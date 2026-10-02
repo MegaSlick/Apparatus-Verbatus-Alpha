@@ -38,8 +38,7 @@ no record below its stated cap is `genuinely-empty` with empty text, bound to th
 detector's census (Attestatores CONTRACT, "A page the detector found nothing on"): it
 counts toward the floor, and the validation above re-derives the census it rests on.
 On a page with no detector record, DAI's witness is therefore the detector's look, not
-a reading of the page's text: under the sealed roster of three page witnesses and a
-floor of 3, it is the page's third witness. On a page whose reading establishes acts,
+a reading of the page's text. On a page whose reading establishes acts,
 the page accounting's rule (i) holds every unit (`no-detector-record-on-act-page`), so no unit there is accepted on DAI's
 silence. A DAI page whose detector's run facts state no cap, or whose records enclosed
 no crop, is `not-run` and does not count.
@@ -74,9 +73,9 @@ accounting's rules (d), (e) and (f) pass. A page of `other` entries also needs r
 (i) to pass, so no detector record lies in an `other` region; with no record detector
 (`not-applicable`) or none measured it stays held. A blank page needs rule (i) to pass
 or not apply, no detected Surya line, and every witness that read the page to have
-retained blank text, with at least one such witness that is not a census: DAI's page on
-which its detector found nothing is such a witness, but a census is never the only one,
-so a page no witness read as blank text stays held. Blankness is measured from each
+retained blank text. DAI's census counts as a blank witness, but at least one blank
+witness must be one that read the page's text, so a page no witness read as blank text
+stays held. Blankness is measured from each
 witness's retained text (`payload`), never its `content_health`; a witness whose retained payload is not
 text cannot confirm a blank. The floor and residual ink must hold as for any unit, and
 nothing else may hold the row. A confirmed blank is `confirmed-blank`; a confirmed

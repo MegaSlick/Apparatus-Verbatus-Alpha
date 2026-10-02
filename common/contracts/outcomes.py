@@ -570,8 +570,8 @@ def systemic_reason(held_pages: Sequence[int], pages: int, limit: str) -> str:
 def _systemic_review_reason(review: Mapping[str, Any]) -> str:
     """The systemic reason of a `run_aggregate` `systemic_review` record, refused when malformed.
 
-    The pages are the alarm's own count of the run's reviewed pages, so a held
-    canary page outside the export's census is named as the alarm named it.
+    The pages are the alarm's own count of the run's reviewed pages; canary pages
+    are not among them, so the reason names only pages of the register.
     """
     if not isinstance(review, Mapping) or set(review) != SYSTEMIC_REVIEW_FIELDS:
         raise FatalAccounting(

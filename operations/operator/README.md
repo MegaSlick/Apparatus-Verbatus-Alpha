@@ -107,9 +107,10 @@ sealed source is the other way. A run whose Recensor holds anything stops there,
 the Archetypus, in every mode; it exports with holds remaining only after `advance`
 passes the Recensor's current seal. `review` shows what each stored decision did.
 
-**More than a few pages held is a problem with the run.** When more than 1 in 50 of a
-run's pages, and at least two of them, are held after the Recensor (`config/review.toml`,
-sealed into the run), the run stops as any hold does, its report says the held share points to a systemic problem,
+**More than a few pages held is a problem with the run.** When the share of a run's
+pages held after the Recensor is above `max_held_page_share` and at least
+`min_systemic_held_pages` pages are held (`config/review.toml`, sealed into the run as
+`review`; canary pages are not counted), the run stops as any hold does, its report says the held share points to a systemic problem,
 and with `--notify` the held notification says so. An `advance` may still pass it; the
 advance check says the line again, the export carries it as a reason, and the run's and
 the export's notifications lead with it. Look for the cause in the run before deciding

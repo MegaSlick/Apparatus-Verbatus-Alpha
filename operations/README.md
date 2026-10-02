@@ -50,7 +50,9 @@ their order and what each costs are in [operator/README.md](operator/README.md).
 - **Two words leave this computer, and only when you name a volume.**
   `upload --network-volume` sends the files a sealed submission record names to a RunPod
   network volume, and `fetch-run` brings a pod-written run tree back from one. Their
-  credentials are read from the environment only.
+  credentials are read from the environment only. The one other thing that leaves is
+  the `--notify` line, sent to `https://ntfy.sh`: a run id, page ordinals and reasons,
+  never register material.
 - **A re-shoot is refused at the Door, whole.** A triage manifest that names a re-shoot
   cluster (two captures of one leaf) makes the Door refuse the entire submission, since
   no later stage links two captures of one leaf. Submit one capture per leaf
