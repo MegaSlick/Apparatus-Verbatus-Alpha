@@ -872,88 +872,10 @@ def test_a_source_with_no_declared_digest_still_reaches_a_duplicate_report(tmp_p
     ]
 
 
-def test_duplicate_files_are_admitted_per_ordinal_and_reported_rather_than_refused_per_file(
-    tmp_path, capsys
-):
-    """Each duplicate is admitted and reported; no *file* is refused for being one.
-
-    The run itself is refused at the close, by the test below -- this one stops
-    before `_finish_door_run` deliberately, because what it pins is the half
-    that survives that refusal: both admissions, the `duplicate_of` link, one
-    stored blob for both copies, and the complete per-filename report an
-    operator reads back. Dropping the second copy would be an automated
-    exclusion, and excluding material is the project lead's decision, not
-    the pipeline's.
-    """
-    data = png(3, 2)
-    sources = [
-        SourceEntry(1, "source-a.png", digest_bytes(data)),
-        SourceEntry(2, "source-b.png", digest_bytes(data)),
-    ]
-    tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context,
-            tree,
-            sources,
-            reader({"source-a.png": data, "source-b.png": data}),
-            policy=POLICY,
-            pdf_settings=PDF_SETTINGS,
-        )
-        == 2
-    )
-    report = door.publish_duplicate_report(context)
-    context.finish(DOOR)
-    records = admissions(tree)
-    assert {record["outcome"] for record in records.values()} == {"admitted"}
-    assert records[2]["payload"]["duplicate_of"] == {
-        "first_declared_path": "source-a.png",
-        "first_ordinal": 1,
-        "source_sha256": digest_bytes(data),
-    }
-    assert records[1]["payload"]["stored_at"] == records[2]["payload"]["stored_at"]
-    assert report is not None
-    entry = next(
-        item
-        for item in tree.build_manifest(DOOR)["artifacts"]
-        if item["kind"] == "duplicate-report"
-    )
-    duplicate = json.loads(tree.read_bytes(entry["relative_path"]).decode("utf-8"))["payload"]
-    assert duplicate["duplicate_source_count"] == 1
-    assert duplicate["duplicate_ordinal_count"] == 1
-    assert duplicate["groups"] == [
-        {
-            "source_sha256": digest_bytes(data),
-            "first_declared_path": "source-a.png",
-            "first_ordinal": 1,
-            "sources": [
-                {"declared_path": "source-a.png", "ordinals": [1]},
-                {"declared_path": "source-b.png", "ordinals": [2]},
-            ],
-        }
-    ]
-    door._announce_duplicate_report(report)
-    summary = capsys.readouterr().err
-    assert "1 duplicate source(s) detected across 1 page ordinal(s)" in summary
-    assert "source-a.png" not in summary
-    assert "source-b.png" not in summary
-
-
-def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed(tmp_path):
-    """The merged-page trap, closed where the filenames are still in hand.
-
-    Two byte-identical files derive one `page_id`, so the Exemplar seals one
-    page citing both submission rows while every stage behind it still works one
-    page per row. Left to run, that submission reads one page where two files
-    were submitted, and the only trace is a private report nobody was told to
-    open. The door refuses the whole submission instead.
-
-    What this pins is the *order*, which is the half a refusal can quietly get
-    wrong: the duplicate report is published, counted and announced first, so
-    the operator keeps the complete per-filename evidence in the tree, and only
-    then does the run stop -- before `seal_boundary` writes the door's own
-    completion. Refusing before the report would lose the evidence; refusing
-    after the seal would leave a completed door on an unreadable submission.
+def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed(tmp_path, capsys):
+    """Two byte-identical files would be one page read twice, so the Door refuses
+    the whole submission, after the duplicate report is sealed and announced (so the
+    per-filename evidence stays in the tree) and before the Door's own seal.
     """
     data = png(3, 2)
     sources = [
@@ -976,7 +898,9 @@ def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed
 
     message = str(refusal.value)
     assert "ordinal(s) 1 and 2 carry identical bytes" in message
-    assert "derives one page identity from more than one submitted file" in message
+    summary = capsys.readouterr().err
+    assert "1 duplicate source(s) detected across 1 page ordinal(s)" in summary
+    assert "source-a.png" not in summary and "source-b.png" not in summary
     # By ordinal, never by filename: `run_stage` prints this to stderr, and the
     # data-handling logging rule excludes a declared path from that channel.
     assert "source-a.png" not in message
@@ -2276,12 +2200,7 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
     proved over the real Door's own refusal.** The shared constructor asks for
     the door's completion seal on both ingress routes before anything is
     written, so an Exemplar started directly over this same refused door still
-    refuses by name here. `test_exemplar_seal.py::
-    test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_complete`
-    pins the same check over a hand-built refused door, and
-    `test_exemplar_seal.py::
-    test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_twice`
-    covers the merged page itself.
+    refuses by name here.
     """
     data = png(4, 3)
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
@@ -2324,7 +2243,7 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
     assert "predecessor door has no stage-seal" in sealed.stderr
     manifest = tree.build_manifest(EXEMPLAR)
     assert [item for item in manifest["artifacts"] if item["kind"] == "page"] == [], (
-        "the exemplar must refuse before sealing the merged page the door refused"
+        "the exemplar must refuse before sealing a page over a door that refused"
     )
 
 
@@ -2968,87 +2887,6 @@ def test_two_byte_identical_pages_inside_one_container_are_both_kept(tmp_path):
     # content-addressed, so both admissions reference one stored blob. Two
     # ordinals, two admissions, one blob — and no duplicate refusal anywhere.
     assert records[1]["payload"]["sha256"] == records[2]["payload"]["sha256"]
-
-
-def test_a_second_copy_of_one_container_keeps_all_pages_and_flags_the_source_duplicate(tmp_path):
-    """The same two rules meeting from the other side.
-
-    Pages of one file are never duplicates of each other; two copies of one file
-    under different names are. A two-page PDF submitted twice produces four slots:
-    four admitted pages. The second filename is a duplicate fact, not a refusal;
-    neither rule may quietly become the other.
-    """
-    data = two_page_pdf()
-    files = {"scan-1.pdf": data, "scan-2.pdf": data}
-    sources = expand_sources(
-        [
-            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
-            for path, payload in files.items()
-        ],
-        reader(files),
-        POLICY,
-    )
-    assert len(sources) == 4
-
-    tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 4
-    )
-    report = door.publish_duplicate_report(context)
-    context.finish(DOOR)
-
-    records = admissions(tree)
-    assert [records[ordinal]["outcome"] for ordinal in sorted(records)] == ["admitted"] * 4
-    for ordinal in (3, 4):
-        assert records[ordinal]["payload"]["declared_path"] == "scan-2.pdf"
-        assert records[ordinal]["payload"]["duplicate_of"]["first_declared_path"] == "scan-1.pdf"
-    assert records[1]["payload"]["stored_at"] == records[3]["payload"]["stored_at"]
-    assert records[2]["payload"]["stored_at"] == records[4]["payload"]["stored_at"]
-    assert report is not None
-
-
-def test_two_identical_broken_sources_are_each_told_the_truth_about_themselves(tmp_path):
-    """A refused source is never the "first admission" a later duplicate names.
-
-    The duplicate reason says "identical content already admitted as source-N". If a
-    second copy of a corrupt file were given that reason, the record would assert an
-    admission that never happened, and the census would read "one
-    corrupt file, one duplicate" when the truth is two corrupt files, each needing
-    the same fix.
-
-    **What actually protects this is the order of the two checks**, not the line that
-    registers the digest — both were broken in turn to find out, and only reordering
-    the duplicate check above the refusal check changed this test's outcome. Refusing
-    a source on its own merits before ever consulting `seen_sources` is the property
-    being asserted here.
-    """
-    data = b"not an image at all"
-    sources = [
-        SourceEntry(1, "broken-a.png", digest_bytes(data)),
-        SourceEntry(2, "broken-b.png", digest_bytes(data)),
-    ]
-    tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context,
-            tree,
-            sources,
-            reader({"broken-a.png": data, "broken-b.png": data}),
-            policy=POLICY,
-            pdf_settings=PDF_SETTINGS,
-        )
-        == 0
-    )
-    context.finish(DOOR)
-
-    records = admissions(tree)
-    for ordinal in (1, 2):
-        assert (
-            reason_code(records[ordinal]["payload"]["reason"]) is RefusalReason.UNRECOGNIZED_FORMAT
-        )
 
 
 def test_an_oversized_source_is_named_too_large_without_ever_being_read(tmp_path):

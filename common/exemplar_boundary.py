@@ -78,20 +78,12 @@ def verify_sealed_page_pixels(
     payload = page.get("payload")
     if not isinstance(payload, dict):
         raise ContractError("a sealed Exemplar page has no payload")
-    rows = sealed_submission_rows(payload)
-    if ordinal not in rows:
+    if payload.get("ordinal") != ordinal:
         raise ContractError(
-            "a sealed Exemplar page does not name this submitted row among its own submission "
-            "rows, so it is not the page this source was sealed into"
+            "a sealed Exemplar page names another submitted ordinal, so it is not the page "
+            "this source was sealed into"
         )
-    _verify_submission_row(rows[ordinal], source)
-    # The page's own top-level filename facts describe one of its rows and must
-    # agree with it. Two rows carrying identical bytes are one page, so the
-    # sealed record cites the whole set; nothing here may quietly disagree with
-    # the citation beside it.
-    if payload.get("ordinal") not in rows:
-        raise ContractError("a sealed Exemplar page's own ordinal is not one of its submitted rows")
-    _verify_page_source_facts(payload, rows[payload["ordinal"]], payload["ordinal"])
+    _verify_page_source_facts(payload, source, ordinal)
 
     source_digest = payload.get("source_sha256")
     if not is_sha256(source_digest):
@@ -117,20 +109,15 @@ def verify_sealed_page_pixels(
     blob_path = tree.blob_path(DOOR, source_digest)
     if payload.get("image_path") != blob_path:
         raise ContractError("a sealed Exemplar page does not name its Door pixel blob")
-    admission_paths = {
-        tree.artifact_path(DOOR, "admission", artifact_id(DOOR, "admission", f"source-{row}"))
-        for row in rows
-    }
     admission_path = tree.artifact_path(
         DOOR,
         "admission",
         artifact_id(DOOR, "admission", f"source-{ordinal}"),
     )
     refs = _references_by_path(page.get("inputs"))
-    if set(refs) != admission_paths | {blob_path}:
+    if set(refs) != {admission_path, blob_path}:
         raise ContractError(
-            "a sealed Exemplar page must input exactly the Door admission of every submission "
-            "row it names, and its pixel blob"
+            "a sealed Exemplar page must input exactly its Door admission and its pixel blob"
         )
     blob_ref = refs[blob_path]
     if blob_ref != {"relative_path": blob_path, "sha256": source_digest}:
@@ -322,7 +309,6 @@ def verify_exemplar_corpus_seal(
 ) -> None:
     """Verify the one Exemplar corpus seal against run authority and page outcomes."""
     expected_ordinals = set(sources)
-    _refuse_a_merged_page_no_consumer_reads_yet(records)
     if set(records) != expected_ordinals or set(entries_by_ordinal) != expected_ordinals:
         # By ordinal, never by submitted filename: the data-handling policy
         # excludes a declared path from the stderr channel `run_stage` prints
@@ -643,73 +629,6 @@ def _verify_crop_is_the_same_image(stored: bytes, derived: bytes) -> None:
             "a crop region's sealed image shows the right pixels but carries content beyond "
             "the crop itself"
         )
-
-
-def _refuse_a_merged_page_no_consumer_reads_yet(records: dict[int, dict[str, Any]]) -> None:
-    """Name the one shape the Exemplar can seal and nothing behind it can read.
-
-    Byte-identical sources submitted twice seal as one page citing both rows,
-    the right answer for the Exemplar, but every stage behind it keys its work
-    by submitted ordinal and would mint each act twice against one `page_id`.
-    Refused here rather than surfacing downstream as a lie about a "lost"
-    ordinal that was actually sealed and cited.
-
-    The Door refuses identical source bytes
-    (`pipeline/1_exemplar/door.py::require_no_duplicate_sources`); this guards
-    the merged shape that two sources with identical derivatives can still
-    produce.
-    """
-    for ordinal, record in records.items():
-        if record.get("outcome") != "sealed":
-            continue
-        payload = record.get("payload")
-        rows = sealed_submission_rows(payload) if isinstance(payload, dict) else {}
-        if len(rows) > 1:
-            raise ContractError(
-                f"the Exemplar sealed submitted ordinal(s) {sorted(rows)} into the single page "
-                f"{record.get('subject_id')} because they carry identical bytes; that is one "
-                "page and one act set, but every stage behind the Exemplar still works one "
-                "page per submitted row and would mint each act on it twice. The run is "
-                f"refused here rather than read twice (reached via ordinal {ordinal})"
-            )
-
-
-def sealed_submission_rows(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
-    """Every submission row one sealed page names, by ordinal.
-
-    Ordinarily one. Byte-identical sources submitted under two filenames derive
-    one `page_id` — identity binds the bytes, not the manifest row — so the
-    Exemplar seals one page artifact citing both rows rather than publishing the
-    same identity twice. The rows are the page's account of which submissions it
-    discharges, and every consumer reads them through here.
-    """
-    rows = payload.get("submission_rows")
-    if not isinstance(rows, list) or not rows:
-        raise ContractError("a sealed Exemplar page cites no submitted row")
-    by_ordinal: dict[int, dict[str, Any]] = {}
-    for row in rows:
-        ordinal = row.get("ordinal") if isinstance(row, dict) else None
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise ContractError("a sealed Exemplar page cites a submitted row with no ordinal")
-        if ordinal in by_ordinal:
-            raise ContractError(
-                f"a sealed Exemplar page cites submitted ordinal {ordinal} twice; a row "
-                "counted twice is a page count that no longer reconciles"
-            )
-        by_ordinal[ordinal] = row
-    if list(by_ordinal) != sorted(by_ordinal):
-        raise ContractError("a sealed Exemplar page cites its submitted rows out of order")
-    return by_ordinal
-
-
-def _verify_submission_row(row: dict[str, Any], source: dict[str, Any]) -> None:
-    """One cited submission row against the run authority's manifest row."""
-    for field in ("relative_path", "sha256", "bytes", "ledger_sha256", "container_page_index"):
-        if source.get(field) != row.get(field):
-            raise ContractError(
-                "a sealed Exemplar page cites a submitted row that no longer matches its "
-                "submitted filename ledger entry"
-            )
 
 
 def _verify_page_source_facts(

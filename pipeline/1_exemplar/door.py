@@ -1005,11 +1005,11 @@ def process_sources(
     after the run sealed: the `computed_sha256` comparison below depends on it.
 
     Per-file, never per-folder: one refused source does not stop the rest.
-    Byte-identical pages within one PDF stay distinct, and a second path with the
-    same bytes is admitted under its own ordinal with a duplicate fact.
+    Byte-identical pages within one PDF stay distinct. Two paths with the same
+    bytes are each admitted here; `publish_duplicate_report` names them and
+    `require_no_duplicate_sources` then refuses the run.
     """
     admitted = 0
-    seen_sources: dict[str, tuple[str, int]] = {}
     # One cached raster, not a map: a path's ordinals are contiguous, and a map
     # would grow memory with the number of rasters.
     cached_path: str | None = None
@@ -1127,18 +1127,7 @@ def process_sources(
                     _publish_refusal(context, source, RefusalReason.DIGEST_MISMATCH, str(error))
                     continue
 
-            # Only admitted sources register: a corrupt twin gets its own
-            # refusal, and a valid second path stays admitted with a duplicate fact.
-            first = seen_sources.get(actual_digest)
-            duplicate_of = None
-            if first is not None and first[0] != source.declared_path:
-                duplicate_of = {
-                    "first_declared_path": first[0],
-                    "first_ordinal": first[1],
-                    "source_sha256": actual_digest,
-                }
-            seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
-            _publish_admission(context, tree, source, decision, data, actual_digest, duplicate_of)
+            _publish_admission(context, tree, source, decision, data, actual_digest)
             admitted += 1
 
     return admitted
@@ -1151,7 +1140,6 @@ def _publish_admission(
     decision: _Decision,
     data: bytes | None,
     actual_digest: str,
-    duplicate_of: dict[str, Any] | None,
 ) -> None:
     _, published = tree.put_blob(DOOR, decision.store_bytes)
     inputs = [context.input_ref(published.relative_path)]
@@ -1180,8 +1168,6 @@ def _publish_admission(
         # master one blob; envelope inputs may not repeat.
         if parent.relative_path != published.relative_path:
             inputs.append(context.input_ref(parent.relative_path))
-    if duplicate_of is not None:
-        extra["duplicate_of"] = duplicate_of
     _publish(context, source, outcome="admitted", payload_extra=extra, inputs=inputs)
 
 
@@ -1300,10 +1286,11 @@ def publish_refusal_report(context: StageContext) -> Report | None:
 
 
 def publish_duplicate_report(context: StageContext) -> Report | None:
-    """Seal the duplicate fact without refusing either source.
+    """Seal which admitted paths share one submitted digest, before the run is refused.
 
     Groups every admitted path sharing one submitted digest and names the first
-    filename and ordinal, so no later stage rediscovers it from blobs.
+    filename and ordinal. Pages of one container share its digest under one path
+    and are not duplicates.
     """
     grouped: dict[str, list[tuple[int, str, dict[str, str]]]] = {}
     for entry, payload in _iter_admissions(context, "admitted"):
@@ -1450,22 +1437,16 @@ def _publish_report(
 
 
 def require_no_duplicate_sources(duplicate_report: Report | None) -> None:
-    """Refuse a submission in which two submitted files derive one page identity.
+    """Refuse a submission in which two submitted files carry identical bytes.
 
-    Byte-identical files derive one `page_id`, but every later stage works one
-    page per submitted row, so the run would read one page where two were submitted.
-
-    The whole submission is refused, never one file, and there is no override
-    flag: the bytes cannot tell a page shot twice from one scan exported twice, so
-    the Door refuses rather than choosing which copy to drop.
+    Page identity binds the submitted bytes, so two such files would be one page
+    read twice. The whole submission is refused, never one file, and there is no
+    override: the bytes cannot tell a page shot twice from one scan exported
+    twice, so the Door refuses rather than choosing which copy to drop.
 
     The error names ordinals only, since `run_stage` prints it to stderr and the
     data-handling policy keeps paths out of logs; the duplicate report sealed
     before this refusal names the files.
-
-    Only identical submitted bytes are caught here. Different sources whose triage
-    derivatives coincide are refused by `common/exemplar_boundary` at the first
-    consumer, so page identity is derived in one place.
     """
     if duplicate_report is None:
         return
@@ -1475,14 +1456,11 @@ def require_no_duplicate_sources(duplicate_report: Report | None) -> None:
     )
     raise ContractError(
         "this submission derives one page identity from more than one submitted file: "
-        f"submitted ordinal(s) {named} carry identical bytes. Byte-identical sources "
-        "derive one page_id, so the Exemplar would seal one page citing every one of "
-        "them while every stage behind it still works one page per submitted row, and "
-        "the run would read one page where two files were submitted. Nothing is "
-        "excluded here and nothing is dropped: the submission is refused whole, and "
-        f"the sealed duplicate report at {duplicate_report.path} names each "
-        "filename. Re-submit with a --submission-manifest naming each distinct scan "
-        "once, or ask the project lead if a repeated scan is genuinely two pages"
+        f"submitted ordinal(s) {named} carry identical bytes, so the run would read one "
+        "page where two files were submitted. Nothing is excluded here and nothing is "
+        "dropped: the submission is refused whole, and the sealed duplicate report at "
+        f"{duplicate_report.path} names each filename. Re-submit with a "
+        "--submission-manifest naming each distinct scan once"
     )
 
 
