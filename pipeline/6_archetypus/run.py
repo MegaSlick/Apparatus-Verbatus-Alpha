@@ -555,9 +555,8 @@ def _archetypus_rows(context) -> list[dict]:
 def build_index(context) -> dict:
     """The rebuildable per-run summary of every Archetypus record this run holds.
 
-    Derived from the immutable per-act records on disk — spec 01's
-    artifact/manifest split, "never the only evidence" — exactly as
-    `manifest.json` is, and safe to delete and rebuild identically.
+    Derived from the immutable per-act records on disk, never the only evidence,
+    exactly as `manifest.json` is, and safe to delete and rebuild identically.
     """
     rows = _archetypus_rows(context)
     index = {

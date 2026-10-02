@@ -1,9 +1,8 @@
-"""Spec 10, test 6: `index.json` reconciles 1:1 with the acts the Recensor
-accepted; a missing or duplicate row is FATAL.
+"""`index.json` reconciles 1:1 with the acts the Recensor accepted; a missing or
+duplicate row is FATAL.
 
 `index.json` is a rebuildable summary derived from the immutable per-act
-records — spec 01's artifact/manifest split, never the only evidence — exactly
-as `manifest.json` is. End-to-end tests exercise the real CLI; direct tests call
+records, never the only evidence, exactly as `manifest.json` is. End-to-end tests exercise the real CLI; direct tests call
 `build_index` and `validate_index` themselves, because a single invocation of the
 stage cannot actually produce a divergence for the consumer check to catch, and
 "nothing can go wrong here today" is not the same claim as "this refuses it".

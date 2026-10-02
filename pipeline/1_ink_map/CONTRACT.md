@@ -116,7 +116,7 @@ that holds none of their ink, so a fixture run maps both pages as `mapped`.
 submission of pages built for them
 (`test_a_real_submission_names_edge_ink_and_an_unmeasurable_page`), and the
 release and hold are exercised on records built the way this stage builds them
-(`pipeline/7_armarium/test_unit14b_edge_release.py`). No run tree in the
+(`pipeline/7_armarium/test_edge_release.py`). No run tree in the
 repository carries an edge finding from this stage through the act-region
 bounds to the Armarium. Positive edge-finding selectivity is measured on real
 material or not claimed.

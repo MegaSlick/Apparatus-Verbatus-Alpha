@@ -110,8 +110,8 @@ def test_exactly_one_field_holds_the_established_characters():
     """Every other string-valued field is a hash, a status, or an identifier.
 
     Pinned by field name against the closed schema, not by comparing values: a
-    revived fallback field holding *different* characters (the old pipeline's
-    exact shape) would never equal `text`, so a value filter cannot fail. The
+    fallback field holding *different* characters would never equal `text`, so a
+    value filter cannot fail. The
     test below proves the closed set refuses such a field outright.
     """
     # The closed set, spelled out: any revived fallback field — reader_text,

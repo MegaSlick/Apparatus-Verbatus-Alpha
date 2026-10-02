@@ -1199,8 +1199,8 @@ def test_jsonl_uncertainty_status_may_not_contradict_the_layer_beside_it(tmp_pat
     """The declaration a recipient reads is checked against the payload it describes.
 
     Cross-format identity compares layer to layer; it never reads
-    `uncertainty_status`, so before this guard a delivered JSONL row could carry a
-    valid canonical layer while telling every reader of that row there was none.
+    `uncertainty_status`, so without this check a delivered JSONL row could carry
+    a valid canonical layer while telling every reader of that row there was none.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
@@ -2461,7 +2461,7 @@ def test_the_terminal_ledger_partitions_sources_pages_and_acts_totally(tmp_path)
 
 
 def test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees():
-    """The two page-category branches spec 11 test 1 names besides delivered/held.
+    """The two page categories a page inherits besides delivered and held.
 
     Driven against the pure function because nothing upstream emits either outcome
     yet, so a full-projection fixture would be synthetic in exactly the same way this
@@ -3035,7 +3035,7 @@ def _partial_projection() -> ArmariumProjection:
 
 
 def test_a_delivered_act_with_a_gap_reaches_every_selected_literal_format(tmp_path):
-    """Spec 11's honesty, measured on the written product rather than asserted.
+    """A damaged act is partial in the written product, not only in the projection.
 
     One schema-legal internal gap: the status says `partial` in the readable
     bundle, the JSONL hand-off and the acts database, the run aggregate names the
