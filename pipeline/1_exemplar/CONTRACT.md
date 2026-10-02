@@ -103,8 +103,9 @@ ordinals, so no page drops out of the denominator.
 
 ## Run-level refusals
 
-After every admission is published the Door seals three private, filename-bearing
-reports, then refuses the whole run, before its own completion seal, when:
+After every admission is published the Door seals up to three private,
+filename-bearing reports, each only when it has something to name, then refuses the
+whole run, before its own completion seal, when:
 
 1. **Two submitted files carry identical bytes** (`duplicate-report`). Page identity
    binds the submitted bytes, so they would be one page read twice. Byte-identical

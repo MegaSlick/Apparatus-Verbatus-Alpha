@@ -67,8 +67,9 @@ The Door refuses any submission that contains a cluster (see
 
 ## Modes and refusals
 
-The modes are named once, as `common.contracts.stages.TRIAGE_MODES`; the sealed
-`config/triage_modes.toml` and `common.stage.require_triage_modes` read that constant.
+The modes are named once, as `common.contracts.stages.TRIAGE_MODES`. The sealed
+`config/triage_modes.toml` must name exactly those modes, which
+`common.stage.load_triage_modes` checks when it reads the file.
 
 Every refusal is a `SchemaRefusal`. Work is bounded before it can amplify: 1,000 rows
 and 1,000 cluster records per manifest, 4,096 members per cluster, 64 parts per frame

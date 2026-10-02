@@ -2,8 +2,8 @@
 
 How the numbers in `config/ink_map.toml`'s `[background]` block were measured and why
 each sits where it does. The contract the stage keeps is in `CONTRACT.md`; the sample
-behind each number, and what it does not establish, is also in that file's provenance
-blocks. Source names are neutral labels (parish A, B, C; a printed parish history).
+behind each number, and what it does not establish, is also in
+`config/ink_map.toml`'s provenance blocks. Source names are neutral labels (parish A, B, C; a printed parish history).
 
 ## Neutral dark-distribution evidence
 
