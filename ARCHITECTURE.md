@@ -37,15 +37,16 @@ flowchart LR
     E --> F["Archetypus<br/><i>the established reading</i>"]
     F --> K["Coniector<br/><i>proposes a reconstruction</i>"]
     K --> G["Armarium<br/><i>written out</i>"]
-    D -.->|"its readings"| K
+    D -.->|"its readings; needs only the Perlector's seal"| K
     K -.->|"labelled, unconfirmed"| G
 ```
 
 The stages run in that order, one after another. Each is a separate program that reads
 the sealed records of the stages before it and refuses to start until its predecessor's
 stage seal verifies. The Coniector is a side branch: it reads only the Perlector's
-readings, nothing on the main line reads it, and it runs once the Archetypus has
-finished; only the Armarium reads what it writes.
+readings and requires only the Perlector's seal, and nothing on the main line reads it.
+It runs after the Archetypus in the run order, and still runs when a hold at the
+Recensor stops the Archetypus and the Armarium; only the Armarium reads what it writes.
 
 **Stage names describe responsibilities, not models.** One model may serve more than one
 role; which model fills which role is configuration, not architecture.
@@ -87,7 +88,9 @@ What the call is shown is the page's feed: the page image, each witness's page b
 into its own units, and the detected lines and blocks, each with an id. The Perlector
 does not reason from context: a date that looks wrong beside its neighbours is written as
 the ink shows it. Each entry it names cites the ids it read, and its region is the
-boxes of those ids; every id it does not cite it must set aside with a reason. It reads
+boxes of the witness units and lines it cites; a block lends no area. Every witness unit
+must be cited or set aside with a reason; every detected line and detector record must
+lie inside some entry's region (a line may also be set aside). It reads
 through to the end; truncation is a failure, not an output. A run configured to show no
 page image cannot establish text from the ink, and every act it reads is held.
 
@@ -95,13 +98,18 @@ Every page reading is then measured by the **page accounting**, a model-free che
 every witness unit, detected line, detector record, witness's text and the page's ink
 is accounted for. Anything it cannot account for, or cannot measure, holds the page.
 
-**A page that cannot be read is not an empty page.** Three cases are kept apart: a page
-whose reading fails (it did not load, or the call failed) is a failure, held and
-counted toward the run's failure cap; a page the Perlector reads as having no text is
-only a claim, held until checked; and a page is *blank* only when the Recensor confirms
-that claim — the page accounting finds no ink left unread, the record detector found no
-record, no line was detected, and every witness that read the page found no text. Ink
-with no reading is held for a person, never passed as blank.
+**A page that cannot be read is not an empty page.** The cases are kept apart:
+
+- a page the door could not decode (corrupt or unreadable) is refused: it is recorded
+  but never counted as acts, and it counts toward the run's hard-failure cap;
+- a page whose reading call failed is held as unread, and counts toward the cap;
+- a page whose answer is not a parsed, valid answer is held as unread;
+- a page the Perlector reads as having no text is only a claim, held until checked;
+- a page is *blank* only when the Recensor confirms that claim: the page accounting
+  finds no ink left unread, the record detector found no record, no line was detected,
+  at least one witness read the page, and every witness that read it found no text.
+
+Ink with no reading is held for a person, never passed as blank.
 
 Where the first reading leaves named ink unread — a witness unit neither cited nor set
 aside, or a detected line or detector record outside every region — the Perlector may be
@@ -181,22 +189,27 @@ superseded, and nothing may disappear inside one.
 is established or exported, in every mode and on the pod. A person then decides each
 held unit or page with `verbatus decide`. Each decision binds to the review it was made
 against and goes stale when that review changes; the run resumes from the Recensor,
-which applies the current decisions. The decisions are:
+which applies the current decisions, or from the Perlector after a page `re-ask`. The
+decisions are:
 
 | Decision | About | Effect |
 |---|---|---|
-| `release` (override) | a unit | clears the unit's own holds; with nothing else holding it, the model's reading goes to export exactly as read, labelled "released by operator" with who, when, why and the holds it cleared |
-| `edit` (correction) | a unit | a person's corrected text becomes the reading, taken as the truth with no machine doubt, labelled "corrected by a person" with who, when, why and an optional note, with the model's reading beside it as "model reading (original)" |
+| `release` (override) | a unit | clears the unit's own holds; with nothing else holding it, the model's reading goes to export exactly as read, labelled "released by operator" with who, when, why and the holds it cleared. Refused when the unit has no hold of its own, and when the reading has no place on the page, malformed doubt marks or no text |
+| `edit` (correction) | a held unit | a person's corrected text becomes the reading, taken as the truth with no machine doubt, labelled "corrected by a person" with who, when, why and an optional note, with the model's reading beside it as "model reading (original)". Refused for a reading with no place on the page |
 | `exclude` (exclusion) | a unit | keeps the unit out of the delivered text but in the record, citing the decision |
 | `hold` | a unit or page | keeps it held, naming a finding |
-| `re-ask` | a page | an operator re-read: the Perlector reads the page again when the run resumes from it |
-| `re-ask` | a unit | holds the unit; the Perlector reads whole pages, so a re-read is asked of its page |
-| `no-missed-act` | a page | clears the page's holds |
+| `re-ask` | a page | asks for an operator re-read: the page stays held until the run resumes from the Perlector, which reads it again |
+| `re-ask` | a unit | holds the unit (`review-reask`) and records the request; nothing is read again until a person records a `re-ask` of its page |
+| `no-missed-act` | a page | clears the page's holds; a reading it releases is labelled "released by operator". Refused on a page that was never read |
 | `missed-act` | a page | holds the page as missing an act |
 | `re-shoot` | a page | holds the page and records a request for a new capture |
 
 The operator's `re-ask` is a person's request for an operator re-read; it is not the
 machine's bounded re-ask.
+
+Unit decisions apply only to entries of a reading; a row standing for a whole page takes
+page decisions. A held one-sided page break is not a unit or a page and cannot be
+decided: a person passes it with `verbatus advance`, and the export names it.
 
 A reading with no place on the page, malformed doubt marks or no text cannot be
 overridden, because the export could not carry it. A correction may replace malformed

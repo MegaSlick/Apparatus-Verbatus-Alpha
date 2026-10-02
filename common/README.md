@@ -138,13 +138,19 @@ accounting of both readings exist exactly when `page_reask.reask_plan`, run
 again over the verified first reading and accounting under the sealed
 `page_level_reread`, names ids. Each kind's attempts must run 1..N without a
 gap (`attempt_ordinals`, the check `latest_attempt` makes), and nothing
-chooses the latest: a stray, missing or third attempt is `FatalAccounting`.
-`parse_state`, `disposition`, `finish_reason` and `reading_ref` are the first
-reading's; `accounting_ref` is the page's last accounting (the re-ask's on a
-re-asked page); `reask_ref` and `trigger_accounting_ref` name the re-ask and
-the first accounting that planned it, both `None` on a page not re-asked.
-`entry_count` is the entries the last accounting counts, `act` and `other`
-alike, `None` when the first answer was not read. Every submitted ordinal
+chooses the latest: a stray or missing attempt is `FatalAccounting`. Each
+operator re-read (attempt `page-read:3` on, without a gap) is verified like a
+first reading, with its own accounting; it must answer stored page re-asks of
+the page and supersede every earlier reading, and the last one is the page's
+current whole-page reading, whose entries are counted. `parse_state`,
+`disposition`, `finish_reason` and `reading_ref` are the current whole-page
+reading's (the first reading, or the last operator re-read); `accounting_ref`
+is the page's last accounting (the re-ask's on a re-asked page);
+`reask_ref` and `trigger_accounting_ref` name the re-ask and the first
+accounting that planned it, both `None` on a page not re-asked or whose
+current reading is an operator re-read. `entry_count` is the entries the last
+accounting counts, `act` and `other` alike, `None` when the first answer was
+not read. Every submitted ordinal
 must have an Exemplar page.
 
 `reading_acts` has one closed row (`READING_ACT_FIELDS`) per unit, in page order:
@@ -155,7 +161,7 @@ must have an Exemplar page.
 | `act_key` | `p<ordinal>:<n>` with the accounting's `n`, or `p<ordinal>:unread` / `:blank` / `:refused` |
 | `page_id`, `page_ordinal` | the page |
 | `n` | the entry's number in the page's last accounting: its number in the first answer, or `k + j` for the re-ask's entry `j` after the first answer's `k`; `None` for a page row |
-| `reading_attempt`, `reading_n` | the reading the entry came from (1, or 2 for the re-ask) and its number there; `None` for a page row |
+| `reading_attempt`, `reading_n` | the reading the entry came from (1, 2 for the re-ask, 3 on for an operator re-read) and its number there; `None` for a page row |
 | `kind` | `act` or `other` as the answer gave it; `act` for `page-unread` and `page-blank`, `None` for `page-refused` |
 | `class` | `reading`, `reading-unplaced`, `page-unread`, `page-blank` or `page-refused` |
 | `disposition` | `read` only when nothing holds the unit, else `held`; `refused` for `page-refused` |
@@ -165,6 +171,11 @@ must have an Exemplar page.
 | `perlectio_ref` | the entry's `perlectio.v3`; `None` for a page row |
 | `hold_codes` | sorted: the recomputed page accounting's `holds`, the entry's own holds, and the page row's hold |
 | `continues_from_previous_page`, `continues_to_next_page` | the answer's flags; `None` for a page row |
+
+On a page an operator re-read, the last re-read stands for the first reading and its
+re-ask in everything below: its entries are the page's rows, its accounting is the
+page's last, and "first reading" and "first answer" mean that re-read. The superseded readings' act
+records stay in the run tree and are not counted.
 
 Every submitted page contributes at least one row. A page whose first reading is
 not a parsed, valid answer is one `page-unread` row (held: `page-unread`, the
@@ -268,8 +279,9 @@ class, kind, page and records, held exactly when it names a hold code),
 `require_establishable` (an accepted review stands over a `read` row, or over a
 row whose only hold is `no-act-on-page-unconfirmed` and whose review names it
 in its `release`), `page_breaks` and `continuation_links` over each page's
-first-reading `act` entries only, since a recovered entry's place in page order
-is not established (one per break, each inputting its named
+current whole-page reading's `act` entries only (its first reading, or the
+operator re-read that superseded it), since a recovered entry's place in page
+order is not established (one per break, each inputting its named
 sides' readings), and the review's reason, coverage and notes.
 
 `page_testimonia.py` reads the page witnesses: the sealed page roster and its

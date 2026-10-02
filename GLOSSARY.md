@@ -50,6 +50,7 @@ chairs:
 | `designator_surya` | Surya, the Designator's line and layout detector |
 | `perlector` | the reader |
 | `reconstructor` | the Coniector's chair: the Perlector's model, asked text only |
+| `annotator` | reserved for a semantic annotation layer; declared absent in the real roster, and no stage uses it |
 
 **door** — the intake step before the Exemplar: it checks and seals what was submitted,
 and records anything it refuses.
@@ -101,13 +102,17 @@ marked superseded.
 held after the Recensor. Such a run has a problem of its own, not just a few hard pages,
 and says so in its stop report, its export and its notification.
 
-**failed page** — a page whose reading could not be made: the page did not load or the
-reader's call failed. It is held and counts toward the run's failure cap; it is never
+**failed page** — a page whose reading call failed (the engine was unreachable, refused
+or stopped unrecognised). It is recorded as a `failed` page reading, held as unread, and
+counts toward the run's hard-failure cap. A page the door could not decode (corrupt or
+unreadable) is not a failed page but a refused one: recorded as a `page-refused` row,
+never counted as acts and not held, and it also counts toward the cap. Neither is ever
 counted as an empty page.
 
 **blank page** — a page confirmed to hold no text: the reader found none, the page
 accounting finds no ink left unread, the record detector found no record, no line was
-detected, and every witness that read it found no text. A page the reader reads as
+detected, at least one witness read it, and every witness that read it found no text.
+A page the reader reads as
 having no text is held until all of that is confirmed; ink with no reading is never
 passed as blank.
 
@@ -147,8 +152,9 @@ blocks (`S1`, …). It defines every id the reading may cite and is published as
 
 **page reading** — one Perlector answer for a whole sealed page, recorded as a
 `page-reading`. A page has its first reading and may have one re-ask and operator
-re-reads, each a separate attempt; none replaces another. A reading that cannot stand is
-held as unread.
+re-reads, each a separate attempt; none overwrites another. An operator re-read
+supersedes the earlier readings, which stay in the run tree, and becomes the page's
+current reading. A first reading that is not a parsed, valid answer is held as unread.
 
 **set-aside** — an id from the feed that the reading lists in its answer's `set_aside`,
 with a short reason, instead of citing it, because there is nothing to read there
@@ -159,14 +165,17 @@ id it was asked about.
 
 **page accounting** — the model-free check, recorded as a `page-accounting`, that a page
 reading accounted for everything on its page: every witness unit cited or set aside,
-every detected line and detector record inside a reading region, every witness's text
-read, and no ink left outside the regions. Whatever it cannot account for, or cannot
+every detected line inside a reading region or set aside, every detector record inside a
+reading region, every witness's text read, and no ink left outside the regions. A Surya
+block places nothing. Whatever it cannot account for, or cannot
 measure, holds the page.
 
-**denominator** — what a run counts: one row per page and one per review unit, derived
-from the Perlector's sealed records with the page accounting recomputed, never taken
-from a record. The Recensor, the Archetypus and the Armarium all count by it. A page the
-door refused is recorded but never counted as an act.
+**denominator** — what a run counts, derived from the Perlector's sealed records with
+the page accounting recomputed, never taken from a record: one page row per sealed page,
+and one review-unit row per entry of each sealed page's current reading, or one row
+standing for a sealed page with none. A page the door refused appears only as a
+`page-refused` row, recorded and never counted. The Recensor, the Archetypus and the
+Armarium all count by it.
 
 **reading region** — the boxes an act's citations cover on its page; their union is the
 act's region.
