@@ -548,7 +548,9 @@ def build_armarium_bundle(
         )
     if "acts-database" in formats.formats:
         members["acts.sqlite"] = _acts_database_bytes(
-            projection.acts, {row["act_id"]: row["label"] for row in operator_rows}
+            projection.acts,
+            {row["act_id"]: row["label"] for row in operator_rows},
+            _database_run_metadata(_manifest_run_binding(projection), ledger),
         )
     if "jsonl" in formats.formats:
         members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts))
@@ -3526,10 +3528,29 @@ def _text_member_path(folder: str) -> str:
     return f"text/_source_folder/{folder}/readings.txt"
 
 
+def _database_run_metadata(run: dict[str, str], ledger: dict[str, Any]) -> dict[str, str]:
+    """What the acts database says of its run: who, and whether it is complete and why not.
+
+    The manifest's `run` binding and its ledger's status and reasons, so a reader
+    of the database alone sees that a partial run is partial.
+    """
+    return {
+        "run": canonical_text(run),
+        "run_status": ledger["status"],
+        "partial_reasons": canonical_text(ledger["unresolved_reasons"]),
+    }
+
+
 def _acts_database_bytes(
-    acts: tuple[dict[str, Any], ...], operator_labels: dict[str, str]
+    acts: tuple[dict[str, Any], ...],
+    operator_labels: dict[str, str],
+    run_metadata: dict[str, str],
 ) -> bytes:
-    """The acts table and its search layer; `operator_labels` by act id, from the operator rows."""
+    """The acts table, its search layer and its metadata.
+
+    `operator_labels` are by act id, from the operator rows; `run_metadata` is
+    `_database_run_metadata`'s.
+    """
     with tempfile.TemporaryDirectory(prefix="armarium-sqlite-") as directory:
         path = f"{directory}/acts.sqlite"
         connection = sqlite3.connect(path)
@@ -3546,6 +3567,7 @@ def _acts_database_bytes(
                 "normalizer_revision": TEXTNORM_REVISION,
                 "schema": _SQLITE_SCHEMA,
                 "unidata_version": unicodedata.unidata_version,
+                **run_metadata,
             }
             connection.executemany(
                 "INSERT INTO export_metadata(key, value) VALUES (?, ?)",
@@ -3943,6 +3965,18 @@ def _text_bundle_literals(root) -> dict[str, tuple]:
 
 
 _STORED_ACTS_TABLES: Final = ("acts", "act_search", "export_metadata")
+_DATABASE_METADATA_KEYS: Final = frozenset(
+    {
+        "canonical_text_encoding",
+        "canonical_text_field",
+        "normalizer_revision",
+        "schema",
+        "unidata_version",
+        "run",
+        "run_status",
+        "partial_reasons",
+    }
+)
 _SQLITE_PRODUCT_TABLES: Final = (*_STORED_ACTS_TABLES, "acts_fts")
 # Writer and verifier share this DDL, so the schema check covers FTS shadow
 # tables and implicit indexes without a second spelling. The `acts` table
@@ -5722,13 +5756,27 @@ def _verify_product_accounting(
                 )
     search_fold_verification = None
     if "acts-database" in formats.formats:
-        database_schema = _read_acts_database(
-            root / "acts.sqlite",
-            "SELECT value FROM export_metadata WHERE key = 'schema'",
-            "the acts database has no readable schema",
+        metadata = dict(
+            _read_acts_database(
+                root / "acts.sqlite",
+                "SELECT key, value FROM export_metadata",
+                "the acts database has no readable metadata",
+            )
         )
-        if database_schema != [(_SQLITE_SCHEMA,)]:
+        if metadata.get("schema") != _SQLITE_SCHEMA:
             raise SchemaRefusal("the acts database's schema is not the one this build writes")
+        claims = manifest["claims"]
+        expected_run = _database_run_metadata(
+            manifest["run"],
+            {"status": claims["status"], "unresolved_reasons": claims["partial_reasons"]},
+        )
+        if set(metadata) != _DATABASE_METADATA_KEYS or any(
+            metadata[key] != value for key, value in expected_run.items()
+        ):
+            raise SchemaRefusal(
+                "the acts database does not name the package's run, status and partial "
+                "reasons as its manifest does"
+            )
         database_records, database_literals = _database_act_records(
             root / "acts.sqlite", sources["regions"]
         )

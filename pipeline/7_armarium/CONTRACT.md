@@ -237,13 +237,21 @@ person wrote is one JSON line, so none can start a line a reader parses.
   hash, the literal's hash, the normalizer revision and `derived_kind: "search-fold"`.
 - `acts_fts`: an FTS5 index over `act_search` (`unicode61 remove_diacritics 2`).
 - `export_metadata`: `canonical_text_encoding`, `canonical_text_field`,
-  `normalizer_revision`, `schema` and `unidata_version`. The fold depends on the
-  Unicode database, which differs between Python versions, so the version it was made
-  under is recorded.
+  `normalizer_revision`, `schema` and `unidata_version`; and the run, as the manifest
+  states it: `run` (the manifest's `run` binding, canonical JSON, carrying its
+  `fixture_id` or `submission_id`), `run_status` (`claims.status`) and
+  `partial_reasons` (`claims.partial_reasons`, canonical JSON), so a reader of the
+  database alone sees whose run it is and that a partial run is partial. The
+  manifest's own self-hash cannot be among them, since the manifest hashes this
+  member. The fold depends on the Unicode database, which differs between Python
+  versions, so the version it was made under is recorded.
 
 The database carries no other reading.
 
 ### `acts.jsonl`, `other.jsonl`, `review-items.jsonl`
+
+These files are rows only: they carry no run status or run identity and are read with
+`EXPORT_MANIFEST.json`, which inventories them by digest.
 
 - `acts.jsonl`: one row per counted act, its row count the act partition: `schema`,
   `act_id`, `act_key`, `category`, `canonical_clean_text` and `canonical_text_sha256`

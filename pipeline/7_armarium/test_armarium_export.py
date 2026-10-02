@@ -44,7 +44,7 @@ from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats
 from common.contracts.approval import real_ingress_record
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, canonical_text, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.outcomes import PAGE_READ_SILENT_PAGE_REASON, ArmariumCategory
 from common.contracts.outcomes import run_aggregate as _run_aggregate
@@ -511,6 +511,37 @@ def test_a_partial_runs_text_bundle_says_it_is_partial_and_names_what_it_lacks(t
         'not-delivered-reason: "the review remains unresolved"',
         "",
     ]
+
+
+def test_a_partial_runs_acts_database_says_whose_run_it_is_and_that_it_is_partial(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    verify_export_bundle(bundle.data, tmp_path / "clean")
+    with sqlite3.connect(tmp_path / "clean" / "acts.sqlite") as connection:
+        metadata = dict(connection.execute("SELECT key, value FROM export_metadata"))
+    assert metadata["run_status"] == "partial"
+    assert json.loads(metadata["partial_reasons"]) == bundle.manifest["claims"]["partial_reasons"]
+    assert json.loads(metadata["run"]) == bundle.manifest["run"]
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("run_status", "complete"),
+        ("partial_reasons", "[]"),
+        ("run", '{"fixture_id":"another"}'),
+    ],
+)
+def test_an_acts_database_that_misstates_its_run_is_refused(tmp_path, key, value):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    database = tmp_path / "tampered.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE export_metadata SET value = ? WHERE key = ?", (value, key))
+    members["acts.sqlite"] = database.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+    with pytest.raises(SchemaRefusal, match="does not name the package's run"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
 def _edited_text_bundle(data: bytes, edit) -> bytes:
@@ -3971,6 +4002,21 @@ def recipient_happy_run(tmp_path_factory):
     return root
 
 
+def _set_database_run(members: dict[str, bytes], run: dict, tmp_path: Path) -> None:
+    """A thorough resealer rewrites the acts database's run binding too."""
+    database = tmp_path / "resealed-run.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE export_metadata SET value = ? WHERE key = 'run'", (canonical_text(run),)
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    members["acts.sqlite"] = database.read_bytes()
+
+
 @pytest.mark.hostile_local
 @pytest.mark.parametrize(
     ("case", "expected"),
@@ -4155,13 +4201,15 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
                     row["detail"]["sealed_audit_round_cap"] += 1
             elif case == "publish-submission":
 
-                def mutate(_members, manifest):
+                def mutate(members, manifest):
                     manifest["run"].pop("fixture_id")
                     manifest["run"]["submission_id"] = "a" * 64
+                    _set_database_run(members, manifest["run"], tmp_path)
             else:
 
-                def mutate(_members, manifest):
+                def mutate(members, manifest):
                     manifest["run"]["scenario"] = "a run that never happened"
+                    _set_database_run(members, manifest["run"], tmp_path)
 
             _recipient_reseal_export(tree, mutate)
             if case in {"publish-submission", "publish-retained-manifest"}:
