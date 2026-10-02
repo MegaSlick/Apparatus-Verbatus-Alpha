@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from armarium_export import verify_export_bundle, verify_projection_identity
+from armarium_export import verify_delivered_bundle, verify_export_bundle
 
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ContractError, FatalAccounting
@@ -166,7 +166,7 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     row = next(item for item in rows if item["act_id"] == refused_act_id)
     assert row["category"] == "refused-with-reason"
     assert row["canonical_clean_text"] is None
-    assert verify_projection_identity(
+    assert verify_delivered_bundle(
         tree.read_bytes(reference["relative_path"]), tmp_path / f"id-{missing_field}"
     )
 

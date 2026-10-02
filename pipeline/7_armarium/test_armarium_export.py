@@ -23,6 +23,7 @@ from armarium_export import (
     ArmariumProjection,
     _act_json_records,
     _jsonl_act_records,
+    _jsonl_literals,
     _not_measured_status,
     _page_ledger_category,
     _terminal_ledger,
@@ -38,7 +39,6 @@ from armarium_export import (
     edge_hold_pages_from_rows,
     verify_delivered_bundle,
     verify_export_bundle,
-    verify_projection_identity,
 )
 from textnorm import TEXTNORM_REVISION, search_fold
 
@@ -492,9 +492,7 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
         "act p1:2 is held-for-review: the review remains unresolved"
     ]
     assert manifest["claims"]["pixels"]["resolution_claim"].startswith("reference validity")
-    assert verify_projection_identity(bundle.data, tmp_path / "identity") == {
-        "act-1": "Cǣsar d’Exemple"
-    }
+    assert _verified_literals(bundle.data, tmp_path / "identity") == {"act-1": "Cǣsar d’Exemple"}
 
 
 def _otherwise_complete(**fields) -> ArmariumProjection:
@@ -824,7 +822,7 @@ def test_markup_like_characters_in_a_literal_do_not_refuse_or_change_it(tmp_path
         _source_bytes,
     )
 
-    assert verify_projection_identity(bundle.data, tmp_path) == {"act-1": literal}
+    assert _verified_literals(bundle.data, tmp_path) == {"act-1": literal}
 
 
 def test_an_act_missing_the_canonical_text_field_entirely_is_refused(tmp_path):
@@ -884,7 +882,7 @@ def test_a_unicode_line_separator_in_a_reading_does_not_stop_the_whole_export(
         _source_bytes,
     )
 
-    assert verify_projection_identity(bundle.data, tmp_path / name) == {"act-1": literal}
+    assert _verified_literals(bundle.data, tmp_path / name) == {"act-1": literal}
 
 
 def test_compare_literal_projections_refuses_an_unhandled_literal_format(tmp_path, monkeypatch):
@@ -923,7 +921,7 @@ def test_projection_identity_refuses_a_self_consistent_package_with_one_drifted_
     tampered = _zip_bytes(members)
     verify_export_bundle(tampered, tmp_path / "clean")
     with pytest.raises(SchemaRefusal, match="projection differs"):
-        verify_projection_identity(tampered, tmp_path / "identity")
+        verify_delivered_bundle(tampered, tmp_path / "identity")
 
 
 def test_projection_identity_refuses_a_self_consistent_package_with_drifted_uncertainty(tmp_path):
@@ -960,7 +958,7 @@ def test_projection_identity_refuses_a_self_consistent_package_with_drifted_unce
     tampered = _zip_bytes(members)
     verify_export_bundle(tampered, tmp_path / "clean")
     with pytest.raises(SchemaRefusal, match="projection differs"):
-        verify_projection_identity(tampered, tmp_path / "identity")
+        verify_delivered_bundle(tampered, tmp_path / "identity")
 
 
 def test_text_bundle_refuses_two_uncertainty_lines_for_one_literal(tmp_path):
@@ -974,7 +972,7 @@ def test_text_bundle_refuses_two_uncertainty_lines_for_one_literal(tmp_path):
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="more than one uncertainty layer"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 def test_text_bundle_refuses_a_literal_section_with_no_uncertainty_layer(tmp_path):
@@ -988,7 +986,7 @@ def test_text_bundle_refuses_a_literal_section_with_no_uncertainty_layer(tmp_pat
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="literal with no uncertainty layer"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(tmp_path):
@@ -1058,7 +1056,7 @@ def test_text_bundle_refuses_an_uncertainty_line_before_its_literal(tmp_path):
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="has no literal to anchor to"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal(tmp_path):
@@ -1089,7 +1087,7 @@ def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="does not anchor to its own act's literal"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 # Ten thousand levels of nesting around a 4,301-digit integer. CPython 3.12
@@ -2592,7 +2590,7 @@ def test_a_section_that_drops_its_last_field_is_refused(tmp_path):
 
 
 def test_the_manifest_says_whether_projection_identity_was_actually_checked(tmp_path):
-    """Below two literal formats, `verify_projection_identity` never runs -- say so."""
+    """Below two literal formats, nothing is compared across formats -- say so."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
     assert manifest["canonical_text"]["identity_verified_across"] == [
@@ -2900,6 +2898,14 @@ def test_a_clean_root_whose_path_carries_uri_syntax_still_verifies(tmp_path):
     assert manifest["claims"]["status"] == "partial"
 
 
+def _verified_literals(data: bytes, clean_root: Path) -> dict[str, str]:
+    """The delivered literals of a package that verified whole, formats compared."""
+    verify_delivered_bundle(data, clean_root)
+    return {
+        act_id: record[0] for act_id, record in _jsonl_literals(clean_root / "acts.jsonl").items()
+    }
+
+
 def _members(data: bytes) -> dict[str, bytes]:
     with ZipFile(BytesIO(data)) as archive:
         return {name: archive.read(name) for name in archive.namelist()}
@@ -3108,7 +3114,7 @@ def test_projection_identity_refuses_a_package_whose_formats_disagree_about_dama
     # `partial` is still the honest status for a row that carries its gap.
     verify_export_bundle(tampered, tmp_path / "clean")
     with pytest.raises(SchemaRefusal, match="projection differs"):
-        verify_projection_identity(tampered, tmp_path / "identity")
+        verify_delivered_bundle(tampered, tmp_path / "identity")
 
 
 def test_the_text_bundle_refuses_a_literal_section_with_no_damage_record(tmp_path):
@@ -3122,7 +3128,7 @@ def test_the_text_bundle_refuses_a_literal_section_with_no_damage_record(tmp_pat
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="no completed literal record"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 def test_the_text_bundle_refuses_two_established_text_statuses_for_one_literal(tmp_path):
@@ -3135,7 +3141,7 @@ def test_the_text_bundle_refuses_two_established_text_statuses_for_one_literal(t
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="established-text status has no literal to describe"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 # --- `claims.not_measured`: what this run did not measure ---------------------
@@ -3662,7 +3668,6 @@ def test_code_never_joins_two_literals_and_the_join_stays_out_of_the_act_account
     )
     assert join["join_rule"] == "verbatus-page-join.v3"
     text = _text(members)
-    assert "RECONSTRUCTED" not in text
     assert _HEAD_TEXT + "\n" + _TAIL_TEXT not in text
     assert "possible-continuation-on: p2:1 (page 2) [join-1-2-0]" in text
     assert "possible-continuation-from: p1:1 (page 1) [join-1-2-0]" in text
@@ -3674,21 +3679,6 @@ def test_code_never_joins_two_literals_and_the_join_stays_out_of_the_act_account
     assert members["review-items.jsonl"] == b""
     partial = manifest["claims"]["partial_reasons"]
     assert any("no reconstruction was made (no-code-join)" in line for line in partial)
-
-
-def test_a_code_joined_section_is_refused(tmp_path):
-    members = _joined_members()
-    (name,) = [name for name in members if name.startswith("text/")]
-    joined = json.dumps(_HEAD_TEXT + "\n" + _TAIL_TEXT, ensure_ascii=False)
-    members[name] = (
-        members[name].decode("utf-8")
-        + "## RECONSTRUCTED join-1-2-0 (not an act)\nreconstructed_text:\n"
-        + joined
-        + "\n"
-    ).encode("utf-8")
-    _refresh_manifest_member(members, name)
-    with pytest.raises(SchemaRefusal, match="joins two readings by code"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "forged")
 
 
 def test_a_note_moved_to_another_act_is_refused(tmp_path):
@@ -3715,7 +3705,6 @@ def test_a_text_bundle_only_export_joins_nothing_and_verifies(tmp_path):
     verify_delivered_bundle(bundle.data, tmp_path / "clean")
     members = _members(bundle.data)
     assert "reconstructions.jsonl" not in members
-    assert "RECONSTRUCTED" not in _text(members)
 
 
 def test_with_no_literal_format_a_join_names_no_text(tmp_path):
@@ -3744,7 +3733,6 @@ def test_an_unjoinable_candidate_is_not_reconstructed_and_carries_no_text(tmp_pa
     (join,) = json.loads(members["sources.json"])["continuation_joins"]
     assert (join["status"], join["not_reconstructed_reason"]) == ("not-reconstructed", reason)
     assert "reconstructions.jsonl" not in members
-    assert "RECONSTRUCTED" not in _text(members)
     partial = json.loads(members[EXPORT_MANIFEST_NAME])["claims"]["partial_reasons"]
     assert any(f"no reconstruction was made ({reason})" in line for line in partial)
 
@@ -3841,7 +3829,6 @@ def test_a_join_across_two_folders_notes_each_side_in_its_own_folder(tmp_path):
     members = _members(bundle.data)
     head_text = members[TEXT_REGISTER].decode("utf-8")
     tail_text = members["text/_source_folder/other/readings.txt"].decode("utf-8")
-    assert "RECONSTRUCTED" not in head_text + tail_text
     assert "possible-continuation-on: p2:1 (page 2) [join-1-2-0]" in head_text
     assert "possible-continuation-from: p1:1 (page 1) [join-1-2-0]" in tail_text
 

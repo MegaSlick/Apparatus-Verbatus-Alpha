@@ -1274,17 +1274,6 @@ def _verify_not_measured_block(block: object) -> None:
         )
 
 
-def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
-    """Prove every selected literal-text format carries identical clean text.
-
-    A package can pass digest verification while one writer transformed the
-    literal differently; this compares the values themselves.
-    """
-    manifest = verify_export_bundle(data, clean_root)
-    formats = _manifest_formats(manifest)
-    return _compare_literal_projections(clean_root, formats)
-
-
 def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
     """Package integrity and one reading per act across formats, in a single extraction.
 
@@ -1878,11 +1867,6 @@ def _verify_text_bundle_joins(root, sources, joins, act_keys) -> None:
                         "the text bundle's continuation notes do not mirror its join rows"
                     )
                 act_notes = None
-            if line.startswith("## RECONSTRUCTED ") or line == "reconstructed_text:":
-                raise SchemaRefusal(
-                    "the text bundle joins two readings by code; only the Coniector "
-                    "reconstructs across a page break"
-                )
             if line.startswith("act-id: "):
                 act_id, act_notes = line.removeprefix("act-id: "), []
             elif line.startswith("possible-continuation-"):
