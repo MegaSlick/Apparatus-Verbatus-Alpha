@@ -1145,15 +1145,20 @@ def publish_page_accounting(
 def _left_to_send(state: _PagePass, prepared: list[_Page], select) -> int:
     """Count the requests this live pass will send, refusing any it cannot resume.
 
-    `select` gives a page's request of this phase, or `None`. Only a request
-    it sends is counted: not one already read, not one it does not ask, and
-    not one over the row's capacity. A request with sends and no reading is
-    sent again only when no retained reply could be its answer.
+    `select` gives a page's requests of this phase: one, a list (a page's
+    operator re-reads, every one of which the window may send), or `None`.
+    Only a request it sends is counted: not one already read, not one it does
+    not ask, and not one over the row's capacity. A request with sends and no
+    reading is sent again only when no retained reply could be its answer.
     """
     context, hooks = state.context, state.hooks
     left, unrecorded, replies = 0, [], None
-    for page in prepared:
-        request = select(page)
+    chosen = [
+        (page, request)
+        for page in prepared
+        for request in (lambda found: found if isinstance(found, list) else [found])(select(page))
+    ]
+    for page, request in chosen:
         if request is None or not _sends(state, page, request):
             continue
         markers = hooks.sent_records(
@@ -1242,7 +1247,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
     if not reread:
         return
     if state.live:
-        left = _left_to_send(state, reread, lambda page: page.rereads[-1])
+        left = _left_to_send(state, reread, lambda page: list(page.rereads))
         if left:
             _refuse_past_phase_deadline(state, left, "re-reading")
     print(f"perlector: reading {len(reread)} pages again as a person asked", file=sys.stderr)
