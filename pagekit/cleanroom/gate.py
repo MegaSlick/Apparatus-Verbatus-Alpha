@@ -10,7 +10,12 @@ The pre-commit hook runs this from the repository root:
 
     python3 -m pagekit.cleanroom.gate
 
-A hook can be skipped, so CI repeats the HOLD and scan checks on every pull request.
+An incident note is never deleted, held or not.
+
+A hook can be skipped, so CI repeats these checks on every pull request: it replays
+the HOLD rule over every commit the branch adds (``replay_hold``), checks that every
+incident note on main is still there with its text unchanged (``incidents_kept``), and
+runs the leak scan over the tree.
 Exit 0: allowed. Exit 1: refused. Exit 2: the gate could not run.
 """
 
@@ -36,37 +41,55 @@ def _exists(root: Path, spec: str) -> bool:
     return _git(root, "cat-file", "-e", spec).returncode == 0
 
 
-def staged_changes(root: Path) -> list[tuple[str, str]]:
-    """(status letter, path) for each staged change under pagekit/."""
-    result = _git(root, "diff", "--cached", "--name-status", "-z", "--no-renames", "--", "pagekit")
+EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+
+def _changes(root: Path, *diff_args: str) -> list[tuple[str, str]]:
+    """(status letter, path) for each change under pagekit/ in a diff."""
+    result = _git(root, "diff", *diff_args, "--name-status", "-z", "--no-renames", "--", "pagekit")
     if result.returncode != 0:
-        raise scan.ScanError("git diff --cached failed")
+        raise scan.ScanError("git diff failed")
     fields = [item.decode("utf-8", errors="replace") for item in result.stdout.split(b"\0")]
     fields = [field for field in fields if field]
     return list(zip(fields[0::2], fields[1::2], strict=True))
+
+
+def staged_changes(root: Path) -> list[tuple[str, str]]:
+    return _changes(root, "--cached")
 
 
 def has_decision(text: str) -> bool:
     return bool(DECISION.search(text))
 
 
-def hold_problems(root: Path) -> list[str]:
-    in_head = _exists(root, f"HEAD:{HOLD}")
-    in_index = _exists(root, f":{HOLD}")
-    if not (in_head or in_index or (root / HOLD).exists()):
-        return []
-    changes = staged_changes(root)
+def _hold_rule(
+    root: Path, before: str, after: str, changes: list[tuple[str, str]], held: bool = False
+) -> list[str]:
+    """The HOLD rule for one change from tree `before` to tree `after`.
+
+    `before` and `after` are object-name prefixes: "HEAD:", ":" for the index, or a
+    commit followed by ":". `held` adds a hold seen elsewhere (the working copy).
+    """
     problems = [
+        f"{path}: an incident note is never deleted"
+        for status, path in changes
+        if status == "D" and path.startswith(INCIDENTS)
+    ]
+    in_before = _exists(root, f"{before}{HOLD}")
+    in_after = _exists(root, f"{after}{HOLD}")
+    if not (in_before or in_after or held):
+        return problems
+    problems += [
         f"{path}: pagekit is on HOLD; only {HOLD} and {INCIDENTS} may change"
         for _status, path in changes
         if path != HOLD and not path.startswith(INCIDENTS)
     ]
-    if in_head and not in_index:
+    if in_before and not in_after:
         decided = any(
             status in ("A", "M")
             and path.startswith(INCIDENTS)
             and has_decision(
-                _git(root, "cat-file", "blob", f":{path}").stdout.decode("utf-8", "replace")
+                _git(root, "cat-file", "blob", f"{after}{path}").stdout.decode("utf-8", "replace")
             )
             for status, path in changes
         )
@@ -76,6 +99,50 @@ def hold_problems(root: Path) -> list[str]:
                 f"record under {INCIDENTS} with a line 'Decision: purge', "
                 "'Decision: minor breach' or 'Decision: false flag'"
             )
+    return problems
+
+
+def hold_problems(root: Path) -> list[str]:
+    """The HOLD rule for the commit being made: last commit to the index."""
+    return _hold_rule(root, "HEAD:", ":", staged_changes(root), (root / HOLD).exists())
+
+
+def _lines(result: subprocess.CompletedProcess[bytes], what: str) -> list[str]:
+    if result.returncode != 0:
+        raise scan.ScanError(f"git could not list {what}")
+    return result.stdout.decode("utf-8", "replace").split()
+
+
+def replay_hold(root: Path, base: str) -> list[str]:
+    """The HOLD rule replayed over every commit in base..HEAD, each against its first
+    parent, so a commit made with the hook skipped is still caught."""
+    problems = []
+    commits = _lines(_git(root, "rev-list", "--reverse", f"{base}..HEAD"), "commits")
+    for commit in commits:
+        parent = _git(root, "rev-parse", "--verify", "--quiet", f"{commit}^1")
+        before = parent.stdout.decode().strip() if parent.returncode == 0 else EMPTY_TREE
+        changes = _changes(root, before, commit)
+        problems += [
+            f"commit {commit[:12]}: {problem}"
+            for problem in _hold_rule(root, f"{before}:", f"{commit}:", changes)
+        ]
+    return problems
+
+
+def incidents_kept(root: Path, base: str) -> list[str]:
+    """Every incident note on `base` is still in HEAD, its text on `base` (trailing
+    whitespace aside) unchanged at the start: notes are added to, never rewritten."""
+    listed = _git(root, "ls-tree", "-r", "-z", "--name-only", base, "--", INCIDENTS)
+    if listed.returncode != 0:
+        raise scan.ScanError(f"git could not list {INCIDENTS} on {base}")
+    problems = []
+    for path in [item.decode() for item in listed.stdout.split(b"\0") if item]:
+        old = _git(root, "cat-file", "blob", f"{base}:{path}").stdout.rstrip()
+        new = _git(root, "cat-file", "blob", f"HEAD:{path}")
+        if new.returncode != 0:
+            problems.append(f"{path}: an incident note on {base} was deleted")
+        elif not new.stdout.startswith(old):
+            problems.append(f"{path}: text already on {base} was changed; add to the note instead")
     return problems
 
 

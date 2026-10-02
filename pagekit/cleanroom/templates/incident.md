@@ -33,11 +33,10 @@ suspicion is right.]
 
 **Recommendation.** [The host's recommendation and its reason.]
 
-**What was done.** [Filled in after the decision: commits reverted, agents replaced,
-files changed.]
-
 [The lead's decision goes on the next line, starting with purge, minor breach or false
 flag, then the reason, for example "Decision: false flag, a loop every image program
-writes the same way".]
+writes the same way". Once the note is on main its text is only ever added to, so
+after the decision the host adds a paragraph below it headed "What was done" (commits
+reverted, agents replaced, files changed).]
 
 Decision:
