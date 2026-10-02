@@ -608,6 +608,28 @@ def _clearance_reasons(
     return [named[key] for key in sorted(named)]
 
 
+# The sentences that state one fact each. The Armarium's terminal ledger names
+# the same facts with the same functions, so one fact is one string on both sides.
+
+
+def unresolved_act_reason(act: str, category: str) -> str:
+    """An act that did not reach a completed category."""
+    return f"act {act} is {category}"
+
+
+def edge_hold_reason(ordinal: int) -> str:
+    """A sealed page held for ink at its edge no reading region claims."""
+    return (
+        f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
+        "reading region on the page claims, so its coverage is not reconciled"
+    )
+
+
+def unsealed_page_reason(ordinal: int, outcome: str, reason: str | None) -> str:
+    """A submitted page the Exemplar did not seal, with its recorded reason."""
+    return f"page {ordinal} was {outcome}: {reason or 'no reason was recorded'}"
+
+
 def run_aggregate(
     act_categories: Mapping[str, ArmariumCategory],
     coverage_records: Mapping[str, Mapping[str, Any]] | None = None,
@@ -724,11 +746,7 @@ def run_aggregate(
 
     # A set: a repeated ordinal is one held page.
     for ordinal in sorted(set(edge_hold_pages or ())):
-        reasons.append(
-            f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
-            "reading region on the page claims, so "
-            "its coverage is not reconciled"
-        )
+        reasons.append(edge_hold_reason(ordinal))
 
     for join in continuation_joins or ():
         crossing = (
@@ -770,7 +788,7 @@ def run_aggregate(
             raise FatalAccounting(f"act {act} carries {category!r}, not a category")
         by_category[category.value] = by_category.get(category.value, 0) + 1
         if VOCABULARIES[ARMARIUM][category.value] is not OutcomeClass.COMPLETED:
-            reasons.append(f"act {act} is {category.value}")
+            reasons.append(unresolved_act_reason(act, category.value))
         # After the category check, so a malformed category is what gets named.
         if category is not ArmariumCategory.DELIVERED:
             if act in text_status:
@@ -821,8 +839,9 @@ def run_aggregate(
         classify(EXEMPLAR, outcome)
         by_page_outcome[outcome] = by_page_outcome.get(outcome, 0) + 1
         if outcome != "sealed":
-            reason = page_census[ordinal].get("reason") or "no reason was recorded"
-            reasons.append(f"page {ordinal} was {outcome}: {reason}")
+            reasons.append(
+                unsealed_page_reason(ordinal, outcome, page_census[ordinal].get("reason"))
+            )
         elif pages_with_acts is not None and ordinal in pages_with_acts:
             held = set((other_categories_by_page or {}).get(ordinal) or ()) - {
                 ArmariumCategory.DELIVERED.value

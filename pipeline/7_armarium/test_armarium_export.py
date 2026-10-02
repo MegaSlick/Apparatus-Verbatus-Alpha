@@ -2546,10 +2546,53 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
     )
 
     assert bundle.manifest["claims"]["status"] == "partial"
-    assert [
-        reason
-        for reason in bundle.manifest["claims"]["partial_reasons"]
-        if reason.startswith("page 1 is held-for-review")
+    assert bundle.manifest["claims"]["partial_reasons"] == [
+        "page 1 delivered no act; its acts are confirmed-blank, excluded-with-approval"
+    ]
+    # Another fact about the same page (a person's clearance of it) does not
+    # stand in for this one: each fact is its own string, named once.
+    cleared = run_aggregate(
+        {
+            "p1:1": ArmariumCategory.CONFIRMED_BLANK,
+            "p1:2": ArmariumCategory.EXCLUDED_WITH_APPROVAL,
+        },
+        original.aggregate_basis["coverage_records"],
+        {1: dict(original.pages[0])},
+        unaddressed_chairs=[],
+        act_pages=original.aggregate_basis["act_pages"],
+        act_text_status={},
+        review_clearances=[
+            {
+                "scope": "page",
+                "subject": 1,
+                "page": 1,
+                "decision": "no-missed-act",
+                "cleared": ["merged-detection"],
+            }
+        ],
+    )
+    [clearance] = cleared["reasons"]
+    assert clearance.startswith("page 1 ")
+    ledger = _terminal_ledger(
+        [
+            {
+                "act_id": act["act_id"],
+                "act_key": act["act_key"],
+                "category": act["category"],
+                "reason": act["reason"],
+                "text_status": None,
+            }
+            for act in acts
+        ],
+        [dict(original.pages[0])],
+        original.aggregate_basis["act_pages"],
+        cleared,
+        (),
+        [],
+    )
+    assert ledger["unresolved_reasons"] == [
+        clearance,
+        "page 1 delivered no act; its acts are confirmed-blank, excluded-with-approval",
     ]
     # And the clean-machine verifier recomputes the same disagreement rather than
     # reading the reassuring half of it out of the manifest.

@@ -78,8 +78,11 @@ from common.contracts.outcomes import (
     TEXT_STATUSES,
     ArmariumCategory,
     derive_record_text_status,
+    edge_hold_reason,
     require_approval,
     run_aggregate,
+    unresolved_act_reason,
+    unsealed_page_reason,
 )
 from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import CORRECTED_LECTIO, corrected_layer, utf8_round_trip
@@ -4178,7 +4181,7 @@ def _page_ledger_category(
     if edge_hold:
         return (
             ArmariumCategory.HELD_FOR_REVIEW.value,
-            f"unclaimed-edge-ink: page {ordinal} carries unreleased ink-map evidence",
+            edge_hold_reason(ordinal),
         )
     if not act_categories:
         # Every page read has a row, so one with no act row holds only other
@@ -4270,6 +4273,8 @@ def _terminal_ledger(
         others_on_page.setdefault(record["page_ordinal"], []).append(record["category"])
     page_units: list[dict[str, Any]] = []
     source_units: list[dict[str, Any]] = []
+    # Each unresolved page's one fact, in the words the aggregate uses for it.
+    page_facts: list[str] = []
     for page in sorted(pages, key=lambda row: row["ordinal"]):
         ordinal = page["ordinal"]
         if page.get("outcome") == "sealed":
@@ -4280,9 +4285,14 @@ def _terminal_ledger(
                 other_categories=others_on_page.get(ordinal, []),
             )
             page_units.append(_page_ledger_unit("page", page, category, reason))
+            if category not in _COMPLETED_CATEGORIES:
+                page_facts.append(reason)
         else:
             category = ArmariumCategory.REFUSED_WITH_REASON.value
             reason = page.get("reason") or "no reason was recorded"
+            page_facts.append(
+                unsealed_page_reason(ordinal, page.get("outcome"), page.get("reason"))
+            )
         source_units.append(_page_ledger_unit("source", page, category, reason))
 
     act_units = [
@@ -4327,8 +4337,7 @@ def _terminal_ledger(
     reasons = _unresolved_reasons(
         units,
         aggregate.get("reasons", []) if aggregate.get("status") != "complete" else [],
-        acts_on_page,
-        others_on_page,
+        page_facts,
     )
     return {
         "schema": TERMINAL_LEDGER_SCHEMA,
@@ -4345,29 +4354,29 @@ def _terminal_ledger(
 
 
 def _unresolved_reasons(
-    units: list[dict[str, Any]],
-    aggregate_reasons: list[str],
-    acts_on_page: dict[int, list[str]],
-    others_on_page: dict[int, list[str]],
+    units: list[dict[str, Any]], aggregate_reasons: list[str], page_facts: list[str]
 ) -> list[str]:
     """One line per unresolved fact: the aggregate's reasons, then what only the ledger knows.
 
-    The aggregate names every unresolved act by key (`act <key> is <category>`);
-    that line gains the act's recorded reason. Every unresolved `other` reading
-    is named by key with its reason, since the aggregate names only its page. A
-    page or source unit is named only when nothing else already says why it is
-    unresolved: no aggregate reason about that page (each begins `page <n> `)
-    and no unresolved act or other reading on it. An unresolved act the
-    aggregate does not name is still named, so no unit can drop out.
+    Both sides state a fact with the same `common.contracts.outcomes` sentence,
+    so a fact is one string and is named once. The aggregate's line for an
+    unresolved act gains the act's recorded reason; an act it does not name is
+    still named, so no unit drops out. Every unresolved `other` reading is named
+    by key with its reason, since the aggregate names only its page. Each
+    unresolved page or unsealed source adds its own fact (`page_facts`).
     """
 
-    def line(unit: dict[str, Any], name: str) -> str:
-        reason = f": {unit['reason']}" if unit["reason"] else ""
-        return f"{unit['unit_type']} {name} is {unit['category']}{reason}"
+    def line(unit: dict[str, Any]) -> str:
+        fact = (
+            unresolved_act_reason(unit["act_key"], unit["category"])
+            if unit["unit_type"] == "act"
+            else f"other {unit['act_key']} is {unit['category']}"
+        )
+        return f"{fact}: {unit['reason']}" if unit["reason"] else fact
 
     unresolved = [unit for unit in units if unit["category"] not in _COMPLETED_CATEGORIES]
     acts = {
-        f"act {unit['act_key']} is {unit['category']}": unit
+        unresolved_act_reason(unit["act_key"], unit["category"]): unit
         for unit in unresolved
         if unit["unit_type"] == "act"
     }
@@ -4379,24 +4388,14 @@ def _unresolved_reasons(
 
     for reason in aggregate_reasons:
         unit = acts.pop(reason, None)
-        add(line(unit, unit["act_key"]) if unit is not None else reason)
+        add(line(unit) if unit is not None else reason)
     for unit in acts.values():
-        add(line(unit, unit["act_key"]))
+        add(line(unit))
     for unit in unresolved:
         if unit["unit_type"] == "other":
-            add(line(unit, unit["act_key"]))
-    refused = ArmariumCategory.REFUSED_WITH_REASON.value
-    for unit in unresolved:
-        # A sealed page's source unit carries its page unit's category and reason.
-        if unit["unit_type"] == "page" or (
-            unit["unit_type"] == "source" and unit["category"] == refused
-        ):
-            ordinal = int(unit["unit_id"].split(":", 1)[1])
-            on_page = acts_on_page.get(ordinal, []) + others_on_page.get(ordinal, [])
-            if not any(
-                reason.startswith(f"page {ordinal} ") for reason in aggregate_reasons
-            ) and all(category in _COMPLETED_CATEGORIES for category in on_page):
-                add(line(unit, str(ordinal)))
+            add(line(unit))
+    for fact in page_facts:
+        add(fact)
     return reasons
 
 
