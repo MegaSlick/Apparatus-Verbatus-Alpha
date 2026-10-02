@@ -2,9 +2,9 @@
 """Reject recognized credential forms and repository-sized payloads from Git.
 
 The pre-commit hook scans the exact index state. CI scans every commit a pull request
-or a push to main adds, and the full history for tags and unknown bases, so
-add-then-delete does not make a leaked key or corpus file disappear. A branch that never
-opens a pull request is checked only by the local hooks.
+or a branch push adds (ci.yml for pull requests, main and tags; ingress.yml for every
+other branch), and the full history for tags, new branches and unknown bases, so
+add-then-delete does not make a leaked key or corpus file disappear.
 Only the Python standard library and Git are required.
 """
 

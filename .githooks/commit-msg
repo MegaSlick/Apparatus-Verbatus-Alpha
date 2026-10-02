@@ -7,7 +7,7 @@ if [ -z "$message" ] || [ ! -f "$message" ]; then
   exit 1
 fi
 
-# CI repeats this scan over the messages of commits a pull request or a push to main adds.
+# CI repeats this scan over the messages of the commits each pull request or push adds.
 ingress="$(dirname "$0")/check_ingress.py"
 if [ ! -f "$ingress" ]; then
   echo "  BLOCKED: $ingress is missing, so the commit message cannot be checked." >&2

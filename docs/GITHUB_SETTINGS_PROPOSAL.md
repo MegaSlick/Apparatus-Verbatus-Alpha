@@ -25,7 +25,7 @@ readable by anyone.
 ## 2. Pull requests (Settings → General → Pull Requests)
 
 - **Automatically delete head branches: on.** A branch then deletes itself when its pull
-  request merges. Branches of closed or superseded pull requests still need deleting by
+  request merges, unless a protection rule on that branch forbids deleting it. Branches of closed or superseded pull requests still need deleting by
   hand, as in issue #242.
 - **Allow merge commits: on; squash and rebase: off.** The history is built from merge
   commits and the review rules assume them.
