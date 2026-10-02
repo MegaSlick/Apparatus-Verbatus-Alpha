@@ -42,8 +42,10 @@ captured frames were split, rotated and grouped before intake. The triage produc
 
 Stages share code only through `common/` and the serving, submission and triage seams of
 `operations/` (see `common/README.md`), and share data only through the records their
-`CONTRACT.md` declares. No stage imports another; `test_stage_import_boundaries.py`
-checks this statically. The numbered directory names also make a direct statement such as
+`CONTRACT.md` declares. No stage imports another. `test_stage_import_boundaries.py`
+checks the imports it can see in the source; it cannot see a module loaded by a computed
+name or through `importlib.util.spec_from_file_location`, nor tell which `run` a bare
+`import run` resolves to. The numbered directory names also make a direct statement such as
 `import 4_perlector` invalid Python.
 
 The page re-ask budget is sealed from `config/recovery.toml` and spent only by the
