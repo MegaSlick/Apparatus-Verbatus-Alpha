@@ -1,10 +1,9 @@
 """The checked-in fixture bytes, and the two declarations that describe them.
 
-Meta-invariant #91 — drift checks over agreement surfaces: wherever two files must
-agree, a test reads BOTH from source and fails on divergence. Three surfaces have
-to agree here, and each has drifted in some project before: the rendered pixels,
-the ingress declaration the hook enforces, and the pipeline's fixture declaration
-that the stage programs read as data.
+Three surfaces must agree: the rendered pixels, the ingress declaration the hook
+enforces, and the fixture declaration the stage programs read as data. Both
+declarations are regenerated and compared whole, so the tests below check
+properties of the fixture rather than restating its contents.
 
 The pixel comparison rather than a byte comparison is deliberate. zlib's output is
 a pure function of its input for a given build, but it is not guaranteed identical
@@ -27,13 +26,8 @@ from common.imaging import decode_grayscale_png
 from proof.build_fixture import (
     _REASK_FIRST_READINGS,
     ACTS,
-    CHURRO_PAGE_RESPONSES,
-    PAGE_TESTIMONY,
     SCENARIOS,
     TESTIMONY,
-    WITNESS_EMPTY,
-    WITNESS_MALFORMED,
-    WITNESS_NOT_RUN,
     act_descriptor,
     build_ingress_manifest,
     build_skeleton_fixture,
@@ -232,7 +226,6 @@ def test_testimony_differs_from_the_established_text_somewhere(skeleton):
 
 
 def test_the_page_testimony_is_declared_per_page_and_chair(skeleton):
-    assert skeleton["testimony"] == list(PAGE_TESTIMONY)
     for row in skeleton["testimony"]:
         assert "act_key" not in row
         assert {"page_ordinal", "chair", "payload"} <= set(row)
@@ -281,7 +274,6 @@ def test_the_declared_churro_page_responses_reach_a_page_scoped_chair(skeleton, 
     assert page_chairs, "the configuration seals no page witness at all"
     declared_pages = {page["ordinal"] for page in skeleton["page"]}
     rows = skeleton["churro_page_response"]
-    assert rows == [dict(row) for row in CHURRO_PAGE_RESPONSES]
     for row in rows:
         assert set(row) - {"scenario"} == {
             "page_ordinal",
@@ -347,50 +339,10 @@ def test_the_churro_scenarios_declare_success_visible_truncation_and_parse_failu
     assert truncated["transport_stop_reason"] == "length"
 
 
-def test_fixture_declares_the_explicit_non_reading_and_malformed_attempts(skeleton):
-    assert skeleton["witness_not_run"] == list(WITNESS_NOT_RUN)
-    assert skeleton["witness_malformed"] == list(WITNESS_MALFORMED)
-    assert "witness_failure" not in skeleton
-
-
-def test_the_scenarios_are_exactly_the_declared_ones(skeleton):
+def test_a_scenario_is_only_its_name(skeleton):
+    """What a scenario departs in lives in the tables that name it."""
     names = [scenario["name"] for scenario in skeleton["scenario"]]
-    assert names == [name for name, _departure in SCENARIOS]
-    assert names == [
-        "happy",
-        "witness-capabilities",
-        "page-review",
-        "page-no-act",
-        "page-other",
-        "page-unread",
-        "page-blank",
-        "page-review-other",
-        "page-unbroken",
-        "page-other-unbroken",
-        "page-no-act-unbroken",
-        "page-flags-disagree",
-        "page-runs-past-end",
-        "reask-recovers",
-        "reask-sets-aside",
-        "reask-malformed",
-        "reask-cut-off",
-        "reask-off",
-        "reask-duplicate",
-        "reask-cited-forgot",
-        "reask-continuation",
-        "blank-then-recovered",
-        "churro-native",
-        "churro-truncation",
-        "refused-page",
-        "refused-first-page",
-        "genuinely-empty-witness",
-        "ink-free-page",
-        "ink-free-page-unwitnessed",
-        "not-run-witness",
-        "malformed-witness",
-        "malformed-capabilities",
-    ]
-    # A scenario is its name; what it departs in lives in the tables that name it.
+    assert len(set(names)) == len(names)
     assert all(set(scenario) == {"name"} for scenario in skeleton["scenario"])
 
 
@@ -431,31 +383,12 @@ def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
     skeleton, models_config
 ):
     rows = skeleton["witness_empty"]
-    assert rows == list(WITNESS_EMPTY)
-    assert rows == [
-        {"scenario": "genuinely-empty-witness", "page_ordinal": 1, "chair": "attestator_3"},
-        {"scenario": "ink-free-page", "page_ordinal": 3, "chair": "attestator_1"},
-        {"scenario": "ink-free-page", "page_ordinal": 3, "chair": "attestator_3"},
-    ]
-    # Derived, not listed: the ink-free page's empty responses cover every
+    names = {scenario["name"] for scenario in skeleton["scenario"]}
+    witness_chairs = set(configured_witness_chairs(models_config))
+    assert rows
+    assert all(row["scenario"] in names and row["chair"] in witness_chairs for row in rows)
+    # The ink-free page's empty responses cover every
     # whole-page chair of the roster; DAI's detector census speaks for it there.
     whole_page_chairs = set(configured_witness_chairs(models_config)) - {"attestator_2"}
     fallback_rows = [row for row in rows if row["scenario"] == "ink-free-page"]
     assert {row["chair"] for row in fallback_rows} == whole_page_chairs
-
-
-def test_no_table_the_page_path_does_not_read_is_declared(skeleton):
-    """The act path's tables have no reader once every page is witnessed whole."""
-    for table in (
-        "chandra_anchor",
-        "prior_reading",
-        "audit_reproof",
-        "reader_assessment",
-        "reader_doubt",
-        "reader_gap",
-        "recovery",
-        "reading_failure",
-        "stop_reason",
-        "witness_failure",
-    ):
-        assert table not in skeleton

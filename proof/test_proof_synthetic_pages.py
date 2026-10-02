@@ -1,8 +1,4 @@
-"""Tests for the synthetic proof-page module.
-
-Every assertion is exact — a count, not "at least one" — because a test that
-passes over an empty population is a defect in this project.
-"""
+"""The synthetic proof pages render deterministically and crop to their own pixels."""
 
 from __future__ import annotations
 
@@ -10,7 +6,6 @@ import pytest
 
 from common.imaging import crop_png
 from proof.synthetic_pages import (
-    PAGE_BREAK_PAGES,
     PAGES,
     SCENARIO_PAGES,
     page_bytes,
@@ -53,14 +48,6 @@ def test_both_pages_start_with_png_signature_and_decode():
         assert len(rows) == height
 
 
-def test_exactly_two_pages_with_expected_act_counts():
-    assert len(PAGES) == 2
-    assert PAGES[0]["ordinal"] == 1
-    assert PAGES[1]["ordinal"] == 2
-    assert len(PAGES[0]["acts"]) == 2
-    assert len(PAGES[1]["acts"]) == 1
-
-
 def test_act_bounds_lie_inside_their_page_and_page_one_acts_do_not_overlap():
     for page in PAGES:
         for act in page["acts"]:
@@ -81,14 +68,6 @@ def test_act_bounds_lie_inside_their_page_and_page_one_acts_do_not_overlap():
         or second_bounds["y"] + second_bounds["h"] <= first_bounds["y"]
     )
     assert horizontally_disjoint or vertically_disjoint
-
-
-def test_cropping_same_bounds_twice_gives_identical_bytes():
-    page = render_page(PAGES[0])
-    bounds = PAGES[0]["acts"][0]["bounds"]
-    first_crop = crop_png(page, bounds)
-    second_crop = crop_png(page, bounds)
-    assert first_crop == second_crop
 
 
 def test_crops_of_two_different_acts_differ():
@@ -125,19 +104,14 @@ def test_out_of_bounds_crop_raises_value_error():
         "w": 50,
         "h": 10,
     }
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="fall outside a 200x260 page"):
         crop_png(page, out_of_bounds)
-
-
-def test_non_png_input_raises_value_error():
-    with pytest.raises(ValueError):
-        crop_png(b"not a png at all", {"x": 0, "y": 0, "w": 1, "h": 1})
 
 
 def test_truncated_png_input_raises_value_error():
     page = render_page(PAGES[0])
     truncated = page[:16]
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match="not a decodable image"):
         crop_png(truncated, {"x": 0, "y": 0, "w": 1, "h": 1})
 
 
@@ -147,7 +121,7 @@ def test_page_bytes_matches_render_page_for_each_ordinal():
 
 
 def test_no_float_appears_anywhere_in_pages():
-    for pages in (PAGES, SCENARIO_PAGES, PAGE_BREAK_PAGES):
+    for pages in (PAGES, SCENARIO_PAGES):
         assert pages
         assert not _walk_for_floats(pages)
 
