@@ -457,17 +457,7 @@ stage's environment. With no readable topic file, a link or anything but a regul
 - **One lease root per provider account.** Separate roots cannot see each other's
   liabilities, and nothing can enforce this without an account identifier.
 
-### Per-stage boots, transfer and preflight
-
-`staged.py` runs one collection stage per independently authorized boot, then takes the pod
-down; it never adopts. No launch or collection path calls it; its tests are its only
-caller. Its durable records on the run volume: a **claim** keyed by the grant
-reference, written before the provider is touched, so one grant cannot buy a second pod
-(a retry after a refused create records a fresh reference); an explicitly unknown **cost
-intent**, fsynced first, so a lost create response never reads as zero; a **boot record**
-binding pod, collection, stage and grant, whose failure triggers immediate pod-down; and
-one **close record** per boot, including a close-failure record when the close raised or
-could not run. `render_boot_schedule` prints every expected boot before any is requested.
+### Transfer, bootstrap and preflight
 
 `transfer.py` carries sealed submission-manifest rows through a generic storage seam,
 verifying SHA-256 and size before and after upload and never overwriting conflicting bytes.
@@ -501,9 +491,8 @@ weight bundle onto the network volume by running `operations/serving/surya/prefe
 in that environment, and refuses it unless its measured manifest is the pinned one, so
 MODEL_STORE needs that environment synced first. The CHAIR_CACHE step copies the
 verified bundle to where the real roster binds it, `config/real-models/designator_surya`
-on container-local disk (`operations/serving/surya/README.md`, "On the pod"). The boot
-schedule names Surya on the Designator's pod. `pod_run` counts Surya among the
-Designator's chairs: a selection that runs the Designator with Surya configured is
+on container-local disk (`operations/serving/surya/README.md`, "On the pod").
+`pod_run` counts Surya among the Designator's chairs: a selection that runs the Designator with Surya configured is
 refused unless the preflight report places Surya as a subprocess, verified its cache and
 carries its golden-page run in `subprocess_receipts`.
 
