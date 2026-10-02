@@ -64,7 +64,7 @@ Attestatores, or a Recensor that holds anything, stops a full run before the
 Armarium; the next step is a person's review, not more GPU work, so the pod is
 not kept waiting for it. Only a held run whose orchestrator says, in the stop
 record this invocation alone gave it (``--stop-record``), that it reached a
-sealed Armarium export (``exported_this_invocation``) holds to the deadline; an
+sealed Armarium export (``read_stop_record``) holds to the deadline; an
 export an earlier pass left in the tree never counts.
 
 **Nothing the run printed dies with the pod.**  The orchestrator's stdout and
@@ -283,32 +283,6 @@ def read_stop_record(stop_record: Path, run_id: str) -> tuple[dict | None, str |
     ):
         return None, "the orchestrator's stop record has no usable exported or systemic field"
     return record, None
-
-
-def systemic_this_invocation(stop_record: Path, run_id: str) -> str | None:
-    """The systemic alarm line this invocation's orchestrator printed, or None.
-
-    It sounds at a Recensor held on more of the run's pages than its sealed
-    review policy allows, and at a person's advance past that stop, so the run
-    reaches its export still carrying it. None as well when the record is not
-    usable (`read_stop_record`), which `main` reports as missing stop evidence.
-    """
-    record, _ = read_stop_record(stop_record, run_id)
-    return None if record is None else record["systemic"]
-
-
-def exported_this_invocation(stop_record: Path, run_id: str) -> bool:
-    """Whether this invocation's orchestrator says it reached a sealed Armarium export.
-
-    A run held before its export (at a held Attestatores or Recensor) waits for
-    a person, and the pod must not bill while it waits. The orchestrator writes
-    its stop record to a path made fresh for this invocation, so an export an
-    earlier pass sealed never reads as this run's. A record that is not usable
-    (`read_stop_record`) is read as not reached: the worst that costs is a pod
-    closed early.
-    """
-    record, _ = read_stop_record(stop_record, run_id)
-    return record is not None and record["exported"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1861,6 +1835,13 @@ def main(
         hold_detail = (
             "the selected stages completed; returning at once so the pod timer closes the "
             "pod. The run tree is on the volume, which outlives the pod, for the next selection"
+        )
+    elif held_before_export and stop_problem is not None:
+        hold_detail = (
+            "the run held, and with no usable stop record whether it reached its Armarium "
+            "export is unknown; returning at once so the pod timer closes the pod rather than "
+            "billing idle time on a guess. The run tree and every record are on the volume, "
+            "which outlives the pod, and `verbatus fetch-run` brings them home"
         )
     elif held_before_export:
         hold_detail = (

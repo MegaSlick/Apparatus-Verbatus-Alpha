@@ -366,7 +366,7 @@ pod.
 selection ending before Armarium also closes promptly, and so does a full run held
 before its export (a held Attestatores or Recensor), since it waits for a person, not
 for the card. A full `complete`, or a `held` run whose orchestrator says in this
-invocation's own stop record (`--stop-record`, read by `exported_this_invocation`) that
+invocation's own stop record (`--stop-record`, read by `read_stop_record`) that
 it reached a sealed export, holds toward the hard deadline (paid idle time); an export
 an earlier pass left in the run tree never counts. It holds
 because the pod timer
