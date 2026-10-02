@@ -86,6 +86,7 @@ from common.page_testimonia import (
     PAGE_TESTIMONIUM_KIND,
     current_page_testimonia,
     declared_page_witness_chairs,
+    is_detector_blank_testimony,
     require_page_roster,
 )
 from common.recensor_receipt import build_recensor_reading_receipt
@@ -276,7 +277,9 @@ def page_coverage_of(ordinal: int, findings: dict[int, dict]) -> dict[str, Any]:
 # --- a page that holds no act -------------------------------------------------------
 
 
-def confirmation(accounting: dict, records: list[dict], *, blank: bool) -> dict[str, Any]:
+def confirmation(
+    accounting: dict, records: list[dict], *, blank: bool, census: frozenset[str]
+) -> dict[str, Any]:
     """Whether a page the reading says holds no act is confirmed so, and why not.
 
     Every detected line, every witness's text and the page's ink must be
@@ -285,7 +288,9 @@ def confirmation(accounting: dict, records: list[dict], *, blank: bool) -> dict[
     detector record lies in an `other` region; without a record detector it
     stays held. A blank page needs rule (i) to pass or not apply, no detected
     line at all, and every witness that read the page to have retained blank
-    text, with at least one such witness.
+    text, with at least one such witness that is not a census: `census` names
+    the chairs whose page record is their record detector's look rather than
+    a reading of the page's text.
     """
     rules = accounting.get("rules", {})
     allowed = BLANK_RULES if blank else {rule: {PASS} for rule in NO_ACT_RULES}
@@ -311,6 +316,10 @@ def confirmation(accounting: dict, records: list[dict], *, blank: bool) -> dict[
         reading = [w for w in witnesses if w["outcome"] in WITNESS_READING_OUTCOMES]
         if not reading:
             failures.append("no witness read the page")
+        elif all(w["chair"] in census for w in reading):
+            failures.append(
+                "only a record detector's census found the page blank; no witness read its text"
+            )
         failures.extend(
             f"witness {w['chair']} read the page and its retained text is not blank"
             for w in reading
@@ -842,7 +851,14 @@ def plan_reviews(
         confirmed = None
         if PAGE_BLANK_HOLD in act["hold_codes"] or NO_ACT_ON_PAGE_HOLD in act["hold_codes"]:
             confirmed = confirmation(
-                accounting["payload"], records, blank=act["class"] == PAGE_BLANK_CLASS
+                accounting["payload"],
+                records,
+                blank=act["class"] == PAGE_BLANK_CLASS,
+                census=frozenset(
+                    record["payload"]["chair"]
+                    for record in records
+                    if is_detector_blank_testimony(context, record)
+                ),
             )
         outcome, payload = review_of(
             act,

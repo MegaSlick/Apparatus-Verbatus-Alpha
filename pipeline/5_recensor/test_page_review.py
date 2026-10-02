@@ -384,6 +384,24 @@ def test_a_page_of_other_entries_dai_saw_nothing_on_is_confirmed_holding_no_act(
     assert tree.receipt()["recensor_status"] == "partial"
 
 
+def test_the_detectors_census_is_named_to_the_confirmation(no_act, tmp_path, monkeypatch):
+    # Page 2's DAI record is its detector's look, so the confirmation knows it as a census.
+    tree = no_act.copy(tmp_path)
+    seen = {}
+    real = page_review.confirmation
+
+    def spy(accounting, records, *, blank, census):
+        seen[records[0]["subject_id"]] = census
+        return real(accounting, records, blank=blank, census=census)
+
+    monkeypatch.setattr(page_review, "confirmation", spy)
+    context = tree.context()
+    page_review.plan_reviews(
+        context, reading_denominator(context), RECENSOR_RUN.page_coverage_findings
+    )
+    assert list(seen.values()) == [frozenset({"attestator_2"})]
+
+
 # --- refusals ---------------------------------------------------------------------------
 
 
@@ -637,10 +655,12 @@ def test_blankness_is_measured_from_the_retained_text_not_the_health_report():
     assert page_review.retained_text_blank(_testimonium("a", text={"records": []})) is None
 
 
+# `b` is a record reader whose page record is its detector's census: it found no record.
 BLANK_WITNESSES = [
     _testimonium("a", text="", blank=True),
     _testimonium("b", "genuinely-empty", text=""),
 ]
+CENSUS = frozenset({"b"})
 
 
 def _without(rule: str, status: str) -> dict:
@@ -648,12 +668,12 @@ def _without(rule: str, status: str) -> dict:
 
 
 def test_a_blank_page_meeting_every_condition_is_confirmed_and_released():
-    confirmed = page_review.confirmation(PASSING, BLANK_WITNESSES, blank=True)
+    confirmed = page_review.confirmation(PASSING, BLANK_WITNESSES, blank=True, census=CENSUS)
     assert confirmed["confirmed"] is True and confirmed["failures"] == []
     # With no record detector, rule (i) does not apply to a blank page.
-    assert page_review.confirmation(_without("i", "not-applicable"), BLANK_WITNESSES, blank=True)[
-        "confirmed"
-    ]
+    assert page_review.confirmation(
+        _without("i", "not-applicable"), BLANK_WITNESSES, blank=True, census=CENSUS
+    )["confirmed"]
     outcome, payload = page_review.review_of(
         _row(act_key="p1:blank", n=None, **{"class": "page-blank"}, hold_codes=[PAGE_BLANK_HOLD]),
         coverage=_coverage(*BLANK_WITNESSES),
@@ -693,11 +713,16 @@ def test_a_blank_page_meeting_every_condition_is_confirmed_and_released():
             [_testimonium("a", "failed", text=None), _testimonium("b", "not-run", text=None)],
             "no witness read the page",
         ),
+        (
+            PASSING,
+            [_testimonium("a", "failed", text=None), BLANK_WITNESSES[1]],
+            "only a record detector's census found the page blank",
+        ),
     ],
-    ids=["d", "e", "f", "i", "lines", "witness-text", "text-unmeasurable", "no-reader"],
+    ids=["d", "e", "f", "i", "lines", "witness-text", "text-unmeasurable", "no-reader", "census"],
 )
 def test_a_blank_page_failing_one_condition_is_held_naming_it(accounting, records, failure):
-    refused = page_review.confirmation(accounting, records, blank=True)
+    refused = page_review.confirmation(accounting, records, blank=True, census=CENSUS)
     assert refused["confirmed"] is False
     assert len(refused["failures"]) == 1 and failure in refused["failures"][0]
 
@@ -705,7 +730,7 @@ def test_a_blank_page_failing_one_condition_is_held_naming_it(accounting, record
 def test_a_confirmed_blank_page_still_holds_on_the_floor_or_residual_ink():
     witnesses = [_testimonium("a", text="")]
     row = _row(n=None, **{"class": "page-blank"}, hold_codes=[PAGE_BLANK_HOLD])
-    confirmed = page_review.confirmation(PASSING, witnesses, blank=True)
+    confirmed = page_review.confirmation(PASSING, witnesses, blank=True, census=frozenset())
     for coverage, page_coverage, code in (
         (_coverage(*witnesses, floor=2), CLEAN, "under-witnessed"),
         (_coverage(*witnesses, floor=1), {**CLEAN, "flagged_pages": [1]}, "residual-ink"),
@@ -724,7 +749,7 @@ def test_a_confirmed_blank_page_still_holds_on_the_floor_or_residual_ink():
 def test_a_page_of_only_other_readings_is_confirmed_as_holding_no_act():
     row = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD], disposition="held")
     witnesses = [_testimonium("a"), _testimonium("b")]
-    confirmed = page_review.confirmation(PASSING, witnesses, blank=False)
+    confirmed = page_review.confirmation(PASSING, witnesses, blank=False, census=frozenset())
     assert confirmed["confirmed"] is True
     outcome, payload = page_review.review_of(
         row,
@@ -744,7 +769,9 @@ def test_a_page_of_only_other_readings_is_confirmed_as_holding_no_act():
 def test_a_page_of_only_other_readings_stays_held_on_any_rule_not_passing(rule, status):
     row = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD], disposition="held")
     witnesses = [_testimonium("a"), _testimonium("b")]
-    unconfirmed = page_review.confirmation(_without(rule, status), witnesses, blank=False)
+    unconfirmed = page_review.confirmation(
+        _without(rule, status), witnesses, blank=False, census=frozenset()
+    )
     assert unconfirmed["failures"] == [f"page accounting rule ({rule}) is {status}, not pass"]
     outcome, payload = page_review.review_of(
         row,
@@ -789,7 +816,7 @@ def test_a_held_row_is_never_released_by_this_stage():
         hold_codes=[PAGE_BLANK_HOLD, "unread-ink"], disposition="held", **{"class": "page-blank"}
     )
     witnesses = [_testimonium("a", text="")]
-    confirmed = page_review.confirmation(PASSING, witnesses, blank=True)
+    confirmed = page_review.confirmation(PASSING, witnesses, blank=True, census=frozenset())
     outcome, payload = page_review.review_of(
         row,
         coverage=_coverage(*witnesses, floor=1),
