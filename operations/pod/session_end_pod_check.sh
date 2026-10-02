@@ -4,18 +4,24 @@
 root=$(cd "$(dirname "$0")/../.." && pwd)
 last="$HOME/.cache/verbatus/pods-reported"
 (
-  # A listing that fails is reported, never read as "no pods". A stopped (EXITED) pod
-  # still bills its disk, so it is reported beside a running one.
-  if listing=$(runpodctl get pod 2>/dev/null); then
-    pods=$(printf '%s\n' "$listing" |
-      awk '$NF == "RUNNING" || $NF == "EXITED" { print $1 }' | sort | tr '\n' ' ')
-    [ -n "$pods" ] || exit 0
-    message="RunPod pods still exist after a Claude session closed: $pods"
-  else
+  # Nothing here is ever read as "no pods" unless the listing says so: a missing CLI, a
+  # failed listing and a table it does not recognise are each reported. Every pod is
+  # named with its state, whatever the state: a stopped pod still bills its disk.
+  if ! command -v runpodctl >/dev/null 2>&1; then
+    pods="runpodctl-missing"
+    message="runpodctl is not installed, so RunPod pods were not checked after a Claude session closed; check the RunPod console."
+  elif ! listing=$(runpodctl get pod 2>/dev/null); then
     pods="unlisted"
     message="Could not list RunPod pods after a Claude session closed; check the RunPod console."
+  elif [ -n "$listing" ] && [ "$(printf '%s\n' "$listing" | awk 'NR == 1 { print $NF }')" != STATUS ]; then
+    pods="unlisted"
+    message="Could not read the RunPod pod listing after a Claude session closed (unrecognised table); check the RunPod console."
+  else
+    pods=$(printf '%s\n' "$listing" | awk 'NR > 1 && NF { print $1 ":" $NF }' | sort | tr '\n' ' ')
+    [ -n "$pods" ] || exit 0
+    message="RunPod pods still exist after a Claude session closed: $pods"
   fi
-  # The same report sent in the last two hours is not sent again.
+  # The same report, by pod id and state, sent in the last two hours is not sent again.
   if [ "$(cat "$last" 2>/dev/null)" = "$pods" ] && [ -n "$(find "$last" -mmin -120 2>/dev/null)" ]; then
     exit 0
   fi

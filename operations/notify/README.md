@@ -20,7 +20,7 @@ this file owns the rule.
 
 | Event | Title on the phone | Priority | Sent by |
 |---|---|---|---|
-| `milestone` | Milestone | 3 | the session, and the operator tool with `--notify` |
+| `milestone` | Milestone | 3 | the session, the operator tool with `--notify`, and a pod lease's launch, close and balance reports |
 | `decision` | Needs a decision | 4 | the session, the operator tool with `--notify`, the pod's systemic alarm, and the session-end pod check |
 | `done` | Session complete | 3 | `/session-end` |
 

@@ -572,7 +572,10 @@ is fetched from an older commit.
   checked before any longer run relies on it.
 - The guard is a backstop, not the shutdown: close pods yourself when work ends and verify
   the close against RunPod's own state and billing. `session_end_pod_check.sh`, a Claude
-  Code SessionEnd hook, pings the lead if a pod is still running when a session closes.
+  Code SessionEnd hook, pings the lead with every pod that still exists, in any state, when
+  a session closes. A missing `runpodctl`, a failed listing or a table it does not
+  recognise is pinged too, never read as "no pods". The same report (pod ids and states)
+  is not sent twice within two hours, and is recorded only once delivered.
 
 ## The hand route: a proof run started by hand
 
