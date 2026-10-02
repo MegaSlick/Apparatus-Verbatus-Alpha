@@ -200,6 +200,7 @@ def _test_not_measured_basis(**overrides):
             "max_comparison_character_pairs": 100_000_000,
             "acts_delivered": 1,
             "acts_with_unmeasured_comparison": 0,
+            "unmeasured_act_ids": [],
         },
     }
     basis.update(overrides)
@@ -3546,6 +3547,7 @@ def test_comparison_bounds_are_measured_only_when_no_delivered_comparison_stoppe
             "max_comparison_character_pairs": 100_000_000,
             "acts_delivered": 2,
             "acts_with_unmeasured_comparison": unmeasured,
+            "unmeasured_act_ids": [f"act-{n}" for n in range(unmeasured)],
         }
         return _not_measured_status("comparison-bounds", detail)
 
@@ -3559,10 +3561,22 @@ def test_comparison_bounds_are_measured_only_when_no_delivered_comparison_stoppe
     ("change", "refusal"),
     [
         (
-            {"acts_with_unmeasured_comparison": 2},
+            {"acts_with_unmeasured_comparison": 2, "unmeasured_act_ids": ["act-1", "act-2"]},
             "names more unmeasured acts than delivered acts",
         ),
         ({"acts_delivered": 2}, "comparison-bounds basis does not count exactly"),
+        (
+            {"acts_with_unmeasured_comparison": 1},
+            "does not name, in order, exactly the acts it counts",
+        ),
+        (
+            {"acts_with_unmeasured_comparison": 2, "unmeasured_act_ids": ["act-2", "act-1"]},
+            "does not name, in order, exactly the acts it counts",
+        ),
+        (
+            {"acts_with_unmeasured_comparison": 1, "unmeasured_act_ids": ["act-elsewhere"]},
+            "names an unmeasured act it does not deliver",
+        ),
     ],
 )
 def test_projection_refuses_a_comparison_bounds_basis_that_misstates_its_acts(change, refusal):

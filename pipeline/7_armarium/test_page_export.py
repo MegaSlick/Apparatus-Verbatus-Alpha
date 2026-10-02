@@ -235,13 +235,14 @@ def test_the_page_accounting_and_what_was_not_measured_are_claimed(complete):
     assert entries["perlector-pass-c"]["detail"]["pages_audit_not_run"] == 2
     assert entries["comparison-bounds"]["status"] == "measured"
     assert entries["comparison-bounds"]["detail"]["acts_with_unmeasured_comparison"] == 0
+    assert entries["comparison-bounds"]["detail"]["unmeasured_act_ids"] == []
 
 
 def test_a_delivered_act_whose_dissent_stopped_on_its_budget_is_disclosed(tmp_path):
     """A run sealed with a one-step dissent budget delivers acts whose comparisons
     stopped (`compared: "unknown"`); the export names each such act and does not
     call the comparison measured."""
-    shipped = Path("config/alignment.toml").read_text(encoding="utf-8")
+    shipped = (ROOT / "config" / "alignment.toml").read_text(encoding="utf-8")
     sealed_line = "max_comparison_steps = 100000000\n"
     assert shipped.count(sealed_line) == 1
     alignment = tmp_path / "config" / "alignment.toml"
@@ -252,17 +253,40 @@ def test_a_delivered_act_whose_dissent_stopped_on_its_budget_is_disclosed(tmp_pa
     )
     result = _export(root, options, "page-other-unbroken")
     assert result.returncode == 0, result.stderr
-    manifest = _bundle(root, tmp_path / "clean")["manifest"]
+    bundle = _bundle(root, tmp_path / "clean")
+    delivered = sorted(row["act_id"] for row in _jsonl(bundle["members"], "acts.jsonl").values())
 
-    entries = {row["instrument"]: row for row in manifest["claims"]["not_measured"]["entries"]}
-    bounds = entries["comparison-bounds"]
+    claims = bundle["manifest"]["claims"]["not_measured"]["entries"]
+    bounds = {row["instrument"]: row for row in claims}["comparison-bounds"]
     assert bounds["status"] == "not-measured"
     assert bounds["detail"] == {
         "sealed_max_comparison_steps": 1,
         "max_comparison_character_pairs": 100_000_000,
         "acts_delivered": 2,
         "acts_with_unmeasured_comparison": 2,
+        "unmeasured_act_ids": delivered,
     }
+
+
+def test_the_verifier_refuses_an_unmeasured_comparison_on_an_act_it_does_not_deliver(
+    complete, tmp_path
+):
+    """The comparison-bounds claim may name only delivered acts as unmeasured; a
+    manifest that blames an act outside the package, its count and status kept
+    consistent with it, is refused."""
+
+    def blame_an_undelivered_act(claims):
+        block = claims["not_measured"]
+        [entry] = [row for row in block["entries"] if row["instrument"] == "comparison-bounds"]
+        entry["detail"].update(
+            acts_with_unmeasured_comparison=1, unmeasured_act_ids=["act_not_in_this_package"]
+        )
+        entry["status"] = "not-measured"
+        block["count"] += 1
+
+    data = _tampered(complete, lambda members: _claims(members, blame_an_undelivered_act))
+    with pytest.raises(SchemaRefusal, match="names an unmeasured act the package does not"):
+        verify_export_bundle(data, tmp_path / "clean")
 
 
 def test_the_same_established_reading_appears_identically_in_every_format(complete):

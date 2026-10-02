@@ -995,6 +995,7 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
             "max_comparison_character_pairs",
             "acts_delivered",
             "acts_with_unmeasured_comparison",
+            "unmeasured_act_ids",
         }
     ),
 }
@@ -1206,8 +1207,20 @@ def _validate_not_measured_detail(
         if detail["pages_audit_not_run"] > detail["pages_read"]:
             raise SchemaRefusal(f"{subject} names more unaudited pages than pages read")
     elif instrument == _COMPARISON_BOUNDS:
-        for field in _NOT_MEASURED_DETAIL_FIELDS[_COMPARISON_BOUNDS]:
+        for field in (
+            "sealed_max_comparison_steps",
+            "max_comparison_character_pairs",
+            "acts_delivered",
+            "acts_with_unmeasured_comparison",
+        ):
             _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
+        act_ids = _require_distinct_strings(
+            detail["unmeasured_act_ids"], subject=f"{subject} unmeasured_act_ids"
+        )
+        if act_ids != sorted(act_ids) or len(act_ids) != detail["acts_with_unmeasured_comparison"]:
+            raise SchemaRefusal(
+                f"{subject} does not name, in order, exactly the acts it counts as unmeasured"
+            )
         if detail["acts_with_unmeasured_comparison"] > detail["acts_delivered"]:
             raise SchemaRefusal(f"{subject} names more unmeasured acts than delivered acts")
     elif instrument == _GEOMETRY_CALIBRATION:
@@ -2325,13 +2338,19 @@ def _validate_projection(projection: ArmariumProjection) -> None:
             "an Armarium projection's Perlector uncertainty basis does not exactly reconcile "
             "with its delivered act projection"
         )
+    bounds = not_measured_basis[_COMPARISON_BOUNDS]
+    delivered_ids = {
+        act["act_id"]
+        for act in projection.acts
+        if act["category"] == ArmariumCategory.DELIVERED.value
+    }
     if (
-        not_measured_basis[_COMPARISON_BOUNDS]["acts_delivered"]
-        != delivered_counts["acts_delivered"]
+        bounds["acts_delivered"] != delivered_counts["acts_delivered"]
+        or not set(bounds["unmeasured_act_ids"]) <= delivered_ids
     ):
         raise SchemaRefusal(
             "an Armarium projection's comparison-bounds basis does not count exactly its "
-            "delivered acts"
+            "delivered acts, or names an unmeasured act it does not deliver"
         )
     # The run's verdict is computed from the basis, so its damage record must
     # match the delivered acts key for key.
@@ -5366,13 +5385,19 @@ def _verify_page_layers(
         raise SchemaRefusal(
             "the Pass C claim does not count exactly the package's real sealed pages as read"
         )
-    delivered_count = sum(
-        category == ArmariumCategory.DELIVERED.value
-        for category in _manifest_act_categories(manifest).values()
-    )
-    if not_measured[_COMPARISON_BOUNDS]["acts_delivered"] != delivered_count:
+    delivered_ids = {
+        act_id
+        for act_id, category in _manifest_act_categories(manifest).items()
+        if category == ArmariumCategory.DELIVERED.value
+    }
+    bounds = not_measured[_COMPARISON_BOUNDS]
+    if bounds["acts_delivered"] != len(delivered_ids):
         raise SchemaRefusal(
             "the comparison-bounds claim does not count exactly the package's delivered acts"
+        )
+    if not set(bounds["unmeasured_act_ids"]) <= delivered_ids:
+        raise SchemaRefusal(
+            "the comparison-bounds claim names an unmeasured act the package does not deliver"
         )
     # Each delivered act's pages are where its cited regions were cut, and the
     # aggregate's page attribution must name every one of them.

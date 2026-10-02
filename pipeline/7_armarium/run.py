@@ -1108,6 +1108,7 @@ def page_not_measured_basis(context, pages: dict[int, dict], projected_acts: lis
         act for act in projected_acts if act["category"] == ArmariumCategory.DELIVERED.value
     ]
     states = [act["uncertainty"]["assessment"]["state"] for act in delivered]
+    unmeasured = sorted(act["act_id"] for act in delivered if unmeasured_comparison(context, act))
     basis = {
         "schema": NOT_MEASURED_BASIS_SCHEMA,
         "perlector-uncertain-spans": {
@@ -1137,9 +1138,8 @@ def page_not_measured_basis(context, pages: dict[int, dict], projected_acts: lis
             "sealed_max_comparison_steps": sealed_dissent_budget(context),
             "max_comparison_character_pairs": MAX_COMPARISON_CHARACTER_PAIRS,
             "acts_delivered": len(delivered),
-            "acts_with_unmeasured_comparison": sum(
-                unmeasured_comparison(context, act) for act in delivered
-            ),
+            "acts_with_unmeasured_comparison": len(unmeasured),
+            "unmeasured_act_ids": unmeasured,
         },
     }
     missing = [name for name in NOT_MEASURED_INSTRUMENTS if name not in basis]
