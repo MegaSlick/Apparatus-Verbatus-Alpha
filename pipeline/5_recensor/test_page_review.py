@@ -27,6 +27,7 @@ from common.contracts.stages import EXEMPLAR, PERLECTOR, RECENSOR
 from common.page_review import (
     CONTINUATION_LINK_FIELDS,
     continuation_links,
+    held_pages_after_review,
     page_breaks,
     reviewed_rows,
     run_page_breaks,
@@ -1081,6 +1082,17 @@ def test_the_recensor_run_links_no_canary_page(happy, tmp_path, monkeypatch):
     [receipt_link] = tree.receipt()["continuation_links"]
     assert receipt_link["subject_id"] == "page-break:1:2"
     assert receipt_link["link_ref"] == verified["ref"]
+
+
+def test_the_systemic_alarm_counts_no_canary_page(review, tmp_path, monkeypatch):
+    """`page-review` holds page 2 of its two; sealed as a canary, page 2 is neither
+    held nor counted, as the Armarium leaves canary pages out of its page holds."""
+    tree = review.copy(tmp_path)
+    assert tree.recensor().returncode == 3
+    run_tree = RunTree(tree.root, RUN_ID)
+    assert held_pages_after_review(run_tree) == ([2], 2)
+    monkeypatch.setattr("common.page_review.canary_ordinals", lambda _run: {2})
+    assert held_pages_after_review(run_tree) == ([], 1)
 
 
 def test_a_link_joins_act_entries_past_a_catchword_and_notes_the_catchword_flag():
