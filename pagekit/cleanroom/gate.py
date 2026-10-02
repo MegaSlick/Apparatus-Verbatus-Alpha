@@ -155,7 +155,10 @@ def incidents_kept(root: Path, base: str) -> list[str]:
         raise scan.ScanError(f"git could not list {INCIDENTS} on {base}")
     problems = []
     for path in [item.decode() for item in listed.stdout.split(b"\0") if item]:
-        old = _git(root, "cat-file", "blob", f"{base}:{path}").stdout.rstrip()
+        read = _git(root, "cat-file", "blob", f"{base}:{path}")
+        if read.returncode != 0:
+            raise scan.ScanError(f"git could not read {path} on {base}")
+        old = read.stdout.rstrip()
         new = _git(root, "cat-file", "blob", f"HEAD:{path}")
         if new.returncode != 0:
             problems.append(f"{path}: an incident note on {base} was deleted")

@@ -6,6 +6,9 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from pagekit.cleanroom import gate, scan
 from pagekit.cleanroom.gate import HOLD, incidents_kept, replay_hold
 
 NOTE = "pagekit/cleanroom/incidents/0001.md"
@@ -112,3 +115,37 @@ def test_lifting_a_hold_needs_a_decision_in_every_incident_note(tmp_path):
     write(repo, other, "# Incident 0002\n\nDecision: purge.\n")
     git(repo, "commit", "-q", "--amend", "--no-edit")
     assert replay_hold(repo, "main") == []
+
+
+def test_an_empty_incident_note_on_main_is_kept_like_any_other(tmp_path):
+    repo = repo_with_main(tmp_path)
+    git(repo, "switch", "-q", "main")
+    write(repo, NOTE, "")
+    commit(repo, "empty note on main")
+    git(repo, "switch", "-q", "work/x")
+    git(repo, "merge", "-q", "main")
+    write(repo, NOTE, "# Incident 0001\n\nDecision: purge.\n")
+    commit(repo, "fill")
+    assert incidents_kept(repo, "main") == []
+    git(repo, "rm", "-q", NOTE)
+    commit(repo, "delete")
+    assert any("was deleted" in problem for problem in incidents_kept(repo, "main"))
+
+
+def test_a_note_that_cannot_be_read_on_main_stops_the_check(tmp_path, monkeypatch):
+    repo = repo_with_main(tmp_path)
+    git(repo, "switch", "-q", "main")
+    write(repo, NOTE, "# Incident 0001\n\nDecision:\n")
+    commit(repo, "note on main")
+    git(repo, "switch", "-q", "work/x")
+    git(repo, "merge", "-q", "main")
+    real = gate._git
+
+    def failing_base_read(root, *args):
+        if args[:2] == ("cat-file", "blob") and args[2].startswith("main:"):
+            return subprocess.CompletedProcess(args, 128, b"", b"fatal")
+        return real(root, *args)
+
+    monkeypatch.setattr(gate, "_git", failing_base_read)
+    with pytest.raises(scan.ScanError):
+        incidents_kept(repo, "main")
