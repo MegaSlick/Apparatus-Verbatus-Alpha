@@ -506,7 +506,11 @@ carries its golden-page run in `subprocess_receipts`.
 or when it has done no work for 30 minutes: no GPU use (under 5 % at every one-minute
 sample; a GPU that cannot report counts as busy), no container CPU use (under half a core,
 from the container's own cgroup, not the shared host's load), no download (under
-256 KB/s received), and no touch of the pod's keep-alive file. A deadline more than a week
+256 KB/s received), and no touch of the pod's keep-alive file. `pod_run` touches that
+file on every liveness tick while the orchestrator runs, so a run in progress never
+depends on the counters. A CPU counter that read well and drops out for a tick neither
+resets nor adds idle time; one unreadable since arming counts as idle (logged as
+`cpu unreadable` on the armed line). A deadline more than a week
 out is taken as a typo and ignored. It needs nothing from the laptop or a Claude session, so a crashed
 session, a closed app or a sleeping Mac cannot leave a pod billing. It uses RunPod's
 documented self-stop route: every pod has `runpodctl` and a pod-scoped `RUNPOD_API_KEY`.

@@ -1247,6 +1247,34 @@ def _guard_heartbeat_age(volume: Path, pod_id: str, instant: float) -> int | Non
     return max(0, int(instant - beat))
 
 
+def _guard_keepalive(volume: Path, pod_id: str | None) -> Callable[[], None]:
+    """Touch this pod's guard keep-alive file, so a running orchestrator counts as work.
+
+    The guard reads its resource counters as a backstop; a run in progress is
+    work whatever they read. Only the first process's pod id is used: a shell's
+    could name another pod on the shared volume and keep it alive. Nothing is
+    touched when no guard armed its directory here. Best effort: a failed touch
+    says so and never stops the run, and the deadline still ends the pod.
+    """
+
+    guard = volume / POD_GUARD_DIRECTORY
+    if not _is_pod_id(pod_id) or not guard.is_dir():
+        return lambda: None
+    path = guard / f"keepalive-{pod_id}"
+
+    def touch() -> None:
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+            try:
+                os.utime(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError as error:
+            print(f"pod_run could not touch the guard keep-alive: {error}", file=sys.stderr)
+
+    return touch
+
+
 def _require_live_guard_for_release(
     volume: Path,
     first_process_pod_id: str | None,
@@ -1747,7 +1775,14 @@ def main(
         "timing_journal_path": str(plan.timing_journal_path),
     }
     _write_run_report(plan, {**running, "state": "running", "exit_code": None})
-    liveness = _liveness_journal(plan, base, now=now)
+    journal = _liveness_journal(plan, base, now=now)
+    keepalive = _guard_keepalive(plan.bootstrap.volume_mount_path, pod_id)
+
+    def liveness(pid: int, alive: bool) -> None:
+        journal(pid, alive)
+        if alive:
+            keepalive()
+
     try:
         completed = runner(
             command,

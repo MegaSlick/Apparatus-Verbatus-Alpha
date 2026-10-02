@@ -446,6 +446,59 @@ def test_a_keepalive_touched_while_idle_holds_off_the_idle_delete(pod, tmp_path)
     assert "no GPU, CPU or network work" not in log_of(state)
 
 
+def test_a_run_s_keepalive_holds_a_cpu_only_stage_whose_counters_read_idle(pod, tmp_path):
+    """pod_run touches the keep-alive on every live tick while the orchestrator runs, so a
+    CPU-only stage on a pod whose cgroup cannot be read is not mistaken for an idle pod.
+    Only the approved time ends it."""
+    env, calls, state = pod
+    state.mkdir()
+    assert not (tmp_path / "cgroup").exists(), "the container's CPU counter is unreadable"
+    keepalive = state / "keepalive-testpod"
+    clock = tmp_path / "clock"
+    on_each_tick(env, tmp_path, f'touch -d "@$(cat "{clock}")" "{keepalive}"\n')
+    run_guard(env, "0.002")
+    assert "cpu unreadable usec" in log_of(state)
+    assert "approved time is up" in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+
+
+def test_a_cpu_counter_unreadable_since_arming_counts_as_idle(pod):
+    """Pinned as it stands: whether an unreadable-from-arming counter should hold the pod
+    instead is the project lead's call, not this test's."""
+    env, calls, state = pod
+    started = clock_of(env)
+    run_guard(env, "5")
+    assert "cpu unreadable usec" in log_of(state)
+    assert "no GPU, CPU or network work" in log_of(state)
+    # As soon as a readable idle counter would: one tick.
+    assert clock_of(env) - started == 1
+
+
+def _idle_cgroup(env, tmp_path, drop_at: int | None) -> None:
+    """A readable counter that never moves, missing for the one tick `drop_at`."""
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    stat = cgroup / "cpu.stat"
+    stat.write_text("usage_usec 1000\n")
+    drop = "" if drop_at is None else f'[ "$1" = {drop_at} ] && rm -f "{stat}" && exit 0\n'
+    on_each_tick(env, tmp_path, drop + f'printf "usage_usec 1000\\n" > "{stat}"\n')
+
+
+# The dropped tick delays the delete by exactly one tick: it neither added idle time
+# nor reset it (a reset would cost the whole idle limit again).
+@pytest.mark.parametrize(("drop_at", "idle_seconds"), [(None, 1), (1, 2)])
+def test_a_cpu_reading_dropped_for_one_tick_neither_resets_nor_adds_idle(
+    pod, tmp_path, drop_at, idle_seconds
+):
+    env, calls, state = pod
+    _idle_cgroup(env, tmp_path, drop_at)
+    started = clock_of(env)
+    run_guard(env, "5")
+    assert "no GPU, CPU or network work" in log_of(state)
+    assert clock_of(env) - started == idle_seconds
+    assert ("idle time unchanged" in log_of(state)) is (drop_at is not None)
+
+
 def test_the_idle_limit_runs_from_the_last_keepalive_touch(pod):
     env, calls, state = pod
     state.mkdir()

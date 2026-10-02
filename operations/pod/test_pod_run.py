@@ -501,6 +501,63 @@ def _guard_deadline(ws: Workspace, value: int, *, heartbeat: float | None = None
 
 
 @pytest.mark.parametrize(
+    ("first_process", "armed", "touched"),
+    [("pod123", True, True), ("pod123", False, False), (None, True, False)],
+)
+def test_a_running_orchestrator_touches_its_own_pod_s_guard_keepalive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first_process: str | None,
+    armed: bool,
+    touched: bool,
+) -> None:
+    """The guard's resource counters are a backstop: a run in progress is work.
+
+    Only the first process's pod id is trusted (a shell's could keep another pod on the
+    shared volume alive), and nothing is created where no guard armed its directory.
+    """
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    if first_process is None:
+        monkeypatch.setattr(pod_run, "PID1_ENVIRON", tmp_path / "no-such-proc" / "environ")
+    else:
+        _first_process(tmp_path, monkeypatch, first_process)
+    guard = ws.volume / pod_run.POD_GUARD_DIRECTORY
+    if armed:
+        guard.mkdir()
+    seen: list[bool] = []
+    keepalive = guard / "keepalive-pod123"
+
+    class Watching(RecordedRunner):
+        def __call__(self, argv, *, cwd, env, transcript, liveness, interval_seconds):  # type: ignore[no-untyped-def]
+            def watched(pid: int, alive: bool) -> None:
+                liveness(pid, alive)
+                seen.append(keepalive.exists())
+
+            return super().__call__(
+                argv,
+                cwd=cwd,
+                env=env,
+                transcript=transcript,
+                liveness=watched,
+                interval_seconds=interval_seconds,
+            )
+
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=Watching(ticks=2),
+    )
+
+    assert code == EXIT_COMPLETE
+    assert seen and seen[0] is touched, "touched on the first live tick, while the child runs"
+    assert guard.is_dir() is armed
+
+
+@pytest.mark.parametrize(
     ("orchestrator_exit", "expected_exit"),
     [
         (0, EXIT_COMPLETE),

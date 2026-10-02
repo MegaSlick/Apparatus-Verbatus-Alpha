@@ -10,7 +10,7 @@
 # /workspace/private/.pod_guard, on the network volume at the pod's mount path). To extend
 # the deadline, write the new epoch second to a temporary file and move it over
 # deadline-<pod id>. Touching keepalive-<pod id> counts as work at that moment: the idle
-# limit then runs from the touch. The guard touches heartbeat-<pod id> on every tick, so
+# limit then runs from the touch; pod_run touches it while the orchestrator runs. The guard touches heartbeat-<pod id> on every tick, so
 # a reader can tell a live guard from a deadline file nobody watches; a released-<pod id>
 # file (pod_run --no-hold writes the run and its outcome there) is quoted in the delete
 # notice, so a finished run's notice differs from one whose time ran out mid-run.
@@ -161,9 +161,14 @@ net_busy() {
   [ $((now - before)) -ge $((interval * busy_net_kbps * 1024)) ]
 }
 
+# Exit 2 is "no evidence this tick": a counter that read well before and drops out for a
+# tick neither resets nor adds idle time. A counter unreadable since arming counts as idle.
 cpu_busy() {
   now=$(cpu_usec)
-  is_epoch "$now" || return 1
+  if ! is_epoch "$now"; then
+    is_epoch "$cpu_before" && return 2
+    return 1
+  fi
   before=$cpu_before
   cpu_before=$now
   is_epoch "$before" || return 1
@@ -199,6 +204,8 @@ while :; do
   net=$?
   if [ "$cpu" -eq 0 ] || [ "$net" -eq 0 ] || gpu_busy; then
     idle_for=0
+  elif [ "$cpu" -eq 2 ]; then
+    say "cpu unreadable this tick; idle time unchanged at ${idle_for}s"
   else
     idle_for=$((idle_for + interval))
     # Idle time counts from the later of the last busy sample and the last keep-alive touch.
