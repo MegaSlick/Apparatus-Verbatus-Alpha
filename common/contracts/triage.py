@@ -1,6 +1,7 @@
-"""The pre-door triage decision-manifest contract. Records transform decisions
-only: it never transforms a source frame and never chooses a member of a
-re-shoot cluster (complementary views remain rows).
+"""The triage decision-manifest contract: per-frame split, crop, rotation and
+colour decisions made before the Door, and the re-shoot cluster records beside
+them. It records decisions only: it never transforms a source frame and never
+chooses a member of a re-shoot cluster.
 
 Geometry and colour conversion are per split part, not per frame, because a
 document taped over the page at its own angle has no single gutter for
@@ -10,9 +11,8 @@ spread's two pages each want their own crop besides.
 ``region`` is a half-open rectangle in source-frame pixel coordinates; after
 cutting it, ``crop_box`` is half-open in that part's local pixel coordinates.
 The cropped pixels are then rotated clockwise about the crop's centre onto an
-expanded canvas. Pixel sampling, fill and encoding belong to the Door's sealed
-apply recipe (`door.py`, `triage-raster-apply-v1`), not to geometry defaults
-hidden here.
+expanded canvas. Pixel sampling, fill and encoding belong to the apply recipe
+(`common.imaging.TRIAGE_APPLY_RECIPE`), not to geometry defaults hidden here.
 """
 
 from __future__ import annotations

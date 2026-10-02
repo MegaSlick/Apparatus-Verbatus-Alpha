@@ -19,7 +19,12 @@ from PIL import Image
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import ContractError
 from common.corpus_register import refuse_capture_preference
-from common.imaging import MAX_PIXELS, encode_image_deterministic, imaging_library_versions
+from common.imaging import (
+    DETERMINISTIC_ENCODER,
+    MAX_PIXELS,
+    encode_image_deterministic,
+    imaging_library_versions,
+)
 
 RECIPE_SCHEMA: Final = "triage-producer-recipe.v1"
 EVIDENCE_SCHEMA: Final = "cluster-candidate-evidence.v1"
@@ -506,7 +511,7 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
             "integer_factor_rule": PROXY_INTEGER_FACTOR_RULE,
             "signature_max_edge": config.signature_max_edge,
             "review_max_edge": config.review_max_edge,
-            "encoder": "common.imaging.encode_image_deterministic-v1",
+            "encoder": DETERMINISTIC_ENCODER,
         },
         "signature_recipe": {
             "grid_columns": config.grid_columns,
@@ -577,10 +582,7 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         "encoder",
     }:
         raise InstrumentRefusal("triage producer recipe proxy recipe has the wrong closed schema")
-    if (
-        proxy["colour_mode"] != "L"
-        or proxy["encoder"] != "common.imaging.encode_image_deterministic-v1"
-    ):
+    if proxy["colour_mode"] != "L" or proxy["encoder"] != DETERMINISTIC_ENCODER:
         raise InstrumentRefusal("triage producer recipe proxy recipe changes the declared encoder")
     if proxy["reduction"] != PROXY_REDUCTION:
         raise InstrumentRefusal(

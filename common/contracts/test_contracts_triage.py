@@ -3,9 +3,13 @@ import time
 from collections.abc import Mapping
 from copy import deepcopy
 
-import manifest as manifest_module
 import pytest
-from manifest import (
+
+import common.contracts.triage as manifest_module
+from common.contracts.canonical import digest_bytes
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.stages import TRIAGE_MODES
+from common.contracts.triage import (
     CLUSTER_SCHEMA,
     MANIFEST_SCHEMA,
     MAX_CLUSTER_MEMBERS,
@@ -19,13 +23,9 @@ from manifest import (
     validate_manifest,
     verify_submitted_frame,
 )
-from manifest import (
+from common.contracts.triage import (
     make_part as contract_make_part,
 )
-
-from common.contracts.canonical import digest_bytes
-from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.stages import TRIAGE_MODES
 
 DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64

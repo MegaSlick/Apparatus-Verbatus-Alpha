@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import stat
-import sys
 import tomllib
 import unicodedata
 import warnings
@@ -21,6 +20,7 @@ from typing import Any, Final, Mapping, Sequence
 
 from PIL import Image
 
+from common.contracts import triage as triage_manifest
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.contracts.identities import physical_page_id
@@ -46,14 +46,6 @@ from operations.triage.instrument import (
     validate_producer_recipe,
 )
 from operations.triage.paths import PathCheckFailure, canonical_distinct_paths
-
-# `pipeline/0_triage` is intentionally the single top-level `manifest` module.
-# The Door uses this same import seam; a second manifest implementation would let
-# pre-door validation drift from its consumer.
-_TRIAGE_ROOT = Path(__file__).resolve().parents[2] / "pipeline" / "0_triage"
-if str(_TRIAGE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_TRIAGE_ROOT))
-import manifest as triage_manifest  # noqa: E402
 
 CONFIRMATION_SCHEMA: Final = "triage-re-shoot-confirmation.v1"
 PRODUCER_IDENTITY: Final = "operations.triage.producer"

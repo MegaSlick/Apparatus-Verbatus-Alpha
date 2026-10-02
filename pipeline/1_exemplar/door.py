@@ -37,10 +37,8 @@ DECLARED_SYNTHETIC_FIXTURE_ROOT: Final = ROOT / "proof"
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(ROOT / "pipeline" / "0_triage"))
 
 import admission  # noqa: E402
-import manifest as triage_manifest  # noqa: E402
 import pdf_render  # noqa: E402
 import render_config  # noqa: E402
 from admission import RefusalReason  # noqa: E402
@@ -58,6 +56,7 @@ from image_formats import (  # noqa: E402
 )
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts import triage as triage_manifest  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
     real_ingress_record,
     synthetic_fixture_ingress_record,
@@ -79,6 +78,7 @@ from common.corpus_register import (  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.image_sniff import SIGNATURE_PREFIX_BYTES  # noqa: E402
+from common.imaging import TRIAGE_APPLY_RECIPE  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
@@ -532,14 +532,7 @@ def decide(
                     "triage_manifest_row": source.triage_row,
                     "triage_backlink": backlink,
                     "operation_order": source.triage_row["split"]["operation_order"],
-                    "apply_recipe": {
-                        "schema": "triage-raster-apply-v1",
-                        "rotation_resample": "Pillow.Resampling.BICUBIC",
-                        "rotation_fill": "Pillow-default-zero",
-                        "rotation_expand": True,
-                        "colour_conversion": "Pillow.Image.convert-direct-or-via-RGB",
-                        "encoder": "common.imaging.encode_image_deterministic-v1",
-                    },
+                    "apply_recipe": dict(TRIAGE_APPLY_RECIPE),
                     "operations": [
                         {"operation": "split", "region": part["region"]},
                         {"operation": "crop", "bounds": part["crop_box"]},

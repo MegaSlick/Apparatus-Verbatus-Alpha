@@ -522,10 +522,8 @@ def test_a_re_derivation_mismatch_names_a_decoder_upgrade_when_one_explains_it()
 
 
 def test_an_embedded_triage_row_is_bounded_before_its_pairwise_geometry_check():
-    """This boundary restates the pre-door row schema because `common/` may not
-    import the numbered pipeline, and the restatement had dropped the part cap. The
-    overlap check below it compares every pair, so an unbounded parts list bought
-    quadratic work on a record this boundary exists in order not to trust."""
+    """The overlap check compares every pair of parts, so an unbounded parts list
+    would buy quadratic work on a record this boundary exists in order not to trust."""
     from common.contracts.stages import MAX_TRIAGE_SPLIT_PARTS
     from common.exemplar_boundary import verify_triage_derivative
 
@@ -538,14 +536,13 @@ def test_an_embedded_triage_row_is_bounded_before_its_pairwise_geometry_check():
         "manifest_row_sha256"
     ]
 
-    with pytest.raises(ContractError, match=f"{MAX_TRIAGE_SPLIT_PARTS}-part split limit"):
+    with pytest.raises(ContractError, match=f"{MAX_TRIAGE_SPLIT_PARTS}-part limit"):
         verify_triage_derivative(contract, master, parent, sealed)
 
 
 def test_a_triage_row_carrying_a_field_outside_the_closed_schema_is_refused():
-    """The behaviour the source-text comparison above stands in for, exercised
-    through the ordinary verification path: matching field sets in two files would
-    still be worth nothing if the boundary had stopped closing its own."""
+    """The embedded row is validated against the closed triage schema even when its
+    self-digest was recomputed to match."""
     from common.exemplar_boundary import verify_triage_derivative
 
     contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
@@ -556,7 +553,7 @@ def test_a_triage_row_carrying_a_field_outside_the_closed_schema_is_refused():
         "manifest_row_sha256"
     ]
 
-    with pytest.raises(ContractError, match="no complete triage manifest row"):
+    with pytest.raises(ContractError, match="invalid triage manifest row.*closed"):
         verify_triage_derivative(contract, master, parent, sealed)
 
 

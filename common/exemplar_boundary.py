@@ -15,7 +15,6 @@ import json
 from typing import Any, Callable, Final
 
 from common.contracts.canonical import (
-    canonical_bytes,
     digest_bytes,
     digest_of,
     is_sha256,
@@ -24,18 +23,11 @@ from common.contracts.canonical import (
 from common.contracts.envelope import read_verified, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, page_id, region_id
-from common.contracts.stages import (
-    DOOR,
-    EXEMPLAR,
-    MAX_TRIAGE_SPLIT_PARTS,
-    PERLECTOR,
-    TRIAGE_ACTOR_FIELDS,
-    TRIAGE_ACTOR_KINDS,
-    TRIAGE_MODES,
-    TRIAGE_PART_FIELDS,
-    TRIAGE_ROW_FIELDS,
-)
+from common.contracts.stages import DOOR, EXEMPLAR, PERLECTOR
+from common.contracts.triage import SPLIT_OPERATION_ORDER, validate_row
 from common.imaging import (
+    DETERMINISTIC_ENCODER,
+    TRIAGE_APPLY_RECIPE,
     carries_only_image_chunks,
     crop_png,
     dimensions,
@@ -785,110 +777,6 @@ def is_triage_derivative_contract(render_contract: Any) -> bool:
     )
 
 
-def _validate_embedded_triage_row(row: Any) -> None:
-    """Validate the provenance fields the common boundary must not take on trust.
-
-    Geometry is checked executable against every recorded operation and the master
-    itself. Mode, actor, override, confidence, cluster identity, and every
-    row/split/part field set are closed here too.
-    """
-    if not isinstance(row, dict) or set(row) != TRIAGE_ROW_FIELDS:
-        raise ContractError("a sealed derivative page carries no complete triage manifest row")
-    if not isinstance(row["corpus_id"], str) or not row["corpus_id"].strip():
-        raise ContractError("a sealed derivative page's triage row has no corpus identity")
-    if row["mode"] not in TRIAGE_MODES:
-        raise ContractError("a sealed derivative page's triage row has no declared mode")
-    if (
-        not isinstance(row["confidence"], int)
-        or isinstance(row["confidence"], bool)
-        or row["confidence"] not in range(5)
-        or not isinstance(row["human_override"], bool)
-    ):
-        raise ContractError(
-            "a sealed derivative page's triage row has invalid confidence or override provenance"
-        )
-    cluster_id = row["re_shoot_cluster_id"]
-    if cluster_id is not None and (not isinstance(cluster_id, str) or not cluster_id.strip()):
-        raise ContractError("a sealed derivative page's triage row has an invalid cluster identity")
-    actor = row["actor"]
-    if (
-        not isinstance(actor, dict)
-        or set(actor) != TRIAGE_ACTOR_FIELDS
-        or actor.get("kind") not in TRIAGE_ACTOR_KINDS
-        or not isinstance(actor.get("identity"), str)
-        or not actor["identity"].strip()
-        or (actor["kind"] == "human" and actor.get("revision") is not None)
-        or (
-            actor["kind"] != "human"
-            and (not isinstance(actor.get("revision"), str) or not actor["revision"].strip())
-        )
-    ):
-        raise ContractError("a sealed derivative page's triage row has no resolved actor")
-    split = row["split"]
-    if (
-        not isinstance(split, dict)
-        or set(split) != {"operation_order", "parts"}
-        or split.get("operation_order") != "region-crop-rotate"
-        or not isinstance(split.get("parts"), list)
-        or not split["parts"]
-        or any(
-            not isinstance(part, dict) or set(part) != TRIAGE_PART_FIELDS for part in split["parts"]
-        )
-    ):
-        raise ContractError("a sealed derivative page's triage row has no closed split record")
-    if len(split["parts"]) > MAX_TRIAGE_SPLIT_PARTS:
-        # Bounded here as well as in the pre-door contract, and before the pairwise
-        # overlap loop below rather than after it: this boundary exists precisely
-        # because the row reaching it is not taken on trust, and the loop it guards
-        # is quadratic in the number of parts.
-        raise ContractError(
-            f"a sealed derivative page's triage row exceeds the "
-            f"{MAX_TRIAGE_SPLIT_PARTS}-part split limit"
-        )
-    frame = row["frame"]
-    if (
-        not isinstance(frame, dict)
-        or set(frame) != {"width", "height"}
-        or any(
-            not isinstance(frame[field], int) or isinstance(frame[field], bool) or frame[field] <= 0
-            for field in ("width", "height")
-        )
-    ):
-        raise ContractError("a sealed derivative page's triage row has no closed frame geometry")
-    regions = []
-    for part in split["parts"]:
-        operations = (
-            {"operation": "split", "region": part["region"]},
-            {"operation": "crop", "bounds": part["crop_box"]},
-            {"operation": "deskew", "rotation": part["rotation"]},
-            {"operation": "convert", "colour_mode": part["colour_mode"]},
-        )
-        for operation in operations:
-            _validate_exemplar_transform(operation)
-        region = part["region"]
-        crop_box = part["crop_box"]
-        if (
-            region["x"] + region["w"] > frame["width"]
-            or region["y"] + region["h"] > frame["height"]
-            or crop_box["x"] + crop_box["w"] > region["w"]
-            or crop_box["y"] + crop_box["h"] > region["h"]
-        ):
-            raise ContractError("a sealed derivative page's triage row has out-of-frame geometry")
-        regions.append(region)
-    for index, region in enumerate(regions):
-        for other in regions[index + 1 :]:
-            disjoint = (
-                region["x"] + region["w"] <= other["x"]
-                or other["x"] + other["w"] <= region["x"]
-                or region["y"] + region["h"] <= other["y"]
-                or other["y"] + other["h"] <= region["y"]
-            )
-            if not disjoint:
-                raise ContractError("a sealed derivative page's triage row has overlapping parts")
-    if sum(region["w"] * region["h"] for region in regions) != frame["width"] * frame["height"]:
-        raise ContractError("a sealed derivative page's triage row does not partition its frame")
-
-
 def verify_triage_derivative(
     contract: dict[str, Any],
     parent_bytes: bytes,
@@ -970,14 +858,7 @@ def _verify_triage_derivative(
     }
     if not isinstance(derivative, dict) or set(derivative) != required:
         raise ContractError("a sealed derivative page has no complete apply recipe")
-    if derivative["apply_recipe"] != {
-        "schema": "triage-raster-apply-v1",
-        "rotation_resample": "Pillow.Resampling.BICUBIC",
-        "rotation_fill": "Pillow-default-zero",
-        "rotation_expand": True,
-        "colour_conversion": "Pillow.Image.convert-direct-or-via-RGB",
-        "encoder": "common.imaging.encode_image_deterministic-v1",
-    }:
+    if derivative["apply_recipe"] != dict(TRIAGE_APPLY_RECIPE):
         raise ContractError("a sealed derivative page changes its recorded raster apply recipe")
     if contract.get("renderer") != "Pillow" or any(
         not isinstance(contract.get(field), str) or not contract[field]
@@ -990,19 +871,13 @@ def _verify_triage_derivative(
         raise ContractError(
             "a sealed derivative page does not carry its manifest row and back-link"
         )
-    _validate_embedded_triage_row(row)
-    row_digest = row.get("manifest_row_sha256")
-    if not is_sha256(row_digest):
-        raise ContractError("a sealed derivative page's manifest row has no sha256")
-    if (
-        digest_bytes(
-            canonical_bytes(
-                {key: value for key, value in row.items() if key != "manifest_row_sha256"}
-            )
-        )
-        != row_digest
-    ):
-        raise ContractError("a sealed derivative page's manifest row digest does not bind its row")
+    try:
+        validate_row(row)
+    except SchemaRefusal as error:
+        raise ContractError(
+            f"a sealed derivative page carries an invalid triage manifest row ({error})"
+        ) from error
+    row_digest = row["manifest_row_sha256"]
     expected_backlink = {
         "corpus_id": row["corpus_id"],
         "source_frame_sha256": row["source_frame_sha256"],
@@ -1021,7 +896,7 @@ def _verify_triage_derivative(
         or not 0 <= part_index < len(split["parts"])
         or derivative["parent_frame_sha256"] != parent["sha256"]
         or derivative["parent_frame_page_index"] != parent["source_frame_index"]
-        or derivative["operation_order"] != "region-crop-rotate"
+        or derivative["operation_order"] != SPLIT_OPERATION_ORDER
     ):
         raise ContractError("a sealed derivative page does not match its triage split part")
     part = split["parts"][part_index]
@@ -1053,7 +928,7 @@ def _verify_triage_derivative(
         "container_page_index": parent["source_frame_index"],
         "width": geometry["width"],
         "height": geometry["height"],
-        "deterministic_encoder": "common.imaging.encode_image_deterministic-v1",
+        "deterministic_encoder": DETERMINISTIC_ENCODER,
     }
     if any(contract.get(field) != value for field, value in expected_render_record.items()):
         raise ContractError(
