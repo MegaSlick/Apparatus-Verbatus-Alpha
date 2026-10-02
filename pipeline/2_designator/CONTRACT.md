@@ -101,7 +101,8 @@ differently from a page never asked.
 
 **`detector-record`**, subject `<page_id>-detector-<n>`, one per detection in
 the engine's order: `page_ordinal`, `detector_ordinal` (`n`), `raw_output_ref`,
-`quantization`, `score_quantization`, `score_bp`, `class_id`, `class_name`,
+`quantization`, `score_quantization`, `score_bp`, `class_id`, `class_name` (null
+for a class the checkpoint does not name),
 `raw_proposal` (the `yolo-obb` record `geometry_layer.yolo_obb` builds, which
 keeps the oriented polygon), `bounds` (its axis-aligned hull), `cut`,
 `authoritative: false`, `authority_effect: "none"`, `region_ref` and

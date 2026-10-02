@@ -12,16 +12,25 @@ page geometry is the Designator's declared quantization, not this module's.
 
 from __future__ import annotations
 
+import atexit
+import functools
 import hashlib
+import importlib
 import io
 import math
+import os
+import shutil
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
+from PIL import Image
+
 from common.chairs.models import ChairIdentity, ServingDetails
+from common.imaging import PNG_CROP_MODES, convert_png_to_rgb, crop_png, dimensions
 
 from .config import InProcessProfile, package_release
 from .errors import ServingConfigurationError
@@ -37,6 +46,16 @@ FIXTURE_ENGINE = "fixture"
 # The most records the fixture detector returns for one page: Ultralytics' own
 # predict default, which the in-process recipe also runs at.
 FIXTURE_MAX_DET = 300
+# Ultralytics reads these at import (`ultralytics/utils/__init__.py`, 8.4.14).
+# `YOLO_OFFLINE` must be the string "true" ("1" does nothing); it makes the
+# online probe answer False, which turns off the usage events sent on predict,
+# update checks and error reporting. `YOLO_AUTOINSTALL=false` stops it
+# installing packages, and `YOLO_CONFIG_DIR` keeps its settings file out of the
+# operator's home. The pod reads private register pages, so none of these may
+# reach the network.
+ULTRALYTICS_OFFLINE_ENV = {"YOLO_OFFLINE": "true", "YOLO_AUTOINSTALL": "false"}
+# The release whose source those switches were read from; any other is refused.
+ULTRALYTICS_OFFLINE_RELEASE = "8.4.14"
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,7 +99,8 @@ def _checked_detection(item: Mapping[str, Any]) -> dict[str, Any]:
         "corners": [[float(x), float(y)] for x, y in corners],
         "score": float(score),
         "class_id": class_id,
-        "class_name": RECORD_DETECTOR_CLASS_NAMES.get(class_id, f"unknown-class-{class_id}"),
+        # A class the checkpoint does not name has no name, rather than an invented one.
+        "class_name": RECORD_DETECTOR_CLASS_NAMES.get(class_id),
     }
 
 
@@ -161,6 +181,78 @@ def check_record_detector_runnable(
     _verified_weights(snapshot_root())
 
 
+def convert_page_to_rgb(page_bytes: bytes) -> bytes:
+    """The sealed page as the record detector is shown it: 8-bit RGB PNG bytes.
+
+    A page in an 8-bit mode is converted exactly as `Image.convert("RGB")`
+    converts it. A 16-bit page first takes the display conversion its record
+    crops take (`crop_png` of the whole page scales its samples to 8 bits),
+    because a bare RGB conversion clips them and shows the detector a white
+    page with no ink. `I` and `F` pages have no display conversion and are
+    refused by name.
+    """
+
+    try:
+        width, height = dimensions(page_bytes)
+        with Image.open(io.BytesIO(page_bytes)) as image:
+            mode = image.mode
+        if mode not in PNG_CROP_MODES:
+            page_bytes = crop_png(page_bytes, {"x": 0, "y": 0, "w": width, "h": height})
+        return convert_png_to_rgb(page_bytes)
+    except (OSError, ValueError) as error:
+        raise ServingConfigurationError(
+            f"the record detector cannot be shown this page as RGB: {error}"
+        ) from error
+
+
+@functools.cache
+def _ultralytics_config_dir() -> Path:
+    """One settings directory per process: Ultralytics fixes its path at import."""
+    path = Path(tempfile.mkdtemp(prefix="verbatus-ultralytics-")).resolve()
+    atexit.register(shutil.rmtree, path, ignore_errors=True)
+    return path
+
+
+def offline_ultralytics() -> Any:
+    """Import Ultralytics with its network paths off, and return its `YOLO` class.
+
+    The switches are environment variables it reads at import, so they are set
+    around the import and the previous values restored. A module imported
+    earlier without them, one whose settings live elsewhere, or another release
+    is refused before anything is loaded.
+    """
+
+    config_dir = _ultralytics_config_dir()
+    switches = {**ULTRALYTICS_OFFLINE_ENV, "YOLO_CONFIG_DIR": str(config_dir)}
+    before = {name: os.environ.get(name) for name in switches}
+    os.environ.update(switches)
+    try:
+        ultralytics = importlib.import_module("ultralytics")
+        utils = importlib.import_module("ultralytics.utils")
+    finally:
+        for name, value in before.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+    if ultralytics.__version__ != ULTRALYTICS_OFFLINE_RELEASE:
+        raise ServingConfigurationError(
+            f"Ultralytics {ultralytics.__version__} is imported, not "
+            f"{ULTRALYTICS_OFFLINE_RELEASE}, whose offline switches this loader sets"
+        )
+    if (
+        utils.ONLINE
+        or utils.AUTOINSTALL
+        or not Path(utils.USER_CONFIG_DIR).resolve().is_relative_to(config_dir)
+    ):
+        raise ServingConfigurationError(
+            "Ultralytics is not offline in this process (imported before its offline switches "
+            "were set, or they did not take); the record detector is not loaded"
+        )
+    utils.SETTINGS.update(sync=False, hub=False)
+    return ultralytics.YOLO
+
+
 def load_ultralytics_record_detector(
     identity: ChairIdentity, profile: InProcessProfile, snapshot_root: Path
 ) -> RecordDetector:
@@ -169,9 +261,8 @@ def load_ultralytics_record_detector(
     weights = _verified_weights(snapshot_root)
     # Imported only here: the laptop environment has neither package.
     import torch
-    from PIL import Image
-    from ultralytics import YOLO
 
+    YOLO = offline_ultralytics()
     torch.use_deterministic_algorithms(True)
     # One thread keeps the float reduction order, and so every box, identical run to run.
     torch.set_num_threads(1)
@@ -184,8 +275,8 @@ def load_ultralytics_record_detector(
         )
 
     def detect(page_png: bytes, _page_ordinal: int) -> list[dict[str, Any]]:
-        with Image.open(io.BytesIO(page_png)) as image:
-            rgb = image.convert("RGB")
+        with Image.open(io.BytesIO(convert_page_to_rgb(page_png))) as image:
+            rgb = image.copy()
         results = model.predict(
             rgb,
             imgsz=profile.imgsz,
@@ -233,7 +324,10 @@ def load_ultralytics_record_detector(
             "max_det": profile.max_det,
             # The Teklia card extracts images at 2000 px before training at 1024; whether
             # their own inference resizes to 2000 first is not stated, so it is not done.
-            "page_preprocessing": "sealed page as RGB into Ultralytics' own letterbox",
+            "page_preprocessing": (
+                "sealed page as RGB (a 16-bit page scaled to 8 bits first) into "
+                "Ultralytics' own letterbox"
+            ),
         },
         serving_details=details,
         _detect=detect,
