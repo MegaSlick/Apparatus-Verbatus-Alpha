@@ -989,14 +989,28 @@ class _PathTree(_Tree):
     whose Recensor receipt binds page 1 to `bound`."""
 
     bound = f"{PERLECTOR}/page-reading/r3.json"
+    bound_sha256 = "f" * 64
+    receipt_pages = (1,)
 
     def read_recensor_partition_receipt(self):
-        return {"pages": [{"page_ordinal": 1, "reading_ref": {"relative_path": self.bound}}]}
+        return {
+            "pages": [
+                {
+                    "page_ordinal": ordinal,
+                    "reading_ref": {"relative_path": self.bound, "sha256": self.bound_sha256},
+                }
+                for ordinal in self.receipt_pages
+            ]
+        }
 
     def build_manifest(self, stage, *, verify_inputs=True):
         return {
             "artifacts": [
-                {**entry, "relative_path": f"{stage}/{entry['kind']}/{entry['artifact_id']}.json"}
+                {
+                    **entry,
+                    "relative_path": f"{stage}/{entry['kind']}/{entry['artifact_id']}.json",
+                    "sha256": "f" * 64,
+                }
                 for entry in super().build_manifest(stage)["artifacts"]
             ]
         }
@@ -1070,19 +1084,46 @@ def test_a_page_a_person_had_read_again_is_judged_on_its_current_reading(monkeyp
     assert len(loaded["act_regions"]) == len(built["act_regions"])
     result = report([loaded])
     assert result["gate"]["passed"] is True
-    # The person's retry is reported apart: the first reading alone read fewer.
+    # The person's retry is reported apart: the first reading read two of the three.
     reread = result["operator_reread"]
     assert reread["page_ordinals"] == [1]
+    assert reread["before_reread"]["exactly_once"] == 2
     assert reread["after_reread"]["exactly_once"] == 3
-    assert reread["before_reread"]["exactly_once"] < 3
-    assert reread["records_now_exactly_once"] == 3 - reread["before_reread"]["exactly_once"]
+    assert (reread["records_now_exactly_once"], reread["records_no_longer_exactly_once"]) == (1, 0)
+    # The machine never re-asked the page, so the re-ask is credited with nothing:
+    # its before and after are the machine's first reading, not the person's retry.
+    reask = result["reask"]
+    assert (reask["pages_reasked"], reask["acts_recovered_on_reask"]) == (0, 0)
+    assert reask["before_reask"]["exactly_once"] == reask["after_reask"]["exactly_once"] == 2
     # A run with no re-read says nothing of one.
     assert "operator_reread" not in report(
         load_page_records(_Tree(_reask_tree_records(built, first), {}))
     )
 
-    # The re-read judged must be the reading the Recensor's receipt binds.
+    # The re-read judged must be the reading the Recensor's receipt binds, path and digest.
     other = _PathTree(records, {})
     other.bound = path
     with pytest.raises(Refusal, match="not the reading the Recensor's receipt binds"):
         load_page_records(other)
+    other = _PathTree(records, {})
+    other.bound_sha256 = "0" * 64
+    with pytest.raises(Refusal, match="not the reading the Recensor's receipt binds"):
+        load_page_records(other)
+    other = _PathTree(records, {})
+    other.receipt_pages = ()
+    with pytest.raises(Refusal, match="receipt binds no one reading for page"):
+        load_page_records(other)
+
+    # An act record naming no reading of the page is refused, never dropped.
+    stray = dict(records)
+    region_key = next(key for key in records if key[1] == "act-region")
+    region = records[region_key]
+    stray[region_key] = {
+        **region,
+        "payload": {
+            **region["payload"],
+            "page_reading_ref": {"relative_path": "elsewhere.json", "sha256": "0" * 64},
+        },
+    }
+    with pytest.raises(Refusal, match="naming no reading of the page"):
+        load_page_records(_PathTree(stray, {}))

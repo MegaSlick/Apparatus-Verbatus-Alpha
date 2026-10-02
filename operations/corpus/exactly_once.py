@@ -260,6 +260,7 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
                 {
                     "subject_id": record["subject_id"],
                     "relative_path": entry.get("relative_path"),
+                    "sha256": entry.get("sha256"),
                     **record,
                 }
             )
@@ -297,7 +298,10 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
             "a page reading",
             reread=isinstance(payload.get(OPERATOR_REREAD_FIELD), Mapping),
         )
-        page["paths"][attempt] = record["relative_path"]
+        page["paths"][attempt] = {
+            "relative_path": record["relative_path"],
+            "sha256": record["sha256"],
+        }
         if attempt in page["readings"]:
             raise Refusal(
                 f"malformed-record: page {payload['page_id']!r} has two readings at attempt "
@@ -361,15 +365,25 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
         if last >= OPERATOR_REREAD_FIRST:
             # An operator re-read: judged on it, as the run counts it, and on the
             # machine's own readings it superseded.
-            current = _receipt_reading(tree, page["feed"]["page_ordinal"])
+            current = _receipt_reading(tree, page_id, page["feed"]["page_ordinal"])
             if current != paths[last]:
                 raise Refusal(
                     f"malformed-record: page {page_id!r}'s last operator re-read is not the "
                     "reading the Recensor's receipt binds"
                 )
+            known = {ref["relative_path"] for ref in paths.values()}
             superseded = {
-                path for ordinal, path in paths.items() if ordinal < OPERATOR_REREAD_FIRST
+                ref["relative_path"]
+                for ordinal, ref in paths.items()
+                if ordinal < OPERATOR_REREAD_FIRST
             }
+            for kind in ("act_regions", "perlectios"):
+                if not all(_of_reading(record, known) for record in page[kind]):
+                    raise Refusal(
+                        f"malformed-record: page {page_id!r} has an act record naming no "
+                        "reading of the page"
+                    )
+            current = current["relative_path"]
             regions, perlectios = page["act_regions"], page["perlectios"]
             page.update(
                 reading=readings[last],
@@ -392,11 +406,17 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
     return loaded
 
 
-def _receipt_reading(tree: RunTree | ReadOnlyRunTree, ordinal: int) -> str | None:
-    """The path of the page reading the Recensor's partition receipt binds for page `ordinal`."""
+def _receipt_reading(tree: RunTree | ReadOnlyRunTree, page_id: str, ordinal: int) -> dict[str, Any]:
+    """The page reading the Recensor's partition receipt binds for page `ordinal`, path and digest."""
     receipt = tree.read_recensor_partition_receipt()
     rows = [row for row in receipt.get("pages") or [] if row.get("page_ordinal") == ordinal]
-    return rows[0]["reading_ref"]["relative_path"] if len(rows) == 1 else None
+    if len(rows) != 1:
+        raise Refusal(
+            f"malformed-record: the Recensor's receipt binds no one reading for page {page_id!r}, "
+            "which a person had read again"
+        )
+    reference = rows[0].get("reading_ref") or {}
+    return {"relative_path": reference.get("relative_path"), "sha256": reference.get("sha256")}
 
 
 def _of_reading(payload: Mapping[str, Any], paths: Collection[str]) -> bool:
@@ -719,7 +739,9 @@ def exactly_once_report(
 
     The gate is judged on each page's sealed final accounting and every act
     region the page holds; `reask` reports the same records judged on the
-    first readings alone.
+    first readings alone, and what the machine's own re-asks added. A page a
+    person had read again enters `reask` as the machine's readings left it,
+    and `operator_reread` reports what the person's retry changed.
     """
     if sealed_policy_sha256 != policy.sha256:
         raise Refusal(
@@ -740,8 +762,16 @@ def exactly_once_report(
         gold_by_page.setdefault(record["page_sha256"], []).append(record)
 
     rows = _score_records(pages, gold, policy)
-    first_rows = _score_records([_first_reading_view(page) for page in pages], gold, policy)
-    reread = _reread_effect(pages, gold, policy, rows)
+    # The machine's own readings: a re-read page as its first reading and re-ask
+    # left it, so the re-ask is credited only with what the machine read.
+    machine_pages = [
+        {**page, **page["superseded"]} if "superseded" in page else page for page in pages
+    ]
+    machine_rows = (
+        _score_records(machine_pages, gold, policy) if machine_pages != list(pages) else rows
+    )
+    first_rows = _score_records([_first_reading_view(page) for page in machine_pages], gold, policy)
+    reread = _reread_effect(pages, machine_rows, rows)
 
     outcomes = Counter(row["outcome"] for row in rows)
     exactly = outcomes[EXACTLY_ONCE]
@@ -862,7 +892,7 @@ def exactly_once_report(
             "uncaught_record_ids": [row["record_id"] for row in uncaught],
             "by_merge_class": dict(sorted(merge_split.items())),
         },
-        "reask": _reask_effect(pages, first_rows, rows),
+        "reask": _reask_effect(machine_pages, first_rows, machine_rows),
         **reread,
         "merged_detection": {
             "fired_on_true_merge": rule_i[("fired", True)],
@@ -896,8 +926,7 @@ def exactly_once_report(
 
 def _reread_effect(
     pages: Sequence[Mapping[str, Any]],
-    gold: Sequence[Mapping[str, Any]],
-    policy: PageAccountingPolicy,
+    before: Sequence[Mapping[str, Any]],
     after: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
     """What a person's operator re-reads changed; nothing for a run with none.
@@ -909,11 +938,6 @@ def _reread_effect(
     reread = [page for page in pages if "superseded" in page]
     if not reread:
         return {}
-    before = _score_records(
-        [{**page, **page["superseded"]} if "superseded" in page else page for page in pages],
-        gold,
-        policy,
-    )
     on_reread = {page["feed"]["page_id"] for page in reread}
     pairs = list(zip(before, after, strict=True))
     return {
