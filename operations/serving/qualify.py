@@ -39,11 +39,16 @@ the one tier that was measured.  Normal serving remains unable to launch an
 unproven row.
 """
 
-SCHEMA = "serving-qualification-candidates.v1"
+SCHEMA = "serving-qualification-candidates.v2"
 QUALIFICATION_PURPOSE = "preflight-qualification"
-# Catalogue row kinds a stage runs itself; preflight records each chair's placement
-# under the same name.
-UNSERVED_KINDS = frozenset({"subprocess", "in-process"})
+# Catalogue row kinds that are never served at a tier, and the placement state
+# preflight records for each: a stage runs Surya as a subprocess and the record
+# detector in-process, and an `unsupported` row cannot be served on that card.
+UNSERVED_PLACEMENT_STATES = {
+    "subprocess": "subprocess",
+    "in-process": "in-process",
+    "unsupported": "unservable-at-tier",
+}
 
 
 class QualificationRefusal(ValueError):
@@ -132,20 +137,21 @@ def qualification_candidates(
             "base checkpoint as well as the adapter; no candidates were emitted for "
             + ", ".join(adapters)
         )
-    # A chair its stage runs as a subprocess (Surya) or in-process (the record
-    # detector) is never served: preflight checks its weights (and runs a
-    # subprocess chair's own runner once on the golden page), so it has a cache
-    # receipt and a placement in that state but no smoke receipt, and no row of
-    # its is ever proven here.
-    profiles = {
-        role: _profile_at_tier(recipes, identity, tier) for role, identity in identities.items()
-    }
+    # Qualification is per chair: it covers exactly the chairs this preflight
+    # placed, which is the whole roster or the narrowed selection an operator
+    # asked for (an `unsupported` row at a small tier is left out that way, since
+    # a preflight that selects it is red). A chair that is never served there has
+    # a placement in its own state and no smoke receipt, and is never a candidate.
+    selected = _placed_chairs(preflight.get("placements"), models.chairs, identities)
+    profiles = {role: _profile_at_tier(recipes, identities[role], tier) for role in selected}
     unserved_states = {
-        role: profile.kind for role, profile in profiles.items() if profile.kind in UNSERVED_KINDS
+        role: UNSERVED_PLACEMENT_STATES[profile.kind]
+        for role, profile in profiles.items()
+        if profile.kind in UNSERVED_PLACEMENT_STATES
     }
-    served = {
-        role: identity for role, identity in identities.items() if role not in unserved_states
-    }
+    served = {role: identities[role] for role in selected if role not in unserved_states}
+    if not served:
+        raise QualificationRefusal("preflight placed no chair that is served at this tier")
     smoke_rows = preflight.get("smoke_receipts")
     if not isinstance(smoke_rows, list):
         raise QualificationRefusal("preflight smoke receipts are not a list")
@@ -158,11 +164,23 @@ def qualification_candidates(
         by_chair.setdefault(chair, []).append(smoke)
     if set(by_chair) != set(served):
         raise QualificationRefusal(
-            "smoke receipts do not cover exactly the configured served chairs: "
+            "smoke receipts do not cover exactly the placed served chairs: "
             f"expected={sorted(served)}, observed={sorted(by_chair)}"
         )
-    _verify_cache_receipts(preflight.get("cache_receipts"), identities)
-    _verify_placements(preflight.get("placements"), identities, tier, unserved_states)
+    _verify_cache_receipts(
+        preflight.get("cache_receipts"),
+        {
+            role: identities[role]
+            for role in selected
+            if unserved_states.get(role) != "unservable-at-tier"
+        },
+    )
+    _verify_placements(
+        preflight.get("placements"),
+        {role: identities[role] for role in selected},
+        tier,
+        unserved_states,
+    )
     _verify_subprocess_receipts(
         preflight.get("subprocess_receipts"),
         {
@@ -246,8 +264,22 @@ def qualification_candidates(
             "dtype": environment.get("dtype"),
             "golden_page_sha256": golden_page_sha256,
         },
+        "preflight_chairs": sorted(selected),
         "candidates": candidates,
     }
+
+
+def _placed_chairs(
+    raw_placements: object,
+    roster: Mapping[str, object],
+    identities: Mapping[str, ChairIdentity],
+) -> list[str]:
+    """The configured chairs the preflight placed, in roster order."""
+    placed = _rows_by_chair(raw_placements, "placements")
+    strangers = sorted(set(placed) - set(roster))
+    if strangers:
+        raise QualificationRefusal(f"placements name chairs outside the roster: {strangers}")
+    return [role for role in identities if role in placed]
 
 
 def _bootstrap_record(report: Mapping[str, object]) -> Mapping[str, object]:
@@ -480,7 +512,7 @@ def _verified_artifact_bytes(root: Path, reference: Mapping[str, object], label:
 def _verify_cache_receipts(raw_receipts: object, identities: Mapping[str, ChairIdentity]) -> None:
     receipts = _rows_by_chair(raw_receipts, "cache receipts")
     if set(receipts) != set(identities):
-        raise QualificationRefusal("cache receipts do not cover exactly the configured chairs")
+        raise QualificationRefusal("cache receipts do not cover exactly the placed chairs")
     for role, rows in receipts.items():
         if len(rows) != 1 or rows[0].get("manifest_digest") != identities[role].digest_manifest:
             raise QualificationRefusal(f"chair {role!r} cache receipt does not match its manifest")
@@ -529,7 +561,7 @@ def _verify_placements(
 ) -> None:
     placements = _rows_by_chair(raw_placements, "placements", selected=set(identities))
     if set(placements) != set(identities):
-        raise QualificationRefusal("placements do not cover exactly the configured chairs")
+        raise QualificationRefusal("placements do not cover exactly the placed chairs")
     for role, rows in placements.items():
         if (
             len(rows) != 1
