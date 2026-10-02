@@ -628,11 +628,9 @@ def test_an_engine_call_with_two_digests_for_one_response_is_refused():
 def test_a_failed_chair_shutdown_stops_the_pass_before_the_seal_is_written(
     live_run, tmp_path, monkeypatch
 ):
-    """CONTRACT.md: 'One chair, started late, stopped before the seal.' Nothing
-    else in this module pins the ordering of `service.close()` ahead of
-    `context.seal_boundary()`. This makes the shutdown itself fail and checks the seal was never reached:
-    if `close()` ran *after* the seal, the failure would either be swallowed by
-    `main`'s own `finally` or reported over an already-sealed stage."""
+    """The chair is stopped before the seal. The shutdown itself fails here, and the
+    seal must never be reached: had `close()` run after the seal, the failure would
+    be swallowed by `main`'s own `finally` or reported over an already-sealed stage."""
     root, catalogue = live_run
     endpoint = FakeEndpoint(
         served_model_id=SERVED_MODEL_ID,

@@ -50,8 +50,7 @@ The sealed Pass-C audit policy is recorded on every `page-reading` as not run.
 What the records derive rather than state -- an answer's problems, each
 entry's plan, the accounting's inputs -- is `common/page_path.py`, the one
 derivation the page-read denominator recomputes them with, and the re-ask's
-plan is `common/page_reask.py`'s. The record shapes are in CONTRACT.md, "Page
-reading".
+plan is `common/page_reask.py`'s. The record shapes are in CONTRACT.md.
 """
 
 from __future__ import annotations

@@ -1,18 +1,25 @@
 """The Perlector's page path: what its records derive, for the stage that writes them and every reader.
 
-Stage 4 (`pipeline/4_perlector/page_run.py`)
-reads each sealed page whole and publishes, per page, a `page-feed`, a
-`page-reading`, a `page-accounting` and, for each entry of a read answer, one
-`act-region` and one `perlectio.v3`. Everything those records hold that is
-derived rather than given is derived here, once:
+Stage 4 (`pipeline/4_perlector/page_run.py`) reads each sealed page whole and
+publishes, per page, a `page-feed`, a `page-reading` and a `page-accounting`
+and, for each entry of a read answer, one `act-region` and one `perlectio.v3`.
+Everything those records hold that is derived rather than given is derived
+here, once, in this order:
 
-- `answer_problems`: what holds a parsed answer whole against its feed;
+- record kinds, schemas and attempt ids;
+- why a page is not asked, the fixture's declared answers, and the refusal of
+  a real submission on a serving row that is not live;
+- an operator re-read's record and its checks;
+- the request: its text, images, digest and capacity, first reading and re-ask;
+- the reply: `read_reply` and `answer_problems`;
 - `entry_plans`: each entry's identity, region, text, doubt marks, truncation
-  and holds, for a page's first reading and for its re-ask
-  (`common/page_reask.py`), whose answer may cite only the ids it names;
+  and holds, for a first reading, a re-ask (`common/page_reask.py`) and an
+  operator re-read;
+- the feed and its witness roster (`page_feed_of`);
+- the Perlectio: page dissent and `expected_perlectio`;
 - `accounting_inputs`: every input the page accounting
-  (`common/page_accounting.py`) measures the reading against -- the feed,
-  every sealed witness of the page shown or hidden, the Designator's Surya and
+  (`common/page_accounting.py`) measures a reading against -- the feed, every
+  sealed witness of the page shown or hidden, the Designator's Surya and
   detector records, the Ink Map's runs and the entries' truncations -- and the
   records it read them from.
 
@@ -227,7 +234,7 @@ def refs_by_path(references: list[dict[str, str]]) -> list[dict[str, str]]:
     return sorted(references, key=lambda reference: reference["relative_path"])
 
 
-# --- pages not asked, and the fixture's declared answers --------------------------
+# --- pages not asked, declared fixture answers, real submissions --------------------
 
 
 def refuse_unlive_real_reading(
