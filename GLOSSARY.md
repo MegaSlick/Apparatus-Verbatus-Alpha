@@ -44,6 +44,17 @@ it, its own holds included. It is labelled "released by operator" with who, when
 and the holds it cleared. It is never available for a reading with no place on the page,
 unreadable doubt marks or no text.
 
+**correction** — a person's corrected text for a held reading, bound to the reading it
+corrects. Once the Recensor accepts it, the person's text is the established reading,
+taken as the truth with no machine doubt, labelled "corrected by a person" with who,
+when and an optional note; the model's reading stays beside it in the export as "model
+reading (original)". It is delivered and counted like any accepted act and never by
+itself makes a run partial.
+
+**operator re-read** — a person's request that the Perlector read a held page again. It
+is outside the re-ask budget, its acts are labelled "read on operator re-read", and it
+becomes the page's current reading; earlier readings stay, marked superseded.
+
 **systemic hold** — a run in which more than 1 in 50 of the pages are held after the
 Recensor. Such a run has a problem of its own, not just a few hard pages, and says so in
 its stop report, its export and its notification.
