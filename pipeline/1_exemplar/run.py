@@ -88,14 +88,45 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     sources = _submitted_sources(context.run)
     admissions = _checked_admissions(tree, context.run, sources)
 
-    sealed = submission_sealed = 0
     sealed_digests = context.run.get("sealed_config_digests")
     canary_ledger = (
         sealed_digests.get("canary-ledger") if isinstance(sealed_digests, dict) else None
     )
+    # Identity binds the admitted bytes' immutable origin, never the manifest
+    # ordinal or path, so inserting a row cannot rename a page. Every identity is
+    # derived, and every refusal below decided, before the first page is published,
+    # so a refused Exemplar seals nothing.
+    identities: dict[int, str] = {}
+    ordinal_by_page: dict[str, int] = {}
+    for ordinal, admission, _admission_ref, _blob_ref in admissions:
+        if admission["outcome"] == "refused":
+            continue
+        identity = page_id(_page_origin(admission["payload"]), {"operation": "whole"})
+        if identity in ordinal_by_page:
+            # The Door refuses byte-identical submissions before its seal, so only a
+            # tree no Door closed can reach this; every later stage works one page
+            # per submitted row.
+            raise ContractError(
+                f"submitted ordinals {ordinal_by_page[identity]} and {ordinal} derive one "
+                "page identity; one page per submitted row is the contract, so nothing was "
+                "sealed"
+            )
+        ordinal_by_page[identity] = ordinal
+        identities[ordinal] = identity
+    if not identities:
+        raise ContractError("every admitted source failed to seal")
+    if all(
+        canary_ledger is not None and sources[ordinal].get("ledger_sha256") == canary_ledger
+        for ordinal in identities
+    ):
+        # Canary pages are controls sealed beside the submission, never a
+        # substitute for it.
+        raise ContractError(
+            "only canary pages were admitted; no page of the real submission can be sealed"
+        )
+
     page_refs: list[dict[str, str]] = []
     census: list[dict[str, Any]] = []
-    sealed_ordinal_by_page: dict[str, int] = {}
     for ordinal, admission, admission_ref, blob_ref in admissions:
         if admission["outcome"] == "refused":
             # The refusal is carried forward as this stage's own outcome so every
@@ -120,19 +151,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             continue
 
         payload = admission["payload"]
-        # Identity binds the admitted bytes' immutable origin, never the manifest
-        # ordinal or path, so inserting a row cannot rename a page.
-        identity = page_id(_page_origin(payload), {"operation": "whole"})
-        if identity in sealed_ordinal_by_page:
-            # The Door refuses byte-identical submissions before its seal, so only
-            # a tree no Door closed can reach this; every later stage works one
-            # page per submitted row.
-            raise ContractError(
-                f"submitted ordinals {sealed_ordinal_by_page[identity]} and {ordinal} derive "
-                "one page identity; one page per submitted row is the contract, so nothing "
-                "was sealed"
-            )
-        sealed_ordinal_by_page[identity] = ordinal
+        identity = identities[ordinal]
         result = context.publish(
             kind="page",
             subject_id=identity,
@@ -149,18 +168,6 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 outcome="sealed",
                 source_sha256=payload["sha256"],
             )
-        )
-        sealed += 1
-        if canary_ledger is None or sources[ordinal].get("ledger_sha256") != canary_ledger:
-            submission_sealed += 1
-
-    if sealed == 0:
-        raise ContractError("every admitted source failed to seal")
-    if submission_sealed == 0:
-        # Canary pages are controls sealed beside the submission, never a
-        # substitute for it.
-        raise ContractError(
-            "only canary pages were admitted; no page of the real submission can be sealed"
         )
 
     seal_payload: dict[str, Any] = {

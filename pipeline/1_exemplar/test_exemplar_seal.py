@@ -1108,20 +1108,21 @@ def test_a_register_naming_the_run_creation_snapshot_is_accepted_unchanged(tmp_p
     assert result.returncode == 0, result.stderr
 
 
-def test_two_rows_deriving_one_page_identity_seal_no_page(tmp_path):
+def test_two_rows_deriving_one_page_identity_publish_no_exemplar_page(tmp_path):
     """One page per submitted row: a tree the Door never closed, holding two
-    byte-identical admissions, is refused rather than sealed as one page for both."""
+    byte-identical admissions, is refused before any page is published."""
     data = png(4, 3)
-    tree, _ = build_door_run(tmp_path / "runs", files={"dup-a.png": data, "dup-b.png": data})
+    tree, _ = build_door_run(
+        tmp_path / "runs", files={"a-first.png": png(3, 2), "dup-a.png": data, "dup-b.png": data}
+    )
 
     result = run_exemplar(tmp_path / "runs")
 
     assert result.returncode == EXIT_FATAL
     assert "derive one page identity" in result.stderr
     assert "dup-a.png" not in result.stderr
-    assert not [
-        entry for entry in tree.build_manifest(EXEMPLAR)["artifacts"] if entry["kind"] == "seal"
-    ]
+    kinds = {entry["kind"] for entry in tree.build_manifest(EXEMPLAR)["artifacts"]}
+    assert not kinds & {"page", "seal"}
 
 
 def _real_submission(tmp_path: Path, files: dict[str, bytes]) -> tuple[Path, list[str]]:
