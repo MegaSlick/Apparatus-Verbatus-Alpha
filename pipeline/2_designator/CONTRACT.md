@@ -19,11 +19,9 @@ pass that never reaches its seal does not seal, whether it was held or refused
 before publishing stage evidence or closed fatally after publishing it, so the
 successor correctly refuses the missing boundary.
 
-Seals are compared as the SET the stored inventory names, on both sides of the
+Seals are compared as the set the stored inventory names, on both sides of the
 boundary: the producer refuses to re-seal, and the successor refuses to read,
-when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
-so removing the latest leaves a prefix that still looks whole — and the earlier
-statement would then answer for a boundary it never witnessed.
+when any named seal is no longer on disk.
 
 ## Scope and input boundary
 
@@ -32,12 +30,9 @@ filename ledger with every Exemplar page outcome and the one self-hashed corpus
 seal. A sealed page's Door admission and pixel blob are checked again before its
 pixels are cropped. The check is deliberately before the first record is written.
 
-That reconciliation includes the merged page — two byte-identical files deriving
-one `page_id` — which this stage refuses because `page_records` keys on the
-submitted ordinal and would otherwise publish that page's evidence twice. The
-Door refuses a submission whose files would merge, naming their ordinals, before it
-seals its own boundary (`pipeline/1_exemplar/door.py::require_no_duplicate_sources`);
-this check refuses the sealed shape itself as a second line.
+That reconciliation refuses a merged page (two byte-identical files deriving one
+`page_id`), whose evidence would otherwise be published twice; the Door refuses
+such a submission first.
 
 Each chair's sealed serving row says how it answers, never a flag and never the
 ingress route; a `fixture` row answers only a synthetic run. A real submission
@@ -49,19 +44,10 @@ chair this run cannot run is refused before the first record is written.
 
 `secondary-provenance` is published exactly once per run, subject
 `"secondary-provenance"`: the resolved `secondary_proposer` chair, absent or
-configured, in the same shape Perlector's `provenance_for` uses for its own
-optional chair. Every run resolves this role for real, whether or not one is
-configured, so `common/stage.py::unaddressed_chairs` always knows to expect it.
-
-"Optional" describes the *configuration* — `config/models.toml` may leave
-`secondary_proposer` absent, and an absence is a valid, recorded decision like
-any other chair's (`AbsentChair`, not a missing entry). It does not describe
-the *resolution path*: something must ask the registry for this role on every
-run, present or absent, or `unaddressed_chairs` cannot stay accurate — a
-misspelt or newly-added role that nothing resolves is exactly the silent-drift
-shape invariant #2 forbids. `secondary_provenance()` is that resolution path,
-and it is unconditional by construction: the chair is optional, its resolution
-is not.
+configured, in the shape every chair's provenance takes. The chair is optional
+in configuration (an absence is a recorded `AbsentChair`), but the role is
+resolved on every run, so `common/stage.py::unaddressed_chairs` can tell a role
+nothing resolved from one deliberately left absent.
 
 ## `kind="detector-page"`, `kind="detector-record"`, and `kind="detector-region"`
 
@@ -72,8 +58,9 @@ nothing else: page evidence that decides nothing.
 
 **Where the detector runs.** This stage runs it itself and never launches an
 engine for it. Its catalogue row is `in-process` (the verified weights, loaded
-on the CPU by `operations/serving/detector.py`) or `fixture`; a `vllm` row is
-refused, and a `fixture` row answers only the fixture pass. The fixture
+on the CPU by `operations/serving/detector.py`, with Ultralytics imported with
+its network paths off) or `fixture`; a `vllm` row is refused, and a `fixture`
+row answers only the fixture pass. The fixture
 detector answers each page with the fixture's `[[detector_record]]` rows for
 that page (`page_ordinal`, four `corners`, `score_bp`, optional `class_id`,
 optional `scenario`): a scenario that declares rows of its own reads those
@@ -85,6 +72,11 @@ The row is checked before anything is published and the detector is loaded
 after Surya has finished, so one model is resident at a time; a resumed pass
 reuses the `secondary-provenance` it already sealed. Every sealed page is asked
 once.
+
+**What the detector is shown.** The sealed page as 8-bit RGB: an 8-bit page
+converted as `Image.convert("RGB")` converts it, a 16-bit page first scaled to
+8 bits by the display conversion its record crops take, and an `I` or `F` page
+refused by name (`detector.convert_page_to_rgb`).
 
 **The raw output.** One retained blob per page, schema
 `record-detector-output.v1`: the page, the run facts (engine, repository,
@@ -129,14 +121,14 @@ never dropped. Two detections that quantize to the same box and score share one
 geometry proposal and still keep a record and a crop each. A proposal's
 `observed_ordinals` index the retained `record-detector-output.v1` detections:
 `geometry_layer.yolo_obb` takes each detection's source ordinal, so the
-ordinals stay true when the caller passes only some detections. Two detections
-share one proposal only with the same box and score.
+ordinals stay true when the caller passes only some detections.
 
 **Determinism.** The in-process detector loads only weights whose SHA-256
 matches the pin, only under the exact package versions its catalogue row names,
-on the CPU with deterministic algorithms and one thread, so the same sealed
-page gives the same boxes. A resumed pass re-derives the same records, and a
-difference meets the RunTree's immutable publish boundary and refuses.
+on the CPU with deterministic algorithms and one thread, so that the same sealed
+page gives the same boxes. That two independent loads agree is configured, not
+yet measured. A resumed pass re-derives the records, and a difference meets the
+RunTree's immutable publish boundary and refuses.
 
 **They decide nothing.** No detector record holds or names an act. Leaving the
 chair absent publishes none of the three kinds and changes no authoritative

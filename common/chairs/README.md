@@ -2,9 +2,12 @@
 
 Every model the pipeline ever calls sits in a **chair**: a named role, resolved
 through pinned configuration (`config/models.toml`) to an exact artifact, fetched
-and verified by digest, served behind a receipt. Swapping a model is a
-configuration change plus at most a serving recipe — nothing here names a model
-in code.
+and verified by digest, served behind a receipt. Repinning a chair's model to
+another revision of the same vendor is a configuration change. Putting another
+vendor's model in a chair is not: the facts each vendor needs (its witness
+adapter, answer bound, decoding rule, wire flags and model-store layout) are
+keyed by chair or adapter in code, and `model_store.py` names the vendor
+artifacts it stores.
 
 | File | What it settles |
 |---|---|
@@ -16,7 +19,7 @@ in code.
 | `receipts.py` | what a serving receipt must carry before it is one |
 | `filesystem.py` | the bounded control-file read and the APFS name key (case and Unicode normalization folded) the other modules share |
 | `errors.py` | the closed refusal taxonomy: every refusal the package raises, each naming the chair |
-| `protocol.py` | the caller-visible shape, and the contract exerciser that names the clause a broken implementation breaks |
+| `protocol.py` | the caller-visible shape, and the contract exerciser the tests run against each implementation |
 
 ## Four things worth knowing before you change anything here
 
