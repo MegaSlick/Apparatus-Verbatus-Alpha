@@ -151,7 +151,7 @@ _REVIEW_ITEM_FIELDS: Final = frozenset(
 )
 _SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v5"
 _SQLITE_USER_VERSION: Final = 5
-# The reading a page-read act came from: its page's first reading, the one
+# The reading an act came from: its page's first reading, the one
 # re-ask of its page, or an operator re-read a person's page re-ask asked for,
 # which superseded the page's earlier readings. A row standing for a page with
 # no entry names none.
@@ -947,8 +947,8 @@ def _extract_archive_members(archive: ZipFile, root_fd: int, names: list[str]) -
 # A run can be `DELIVERED` and `complete` over instruments that never measured.
 # Every bundle names them, with each status derived from the run's
 # own records so a run that measured reads differently from one that did not.
-NOT_MEASURED_SCHEMA: Final = "armarium-not-measured.v1"
-NOT_MEASURED_BASIS_SCHEMA: Final = "armarium-not-measured-basis.v1"
+NOT_MEASURED_SCHEMA: Final = "armarium-not-measured.v2"
+NOT_MEASURED_BASIS_SCHEMA: Final = "armarium-not-measured-basis.v2"
 # Every instrument is emitted on every bundle, so an absent row never reads as a
 # measured one.
 _PERLECTOR_UNCERTAIN_SPANS: Final = "perlector-uncertain-spans"
@@ -956,11 +956,15 @@ _GEOMETRY_CALIBRATION: Final = "designator-geometry-calibration"
 # The page accounting's own thresholds, and Pass C over each page reading.
 _PAGE_ACCOUNTING_THRESHOLDS: Final = "page-accounting-thresholds"
 _PASS_C: Final = "perlector-pass-c"
+# Each delivered act's dissent against its witnesses, which a comparison past the
+# sealed step budget or the character-pair bound records as `compared: "unknown"`.
+_COMPARISON_BOUNDS: Final = "comparison-bounds"
 NOT_MEASURED_INSTRUMENTS: Final = (
     _PERLECTOR_UNCERTAIN_SPANS,
     _GEOMETRY_CALIBRATION,
     _PAGE_ACCOUNTING_THRESHOLDS,
     _PASS_C,
+    _COMPARISON_BOUNDS,
 )
 
 
@@ -985,6 +989,15 @@ _NOT_MEASURED_DETAIL_FIELDS: Final = {
         {"policy_sha256", "thresholds", "calibrated_for_this_corpus", "sample_count"}
     ),
     _PASS_C: frozenset({"pages_read", "pages_audit_not_run", "sealed_audit_round_cap"}),
+    _COMPARISON_BOUNDS: frozenset(
+        {
+            "sealed_max_comparison_steps",
+            "max_comparison_character_pairs",
+            "acts_delivered",
+            "acts_with_unmeasured_comparison",
+            "unmeasured_act_ids",
+        }
+    ),
 }
 _GEOMETRY_CALIBRATION_ROW_FIELDS: Final = frozenset(
     {"configuration", "calibrated_for_this_corpus", "sample_count"}
@@ -1007,6 +1020,11 @@ _NOT_MEASURED_RECORDED_IN: Final = {
     _PASS_C: (
         "each page's `page-reading` record, field `audit`, and the sealed Perlector audit "
         "policy's `round_cap`, in the retained run"
+    ),
+    _COMPARISON_BOUNDS: (
+        'each delivered act\'s `perlectio` record, field `dissent`, rows `compared: "unknown"`, '
+        "and the sealed alignment configuration's `[dissent] max_comparison_steps`, in the "
+        "retained run"
     ),
 }
 # In canonical order. `perlector-protocol` is not Designator geometry, but its
@@ -1188,6 +1206,23 @@ def _validate_not_measured_detail(
             _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
         if detail["pages_audit_not_run"] > detail["pages_read"]:
             raise SchemaRefusal(f"{subject} names more unaudited pages than pages read")
+    elif instrument == _COMPARISON_BOUNDS:
+        for field in (
+            "sealed_max_comparison_steps",
+            "max_comparison_character_pairs",
+            "acts_delivered",
+            "acts_with_unmeasured_comparison",
+        ):
+            _require_non_negative_integer(detail[field], subject=f"{subject} {field}")
+        act_ids = _require_distinct_strings(
+            detail["unmeasured_act_ids"], subject=f"{subject} unmeasured_act_ids"
+        )
+        if act_ids != sorted(act_ids) or len(act_ids) != detail["acts_with_unmeasured_comparison"]:
+            raise SchemaRefusal(
+                f"{subject} does not name, in order, exactly the acts it counts as unmeasured"
+            )
+        if detail["acts_with_unmeasured_comparison"] > detail["acts_delivered"]:
+            raise SchemaRefusal(f"{subject} names more unmeasured acts than delivered acts")
     elif instrument == _GEOMETRY_CALIBRATION:
         configurations = detail["configurations"]
         if not isinstance(configurations, list) or len(configurations) != len(
@@ -1543,7 +1578,7 @@ def _verify_coniector_layer(
     elif "jsonl" in formats.formats:
         shown.append([])
     if "text-bundle" in formats.formats:
-        records = _text_bundle_records(root)
+        records = _text_bundle_records(root, sources["pages"])
         literals = {act_id: (record.literal,) for act_id, record in records.items()}
         keys = {act_id: record.heading_key for act_id, record in records.items()}
         corrected = {
@@ -2197,6 +2232,8 @@ def _not_measured_status(instrument: str, detail: dict[str, Any]) -> str:
         if detail["pages_audit_not_run"] == detail["pages_read"]:
             return "declared-unproduced"
         return "not-measured"
+    if instrument == _COMPARISON_BOUNDS:
+        return "measured" if detail["acts_with_unmeasured_comparison"] == 0 else "not-measured"
     raise SchemaRefusal(f"no not-measured status rule exists for {instrument!r}")
 
 
@@ -2300,6 +2337,20 @@ def _validate_projection(projection: ArmariumProjection) -> None:
         raise SchemaRefusal(
             "an Armarium projection's Perlector uncertainty basis does not exactly reconcile "
             "with its delivered act projection"
+        )
+    bounds = not_measured_basis[_COMPARISON_BOUNDS]
+    delivered_ids = {
+        act["act_id"]
+        for act in projection.acts
+        if act["category"] == ArmariumCategory.DELIVERED.value
+    }
+    if (
+        bounds["acts_delivered"] != delivered_counts["acts_delivered"]
+        or not set(bounds["unmeasured_act_ids"]) <= delivered_ids
+    ):
+        raise SchemaRefusal(
+            "an Armarium projection's comparison-bounds basis does not count exactly its "
+            "delivered acts, or names an unmeasured act it does not deliver"
         )
     # The run's verdict is computed from the basis, so its damage record must
     # match the delivered acts key for key.
@@ -2570,7 +2621,7 @@ def _delivered_doubt_counts(acts: tuple[dict[str, Any], ...]) -> dict[str, int]:
     """The Perlector uncertainty basis's four counts, taken from the delivered acts.
 
     Counted by state, never by subtraction, so a broken doubt report is not
-    counted as "no doubt channel". Any other state (the Recensor's `malformed`,
+    counted as a person's correction (`not-assessed`). Any other state (the Recensor's `malformed`,
     for one) is refused: the Recensor holds those, so a delivered one means the
     projection did not come from a run.
     """
@@ -2593,8 +2644,8 @@ def _delivered_doubt_counts(acts: tuple[dict[str, Any], ...]) -> dict[str, int]:
         else:
             raise SchemaRefusal(
                 f"an Armarium projection delivers act {act.get('act_key')!r} whose sealed doubt "
-                f"assessment is {state!r}; only a reading that was assessed, or one whose reader "
-                "had no channel, is deliverable -- a doubt report that could not be anchored is "
+                f"assessment is {state!r}; only a reading that was assessed, or one a person "
+                "corrected, is deliverable -- a doubt report that could not be anchored is "
                 "held for review, never counted"
             )
     return counts
@@ -3847,7 +3898,7 @@ class _TextBundleRecord(NamedTuple):
     text_status: str
     annotations: list[Any]
     heading_key: str
-    # A page-read act's reading, on the line after its act-id; `None` without one.
+    # An act's reading, on the line after its act-id; `None` without one.
     reading: str | None = None
 
 
@@ -4808,11 +4859,9 @@ def _verify_exact_product_members(
     expected = {EXPORT_MANIFEST_NAME, "sources.json", *selected}
     if "jsonl" in formats.formats:
         expected.add(OTHER_READINGS_MEMBER)
-    # Written only when a delivered act carries a reconstruction; its rows are
+    # Written exactly when `sources.json` records a reconstruction; its rows are
     # verified whole (`_verify_coniector_layer`).
-    if "jsonl" in formats.formats and (
-        CONIECTOR_MEMBER in actual_names or sources.get("reconstructions")
-    ):
+    if "jsonl" in formats.formats and sources.get("reconstructions"):
         expected.add(CONIECTOR_MEMBER)
     # Written exactly when a delivered reading carries an operator row
     # (`_verify_operator_layer`).
@@ -5329,10 +5378,26 @@ def _verify_page_layers(
         raise SchemaRefusal("the exported re-ask claim does not follow from the act readings")
     held_codes = {row["ordinal"]: row["hold_codes"] for row in page_rows if row["hold_codes"]}
     held = set(held_codes) - _operator_released_pages(sources, manifest, held_codes)
-    pass_c = {entry["instrument"]: entry["detail"] for entry in claims["not_measured"]["entries"]}
-    if pass_c[_PASS_C]["pages_read"] != len(sealed):
+    not_measured = {
+        entry["instrument"]: entry["detail"] for entry in claims["not_measured"]["entries"]
+    }
+    if not_measured[_PASS_C]["pages_read"] != len(sealed):
         raise SchemaRefusal(
             "the Pass C claim does not count exactly the package's real sealed pages as read"
+        )
+    delivered_ids = {
+        act_id
+        for act_id, category in _manifest_act_categories(manifest).items()
+        if category == ArmariumCategory.DELIVERED.value
+    }
+    bounds = not_measured[_COMPARISON_BOUNDS]
+    if bounds["acts_delivered"] != len(delivered_ids):
+        raise SchemaRefusal(
+            "the comparison-bounds claim does not count exactly the package's delivered acts"
+        )
+    if not set(bounds["unmeasured_act_ids"]) <= delivered_ids:
+        raise SchemaRefusal(
+            "the comparison-bounds claim names an unmeasured act the package does not deliver"
         )
     # Each delivered act's pages are where its cited regions were cut, and the
     # aggregate's page attribution must name every one of them.
@@ -5721,7 +5786,7 @@ def _act_reading_sources(sources: dict[str, Any], act_keys: dict[str, str]) -> d
 def _verify_product_readings(
     records: dict[str, dict[str, Any]], readings: dict[str, Any], *, subject: str
 ) -> None:
-    """Every act row names the reading its source act came from, and none on the act path."""
+    """Every act row names the reading its source act came from."""
     if any(record["reading"] != readings.get(act_id) for act_id, record in records.items()):
         raise SchemaRefusal(f"the {subject} does not name the reading each act came from")
 

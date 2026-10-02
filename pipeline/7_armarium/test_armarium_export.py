@@ -195,6 +195,13 @@ def _test_not_measured_basis(**overrides):
             "pages_audit_not_run": 1,
             "sealed_audit_round_cap": 1,
         },
+        "comparison-bounds": {
+            "sealed_max_comparison_steps": 1_000,
+            "max_comparison_character_pairs": 100_000_000,
+            "acts_delivered": 1,
+            "acts_with_unmeasured_comparison": 0,
+            "unmeasured_act_ids": [],
+        },
     }
     basis.update(overrides)
     return basis
@@ -228,6 +235,7 @@ def _basis_for_acts(acts, *, sealed_pages=1):
         # rather than the partition rule one step earlier.
         "acts_not_assessed": len(delivered) - assessed,
     }
+    basis["comparison-bounds"]["acts_delivered"] = len(delivered)
     return basis
 
 
@@ -1733,6 +1741,28 @@ def test_unselected_format_members_cannot_hide_inside_a_self_consistent_bundle(t
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
+def test_a_reconstruction_member_with_no_recorded_reconstruction_is_refused(tmp_path):
+    """The writer adds `coniector.jsonl` only when `sources.json` records a
+    reconstruction, so an empty one planted beside none is a member nothing
+    promised."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    assert "reconstructions" not in json.loads(members["sources.json"])
+    members["coniector.jsonl"] = b""
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["members"] = sorted(
+        [
+            *manifest["members"],
+            {"bytes": 0, "path": "coniector.jsonl", "sha256": digest_bytes(b"")},
+        ],
+        key=lambda row: row["path"],
+    )
+    _refresh_manifest(members, manifest)
+
+    with pytest.raises(SchemaRefusal, match=r"selected formats.*unexpected=\['coniector.jsonl'\]"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
 @pytest.mark.parametrize("embed_pixels", [False, True])
 def test_sealed_source_page_cannot_lose_its_pixel_reference(embed_pixels, tmp_path):
     bundle = build_armarium_bundle(
@@ -2477,11 +2507,11 @@ def test_bundle_bytes_are_deterministic_for_the_same_sealed_projection():
 
 
 def test_the_terminal_ledger_partitions_sources_pages_and_acts_totally(tmp_path):
-    """Spec 11 test 1: a total partition, not an act-only one.
+    """A total partition, not an act-only one.
 
     One submitted source, one sealed page and two acts is four units, every one of
     them carrying a closed category. The counts are checked to sum because a partition
-    that misses a unit is invariant #10's imbalance and its failure mode is silence.
+    that misses a unit loses it silently.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     ledger = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])["claims"]["terminal_ledger"]
@@ -3504,6 +3534,61 @@ def test_pass_c_is_declared_unproduced_and_measured_when_it_runs():
     assert status(2) == "declared-unproduced"
     assert status(0) == "measured"
     assert status(1) == "not-measured"
+
+
+def test_comparison_bounds_are_measured_only_when_no_delivered_comparison_stopped():
+    """A delivered act whose dissent stopped on the step budget or the pair bound
+    was delivered without that witness's departures measured; one such act makes
+    the instrument `not-measured`."""
+
+    def status(unmeasured: int) -> str:
+        detail = {
+            "sealed_max_comparison_steps": 1_000,
+            "max_comparison_character_pairs": 100_000_000,
+            "acts_delivered": 2,
+            "acts_with_unmeasured_comparison": unmeasured,
+            "unmeasured_act_ids": [f"act-{n}" for n in range(unmeasured)],
+        }
+        return _not_measured_status("comparison-bounds", detail)
+
+    assert _entry(_block(_projection()), "comparison-bounds")["status"] == "measured"
+    assert status(0) == "measured"
+    assert status(1) == "not-measured"
+    assert status(2) == "not-measured"
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    [
+        (
+            {"acts_with_unmeasured_comparison": 2, "unmeasured_act_ids": ["act-1", "act-2"]},
+            "names more unmeasured acts than delivered acts",
+        ),
+        ({"acts_delivered": 2}, "comparison-bounds basis does not count exactly"),
+        (
+            {"acts_with_unmeasured_comparison": 1},
+            "does not name, in order, exactly the acts it counts",
+        ),
+        (
+            {"acts_with_unmeasured_comparison": 2, "unmeasured_act_ids": ["act-2", "act-1"]},
+            "does not name, in order, exactly the acts it counts",
+        ),
+        (
+            {"acts_with_unmeasured_comparison": 1, "unmeasured_act_ids": ["act-elsewhere"]},
+            "names an unmeasured act it does not deliver",
+        ),
+    ],
+)
+def test_projection_refuses_a_comparison_bounds_basis_that_misstates_its_acts(change, refusal):
+    projection = _projection()
+    basis = _basis_for_acts(projection.acts)
+    basis["comparison-bounds"].update(change)
+    with pytest.raises(SchemaRefusal, match=refusal):
+        build_armarium_bundle(
+            replace(projection, not_measured_basis=basis),
+            _formats(embed_pixels=False),
+            _source_bytes,
+        )
 
 
 def test_the_uncertainty_instrument_measures_the_readers_that_were_actually_asked():

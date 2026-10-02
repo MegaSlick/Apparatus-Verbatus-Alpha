@@ -80,11 +80,11 @@ from common.page_accounting import (
     normalized_text,
 )
 from common.page_accounting import SCHEMA as PAGE_ACCOUNTING_SCHEMA
+from common.page_edges import OPERATOR_REREAD_FIRST
 from common.page_feed import SCHEMA as PAGE_FEED_SCHEMA
 from common.page_path import (
     ACT_REGION_SCHEMA,
     OPERATOR_REREAD_FIELD,
-    OPERATOR_REREAD_FIRST,
     PAGE_READING_SCHEMA,
     PERLECTIO_SCHEMA,
 )

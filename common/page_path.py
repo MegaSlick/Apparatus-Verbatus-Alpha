@@ -29,7 +29,7 @@ import re
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
-from common import dissent, page_accounting, page_answer, page_render, truncation
+from common import dissent, page_accounting, page_answer, page_edges, page_render, truncation
 from common import reading_annotations as annotations
 from common.alignment import bracket_marker_view
 from common.background import (
@@ -46,7 +46,6 @@ from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.serving import reading_stop_reason
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
 from common.decoding import chair_decoding, engine_effective_sampling, recorded_wire_decimals
-from common.page_edges import FIRST_READING, OPERATOR_REREAD_FIRST, REASK_READING
 from common.page_witness_units import DAI, READ_OUTCOME, WITNESS_LETTERS, witness_reading
 from common.request_capacity import page_request_capacity
 from common.residual_ink import (
@@ -108,7 +107,7 @@ PAGE_PATH_KINDS: Final = frozenset(
 PAGE_READ_OPERATION: Final = "page-read"
 # The machine's own readings of a page: the first and its one re-ask. An operator
 # re-read is numbered after both (`is_operator_reread`, "an operator re-read" below).
-READING_ORDINALS: Final = (FIRST_READING, REASK_READING)
+READING_ORDINALS: Final = (page_edges.FIRST_READING, page_edges.REASK_READING)
 # The `page-reading` field only an operator re-read carries (`operator_reread_record`).
 OPERATOR_REREAD_FIELD: Final = "operator_reread"
 ACT_REGION_OPERATION: Final = "reading-region"
@@ -176,7 +175,7 @@ PAGE_TESTIMONIUM_KIND: Final = "page-testimonium"
 
 def is_operator_reread(ordinal: Any) -> bool:
     """Whether a page reading's ordinal is an operator re-read's (3 or more)."""
-    return is_plain_int(ordinal) and ordinal >= OPERATOR_REREAD_FIRST
+    return is_plain_int(ordinal) and ordinal >= page_edges.OPERATOR_REREAD_FIRST
 
 
 def is_whole_page_reading(ordinal: Any) -> bool:
@@ -185,7 +184,7 @@ def is_whole_page_reading(ordinal: Any) -> bool:
     A re-ask (2) was asked about named ids alone, so its entries never set a
     page's edges.
     """
-    return ordinal == FIRST_READING or is_operator_reread(ordinal)
+    return ordinal == page_edges.FIRST_READING or is_operator_reread(ordinal)
 
 
 def page_reading_attempt(page_id: str, ordinal: int) -> str:
@@ -193,7 +192,7 @@ def page_reading_attempt(page_id: str, ordinal: int) -> str:
     if ordinal not in READING_ORDINALS and not is_operator_reread(ordinal):
         raise ContractError(
             "a page reading is attempt 1, its re-ask 2, or an operator re-read from "
-            f"{OPERATOR_REREAD_FIRST} on, never {ordinal!r}"
+            f"{page_edges.OPERATOR_REREAD_FIRST} on, never {ordinal!r}"
         )
     return attempt_id(page_id, PAGE_READ_OPERATION, ordinal)
 
@@ -713,7 +712,7 @@ def entry_plans(
     stop_reason: str | None,
     truncation_policy: Mapping[str, Any],
     accounting_policy: page_accounting.PageAccountingPolicy,
-    attempt: int = FIRST_READING,
+    attempt: int = page_edges.FIRST_READING,
     named: list[str] | None = None,
     first_count: int = 0,
 ) -> list[dict[str, Any]]:
@@ -739,9 +738,9 @@ def entry_plans(
     here, before any act record exists.
     """
     page_pixels = feed["page_size"]["w"] * feed["page_size"]["h"]
-    if (attempt == REASK_READING) != (named is not None):
+    if (attempt == page_edges.REASK_READING) != (named is not None):
         raise ContractError("a re-ask's entries are planned with its named ids, and only its")
-    if first_count and attempt != REASK_READING:
+    if first_count and attempt != page_edges.REASK_READING:
         raise ContractError("only a re-ask's entries are numbered on after a first reading's")
     reading_attempt = page_reading_attempt(page_id, attempt)
     autopsia = feed["page_render"] is not None
@@ -1216,7 +1215,7 @@ def is_perlectio_field_set(payload: Mapping[str, Any]) -> bool:
         return True
     return (
         fields == PERLECTIO_FIELDS | RECOVERED_FIELDS
-        and payload["reading_attempt"] == REASK_READING
+        and payload["reading_attempt"] == page_edges.REASK_READING
     )
 
 
@@ -1227,9 +1226,9 @@ def recovered_fields(plan: Mapping[str, Any]) -> dict[str, int]:
     so a recovered entry is always told from a first reading's; its `n` is
     the page accounting's.
     """
-    if plan["reading_attempt"] != REASK_READING:
+    if plan["reading_attempt"] != page_edges.REASK_READING:
         return {}
-    return {"reading_attempt": REASK_READING, "reading_n": plan["reading_n"]}
+    return {"reading_attempt": page_edges.REASK_READING, "reading_n": plan["reading_n"]}
 
 
 # --- the page accounting's inputs -----------------------------------------------
@@ -1741,7 +1740,7 @@ def accounting_inputs(
     record_detector_configured: bool,
     fixture_placeholders: bool,
     reask: Mapping[str, Any] | None = None,
-    attempt: int = FIRST_READING,
+    attempt: int = page_edges.FIRST_READING,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """What the page accounting measures one page reading against, and the records it came from.
 

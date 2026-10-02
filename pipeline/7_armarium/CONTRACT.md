@@ -530,8 +530,15 @@ than left out): `perlector-uncertain-spans` (`config/perlector_audit.toml`'s
 configurations and of `config/perlector_protocol.toml`'s `[truncation]` table),
 then `page-accounting-thresholds` (every threshold of the sealed
 `config/page_accounting.toml`; all are starting values, so `not-measured`),
-and `perlector-pass-c` (from each real sealed page's reading `audit`, `pages_read`
-bound to that page count; no reading runs Pass C, so `declared-unproduced`).
+`perlector-pass-c` (from each real sealed page's reading `audit`, `pages_read`
+bound to that page count; no reading runs Pass C, so `declared-unproduced`), and
+`comparison-bounds` (each delivered act's Perlectio `dissent` rows beside the sealed
+`config/alignment.toml` `[dissent] max_comparison_steps` and the dissent module's
+character-pair bound; `acts_delivered` bound to the delivered acts, and
+`unmeasured_act_ids` the sorted delivered acts with a comparison recorded
+`compared: "unknown"`, their count `acts_with_unmeasured_comparison`). `measured` means
+only that no delivered act's comparison stopped; it says nothing about whether the
+bounds are calibrated for this corpus.
 
 **Formats.** `sources.json` (`armarium-sources.v5`) carries `other_outcomes`,
 `other_citations`, `page_accounting` and `act_readings` (`{act_id, act_key,

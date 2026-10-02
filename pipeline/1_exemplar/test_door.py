@@ -4672,15 +4672,14 @@ def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(
     assert read_sealed_toml(edited, "triage modes")[1] in str(refusal.value)
 
 
-def test_a_run_sealed_before_the_repair_is_refused_by_name_not_by_key_error():
+def test_an_authority_without_the_triage_modes_seal_is_refused_by_name():
     """A run authority missing the modes seal names the binding fault.
 
     Missing bindings and changed files require distinct operator actions, so this
     path must not collapse into a bare KeyError or the drift refusal.
     """
-    pre_repair_authority = {
+    authority_without_modes = {
         "sealed_config_digests": {
-            "designator-padding": "a" * 64,
             "designator-geometry": "b" * 64,
             "alignment": "c" * 64,
             "corpus-frame-shard": "d" * 64,
@@ -4691,7 +4690,7 @@ def test_a_run_sealed_before_the_repair_is_refused_by_name_not_by_key_error():
         },
         SEAL_METHOD_FIELD: SEAL_METHOD,
     }
-    sealed = run_sealed_config_digests(pre_repair_authority)
+    sealed = run_sealed_config_digests(authority_without_modes)
     assert "triage-modes" not in sealed
     with pytest.raises(ContractError, match="sealed no digest for the triage modes") as refusal:
         require_triage_modes(sealed)
@@ -4810,14 +4809,8 @@ def test_the_real_door_seals_and_proves_triage_modes_on_a_run_that_carries_geome
     assert "triage_document_digests" not in run
 
 
-def test_a_door_with_the_pre_repair_missing_binding_refuses_before_it_expands_geometry(
-    tmp_path, monkeypatch
-):
-    """A missing modes seal refuses before triage rows can shape any source.
-
-    Stripping the current binding provides the invalid authority without reproducing
-    an obsolete Door implementation.
-    """
+def test_a_door_missing_the_modes_binding_refuses_before_it_expands_geometry(tmp_path, monkeypatch):
+    """A missing modes seal refuses before triage rows can shape any source."""
     approved, source, _policy, policy_path, ledger_path, ledger = _approved_submission(
         tmp_path, {"FS-1234.png": png(4, 3)}
     )

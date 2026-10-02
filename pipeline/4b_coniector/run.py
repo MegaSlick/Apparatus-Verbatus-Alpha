@@ -32,7 +32,7 @@ from common.contracts.canonical import text_sha256  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.stages import CONIECTOR  # noqa: E402
 from common.decoding import load_decoding_policy, reconstructor_max_tokens  # noqa: E402
-from common.reconstruction import MODE_ON, load_reconstruction_policy  # noqa: E402
+from common.reconstruction import load_reconstruction_policy  # noqa: E402
 from common.reconstruction_prompt import PROMPT_VERSION, shown_keys  # noqa: E402
 from common.reconstruction_records import (  # noqa: E402
     CALL_FAILED,
@@ -394,7 +394,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     replanned = _publish_plan(context, plan)
     chair = None
     try:
-        if plan["calls"] and policy.mode == MODE_ON:
+        if plan["calls"]:
             chair = _Chair(
                 context, decoding, decoding_sha256, serving_factory or stage_chair_client
             )

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from common import page_path
+from common import page_edges, page_path
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.stages import ARCHETYPUS, PERLECTOR, RECENSOR
 from common.exemplar_boundary import verify_reading_region_lineage
@@ -338,7 +338,7 @@ def test_the_constructor_establishes_a_reading_the_re_ask_recovered(happy, tmp_p
     context, _rows, establish = _constructor(happy, tmp_path)
     context.tree = _FeedTree(
         context.tree,
-        lambda payload: payload.update(reading_attempt=page_path.REASK_READING, reading_n=1),
+        lambda payload: payload.update(reading_attempt=page_edges.REASK_READING, reading_n=1),
         kind=page_path.PERLECTIO_KIND,
     )
     record, _inputs = establish("p1:2")

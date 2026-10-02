@@ -40,6 +40,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Final
 
+from common import page_edges
 from common.contracts.approval import PAGE_SCOPE, UNIT_SCOPE
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
@@ -70,16 +71,15 @@ from common.page_review import (
     REVIEW_DECISIONS_SCHEMA,
     REVIEW_DECISIONS_SUBJECT,
     REVIEWED_PAGE_REVIEW_FIELDS,
-    act_entries_by_page,
     current_link_records,
     current_review_decisions,
     link_generations,
     of_superseded_reading,
     operator_correction,
     override_refusal,
-    page_breaks,
     require_establishable,
     reviewed_rows,
+    run_page_breaks,
     superseded_readings,
 )
 from common.page_testimonia import (
@@ -100,9 +100,9 @@ from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_CLASS,
     PAGE_BLANK_HOLD,
-    exemplar_page_ids,
     latest_attempt,
     reading_denominator,
+    real_pages,
 )
 
 # The kind of the Archetypus record that establishes one reading.
@@ -340,15 +340,16 @@ def _flags(act: dict) -> list[str]:
 def continuation_off_edge(acts: list[dict]) -> dict[str, list[str]]:
     """Each `act` entry whose continuation flag is not at its page's act edge, flags named.
 
-    A page's act edge is its last whole-page `act` entry (for running on)
-    and its first (for running on from before), `act_entries_by_page`'s; the
-    `other` entries around them, a catchword for one, and an entry the
-    re-ask recovered do not move it.
+    A page's act edge is its last whole-page `act` entry (for running on) and its
+    first (for running on from before), in answer order. The `other` entries
+    around them, a catchword for one, do not move it, and neither does an entry
+    the re-ask recovered: it was asked about ids alone, with no continuation flag
+    allowed, so its place in page order is not established.
     """
     found: dict[str, list[str]] = {}
-    for page in act_entries_by_page(acts).values():
-        first = min(act["n"] for act in page)
-        last = max(act["n"] for act in page)
+    whole_page = page_edges.whole_page_entries(acts)
+    for page in page_edges.act_entries_by_page(whole_page).values():
+        first, last = page[0]["n"], page[-1]["n"]
         for act in page:
             flags = []
             if act["continues_from_previous_page"] is True and act["n"] != first:
@@ -895,9 +896,11 @@ def review_pages(
     decided, decisions = decide_reviews(context, planned)
     ordinal = None if decisions is None else _review_decisions_ordinal(context, decisions)
     by_id = {act["act_id"]: act for act in acts}
+    # A null side's evidence is its page's reading, and a canary page is no side.
+    real = real_pages(context.run, pages)
     links = [
-        (subject, payload, link_inputs(payload, by_id, pages))
-        for subject, payload in page_breaks(exemplar_page_ids(context), acts)
+        (subject, payload, link_inputs(payload, by_id, real))
+        for subject, payload in run_page_breaks(context, acts)
     ]
 
     held = 0
@@ -1180,7 +1183,9 @@ def write_reading_receipt(
                 "coverage": coverage,
             }
         )
-    links = current_links(context, page_breaks(exemplar_page_ids(context), acts), by_id, pages)
+    links = current_links(
+        context, run_page_breaks(context, acts), by_id, real_pages(context.run, pages)
+    )
     receipt = build_recensor_reading_receipt(
         run_id=context.tree.run_id,
         config_digest=context.run["config_digest"],

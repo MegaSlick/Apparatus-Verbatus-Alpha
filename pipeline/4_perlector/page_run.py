@@ -80,15 +80,14 @@ from common.contracts.identities import (
 from common.contracts.stages import DESIGNATOR, EXEMPLAR, INK_MAP, PERLECTOR
 from common.exemplar_boundary import cut_exemplar_crop, read_sealed_page
 from common.imaging import dimensions
+from common.page_edges import FIRST_READING, OPERATOR_REREAD_FIRST, REASK_READING
 from common.page_path import (
     ACT_REGION_KIND,
     ACT_REGION_SCHEMA,
     CALL_FAILED,
-    FIRST_READING,
     HELD,
     NOT_RUN,
     OPERATOR_REREAD_FIELD,
-    OPERATOR_REREAD_FIRST,
     PAGE_ACCOUNTING_KIND,
     PAGE_FEED_KIND,
     PAGE_NOT_SEALED,
@@ -97,7 +96,6 @@ from common.page_path import (
     PARSED,
     PERLECTIO_KIND,
     READ,
-    REASK_READING,
     REFUSED_CAPACITY,
     RETIRED_PAGE_READING_SCHEMAS,
 )

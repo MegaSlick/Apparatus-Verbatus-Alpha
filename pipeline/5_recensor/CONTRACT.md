@@ -113,6 +113,9 @@ ids alone, may set no continuation flag, and its place in page order is not
 established, so it never moves a page's act edge, is never a side of a link (a link
 naming one is refused) and never holds `continuation-off-page-edge`, and a
 first-reading entry at the edge stays at the edge whatever the re-ask added after it.
+Breaks are taken over the run's real pages only: a canary page, which the Door appends
+after them, is never a side of a link, so the last real page's flag reads as it would
+with no canary beside it (`common/page_review.py::run_page_breaks`).
 When either side's
 flag says the text runs across, one `kind="continuation-link"` (subject
 `page-break:<p>:<p+1>`, attempt `attempt_id(subject, "link", n)`) records it. A pass

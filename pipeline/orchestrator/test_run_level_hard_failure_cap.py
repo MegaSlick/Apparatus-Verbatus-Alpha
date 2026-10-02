@@ -384,8 +384,8 @@ def test_a_hard_failure_policy_swapped_between_orchestrations_is_refused_on_resu
     )
     assert first.returncode == 0, first.stderr
 
-    # The threshold is ruled and `RULED_THRESHOLD` refuses to move either way, so
-    # the swap moves one [[kind]] to the end: a value change the resolved policy
+    # The threshold is fixed at `HARD_FAILURE_THRESHOLD` and refuses any other value,
+    # so the swap moves one [[kind]] to the end: a value change the resolved policy
     # sorts away, which only this file's seal can attribute.
     first_kind = '[[kind]]\nstage = "perlector"\noutcome = "failed"\n'
     shipped = _shipped_hard_failure()

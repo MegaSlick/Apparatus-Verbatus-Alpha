@@ -193,8 +193,8 @@ def _uncertainty_lines(
 
     The state line always comes first, so an empty layer is never displayed
     as a reader's confidence; spans and gaps print whenever there are any,
-    whatever the state, since a chair whose prompt has no doubt grammar can
-    still carry real published spans under `not-assessed`.
+    whatever the state, so a layer that carries them under a state other than
+    `assessed` is shown as published beside that state, never hidden.
     """
     if assessment is not None and not isinstance(assessment, dict):
         raise ProjectionShapeError(

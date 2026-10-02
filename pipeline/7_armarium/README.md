@@ -22,7 +22,8 @@ lead's ARCHITECTURE approval, and every export states it as not produced.
 Every bundle also carries `claims.not_measured`: the instruments this build does
 not fully measure, each with what this run actually recorded for it — the reader's
 doubt assessment, uncalibrated geometry and truncation thresholds, the page
-accounting's starting thresholds, and the audit pass no reading runs. The block is
+accounting's starting thresholds, the audit pass no reading runs, and each delivered
+act whose dissent comparison with a witness stopped on its bound. The block is
 required by the export schema and derived from the run's own records, so a bundle
 can neither omit its caveats nor report the same ones whatever happened.
 

@@ -109,7 +109,7 @@ class _RecordingContext:
             review_config=config / "review.toml",
         )
         self.perlector_audit_config_path = config / "perlector_audit.toml"
-        # Read for the sealed reading unit, which decides the act or page export.
+        # Read for the [truncation] provenance the not-measured geometry row discloses.
         self.perlector_protocol_config_path = self.args.perlector_protocol_config
         # Mirror the real context's named point-of-use seals.  The terminal
         # paths read every file named below; recording their digests here makes the
