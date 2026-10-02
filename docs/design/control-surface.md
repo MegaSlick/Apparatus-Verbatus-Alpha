@@ -56,7 +56,9 @@ pod side. Everything below that reads them says so and waits for that phase.
 ## How every command answers
 
 With `--json`, a command prints one object to standard output and nothing else. Progress
-lines and warnings for a person go to standard error.
+lines and warnings for a person go to standard error. The one exception is `watch
+--json`, which prints JSON Lines: one progress object per change, and the result
+envelope below as its last line.
 
 ```json
 {
@@ -135,8 +137,10 @@ Follows a pod run from the laptop without SSH.
   took, the liveness age, and the run's state. Once phase 0 exists it also shows the
   estimate. The estimate is for the current stage only and is labelled "this stage
   finishes about …", never as the run's finish.
-- **Output:** with `--json`, one JSON line per change, then a result envelope as the last
-  line with the run's state and `next_action`.
+- **Output:** with `--json`, JSON Lines (the exception named under "How every command
+  answers"): one `verbatus.watch.v1` object per change, then the result envelope as the
+  last line with the run's state and `next_action`. A client reads lines until one has
+  `"schema": "verbatus.result.v1"`.
 - **Exit:** the state's exit: 0 complete, 3 held, partial or paused, 4 halted, 2 failed or
   never-started, 6 interrupted (the writer vanished and nobody asked it to), and 0 with
   state `running` on a timeout.
@@ -155,7 +159,9 @@ Later, `watch` also follows a local run and reads the event log (see "Events").
   checks for a pause request there and exits 9. Never stops a stage half-way.
 - **`resume --run-id`:** `start --from <stage>` with the first unsealed stage worked out
   for you, under the run's recorded settings. Never clears a hold (that is `decide` or
-  `advance`).
+  `advance`). For a pod run it never trusts the liveness age alone, since that compares
+  two clocks: while the pod still exists it refuses and points at `pod stop`, so a skewed
+  clock cannot start a second writer.
 
 ### `verbatus inspect`
 
@@ -277,7 +283,11 @@ id>.jsonl` locally, `events/<run id>.jsonl` at the volume's root for a pod run.
 tree on each tick, the orchestrator's exit, a pause request at a boundary, and (once
 built) the extension handler it runs. Every other command, such as `decide`, `advance`,
 `export` or `pod start`, writes a receipt of its own, not an event. Each line is written
-whole with one append; a reader ignores a torn last line and reads it next time.
+whole with one append; a reader ignores a torn last line and reads it next time. A
+launcher that starts on an existing log first checks that the log ends with a newline;
+if it does not, the launcher cuts the torn fragment off before appending, and takes the
+next `seq` from the last whole line, so a crash in mid-write leaves no joined lines and
+no gap.
 
 The log is a record, not authority. If it is lost, the state still comes from the tree.
 
