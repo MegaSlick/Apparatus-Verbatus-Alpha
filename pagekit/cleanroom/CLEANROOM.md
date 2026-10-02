@@ -133,7 +133,8 @@ nothing was copied; together with the record they show the process was followed.
   so lines of text on a page are numbered in words.
 - **Leak scan** (`scan.py`). The host runs `python3 -m pagekit.cleanroom.scan` over
   pagekit's tracked files. It looks for the wording of a GPL licence header, a
-  copyright notice naming either project or their authors, links into their source
+  copyright header line (a line that begins with the notice) naming either project or
+  their authors, links into their source
   repositories, and words on the deny-hash list. It reports counts and pagekit
   locations only. A test runs it on every pull request and expects no hits.
   *Exception:* NOTICE links to the two projects' front pages as a credit. The link rule

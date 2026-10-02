@@ -74,3 +74,17 @@ record".
 - **Brief:** `briefs/0004-narrow-copyright-rule.md` (sha256
   1b8639a0d5a68880b113f905ddce0ef97fef860a847c46d705033a62d3b9a9ee), copied word for word from the
   session transcript after the agent finished.
+
+## 0005 — A second false match on a brief, and the rule now looks only at headers
+
+- **Who:** recorded by the build-side agent of entry 0002 at the host's direction.
+- **What happened:** the commit gate refused the host's commit of brief 0004 for the
+  same reason as in entry 0004: a sentence in the brief describing the copyright rule
+  looked like a notice to the rule. Nothing from the other project was involved, and
+  no incident was opened.
+- **What was done:** in commit ebd3d96b the rule was changed to look only at header
+  lines, where real copyright notices sit: a line that starts with the notice, perhaps
+  after a comment mark. A notice mentioned in the middle of a sentence no longer
+  matches. Tests check that both brief lines refused by mistake now pass and that
+  notices in several formats are still caught. The brief was then committed unchanged
+  in e066edae.
