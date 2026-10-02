@@ -106,9 +106,8 @@ PAGE_PATH_KINDS: Final = frozenset(
 )
 
 PAGE_READ_OPERATION: Final = "page-read"
-# The attempts a page reading is: the first reading, at most one re-ask, and
-# then each operator re-read a person's page `re-ask` decision asked for,
-# numbered from `OPERATOR_REREAD_FIRST` on whether or not the page was re-asked.
+# The machine's own readings of a page: the first and its one re-ask. An operator
+# re-read is numbered after both (`is_operator_reread`, "an operator re-read" below).
 READING_ORDINALS: Final = (FIRST_READING, REASK_READING)
 # The `page-reading` field only an operator re-read carries (`operator_reread_record`).
 OPERATOR_REREAD_FIELD: Final = "operator_reread"

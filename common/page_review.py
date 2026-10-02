@@ -735,13 +735,13 @@ def act_entries_by_page(acts: Sequence[Mapping[str, Any]]) -> dict[int, list[Map
     break can join.
 
     A page's edges are its current whole-page reading's: its first reading's, or
-    an operator re-read's that superseded it (`common.page_edges.first_attempt_entries`).
+    an operator re-read's that superseded it (`common.page_edges.whole_page_entries`).
     An entry the re-ask recovered (`common.page_edges.REASK_READING`) was asked
     about ids alone, with no continuation flag allowed, so its place in page order
     is not established: it never moves a page's act edge and is never a side of a
     page break.
     """
-    return page_edges.act_entries_by_page(page_edges.first_attempt_entries(acts))
+    return page_edges.act_entries_by_page(page_edges.whole_page_entries(acts))
 
 
 def page_breaks(
@@ -755,7 +755,7 @@ def page_breaks(
     sides disagree is still recorded. A side with no `act` entry (a page not
     read, blank, of `other` entries only, or outside the run) is null. The link holds no unit and joins nothing.
     """
-    edges = page_edges.page_edges(page_edges.first_attempt_entries(acts))
+    edges = page_edges.page_edges(page_edges.whole_page_entries(acts))
     ordinals = sorted(pages)
     links = []
     for left in range(ordinals[0] - 1, ordinals[-1] + 1):

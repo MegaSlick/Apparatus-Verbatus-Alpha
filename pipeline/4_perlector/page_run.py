@@ -540,8 +540,8 @@ def _plan_rereads(state: _PagePass, prepared: list[_Page]) -> None:
     current re-ask decision no re-read answers yet (`page_reread.requested_rereads`).
     """
     context = state.context
-    requested = page_reread.requested_rereads(context.tree)
     stored = page_reread.stored_decisions(context.tree)
+    requested = page_reread.requested_rereads(context.tree, stored)
     for page in prepared:
         if page.feed is None:
             if page.page_id in requested:

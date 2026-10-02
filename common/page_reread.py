@@ -47,7 +47,7 @@ def answered_decisions(tree) -> set[str]:
     return answered
 
 
-def requested_rereads(tree) -> dict[str, list[Decision]]:
+def requested_rereads(tree, stored: dict[str, Decision] | None = None) -> dict[str, list[Decision]]:
     """Each page a current page re-ask asks to be read again, with the decisions not yet answered.
 
     `{page_id: [(approval reference, record)]}` in hash order. A decision is
@@ -56,8 +56,9 @@ def requested_rereads(tree) -> dict[str, list[Decision]]:
     decisions disagree asks for nothing (`page_reask_decisions`). A decision an
     operator re-read already answers asks for nothing again, so a pass resumed
     before the Recensor has reviewed the new reading reads no page twice.
+    `stored` is `stored_decisions(tree)`, when the caller already holds it.
     """
-    stored = stored_decisions(tree)
+    stored = stored_decisions(tree) if stored is None else stored
     if not stored:
         return {}
     units = published_units(tree)

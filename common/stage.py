@@ -2266,10 +2266,10 @@ class _PageReadRecords:
     def decisions(self) -> dict[str, tuple[Any, dict[str, Any]]]:
         """The run's stored review decisions by digest, read once, for operator re-reads."""
         if self._decisions is None:
-            self._decisions = {
-                reference.sha256: (reference, record)
-                for reference, record in self.tree.review_decision_records()
-            }
+            # Imported here: `page_reread` reads the Recensor's reviews through this module.
+            from common.page_reread import stored_decisions
+
+            self._decisions = stored_decisions(self.tree)
         return self._decisions
 
     def by_subject(self, kind: str, subject: str) -> list[dict[str, Any]]:

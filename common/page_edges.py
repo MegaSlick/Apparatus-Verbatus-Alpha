@@ -26,11 +26,14 @@ OPERATOR_REREAD_FIRST: Final = 3
 Entry = Mapping[str, Any]
 
 
-def first_attempt_entries(entries: Iterable[Entry]) -> list[Entry]:
-    """The entries of each page's current whole-page reading: the reading a page's edges are of.
+def whole_page_entries(entries: Iterable[Entry]) -> list[Entry]:
+    """Every entry not read on a re-ask: the whole-page entries a page's edges are of.
 
-    That is the first reading, or an operator re-read (attempt 3 on) that
-    superseded it; never the re-ask's.
+    It drops the re-ask's entries (asked about ids alone) and rows that stand
+    for no entry, and nothing else, so callers pass current rows only: the
+    page-read denominator's, which count each page's current whole-page
+    reading (its first, or the operator re-read that superseded it) and never a
+    superseded one.
     """
     return [
         entry
