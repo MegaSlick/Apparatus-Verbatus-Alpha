@@ -113,7 +113,8 @@ def test_only_the_source_line_may_hold_code_like_names_and_never_other_code():
         ("warp" + "Affine(src, M)", "call_or_assignment"),
     ):
         wrapped = CLEAN.replace(
-            "Source: projection profiles", "Source: a paper\n" + hidden + "\nAlso: projection profiles"
+            "Source: projection profiles",
+            "Source: a paper\n" + hidden + "\nAlso: projection profiles",
         )
         assert rule in rules(wrapped), hidden
 
