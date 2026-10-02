@@ -44,7 +44,9 @@ def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(
 
 
 def test_a_declaration_of_another_schema_is_refused(tmp_path):
-    with pytest.raises(ContractError, match="not its closed schema"):
+    with pytest.raises(
+        ContractError, match=r"schema 'perlector-audit.v2'\) is not its closed schema"
+    ):
         audit.load(_declaration(tmp_path, schema="perlector-audit.v2"))
 
 

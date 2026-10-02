@@ -50,7 +50,7 @@ from operations.serving.config import (
     load_serving_recipes,
     profile_preflight_digest,
 )
-from operations.serving.errors import ServiceStopError
+from operations.serving.errors import ChairTransportFailure, ServiceStopError
 from operations.serving.fakes import (
     FakeEndpoint,
     FakeLauncher,
@@ -435,8 +435,6 @@ def test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_
 
 def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
     """A dispatched request's uncertain outcome keeps its closed call evidence."""
-    failure_type = getattr(live_calls.serving_errors, "ChairTransportFailure", None)
-    assert failure_type is not None, "the serving transport-failure contract is required"
     call_ref = {
         "relative_path": "r/operations/serving/calls/transport.json",
         "sha256": "a" * 64,
@@ -445,7 +443,7 @@ def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
         "relative_path": "r/operations/serving/receipts/receipt.json",
         "sha256": "b" * 64,
     }
-    error = failure_type(
+    error = ChairTransportFailure(
         "timed out after request dispatch",
         call_record_ref=call_ref,
         request_sha256="c" * 64,

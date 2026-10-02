@@ -216,7 +216,7 @@ def unrecorded_replies(context) -> tuple[list[dict[str, Any]], bool]:
     before the call record that names them, so a pass stopped between the two leaves
     bytes no call record names: every blob that is not a call record, a reply one names,
     serving evidence, a page render, or an input of some record is counted as such a
-    reply.
+    reply, and so is a call record of another schema, since nothing here can read it.
     """
     manifest = context.tree.build_manifest(PERLECTOR)
     bound = {
@@ -269,6 +269,15 @@ def refuse_past_deadline(
             f"{deadline.isoformat()} leaves {remaining}s; nothing more was started. {remedy}"
         )
 
+
+# The failures of one call that `failure_record` records as the call's own outcome;
+# any other error stops the pass.
+CALL_FAILURES: Final = (
+    EngineSignalRefusal,
+    ChairResponseRefusal,
+    EndpointUnavailable,
+    serving_errors.ChairTransportFailure,
+)
 
 _NO_FAILURE_EVIDENCE: Final = {
     "raw_response_ref": None,

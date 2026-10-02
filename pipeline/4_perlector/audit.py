@@ -26,7 +26,10 @@ def load(path: str | Path) -> tuple[dict[str, Any], str]:
         or set(policy) != _CONFIG_FIELDS
         or policy.get("schema") != SCHEMA
     ):
-        raise ContractError("the Perlector audit declaration is not its closed schema")
+        found = policy.get("schema") if isinstance(policy, dict) else None
+        raise ContractError(
+            f"the Perlector audit declaration (schema {found!r}) is not its closed schema {SCHEMA}"
+        )
     numeric = ("default_round_cap", "absolute_round_cap", "round_cap")
     if any(
         not isinstance(policy.get(key), int) or isinstance(policy[key], bool) for key in numeric

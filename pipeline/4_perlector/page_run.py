@@ -64,7 +64,6 @@ from typing import Any, Callable, Final
 import live_calls
 from throughput import planned_seconds_per_page
 
-import operations.serving.errors as serving_errors
 from common import (
     page_accounting,
     page_path,
@@ -112,22 +111,13 @@ from common.stage import (
     stage_manifest,
 )
 from operations.serving.assembly import bound_serving_recipes
-from operations.serving.chat_request import EngineSignalRefusal, send_page_request
-from operations.serving.errors import ChairResponseRefusal
-from operations.serving.http import EndpointUnavailable
+from operations.serving.chat_request import send_page_request
 
 # The `reader-sent` pass a page's call is recorded under, its re-ask's, and an
 # operator re-read's.
 PAGE_READING_PASS: Final = "page-reading"
 PAGE_REASK_PASS: Final = "page-reask"
 PAGE_REREAD_PASS: Final = "page-reread"
-
-_PAGE_LOCAL_CALL_FAILURES: Final = (
-    EngineSignalRefusal,
-    ChairResponseRefusal,
-    EndpointUnavailable,
-    serving_errors.ChairTransportFailure,
-)
 
 
 def page_key(page_ordinal: int) -> str:
@@ -461,7 +451,7 @@ def _call(run, page: _Page, request: _Request, images: list[bytes]) -> dict[str,
             max_tokens=request.capacity["max_tokens"],
             what=f"page {page.page_id}",
         )
-    except _PAGE_LOCAL_CALL_FAILURES as error:
+    except live_calls.CALL_FAILURES as error:
         return error
 
 
@@ -809,12 +799,9 @@ def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -
     else:
         receipt_ref = run.receipt_ref
         capacity = request.capacity
-        inputs += [
-            context.artifact_ref(PERLECTOR, live_calls.SENT_KIND, marker["artifact_id"])
-            for marker in live_calls.sent_records(
-                context, page.page_id, page_key(page.ordinal), request.ordinal, request.pass_name
-            )
-        ]
+        inputs += live_calls.sent_refs(
+            context, page.page_id, page_key(page.ordinal), request.ordinal, request.pass_name
+        )
         if isinstance(result, Exception):
             failure = live_calls.failure_record(result, phase=request.pass_name)
             if failure is None:
@@ -894,9 +881,10 @@ def _check_adopted(
         or payload.get("disposition") not in (READ, HELD)
     ):
         raise ContractError(
-            f"page {page.page_id}'s retained page reading was made from another feed or "
-            "configuration than this page has now; it is not adopted and the page is not "
-            "asked again. Read this page in a new run"
+            f"page {page.page_id}'s retained page reading (schema {schema!r}) was made from "
+            "another feed or configuration than this page has now, or under another schema "
+            f"than {PAGE_READING_SCHEMA}; it is not adopted and the page is not asked again. "
+            "Read this page in a new run"
         )
     if payload.get(OPERATOR_REREAD_FIELD) != request.reread:
         raise FatalAccounting(
