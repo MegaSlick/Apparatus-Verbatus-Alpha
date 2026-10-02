@@ -1616,7 +1616,17 @@ def test_every_selection_after_the_door_requires_its_predecessor_seal_before_boo
 def test_auto_and_empty_selection_preflight_roles(tmp_path: Path, capsys) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
-    for extra, expected in (((), None), (("--stage", "door"), [])):
+    # A full run preflights exactly the chairs its stages use, not every configured row.
+    full = [
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+        "designator_surya",
+        "perlector",
+        "reconstructor",
+        "secondary_proposer",
+    ]
+    for extra, expected in (((), full), (("--stage", "door"), [])):
         assert (
             main(
                 _run_argv(ws, extra=(*extra, "--dry-run")),
@@ -1684,6 +1694,43 @@ def test_selection_refuses_missing_chair_smoke_after_preflight(tmp_path: Path) -
     assert code == EXIT_REFUSED
     assert runner.calls == []
     assert "attestator_2" in _report(ws)["reason"]
+
+
+def test_a_coniector_selection_is_refused_without_reconstructor_preflight_evidence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    argv = _run_argv(ws, extra=("--stage", "coniector"))
+    reconstruction = ws.repository / "config" / "reconstruction.toml"
+    assert 'mode = "on"' in reconstruction.read_text(encoding="utf-8")
+    clock = Clock()
+    runner = RecordedRunner()
+
+    class NoReconstructorSmoke(PreflightedActions):
+        def run_preflight(self) -> dict[str, object]:
+            return self._step(
+                BootstrapStep.PREFLIGHT,
+                {
+                    "color": "green",
+                    "placement_tier": TIER,
+                    "serving_config_inputs": SERVING_INPUTS,
+                    "smoke_receipts": [{"chair": "perlector", "valid": True}],
+                },
+            )
+
+    code = main(
+        argv,
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: NoReconstructorSmoke(),
+        runner=runner,
+    )
+
+    assert code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "reconstructor" in _report(ws)["reason"]
 
 
 @pytest.mark.parametrize(

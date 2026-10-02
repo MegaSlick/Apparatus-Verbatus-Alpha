@@ -141,7 +141,7 @@ from common.chairs.models import ChairIdentity, is_witness_role
 from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import SEAL_PREDECESSORS
-from common.reconstruction import load_reconstruction_policy
+from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH, load_reconstruction_policy
 from common.runtree.store import RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import (
@@ -590,7 +590,9 @@ class RunPlan:
             ) from error
         if "coniector" in selected:
             # The orchestrator reads the checkout's own reconstruction setting.
-            reconstruction = self.repository / "config" / "reconstruction.toml"
+            reconstruction = self.repository / DEFAULT_RECONSTRUCTION_CONFIG_PATH.relative_to(
+                DEFAULT_RECONSTRUCTION_CONFIG_PATH.parents[1]
+            )
             try:
                 mode = load_reconstruction_policy(reconstruction).mode
             except ContractError as error:
@@ -1617,10 +1619,9 @@ def main(
                 report_path=plan.report_path,
                 now=now,
             )
-        if plan.stage is not None or plan.from_stage is not None:
-            bootstrap_plan = replace(
-                bootstrap_plan, preflight_roles=tuple(sorted(plan.required_chairs()))
-            )
+        bootstrap_plan = replace(
+            bootstrap_plan, preflight_roles=tuple(sorted(plan.required_chairs()))
+        )
         plan = replace(plan, bootstrap=bootstrap_plan)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
         _require_selection_predecessor(plan)
