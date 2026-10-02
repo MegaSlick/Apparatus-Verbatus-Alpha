@@ -2981,12 +2981,11 @@ def test_real_bindings_seal_every_name_later_stages_recheck_plus_the_door_only_n
 def test_a_rewritten_geometry_policy_is_refused_by_name_by_require_sealed_config(tmp_path):
     """The sealed geometry name must be able to fail, and to say which fault it is.
 
-    A name in `sealed_config_digests` earns its place by having a point of use
-    that requires it; a name nothing can refuse against "would read as a closed
-    window that nothing actually shuts" (`common/stage.py`). So this drives the
-    Door's own real-path map into the comparison `require_sealed_config` makes,
-    and proves both refusals separately: a file rewritten after the door bound
-    it, and an authority that never sealed the name at all. They need different
+    A sealed name is worth having only if its point of use can refuse against it.
+    This drives the Door's own real-path map into the comparison
+    `require_sealed_config` makes, and proves both refusals separately: a file
+    rewritten after the door bound it, and an authority that never sealed the
+    name at all. They need different
     operator actions — restore the policy, versus create the run again on a
     build that seals it — so they must not collapse into one message.
 
@@ -3106,12 +3105,10 @@ def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry(
     ],
 )
 def test_each_door_path_enforces_the_shard_limit_at_run_creation(submission, denominator):
-    """F-new-1's helper tests must also pin both production call sites.
+    """Both Door routes call the shard limit check on their own page denominator.
 
-    Sonnet's four tests invoked ``require_corpus_frame_shard`` directly; deleting
-    both calls from the Door left all four green. This AST assertion binds the
-    already behavior-tested helper to each ingress denominator without needing a
-    1,001-page fixture.
+    The check itself is tested directly; this binds it to each route without
+    needing a 1,001-page fixture.
     """
     tree = ast.parse(dedent(inspect.getsource(submission)))
     calls = [
