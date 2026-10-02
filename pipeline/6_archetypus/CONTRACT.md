@@ -256,7 +256,12 @@ obvious way produces a mismatch against every record.
 the stored approval itself (`common/correction.py::stored_edits`), `uncertainty` is the
 one fixed layer a correction carries (`lectio_kind: "person-corrected"`, no spans, no
 gaps, assessment `not-assessed` saying the person's text is taken as the truth), and
-`provenance` is the correction's, built by `correction_provenance`:
+`provenance` is the correction's, built by `correction_provenance`. The person's text
+is not read for doubt marks: `[[...]]` in it is the person's own characters, kept as
+written, never parsed as machine doubt or refused as malformed. That is why its layer
+is its own kind, `person-corrected`, and never a page reading's: the doubt-mark grammar
+is the model's way of saying what it could not read, and a person's text says what the
+person reads.
 
 ```
 {label: "corrected by a person", note: str | null,
