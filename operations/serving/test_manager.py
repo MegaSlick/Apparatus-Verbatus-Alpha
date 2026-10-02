@@ -4844,7 +4844,7 @@ def test_assert_generation_config_key_coverage_names_every_unaccounted_key() -> 
 
 
 def test_render_vllm_argv_carries_enable_prompt_tokens_details(tmp_path: Path) -> None:
-    """Hostile review item H: the engine's own token counts must be requestable."""
+    """The engine's per-modality token counts are requested, so each call can be reconciled."""
 
     chair = identity("reader", "reader-v1")
     manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
@@ -4857,13 +4857,11 @@ def test_render_vllm_argv_carries_enable_prompt_tokens_details(tmp_path: Path) -
 def test_the_readiness_poll_retries_a_transport_refusal_and_then_starts(tmp_path: Path) -> None:
     """A normalised transport refusal must cost an interval, never the launch.
 
-    This is the half of the R4 defect the manager owns.  While a broken 4xx/5xx
-    body escaped `operations/serving/http.py` as a bare `http.client` exception,
-    it missed this loop's `except EndpointUnavailable` entirely and fell through
-    to the unexpected-start handler, which refuses and tears the child down.
-    Classification is pinned against a real socket in `test_http.py`; what is
-    pinned here is that the classification the transport now produces is spent
-    on a retry.
+    A broken 4xx/5xx body that escaped the transport as a bare `http.client`
+    exception would miss this loop's `except EndpointUnavailable` and reach the
+    unexpected-start handler, which refuses and tears the child down.
+    Classification is pinned against a real socket in `test_http.py`; this pins
+    that the classification is spent on a retry.
     """
 
     chair = identity("reader", "reader-v1")

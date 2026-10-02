@@ -148,8 +148,8 @@ def _system_content(text: str) -> list[dict[str, str]]:
 def _presented_image_bytes(context: Any, presented: Mapping[str, Any]) -> bytes:
     """Read back exactly the bytes an adapter's own presentation names.
 
-    ARCHITECTURE invariant 3: the exact image shown must be reproducible from
-    what was recorded. Checked here, by digest, rather than assumed.
+    The exact image shown must be reproducible from what was recorded, so it is
+    checked here by digest rather than assumed.
     """
 
     return read_verified(

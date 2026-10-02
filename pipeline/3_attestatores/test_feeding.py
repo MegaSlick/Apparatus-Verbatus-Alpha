@@ -89,7 +89,7 @@ class _Tree:
             raise FileNotFoundError(2, "No such file or directory", path) from None
 
 
-# --- Churro on its vendor's own grammar (U10) ---------------------------------
+# --- Churro on its vendor's own grammar --------------------------------------
 #
 # The chair carries no prompt bytes of this repository's any more: what it is
 # asked is one of two vendor-attested system strings in

@@ -706,7 +706,7 @@ def test_churro_presents_the_vendors_own_prepared_page_and_it_re_derives(width, 
     `validate_presented_page_binding` performs those three steps in that order
     and refuses a digest that does not come back, so this is the assertion that
     the exact image the chair saw is reproducible from the Exemplar plus the
-    record (ARCHITECTURE invariant 3). The colour step is recorded rather than
+    record. The colour step is recorded rather than
     left to the engine's own `do_convert_rgb`, which would happen server-side
     and unrecorded.
     """
