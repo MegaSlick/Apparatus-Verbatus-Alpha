@@ -71,3 +71,6 @@ record".
   notices (the word with (C), the copyright sign or a year, then a project or author
   name), with tests that such prose passes and notices in several formats are caught.
   The brief was then committed unchanged in 434deeb0.
+- **Brief:** `briefs/0004-narrow-copyright-rule.md` (sha256
+  1b8639a0d5a68880b113f905ddce0ef97fef860a847c46d705033a62d3b9a9ee), copied word for word from the
+  session transcript after the agent finished.
