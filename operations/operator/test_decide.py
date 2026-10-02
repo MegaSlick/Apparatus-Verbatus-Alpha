@@ -100,7 +100,8 @@ def test_each_decision_is_recorded_current_and_the_recensor_applies_it(
     assert _decide(root, tmp_path, monkeypatch, *words, "--reason", "seen on the page") == 0
     out = capsys.readouterr().out
     assert f"Recorded: {decision}" in out and "by project-lead" in out
-    assert "Next: resume the run from the recensor" in out
+    resume = "perlector" if (scope, decision) == ("page", "re-ask") else "recensor"
+    assert f"Next: resume the run from the {resume}" in out
     [record] = _stored(root)
     validate_approval_record(record)
     assert record["review"]["scope"] == scope
@@ -121,6 +122,10 @@ def test_a_page_rerun_request_is_recorded_and_says_how_the_page_is_read_again(
     out = " ".join(capsys.readouterr().out.split())
     assert "when the run resumes from the Perlector (--from perlector --to armarium)" in out
     assert "needs the project lead's permission" in out
+    # The next step resumes from the Perlector, which reads the page; from the
+    # Recensor it would never be read again.
+    assert "Next: resume the run from the perlector (`--from perlector --to armarium`)" in out
+    assert "Next: resume the run from the recensor" not in out
     assert run_stage(root, RUN_ID, SCENARIO, RECENSOR, **options).returncode == 3
     [request] = _decisions_record(root)["requests"]
     assert (request["scope"], request["page_ordinal"], request["decision"]) == ("page", 2, "re-ask")
@@ -295,4 +300,22 @@ def test_an_edit_of_an_unplaced_reading_is_refused_and_nothing_is_written(
     out = capsys.readouterr().out
     assert "correcting p2:1 cannot send it to export" in out
     assert "no region on its page" in out
+    assert _stored(root) == []
+
+
+@pytest.mark.parametrize(
+    "words, refusal",
+    [
+        (("edit", "--unit", "p1:1"), "an edit names its corrected text with --text-file"),
+        (("release", "--unit", "p1:1", "--text-file", "x.txt"), "only an edit takes --text-file"),
+        (("release", "--unit", "p1:1", "--note", "n"), "only an edit takes --note"),
+    ],
+    ids=["edit-without-text", "text-without-edit", "note-without-edit"],
+)
+def test_text_and_note_options_belong_to_an_edit_alone(
+    recensed, tmp_path, monkeypatch, capsys, words, refusal
+):
+    root, _options = _copy(recensed, tmp_path)
+    assert _decide(root, tmp_path, monkeypatch, *words, "--reason", "why") == 2
+    assert refusal in capsys.readouterr().out
     assert _stored(root) == []

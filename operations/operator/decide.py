@@ -257,7 +257,22 @@ def report(prepared: PreparedDecision, reference: ApprovalRecordReference) -> li
         f"{', '.join(prepared.held_codes) or 'nothing'}.",
         f"Decision record: {reference.relative_path} ({reference.sha256})",
         f"When the Recensor runs again, {effect}.",
+        _next_step(decision == "re-ask" and review["scope"] == PAGE_SCOPE),
+    ]
+
+
+def _next_step(reread: bool) -> str:
+    """How the run goes on after the decision: from the Perlector for a page re-ask, which
+    must read the page again before the Recensor reviews it, else from the Recensor."""
+    if reread:
+        return (
+            "Next: resume the run from the perlector (`--from perlector --to armarium`), which "
+            "reads the page again and then has the Recensor apply every decision recorded; it "
+            "goes on to export once nothing is held, or once `verbatus advance --stage "
+            "recensor` passes its new seal."
+        )
+    return (
         "Next: resume the run from the recensor (`--from recensor --to armarium`), which "
         "applies every decision recorded; it goes on to export once nothing is held, or once "
-        "`verbatus advance --stage recensor` passes its new seal.",
-    ]
+        "`verbatus advance --stage recensor` passes its new seal."
+    )
