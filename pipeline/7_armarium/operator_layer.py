@@ -97,9 +97,6 @@ MODEL_TEXT_LINE: Final = "model_reading_text:"
 MODEL_UNCERTAINTY_LINE: Final = "model_reading_uncertainty:"
 MODEL_STATUS_LINE: Final = "model_reading_text_status: "
 ROW_LINE: Final = "operator_row:"
-# Where `lines_for` puts `ROW_LINE`, by label: after the label line, or after the
-# label, the note and the model reading's lines.
-_ROW_LINE_AT: Final = {RELEASED_LABEL: 1, CORRECTED_LABEL: 9}
 # The headings under which a text bundle shows a reading, by the id line that opens it.
 ID_LINES: Final = ("act-id: ", "other-id: ")
 
@@ -192,6 +189,28 @@ def lines_for(row: Mapping[str, Any], model: Mapping[str, Any] | None = None) ->
             f"{MODEL_STATUS_LINE}{model['text_status']}",
         ]
     return [*lines, ROW_LINE, _json(row)]
+
+
+# A stand-in model reading: `lines_for` over it gives the block's layout, never its values.
+_LAYOUT_MODEL: Final = {"text": "", "uncertainty": None, "text_status": ""}
+
+
+def _layout(row: Mapping[str, Any]) -> dict[str, int]:
+    """Where `lines_for` puts each line of a row's block, counted from its label line.
+
+    `row` is `ROW_LINE`'s offset, and for a corrected row `text`, `uncertainty`
+    and `status` are the model reading's value lines; read from what
+    `lines_for` writes, so a reader never counts lines on its own.
+    """
+    shown = lines_for(row, _LAYOUT_MODEL if row["label"] == CORRECTED_LABEL else None)
+    layout = {"row": shown.index(ROW_LINE)}
+    if row["label"] == CORRECTED_LABEL:
+        layout["text"] = shown.index(MODEL_TEXT_LINE) + 1
+        layout["uncertainty"] = shown.index(MODEL_UNCERTAINTY_LINE) + 1
+        layout["status"] = next(
+            index for index, line in enumerate(shown) if line.startswith(MODEL_STATUS_LINE)
+        )
+    return layout
 
 
 def block_end(lines: Sequence[str], start: int) -> int:
@@ -339,14 +358,17 @@ def text_bundle_rows(
                 row = _require_shape(json.loads(lines[index + 1]))
             except (IndexError, ValueError) as error:
                 raise SchemaRefusal("a text-bundle operator row is not JSON") from error
-            start = index - _ROW_LINE_AT[row["label"]]
+            layout = _layout(row)
+            start = index - layout["row"]
             model = None
             if row["label"] == CORRECTED_LABEL and start >= 0:
                 try:
                     shown = {
-                        "text": json.loads(lines[start + 5]),
-                        "uncertainty": json.loads(lines[start + 7]),
-                        "text_status": lines[start + 8].removeprefix(MODEL_STATUS_LINE),
+                        "text": json.loads(lines[start + layout["text"]]),
+                        "uncertainty": json.loads(lines[start + layout["uncertainty"]]),
+                        "text_status": lines[start + layout["status"]].removeprefix(
+                            MODEL_STATUS_LINE
+                        ),
                     }
                 except ValueError as error:
                     raise SchemaRefusal(

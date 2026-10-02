@@ -338,7 +338,7 @@ def _verify_two_folders(monkeypatch, tmp_path, shown_by_folder: dict[str, list[d
         "reconstructions": [["act_a"]],
     }
     armarium_export._verify_coniector_layer(
-        tmp_path, {}, ArmariumFormats(("text-bundle",), False), sources, set()
+        tmp_path, ArmariumFormats(("text-bundle",), False), sources, set(), {}
     )
 
 

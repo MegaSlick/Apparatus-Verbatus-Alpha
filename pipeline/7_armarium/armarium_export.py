@@ -756,8 +756,12 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     search_fold_verification = _verify_product_accounting(root, manifest, formats, sources)
     _verify_page_layers(root, manifest, formats, sources)
     _verify_continuation_joins(root, formats, sources)
-    _verify_coniector_layer(root, manifest, formats, sources, actual_names)
-    _verify_operator_layer(root, manifest, formats, sources, actual_names)
+    # The operator rows and the model readings beside corrected ones, read once
+    # for both layers that hold readings to them.
+    recorded = _operator_rows(sources, manifest)
+    models = _model_readings_shown(root, formats, sources, actual_names, recorded)
+    _verify_coniector_layer(root, formats, sources, actual_names, models)
+    _verify_operator_layer(root, manifest, formats, sources, actual_names, recorded)
     verification = {}
     if search_fold_verification is not None:
         verification["search_fold"] = search_fold_verification
@@ -1502,10 +1506,10 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
 
 def _verify_coniector_layer(
     root: Path,
-    manifest: dict[str, Any],
     formats: ArmariumFormats,
     sources: dict,
     actual_names: set[str],
+    models: dict[str, dict[str, dict[str, Any]]],
 ) -> None:
     """Recompute every reconstruction the package shows, in each format that shows it.
 
@@ -1517,18 +1521,8 @@ def _verify_coniector_layer(
     sit beneath its own act's section (a join in its own section) in every
     folder that sections the act. Every format that shows reconstructions shows
     exactly the rows `sources.json` records, so a row dropped from one is
-    refused.
+    refused. `models` is `_model_readings_shown`'s, by format.
     """
-    models = (
-        _model_readings_shown(
-            root, formats, sources, actual_names, _operator_rows(sources, manifest)
-        )
-        if any(
-            isinstance(row, dict) and row.get("label") == CORRECTED_LABEL
-            for row in sources.get(OPERATOR_SOURCES_FIELD) or []
-        )
-        else {}
-    )
     shown: list[list[dict[str, Any]]] = []
     if CONIECTOR_MEMBER in actual_names:
         literals = _jsonl_literals(root / "acts.jsonl")
@@ -1678,6 +1672,7 @@ def _verify_operator_layer(
     formats: ArmariumFormats,
     sources: dict[str, Any],
     actual_names: set[str],
+    recorded: list[dict[str, Any]],
 ) -> None:
     """Every format that carries the operator layer shows exactly the rows `sources.json` records.
 
@@ -1685,9 +1680,7 @@ def _verify_operator_layer(
     text bundle shows each once beneath its reading's section in every folder
     that sections the reading, so a label dropped from a format is refused.
     """
-    recorded = _operator_rows(sources, manifest)
     _verify_reading_holds(sources, manifest, recorded)
-    _model_readings_shown(root, formats, sources, actual_names, recorded)
     _verify_corrections(root, formats, sources, recorded)
     shown: list[tuple[str, list[dict[str, Any]]]] = []
     if "jsonl" in formats.formats:
@@ -1897,15 +1890,19 @@ def _verify_corrections(
                     )
 
 
+# What an operator row and a correction's provenance both say of each edit.
+_EDIT_NAMED_FIELDS: Final = ("decision_hash", "approver", "timestamp", "reason", "approval_ref")
+
+
+def _edit_named(decision: dict[str, Any]) -> dict[str, Any]:
+    """The fields of one edit both an operator row and a correction's provenance name."""
+    return {key: decision[key] for key in _EDIT_NAMED_FIELDS}
+
+
 def _require_correction_provenance(provenance: Any, row: dict[str, Any]) -> None:
     """A corrected reading's provenance: the row's label, note, model reading and edits."""
     edits = sorted(
-        (
-            {key: decision[key] for key in ("decision_hash", "approver", "timestamp", "reason")}
-            | {"approval_ref": decision["approval_ref"]}
-            for decision in row["decisions"]
-            if decision["decision"] == "edit"
-        ),
+        (_edit_named(decision) for decision in row["decisions"] if decision["decision"] == "edit"),
         key=lambda decision: decision["decision_hash"],
     )
     decisions = provenance.get("decisions") if isinstance(provenance, dict) else None
@@ -1919,12 +1916,7 @@ def _require_correction_provenance(provenance: Any, row: dict[str, Any]) -> None
             isinstance(decision, dict) and set(decision) == CORRECTION_DECISION_FIELDS
             for decision in decisions
         )
-        or [
-            {key: decision[key] for key in ("decision_hash", "approver", "timestamp", "reason")}
-            | {"approval_ref": decision["approval_ref"]}
-            for decision in decisions
-        ]
-        != edits
+        or [_edit_named(decision) for decision in decisions] != edits
     ):
         raise SchemaRefusal(
             f"{row['act_key']}'s provenance does not name the correction its operator row labels"
