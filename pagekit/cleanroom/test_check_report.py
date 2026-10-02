@@ -99,14 +99,23 @@ def test_ordinary_english_class_and_a_doi_link_are_not_code():
     assert check(text, NONE) == []
 
 
-def test_a_source_paragraph_may_hold_code_like_names_but_not_other_code():
+def test_only_the_source_line_may_hold_code_like_names_and_never_other_code():
     citation = (
-        "Source: DeMenthon and Davis, model-based pose in twenty" + "Five lines of code,\n"
+        "Source: DeMenthon and Davis, model-based pose in twenty" + "Five lines of code, "
         "IJCV 15:123-141, 1995, and the open" + "CV function warp" + "Affine(src, M).\n"
     )
     text = CLEAN.replace("Source: projection profiles", citation + "Also: projection profiles")
     assert rules(text) == set()
     assert "brace" in rules(text.replace("1995,", "1995, " + "{" + "x" + "}"))
+    # The line after the Source line is checked in full: code cannot hide under it.
+    for hidden, rule in (
+        ("open" + "CV, 1995", "identifier_shape"),
+        ("warp" + "Affine(src, M)", "call_or_assignment"),
+    ):
+        wrapped = CLEAN.replace(
+            "Source: projection profiles", "Source: a paper\n" + hidden + "\nAlso: projection profiles"
+        )
+        assert rule in rules(wrapped), hidden
 
 
 def test_plain_english_plurals_pass_the_call_rule():

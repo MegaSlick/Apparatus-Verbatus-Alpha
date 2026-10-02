@@ -50,7 +50,7 @@ LINE_RULES: dict[str, re.Pattern[str]] = {
     "owner_account": re.compile(r"4lex[4]", re.IGNORECASE),
 }
 # Shapes of code names and code statements. A citation may hold names like these, so
-# a "Source:" paragraph (the Source line and the lines wrapped under it) is exempt.
+# a "Source:" line is exempt; the lines after it are not.
 SHAPE_RULES: dict[str, re.Pattern[str]] = {
     "identifier_shape": re.compile(
         r"\b[a-z]+[A-Z][A-Za-z0-9]*\b"  # an internal capital: estimateSkew
@@ -67,14 +67,9 @@ SHAPE_RULES: dict[str, re.Pattern[str]] = {
 def check(text: str, hashes: frozenset[str]) -> list[tuple[str, int]]:
     """Each broken rule with the report line it was found on (0 for the whole report)."""
     problems: list[tuple[str, int]] = []
-    in_source = False
     for number, raw in enumerate(text.splitlines(), 1):
         line = DOI.sub("doi", raw)
-        if line.startswith("Source:"):
-            in_source = True
-        elif not line.strip() or line.startswith("#"):
-            in_source = False
-        rules = LINE_RULES if in_source else LINE_RULES | SHAPE_RULES
+        rules = LINE_RULES if line.startswith("Source:") else LINE_RULES | SHAPE_RULES
         problems.extend((rule, number) for rule, pattern in rules.items() if pattern.search(line))
     problems.extend(("denied_word", number) for number in denied_lines(text, hashes))
     problems.extend(_structure(text))

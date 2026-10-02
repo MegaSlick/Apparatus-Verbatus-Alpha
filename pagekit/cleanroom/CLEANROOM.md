@@ -161,9 +161,9 @@ nothing was copied; together with the record they show the process was followed.
   followed by a name and a bracket or colon); braces; lines ending in a semicolon;
   file names with source extensions; paths; links other than doi.org; line-number
   references; the ScanTailor Advanced maintainer's account name; or a word on the
-  deny-hash list. Outside the Source paragraph (the Source line and the lines wrapped
-  under it, where a citation may need such names) it also refuses the shapes of code
-  names and statements: a word with a capital inside it after a small letter (like
+  deny-hash list. On every line but a Source line (where a citation may need such
+  names, so a citation that needs one keeps it on that one line) it also refuses the
+  shapes of code names and statements: a word with a capital inside it after a small letter (like
   "estimateSkew"), a word with an underscore inside it (including upper-case constant
   names), a word directly followed by an opening bracket (except a plural like
   "page(s)"), "word = word", and "word.word(". It also requires the template's four
