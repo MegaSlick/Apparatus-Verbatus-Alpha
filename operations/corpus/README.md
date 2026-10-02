@@ -49,8 +49,9 @@ Build a canary submission from an external RecordGold local set containing
 Repeat `--page-sha` for each selected page. The command verifies reference,
 digest, and geometry before writing `private/canary/pages/`,
 `private/canary/reference-pages.json`, and a Door-ready
-`private/canary/submission-manifest.json`. Pass the `pages/` directory as the
-Boot B canary folder and the manifest as its canary manifest.
+`private/canary/submission-manifest.json`. Copy both to the volume and pass the
+`pages/` directory as `pod_run`'s `--canary-folder` and the manifest as its
+`--canary-manifest`.
 `--split` defaults to `train`; a checked directory with `reference-pages.json`
 and digest-named images under `pages/` is also accepted for local synthetic tests.
 - `local_admission.py` — the existing local sets (`recordgold_evaluation_val_v1`,
