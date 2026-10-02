@@ -886,15 +886,17 @@ def test_reask_records_are_read_by_schema_and_kept_apart(monkeypatch):
     with pytest.raises(Refusal, match="has a re-ask and no first reading"):
         load_page_records(_Tree(no_first, {}))
 
+    # A re-ask's accounting is "combined", and "attempt-<n>" from 3 on names an
+    # operator re-read, so "attempt-2" is no basis any accounting has.
     unknown_basis = dict(records)
     unknown_basis[(PERLECTOR, "page-accounting", "p2")] = {
         "subject_id": "page-1",
         "payload": {
             **records[(PERLECTOR, "page-accounting", "p2")]["payload"],
-            "answer_basis": "attempt-9",
+            "answer_basis": "attempt-2",
         },
     }
-    with pytest.raises(Refusal, match="answer basis 'attempt-9'"):
+    with pytest.raises(Refusal, match="answer basis 'attempt-2'"):
         load_page_records(_Tree(unknown_basis, {}))
 
     region = (PERLECTOR, "act-region", "act-3")
