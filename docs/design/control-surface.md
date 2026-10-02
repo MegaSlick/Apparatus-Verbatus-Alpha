@@ -389,7 +389,11 @@ After a confirm: creates the pod with the guard armed (deadline at the soft maxi
 limit from the spend policy), the volume at `/workspace/private` and the quoted card;
 then reads `.pod_guard/guard.log` and `deadline-<pod id>` from the volume until the guard
 reports armed for this pod. If that does not happen within ten minutes, it deletes the
-pod and answers `guard-not-armed`. It writes a receipt naming the pod and its budget.
+pod and checks that it is gone the same way `pod stop` does (`runpodctl pod get` fails
+and `runpodctl pod list` does not show it). Only when both checks pass does it answer
+`guard-not-armed`; if either cannot confirm the delete, it exits 6 (state unknown) and
+says to check the RunPod console. It
+writes a receipt naming the pod and its budget.
 
 - **Exit:** 0 created and guard armed; 2 refused before anything was created; 6 created
   but its state is unknown.
@@ -444,9 +448,11 @@ The laptop also checks the request against the hard maximum before sending it
 
 **Until both exist, extension is the manual route:** over SSH, the lead writes the new
 epoch second to a temporary file and moves it over `.pod_guard/deadline-<pod id>`, as
-`pod_guard.sh` describes. That is the lead's own act; nothing checks it against the
-budget. The guard ignores a deadline more than a week away, but that only catches a
-typo; it is not a limit.
+`pod_guard.sh` describes. That is the lead's own act: no agent or AI driver ever writes
+that file. Nothing checks the edit against the budget, so the edit itself is the lead's
+permission, and a deadline past the hard maximum is the lead's new hard maximum. The guard
+ignores a deadline more than a week away, but that only catches a typo; it is not a
+limit.
 
 ### Pause and stop on a pod
 
