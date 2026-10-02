@@ -114,6 +114,34 @@ cannot keep a leaking report out of the host's context. The host then says so in
 log entry, and the report still has to pass the check before anything reaches the
 build side.
 
+### Outside reading-side sessions
+
+The lead may run a reading-side session somewhere else, for example in a separate
+Claude chat, and bring back a document. Such a session is on the reading side, and its
+document comes in by this path:
+
+1. **Before starting,** the lead gives the chat the rules from
+   [templates/reader-brief.md](templates/reader-brief.md): what it may and may not
+   share.
+2. **The lead keeps the chat,** so its transcript can be checked later.
+3. **The document goes straight into quarantine, unread.** It is saved in the local,
+   git-ignored quarantine folder (`workbench/quarantine/`) and is never committed.
+4. **The host logs its arrival:** the time it was received, its size and its sha256.
+5. **The host runs the report check on it** before anyone reads it.
+6. **If it fails,** as working notes usually will, a reading-side agent distils it into
+   finding reports, written into quarantine. Each report is checked before the host
+   opens it, and one that fails is deleted unread, as above.
+7. **The host reads each passing report** and accepts it into `findings/`, with its
+   sha256 in the log.
+
+A brainstorming chat that never read the other program's code is not a reading-side
+session, and its ideas may come in directly. Anything from any chat that mentions the
+other program's internals goes through the path above.
+
+Log entries 0006 to 0008 are the first worked example: the lead's working document
+received and checked, the reading-side agent's distillation of it, and the reports it
+produced checked, read and accepted.
+
 ### Deny hashes
 
 [deny-hashes.txt](deny-hashes.txt) holds sha256 digests of identifiers that are
