@@ -23,7 +23,12 @@
       "Bash(git config core.hooksPath *)",
       "Bash(git config --unset core.hooksPath*)",
       "Bash(git*filter-branch*)",
-      "Bash(git*filter-repo*)"
+      "Bash(git*filter-repo*)",
+      "Bash(*scantailor*)",
+      "Bash(*Scantailor*)",
+      "Bash(*ScanTailor*)",
+      "Bash(*SCANTAILOR*)",
+      "Bash(*4lex4*)"
     ],
     "ask": [
       "Bash(runpodctl send*)",
