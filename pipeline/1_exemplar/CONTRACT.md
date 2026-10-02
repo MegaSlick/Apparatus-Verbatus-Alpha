@@ -111,9 +111,11 @@ reports, then refuses the whole run, before its own completion seal, when:
    pages inside one container are not duplicates.
 2. **Any re-shoot cluster is present** (`re-shoot-cluster-report`). No later stage
    links two captures of one leaf, so each would be read and exported as its own act.
-   A cluster whose members are not all confirmed in the run's register is refused as
-   `unconfirmed-re-shoot`, any other as `confirmed-re-shoot`. Remedy: submit one
-   capture per leaf with a decision manifest whose rows name no cluster.
+   The `re-shoot` refusal names every cluster by its position in the report and its
+   member ordinals, marking any not confirmed in the run's register. Remedy: submit
+   one capture per leaf, with a decision manifest whose rows name no cluster and no
+   `--triage-clusters`. A cluster with a member outside the submission is refused
+   at source expansion with the same remedy.
 3. **No page of the submission was admitted** (`refusal-report`). Admitted canaries do
    not count.
 

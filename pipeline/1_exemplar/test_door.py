@@ -1496,66 +1496,38 @@ def test_re_shoot_cluster_admits_every_member_and_records_no_canonical(tmp_path)
     assert "canonical" not in json.dumps(payload)
 
 
-def test_a_re_shoot_the_register_does_not_confirm_is_refused_before_the_seal(tmp_path):
-    """Refused at the Door's close after its cluster report is sealed and before its own
-    seal, and the run id stays bound to the register it was created with.
-    """
-    context, _digests = _admitted_re_shoot_pair(tmp_path)
-    with pytest.raises(ContractError, match="unconfirmed-re-shoot.*opening-7"):
-        door._finish_door_run(context, 2)
-    kinds = {entry["kind"] for entry in context.tree.build_manifest(DOOR)["artifacts"]}
-    assert "re-shoot-cluster-report" in kinds
-    assert "stage-seal" not in kinds
-    with pytest.raises(IncompatibleReuse):
-        _admitted_re_shoot_pair(
-            tmp_path,
-            register_bytes=_re_shoot_register(
-                tmp_path, {"opening-7": ("parish-a", _pair_digests())}
-            ),
-        )
-
-
 @pytest.mark.parametrize(
-    "pages",
+    ("pages", "confirmed"),
     [
-        {"opening-7": ("parish-b", _pair_digests())},
-        {"opening-7": ("parish-a", _pair_digests()[:1])},
-    ],
-    ids=["another-corpus", "a-member-unregistered"],
-)
-def test_a_re_shoot_is_confirmed_only_when_its_corpus_registers_every_member(tmp_path, pages):
-    context, _digests = _admitted_re_shoot_pair(
-        tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
-    )
-    with pytest.raises(ContractError, match="unconfirmed-re-shoot"):
-        door.require_no_re_shoots(context, door.publish_cluster_report(context))
-
-
-@pytest.mark.parametrize(
-    "pages",
-    [
-        {"opening-7": ("parish-a", _pair_digests())},
+        (None, False),
+        ({"opening-7": ("parish-b", _pair_digests())}, False),
+        ({"opening-7": ("parish-a", _pair_digests()[:1])}, False),
+        ({"opening-7": ("parish-a", _pair_digests())}, True),
         # A split opening: each leaf holds a different subset of the cluster.
-        {
-            "opening-7-left": ("parish-a", _pair_digests()[:1]),
-            "opening-7-right": ("parish-a", _pair_digests()[1:]),
-        },
+        (
+            {
+                "opening-7-left": ("parish-a", _pair_digests()[:1]),
+                "opening-7-right": ("parish-a", _pair_digests()[1:]),
+            },
+            True,
+        ),
     ],
-    ids=["one-page", "pages-with-different-members"],
+    ids=["no-register", "another-corpus", "a-member-unregistered", "one-page", "split-opening"],
 )
-def test_a_confirmed_re_shoot_is_refused_whole_before_the_seal(tmp_path, pages):
-    """No stage links two captures of one leaf, so a confirmed re-shoot would be read
-    and exported once per capture; the Door refuses it, naming ordinals, never paths.
-    """
-    context, _digests = _admitted_re_shoot_pair(
-        tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
-    )
-    with pytest.raises(ContractError, match="confirmed-re-shoot") as refused:
+def test_a_re_shoot_is_refused_whole_before_the_seal_confirmed_or_not(tmp_path, pages, confirmed):
+    """No stage links two captures of one leaf, so a re-shoot would be read and
+    exported once per capture. The refusal names the cluster by position and member
+    ordinals, never by its id or a filename, and marks an unconfirmed one."""
+    register = None if pages is None else _re_shoot_register(tmp_path, pages)
+    context, _digests = _admitted_re_shoot_pair(tmp_path, register_bytes=register)
+    with pytest.raises(ContractError, match="^re-shoot:") as refused:
         door._finish_door_run(context, 2)
     message = str(refused.value)
-    assert not message.startswith("unconfirmed")
-    assert "opening-7 (submitted ordinal(s) 1, 2)" in message
+    assert "cluster 1 (submitted ordinal(s) 1, 2" in message
+    assert ("not confirmed" in message) is not confirmed
+    assert "opening-7" not in message
     assert "a.png" not in message and "b.png" not in message
+    assert "omit --triage-clusters" in message
     kinds = {entry["kind"] for entry in context.tree.build_manifest(DOOR)["artifacts"]}
     assert "re-shoot-cluster-report" in kinds
     assert "stage-seal" not in kinds
@@ -3490,15 +3462,35 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
         "member_frame_sha256": [first_digest, second_digest],
         "split_count": 1,
     }
-    with pytest.raises(ContractError, match="would cross this submitted shard") as crossing:
+    with pytest.raises(ContractError, match="not in this submission") as crossing:
         door.expand_sources(
             [{"relative_path": "a.png", "sha256": first_digest}],
             reader({"a.png": first}),
             triage_rows=rows,
             triage_clusters={"opening-7": cluster},
         )
-    assert "no source expansion was returned" in str(crossing.value)
-    assert "submit every cluster member in the same shard" in str(crossing.value)
+    assert door.RE_SHOOT_REMEDY in str(crossing.value)
+    # The remedy followed literally: one capture, rows naming no cluster, no records.
+    unlinked = door.triage_manifest.make_row(
+        **{
+            key: value
+            for key, value in rows[first_digest].items()
+            if key not in {"manifest_row_sha256", "re_shoot_cluster_id"}
+        },
+        re_shoot_cluster_id=None,
+    )
+    door.triage_manifest.validate_manifest(
+        {
+            "schema": door.triage_manifest.MANIFEST_SCHEMA,
+            "corpus_id": "parish-a",
+            "records": [unlinked],
+        }
+    )
+    assert door.expand_sources(
+        [{"relative_path": "a.png", "sha256": first_digest}],
+        reader({"a.png": first}),
+        triage_rows={first_digest: unlinked},
+    )
 
     with pytest.raises(ContractError, match="no supplied cluster record") as unresolved:
         door.expand_sources(

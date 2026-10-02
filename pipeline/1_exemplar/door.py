@@ -171,6 +171,15 @@ DOOR_REFUSAL_REPORT_SUBJECT: Final = "refusal-report"
 DOOR_DUPLICATE_REPORT_SCHEMA: Final = "door-duplicate-report.v0"
 DOOR_DUPLICATE_REPORT_SUBJECT: Final = "duplicate-report"
 DOOR_CLUSTER_REPORT_SCHEMA: Final = "door-re-shoot-cluster-report.v1"
+# No stage links captures of one leaf, so a run takes one capture per leaf and no
+# cluster. Followed literally this passes: the manifest validator refuses rows that
+# name a cluster without its records, and records listing frames whose rows name none.
+RE_SHOOT_REMEDY: Final = (
+    "Submit one capture per leaf: keep one capture of each leaf in the submitted folder "
+    "and its filename ledger, regenerate the triage decision manifest with no re-shoot "
+    "cluster (every row's re_shoot_cluster_id null), omit --triage-clusters, and resubmit "
+    "under a new run id"
+)
 _SOURCE_HASH_CHUNK: Final = 1024 * 1024
 # Triage JSON is untrusted input. A run holds at most one 1,000-page shard (the
 # corpus-frame validator's ceiling), so bound both before the triage manifest's
@@ -835,9 +844,8 @@ def expand_sources(
             members = set(record["member_frame_sha256"])
             if not members <= submitted_digests:
                 raise ContractError(
-                    "a re-shoot cluster would cross this submitted shard; no source expansion was "
-                    "returned because every member must remain visible together and no canonical "
-                    "frame may be selected; submit every cluster member in the same shard and retry"
+                    "a re-shoot cluster names a capture that is not in this submission; no "
+                    f"source expansion was returned. {RE_SHOOT_REMEDY}"
                 )
     # Rows for frames outside this submission are expected: the manifest is
     # corpus-scoped and a submission is one shard.
@@ -1354,11 +1362,11 @@ def require_no_re_shoots(context: StageContext, cluster_report: Report | None) -
     refused after the cluster report is sealed and before the Door's seal, so no
     page is lost and the report names every member's file.
 
-    An unconfirmed cluster (some member is not in a current membership of a
-    physical page of the cluster's corpus in the run's register) is named apart,
-    because its captures may not be one leaf at all and the triage link itself
-    may be wrong. The message names ordinals, never filenames: it goes to the
-    terminal, and the sealed report is where filenames belong.
+    Clusters are named by their position in the report and their member ordinals,
+    never by cluster id or filename: the message goes to the terminal, and a
+    hand-written id could be a filename. A cluster some member of which is not in a
+    current membership of a physical page of its corpus in the run's register is
+    marked unconfirmed, since its captures may not be one leaf at all.
     """
     if cluster_report is None:
         return
@@ -1375,45 +1383,24 @@ def require_no_re_shoots(context: StageContext, cluster_report: Report | None) -
         for capture in members
     }
 
-    def is_confirmed(cluster: dict[str, Any]) -> bool:
-        return all(
-            (cluster["corpus_id"], member["source_frame_sha256"]) in confirmed
+    def described(index: int, cluster: dict[str, Any]) -> str:
+        ordinals = ", ".join(
+            str(page["ordinal"]) for member in cluster["members"] for page in member["pages"]
+        )
+        unconfirmed = any(
+            (cluster["corpus_id"], member["source_frame_sha256"]) not in confirmed
             for member in cluster["members"]
         )
+        mark = ", not confirmed by the run's corpus register" if unconfirmed else ""
+        return f"cluster {index} (submitted ordinal(s) {ordinals}{mark})"
 
-    def named(selected: list[dict[str, Any]]) -> str:
-        return "; ".join(
-            f"cluster {cluster['cluster_id']} (submitted ordinal(s) "
-            + ", ".join(
-                str(page["ordinal"]) for member in cluster["members"] for page in member["pages"]
-            )
-            + ")"
-            for cluster in selected
-        )
-
-    unconfirmed = [cluster for cluster in clusters if not is_confirmed(cluster)]
-    remedy = (
-        "Submit one capture per leaf: keep one capture of each leaf in the submitted "
-        "folder and its filename ledger, regenerate the triage decision manifest so that "
-        "capture's row names no re-shoot cluster, and resubmit under a new run id; this "
-        "run id stays bound to the triage inputs it was created with"
-    )
-    if unconfirmed:
-        raise ContractError(
-            f"unconfirmed-re-shoot: triage links {named(unconfirmed)} as captures of one "
-            "leaf, but the corpus register this run was created with does not record every "
-            "capture as a member of a physical page of that corpus. Nothing is sealed and "
-            "no page is dropped: the submission is refused whole, and the sealed cluster "
-            f"report at {cluster_report.path} names each member's file. If the captures "
-            "are not one leaf, remove the re-shoot link from the triage decision manifest. "
-            f"{remedy}"
-        )
+    named = "; ".join(described(index, cluster) for index, cluster in enumerate(clusters, 1))
     raise ContractError(
-        f"confirmed-re-shoot: this submission holds more than one capture of one leaf: "
-        f"{named(clusters)}. No later stage links captures of one leaf, so each capture "
-        "would be read and exported as a separate copy of the same acts. Nothing is "
-        "sealed and no page is dropped: the submission is refused whole, and the sealed "
-        f"cluster report at {cluster_report.path} names each member's file. {remedy}"
+        f"re-shoot: triage links captures as one leaf: {named}. No later stage links "
+        "captures of one leaf, so each would be read and exported as a separate copy of the "
+        "same acts. Nothing is sealed and no page is dropped: the submission is refused "
+        f"whole, and the sealed cluster report at {cluster_report.path} lists the clusters "
+        f"in this order and names each member's file. {RE_SHOOT_REMEDY}"
     )
 
 
