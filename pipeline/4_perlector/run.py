@@ -38,6 +38,7 @@ from common.page_path import refuse_unlive_real_reading  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     PERLECTOR_CHAIR,
+    is_real_ingress,
     open_stage_context,
     run_stage,
     stage_parser,
@@ -50,6 +51,11 @@ from operations.serving.client import ChairClient, serving_mode_for  # noqa: E40
 from operations.serving.errors import ChairResponseRefusal  # noqa: E402
 
 DESCRIPTION = "Perlector: reads each sealed page whole, with the testimonia as fallible clues."
+
+
+def real_ingress(context) -> bool:
+    """Whether this run authority names the real route, by the shared reader."""
+    return is_real_ingress(context.run)
 
 
 def perlector_chair(context) -> ChairIdentity | AbsentChair:
