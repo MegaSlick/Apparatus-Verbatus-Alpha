@@ -300,7 +300,10 @@ After every review is published, the stage rebuilds `recensor-partition-receipt.
 - **Every `continuation-link`** is matched one to one against the breaks the answers
   flag; a missing, stray or different link is refused.
 - **`page_holds`** is the `review-decisions` record's `page_holds`, empty for a run that
-  stores no decision.
+  stores no decision. A held canary page stays in it and keeps the receipt `partial`: a
+  canary is a known-answer page, so a held canary is a real signal about the run. The
+  systemic alarm's held share still leaves canary pages out, since they are controls,
+  not pages of the register (`common/page_review.py::held_pages_after_review`).
 
 `reasons` names every held unit that is not released, every under-witnessed or
 unresolved unit, every held page break and every held page, and the receipt is
