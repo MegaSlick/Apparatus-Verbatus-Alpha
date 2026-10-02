@@ -1549,7 +1549,15 @@ def _decide_with_confirmation(
     if prepared.text_sha256 is not None:
         _print(f"Corrected text: {json.dumps(text, ensure_ascii=False)}")
         _print(f"Corrected text digest: {prepared.text_sha256}")
-        edited = f" with text {prepared.text_sha256}"
+        if note is None:
+            _print("Note: none")
+            edited = f" with text {prepared.text_sha256} and no note"
+        else:
+            from common.correction import text_sha256
+
+            _print(f"Note: {json.dumps(note, ensure_ascii=False)}")
+            _print(f"Note digest: {text_sha256(note)}")
+            edited = f" with text {prepared.text_sha256} and note {text_sha256(note)}"
     phrase = (
         f"decide {decision} of {prepared.subject} in {run_id} at {prepared.basis_digest}"
         f"{edited} for reason {json.dumps(reason, ensure_ascii=True)}"
@@ -1559,7 +1567,7 @@ def _decide_with_confirmation(
             ErrorCode.DECISION_REFUSED,
             detail=(
                 "the typed confirmation did not exactly name this decision, subject, run, "
-                "review basis, corrected text and recorded reason"
+                "review basis, corrected text and note, and recorded reason"
             ),
         )
     try:

@@ -52,7 +52,7 @@ from common.contracts.uncertainty import corrected_layer
 from common.review_decisions import READING_HELD
 from common.runtree.store import RunTree
 from common.stage import EXIT_COMPLETE, EXIT_HELD
-from conftest import load_stage
+from conftest import load_stage, rewitness_stage_boundary
 
 DUPLICATE = "duplicate-region"
 MERGED = "merged-detection"
@@ -541,7 +541,8 @@ def test_a_text_no_edit_names_is_refused_by_the_verifier(corrected, tmp_path):
 
 
 def test_the_decide_command_records_an_edit_bound_to_its_text(reading_held, tmp_path, monkeypatch):
-    """`verbatus decide edit` reads the text from a file and names its digest in the confirmation."""
+    """`verbatus decide edit` reads the text from a file and names its digest, and the note's
+    or "no note", in the confirmation."""
     from operations.operator import cli
 
     tree = _copy(reading_held, tmp_path)
@@ -575,8 +576,14 @@ def test_the_decide_command_records_an_edit_bound_to_its_text(reading_held, tmp_
         == 0
     )
     assert digest_bytes(EDITED.encode("utf-8")) in phrases[0]
-    for words in (("release", "--unit", "p1:2"), ("no-missed-act", "--page", "1")):
-        assert cli.main([*common, *where, *words, *reason]) == 0
+    # The note is confirmed by its digest, and an edit with none says so.
+    assert f"and note {digest_bytes(NOTE.encode('utf-8'))}" in phrases[0]
+    unchanged = tmp_path / "p1-2.txt"
+    unchanged.write_text(TEXTS["p1:2"], encoding="utf-8")
+    edit = ("edit", "--unit", "p1:2", "--text-file", str(unchanged))
+    assert cli.main([*common, *where, *edit, *reason]) == 0
+    assert "and no note" in phrases[1]
+    assert cli.main([*common, *where, "no-missed-act", "--page", "1", *reason]) == 0
 
     assert _recense(tree) == EXIT_COMPLETE
     _after_recensor(tree)
@@ -672,3 +679,148 @@ def test_an_edit_its_page_still_holds_is_no_correction_and_an_advance_exports(
     }
     assert acts["p1:1"]["category"] != "delivered"
     armarium_export.verify_export_bundle(_repacked(dict(members)), tmp_path / "clean")
+
+
+# --- a resealed Archetypus that is not the person's correction -------------------------
+
+
+@pytest.fixture(scope="module")
+def corrected_established(reading_held, tmp_path_factory) -> SimpleNamespace:  # noqa: F811
+    """p1:1 corrected and established by the Archetypus; nothing after it has run."""
+    tree = _copy(reading_held, tmp_path_factory.mktemp("corrected-established"))
+    _correct(tree)
+    assert _recense(tree) == EXIT_COMPLETE
+    assert _run(tree, "pipeline/6_archetypus/run.py").returncode == EXIT_COMPLETE
+    return tree
+
+
+def _forge_archetypus(root, change) -> None:
+    """Rewrite p1:1's record, reseal it and rewitness the Archetypus, as an honest
+    producer of the forged record would."""
+    tree = RunTree(root, RUN_ID)
+    [entry] = [
+        entry
+        for entry in tree.build_manifest(ARCHETYPUS)["artifacts"]
+        if entry["kind"] == "archetypus"
+        and tree.read_artifact(ARCHETYPUS, "archetypus", entry["artifact_id"])["payload"]["act_key"]
+        == "p1:1"
+    ]
+    path = tree.resolve(entry["relative_path"])
+    record = json.loads(path.read_text(encoding="utf-8"))
+    change(record)
+    record["payload"]["self_hash"] = self_hash(record["payload"])
+    record["self_hash"] = self_hash(record)
+    path.write_bytes(canonical_bytes(record))
+    rewitness_stage_boundary(tree, ARCHETYPUS)
+
+
+def _other_text(record):
+    record["payload"]["text"] = EDITED + " and more"
+
+
+def _model_layer(record):
+    record["payload"]["uncertainty"] = {**corrected_layer(), "lectio_kind": "page-read"}
+
+
+def _other_note(record):
+    record["payload"]["provenance"]["note"] = "a note nobody wrote"
+
+
+def _no_approval_input(record):
+    record["inputs"] = [
+        ref for ref in record["inputs"] if not ref["relative_path"].startswith("receipts/")
+    ]
+
+
+@pytest.mark.parametrize(
+    "forge",
+    [_other_text, _model_layer, _other_note, _no_approval_input],
+    ids=["text", "layer", "provenance", "inputs"],
+)
+def test_a_resealed_archetypus_other_than_the_stored_edit_is_refused_by_the_armarium(
+    corrected_established, tmp_path, forge
+):
+    tree = _copy(corrected_established, tmp_path)
+    _forge_archetypus(tree.root, forge)
+    assert _run(tree, "pipeline/4b_coniector/run.py").returncode in (EXIT_COMPLETE, EXIT_HELD)
+    result = _run(tree, "pipeline/7_armarium/run.py")
+    assert result.returncode == 2, result.stderr
+    assert "the Archetypus of p1:1" in result.stderr
+    assert "person's correction" in result.stderr or "stored edit" in result.stderr
+
+
+# --- an edit alone completes a run ---------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def unit_held(designated, tmp_path_factory) -> SimpleNamespace:  # noqa: F811
+    """The tree through the Recensor's first pass, p1:2 held only on its own reading:
+    doubt marks the reader could not parse, with no page hold."""
+    work = tmp_path_factory.mktemp("unit-held")
+    root = work / "runs"
+    shutil.copytree(designated.run_root, root)
+    read_by_live_witnesses(designated, root, work / "witnesses")
+    # No act runs across the page break, so nothing but p1:2 keeps the run partial.
+    answer = json.loads(PAGE_ANSWERS[1])
+    answer["acts"][1]["text"] = "SYNTHETIC ACT TWO delta [[]] epsilon zeta eta"
+    answer["acts"][1]["continues_to_next_page"] = False
+    second = json.loads(PAGE_ANSWERS[2])
+    for act in second["acts"]:
+        act["continues_from_previous_page"] = False
+    reader = PageReaderWorld(
+        designated.catalogue,
+        work / "reader",
+        {1: json.dumps(answer), 2: json.dumps(second)},
+    )
+    assert (
+        run_in_process(
+            perlector,
+            root,
+            designated.catalogue,
+            placement_tier=TIER,
+            serving_factory=reader.factory,
+        )
+        == EXIT_COMPLETE
+    )
+    tree = SimpleNamespace(root=root, catalogue=designated.catalogue)
+    assert _run(tree, "pipeline/5_recensor/run.py").returncode == EXIT_HELD
+    review = _reviews(root)["p1:2"]
+    assert review["outcome"] == "held-for-review"
+    assert "doubt-marks-malformed" in review["payload"]["hold_codes"]
+    return tree
+
+
+def test_an_edit_of_a_reading_with_malformed_doubt_marks_is_delivered(unit_held, tmp_path):
+    """Its marks cannot be released, but a person's text carries none."""
+    from operations.operator import decide
+
+    tree = _copy(unit_held, tmp_path)
+    with pytest.raises(ApprovalRefusal, match="releasing p1:2 cannot send it to export"):
+        decide.prepare_decision(
+            RunTree(tree.root, RUN_ID), decision="release", unit="p1:2", reason="fine"
+        )
+    _decide(tree.root, "p1:2", "edit", text=TEXTS["p1:2"])
+    assert _recense(tree) == EXIT_COMPLETE
+    _after_recensor(tree)
+    bundle = _bundle(tree.root, tmp_path / "clean")
+    assert bundle["acts"]["p1:2"]["canonical_clean_text"] == TEXTS["p1:2"]
+    assert bundle["acts"]["p1:2"]["uncertainty"] == corrected_layer()
+
+
+def test_a_run_whose_only_decision_is_an_edit_of_a_unit_held_reading_is_complete(
+    unit_held, tmp_path
+):
+    """A correction is no reason: with nothing else held, the aggregate is complete."""
+    tree = _copy(unit_held, tmp_path)
+    reviews = _reviews(tree.root)
+    held = [key for key, review in reviews.items() if review["outcome"] == "held-for-review"]
+    assert held == ["p1:2"], "only the edited unit is held, and only on its own reading"
+    _decide(tree.root, "p1:2", "edit", text=TEXTS["p1:2"])
+    assert _recense(tree) == EXIT_COMPLETE
+    _after_recensor(tree)
+    sources = json.loads(_members(tree.root)["sources.json"])
+    assert sources["aggregate_basis"]["review_decisions"]["corrections"] == ["p1:2"]
+    manifest = armarium_export.verify_delivered_bundle(
+        _repacked(dict(_members(tree.root))), tmp_path / "clean"
+    )
+    assert manifest["aggregate"]["status"] == "complete", manifest["aggregate"]["reasons"]

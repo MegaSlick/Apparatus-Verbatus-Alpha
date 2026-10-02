@@ -282,3 +282,17 @@ def test_the_reason_is_bounded_by_the_approval_contract(recensed, tmp_path, monk
     assert _decide(root, tmp_path, monkeypatch, *words, "y" * 5_000) == 0
     [record] = _stored(root)
     assert record["reason"] == "y" * 5_000
+
+
+def test_an_edit_of_an_unplaced_reading_is_refused_and_nothing_is_written(
+    recensed, tmp_path, monkeypatch, capsys
+):
+    root, _options = _copy(recensed, tmp_path)
+    text_file = tmp_path / "text.txt"
+    text_file.write_text("SYNTHETIC ACT TWO", encoding="utf-8")
+    words = ("edit", "--unit", "p2:1", "--text-file", str(text_file))
+    assert _decide(root, tmp_path, monkeypatch, *words, "--reason", "why") == 2
+    out = capsys.readouterr().out
+    assert "correcting p2:1 cannot send it to export" in out
+    assert "no region on its page" in out
+    assert _stored(root) == []
