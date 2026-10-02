@@ -95,3 +95,20 @@ def test_incident_notes_on_main_are_append_only(tmp_path):
     git(repo, "rm", "-q", NOTE)
     commit(repo, "delete")
     assert any("was deleted" in problem for problem in incidents_kept(repo, "main"))
+
+
+def test_lifting_a_hold_needs_a_decision_in_every_incident_note(tmp_path):
+    repo = repo_with_main(tmp_path)
+    other = "pagekit/cleanroom/incidents/0002.md"
+    write(repo, other, "# Incident 0002\n\nDecision:\n")
+    hold(repo)
+    git(repo, "rm", "-q", HOLD)
+    write(repo, NOTE, "# Incident 0001\n\nDecision: false flag, a common idiom.\n")
+    commit(repo, "lift with one note undecided")
+    problems = replay_hold(repo, "main")
+    assert any(f"{other}: removing {HOLD} needs a decision" in problem for problem in problems)
+    assert not any(NOTE in problem for problem in problems)
+
+    write(repo, other, "# Incident 0002\n\nDecision: purge.\n")
+    git(repo, "commit", "-q", "--amend", "--no-edit")
+    assert replay_hold(repo, "main") == []

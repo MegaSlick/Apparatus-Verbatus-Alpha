@@ -3,7 +3,8 @@
 While ``pagekit/cleanroom/HOLD`` exists (in the last commit, the staged tree or the
 working copy), a commit may change only the HOLD file and the incident records under
 ``pagekit/cleanroom/incidents/``. The commit that removes HOLD must also add or change
-an incident record carrying the lead's ``Decision:`` line. Everything is read from
+an incident record carrying the lead's ``Decision:`` line, and every incident record it
+leaves must carry one. Everything is read from
 the commit being made, never from branch names or environment variables.
 
 The pre-commit hook runs this from the repository root:
@@ -85,21 +86,38 @@ def _hold_rule(
         if path != HOLD and not path.startswith(INCIDENTS)
     ]
     if in_before and not in_after:
-        decided = any(
-            status in ("A", "M")
-            and path.startswith(INCIDENTS)
-            and has_decision(
-                _git(root, "cat-file", "blob", f"{after}{path}").stdout.decode("utf-8", "replace")
-            )
+        notes = _incident_notes(root, after)
+        undecided = [path for path in notes if not has_decision(_blob(root, f"{after}{path}"))]
+        decided_here = any(
+            status in ("A", "M") and path.startswith(INCIDENTS) and path not in undecided
             for status, path in changes
         )
-        if not decided:
+        if not decided_here:
             problems.append(
                 f"removing {HOLD} needs the lead's decision in the same commit: an incident "
                 f"record under {INCIDENTS} with a line 'Decision: purge', "
                 "'Decision: minor breach' or 'Decision: false flag'"
             )
+        problems += [f"{path}: removing {HOLD} needs a decision in this note" for path in undecided]
     return problems
+
+
+def _blob(root: Path, spec: str) -> str:
+    result = _git(root, "cat-file", "blob", spec)
+    if result.returncode != 0:
+        raise scan.ScanError(f"git could not read {spec}")
+    return result.stdout.decode("utf-8", "replace")
+
+
+def _incident_notes(root: Path, tree: str) -> list[str]:
+    """Every incident note in `tree`, an object-name prefix as in `_hold_rule`."""
+    if tree == ":":
+        listed = _git(root, "ls-files", "-z", "--", INCIDENTS)
+    else:
+        listed = _git(root, "ls-tree", "-r", "-z", "--name-only", tree.rstrip(":"), "--", INCIDENTS)
+    if listed.returncode != 0:
+        raise scan.ScanError(f"git could not list {INCIDENTS} in {tree}")
+    return [item.decode("utf-8", "replace") for item in listed.stdout.split(b"\0") if item]
 
 
 def hold_problems(root: Path) -> list[str]:
