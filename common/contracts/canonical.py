@@ -225,6 +225,11 @@ def digest_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def text_sha256(text: str) -> str:
+    """The digest a text is named by: its UTF-8 bytes, never its canonical JSON."""
+    return digest_bytes(text.encode("utf-8"))
+
+
 def walk_dicts(value: Any, cycle_refusal: str) -> Iterator[dict]:
     """Yield every dict nested in `value` through dicts, lists and tuples.
 

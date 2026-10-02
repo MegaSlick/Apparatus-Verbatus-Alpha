@@ -1553,7 +1553,7 @@ def _decide_with_confirmation(
             _print("Note: none")
             edited = f" with text {prepared.text_sha256} and no note"
         else:
-            from common.correction import text_sha256
+            from common.contracts.canonical import text_sha256
 
             _print(f"Note: {json.dumps(note, ensure_ascii=False)}")
             _print(f"Note digest: {text_sha256(note)}")

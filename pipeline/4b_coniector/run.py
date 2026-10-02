@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 import operations.serving.errors as serving_errors  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.canonical import text_sha256  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.stages import CONIECTOR  # noqa: E402
 from common.decoding import load_decoding_policy, reconstructor_max_tokens  # noqa: E402
@@ -61,7 +62,6 @@ from common.reconstruction_records import (  # noqa: E402
     reconstruction_subject,
     reply_state,
     sealed_generations,
-    text_sha256,
 )
 from common.request_capacity import (  # noqa: E402
     RequestCapacityRefusal,

@@ -31,7 +31,7 @@ from common.contracts.approval import (
     ApprovalRecordReference,
     review_decision_digests,
 )
-from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.canonical import text_sha256
 from common.contracts.errors import FatalAccounting
 from common.review_decisions import CORRECTION_FIELD, correction_digest
 
@@ -39,7 +39,7 @@ CORRECTED_LABEL: Final = "corrected by a person"
 ORIGINAL_LABEL: Final = "model reading (original)"
 PROVENANCE_FIELDS: Final = frozenset({"label", "note", "decisions", "model_reading"})
 # Enough of each edit to rebuild its approval record from the delivered text and
-# the note (`rebuilt_edit`), so a clean machine can check the decision is the one
+# the note (`edit_digests`), so a clean machine can check the decision is the one
 # that names that text.
 DECISION_FIELDS: Final = frozenset(
     {
@@ -56,11 +56,6 @@ DECISION_FIELDS: Final = frozenset(
 MODEL_READING_FIELDS: Final = frozenset(
     {"label", "perlectio_ref", "text_sha256", "text_status", "provenance"}
 )
-
-
-def text_sha256(text: str) -> str:
-    """The digest a correction names a text by: its UTF-8 bytes."""
-    return digest_bytes(text.encode("utf-8"))
 
 
 def stored_edits(
@@ -160,11 +155,6 @@ def model_provenance(provenance: Mapping[str, Any]) -> Any:
     if is_correction(provenance):
         return provenance["model_reading"]["provenance"]
     return provenance
-
-
-def record_digest(record: Mapping[str, Any]) -> str:
-    """The digest a stored approval is named by in the run tree: its canonical bytes."""
-    return digest_bytes(canonical_bytes(record))
 
 
 def edit_digests(

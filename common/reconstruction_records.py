@@ -37,7 +37,7 @@ from typing import Any, Final
 
 from common import page_path
 from common.chairs.models import ChairIdentity
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, text_sha256
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import CONIECTOR, PERLECTOR
@@ -149,10 +149,6 @@ CALL_FIELDS: Final = frozenset(
 MAKER_FIELDS: Final = frozenset(
     {"kind", "chair", "chair_state", "resolved_identity", "resolved_revision", "receipt_ref"}
 )
-
-
-def text_sha256(text: str) -> str:
-    return digest_bytes(text.encode("utf-8"))
 
 
 # --- the diplomatic entries ------------------------------------------------------------

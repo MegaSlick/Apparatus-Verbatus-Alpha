@@ -40,9 +40,9 @@ from common.contracts.approval import (
     ApprovalRecordReference,
     build_review_decision_record,
 )
+from common.contracts.canonical import text_sha256
 from common.contracts.errors import ApprovalRefusal
 from common.contracts.stages import ARCHETYPUS, ARMARIUM
-from common.correction import text_sha256
 from common.page_review import override_refusal, published_units
 from common.review_decisions import CURRENT, published_basis, review_decision
 from common.runtree.store import RunTree

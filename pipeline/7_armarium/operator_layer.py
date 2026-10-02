@@ -31,17 +31,12 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
-from common.contracts.canonical import is_sha256
+from common.contracts.canonical import is_sha256, text_sha256
 from common.contracts.errors import SchemaRefusal
 from common.contracts.outcomes import derive_record_text_status
 from common.contracts.uncertainty import PAGE_READ_LECTIO
 from common.contracts.uncertainty import validate as validate_uncertainty
-from common.correction import (
-    CORRECTED_LABEL,
-    MODEL_READING_FIELDS,
-    ORIGINAL_LABEL,
-    text_sha256,
-)
+from common.correction import CORRECTED_LABEL, MODEL_READING_FIELDS, ORIGINAL_LABEL
 
 OPERATOR_MEMBER: Final = "operator.jsonl"
 SOURCES_FIELD: Final = "operator_actions"
