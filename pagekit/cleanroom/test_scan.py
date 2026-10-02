@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -45,19 +46,23 @@ def test_each_rule_finds_its_synthetic_hit(line, rule):
     assert scan.scan_text("x.md", f"intro\n{line}\n", NONE)[0].line == 2
 
 
-@pytest.mark.parametrize(
-    "line",
-    [
-        "Copyright (C) 2007 Joseph Artsi" + "movich",
-        "Copyright \u00a9 2015 " + FORK,
-        "Copyright 2019 the Scan" + "Tailor Advanced developers",
-        "\u00a9 2020 Scan" + "Tailor authors",
-        "(c) 2007-2009 Joseph Artsi" + "movich <someone@example.invalid>",
-        " * COPYRIGHT (C) " + OWNER + " contributors",
-    ],
-)
-def test_copyright_notices_in_several_formats_are_hits(line):
-    assert [hit.rule for hit in scan.scan_text("x.cpp", line + "\n", NONE)] == ["foreign_copyright"]
+NOTICES = [
+    "Copyright (C) 2007 Joseph Artsi" + "movich",
+    "Copyright \u00a9 2015 " + FORK,
+    "Copyright 2019 the Scan" + "Tailor Advanced developers",
+    "\u00a9 2020 Scan" + "Tailor authors",
+    "(c) 2007-2009 Joseph Artsi" + "movich <someone@example.invalid>",
+    "COPYRIGHT (C) " + OWNER + " contributors",
+]
+LEADERS = ["", "  ", "# ", "// ", "/* ", " * ", "-- ", "; ", "<!-- ", '"""', "''' "]
+BRIEFS = Path(__file__).with_name("briefs")
+
+
+@pytest.mark.parametrize("notice", NOTICES)
+@pytest.mark.parametrize("leader", LEADERS)
+def test_copyright_header_lines_are_hits_behind_any_comment_leader(leader, notice):
+    hits = scan.scan_text("x.cpp", leader + notice + "\n", NONE)
+    assert [hit.rule for hit in hits] == ["foreign_copyright"]
 
 
 @pytest.mark.parametrize(
@@ -66,10 +71,22 @@ def test_copyright_notices_in_several_formats_are_hits(line):
         "the host scans for GPL/Scan" + "Tailor copyright or licence headers",
         "a copyright notice naming Scan" + "Tailor or its authors is refused",
         "Copyright questions about Scan" + "Tailor are a lawyer's matter",
+        "the header read Copyright (C) 2007 Scan" + "Tailor authors, mid-sentence",
+        "- Copyright (C) 2007 Scan" + "Tailor in a list item is prose, not a header",
     ],
 )
-def test_prose_about_copyright_notices_is_not_a_hit(line):
+def test_prose_mentioning_a_notice_is_not_a_hit(line):
     assert scan.scan_text("x.md", line + "\n", NONE) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "number"),
+    [("0002a-build-cleanroom-task.md", 24), ("0004-narrow-copyright-rule.md", 12)],
+)
+def test_the_brief_lines_once_refused_by_mistake_pass(name, number):
+    line = (BRIEFS / name).read_text(encoding="utf-8").splitlines()[number - 1]
+    assert "copyright" in line.lower()
+    assert scan.scan_text(name, line + "\n", NONE) == []
 
 
 def test_a_front_page_credit_link_is_not_a_hit():
