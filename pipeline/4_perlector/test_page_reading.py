@@ -2005,11 +2005,11 @@ def test_with_the_perlector_chair_absent_every_page_is_fed_and_accounted_not_rea
     assert _records(root, "act-region") == []
 
 
-def test_the_deadline_count_takes_every_operator_re_read_the_window_may_send():
+def test_the_deadline_count_takes_every_operator_re_read_the_window_may_send(monkeypatch):
     """The live deadline count takes every operator re-read request of a page."""
     sends = []
-    hooks = SimpleNamespace(sent_records=lambda *args: sends.append(args) or [])
-    state = SimpleNamespace(context=SimpleNamespace(), hooks=hooks, live=True)
+    monkeypatch.setattr(page_run.live_calls, "sent_records", lambda *args: sends.append(args) or [])
+    state = SimpleNamespace(context=SimpleNamespace(), live=True)
     page = SimpleNamespace(
         page_id="pg_0000000000000001",
         ordinal=1,
