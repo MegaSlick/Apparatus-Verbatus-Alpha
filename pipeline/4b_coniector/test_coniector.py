@@ -829,31 +829,37 @@ def test_the_recompute_refuses_a_forged_live_call(live, tmp_path, change, refusa
         _verified(root, options)
 
 
-def _main_on_a_real_submission(monkeypatch, *, calls: list, serving_mode: str):
-    """The Coniector's `main` over a real-ingress context, its plan and chair stubbed.
+def _main_on_a_real_submission(monkeypatch, tree, serving_mode: str):
+    """The Coniector's `main` over a sealed fixture tree, its chair and its plan
+    publication stubbed. The context's run authority says real once the readings are
+    read, since the fixture tree's upstream records are not a real submission's.
 
     Returns what it published, in order, and the error it raised, if any.
     """
     coniector = load_stage("4b_coniector")
+    root, options = tree
     published: list[str] = []
-    context = SimpleNamespace(
-        run={"ingress": real_ingress_record()},
-        require_sealed_config=lambda *_args: None,
-        seal_boundary=lambda: published.append("seal"),
-        finish=lambda: None,
-    )
-    args = SimpleNamespace(reconstruction_config=None, decoding_config=None)
-    monkeypatch.setattr(
-        coniector, "stage_parser", lambda _d: SimpleNamespace(parse_args=lambda: args)
-    )
-    monkeypatch.setattr(coniector, "open_stage_context", lambda *_a, **_k: context)
-    monkeypatch.setattr(
-        coniector, "load_reconstruction_policy", lambda _p: SimpleNamespace(sha256="0", mode="on")
-    )
-    monkeypatch.setattr(coniector, "load_decoding_policy", lambda _p: ({}, "0"))
-    monkeypatch.setattr(coniector, "reading_acts", lambda _c: [])
-    monkeypatch.setattr(coniector, "diplomatic_entries", lambda _c, _r: ([], {}))
-    monkeypatch.setattr(coniector, "plan_payload", lambda _p, _e: {"calls": calls})
+    opened = coniector.open_stage_context
+
+    def real(*args, **kwargs):
+        context = opened(*args, **kwargs)
+        entries = coniector.diplomatic_entries
+
+        def then_real(*a):
+            found = entries(*a)
+            context.run = {**context.run, "ingress": real_ingress_record()}
+            return found
+
+        monkeypatch.setattr(coniector, "diplomatic_entries", then_real)
+        monkeypatch.setattr(type(context), "seal_boundary", lambda _s: published.append("seal"))
+        monkeypatch.setattr(type(context), "finish", lambda _s: None)
+        return context
+
+    argv = [CONIECTOR_PROGRAM, "--run-root", str(root), "--run-id", RUN_ID, "--scenario", "happy"]
+    for name, value in options.items():
+        argv += [f"--{name.replace('_', '-')}", str(value)]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(coniector, "open_stage_context", real)
     monkeypatch.setattr(
         coniector,
         "_Chair",
@@ -862,8 +868,6 @@ def _main_on_a_real_submission(monkeypatch, *, calls: list, serving_mode: str):
         ),
     )
     monkeypatch.setattr(coniector, "_publish_plan", lambda *_a: published.append("plan"))
-    monkeypatch.setattr(coniector, "reconstructor_max_tokens", lambda _d: 1)
-    monkeypatch.setattr(coniector, "_publish_call", lambda *_a: pytest.fail("a call was asked"))
     try:
         coniector.main()
     except ContractError as error:
@@ -871,20 +875,18 @@ def _main_on_a_real_submission(monkeypatch, *, calls: list, serving_mode: str):
     return published, None
 
 
-def test_a_real_submission_on_a_non_live_row_is_refused_before_the_plan(monkeypatch):
+def test_a_real_submission_on_a_non_live_row_is_refused_before_the_plan(unconsecutive, monkeypatch):
     """A declared answer cannot stand in for a reply to real ink, so the stage refuses
     by name before it publishes anything, not part-way through its calls."""
-    published, error = _main_on_a_real_submission(
-        monkeypatch, calls=[{"page_ordinal": 1}], serving_mode="fixture"
-    )
+    published, error = _main_on_a_real_submission(monkeypatch, unconsecutive, "fixture")
     assert published == []
     assert error is not None
     assert "the Coniector cannot read a real submission from declared fixture answers" in str(error)
     assert "'reconstructor'" in str(error)
 
 
-def test_a_real_submission_that_asks_nothing_is_not_refused(monkeypatch):
+def test_a_real_submission_that_asks_nothing_is_not_refused(off, monkeypatch):
     """With nothing to ask, a non-live row has nothing to answer, and the stage seals."""
-    published, error = _main_on_a_real_submission(monkeypatch, calls=[], serving_mode="fixture")
+    published, error = _main_on_a_real_submission(monkeypatch, off, "fixture")
     assert error is None
     assert published == ["plan", "seal"]

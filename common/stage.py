@@ -3560,6 +3560,31 @@ def is_real_ingress(run: Mapping[str, Any]) -> bool:
     return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
 
 
+def refuse_unlive_real_reading(
+    context: StageContext,
+    chair: ChairIdentity | AbsentChair,
+    serving_mode: str,
+    *,
+    stage: str = "Perlector",
+) -> None:
+    """Refuse a non-live serving row on a real submission, before anything is published.
+
+    The Perlector and the Coniector read the synthetic fixture's declared answers when
+    their chair's sealed row is not live. A real submission has no declarations, and
+    a declared answer cannot stand in for a model's reply to real ink. A fixture run,
+    a live row and an absent chair, which reads nothing, all pass.
+    """
+    if serving_mode == "live" or not is_real_ingress(context.run) or isinstance(chair, AbsentChair):
+        return
+    raise ContractError(
+        f"the {stage} cannot read a real submission from declared fixture answers: the "
+        f"sealed serving-recipe row for chair {chair.role!r} is not a live row, and a "
+        "declared answer cannot stand in for a model's reply to real ink. Start a new run "
+        f"sealed under a catalogue whose {stage} row is live; a sealed run's catalogue "
+        "cannot be changed"
+    )
+
+
 def sealed_decoding_policy(context: StageContext) -> tuple[dict[str, Any], str]:
     """The run's decoding policy, refused unless it is the one the run sealed."""
     policy, digest = load_decoding_policy(context.args.decoding_config)
