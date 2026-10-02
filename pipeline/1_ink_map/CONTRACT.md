@@ -253,9 +253,9 @@ placed and not derived. The gaps at the top: 6148 → 6595 (447), **6595 → 707
 | teklia_dai_cretdhi | 24 | 21 | 9 | 12 | 3 | 12.5% |
 | recordgold_production_train_v1 | 32 | 29 | 11 | 18 | 3 | 9.4% |
 | recordgold_evaluation_val_v1 | 4 | 4 | 0 | 4 | 0 | 0.0% |
-| Embrun | 15 | 13 | 0 | 13 | 2 | 13.3% |
-| Oka | 15 | 15 | 14 | 1 | 0 | 0.0% |
-| Montebello | 15 | 13 | 0 | 13 | 2 | 13.3% |
+| parish A | 15 | 13 | 0 | 13 | 2 | 13.3% |
+| parish B | 15 | 15 | 14 | 1 | 0 | 0.0% |
+| parish C | 15 | 13 | 0 | 13 | 2 | 13.3% |
 | Saint-Jacques | 15 | 15 | 15 | 0 | 0 | 0.0% |
 | control (7 proxies) | 7 | 4 | 0 | 4 | 3 | 42.9% |
 | **all** | **127** | **114** | **49** | **65** | **13** | **10.2%** |
@@ -422,13 +422,13 @@ Per source, on the 114 inferred pages:
 | teklia_dai_cretdhi | 172 / 212 / 231 | 0 / 0 / 22 | 57 / 69 / 75 | 0.2626 / 0.3710 / 0.6149 | 0.1875 / 0.2117 / 0.3899 | 0.0165 / 0.0356 / 0.0962 |
 | recordgold_production_train_v1 | 157 / 212 / 245 | 0 / 1 / 23 | 52 / 69 / 80 | 0.2816 / 0.3946 / 0.5365 | 0.1780 / 0.2481 / 0.4080 | 0.0192 / 0.0474 / 0.0696 |
 | recordgold_evaluation_val_v1 | 216 / 223 / 224 | 0 / 0 / 1 | 71 / 74 / 74 | 0.3062 / 0.4221 / 0.5624 | 0.2145 / 0.2437 / 0.2767 | 0.0221 / 0.0432 / 0.0490 |
-| Embrun | 171 / 217 / 230 | 0 / 0 / 0 | 56 / 72 / 76 | 0.1635 / 0.3886 / 0.5688 | 0.1270 / 0.2310 / 0.4096 | 0.0045 / 0.0369 / 0.0797 |
-| Oka | 176 / 189 / 252 | 0 / 176 / 247 | 20 / 20 / 66 | 0.0282 / 0.2137 / 0.5245 | 0.0282 / 0.2039 / 0.4571 | 0.0383 (one page) |
-| Montebello | 188 / 209 / 216 | 0 / 0 / 0 | 62 / 69 / 71 | 0.3263 / 0.3892 / 0.5818 | 0.1534 / 0.2633 / 0.4728 | 0.0249 / 0.0356 / 0.0678 |
+| parish A | 171 / 217 / 230 | 0 / 0 / 0 | 56 / 72 / 76 | 0.1635 / 0.3886 / 0.5688 | 0.1270 / 0.2310 / 0.4096 | 0.0045 / 0.0369 / 0.0797 |
+| parish B | 176 / 189 / 252 | 0 / 176 / 247 | 20 / 20 / 66 | 0.0282 / 0.2137 / 0.5245 | 0.0282 / 0.2039 / 0.4571 | 0.0383 (one page) |
+| parish C | 188 / 209 / 216 | 0 / 0 / 0 | 62 / 69 / 71 | 0.3263 / 0.3892 / 0.5818 | 0.1534 / 0.2633 / 0.4728 | 0.0249 / 0.0356 / 0.0678 |
 | Saint-Jacques | 185 / 197 / 208 | 9 / 10 / 26 | 56 / 62 / 65 | 0.3753 / 0.4722 / 0.5838 | 0.1837 / 0.2404 / 0.4581 | n/a (modal branch) |
 | control (7 proxies) | 189 / 196 / 196 | 0 / 0 / 0 | 62 / 65 / 65 | 0.4756 / 0.5218 / 0.6595 | 0.2991 / 0.3391 / 0.3579 | 0.0308 / 0.0549 / 0.0722 |
 
-Oka is the source the floor is for: 10 of its 15 pages have 22 grey levels or
+parish B is the source the floor is for: 10 of its 15 pages have 22 grey levels or
 fewer between their two modes and derive the floor margin of 20, so their ink
 fraction barely moves. Saint-Jacques takes the plain modal branch on all 15, so
 it has no dark-distribution block or dark-excluded statistic to report; its
@@ -436,7 +436,7 @@ whole-page figure is the relevant observed value, and it halves.
 
 **Components at the sealed `gap_tolerance_px = 3`**, over the 114 inferred pages:
 **87 / 2,772 / 24,617** against **87 / 6,237 / 24,617** at the fixed margin — the
-median more than halves, and the extremes are the two Oka pages that derive the
+median more than halves, and the extremes are the two parish B pages that derive the
 floor and therefore do not move at all.
 
 **The refusal outcome is unchanged, page for page.** 114 inferred, 13 refused,
