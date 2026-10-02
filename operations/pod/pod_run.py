@@ -181,8 +181,7 @@ from .bootstrap_main import (
     refuse_credential_looking_argv,
 )
 from .durable import atomic_write, canonical_json
-from .models import POD_GUARD_DIRECTORY, run_report_paths, utc_now
-from .provider_runpod import POD_ID_ENVIRONMENT
+from .models import POD_GUARD_DIRECTORY, POD_ID_ENVIRONMENT, run_report_paths, utc_now
 from .run_exits import (
     EXIT_BOOTSTRAP_RED,
     EXIT_COMPLETE,
