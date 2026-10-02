@@ -176,6 +176,12 @@ def test_consecutive_pages_join_an_act_across_the_break_asked_on_its_last_page(c
     join = _by_keys(root)[("p1:2", "p2:1")]
     assert join["subject_id"] == join["payload"]["act_ids"][0]
     assert join["payload"]["unit"] == "join" and join["payload"]["continues"] is True
+    # The fixture's two pieces read alike, so their order is pinned by the act each
+    # names; the joined text's order is proved on distinct pieces in
+    # `common/test_reconstruction_records.py`.
+    rows = [json.loads(line) for line in _members(root)["acts.jsonl"].splitlines()]
+    act_ids = {row["act_key"]: row["act_id"] for row in rows}
+    assert join["payload"]["act_ids"] == [act_ids["p1:2"], act_ids["p2:1"]]
     assert join["payload"]["reconstruction_raw"] == (
         "SYNTHETIC ACT TWO delta epsilon zeta eta SYNTHETIC ACT TWO delta epsilon zeta eta"
     )
