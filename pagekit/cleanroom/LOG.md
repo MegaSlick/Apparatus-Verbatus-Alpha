@@ -176,3 +176,29 @@ record".
 - **Use:** build-side briefs for later slices may cite these findings by number,
   together with a written spec, and commits that use one carry
   `Clean-room-finding: NNNN`.
+
+## 0009 — A rule of this protocol was broken: reading-side work ran while the old bridge was still on main
+
+- **Who:** recorded by the host after an independent reader of this branch pointed it
+  out.
+- **The rule:** CLEANROOM.md said the repository's older ScanTailor bridge (entry 0003)
+  must be gone before any reading-side session starts.
+- **What happened:** the reading-side session of entries 0007 and 0008 ran while those
+  files were still on `main`. They are removed by two other open pull requests (#245,
+  #248) that had not merged. The host started the session without checking this rule.
+- **Did anything cross?** As far as the record shows, no. The reading-side agent was
+  told to read only the lead's document, two pagekit files and the report template,
+  and its reports passed the check and the host's reading (entry 0008). No build-side
+  agent has read the bridge files.
+- **What the host itself has seen of the bridge**, checked against this session's own
+  transcript on 2026-10-02:
+  - The host never opened the bridge files.
+  - It ran searches while preparing the clean-up pull requests that delete them. Those
+    printed their file names, the import lines in other files that refer to them, and
+    one line of the triage stage description naming the bridge as a kind of actor.
+- **Status:** a procedural breach, not a suspected leak, so no HOLD was placed. The lead
+  is asked to decide whether entries 0007 and 0008 stand, recommended yes. The rule is
+  rewritten so it can be kept:
+  - no build-side agent may read the bridge files;
+  - the bridge must be removed from `main` before pagekit merges.
+- **Lead's decision:** [to be recorded here when the lead answers.]
