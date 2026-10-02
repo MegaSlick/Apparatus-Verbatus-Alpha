@@ -42,8 +42,8 @@ recipe or a missing row fails in tests, not on a rented card.
 - An `unproven` row launches only under a qualification purpose: the pod smoke
   (`preflight-qualification`) or a run started with
   `--mechanics-qualification`. The launch audit records which.
-- A chair configured as an adapter of another chair is refused: only full
-  checkpoints are served.
+- Only full checkpoints are served: the roster refuses a chair declared as an
+  adapter of another (`adapter_of`) when it is parsed.
 
 ## Lifecycle
 

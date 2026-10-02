@@ -123,8 +123,6 @@ def _vllm_row(
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
-        "enable_tower_connector_lora": False,
-        "max_lora_rank": 16,
         "generation_config": "vllm",
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,

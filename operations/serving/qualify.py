@@ -128,15 +128,6 @@ def qualification_candidates(
         for role, identity in models.chairs.items()
         if isinstance(identity, ChairIdentity)
     }
-    adapters = sorted(
-        role for role, identity in identities.items() if identity.adapter_of is not None
-    )
-    if adapters:
-        raise QualificationRefusal(
-            "adapter qualification is unsupported: an adapter proof must bind its resolved "
-            "base checkpoint as well as the adapter; no candidates were emitted for "
-            + ", ".join(adapters)
-        )
     # Qualification is per chair: it covers exactly the chairs this preflight
     # placed, which is the whole roster or the narrowed selection an operator
     # asked for (an `unsupported` row at a small tier is left out that way, since

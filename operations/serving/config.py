@@ -119,8 +119,6 @@ _PROFILE_FIELDS = {
     "enable_prefix_caching",
     "enforce_eager",
     "trust_remote_code",
-    "enable_tower_connector_lora",
-    "max_lora_rank",
     "generation_config",
     "startup_timeout_seconds",
     "poll_interval_seconds",
@@ -301,8 +299,6 @@ class ServingProfile:
     enable_prefix_caching: bool
     enforce_eager: bool
     trust_remote_code: bool
-    enable_tower_connector_lora: bool
-    max_lora_rank: int
     generation_config: str
     startup_timeout_seconds: int
     poll_interval_seconds: int
@@ -613,14 +609,6 @@ def _parse_profile(
     enable_prefix_caching = _bool(raw["enable_prefix_caching"], "enable_prefix_caching")
     enforce_eager = _bool(raw["enforce_eager"], "enforce_eager")
     trust_remote_code = _bool(raw["trust_remote_code"], "trust_remote_code")
-    enable_tower_connector_lora = _bool(
-        raw["enable_tower_connector_lora"], "enable_tower_connector_lora"
-    )
-    max_lora_rank = _positive_int(raw["max_lora_rank"], "max_lora_rank")
-    if max_lora_rank not in {1, 8, 16, 32, 64, 128, 256, 320, 512}:
-        raise ServingConfigurationError(
-            "max_lora_rank must be one of vLLM's supported static LoRA ranks"
-        )
     generation_config = _text(raw["generation_config"], "generation_config")
     if generation_config not in _GENERATION_CONFIG_VALUES:
         raise ServingConfigurationError(
@@ -687,8 +675,6 @@ def _parse_profile(
         enable_prefix_caching=enable_prefix_caching,
         enforce_eager=enforce_eager,
         trust_remote_code=trust_remote_code,
-        enable_tower_connector_lora=enable_tower_connector_lora,
-        max_lora_rank=max_lora_rank,
         generation_config=generation_config,
         startup_timeout_seconds=timeout,
         poll_interval_seconds=poll,

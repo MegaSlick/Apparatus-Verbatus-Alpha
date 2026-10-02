@@ -317,7 +317,7 @@ class ServingManager:
     """A sequential vLLM lifecycle manager.
 
     :meth:`start` verifies the chair's snapshot just before launch. Only full
-    checkpoints are served: a chair configured as an adapter of another is refused.
+    checkpoints are served; the roster refuses an adapter chair when it is parsed.
     """
 
     def __init__(
@@ -427,11 +427,6 @@ class ServingManager:
         process: ServerProcess | None = None
         endpoint = ""
         try:
-            if identity.adapter_of is not None:
-                raise ServingConfigurationError(
-                    f"chair {identity.role!r} is configured as an adapter of "
-                    f"{identity.adapter_of!r}; only full checkpoints are served"
-                )
             # The recipe check comes before any snapshot is verified.
             profile = self._launchable_profile(identity, tier)
             self._assert_runtime(profile)
@@ -835,8 +830,6 @@ class ServingManager:
                     "gpu_memory_utilization": str(profile.gpu_memory_utilization),
                     "min_pixels": profile.min_pixels,
                     "max_pixels": profile.max_pixels,
-                    "max_lora_rank": profile.max_lora_rank,
-                    "enable_tower_connector_lora": profile.enable_tower_connector_lora,
                     "enable_prefix_caching": profile.enable_prefix_caching,
                     "enforce_eager": profile.enforce_eager,
                     "trust_remote_code": profile.trust_remote_code,

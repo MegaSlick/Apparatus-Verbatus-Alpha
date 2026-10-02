@@ -331,8 +331,6 @@ def profile_row(
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
-        "enable_tower_connector_lora": False,
-        "max_lora_rank": 16,
         "generation_config": "vllm",
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,
@@ -502,29 +500,6 @@ def test_explicit_mechanics_qualification_launches_unproven_profile_and_records_
     assert len(publisher.calls) == 1
     handle.stop()
     assert launcher.processes[0].terminate_calls == 1
-
-
-def test_an_adapter_chair_is_refused_before_any_snapshot_launch_or_receipt(
-    tmp_path: Path,
-) -> None:
-    adapter = identity("adapter", "adapter-v1", adapter_of="base")
-    manager, _, _, launcher, registry, publisher = manager_for(
-        tmp_path,
-        identities={adapter.role: adapter},
-        profiles=(
-            profile_row(
-                recipe="adapter-v1", chair="adapter", served_model_id="adapter-api", port=8100
-            ),
-        ),
-        model_ids=("adapter-api",),
-    )
-
-    with pytest.raises(ServingRecipeRefusal, match="only full checkpoints are served"):
-        manager.start(adapter, TIER)
-
-    assert registry.ensure_calls == []
-    assert launcher.processes == []
-    assert publisher.calls == []
 
 
 def test_a_proven_profile_does_not_carry_over_onto_a_repointed_chair(tmp_path: Path) -> None:
@@ -2300,16 +2275,9 @@ def test_config_catalogue_is_complete_for_the_fixture_roster_and_closed() -> Non
             assert isinstance(profile, FixtureProfile)
 
     raw = profile_row(recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000)
-    raw.pop("enable_tower_connector_lora")
-    with pytest.raises(ServingConfigurationError, match="enable_tower_connector_lora"):
+    raw["max_lora_rank"] = 16
+    with pytest.raises(ServingConfigurationError, match="unknown field"):
         recipes(raw)
-
-    bad_rank = profile_row(
-        recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
-    )
-    bad_rank["max_lora_rank"] = 7
-    with pytest.raises(ServingConfigurationError, match="supported static LoRA ranks"):
-        recipes(bad_rank)
 
     duplicate_endpoint = profile_row(
         recipe="other-v1", chair="other", served_model_id="other-api", port=8000
