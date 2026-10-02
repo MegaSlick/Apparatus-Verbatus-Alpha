@@ -694,7 +694,20 @@ class OperatorSurface:
         models_config: str | Path | None = None,
         serving_recipes_config: str | Path | None = None,
         witness_context_config: str | Path | None = None,
+        from_stage: str | None = None,
+        to_stage: str | None = None,
     ) -> RunOutcome:
+        """Run or resume `run_id` under this state's run root.
+
+        `from_stage` and `to_stage` resume only that inclusive range of stages,
+        as the orchestrator's `--from`/`--to` do: after a review decision, from
+        the Recensor (or the Perlector for a page re-ask) to the Armarium.
+        """
+        if (from_stage is None) != (to_stage is None):
+            raise OperatorError(
+                ErrorCode.INVALID_COMMAND,
+                detail="--from and --to name a range of stages together; give both or neither",
+            )
         if submission_folder is None:
             for flag, value in (
                 ("--submission-manifest", submission_manifest),
@@ -776,6 +789,7 @@ class OperatorSurface:
             "--run-root",
             str(run_root),
             *stage_argv,
+            *(() if from_stage is None else ("--from", from_stage, "--to", str(to_stage))),
         ]
         # Every receipt this run writes carries the same identity facts, since
         # a later diagnosis may have only the state directory.

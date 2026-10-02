@@ -5249,3 +5249,37 @@ def test_export_does_not_take_a_fetch_whose_canary_raised_an_alarm(tmp_path: Pat
     assert missing.value.code is ErrorCode.EXPORT_MISSING
     # Refused when choosing a run, before any Armarium export is attempted.
     assert missing.value.detail is None
+
+
+def test_a_held_run_resumes_from_the_recensor_through_verbatus_run(tmp_path: Path) -> None:
+    """After a decision or an advance, `verbatus run --from recensor --to armarium` resumes it."""
+    from conftest import advance_held_recensor
+
+    surface = _surface(tmp_path)
+    with pytest.raises(OperatorError) as held:
+        surface.run(run_id="resumed", scenario="page-review")
+    assert held.value.code is ErrorCode.RUN_HELD
+    run_root = surface.state_root / "runs"
+    assert not (run_root / "resumed" / "7_armarium").exists()
+
+    advance_held_recensor(run_root, "resumed")
+    with pytest.raises(OperatorError) as partial:
+        surface.run(
+            run_id="resumed", scenario="page-review", from_stage="recensor", to_stage="armarium"
+        )
+
+    assert partial.value.code is ErrorCode.RUN_HELD
+    assert (run_root / "resumed" / "7_armarium").is_dir()
+    argv = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]["argv"]
+    assert argv[argv.index("--from") :][:4] == ["--from", "recensor", "--to", "armarium"]
+
+
+def test_a_resume_range_names_both_of_its_ends(tmp_path: Path) -> None:
+    with pytest.raises(OperatorError) as refused:
+        _surface(tmp_path).run(run_id="half", from_stage="recensor")
+    assert refused.value.code is ErrorCode.INVALID_COMMAND
+    assert "give both or neither" in (refused.value.detail or "")
+    parsed = cli.build_parser().parse_args(
+        ["run", "--run-id", "r", "--from", "recensor", "--to", "armarium"]
+    )
+    assert (parsed.from_stage, parsed.to_stage) == ("recensor", "armarium")

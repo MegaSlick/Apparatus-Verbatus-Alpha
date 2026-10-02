@@ -1145,9 +1145,10 @@ def _next_action(
             summary = (
                 f"{census} The run stopped at a held Recensor, before the Archetypus: nothing "
                 "is established or exported until the holds below are decided. Record review "
-                "decisions about them in this run, then resume it from the Recensor (the "
-                f"orchestrator's `--from recensor --to armarium`, or {resume_command}"
-                f"{resume_where}); the Recensor applies every decision and the run continues "
+                "decisions about them in this run, then resume it from the Recensor ("
+                f"{resume_command[:-1]} --from recensor --to armarium`{resume_where}, or "
+                "`pod_run --from recensor --to armarium` on its pod); the Recensor applies "
+                "every decision and the run continues "
                 "once nothing is held. To export with holds remaining, `advance` the Recensor "
                 "boundary first; the export then names every hold."
             )

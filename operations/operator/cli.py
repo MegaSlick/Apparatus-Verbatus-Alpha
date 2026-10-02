@@ -523,6 +523,15 @@ def build_parser() -> PlainParser:
 
     run = verbs.add_parser("run", help="run or resume a recorded fixture or real submission")
     run.add_argument("--run-id", required=True, help="a short name for this run")
+    run.add_argument(
+        "--from",
+        dest="from_stage",
+        choices=STAGES,
+        help="resume only from this stage (with --to), e.g. recensor after a review decision",
+    )
+    run.add_argument(
+        "--to", dest="to_stage", choices=STAGES, help="the last stage of the --from range"
+    )
     run.add_argument("--scenario", default="happy", help="declared fixture scenario")
     run.add_argument("--fixture", default=DEFAULT_FIXTURE, help="declared fixture name")
     run.add_argument(
@@ -852,6 +861,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 models_config=args.models_config,
                 serving_recipes_config=args.serving_recipes_config,
                 witness_context_config=args.witness_context_config,
+                from_stage=args.from_stage,
+                to_stage=args.to_stage,
             )
         elif args.verb == "fetch-run":
             derived = _derived_evidence_keys(args.launch_receipt, volume, args.run_id)

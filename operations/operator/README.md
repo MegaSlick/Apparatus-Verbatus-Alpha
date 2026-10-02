@@ -100,7 +100,8 @@ bundle written (`export-unreconciled`, distinct from an unreadable record,
 **A hold is not cleared by running the same run name again**: that republishes the same
 sealed hold. An operator review decision recorded in the run (`approval-record.v1`,
 `pipeline/5_recensor/CONTRACT.md`, "Operator review decisions") resolves it when the run
-resumes from the Recensor, which applies every decision stored; a new run over the same
+resumes from the Recensor (`verbatus run --run-id <run> --from recensor --to armarium`),
+which applies every decision stored; a new run over the same
 sealed source is the other way. A run whose Recensor holds anything stops there, before
 the Archetypus, in every mode; it exports with holds remaining only after `advance`
 passes the Recensor's current seal. `review` shows what each stored decision did.
@@ -152,7 +153,7 @@ item:
 - **Keep it held.** `hold` a unit or page with a `--finding`, or `missed-act` on a page.
 - **Send it through the stage again.** `re-ask` a page asks for it to be read again;
   `re-shoot` a page asks for a new image. Resume the run from the Perlector
-  (`--from perlector --to armarium`): the Perlector reads the page again as its next
+  (`verbatus run --run-id <run> --from perlector --to armarium`): the Perlector reads the page again as its next
   operator re-read (attempt 3, then 4, ...), bound to your decision. That reading becomes
   the page's current one: the Recensor reviews it, the counts and the export use it, and
   its acts are labelled "read on operator re-read". The page's earlier readings and their
@@ -169,8 +170,9 @@ page that review does not name, a decision its subject does not allow, and a run
 Archetypus has established a reading or whose Armarium has published its export, where a
 decision recorded now could reach nothing. It writes one permanent record under the
 run's `receipts/sha256/`, prints what it recorded, and names the next step: resume the
-run from the Recensor (`--from recensor --to armarium`), which applies every decision
-stored, or from the Perlector for a page `re-ask`.
+run from the Recensor (`verbatus run --run-id <run> --from recensor --to armarium`, or
+`pod_run --from recensor --to armarium` on its pod), which applies every decision stored,
+or from the Perlector for a page `re-ask`.
 
 What is built: a reading goes to export as read, corrected by a person beside the
 model's original, is kept out, is kept held, or is read again. Splitting and merging
