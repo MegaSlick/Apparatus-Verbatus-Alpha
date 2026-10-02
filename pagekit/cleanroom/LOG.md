@@ -115,3 +115,64 @@ record".
   5312f3531b6e1a561c1b5d4d572977aaf3a50b2aa5bcefb8917946d977930c1d).
 - **Outcome:** recorded in a later entry once the host has run the report check on
   each report.
+
+## 0008 — Reading side's reports checked, read and accepted
+
+- **Who:** the reading-side agent of entry 0007 wrote the reports; the host checked
+  and read them.
+- **The agent's task message** gave it only the brief's path and sha256 (task message
+  sha256 8460a83ddb84f66588e164b1ae13b69e3df0d732d0bd0263106e513e78fb9978).
+- **What came back:** 36 files written into the local quarantine folder. The agent's
+  reply listed only their names and sha256 digests, and the digests matched the files.
+- **Check before reading:** the host ran the report check on every file before opening
+  any of them. All 35 finding reports passed every rule. The index file
+  (`0000-index.md`) is not a finding report: it failed only the template-structure
+  rules and broke no content rule.
+- **Host's reading:** the host then read all 36 files in full. They name page
+  situations, published or textbook methods with citations, and what each setting
+  should depend on. The host found no code, no file or function names, no numbers
+  taken from the other program, and no description of how that program is built. The
+  index records, in plain words, what the reader left out because it could not be
+  passed on without carrying the other program's expression: the order of its filters,
+  its numbers, its data structures, its specific recipes, its dewarping internals, and
+  two behaviours the lead's document calls defects in that code.
+- **Accepted:** the 36 files are saved unchanged in `findings/`:
+  - `0000-index.md`: 4caaef201dc80a0a5ccbfa96bd74475f46a835ed41192fb0d59d6388b61b4813
+  - `0001-orientation-quarter-turn.md`: 2d9cfa3c9dd85583c92e6a137ba79a7ce753b5095044f7278db388fe8985313f
+  - `0002-orientation-upside-down.md`: 0c692c5977df252f4135e04f77d1b3fe895c08feeb8eeee9e723e58ab25f0d67
+  - `0003-spread-or-single.md`: 51d6a74ccd1051d72dce5fe64bea17f0d64ecf641b5ced9ce9dae039cbd62bfc
+  - `0004-gutter-line.md`: f2920efeb6009f6d90cb59805a1c0170282de1635271b87a83cd425ae55b06cb
+  - `0005-gap-split.md`: 58cbf15e4712fa4e27f7fe3f1f0328f6427057627b0688740566d99be68b4b27
+  - `0006-slanted-split.md`: 49d5b691c17d677762f1b2097955add4b88694605dceda846019780a49ebb156
+  - `0007-neighbour-offcut.md`: ec96425da38fbc4cce793fd55f1616c5ee032c5b5a8cb18f283892b61fcd42a0
+  - `0008-gutter-marginalia.md`: e5bff586503d075f962a3ade396f58076b5b4afaf2b462148ac7268eebffabbb
+  - `0009-deskew.md`: 27950ad52c550b29ce03b16dd8f4f9e62228db4e331e1eccd87f1d16219f435a
+  - `0010-deskew-distractors.md`: 4dbe6910f19500052a6cc7e2fab25ef86aeb7cc280366163f543618fa43b2963
+  - `0011-skew-outliers.md`: 933de15934ee6ce2572f5a24194b611cea9ae5a61fc61b5a9464a5eba122106a
+  - `0012-skew-limits.md`: feb827ea7b761b6eef6a8029d6879398ed36cfc11e40e88f7b4ef8bb9540b3f7
+  - `0013-polarity.md`: 56fb677f0dd208693082f13b4223d4151115fc977f7363ba9b83c5eb718eb5d9
+  - `0014-resolution-metadata.md`: 75b0ab17ed06be47d8ebed800dab091caf042a01f056ca4985668cc7d8a56aa3
+  - `0015-page-box.md`: 437c2471798b9f81fa85efc2e6b1fe901829ca5c516057bf1368006410a77314
+  - `0016-content-box.md`: 87659ba056af99fff6dbf5d38321ce44dbd80fbe991e6a494a15ad2ca746ad82
+  - `0017-dark-band-with-light-text.md`: 7c09330917e89a50f8c52b7aea274af60a7cb539551247aafc7fd5852f244875
+  - `0018-ruled-lines.md`: fc676816b0d5a3ec827ebd15cfea29ed122908ac26197cb23546ea0187a61911
+  - `0019-scanning-targets.md`: 9569cd08e898bffa31a5a6e3bc9ea890049de59820b52eab6e9e216c08ae5256
+  - `0020-margins-padding.md`: c72b417bd7a252a8dc8514f2ce9c0fd6cb4ebf405e3d788862e8733fdc25f6b2
+  - `0021-blank-page.md`: b2fd7bad253710615df6975e1cd21b67e40fffd9640e36c88a1f17714f653351
+  - `0022-dewarp.md`: 92d75c6cdeb48bbc724c73ab08a146bdc28c4f6c1d845cd9ba16e6274890809d
+  - `0023-uneven-illumination.md`: f28bf5dd3f20f9f54965b81e96dae00cb226adc313b6d1a51a33744bb411db31
+  - `0024-paper-colour-cast.md`: de5cf7f2eeb56f921ec70073ce49ea306449cb66cb948d78946f8b55e2340d31
+  - `0025-binarisation.md`: a0d176771320e1bff1f5dd4d18da811e5df0cab8c8670746b95ce9e10bdc8e75
+  - `0026-stroke-edge-smoothing.md`: f9831fbc4ce1483255cf04f73eda8fcfbe6df57ae4f0104e1df652bc5aa304e6
+  - `0027-despeckle.md`: c1d8ae114660dad3cf427cd76b1d8af1a7ad9846315beb3df7aa3ed14bb00607
+  - `0028-picture-zones.md`: 7ff21317835ed18e36b699f77a5f79378e3dbba5df68a1dcad53a8a6b50d2c44
+  - `0029-colour-reduction.md`: 2c716003f86b8422030a14aec55002347f7aaf440fb92280d624eaa4004a87d3
+  - `0030-bleed-through.md`: 0a98a74522be3c30521d364289b7b6306a3adc12c98541277ce8f2096486efb3
+  - `0031-resample-once.md`: cd72329cf10bd342d7c8343e294935596c8ec681907a135aa7925fe6a15001c9
+  - `0032-faint-ink-tone.md`: 131be000c2e2c67c9be362a2fa6650560bdb1f02a5741adfd639ea23ad533eae
+  - `0033-manual-overrides.md`: 9a8d67456d839818f413f67885ab269be1d5b9eb8a85ce4cac18c46d5a7d2b86
+  - `0034-coordinate-provenance.md`: 6733e53d78d2e8e41dc8250f98f62c81c3435eb45cc92c1111f8565f88119838
+  - `0035-measuring-success.md`: 86bf9eb8e3cde6e4aedd41154cf6c0780c22d513934cc10de17409d68a5bc9eb
+- **Use:** build-side briefs for later slices may cite these findings by number,
+  together with a written spec, and commits that use one carry
+  `Clean-room-finding: NNNN`.
