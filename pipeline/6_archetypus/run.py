@@ -257,11 +257,9 @@ def _validate_region_fields(region, label: str) -> None:
 
     A region is embedded from the reading whole and copied field-for-field into
     the export, so the record's own closed top-level schema
-    (`validate_record_fields`) says nothing about what rides inside one — this
-    is the field-set closure for that sub-object, the shape that stopped
-    `consolidated_literal` at construction (`_crop_references`) and now also
-    stops it surviving a reseal past `validate_record`, the function every later
-    stage-local read and CONTRACT.md's `kind="archetypus"` section both rely on.
+    (`validate_record_fields`) says nothing about what rides inside one; this is
+    the field-set closure for that sub-object, at construction and on every
+    read-back through `validate_record`.
     """
     if not isinstance(region, dict):
         raise SchemaRefusal(f"{label} is not an object")
@@ -582,9 +580,9 @@ def validate_index(context, index, *, on_disk=None, accepted=None) -> dict:
     and never quietly repaired underneath a reader.
 
     `on_disk` and `accepted` are derived from the immutable records when
-    omitted — the one-argument consumer form CONTRACT.md documents. The stage's
-    own finishing step passes both, because it reconciles twice back to back
-    and re-reading a parish of records for the same answer buys nothing.
+    omitted. The stage's own finishing step passes both, because it reconciles
+    twice back to back and re-reading every record for the same answer buys
+    nothing.
     """
     if not isinstance(index, dict) or set(index) != _INDEX_FIELDS:
         raise FatalAccounting("the Archetypus index is not the closed derived-index shape")

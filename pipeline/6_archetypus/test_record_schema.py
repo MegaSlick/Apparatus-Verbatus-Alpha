@@ -210,10 +210,9 @@ def test_record_validation_refuses_a_bad_nested_self_hash():
 
 # --- The rest of the resealed-record refusals, each exercised ------------------
 #
-# `validate_record` runs on every later stage-local read, and CONTRACT.md offers
-# it to any consumer wanting to prove a record before relying on it. So each of
-# its refusals gets a case that fails without it: a refusal no test can kill is
-# a claim nobody has measured.
+# `validate_record` runs on every later stage-local read, so each of its
+# refusals gets a case that fails without it: a refusal no test can kill is a
+# claim nobody has measured.
 
 
 def test_record_validation_refuses_a_dissent_pointer_that_left_its_perlectio():

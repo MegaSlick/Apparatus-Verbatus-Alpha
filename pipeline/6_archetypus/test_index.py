@@ -204,9 +204,8 @@ def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(esta
 
 # --- The rest of `validate_index`'s refusals, each exercised ------------------
 #
-# CONTRACT.md offers `validate_index` to any consumer wanting to prove the
-# accounting before relying on it, so these refusals are load-bearing for
-# someone other than this stage. Each case reseals a well-formed index around
+# The stage reads its index back through `validate_index` before finishing, so
+# each refusal is load-bearing. Each case reseals a well-formed index around
 # one defect, because a refusal no test can kill is a claim nobody has measured.
 
 
