@@ -87,7 +87,7 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     horizontally contiguous, so a page of millions of pixels is a few hundred
     thousand runs and the neighbourhood probe becomes an interval overlap test.
     It returns the same components, bounds and total order as a per-pixel
-    labelling; the tests compare the two on every page shape.
+    labelling; the tests compare the two on fixture, synthetic and randomised pages.
     """
     return [
         component
