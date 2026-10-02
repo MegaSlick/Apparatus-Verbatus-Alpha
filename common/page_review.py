@@ -730,20 +730,6 @@ def review_notes(review: Mapping[str, Any]) -> list[dict[str, Any]]:
 # --- page breaks ---------------------------------------------------------------------
 
 
-def act_entries_by_page(acts: Sequence[Mapping[str, Any]]) -> dict[int, list[Mapping[str, Any]]]:
-    """Each page's whole-page `act` entries in answer order: the only entries a page
-    break can join.
-
-    A page's edges are its current whole-page reading's: its first reading's, or
-    an operator re-read's that superseded it (`common.page_edges.whole_page_entries`).
-    An entry the re-ask recovered (`common.page_edges.REASK_READING`) was asked
-    about ids alone, with no continuation flag allowed, so its place in page order
-    is not established: it never moves a page's act edge and is never a side of a
-    page break.
-    """
-    return page_edges.act_entries_by_page(page_edges.whole_page_entries(acts))
-
-
 def page_breaks(
     pages: Mapping[int, str], acts: Sequence[Mapping[str, Any]]
 ) -> list[tuple[str, dict[str, Any]]]:

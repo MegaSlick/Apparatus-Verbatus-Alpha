@@ -22,7 +22,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Callable, Final, Protocol
 
-from common import page_accounting, page_path, page_reask
+from common import page_accounting, page_edges, page_path, page_reask
 from common.alignment import (
     DEFAULT_ALIGNMENT_CONFIG_PATH,
     load_dissent_limits,
@@ -2355,7 +2355,7 @@ def _refused_page_row(
     reading = _one(
         index.by_subject(page_path.PAGE_READING_KIND, page_id),
         f"{what}'s page reading",
-        page_path.page_reading_attempt(page_id, page_path.FIRST_READING),
+        page_path.page_reading_attempt(page_id, page_edges.FIRST_READING),
     )
     payload = _payload_of(reading)
     exemplar_ref = context.artifact_ref(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
@@ -2467,9 +2467,9 @@ def _verify_page_reading(
         sorted(reread_accounting_by) == rereads and len(reread_accounting_list) == len(rereads),
         f"{what}'s operator re-reads {rereads} are not each accounted exactly once",
     )
-    reading = reading_by[page_path.FIRST_READING]
+    reading = reading_by[page_edges.FIRST_READING]
     payload = _payload_of(reading)
-    _require_page_reading(what, reading, page_id, ordinal, page_path.FIRST_READING)
+    _require_page_reading(what, reading, page_id, ordinal, page_edges.FIRST_READING)
     _require(
         payload.get("reask") is None,
         f"{what}'s first page reading records a re-ask; only attempt 2 is one",
@@ -2497,7 +2497,7 @@ def _verify_page_reading(
     _verify_request(context, what, reading, payload, feed)
     _verify_disposition(what, payload)
     plans = _entry_plans(index, what, payload, feed, page_id)
-    first_accounting = accounting_by.get(page_path.FIRST_READING)
+    first_accounting = accounting_by.get(page_edges.FIRST_READING)
     _require(first_accounting is not None, f"{what}'s first page accounting is missing")
     measure = partial(
         _verify_accounting, context, index, feed=feed, feed_ref=feed_ref, witnesses=witnesses
@@ -2509,7 +2509,7 @@ def _verify_page_reading(
         )
     except (ContractError, KeyError, TypeError) as error:
         raise FatalAccounting(f"{what}'s re-ask cannot be planned again: {error}") from error
-    expected = list(page_path.READING_ORDINALS if named else (page_path.FIRST_READING,))
+    expected = list(page_path.READING_ORDINALS if named else (page_edges.FIRST_READING,))
     _require(
         sorted(reading_by) == expected and sorted(accounting_by) == expected,
         f"{what} carries page reading attempts {sorted(reading_by)} and accounting attempts "
@@ -2518,21 +2518,21 @@ def _verify_page_reading(
         f"attempts {expected}; a stray, missing or further attempt is never counted",
     )
     trigger_ref = index.ref(first_accounting)
-    by_reading = {page_path.FIRST_READING: (payload, reading_ref)}
+    by_reading = {page_edges.FIRST_READING: (payload, reading_ref)}
     accounting_ref, page_holds, act_plans, reask_ref = trigger_ref, trigger["holds"], plans, None
     if named:
         second, reask_ref, reask_plans = _verify_reask(
             context,
             index,
             f"{what}'s re-ask",
-            reading_by[page_path.REASK_READING],
+            reading_by[page_edges.REASK_READING],
             feed=feed,
             first=payload,
             refs=(feed_ref, reading_ref, trigger_ref),
             named=named,
             first_count=len(plans),
         )
-        last = accounting_by[page_path.REASK_READING]
+        last = accounting_by[page_edges.REASK_READING]
         combined = measure(
             f"{what}'s re-ask",
             last,
@@ -2552,7 +2552,7 @@ def _verify_page_reading(
         )
         act_plans = page_path.reask_act_plans(combined, plans, reask_plans, what)
         accounting_ref, page_holds = index.ref(last), combined["holds"]
-        by_reading[page_path.REASK_READING] = (second, reask_ref)
+        by_reading[page_edges.REASK_READING] = (second, reask_ref)
     superseded: list[dict[str, str]] = []
     if rereads:
         superseded = [reading_ref, *([reask_ref] if named else [])]
@@ -2640,7 +2640,7 @@ def _reread_ordinals(
                 "sealed attempt identity does not bind"
             )
         found[ordinal] = record
-    first = page_path.OPERATOR_REREAD_FIRST
+    first = page_edges.OPERATOR_REREAD_FIRST
     _require(
         sorted(found) == list(range(first, first + len(found))),
         f"{what}s {sorted(found)} do not run from {first} without a gap; a lost re-read is "
@@ -2769,7 +2769,7 @@ def _verify_reask(
     feed_ref, first_ref, trigger_ref = refs
     ordinal, page_id = feed["page_ordinal"], feed["page_id"]
     payload = _payload_of(reading)
-    _require_page_reading(what, reading, page_id, ordinal, page_path.REASK_READING)
+    _require_page_reading(what, reading, page_id, ordinal, page_edges.REASK_READING)
     _problem_codes(payload.get("problems"), f"{what}'s page reading")
     inputs = reading.get("inputs", [])
     _require(
@@ -2834,9 +2834,9 @@ def _entry_plans(
             accounting_policy=index.accounting_policy,
             attempt=attempt
             if attempt is not None
-            else page_path.FIRST_READING
+            else page_edges.FIRST_READING
             if named is None
-            else page_path.REASK_READING,
+            else page_edges.REASK_READING,
             named=named,
             first_count=first_count,
         )
@@ -3192,7 +3192,7 @@ def _verify_accounting(
     reading_ref: dict[str, str],
     plans: list[dict[str, Any]],
     reask: Mapping[str, Any] | None = None,
-    attempt: int = page_path.FIRST_READING,
+    attempt: int = page_edges.FIRST_READING,
 ) -> dict[str, Any]:
     """The page accounting measured again must be exactly the sealed one; return it.
 
@@ -3225,7 +3225,7 @@ def _measure_page_accounting(
     reading_ref: dict[str, str],
     plans: list[dict[str, Any]],
     reask: Mapping[str, Any] | None = None,
-    attempt: int = page_path.FIRST_READING,
+    attempt: int = page_edges.FIRST_READING,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """The page accounting of one reading, or of it and its re-ask, and its inputs.
 

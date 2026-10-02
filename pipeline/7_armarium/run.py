@@ -49,7 +49,7 @@ from armarium_export import (  # noqa: E402
 from coniector_layer import export_rows  # noqa: E402
 from operator_layer import corrected_row, released_row  # noqa: E402
 
-from common import page_path  # noqa: E402
+from common import page_edges, page_path  # noqa: E402
 from common.background import (  # noqa: E402
     validate_ink_not_measurable_payload,
     validate_measured_ink_map_payload,
@@ -1125,8 +1125,8 @@ def page_not_measured_basis(context, pages: dict[int, dict], projected_acts: lis
 # The reading a counted entry came from, by the attempt its verified denominator
 # row names: its page's first reading, its re-ask, or an operator re-read (3 on).
 _ACT_READING_LABELS: Final = {
-    page_path.FIRST_READING: FIRST_READING_LABEL,
-    page_path.REASK_READING: READ_ON_REASK_LABEL,
+    page_edges.FIRST_READING: FIRST_READING_LABEL,
+    page_edges.REASK_READING: READ_ON_REASK_LABEL,
 }
 
 

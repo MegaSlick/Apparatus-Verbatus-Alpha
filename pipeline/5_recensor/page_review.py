@@ -40,6 +40,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, Final
 
+from common import page_edges
 from common.contracts.approval import PAGE_SCOPE, UNIT_SCOPE
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
@@ -70,7 +71,6 @@ from common.page_review import (
     REVIEW_DECISIONS_SCHEMA,
     REVIEW_DECISIONS_SUBJECT,
     REVIEWED_PAGE_REVIEW_FIELDS,
-    act_entries_by_page,
     current_link_records,
     current_review_decisions,
     link_generations,
@@ -340,15 +340,16 @@ def _flags(act: dict) -> list[str]:
 def continuation_off_edge(acts: list[dict]) -> dict[str, list[str]]:
     """Each `act` entry whose continuation flag is not at its page's act edge, flags named.
 
-    A page's act edge is its last whole-page `act` entry (for running on)
-    and its first (for running on from before), `act_entries_by_page`'s; the
-    `other` entries around them, a catchword for one, and an entry the
-    re-ask recovered do not move it.
+    A page's act edge is its last whole-page `act` entry (for running on) and its
+    first (for running on from before), in answer order. The `other` entries
+    around them, a catchword for one, do not move it, and neither does an entry
+    the re-ask recovered: it was asked about ids alone, with no continuation flag
+    allowed, so its place in page order is not established.
     """
     found: dict[str, list[str]] = {}
-    for page in act_entries_by_page(acts).values():
-        first = min(act["n"] for act in page)
-        last = max(act["n"] for act in page)
+    whole_page = page_edges.whole_page_entries(acts)
+    for page in page_edges.act_entries_by_page(whole_page).values():
+        first, last = page[0]["n"], page[-1]["n"]
         for act in page:
             flags = []
             if act["continues_from_previous_page"] is True and act["n"] != first:
