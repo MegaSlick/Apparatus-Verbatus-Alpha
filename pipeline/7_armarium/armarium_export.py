@@ -1936,8 +1936,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
     if not isinstance(rows, list | tuple):
         raise SchemaRefusal(
             f"{subject} does not carry its ink-map page rows as a list. Its page-level edge "
-            "holds cannot be derived or checked. Rebuild the export from an Armarium v3 source "
-            "graph."
+            "holds cannot be derived or checked. Rebuild the export from the intact run tree."
         )
     ordinals: set[int] = set()
     validated: list[dict[str, Any]] = []
@@ -1945,8 +1944,8 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
         if not isinstance(row, dict) or set(row) != _INK_MAP_ROW_FIELDS:
             raise SchemaRefusal(
                 f"{subject} has an ink-map row that is not its closed shape. The verifier cannot "
-                "tell which page measurement the row states. Rebuild the export from an intact "
-                "Armarium v3 source graph."
+                "tell which page measurement the row states. Rebuild the export from the intact "
+                "run tree."
             )
         ordinal, outcome, remeasured = row["ordinal"], row["initial_outcome"], row["remeasured"]
         if not is_plain_int(ordinal) or ordinal <= 0:
