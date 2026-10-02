@@ -978,12 +978,6 @@ def test_capacity_refusal_attempt_declares_the_refused_chairs_own_format_capabil
     )
     assert bare.format_capabilities == attestatores.DEFAULT_FORMAT_CAPABILITIES
 
-    # An adapter that declares none falls back to the blanket default.
-    undeclared = attestatores.capacity_refusal_attempt(
-        error, receipt_ref=receipt_ref, what="the test request", adapter=SimpleNamespace()
-    )
-    assert undeclared.format_capabilities == attestatores.DEFAULT_FORMAT_CAPABILITIES
-
     # An adapter that names its own grammar: that value, not the default.
     declared = {"can_express_uncertainty": True, "can_express_layout": True}
     adapter = SimpleNamespace(format_capabilities=declared)

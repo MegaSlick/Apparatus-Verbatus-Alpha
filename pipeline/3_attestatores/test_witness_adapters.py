@@ -44,13 +44,13 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
     # vendor's own document, the plain reading-order text the paper-era harness
     # expected, and the retired `<output>` envelope kept as retained history.
     assert (
-        spec.parse(
+        adapters.churro.parse(
             b"<HistoricalDocument><Page><Body><Line>text</Line></Body></Page></HistoricalDocument>"
         )
         == "text"
     )
-    assert spec.parse(b"plain reading") == "plain reading"
-    assert spec.parse(b"<output>text</output>") == "text"
+    assert adapters.churro.parse(b"plain reading") == "plain reading"
+    assert adapters.churro.parse(b"<output>text</output>") == "text"
     # Bound by identity, not by "is not None": the point of the slot is which
     # function answers there, and a rebinding to a different one is exactly the
     # change a later adapter unit must not make silently. Churro's slot binds
@@ -66,10 +66,10 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
     # placeholder is a shape this reader can place nothing in and is read only
     # through the separate `parse_fixture_placeholder` the fixture posture names.
     assert (
-        chandra.parse(b'<div data-bbox="0 0 500 500" data-label="Text">layout text</div>')
+        adapters.chandra.parse(b'<div data-bbox="0 0 500 500" data-label="Text">layout text</div>')
         == "layout text"
     )
-    assert chandra.parse(
+    assert adapters.chandra.parse(
         b'{"schema":"fixture-chandra-response.v1","markdown":"text","blocks":[]}'
     ) == {"parse_outcome": "no-layout-blocks"}
     assert (
@@ -204,7 +204,7 @@ def test_dai_crop_resize_is_a_rederivable_adapter_crop_and_preserves_uncertainty
         page_bytes=page,
     )
     response = "[UNCERTAIN] Marie [CROSSED_OUT]"
-    assert adapter.parse(response.encode()) == response
+    assert adapters.feeding.validate_dai_text(response.encode()) == response
     assert adapter.observe(presented, response)[0]["span"] == {
         "start": 0,
         "end": len(response),
@@ -289,7 +289,7 @@ def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
 def test_the_registry_binds_the_native_intake_contract_seams():
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
-    # Quantization is data beside the five operations; `takes_page_size` says
+    # Quantization is data beside the four operations; `takes_page_size` says
     # whether this adapter's `observe` accepts the sealed page's own size, and
     # `resolve_framing` how it resolves a declared framing name (`None` where it
     # has one framing and a run has nothing to choose) -- all three read off the
@@ -299,7 +299,6 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     # stage and every reader of its page records share.
     assert fields == {
         "prompt",
-        "parse",
         "retain",
         "present",
         "observe",
@@ -307,7 +306,6 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         "takes_page_size",
         "resolve_framing",
         "format_capabilities",
-        "fixture_parse",
     }
     assert set(page_witness_units.UNIT_KINDS) == set(adapters.RUNNABLE_ADAPTERS)
     assert {
@@ -315,21 +313,9 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         for name, unit in page_witness_units.UNIT_KINDS.items()
         if unit == page_witness_units.DETECTOR_RECORD_UNIT
     } == {"dai.v1"}
-    # The reader each adapter's fixture posture uses where its declared rows are
-    # not in the grammar a served chair answers in. Chandra alone has one,
-    # because `proof/skeleton_fixture.toml`'s Chandra rows are not in the vendor
-    # grammar; the other two read their fixture rows through the same parser
-    # their live answers take, so they declare none rather than an alias.
-    assert {name: entry.fixture_parse for name, entry in adapters.RUNNABLE_ADAPTERS.items()} == {
-        "chandra.v1": adapters.chandra.parse_fixture_placeholder,
-        "churro.v1": None,
-        "dai.v1": None,
-    }
     # What each adapter's own grammar can carry, read off the registry entry the
     # same way. All three now declare their own (`chandra.FORMAT_CAPABILITIES`,
-    # `churro.FORMAT_CAPABILITIES`, `feeding.DAI_FORMAT_CAPABILITIES`); none of
-    # them fall back to the shared blanket default any more, and none of the
-    # three still coincides with it: Chandra carries layout and no uncertainty
+    # `churro.FORMAT_CAPABILITIES`, `feeding.DAI_FORMAT_CAPABILITIES`): Chandra carries layout and no uncertainty
     # notation, and Churro and DAI carry a notation for doubt and no geometry.
     # Each binding is asserted by identity as well as by value, so that a flip
     # of an adapter's own flag moves the registry with the adapter rather than

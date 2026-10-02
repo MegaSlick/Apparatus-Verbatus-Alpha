@@ -1051,7 +1051,12 @@ def _stub_adapter(*, retain_result: dict[str, Any], prompt: dict[str, Any] | Non
         }
 
     retained: list[bool] = []
-    return SimpleNamespace(prompt=prompt_fn, retain=retain_fn, retained_served=retained)
+    return SimpleNamespace(
+        prompt=prompt_fn,
+        retain=retain_fn,
+        retained_served=retained,
+        format_capabilities={"can_express_uncertainty": False, "can_express_layout": False},
+    )
 
 
 def _dai_presentation(*, width: int = 3_000, height: int = 1_001) -> dict[str, Any]:
@@ -1184,31 +1189,6 @@ def test_live_attempt_from_response_read_on_a_complete_stop(tmp_path: Path):
     assert blob_store.has(response.response_sha256)  # raw blob retained
 
 
-def test_format_capabilities_falls_back_to_the_blanket_default_when_undeclared(tmp_path: Path):
-    """`adapter.format_capabilities` read with the blanket default as fallback.
-
-    `_stub_adapter` declares no `format_capabilities` attribute, so this seam
-    must still record the blanket default, not raise `AttributeError` and not
-    silently record `None`.
-    """
-
-    response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content="x", finish_reason="stop"))
-    adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "x"}})
-    assert not hasattr(adapter, "format_capabilities")
-
-    attempt = live_witness.live_attempt_from_response(
-        _Context(tree=_FakeTree()),
-        adapter,
-        "dai.v1",
-        response,
-        generation_declared={},
-        parser="text",
-        **_dai_view_kwargs(),
-    )
-
-    assert attempt.format_capabilities == witness_adapters.FALLBACK_FORMAT_CAPABILITIES
-
-
 def test_format_capabilities_is_read_from_the_adapter_when_it_declares_one(tmp_path: Path):
     """The other half: once an adapter names its own grammar's capability, the
     seam reports that rather than the blanket default -- a Testimonium stops
@@ -1231,7 +1211,6 @@ def test_format_capabilities_is_read_from_the_adapter_when_it_declares_one(tmp_p
     )
 
     assert attempt.format_capabilities == declared
-    assert attempt.format_capabilities != witness_adapters.FALLBACK_FORMAT_CAPABILITIES
 
 
 def test_format_capabilities_on_a_malformed_response_still_names_the_adapters_own_grammar(

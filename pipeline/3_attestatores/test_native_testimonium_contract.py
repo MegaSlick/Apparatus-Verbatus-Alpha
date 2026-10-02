@@ -96,7 +96,7 @@ def test_a_page_the_perlector_was_shown_closes_its_witness_layer(tmp_path):
 def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
     adapter = attestatores.witness_adapters.resolve_runnable_adapter("dai.v1")
     raw = "[UNCERTAIN]  ſ [CROSSED_OUT]".encode("utf-8")
-    parsed = adapter.parse(raw)
+    parsed = attestatores.feeding.validate_dai_text(raw)
     presented = _base()["presented"]
     observed = adapter.observe(presented, parsed)
 

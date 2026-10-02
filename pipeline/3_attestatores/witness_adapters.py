@@ -26,7 +26,6 @@ adapter's rule by omission.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Any, Callable, Final, Mapping
 
 import chandra
@@ -43,13 +42,6 @@ from common.page_witness_units import reads_detector_records
 from common.stage import SECONDARY_PROPOSER_CHAIR
 from common.witness_adapters import AdapterRefusal, resolve_witness_adapter_name
 
-#: What an adapter that has not declared its own format capabilities records.
-#: Read-only: a mutable shared default would move every undeclared adapter at
-#: once, so each seam copies it into the record it writes.
-FALLBACK_FORMAT_CAPABILITIES: Final[Mapping[str, bool]] = MappingProxyType(
-    {"can_express_uncertainty": False, "can_express_layout": False}
-)
-
 _FORMAT_CAPABILITY_FIELDS: Final = frozenset({"can_express_uncertainty", "can_express_layout"})
 
 
@@ -60,13 +52,10 @@ def declared_format_capabilities(adapter: Any) -> dict[str, bool]:
     `run.py::_declared_format_capabilities` so the two reads of one adapter's
     capabilities cannot drift apart.
 
-    Reads with ``getattr`` rather than ``isinstance``, since ``adapter`` here
-    is a duck-typed bundle of callables, not a shared base class. Falls back to
-    :data:`FALLBACK_FORMAT_CAPABILITIES` for an adapter that declares none, and
-    always returns a fresh ``dict`` rather than the adapter's own mapping, so a
+    Always returns a fresh ``dict`` rather than the adapter's own mapping, so a
     Testimonium never carries a value that could be mutated out from under it.
     """
-    capabilities = getattr(adapter, "format_capabilities", FALLBACK_FORMAT_CAPABILITIES)
+    capabilities = adapter.format_capabilities
     if not isinstance(capabilities, Mapping) or set(capabilities) != _FORMAT_CAPABILITY_FIELDS:
         raise SchemaRefusal(
             f"adapter {adapter!r} declares a format_capabilities that is not the two-key "
@@ -83,24 +72,23 @@ def declared_format_capabilities(adapter: Any) -> dict[str, bool]:
 
 @dataclass(frozen=True, slots=True)
 class RunnableAdapter:
-    """The five native-boundary operations and optional pixel-conversion rule.
+    """The native-boundary operations, the grammar's capabilities and its pixel-conversion rule.
 
     Geometry must derive from the presented image and retained response, never
     from a different arm or presentation metadata alone. ``quantization`` is
     ``None`` where the response supplies no native geometry to convert at all.
 
-    Every per-adapter fact below (``takes_page_size``, ``resolve_framing``,
-    ``format_capabilities``, ``fixture_parse``) is declared on the registry
-    entry rather than dispatched by adapter name, so a caller asks the
-    registry and a second adapter acquiring the same trait is never forgotten
-    at a call site written for the first.
+    Parsing is not an entry here: ``retain`` parses the response it keeps, through
+    `feeding.retain_model_view`.
     """
 
     prompt: Callable[..., Any]
-    parse: Callable[..., Any]
     retain: Callable[..., Any]
     present: Callable[..., Any]
     observe: Callable[..., Any]
+    #: What this adapter's own output grammar can carry -- a fact about the
+    #: grammar, never about a reply.
+    format_capabilities: Mapping[str, bool]
     quantization: str | None = None
     #: Whether this adapter's ``observe`` accepts the sealed page's own size,
     #: because its response reports geometry normalized against the whole
@@ -109,16 +97,6 @@ class RunnableAdapter:
     #: How this adapter resolves a declared framing name, or ``None`` where it
     #: has exactly one framing and there is nothing to choose.
     resolve_framing: Callable[..., str] | None = None
-    #: What this adapter's own output grammar can carry -- a fact about the
-    #: grammar, never about a reply. The default is the blanket value used
-    #: when an adapter declares none of its own.
-    format_capabilities: Mapping[str, bool] = FALLBACK_FORMAT_CAPABILITIES
-    #: How this adapter reads the committed fixture's own declared bytes, where
-    #: those are not the vendor grammar a served chair answers in. ``None`` for
-    #: an adapter whose fixture rows and live answers share one shape. Retained
-    #: history only: the retention seam refuses this reader's parser name for a
-    #: served chair (`feeding.retain_model_view`).
-    fixture_parse: Callable[..., Any] | None = None
 
 
 def _retain_dai_model_view(
@@ -323,19 +301,16 @@ def validate_adapter_presentation(
 RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
     "chandra.v1": RunnableAdapter(
         prompt=chandra.prompt,
-        parse=chandra.parse,
         retain=chandra.retain,
         present=chandra.present,
         observe=chandra.observe,
         quantization=chandra.QUANTIZATION_RULE,
         takes_page_size=True,
         format_capabilities=chandra.FORMAT_CAPABILITIES,
-        fixture_parse=chandra.parse_fixture_placeholder,
     ),
     "churro.v1": RunnableAdapter(
         prompt=churro.prompt,
         resolve_framing=churro.resolve_framing,
-        parse=churro.parse,
         retain=churro.retain,
         present=churro.present,
         observe=churro.observe,
@@ -345,7 +320,6 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
     ),
     "dai.v1": RunnableAdapter(
         prompt=feeding.dai_prompt,
-        parse=feeding.validate_dai_text,
         retain=_retain_dai_model_view,
         present=_dai_present,
         observe=_dai_observe,
