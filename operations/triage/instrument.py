@@ -32,7 +32,7 @@ from common.imaging import (
     imaging_library_versions,
 )
 
-RECIPE_SCHEMA: Final = "triage-producer-recipe.v1"
+RECIPE_SCHEMA: Final = "triage-producer-recipe.v2"
 EVIDENCE_SCHEMA: Final = "cluster-candidate-evidence.v1"
 EVIDENCE_MANIFEST_SCHEMA: Final = "cluster-candidate-evidence-manifest.v1"
 DEFAULT_CONFIG_PATH: Final = Path(__file__).with_name("instrument.toml")

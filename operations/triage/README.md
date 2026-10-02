@@ -29,7 +29,7 @@ apply by itself. The instrument is blind to two frames that agree because neithe
 carries ink (blank or near-blank openings of one printed form); the recipe lists this
 under `known_blindness`.
 
-`instrument.producer_recipe(load_config())` is the closed `triage-producer-recipe.v1`
+`instrument.producer_recipe(load_config())` is the closed `triage-producer-recipe.v2`
 description of a pass. Write it beside the decision manifest and hand it to the Door
 as `--triage-producer-recipe`; the Door validates it and binds its digest into the
 run.

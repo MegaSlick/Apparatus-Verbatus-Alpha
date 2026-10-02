@@ -1161,7 +1161,7 @@ def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(
         # check instead, which also matches "invalid" — the guard against a triage
         # document carrying two values for one field gone with nothing reporting it.
         (
-            b'{"schema":"triage-producer-recipe.v1","schema":"other"}',
+            b'{"schema":"triage-producer-recipe.v2","schema":"other"}',
             "the triage producer recipe is not valid UTF-8 JSON",
         ),
         # The nesting case genuinely needs the width: whether the parser gives up

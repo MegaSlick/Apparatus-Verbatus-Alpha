@@ -1507,7 +1507,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     )
     parser.add_argument(
         "--triage-producer-recipe",
-        help="sealed triage-producer-recipe.v1 for the pre-door producer run",
+        help="sealed triage-producer-recipe.v2 for the pre-door producer run",
     )
     args = parser.parse_args()
     registry = (
