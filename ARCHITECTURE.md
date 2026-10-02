@@ -1,8 +1,9 @@
 # Architecture
 
-*The shape of the pipeline and the reasons for it. Implementation details are discovered
-and tested during alpha; they are not settled here. Terms are defined in
-[GLOSSARY.md](GLOSSARY.md); the principles they serve are in [PRINCIPLES.md](PRINCIPLES.md).*
+*The shape of the pipeline and the reasons for it. Each stage's records and interface are
+in its `CONTRACT.md`; [pipeline/README.md](pipeline/README.md) maps the directories.
+Terms are defined in [GLOSSARY.md](GLOSSARY.md); the principles they serve are in
+[PRINCIPLES.md](PRINCIPLES.md).*
 
 ## The claim
 
@@ -33,11 +34,18 @@ flowchart LR
     C --> D["Perlector<br/><i>reads each page, names its acts</i>"]
     D -->|"one bounded re-ask"| D
     D --> E["Recensor<br/><i>completeness & review</i>"]
-    D --> K["Coniector<br/><i>proposes a reconstruction</i>"]
     E --> F["Archetypus<br/><i>the established reading</i>"]
-    F --> G["Armarium<br/><i>written out</i>"]
+    F --> K["Coniector<br/><i>proposes a reconstruction</i>"]
+    K --> G["Armarium<br/><i>written out</i>"]
+    D -.->|"its readings"| K
     K -.->|"labelled, unconfirmed"| G
 ```
+
+The stages run in that order, one after another. Each is a separate program that reads
+the sealed records of the stages before it and refuses to start until its predecessor's
+stage seal verifies. The Coniector is a side branch: it reads only the Perlector's
+readings, nothing on the main line reads it, and it runs once the Archetypus has
+finished; only the Armarium reads what it writes.
 
 **Stage names describe responsibilities, not models.** One model may serve more than one
 role; which model fills which role is configuration, not architecture.
@@ -46,15 +54,18 @@ role; which model fills which role is configuration, not architecture.
 
 **Exemplar** — the sealed source. In manuscript practice the exemplar is the original
 you copy *from*; here it is the immutable scanned page, hashed and accounted for.
-Nothing downstream may alter it.
+Nothing downstream may alter it. Before it, the door checks each submitted file,
+renders or splits it into pages, and records anything it refuses.
 
 **Ink map** — measures where ink lies on each sealed page, with no model involved. It
-gives the Recensor an independent account of the page to check coverage against: an inked
-region that no reading region claims is a candidate for a missed act.
+gives the page accounting and the Armarium an independent account of the page: an
+inked region that no reading region claims is a candidate for a missed act.
 
 **Designator** — *designo*, to mark out. Publishes the page evidence the reading is
-checked against: the lines and blocks a layout detector finds, and the records a record
-detector finds, with their crops. It marks out no act and establishes no text.
+checked against: the lines and blocks a layout detector (Surya) finds, and the records
+a record detector finds, with their crops. It marks out no act and establishes no text,
+but the page accounting holds a page when the reading and the detector's records
+disagree.
 
 Act boundaries in parish registers are often signalled textually — marginal names, the
 formulaic *L'an mil sept cent…* opening — and purely visual segmentation would run acts
@@ -62,32 +73,41 @@ together wherever the scribe left no gap. So the acts are named by the reader th
 the whole page, and the detectors' records are independent evidence that the accounting
 checks each act against.
 
-**Attestatores** — the witnesses. Each reads the page (a whole-page reader) or each
-detected record on it (a record reader) and produces a
-**Testimonium**: **unverified, of uncertain and unequal quality, and never final.**
-Always retained; never authoritative. Referred to in code by numbered role, with model
-and revision bound in one pinned config; the Testimonium itself carries the resolved
-identity that produced it.
+**Attestatores** — the witnesses. Every witness reads every sealed page: a whole-page
+reader reads the page image, and a record reader reads the crops of the records its
+detector found on the page. Each produces one **Testimonium** per page:
+**unverified, of uncertain and unequal quality, and never final.** Always retained;
+never authoritative. Each witness sits in a chair, with model and revision pinned in the
+model roster; the Testimonium carries the resolved identity that produced it.
 
 **Perlector** — *perlegere*, to read through to the end. Reads each sealed page whole,
-names the acts on it, and establishes their text from the ink, using the testimonia as
-clues that sharpen its own reading, never as options to choose between. It reads the
-ink with the witnesses as clues and does not reason from context: a date that looks
-wrong beside its neighbours is written as the ink shows it. Each act cites the lines,
-records and witness units it covers, and its region is the union of those boxes. It
-reads through to the end; truncation is a failure, not an output.
+in one call, names the acts on it, and establishes their text from the ink, using the
+testimonia as clues that sharpen its own reading, never as options to choose between.
+What the call is shown is the page's feed: the page image, each witness's page broken
+into its own units, and the detected lines and blocks, each with an id. The Perlector
+does not reason from context: a date that looks wrong beside its neighbours is written as
+the ink shows it. Each entry it names cites the ids it read, and its region is the
+boxes of those ids; every id it does not cite it must set aside with a reason. It reads
+through to the end; truncation is a failure, not an output. A run configured to show no
+page image cannot establish text from the ink, and every act it reads is held.
+
+Every page reading is then measured by the **page accounting**, a model-free check that
+every witness unit, detected line, detector record, witness's text and the page's ink
+is accounted for. Anything it cannot account for, or cannot measure, holds the page.
 
 **A page that cannot be read is not an empty page.** Three cases are kept apart: a page
 whose reading fails (it did not load, or the call failed) is a failure, held and
 counted toward the run's failure cap; a page the Perlector reads as having no text is
 only a claim, held until checked; and a page is *blank* only when the Recensor confirms
-that claim — no ink left unread on the ink map, no line detected, and every witness that
-read the page found no text. Ink with no reading is held for a person, never passed as
-blank.
+that claim — the page accounting finds no ink left unread, the record detector found no
+record, no line was detected, and every witness that read the page found no text. Ink
+with no reading is held for a person, never passed as blank.
 
-Where the first reading leaves named ink unread, the Perlector may be asked once more
-about that page: **one bounded re-ask**, additive, separately recorded, and never a
-replacement for the first reading. Acts it recovers are labelled "read on re-ask".
+Where the first reading leaves named ink unread — a witness unit neither cited nor set
+aside, or a detected line or detector record outside every region — the Perlector may be
+asked once more about exactly those ids: **one bounded re-ask**, additive, separately
+recorded, and never a replacement for the first reading. Acts it recovers are labelled
+"read on re-ask".
 
 **The Perlector chair is swappable, and that is a design requirement rather than a
 convenience.** A stock base model, an unaltered vendor model, and a locally trained checkpoint
@@ -101,21 +121,21 @@ baseline, run as an experiment beside the pipeline — and in the dissent record
 whose advantage disappears once the witnesses are taken away has not learned to read,
 whatever its transcription score says.
 
-**Coniector** — one who conjectures; in textual criticism a conjecture is a reading no
-witness carries, proposed from sense and context. After the Perlector has read every
-page, the Coniector reads its transcriptions as text, never the page image, and looks for
-what does not fit: an act cut at a page break, half an act, a date out of sequence such
-as 1888 among acts of 1666. It proposes a reconstruction under the diplomatic, recording
-each departure with its span and both readings. A person may make one too; every
-reconstruction is labelled by who made it. It joins pieces across a page break only when
-the run declares its pages consecutive. A reconstruction is never established and never
-counted, and no stage but the Armarium reads it.
-
 **Recensor** — *recensio*. The completeness stage. See below.
 
 **Archetypus** — the established reading. In textual criticism, the ancestor from which
-all surviving witnesses descend. This is the authoritative *pipeline output* — a machine
-reading, not truth.
+all surviving witnesses descend. It establishes each reading the Recensor accepted, and
+only those. This is the authoritative *pipeline output* — a machine reading, not truth.
+
+**Coniector** — one who conjectures; in textual criticism a conjecture is a reading no
+witness carries, proposed from sense and context. The Coniector reads the Perlector's
+transcriptions as text, never the page image, and looks for what does not fit: an act
+cut at a page break, half an act, a date out of sequence such as 1888 among acts of
+1666. It proposes a reconstruction under the diplomatic, recording each departure with
+its span and both readings. A person may make one too; every reconstruction is labelled
+by who made it. It joins pieces across a page break only when the run declares its pages
+consecutive. A reconstruction is never established and never counted. Whether the
+Coniector runs is a sealed switch.
 
 **Armarium** — the cupboard where finished codices were kept, as against the scriptorium
 where they were made. Where the pipeline writes its output: the established text, its
@@ -124,19 +144,26 @@ whatever formats are asked for. The pipeline ends here.
 
 ## The Recensor
 
-It reviews and establishes that the text is **complete**. It establishes no text and it
-censors nothing.
+It establishes that the reading is **complete**. It establishes no text, censors
+nothing, calls no model and asks for no recovery; every check it makes is deterministic.
 
-It examines the page, the reading regions, the page accounting, the testimonia and the
-Perlector's findings, and asks whether:
+It reviews every unit the run counts — each entry of a page's reading, or the one row
+standing for a page that has none — and asks whether:
 
-- an act or meaningful region was missed
-- ink lies outside every reading region
-- an act continues onto the next page
-- the witness floor is met
+- the page accounting accounted for everything on the page (its verdict is recomputed
+  from the sealed records, not taken from the Perlector);
+- the witness floor is met: enough of the configured witnesses read the page and were
+  not truncated;
+- ink on the page lies outside every reading region (the page's own pixels, measured
+  against every box of every region);
+- a page claimed blank, or holding only entries that are not acts, really is so;
+- an act continues onto the next page: at each page break, the last act of one page and
+  the first of the next are compared by their continuation flags, and a claim only one
+  side makes is held.
 
-It may then accept a unit, confirm a page blank or confirm that it holds no act, link
-material across pages, or hold for review.
+A unit is accepted only when nothing holds it. Otherwise it is held for review with
+every reason named. The Recensor may confirm a page blank or confirm that it holds no
+act, and it links material across a page break when both sides agree.
 
 **It recovers coverage, not quality.** A suspected fabrication or a poor reading may be
 flagged for review. It may never be re-rolled until it looks better. A witness model's
@@ -153,52 +180,53 @@ superseded, and nothing may disappear inside one.
 **Operator review.** A run whose Recensor holds anything stops there, before anything
 is established or exported, in every mode and on the pod. A person then decides each
 held unit or page with `verbatus decide`. Each decision binds to the review it was made
-against and goes stale when that review changes. The decisions are:
+against and goes stale when that review changes; the run resumes from the Recensor,
+which applies the current decisions. The decisions are:
 
-- an **override**, which sends the model's reading to export exactly as read, its own
-  holds included, labelled "released by operator" with who, when, why and the holds it
-  cleared;
-- a **correction**, which sends a person's corrected text to export as the reading,
-  taken as the truth with no machine doubt, labelled "corrected by a person" with who,
-  when, why and an optional note, with the model's reading beside it as "model reading
-  (original)";
-- an **exclusion**, which keeps a unit out of the delivered text but in the record,
-  citing the decision;
-- a **request to read a page again**, which the Perlector reads as an operator re-read
-  when the run resumes from it.
+| Decision | About | Effect |
+|---|---|---|
+| `release` (override) | a unit | clears the unit's own holds; with nothing else holding it, the model's reading goes to export exactly as read, labelled "released by operator" with who, when, why and the holds it cleared |
+| `edit` (correction) | a unit | a person's corrected text becomes the reading, taken as the truth with no machine doubt, labelled "corrected by a person" with who, when, why and an optional note, with the model's reading beside it as "model reading (original)" |
+| `exclude` (exclusion) | a unit | keeps the unit out of the delivered text but in the record, citing the decision |
+| `hold` | a unit or page | keeps it held, naming a finding |
+| `re-ask` | a page | an operator re-read: the Perlector reads the page again when the run resumes from it |
+| `re-ask` | a unit | holds the unit; the Perlector reads whole pages, so a re-read is asked of its page |
+| `no-missed-act` | a page | clears the page's holds |
+| `missed-act` | a page | holds the page as missing an act |
+| `re-shoot` | a page | holds the page and records a request for a new capture |
 
-A reading with no place on the page, unreadable doubt marks or no text cannot be
-overridden, because the export could not carry it. A correction may replace unreadable
+The operator's `re-ask` is a person's request for an operator re-read; it is not the
+machine's bounded re-ask.
+
+A reading with no place on the page, malformed doubt marks or no text cannot be
+overridden, because the export could not carry it. A correction may replace malformed
 doubt marks or missing text, since the person's text is what is delivered, but a
-reading with no place on the page stays held. When more than 1 in 50 of a run's
-pages are held, the run has a systemic problem, not a few hard pages. It stops as any
-hold does and says so, and a person who advances it anyway carries that warning into
-the export and the notification.
+reading with no place on the page stays held. When more than a sealed share of a run's
+pages are held (1 in 50 in `config/review.toml`), the run has a systemic problem, not a
+few hard pages. It stops as any hold does and says so, and a person who advances it
+anyway carries that warning into the export and the notification.
 
 Roughly, with the branches drawn out:
 
 ```mermaid
 flowchart LR
-    E["Exemplar"] --> D["Designator<br/>lines + records"]
+    E["Exemplar"] --> M["Ink map"]
+    M --> D["Designator<br/>lines + records"]
     D --> A["Attestatores<br/>unverified testimony"]
     A --> P["Perlector<br/>reads the page"]
     P -->|"named ink left unread"| Q["Perlector<br/>one re-ask"]
     Q --> R
-    P --> R["Recensor<br/>completeness and logic"]
+    P --> R["Recensor<br/>completeness"]
 
     R -->|"complete"| AR["Archetypus"]
-    R -->|"unresolved"| H["Human review"]
+    R -->|"held"| H["Operator review"]
+    H -->|"decisions applied"| R
+    H -->|"page re-read"| P
 ```
 
-**Implementation is deliberately undecided.** Candidates, to be tested in alpha:
-deterministic checks on coverage, geometry, numbering, dates, abrupt endings and page
-order; a vision model; a separately tuned Perlector
-if testing shows it is needed; a small text-only model that flags gaps or incoherence;
-review where uncertainty remains.
-
-A text-only model may **flag** a problem. It may never establish text or change a
-reading; the Coniector's reconstruction is the one text a model proposes from context,
-and it stays a labelled layer beside the reading.
+No model but the Perlector establishes text or changes a reading. The Coniector's
+reconstruction is the one text a model proposes from context, and it stays a labelled
+layer beside the reading.
 
 ## Dissent
 

@@ -19,58 +19,102 @@ burial). Registers also hold index rows, letters and notes, so the term is kept
 deliberately loose: a narrow definition would exclude material, and a missed act is worse
 than a poorly read one.
 
+**entry kind `other`** — an entry of a page reading that is text but not an act: a
+heading, a page number, a marginal note that is not an entry. It is read, placed and
+accounted for like an act but is not counted as one, and a page whose entries are all
+`other` is held until the Recensor confirms it holds no act.
+
 **page** — one image from the source.
 
 **crop** — an image region cut from a sealed page and shown or kept: one detected
 record's crop for a record reader, or an act's reading region.
 
-**witness** — a model that reads a page, or each record on it, and reports what it
-saw. Its report is evidence, not an answer.
+**witness** — a model that reads every page and reports what it saw: a whole-page reader
+reads the page image, a record reader reads the crops of the records its detector found
+on the page. Its report is evidence, not an answer.
 
-**chair** — a numbered role in the pipeline that one model fills. The binding lives in a
+**witness floor** — how many configured witnesses must have read a page, without
+truncation, for a unit on it to be accepted. Set as `witness_floor` in the model roster
+and checked by the Recensor; a page below it is held `under-witnessed`.
+
+**chair** — a named role in the pipeline that one model fills. The binding lives in a
 model roster under `config/`: `models.toml` holds small local stand-ins and
-`models-real.toml` the real models. *Attestator 1* is a chair; the model sitting in it
-can be swapped without touching code.
+`models-real.toml` the real models. A model of a family the code already has an adapter
+for can be swapped by configuration alone; a new witness family needs an adapter. The
+chairs:
+
+| Chair | Role |
+|---|---|
+| `attestator_1`, `attestator_2`, `attestator_3` | the witnesses (Attestatores) |
+| `secondary_proposer` | the record detector: the Designator's detector of register records, whose crops the record reader reads |
+| `designator_surya` | Surya, the Designator's line and layout detector |
+| `perlector` | the reader |
+| `reconstructor` | the Coniector's chair: the Perlector's model, asked text only |
 
 **door** — the intake step before the Exemplar: it checks and seals what was submitted,
 and records anything it refuses.
 
+**canary** — a private page whose reading is already known, added to a real run as a
+control from a separate folder and manifest. The door gives canary pages the ordinals
+after the real pages and seals their ledger as `canary-ledger`. A canary page is never
+read beside a real one (never a side of a page break, never a reconstruction's context),
+and the export reports canaries apart from the delivered pages.
+
 **sealed** — written once with a recorded hash, so an accidental later change is detectable.
 
-**held** — set aside for human review rather than silently dropped or passed as done.
+**run authority** — `run.json`, the self-hashed record of what one run is: its source
+pages, witness chairs, configuration digest and the digest of every sealed configuration.
+Reopening a run id whose bindings have changed is refused.
 
-**override** — a person's decision that sends a held reading to export as the model read
-it, its own holds included. It is labelled "released by operator" with who, when, why
-and the holds it cleared. It is never available for a reading with no place on the page,
-unreadable doubt marks or no text.
+**stage seal** — the `stage-seal` record a stage publishes, with its `decode-environment`,
+before its final manifest. It binds what the stage wrote to the run's configuration; the
+next stage refuses to start without it. A stage that held after publishing its evidence
+still seals; one that stopped before does not.
 
-**correction** — a person's corrected text for a held reading, bound to the reading it
-corrects. Once the Recensor accepts it, the person's text is the established reading,
-taken as the truth with no machine doubt, labelled "corrected by a person" with who,
-when, why and an optional note; the model's reading stays beside it in the export as "model
-reading (original)". It is delivered and counted like any accepted act and never by
-itself makes a run partial.
+**unit** — two uses, kept apart by context. A *witness unit* is one piece of a witness's
+page in that witness's own order (a Chandra block, a Churro section, one of DAI's record
+crops), cited by an id such as `A1`. A *review unit* is one row the run counts: an entry
+of a page reading, or the one row standing for a page with none (unread or blank); the
+Recensor reviews each and a person decides about held ones (`--unit p1:2`).
 
-**operator re-read** — a person's request that the Perlector read a held page again. It
-is outside the re-ask budget, its acts are labelled "read on operator re-read", and it
-becomes the page's current reading; earlier readings stay, marked superseded.
+**held** — kept back for human review: not established or exported until a person
+decides, and never silently dropped or passed as done.
 
-**systemic hold** — a run in which more than 1 in 50 of the pages are held after the
-Recensor. Such a run has a problem of its own, not just a few hard pages, and says so in
-its stop report, its export and its notification.
+**override** — a person's decision (`release`) that sends a held reading to export as
+the model read it, its own holds included. It is labelled "released by operator" with
+who, when, why and the holds it cleared. It is never available for a reading with no
+place on the page, malformed doubt marks or no text.
+
+**correction** — a person's corrected text for a held reading (`edit`), bound to the
+reading it corrects. Once the Recensor accepts it, the person's text is the established
+reading, taken as the truth with no machine doubt, labelled "corrected by a person" with
+who, when, why and an optional note; the model's reading stays beside it in the export as
+"model reading (original)". It is delivered and counted like any accepted act and never
+by itself makes a run partial.
+
+**operator re-read** — a person's request (a page `re-ask` decision) that the Perlector
+read a held page again. It is outside the re-ask budget, its acts are labelled "read on
+operator re-read", and it becomes the page's current reading; earlier readings stay,
+marked superseded.
+
+**systemic hold** — a run in which more than a sealed share of the pages (1 in 50) are
+held after the Recensor. Such a run has a problem of its own, not just a few hard pages,
+and says so in its stop report, its export and its notification.
 
 **failed page** — a page whose reading could not be made: the page did not load or the
 reader's call failed. It is held and counts toward the run's failure cap; it is never
 counted as an empty page.
 
-**blank page** — a page confirmed to hold no text: the reader found none, the ink map
-shows no ink left unread, no line was detected, and every witness that read it found no
-text. A page the reader reads as having no text is held until all of that is confirmed;
-ink with no reading is never passed as blank.
+**blank page** — a page confirmed to hold no text: the reader found none, the page
+accounting finds no ink left unread, the record detector found no record, no line was
+detected, and every witness that read it found no text. A page the reader reads as
+having no text is held until all of that is confirmed; ink with no reading is never
+passed as blank.
 
 **re-ask** — one further, bounded question to the reader about a page whose first reading
-left named ink unread. It is additive and separately recorded; acts it recovers are
-labelled "read on re-ask". The bound is sealed per run.
+left named ink unread: a witness unit neither cited nor set aside, or a detected line or
+detector record outside every region. It is additive and separately recorded; acts it
+recovers are labelled "read on re-ask". The bound is sealed per run.
 
 **run tree** — the directory one run writes, with one folder per stage.
 
@@ -81,35 +125,62 @@ labelled "read on re-ask". The bound is sealed per run.
 | Term | Plain meaning here |
 |---|---|
 | **Exemplar** | The sealed, immutable source page. (In manuscript practice, the original a scribe copies from.) |
-| **Ink map** | Measures where ink lies on each sealed page, without any model, so the Recensor can check that every inked region ended up in a reading region. |
+| **Ink map** | Measures where ink lies on each sealed page, without any model, so the page accounting can check that every inked region ended up in a reading region. |
 | **Designator** | Publishes each page's detected lines, blocks and records, the evidence the reading is checked against. It marks out no act and establishes no text. |
 | **Attestator** | One witness model. Plural **Attestatores**. |
 | **Perlector** | The reader: reads each whole page itself, names the acts on it and establishes their text, using witness testimony as clues. |
-| **Coniector** | Proposes a labelled, unconfirmed reconstruction of an act from the text around it: the Perlector's transcriptions, never the image. Establishes nothing. (In textual criticism, a conjecture is a reading no witness carries.) |
-| **Recensor** | Checks that the page is completely covered and holds what is not. It establishes no text. (Textual critics use *recensio* for weighing witnesses; here the word means the completeness review.) |
+| **Recensor** | Checks that each page is completely accounted for and holds what is not. It establishes no text and calls no model. (Textual critics use *recensio* for weighing witnesses; here the word means the completeness review.) |
 | **Archetypus** | The established reading, the pipeline's output: a machine reading, not truth. (Borrowed loosely from the ancestor text all witnesses descend from.) |
+| **Coniector** | Proposes a labelled, unconfirmed reconstruction of an act from the text around it: the Perlector's transcriptions, never the image. Establishes nothing. (In textual criticism, a conjecture is a reading no witness carries.) |
 | **Armarium** | Where the output is written. (The cupboard where finished books were kept.) |
 
 ## What the stages produce
 
-**Testimonium** (plural *Testimonia*) — an unverified witness report on a page,
-of uncertain quality, always kept and never final; it names its model and revision.
+**Testimonium** (plural *Testimonia*) — one witness's unverified report on one page, of
+uncertain quality, always kept and never final; it names its model and revision.
 
-**page reading** — the Perlector's one whole-page answer for a sealed page. A page whose
-reading cannot stand is held as unread.
+**feed** — everything one whole-page Perlector call is shown, built from sealed records
+under the run's sealed `[feed]` switches: the page image, each shown witness's page
+broken into its own units (ids `A1`, `B1`, …), and Surya's detected lines (`L1`, …) and
+blocks (`S1`, …). It defines every id the reading may cite and is published as a
+`page-feed` before the call.
+
+**page reading** — one Perlector answer for a whole sealed page, recorded as a
+`page-reading`. A page has its first reading and may have one re-ask and operator
+re-reads, each a separate attempt; none replaces another. A reading that cannot stand is
+held as unread.
+
+**set-aside** — an id from the feed that the reading lists in its answer's `set_aside`,
+with a short reason, instead of citing it, because there is nothing to read there
+(empty, not text, or a detection that repeats another). The page accounting counts it
+as accounted for, but holds the page when a set-aside witness unit carries more text
+than the sealed limit, when it names a detector record, or when a re-ask sets aside an
+id it was asked about.
+
+**page accounting** — the model-free check, recorded as a `page-accounting`, that a page
+reading accounted for everything on its page: every witness unit cited or set aside,
+every detected line and detector record inside a reading region, every witness's text
+read, and no ink left outside the regions. Whatever it cannot account for, or cannot
+measure, holds the page.
+
+**denominator** — what a run counts: one row per page and one per review unit, derived
+from the Perlector's sealed records with the page accounting recomputed, never taken
+from a record. The Recensor, the Archetypus and the Armarium all count by it. A page the
+door refused is recorded but never counted as an act.
 
 **reading region** — the boxes an act's citations cover on its page; their union is the
 act's region.
 
-**Lectio nuda** — an unprimed reading with no witness shown: an experiment in
-`operations/spike_perlector/`, not a pipeline pass.
+**Lectio nuda** — a reading made with no witness shown. The pipeline never establishes
+one: the stages after the Perlector refuse it. `operations/spike_perlector/` measures it
+as an experiment.
 
-**Perlectio** — what the Perlector returns: the reading, what it was based on, and where
-it departed from every witness (its dissent).
+**Perlectio** — what the Perlector returns for one entry: the reading, what it was based
+on, and where it departed from every witness (its dissent).
 
 **Diplomatic** — the Perlector's transcription of exactly what the ink on one page
-shows, read with the witnesses as clues and never corrected from context; the
-established reading.
+shows, read with the witnesses as clues and never corrected from context. It is the
+established reading unless a person corrected it.
 
 **Reconstruction** — a labelled, unconfirmed layer under a diplomatic, made after the
 reading by the Coniector or a person from the text around the act: the diplomatic with
