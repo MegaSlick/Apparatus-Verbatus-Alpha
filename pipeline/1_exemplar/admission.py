@@ -85,13 +85,6 @@ def reason_code(text: object) -> RefusalReason:
         ) from None
 
 
-# The route of every named format, sealed into a real run's `config_digest`.
-FORMAT_ROUTES: Final = {
-    format_name: RENDER_PAGES if format_name in ALWAYS_A_CONTAINER else ADMIT_OR_FAN_OUT
-    for format_name in sorted(SNIFFABLE_FORMATS)
-}
-
-
 def route_for(detected: str | None) -> str:
     """The decoder route for a sniffed format; an unknown signature gets a raster attempt.
 
@@ -101,6 +94,12 @@ def route_for(detected: str | None) -> str:
     `unrecognized-format` alarm rather than a silent omission.
     """
     return RENDER_PAGES if detected in ALWAYS_A_CONTAINER else ADMIT_OR_FAN_OUT
+
+
+# The route of every named format, sealed into a real run's `config_digest`.
+FORMAT_ROUTES: Final = {
+    format_name: route_for(format_name) for format_name in sorted(SNIFFABLE_FORMATS)
+}
 
 
 def inspect_source(data: bytes, *, declared_sha256: str | None) -> AdmissionOutcome:

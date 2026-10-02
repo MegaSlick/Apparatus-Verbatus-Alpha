@@ -86,7 +86,6 @@ def test_pdf_alone_renders_pages_and_every_other_detected_format_is_decoded():
             assert route_for(detected) == (RENDER_PAGES if name == "pdf" else ADMIT_OR_FAN_OUT)
     assert route_for(None) == ADMIT_OR_FAN_OUT
     assert set(FORMAT_ROUTES) == SNIFFABLE_FORMATS
-    assert all(route == route_for(name) for name, route in FORMAT_ROUTES.items())
 
 
 @pytest.mark.parametrize(("encoder", "sniffed"), [("WEBP", "webp"), ("HEIF", "heic")])
