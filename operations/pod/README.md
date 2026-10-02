@@ -941,19 +941,9 @@ root:
 bash operations/pod/prepare_runtime.sh
 ```
 
-It installs the official `uv 0.12.1` at `/usr/local/bin/uv`, `ninja-build` at
-`/usr/bin/ninja` (without it the Chandra and DAI vLLM warm-up fails), and a
-Landlock-capable `setpriv` at `/usr/bin/setpriv` (stock Ubuntu 24.04's lacks
-`--landlock-access`). A working `setpriv` is kept; otherwise it verifies pinned SHA-256
-digests, builds only `setpriv` from util-linux 2.42.3, and keeps the old binary at
-`/usr/local/lib/verbatus-runtime-prerequisites/setpriv.before-util-linux-2.42.3`. It is
-idempotent, with bounded, retried downloads. Either `setpriv` must pass:
-
-```bash
-setpriv --no-new-privs --landlock-access fs:write-file -- /bin/true
-```
-
-A kernel without working Landlock is a refusal: choose another host, never bypass it.
+It installs the official `uv 0.12.1` at `/usr/local/bin/uv`, checked against its pinned
+SHA-256, and `ninja-build` at `/usr/bin/ninja` (without it the Chandra and DAI vLLM
+warm-up fails). It is idempotent, with bounded, retried downloads.
 
 Keep the repository, `.venv` and `UV_CACHE_DIR` on container-local disk. The serving stack
 keeps only the active model in its container-local cache. Keep inputs, outputs,
