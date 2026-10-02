@@ -2095,3 +2095,29 @@ def test_a_chandra_answer_under_an_unmeasured_stop_word_resumes_from_its_termina
     record = page_records(RunTree(run_root, RUN_ID))[(1, "attestator_1")]
     assert record["outcome"] == "failed"
     assert "'abort'" in record["payload"]["reason"]
+
+
+@pytest.mark.parametrize("damage", ["changed", "removed"])
+def test_a_response_kept_unread_is_bound_to_its_page_record(live_run, tmp_path, damage):
+    """Its bytes are an input of the page record itself, not only named inside its
+    call record, so changing or losing them is refused when the record is read."""
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_3"][0] = ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason="abort")
+    world = LiveWorld(live_run, tmp_path, scripts)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    record = page_records(tree)[(1, "attestator_3")]
+    call = json.loads(tree.read_bytes(record["payload"]["serving_call_ref"]["relative_path"]))
+    unread = call["raw_response_ref"]
+    assert unread in record["inputs"]
+    assert unread in record["payload"]["raw_response_refs"]
+
+    blob = tree.resolve(unread["relative_path"])
+    if damage == "changed":
+        blob.write_bytes(b"another answer")
+    else:
+        blob.unlink()
+    with pytest.raises(Exception, match="digest|missing|No such file|not found"):
+        tree.read_artifact(ATTESTATORES, "page-testimonium", record["artifact_id"])

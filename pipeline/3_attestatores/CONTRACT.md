@@ -80,7 +80,9 @@ records (below).
 view), a `provenance.receipt_ref` naming the receipt the chair's client re-read
 at start, and its serving call: `serving_call_ref` on a Chandra or Churro page,
 one `unit_call_refs` entry per record on a DAI page. Every call record is bound
-as an input. The writer and the tally (`verify_page_call_sampling`) hold each
+as an input. A response kept unread (no capture) is named in
+`raw_response_refs` and bound as an input itself, so its bytes are re-hashed
+whenever the record is read. The writer and the tally (`verify_page_call_sampling`) hold each
 call to the chair's sealed sampling row and its receipt's seed; a Chandra page
 sends no seed and samples at its returned attempt's ordinal. A live record that
 retains a response and names no serving call is refused.

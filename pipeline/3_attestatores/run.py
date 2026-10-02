@@ -1266,6 +1266,15 @@ def publish_page_testimonium(
         attempt=attempt,
         live=live,
     )
+    if (
+        attempt.native_capture is None
+        and attempt.raw_response_ref is not None
+        and attempt.raw_response_ref not in response_refs
+    ):
+        # A response kept unread has no capture to name its bytes, so the page
+        # record binds them itself; otherwise they could change or vanish
+        # behind a call record that only names them.
+        response_refs = [*response_refs, dict(attempt.raw_response_ref)]
     payload = page_testimonium_payload(
         chair=chair,
         page_ordinal=page_ordinal,
