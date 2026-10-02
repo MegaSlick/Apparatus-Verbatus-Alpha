@@ -39,12 +39,9 @@ SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
 MAX_MANIFEST_ROWS: Final = 1_000
 MAX_CLUSTER_RECORDS: Final = 1_000
 MAX_CLUSTER_MEMBERS: Final = 4_096
-# A single frame's parts must remain in one content-aware shard, and the shared
-# corpus-frame policy refuses any configured shard limit above 1,000 — so any
-# bound at or below that keeps every ingestible frame provable. The 64-part
-# value caps the quadratic pairwise-disjointness proof; a real frame with more
-# parts needs a triage-policy change, not a bigger loop. The Exemplar boundary
-# bounds the same split with the shared cap.
+# Caps the quadratic pairwise-disjointness check; a real frame with more parts
+# needs a triage-policy change, not a bigger loop. Well under the 1,000-page shard,
+# which one frame's parts must fit in.
 MAX_SPLIT_PARTS: Final = MAX_TRIAGE_SPLIT_PARTS
 
 _RECTANGLE_FIELDS: Final = {"space", "x", "y", "w", "h"}

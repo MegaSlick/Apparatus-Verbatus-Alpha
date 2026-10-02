@@ -184,10 +184,6 @@ MAX_TRIAGE_DERIVATIVE_PAGES: Final = 1_000
 _TRIAGE_FRAME_INDEX: Final = 0
 
 
-def _is_positive_int(value: Any) -> bool:
-    return is_plain_int(value) and value >= 1
-
-
 def _source_digest_stream(handle: BinaryIO) -> tuple[str, int]:
     """Hash an already-open source and reset it for the PDF decoder."""
     digest = hashlib.sha256()
@@ -871,78 +867,6 @@ def _require_case_unique_paths(files: list[dict[str, Any]]) -> None:
                 "name portable evidence uniquely"
             )
         seen.add(portable)
-
-
-def content_aware_shards(
-    sources: list[SourceEntry], *, max_pages_per_shard: int, max_shards: int | None = None
-) -> list[list[SourceEntry]]:
-    """Choose only seams that keep a split pair and re-shoot cluster whole.
-
-    Call it before creating each RunTree: cutting after a run exists would
-    change its immutable denominator. The page cap is sealed policy; pass
-    ``max_shards`` only for a caller's own ceiling.
-    """
-    if not _is_positive_int(max_pages_per_shard) or (
-        max_shards is not None and not _is_positive_int(max_shards)
-    ):
-        raise ContractError(
-            "content-aware sharding received a non-positive or non-integer page or shard limit; "
-            "no shard plan was returned because slice boundaries must be exact page counts; "
-            "pass positive integer limits and retry"
-        )
-    ordered = sorted(sources, key=lambda source: source.ordinal)
-    if not ordered:
-        raise ContractError(
-            "content-aware sharding received no submitted pages; no shard plan was returned "
-            "because an empty plan would hide an empty submission; supply a non-empty post-split "
-            "page census and retry"
-        )
-    blocked: set[int] = set()
-    # Split parts are adjacent, so block every seam inside one; a cluster may be
-    # scattered, so block every seam between its first and last member.
-    for left, right in zip(ordered, ordered[1:], strict=False):
-        if (
-            left.triage_row is not None
-            and right.triage_row is not None
-            and left.declared_path == right.declared_path
-            and left.declared_sha256 == right.declared_sha256
-            and left.triage_part_index is not None
-            and right.triage_part_index is not None
-        ):
-            blocked.add(left.ordinal)
-    clusters: dict[str, list[int]] = {}
-    for source in ordered:
-        if source.triage_row is None:
-            continue
-        cluster_id = source.triage_row["re_shoot_cluster_id"]
-        if cluster_id is not None:
-            clusters.setdefault(cluster_id, []).append(source.ordinal)
-    for ordinals in clusters.values():
-        blocked.update(range(min(ordinals), max(ordinals)))
-    shards: list[list[SourceEntry]] = []
-    start = 0
-    while start < len(ordered):
-        end = min(start + max_pages_per_shard, len(ordered))
-        if end < len(ordered):
-            while end > start and ordered[end - 1].ordinal in blocked:
-                end -= 1
-            if end == start:
-                raise ContractError(
-                    "content-aware shard refusal: every legal seam within the configured "
-                    "page cap would cut a split pair or re-shoot cluster; no shard plan was "
-                    "returned because those units must remain whole; place the whole unit in a "
-                    "shard within the sealed cap, or stop for the project lead if the cap itself conflicts"
-                )
-        shards.append(ordered[start:end])
-        start = end
-    if max_shards is not None and len(shards) > max_shards:
-        raise ContractError(
-            "content-aware shard refusal: the configured shard count is exhausted without "
-            "cutting a split pair or re-shoot cluster; no shard plan was returned because the "
-            "caller ceiling cannot be met honestly; remove or increase that caller-supplied "
-            "ceiling and retry"
-        )
-    return shards
 
 
 def process_sources(

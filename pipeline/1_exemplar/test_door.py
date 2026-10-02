@@ -1402,23 +1402,6 @@ def test_split_render_uses_the_deterministic_common_encoder(monkeypatch):
     assert calls == [first, first]
 
 
-def test_content_aware_shards_do_not_cut_split_pairs_or_clusters():
-    split_row = {"re_shoot_cluster_id": None}
-    cluster_row = {"re_shoot_cluster_id": "opening-7"}
-    split = [
-        SourceEntry(1, "a.jpg", "a" * 64, 0, triage_row=split_row, triage_part_index=0),
-        SourceEntry(2, "a.jpg", "a" * 64, 1, triage_row=split_row, triage_part_index=1),
-        SourceEntry(3, "b.jpg", "b" * 64, 0, triage_row=cluster_row, triage_part_index=0),
-        SourceEntry(4, "c.jpg", "c" * 64, 0, triage_row=cluster_row, triage_part_index=0),
-    ]
-    shards = door.content_aware_shards(split, max_pages_per_shard=2)
-    assert [[source.ordinal for source in shard] for shard in shards] == [[1, 2], [3, 4]]
-    with pytest.raises(ContractError, match="content-aware shard refusal"):
-        door.content_aware_shards(split[:2], max_pages_per_shard=1)
-    with pytest.raises(ContractError, match="content-aware shard refusal"):
-        door.content_aware_shards(split[2:], max_pages_per_shard=1)
-
-
 def _admitted_re_shoot_pair(tmp_path, register_bytes=None):
     """Two admitted captures triage links as one re-shoot cluster, and their cluster report."""
     first, second = png(4, 3), png(4, 3, rows=(b"\x00" + b"\x63" * 4) * 3)
@@ -3462,46 +3445,8 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
         )
 
 
-def test_content_aware_shards_impose_no_shard_ceiling_of_their_own():
-    """The sealed page cap is the policy; the shard count is its consequence.
-
-    An implicit count ceiling would refuse a valid larger corpus independently of
-    the sealed page cap. A caller with an external ceiling must pass it explicitly.
-    """
-    sources = [
-        SourceEntry(index, f"{index:03d}.jpg", f"{index:03d}".zfill(64)) for index in range(1, 9)
-    ]
-
-    assert len(door.content_aware_shards(sources, max_pages_per_shard=2)) == 4
-    with pytest.raises(ContractError, match="shard count is exhausted"):
-        door.content_aware_shards(sources, max_pages_per_shard=2, max_shards=3)
-
-
-@pytest.mark.parametrize(
-    ("max_pages", "max_shards"),
-    [(True, None), (1.5, None), ("2", None), (2, True), (2, 1.5), (2, "3")],
-)
-def test_content_aware_shard_limits_are_positive_integer_counts(max_pages, max_shards):
-    sources = [SourceEntry(1, "one.jpg", "a" * 64)]
-
-    with pytest.raises(ContractError, match="non-positive or non-integer") as refused:
-        door.content_aware_shards(
-            sources,
-            max_pages_per_shard=max_pages,
-            max_shards=max_shards,
-        )
-    assert "no shard plan was returned" in str(refused.value)
-    assert "pass positive integer limits" in str(refused.value)
-
-
 def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(tmp_path):
-    """The seam a *production* run can actually place is the operator's folder cut.
-
-    Nothing in the tree partitions a corpus into shards; `content_aware_shards`
-    only plans seams for its caller, and a split pair cannot straddle a folder cut
-    because both halves come from one file. A cluster can, so source expansion must
-    refuse an incomplete cluster independently of whether the planner was used.
-    """
+    """A cluster with a member outside the submitted folder is refused at expansion."""
     first, second = png(4, 3), png(4, 3, rows=(b"\x00" + b"\x63" * 4) * 3)
     first_digest, second_digest = digest_bytes(first), digest_bytes(second)
 
@@ -3714,8 +3659,7 @@ def test_synthetic_63_64_65_plus_66_closes_instrument_confirmation_register_and_
         triage_rows=produced.rows_by_digest,
         triage_clusters=produced.clusters,
     )
-    shards = door.content_aware_shards(sources, max_pages_per_shard=3)
-    assert [[source.ordinal for source in shard] for shard in shards] == [[1, 2, 3], [4]]
+    assert [source.ordinal for source in sources] == [1, 2, 3, 4]
 
 
 def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_out():
@@ -3779,12 +3723,6 @@ def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_ou
     )
     assert [source.triage_part_index for source in sources] == [0, 1, 2, 3, 4] * 2
     assert {source.ordinal for source in sources} == set(range(1, 11))
-
-    # The cluster spans every one of those ten ordinals, so no seam inside it is
-    # legal: one shard holds it or the submission is refused.
-    assert len(door.content_aware_shards(sources, max_pages_per_shard=10)) == 1
-    with pytest.raises(ContractError, match="content-aware shard refusal"):
-        door.content_aware_shards(sources, max_pages_per_shard=5)
 
 
 def test_the_producer_measures_a_cluster_span_in_door_ordinals_not_in_frames():
@@ -3876,59 +3814,6 @@ def test_a_submitted_frame_with_no_triage_row_is_refused_and_a_row_outside_the_s
         },
     )
     assert [source.declared_sha256 for source in sources] == [submitted_digest]
-
-
-def test_a_legal_seam_between_byte_identical_split_files_is_not_mistaken_for_a_pair():
-    """A pair is one declared path's parts, not every adjacent copy of its digest."""
-    row = {"re_shoot_cluster_id": None}
-    digest = "a" * 64
-    sources = [
-        SourceEntry(1, "copy-a.jpg", digest, 0, triage_row=row, triage_part_index=0),
-        SourceEntry(2, "copy-a.jpg", digest, 1, triage_row=row, triage_part_index=1),
-        SourceEntry(3, "copy-b.jpg", digest, 0, triage_row=row, triage_part_index=0),
-        SourceEntry(4, "copy-b.jpg", digest, 1, triage_row=row, triage_part_index=1),
-    ]
-
-    shards = door.content_aware_shards(sources, max_pages_per_shard=2)
-
-    assert [[source.ordinal for source in shard] for shard in shards] == [[1, 2], [3, 4]]
-
-
-def test_nested_cluster_spans_remain_whole_without_inventing_a_winner():
-    rows = {
-        "outer": {"re_shoot_cluster_id": "outer"},
-        "inner": {"re_shoot_cluster_id": "inner"},
-        "none": {"re_shoot_cluster_id": None},
-    }
-    cluster_by_ordinal = {
-        1: "none",
-        2: "outer",
-        3: "inner",
-        4: "none",
-        5: "none",
-        6: "inner",
-        7: "outer",
-        8: "none",
-    }
-    sources = [
-        SourceEntry(
-            ordinal,
-            f"{ordinal}.jpg",
-            f"{ordinal:064x}",
-            0,
-            triage_row=rows[cluster_by_ordinal[ordinal]],
-            triage_part_index=0,
-        )
-        for ordinal in range(1, 9)
-    ]
-
-    shards = door.content_aware_shards(sources, max_pages_per_shard=6)
-
-    assert [[source.ordinal for source in shard] for shard in shards] == [
-        [1],
-        [2, 3, 4, 5, 6, 7],
-        [8],
-    ]
 
 
 def test_unicode_and_separator_like_relative_paths_have_exact_stable_ordinals():

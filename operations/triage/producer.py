@@ -786,13 +786,9 @@ def produce(
             evidence_manifest=evidence_manifest,
             evidence_records=evidence_records,
         )
-        # The span a shard has to hold is measured in Door ordinals, not in frames.
-        # `expand_sources` orders submitted sources by relative path and emits one
-        # ordinal per split part, and `content_aware_shards` blocks every seam between
-        # a cluster's first and last ordinal. Counting members in submission order
-        # therefore understates the real span twice over — three frames of five parts
-        # each occupy fifteen ordinals — and a cluster this producer waved through can
-        # leave the Door with no legal seam at all, which refuses the whole submission.
+        # The span a shard has to hold is measured in Door ordinals, not in frames:
+        # the Door orders submitted sources by relative path and gives each split part
+        # its own ordinal, so three frames of five parts each occupy fifteen ordinals.
         ordinal = 0
         first_ordinal: dict[str, int] = {}
         last_ordinal: dict[str, int] = {}
