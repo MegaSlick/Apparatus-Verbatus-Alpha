@@ -210,6 +210,11 @@ def test_a_page_read_run_exports_its_acts_and_other_readings_complete(complete):
     assert sorted(_jsonl(members, "other.jsonl")) == ["p1:1"]
     text = _text_bundle(members)
     assert "## OTHER p1:1 (not an act)" in text and "## p1:1 " not in text
+    assert text.split("\n")[1:3] == [
+        "run-status: complete",
+        "folder-readings: 3 delivered, 0 not delivered",
+    ]
+    assert "## NOT DELIVERED" not in text
     export = complete["export"]["payload"]
     assert export["expected_acts"] == 2
     assert [item["act_key"] for item in export["other_readings"]] == ["p1:1"]
@@ -647,6 +652,9 @@ def test_a_held_other_reading_keeps_the_run_partial(tmp_path):
         for reason in claims["partial_reasons"]
         if reason.startswith(f"other {other['act_key']} is held-for-review: ")
     ]
+    assert f"## NOT DELIVERED {other['act_key']} ({other['act_id']})\nnot-delivered: other " in (
+        _text_bundle(bundle["members"])
+    )
 
     def drop_other(members: dict) -> None:
         rows = members["review-items.jsonl"].decode("utf-8").splitlines(keepends=True)

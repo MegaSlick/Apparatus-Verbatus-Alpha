@@ -495,6 +495,59 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
     assert _verified_literals(bundle.data, tmp_path / "identity") == {"act-1": "Cǣsar d’Exemple"}
 
 
+def test_a_partial_runs_text_bundle_says_it_is_partial_and_names_what_it_lacks(tmp_path):
+    """A reader of readings.txt alone sees the run's status and every reading not
+    delivered on its pages, text-free, rather than a file that reads as complete."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    lines = _members(bundle.data)[TEXT_REGISTER].decode("utf-8").split("\n")
+    assert lines[1:3] == [
+        "run-status: partial (EXPORT_MANIFEST.json claims.partial_reasons says why)",
+        "folder-readings: 1 delivered, 1 not delivered",
+    ]
+    stub = lines.index("## NOT DELIVERED p1:2 (act-2)")
+    assert lines[stub : stub + 4] == [
+        "## NOT DELIVERED p1:2 (act-2)",
+        "not-delivered: act held-for-review",
+        'not-delivered-reason: "the review remains unresolved"',
+        "",
+    ]
+
+
+def _edited_text_bundle(data: bytes, edit) -> bytes:
+    members = _members(data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    edit(lines)
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+    return _zip_bytes(members)
+
+
+def _drop_stub(lines: list[str]) -> None:
+    stub = lines.index("## NOT DELIVERED p1:2 (act-2)")
+    del lines[stub : stub + 4]
+
+
+@pytest.mark.parametrize(
+    "edit, refusal",
+    [
+        (
+            lambda lines: lines.__setitem__(1, "run-status: complete"),
+            "does not state the run's status",
+        ),
+        (
+            lambda lines: lines.__setitem__(2, "folder-readings: 1 delivered, 0 not delivered"),
+            "does not state the run's status",
+        ),
+        (_drop_stub, "does not name exactly the readings"),
+    ],
+    ids=["status-made-complete", "count-edited", "stub-dropped"],
+)
+def test_a_text_bundle_that_hides_a_partial_run_is_refused(tmp_path, edit, refusal):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    with pytest.raises(SchemaRefusal, match=refusal):
+        verify_export_bundle(_edited_text_bundle(bundle.data, edit), tmp_path / "clean")
+
+
 def _otherwise_complete(**fields) -> ArmariumProjection:
     """A projection with nothing else wrong with it.
 

@@ -529,11 +529,13 @@ def build_armarium_bundle(
         }
     members["sources.json"] = canonical_bytes(sources_record)
 
+    ledger = _projection_ledger(projection)
     if "text-bundle" in formats.formats:
         members.update(
             _text_bundle_members(
                 projection.acts,
                 source_rows,
+                ledger["status"],
                 projection.continuation_joins,
                 projection.other_readings,
                 coniector_rows,
@@ -566,7 +568,7 @@ def build_armarium_bundle(
     members.update(embedded_crops)
     members.update(embedded_other_crops)
 
-    manifest = _export_manifest(projection, formats, members)
+    manifest = _export_manifest(projection, formats, members, ledger)
     archive_members = {EXPORT_MANIFEST_NAME: canonical_bytes(manifest), **members}
     data = _zip_bytes(archive_members)
     # A package that does not survive a clean extraction must fail before it
@@ -672,6 +674,8 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_uncertainty_claim(manifest)
     _verify_exact_product_members(formats, sources, actual_names)
     search_fold_verification = _verify_product_accounting(root, manifest, formats, sources)
+    if "text-bundle" in formats.formats:
+        _verify_text_bundle_status(root, manifest, sources)
     _verify_page_layers(root, manifest, formats, sources)
     _verify_continuation_joins(root, formats, sources)
     # The operator rows and the model readings beside corrected ones, read once
@@ -2972,6 +2976,7 @@ def _image_reference(
 def _text_bundle_members(
     acts: tuple[dict[str, Any]],
     source_rows: list[dict[str, Any]],
+    status: str,
     joins: tuple[dict[str, Any], ...] = (),
     others: tuple[dict[str, Any], ...] = (),
     coniector_rows: tuple[dict[str, Any], ...] = (),
@@ -2979,6 +2984,11 @@ def _text_bundle_members(
     model_readings: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
+
+    Each file opens with the run's status (`status`, the terminal ledger's) and
+    how many of its readings were delivered, and ends with a text-free
+    `## NOT DELIVERED` section for every reading on its pages that was not, so
+    a partial run never reads as complete.
 
     A reading an operator acted on carries its operator lines, and a corrected
     one the model's reading beside the person's (`model_readings`, by id).
@@ -3027,9 +3037,24 @@ def _text_bundle_members(
     released = {row["act_id"]: row for row in operator_rows}
     models = model_readings or {}
     members: dict[str, bytes] = {}
+    not_delivered = _not_delivered_by_folder(
+        [
+            _not_delivered_row(reading, kind)
+            for reading, kind in [(act, "act") for act in acts]
+            + [(other, "other") for other in others]
+            if reading["category"] != ArmariumCategory.DELIVERED.value
+        ],
+        source_rows,
+    )
     for folder in sorted(folders):
         records = grouped[folder]
-        lines = [f"# Armarium text bundle — source folder: {folder or '.'}", ""]
+        lines = [
+            f"# Armarium text bundle — source folder: {folder or '.'}",
+            *_folder_status_lines(
+                status, len(records) + len(other_groups[folder]), len(not_delivered[folder])
+            ),
+            "",
+        ]
         for act in sorted(records, key=lambda item: act_key_sort_key(item["act_key"])):
             regions = act["source_regions"]
             lines.extend([f"## {act['act_key']} ({act['act_id']})", f"act-id: {act['act_id']}"])
@@ -3073,8 +3098,107 @@ def _text_bundle_members(
             lines.extend(
                 _other_section(other, released.get(other["act_id"]), models.get(other["act_id"]))
             )
+        for row in not_delivered[folder]:
+            lines.extend(_not_delivered_section(row))
         members[_text_member_path(folder)] = "\n".join(lines).encode("utf-8")
     return members
+
+
+_NOT_DELIVERED_PREFIX: Final = "## NOT DELIVERED "
+
+
+def _folder_status_lines(status: str, delivered: int, not_delivered: int) -> list[str]:
+    """A text-bundle file's opening lines: the run's status and this folder's count."""
+    said = "" if status == "complete" else " (EXPORT_MANIFEST.json claims.partial_reasons says why)"
+    return [
+        f"run-status: {status}{said}",
+        f"folder-readings: {delivered} delivered, {not_delivered} not delivered",
+    ]
+
+
+def _not_delivered_row(reading: dict[str, Any], kind: str) -> dict[str, Any]:
+    """What a text bundle says of a reading it does not deliver: who, where, and why."""
+    page = _key_page(reading["act_key"]) if kind == "act" else reading["page_ordinal"]
+    return {
+        "act_id": reading["act_id"],
+        "act_key": reading["act_key"],
+        "kind": kind,
+        "page_ordinal": page,
+        "category": reading["category"],
+        "reason": _export_reason(reading),
+    }
+
+
+def _not_delivered_by_folder(
+    rows: list[dict[str, Any]], pages: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    """Each not-delivered reading under the folder of the page it was read on, in reading order."""
+    paths = {page["ordinal"]: page["declared_path"] for page in pages}
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in sorted(rows, key=lambda item: act_key_sort_key(item["act_key"])):
+        if row["page_ordinal"] not in paths:
+            raise SchemaRefusal(f"the not-delivered reading {row['act_key']} names no source page")
+        grouped[_source_folder_for_declared_path(paths[row["page_ordinal"]])].append(row)
+    return grouped
+
+
+def _not_delivered_section(row: dict[str, Any]) -> list[str]:
+    """One text-free section for a reading the package does not deliver."""
+    return [
+        f"{_NOT_DELIVERED_PREFIX}{row['act_key']} ({row['act_id']})",
+        f"not-delivered: {row['kind']} {row['category']}",
+        f"not-delivered-reason: {json.dumps(row['reason'], ensure_ascii=False)}",
+        "",
+    ]
+
+
+def _verify_text_bundle_status(
+    root: Path, manifest: dict[str, Any], sources: dict[str, Any]
+) -> None:
+    """Every text-bundle file states the run's status, its folder's count and its undelivered readings.
+
+    All three are rebuilt from the package's own accounting with the writer's
+    functions and must be exactly what each file says.
+    """
+    delivered: dict[str, int] = Counter()
+    for field in ("act_citations", "other_citations"):
+        for citation in _act_citation_sources(sources, field).values():
+            for folder in {
+                _source_folder_for_declared_path(region["declared_path"])
+                for region in citation["source_regions"]
+            }:
+                delivered[folder] += 1
+    rows = [
+        _not_delivered_row(outcome, "act")
+        for outcome in _act_outcome_sources(sources).values()
+        if outcome["category"] != ArmariumCategory.DELIVERED.value
+    ] + [
+        _not_delivered_row(outcome, "other")
+        for outcome in _other_outcome_sources(sources).values()
+        if outcome["category"] != ArmariumCategory.DELIVERED.value
+    ]
+    not_delivered = _not_delivered_by_folder(rows, sources["pages"])
+    folders = {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
+    for folder in sorted(folders):
+        lines = _package_lines(root / _text_member_path(folder), "text bundle")
+        expected = _folder_status_lines(
+            manifest["claims"]["status"], delivered[folder], len(not_delivered[folder])
+        )
+        if lines[1 : 1 + len(expected)] != expected:
+            raise SchemaRefusal(
+                f"the text bundle for folder {folder or '.'!r} does not state the run's status "
+                "and its readings as the package accounts for them"
+            )
+        shown: list[str] = []
+        for index, line in enumerate(lines):
+            if line.startswith(_NOT_DELIVERED_PREFIX):
+                end = lines.index("", index) if "" in lines[index:] else len(lines)
+                shown.extend(lines[index : end + 1])
+        if shown != [line for row in not_delivered[folder] for line in _not_delivered_section(row)]:
+            raise SchemaRefusal(
+                f"the text bundle for folder {folder or '.'!r} does not name exactly the readings "
+                "on its pages that the package does not deliver"
+            )
 
 
 _OTHER_SECTION_PREFIX: Final = "## OTHER "
@@ -4271,10 +4395,27 @@ def _unresolved_reasons(
     return reasons
 
 
+def _projection_ledger(projection: ArmariumProjection) -> dict[str, Any]:
+    """The terminal ledger of a validated projection."""
+    return _terminal_ledger(
+        _act_outcomes(projection.acts),
+        list(projection.pages),
+        projection.aggregate_basis.get("act_pages")
+        if isinstance(projection.aggregate_basis, dict)
+        else None,
+        projection.aggregate,
+        _edge_hold_pages_from_validated_rows(
+            _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
+        ),
+        _other_outcomes(projection.other_readings),
+    )
+
+
 def _export_manifest(
     projection: ArmariumProjection,
     formats: ArmariumFormats,
     members: dict[str, bytes],
+    ledger: dict[str, Any],
 ) -> dict[str, Any]:
     counts = Counter(act["category"] for act in projection.acts)
     categories = [
@@ -4296,16 +4437,6 @@ def _export_manifest(
     edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     unmeasurable_ink_map_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
     other_outcomes = _other_outcomes(projection.other_readings)
-    ledger = _terminal_ledger(
-        _act_outcomes(projection.acts),
-        list(projection.pages),
-        projection.aggregate_basis.get("act_pages")
-        if isinstance(projection.aggregate_basis, dict)
-        else None,
-        projection.aggregate,
-        edge_hold_pages,
-        other_outcomes,
-    )
     manifest: dict[str, Any] = {
         "schema": EXPORT_MANIFEST_SCHEMA,
         "canonical_text": _canonical_text_claim(formats.formats),
