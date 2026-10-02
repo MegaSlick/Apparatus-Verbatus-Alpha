@@ -4,8 +4,9 @@ Four rules, each a deterministic text match. "The two projects" are ScanTailor a
 ScanTailor Advanced.
 
 - ``gpl_licence_header``: the wording of a GPL licence header or an SPDX GPL tag;
-- ``foreign_copyright``: a copyright notice that names one of the two projects or
-  their authors;
+- ``foreign_copyright``: a copyright notice (the word with (C), the sign or a year)
+  that names one of the two projects or their authors; prose about such notices
+  does not match;
 - ``source_repository_url``: a link into the two projects' source repositories (a
   file, tree, clone or raw URL). A bare link to a repository's front page is a credit,
   as in NOTICE, and is not matched;
@@ -47,8 +48,12 @@ RULES: dict[str, re.Pattern[str]] = {
         r"|Free\s+Software\s+Foundation",
         re.IGNORECASE,
     ),
+    # A notice, not prose about one: "Copyright" with (C), the sign or a year, or the
+    # sign or (C) before a year, then a project or author name later on the line.
     "foreign_copyright": re.compile(
-        r"copyright\b.{0,80}?(?:scan\s*tailor|artsimovi(?:ch)|4lex[4])", re.IGNORECASE
+        r"(?:\bcopyright\b\s*(?:\(c\)|\u00a9|\d{4})|\u00a9|\(c\)\s*\d{4})"
+        r".*?(?:scan\s*tailor|artsimovi(?:ch)|4lex[4])",
+        re.IGNORECASE,
     ),
     "source_repository_url": re.compile(
         r"github\.com[/:]" + _OWNERS + r"/[\w.-]+?(?:\.git\b|/[^\s)>\]]+)"

@@ -45,6 +45,33 @@ def test_each_rule_finds_its_synthetic_hit(line, rule):
     assert scan.scan_text("x.md", f"intro\n{line}\n", NONE)[0].line == 2
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Copyright (C) 2007 Joseph Artsi" + "movich",
+        "Copyright \u00a9 2015 " + FORK,
+        "Copyright 2019 the Scan" + "Tailor Advanced developers",
+        "\u00a9 2020 Scan" + "Tailor authors",
+        "(c) 2007-2009 Joseph Artsi" + "movich <someone@example.invalid>",
+        " * COPYRIGHT (C) " + OWNER + " contributors",
+    ],
+)
+def test_copyright_notices_in_several_formats_are_hits(line):
+    assert [hit.rule for hit in scan.scan_text("x.cpp", line + "\n", NONE)] == ["foreign_copyright"]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "the host scans for GPL/Scan" + "Tailor copyright or licence headers",
+        "a copyright notice naming Scan" + "Tailor or its authors is refused",
+        "Copyright questions about Scan" + "Tailor are a lawyer's matter",
+    ],
+)
+def test_prose_about_copyright_notices_is_not_a_hit(line):
+    assert scan.scan_text("x.md", line + "\n", NONE) == []
+
+
 def test_a_front_page_credit_link_is_not_a_hit():
     for link in (
         f"https://github.com/{OWNER}/{OWNER}",
