@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import tomllib
 from argparse import Namespace
 from dataclasses import dataclass, field
@@ -3831,12 +3832,23 @@ def test_a_descendant_holding_the_pipe_cannot_stop_the_runner_from_returning(
 # --- a run holds its pod only while it shows progress -------------------------------
 
 
-def _stalling_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cpu: list[int]
-) -> tuple[list[float], list[list[str]]]:
-    """Drive one run whose orchestrator ticks once per five minutes with these CPU readings.
+def _burn_cpu() -> None:
+    """Use CPU time in this process until its counter visibly moves."""
 
-    Returns the minute of each keep-alive touch and every notice argv.
+    start = os.times()
+    while os.times().user + os.times().system - start.user - start.system < 0.02:
+        sum(range(1000))
+
+
+def _stalling_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ticks: list[str]
+) -> tuple[list[float], list[list[str]]]:
+    """Drive one run whose orchestrator ticks once per five minutes doing what `ticks` says.
+
+    On every tick an idle model server in the orchestrator's own process tree burns CPU
+    and appends to its engine log in the run tree; "transcript" also adds stage output,
+    and "artifact" also publishes a file in the run tree. Returns the minute of each
+    keep-alive touch and every notice argv.
     """
     ws = _prepared(tmp_path)
     clock = Clock()
@@ -3851,15 +3863,30 @@ def _stalling_run(
         "_guard_keepalive",
         lambda volume, pod_id: lambda: touches.append((clock.now() - start).total_seconds() / 60),
     )
-    readings = iter(cpu)
-    monkeypatch.setattr(pod_run, "process_tree_cpu_ticks", lambda pid: next(readings))
+    tree = ws.volume / pod_run.DEFAULT_RUNS_DIRECTORY / "first-real-run"
+    engine_log = tree / "4_perlector" / pod_run.SERVING_LOGS_DIR / "vllm-perlector.log"
     notify = NotifyRecorder()
 
     class Ticking(RecordedRunner):
         def __call__(self, argv, *, cwd, env, transcript, liveness, interval_seconds):  # type: ignore[no-untyped-def]
-            for _ in cpu:
+            for number, tick in enumerate(ticks):
                 clock.sleep(300)
-                liveness(self.pid, True)
+                _burn_cpu()
+                engine_log.parent.mkdir(parents=True, exist_ok=True)
+                with engine_log.open("a", encoding="utf-8") as log:
+                    log.write("Avg prompt throughput: 0.0 tokens/s\n")
+                if tick == "transcript":
+                    with Path(transcript).open("a", encoding="utf-8") as out:
+                        out.write(f"page {number} read\n")
+                elif tick == "artifact":
+                    artifact = tree / "4_perlector" / f"page-{number}.json"
+                    artifact.write_text("{}", encoding="utf-8")
+                    # Ahead of every earlier write, whatever the filesystem's clock grain.
+                    later = time.time_ns() + (number + 1) * 10**9
+                    os.utime(artifact, ns=(later, later))
+                else:
+                    assert tick == "idle"
+                liveness(os.getpid(), True)
             return super().__call__(
                 argv,
                 cwd=cwd,
@@ -3884,17 +3911,20 @@ def _stalling_run(
 
 
 def test_a_progressing_run_holds_its_pod_on_every_tick(tmp_path, monkeypatch) -> None:
-    touches, stalls = _stalling_run(tmp_path, monkeypatch, [1, 2, 3, 4, 5, 6])
-    assert touches == [5, 10, 15, 20, 25, 30]
+    touches, stalls = _stalling_run(
+        tmp_path, monkeypatch, ["transcript", "artifact", "transcript", "artifact", "transcript"]
+    )
+    assert touches == [5, 10, 15, 20, 25]
     assert stalls == []
 
 
-def test_a_hung_run_stops_holding_its_pod_after_the_stall_window_and_says_so_once(
+def test_an_idle_server_burning_cpu_does_not_hold_the_pod_past_the_stall_window(
     tmp_path, monkeypatch
 ) -> None:
     assert pod_run.RUN_STALL_SECONDS == 15 * 60
-    touches, stalls = _stalling_run(tmp_path, monkeypatch, [5] * 7)
-    # Last progress at minute 5: held through minute 15, released from minute 20 on.
+    touches, stalls = _stalling_run(tmp_path, monkeypatch, ["idle"] * 7)
+    # Only the first tick, which finds the run tree new, is progress: held through
+    # minute 15, released from minute 20 on, though the server burned CPU every tick.
     assert touches == [5, 10, 15]
     [notice] = stalls
     assert notice[-2] == "decision"
@@ -3903,23 +3933,33 @@ def test_a_hung_run_stops_holding_its_pod_after_the_stall_window_and_says_so_onc
 
 
 def test_progress_after_a_stall_holds_the_pod_again(tmp_path, monkeypatch) -> None:
-    touches, stalls = _stalling_run(tmp_path, monkeypatch, [5, 5, 5, 5, 5, 6, 6])
+    touches, stalls = _stalling_run(
+        tmp_path, monkeypatch, ["idle"] * 5 + ["artifact", "transcript"]
+    )
     assert touches == [5, 10, 15, 30, 35]
     assert len(stalls) == 1
 
 
-def test_process_tree_cpu_counts_every_descendant_and_nothing_else(tmp_path: Path) -> None:
-    def process(pid: int, parent: int, used: tuple[int, int, int, int], name: str) -> None:
-        entry = tmp_path / str(pid)
-        entry.mkdir()
-        fields = ["S", str(parent), *["0"] * 9, *map(str, used), "20", "0"]
-        (entry / "stat").write_text(f"{pid} ({name}) {' '.join(fields)}\n", encoding="ascii")
+def test_the_run_tree_mark_moves_on_stage_writes_and_not_on_engine_logs(tmp_path: Path) -> None:
+    assert pod_run.run_tree_mark(tmp_path / "absent") is None
+    stage = tmp_path / "4_perlector"
+    engine_log = stage / pod_run.SERVING_LOGS_DIR / "vllm-perlector.log"
+    engine_log.parent.mkdir(parents=True)
+    engine_log.write_text("starting\n", encoding="utf-8")
+    before = pod_run.run_tree_mark(tmp_path)
+    assert before is not None
 
-    process(10, 1, (1, 2, 3, 4), "orchestrator")
-    process(11, 10, (5, 5, 0, 0), "a stage (with) parens")
-    process(12, 11, (7, 0, 0, 0), "grandchild")
-    process(20, 1, (100, 100, 0, 0), "unrelated")
-    (tmp_path / "self").mkdir()
+    future = before + 10**9
+    os.utime(engine_log, ns=(future, future))
+    assert pod_run.run_tree_mark(tmp_path) == before
 
-    assert pod_run.process_tree_cpu_ticks(10, tmp_path) == 10 + 10 + 7
-    assert pod_run.process_tree_cpu_ticks(99, tmp_path) is None
+    artifact = stage / "page-1.json"
+    artifact.write_text("{}", encoding="utf-8")
+    os.utime(artifact, ns=(future, future))
+    assert pod_run.run_tree_mark(tmp_path) == future
+
+    # A name published from an older file still moves the mark through its directory.
+    later = future + 10**9
+    os.link(artifact, stage / "page-2.json")
+    os.utime(stage, ns=(later, later))
+    assert pod_run.run_tree_mark(tmp_path) == later

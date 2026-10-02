@@ -142,7 +142,7 @@ from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import SEAL_PREDECESSORS
 from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH, load_reconstruction_policy
-from common.runtree.store import RunTree
+from common.runtree.store import SERVING_LOGS_DIR, RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import (
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
@@ -1248,61 +1248,60 @@ def _guard_heartbeat_age(volume: Path, pod_id: str, instant: float) -> int | Non
     return max(0, int(instant - beat))
 
 
-# How long a live orchestrator may show no progress (no CPU time in its process tree, no
-# new transcript output) before pod_run stops holding the pod and leaves the guard's idle
-# check to decide. UNMEASURED: no stage's longest quiet stretch has been measured yet.
+# How long a live orchestrator may show no progress (no new transcript output, nothing
+# written in its run tree outside the serving logs) before pod_run stops holding the pod
+# and leaves the guard's idle check to decide. UNMEASURED: no stage's longest quiet stretch
+# has been measured yet.
 RUN_STALL_SECONDS = 15 * 60
 
 
-def process_tree_cpu_ticks(pid: int, proc: Path = Path("/proc")) -> int | None:
-    """CPU time used by `pid` and every live descendant, plus the children each reaped, in
-    clock ticks; None where /proc cannot say (not Linux, or the process is gone)."""
+def run_tree_mark(root: Path) -> int | None:
+    """The newest modification time, in nanoseconds, of anything under `root` that a
+    stage wrote; None when `root` cannot be read.
 
-    parents: dict[int, int] = {}
-    used: dict[int, int] = {}
-    try:
-        entries = list(proc.iterdir())
-    except OSError:
-        return None
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
+    Directories count, so a published name or a replaced manifest moves the mark even
+    when the file's own time is older. The serving-logs directories do not: an engine
+    that sits idle still writes its log, and that is not the stage advancing.
+    """
+
+    newest: int | None = None
+    pending = [root]
+    while pending:
+        directory = pending.pop()
         try:
-            text = (entry / "stat").read_text(encoding="ascii", errors="replace")
+            newest = max(newest or 0, directory.lstat().st_mtime_ns)
+            with os.scandir(directory) as entries:
+                listed = list(entries)
         except OSError:
+            if directory == root:
+                return None
             continue
-        # The command name sits in parentheses and may hold spaces or parentheses itself.
-        fields = text[text.rfind(")") + 2 :].split()
-        try:
-            parents[int(entry.name)] = int(fields[1])
-            used[int(entry.name)] = sum(int(value) for value in fields[11:15])
-        except (IndexError, ValueError):
-            continue
-    if pid not in used:
-        return None
-    tree = {pid}
-    grew = True
-    while grew:
-        grew = False
-        for child, parent in parents.items():
-            if parent in tree and child not in tree:
-                tree.add(child)
-                grew = True
-    return sum(used[member] for member in tree)
+        for entry in listed:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name != SERVING_LOGS_DIR:
+                        pending.append(Path(entry.path))
+                    continue
+                newest = max(newest, entry.stat(follow_symlinks=False).st_mtime_ns)
+            except OSError:
+                continue
+    return newest
 
 
 class RunProgress:
     """Whether a live orchestrator is still doing something, judged once per liveness tick.
 
-    Progress is CPU time gained anywhere in its process tree or output added to its
-    transcript. A run that shows neither for `stall_seconds` is stalled until either
-    moves again; `stalled_since` names the last moment it showed progress.
+    Progress is a change the stages own: output added to the transcript, or something
+    written in the run tree outside the serving logs. CPU time is not progress: an idle
+    model server in the orchestrator's process tree uses some on every tick. A run that
+    shows no change for `stall_seconds` is stalled until one comes; `last_progress`
+    names the last moment it showed one.
     """
 
     def __init__(
         self,
         *,
-        sample: Callable[[int], tuple[int | None, int | None]],
+        sample: Callable[[], tuple[int | None, int | None]],
         now: Callable[[], datetime],
         stall_seconds: float = RUN_STALL_SECONDS,
     ) -> None:
@@ -1312,15 +1311,11 @@ class RunProgress:
         self._last: tuple[int | None, int | None] | None = None
         self.last_progress: datetime | None = None
 
-    def advancing(self, pid: int) -> bool:
-        current = self._sample(pid)
+    def advancing(self) -> bool:
+        current = self._sample()
         instant = self._now()
         previous, self._last = self._last, current
-        moved = previous is None or any(
-            new is not None and (old is None or new > old)
-            for new, old in zip(current, previous, strict=True)
-        )
-        if moved or self.last_progress is None:
+        if current != previous or self.last_progress is None:
             self.last_progress = instant
             return True
         return (instant - self.last_progress).total_seconds() < self._stall_seconds
@@ -1864,7 +1859,10 @@ def main(
     journal = _liveness_journal(plan, base, now=now)
     keepalive = _guard_keepalive(plan.bootstrap.volume_mount_path, pod_id)
     progress = RunProgress(
-        sample=lambda pid: (process_tree_cpu_ticks(pid), _file_size(plan.transcript_path)),
+        sample=lambda: (
+            _file_size(plan.transcript_path),
+            run_tree_mark(plan.run_root / plan.run_id),
+        ),
         now=now,
     )
     stall_noticed = False
@@ -1876,7 +1874,7 @@ def main(
         journal(pid, alive)
         if not alive:
             return
-        if progress.advancing(pid):
+        if progress.advancing():
             stall_noticed = False
             keepalive()
             return

@@ -507,9 +507,11 @@ or when it has done no work for 30 minutes: no GPU use (under 5 % at every one-m
 sample; a GPU that cannot report counts as busy), no container CPU use (under half a core,
 from the container's own cgroup, not the shared host's load), no download (under
 256 KB/s received), and no touch of the pod's keep-alive file. `pod_run` touches that
-file on every liveness tick while the orchestrator shows progress (CPU time gained in its
-process tree, or new output in its transcript), so a working run never depends on the
-counters. A live run that shows no progress for 15 minutes (`RUN_STALL_SECONDS`, not yet
+file on every liveness tick while the orchestrator shows progress: new output in its
+transcript, or anything written in its run tree outside the `serving-logs` directories.
+CPU time is not progress, because an idle model server in the run's process tree uses a
+little on every tick, and its engine log keeps growing too. A working run never depends
+on the counters. A live run that shows no progress for 15 minutes (`RUN_STALL_SECONDS`, not yet
 measured against a real stage) stops touching it and sends one notice ("run on <pod>
 shows no progress since <time>; the idle guard now decides"); the guard's own counters
 then decide, and touching resumes if the run moves again. An unreadable CPU counter never deletes a pod. If it cannot be
