@@ -43,8 +43,9 @@ page images → Exemplar → Ink map → Designator → Attestatores → Perlect
 | Perlector | `Qwen/Qwen3.8-27B` |
 | Coniector | `Qwen/Qwen3.8-27B` (the Perlector's model, text only) |
 
-Models are bound to roles in `config/models-real.toml` and can be swapped without code
-changes.
+Models are bound to roles in `config/models-real.toml`. Moving a role to another
+revision of the same model is a configuration change; a model that answers in a
+different format also needs its own adapter (`common/witness_adapters.py`).
 
 ## Getting started
 
@@ -67,7 +68,10 @@ and export — not reading:
   --scenario happy --run-id demo --run-root /tmp/verbatus-demo
 ```
 
-Each stage writes its sealed output under the run root, ending in `7_armarium/`.
+Each stage writes its sealed output under the run root, ending in `7_armarium/`. This
+scenario ends with `run demo: partial` and exit code 3, by design: the synthetic act
+that crosses from page 1 to page 2 is flagged, not silently joined, so the export says it
+is partial. Exit codes: 0 complete, 2 failed or refused, 3 held for review or partial, 4 halted.
 
 **Real pages** need the real roster (`--models-config config/models-real.toml`) and a
 Linux GPU machine running vLLM; the RunPod
@@ -107,5 +111,11 @@ reviewed it (`Reviewed-by`).
 
 ## Licence
 
-Apache License 2.0; see [LICENSE](LICENSE). Copyright 2026 Tyrel Somerville, project
-lead.
+The code is under the Apache License 2.0; see [LICENSE](LICENSE). Copyright 2026 Tyrel
+Somerville, project lead.
+
+The models are not part of this repository. They are fetched at a pinned revision when a
+run starts, each under its own terms, recorded beside each model in
+`config/models-real.toml`. Several allow research use only.
+The record detector runs through `ultralytics`, which is AGPL-3.0; it is installed
+only on the GPU machine, never in this repository's own environment.

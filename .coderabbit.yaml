@@ -11,8 +11,7 @@ reviews:
   # Default is `chill`. This repository wants everything and filters afterwards.
   profile: assertive
 
-  # Off: CodeRabbit comments but never approves a pull request itself once its
-  # comments are resolved. Merging is decided by the rules in AGENTS.md.
+  # CodeRabbit comments but never approves or blocks; merging follows AGENTS.md.
   request_changes_workflow: false
 
   high_level_summary: true
@@ -29,20 +28,16 @@ reviews:
   auto_review:
     enabled: true
     auto_incremental_review: true
-    # This counts reviewed commits, not review runs. After two reviewed commits CodeRabbit
-    # pauses; a later material commit needs a manual incremental request and HEAD coverage check.
+    # Counts reviewed commits. After two, CodeRabbit pauses until asked to review again.
     auto_pause_after_reviewed_commits: 2
 
   pre_merge_checks:
-    # Every mode stays `warning`. `error` requires resolution before merging, and a
-    # check that can hold his merge button is enforcement he cannot undo.
+    # Every check stays `warning`, so no check can block the lead's merge button.
     title:
       mode: warning
     description:
       mode: warning
-    # Quoted, because a YAML 1.1 parser resolves bare `off` to the boolean `false`
-    # and this field wants the string. The CLI validator accepts either; PyYAML and
-    # the yamllint enabled below do not. Found by CodeRabbit on PR 23.
+    # Quoted: a YAML 1.1 parser reads bare `off` as the boolean false.
     docstrings:
       mode: "off"
     issue_assessment:
@@ -108,8 +103,8 @@ reviews:
         that drops, skips or silently substitutes one act is not a small bug: it removes
         a person from a family, and nothing downstream can tell that it happened. Weigh
         anything that loses, reorders or quietly defaults a record accordingly. Several
-        vision models report on each act as witnesses; a trained reader establishes the
-        text. Witnesses are clues, never options — code that picks among them is a
+        vision models report on each page as witnesses; a reader model, the Perlector,
+        establishes the text. Witnesses are clues, never options — code that picks among them is a
         defect however well it scores. Report every finding with a concrete trigger, impact,
         evidence, and any uncertainty, including low-severity findings. Label an improvement
         that is not required for correctness as optional; session disposition filters findings,
