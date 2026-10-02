@@ -885,8 +885,9 @@ def verify_recipes_cover_chairs(
     missing = sorted(expected - actual)
     unexpected = sorted(actual - expected)
     if missing or unexpected:
+        catalogue = recipes.source_path or "the serving catalogue"
         raise ServingConfigurationError(
-            "config/serving_recipes.toml must match exactly every configured chair at every "
+            f"{catalogue} must match exactly every configured chair at every "
             f"configured placement tier; missing={missing}, unexpected={unexpected}"
         )
 
