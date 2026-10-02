@@ -1486,19 +1486,24 @@ def require_no_duplicate_sources(duplicate_report: Report | None) -> None:
     )
 
 
-def require_confirmed_re_shoots(context: StageContext, cluster_report: Report | None) -> None:
-    """Refuse a submission holding a triage re-shoot the corpus register does not confirm.
+def require_no_re_shoots(context: StageContext, cluster_report: Report | None) -> None:
+    """Refuse a submission holding a triage re-shoot cluster, confirmed or not.
 
-    Only a register membership tells later stages that captures show one page; without
-    it each capture becomes its own act, and one physical act is read and exported once
-    per capture with nothing linking them. A cluster is confirmed when every member sits
-    in a current membership of some physical page of the cluster's own corpus: one
-    cluster may span several pages with different members (a split opening), and the
-    sealed cluster report carries no page ids to check page by page. The submission is
-    refused whole before the seal, so no page is lost.
+    No stage after the Door links two captures of one leaf, so each capture would
+    be read and exported as its own act: one physical act exported once per
+    capture, with nothing marking the copies as one. The whole submission is
+    refused after the cluster report is sealed and before the Door's seal, so no
+    page is lost and the report names every member's file.
+
+    An unconfirmed cluster (some member is not in a current membership of a
+    physical page of the cluster's corpus in the run's register) is named apart,
+    because its captures may not be one leaf at all and the triage link itself
+    may be wrong. The message names ordinals, never filenames: it goes to the
+    terminal, and the sealed report is where filenames belong.
     """
     if cluster_report is None:
         return
+    clusters = cluster_report.payload["clusters"]
     register = read_snapshot(context.tree, context.run)
     corpus_of = {
         record["physical_page_id"]: record["corpus_id"]
@@ -1510,27 +1515,47 @@ def require_confirmed_re_shoots(context: StageContext, cluster_report: Report | 
         for page, (_digest, members) in membership_heads(register).items()
         for capture in members
     }
-    unconfirmed = sorted(
-        cluster["cluster_id"]
-        for cluster in cluster_report.payload["clusters"]
-        if any(
-            (cluster["corpus_id"], member["source_frame_sha256"]) not in confirmed
+
+    def is_confirmed(cluster: dict[str, Any]) -> bool:
+        return all(
+            (cluster["corpus_id"], member["source_frame_sha256"]) in confirmed
             for member in cluster["members"]
         )
+
+    def named(selected: list[dict[str, Any]]) -> str:
+        return "; ".join(
+            f"cluster {cluster['cluster_id']} (submitted ordinal(s) "
+            + ", ".join(
+                str(page["ordinal"]) for member in cluster["members"] for page in member["pages"]
+            )
+            + ")"
+            for cluster in selected
+        )
+
+    unconfirmed = [cluster for cluster in clusters if not is_confirmed(cluster)]
+    remedy = (
+        "Submit one capture per leaf: keep one capture of each leaf in the submitted "
+        "folder and its filename ledger, regenerate the triage decision manifest so that "
+        "capture's row names no re-shoot cluster, and resubmit under a new run id; this "
+        "run id stays bound to the triage inputs it was created with"
     )
-    named = ", ".join(unconfirmed)
     if unconfirmed:
         raise ContractError(
-            f"unconfirmed-re-shoot: triage links re-shoot cluster(s) {named}, but the corpus "
-            "register this run was created with does not record every capture in them as a "
-            "member of a physical page of that corpus, so each capture would be read and "
-            "exported as a separate act. Nothing is sealed and no page is dropped: the "
-            f"submission is refused whole, and the sealed cluster report at {cluster_report.path} "
-            "names each member. Confirm the cluster into the corpus register (or remove the "
-            "triage link if the captures are not one page), then resubmit under a new run id "
-            "with --corpus-register; this run id stays bound to the register and triage "
-            "inputs it was created with and refuses reuse"
+            f"unconfirmed-re-shoot: triage links {named(unconfirmed)} as captures of one "
+            "leaf, but the corpus register this run was created with does not record every "
+            "capture as a member of a physical page of that corpus. Nothing is sealed and "
+            "no page is dropped: the submission is refused whole, and the sealed cluster "
+            f"report at {cluster_report.path} names each member's file. If the captures "
+            "are not one leaf, remove the re-shoot link from the triage decision manifest. "
+            f"{remedy}"
         )
+    raise ContractError(
+        f"confirmed-re-shoot: this submission holds more than one capture of one leaf: "
+        f"{named(clusters)}. No later stage links captures of one leaf, so each capture "
+        "would be read and exported as a separate copy of the same acts. Nothing is "
+        "sealed and no page is dropped: the submission is refused whole, and the sealed "
+        f"cluster report at {cluster_report.path} names each member's file. {remedy}"
+    )
 
 
 def require_some_admitted(
@@ -1702,7 +1727,7 @@ def _finish_door_run(context: StageContext, admitted: int, *, canary_admitted: i
     _announce_refusal_report(refusal_report)
     _announce_duplicate_report(duplicate_report)
     require_no_duplicate_sources(duplicate_report)
-    require_confirmed_re_shoots(context, cluster_report)
+    require_no_re_shoots(context, cluster_report)
     require_some_admitted(admitted, refusal_report, canary_admitted=canary_admitted)
     context.seal_boundary()
     context.finish(DOOR)

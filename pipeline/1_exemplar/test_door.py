@@ -1642,13 +1642,11 @@ def test_re_shoot_cluster_admits_every_member_and_records_no_canonical(tmp_path)
 
 
 def test_a_re_shoot_the_register_does_not_confirm_is_refused_before_the_seal(tmp_path):
-    """Unconfirmed, each capture would become its own act: one act exported twice, unlinked.
-
-    Refused at the Door's close after its cluster report is sealed and before its own
+    """Refused at the Door's close after its cluster report is sealed and before its own
     seal, and the run id stays bound to the register it was created with.
     """
     context, _digests = _admitted_re_shoot_pair(tmp_path)
-    with pytest.raises(ContractError, match="unconfirmed-re-shoot.*opening-7.*new run id"):
+    with pytest.raises(ContractError, match="unconfirmed-re-shoot.*opening-7"):
         door._finish_door_run(context, 2)
     kinds = {entry["kind"] for entry in context.tree.build_manifest(DOOR)["artifacts"]}
     assert "re-shoot-cluster-report" in kinds
@@ -1675,7 +1673,7 @@ def test_a_re_shoot_is_confirmed_only_when_its_corpus_registers_every_member(tmp
         tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
     )
     with pytest.raises(ContractError, match="unconfirmed-re-shoot"):
-        door.require_confirmed_re_shoots(context, door.publish_cluster_report(context))
+        door.require_no_re_shoots(context, door.publish_cluster_report(context))
 
 
 @pytest.mark.parametrize(
@@ -1690,11 +1688,22 @@ def test_a_re_shoot_is_confirmed_only_when_its_corpus_registers_every_member(tmp
     ],
     ids=["one-page", "pages-with-different-members"],
 )
-def test_a_re_shoot_the_register_confirms_is_admitted(tmp_path, pages):
+def test_a_confirmed_re_shoot_is_refused_whole_before_the_seal(tmp_path, pages):
+    """No stage links two captures of one leaf, so a confirmed re-shoot would be read
+    and exported once per capture; the Door refuses it, naming ordinals, never paths.
+    """
     context, _digests = _admitted_re_shoot_pair(
         tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
     )
-    door.require_confirmed_re_shoots(context, door.publish_cluster_report(context))
+    with pytest.raises(ContractError, match="confirmed-re-shoot") as refused:
+        door._finish_door_run(context, 2)
+    message = str(refused.value)
+    assert not message.startswith("unconfirmed")
+    assert "opening-7 (submitted ordinal(s) 1, 2)" in message
+    assert "a.png" not in message and "b.png" not in message
+    kinds = {entry["kind"] for entry in context.tree.build_manifest(DOOR)["artifacts"]}
+    assert "re-shoot-cluster-report" in kinds
+    assert "stage-seal" not in kinds
 
 
 @pytest.mark.parametrize("bad_bytes", [True, False, -1, "5", 5.0])

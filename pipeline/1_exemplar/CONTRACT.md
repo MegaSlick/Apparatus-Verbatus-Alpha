@@ -32,7 +32,7 @@ statement would then answer for a boundary it never witnessed.
 
 A refused Door is that second case: it publishes its refusal, duplicate and
 re-shoot cluster reports, announces the first two, and only then do
-`require_no_duplicate_sources`, `require_confirmed_re_shoots` and
+`require_no_duplicate_sources`, `require_no_re_shoots` and
 `require_some_admitted` raise, in that order — so the evidence is on disk and no
 `stage-seal` is, and the Exemplar's "predecessor door has no stage-seal" names a
 refused submission rather than a missing file.
@@ -377,19 +377,17 @@ the cluster report includes every such outcome. A corrupt member therefore remai
 visibly in its cluster rather than disappearing from the cluster record while
 surviving only in the separate refusal report.
 
-**An unconfirmed re-shoot is refused.** Only a corpus-register membership tells later
-stages that captures show one physical page; without one, each capture becomes its own
-act and one physical act is exported once per capture, unlinked. So the Door refuses
-the whole submission (`unconfirmed-re-shoot`, `require_confirmed_re_shoots`) unless
-every member of each reported cluster sits in a current membership of some physical
-page of that cluster's own corpus in the run's register snapshot; a run created without
-`--corpus-register` confirms nothing. One cluster may span several pages with
-different members (a split opening), and the cluster report carries no page ids, so the
-check is per member rather than per page. The refusal fires after the cluster report is
-sealed and before the Door's seal, so no page is dropped: the operator confirms the
-cluster into the register (or removes the triage link) and resubmits under a new run
-id, because a run id stays bound to the register and triage inputs it was created with. A confirmed re-shoot is admitted; the Perlector then holds its acts, because
-no cross-capture read is built yet (`pipeline/4_perlector/CONTRACT.md`).
+**A re-shoot is refused, confirmed or not.** No stage after the Door links two
+captures of one leaf, so each capture would be read and exported as its own act: one
+physical act exported once per capture, unlinked. The Door therefore refuses the whole
+submission whenever the cluster report names any cluster, after that report is sealed
+and before the Door's own seal, so no page is dropped. The refusal names the cluster
+ids and member ordinals (never filenames; the report holds those). A cluster whose
+members are not all in a current membership of some physical page of its corpus in the
+run's register snapshot is refused as `unconfirmed-re-shoot`, because its captures may
+not be one leaf and the triage link itself may be wrong; any other cluster is refused as
+`confirmed-re-shoot`. The remedy is the same: submit one capture per leaf, with a
+triage decision manifest whose rows name no re-shoot cluster, under a new run id.
 
 **Not yet wired, and whose job it is.** `door.content_aware_shards` plans seams
 that fall at opening boundaries and never inside a split pair or a cluster, and
