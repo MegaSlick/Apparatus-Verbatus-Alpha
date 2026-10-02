@@ -585,8 +585,7 @@ def _reasons(
             )
         if coverage["unresolved_chairs"]:
             reasons.append(
-                f"unit {act_id} has {coverage['unresolved_chairs']} chair(s) with no "
-                "outcome yet"
+                f"unit {act_id} has {coverage['unresolved_chairs']} chair(s) with no outcome yet"
             )
     for link in links:
         if link["outcome"] != "accepted":
