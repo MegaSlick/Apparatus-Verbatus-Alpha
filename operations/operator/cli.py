@@ -16,7 +16,6 @@ import stat
 import sys
 import time
 import traceback
-from datetime import datetime
 from pathlib import Path
 from typing import Final, Sequence
 
@@ -25,14 +24,10 @@ from common.contracts.approval import FINDINGS, REVIEW_DECISIONS
 from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
 from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes, launch_run_id
-from operations.pod.models import (
-    PodCreateRequest,
-    container_disk_gb_for_tier,
-    require_utc,
-)
 from operations.pod.transfer import normalize_transfer_prefix
 
 from . import notify_bridge, review_text
+from . import spend as spend_view
 from .advance import (
     UnsealedBoundaryRefusal,
     boundary_summary,
@@ -43,7 +38,6 @@ from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .ingest import ingest
 from .records import DescriptorStore, ReceiptStore
 from .review import ReadOnlyRun
-from .spend import SpendSurface
 from .surface import DEFAULT_FIXTURE, OperatorSurface, bounded_tail
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
@@ -62,10 +56,8 @@ def _upload_prefix(value: str) -> str:
 # folder of run trees, a backup drive), so they are never checked against it.
 _CHECKOUT_RESOURCES_BY_VERB: Final[dict[str, tuple[str, ...]]] = {
     "run": ("pipeline", "config", "proof"),
-    "boot": ("config", "proof"),
     "ingest": ("config",),
     "triage": ("config",),
-    "launch": ("config",),
     "spend": ("config",),
 }
 
@@ -74,8 +66,6 @@ def _checkout_resources_read(args: argparse.Namespace) -> tuple[str, ...]:
     """The checkout directories this exact invocation will read from its workspace."""
 
     needed = _CHECKOUT_RESOURCES_BY_VERB.get(args.verb, ())
-    if args.verb == "launch" and args.spend is not None:
-        return ()
     if args.verb == "spend" and args.policy is not None:
         return ()
     if args.verb == "ingest" and args.policy is not None:
@@ -432,7 +422,7 @@ def _annotate_unrecognized(message: str) -> str:
 def build_parser() -> PlainParser:
     parser = PlainParser(
         prog="verbatus",
-        description="A safe, offline rehearsal for the Apparatus Verbatus operator flow.",
+        description="The Apparatus Verbatus operator, one plain word at a time.",
     )
     parser.add_argument(
         "--workspace",
@@ -461,17 +451,6 @@ def build_parser() -> PlainParser:
         ),
     )
     verbs = parser.add_subparsers(dest="verb", required=True, title="words you can use")
-
-    launch = verbs.add_parser(
-        "launch", help="show price and ceilings, then record a typed paid confirmation"
-    )
-    launch.add_argument("--request", type=Path, required=True, help="reviewed pod request JSON")
-    launch.add_argument("--spend", type=Path, help="reviewed spending policy TOML")
-    launch.add_argument(
-        "--adopt-pod", help="adopt this already-recorded fixture pod through the same gate"
-    )
-
-    verbs.add_parser("boot", help="run bootstrap and finish with a green or red report")
 
     upload = verbs.add_parser(
         "upload", help="seal or reuse a submission record, then transfer with zero GPU-hours"
@@ -656,16 +635,9 @@ def build_parser() -> PlainParser:
         ),
     )
 
-    close = verbs.add_parser(
-        "close", help="record a typed confirmation, then verify close and captured cost"
-    )
-    close.add_argument(
-        "--pod-id", help="the recorded fixture pod id, if you want to repeat it explicitly"
-    )
-
     verbs.add_parser("status", help="read saved receipts only; it never contacts a provider")
     spend = verbs.add_parser(
-        "spend", help="show the reviewed spend floor, saved balance observations, and alert history"
+        "spend", help="show the reviewed spending policy's ceilings, floor and alert threshold"
     )
     spend.add_argument("view", choices=("show",), help="the read-only spend view")
     spend.add_argument(
@@ -828,25 +800,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         volume = _network_volume(getattr(args, "network_volume", None), verb=args.verb)
         if volume is None:
-            _print("Verbatus is in offline rehearsal mode. It will not contact a cloud provider.")
+            _print("Verbatus works on this computer. It will not contact a cloud provider.")
         else:
-            _print("Verbatus will not start, adopt or close any pod: that stays offline.")
+            _print("Verbatus never starts, adopts or closes a pod.")
             if args.verb == "fetch-run":
                 _print(f"You asked it to read a run tree from {volume.describe()}.")
             else:
                 _print(f"You asked it to send files to {volume.describe()}.")
-        if args.verb == "launch":
-            request = load_request(args.request)
-            spend = args.spend or workspace / "config" / "spend.toml"
-            _print(f"Using reviewed spending policy: {spend}")
-            prepared = surface.prepare_launch(
-                request, policy_path=spend, adopt_pod_id=args.adopt_pod
-            )
-            confirmation = _typed_paid_confirmation()
-            surface.launch(prepared, confirmation)
-        elif args.verb == "boot":
-            surface.boot()
-        elif args.verb == "upload":
+        if args.verb == "upload":
             if args.sealed_manifest is not None:
                 if args.policy is not None:
                     raise OperatorError(
@@ -919,15 +880,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             surface.fetch_run(**fetch_arguments)  # type: ignore[arg-type]
         elif args.verb == "export":
             surface.export(run_id=args.run_id, run_root=args.run_root)
-        elif args.verb == "close":
-            prepared_close = surface.prepare_close(pod_id=args.pod_id)
-            confirmation = _typed_close_confirmation(prepared_close.phrase)
-            surface.close(prepared_close, confirmation)
         elif args.verb == "status":
             surface.status()
         elif args.verb == "spend":
             policy = args.policy or workspace / "config" / "spend.toml"
-            for line in SpendSurface(surface.receipts, surface.now()).show(policy):
+            for line in spend_view.show(policy):
                 _print(line)
         elif args.verb == "review":
             _review(args.run_root, args.run_id, raw=args.json, review_page=args.review_page)
@@ -1447,85 +1404,6 @@ def _decide_with_confirmation(
         _print(line)
 
 
-def load_request(path: str | Path) -> PodCreateRequest:
-    """Read the strict request shape without showing a JSON/parser traceback."""
-
-    source = Path(path)
-    try:
-        descriptor = os.open(source, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-        with os.fdopen(descriptor, "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise OSError("the pod request is not a regular file")
-            data = handle.read(MAX_REQUEST_BYTES + 1)
-        if len(data) > MAX_REQUEST_BYTES:
-            raise ValueError(f"the pod request exceeds {MAX_REQUEST_BYTES} bytes")
-        raw = json.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND, detail="the pod request JSON could not be read"
-        ) from error
-    if not isinstance(raw, dict):
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND, detail="the pod request must be a JSON object"
-        )
-    allowed = {
-        "name",
-        "gpu_type",
-        "image",
-        "volume_id",
-        "volume_mount_path",
-        "docker_start_cmd",
-        "hard_deadline",
-        "repository_commit",
-        "container_disk_gb",
-        "template",
-        "metadata",
-        "interruptible",
-        "recovery_only",
-    }
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND,
-            detail=f"the pod request contains unknown fields: {', '.join(unknown)}",
-        )
-    try:
-        command = raw["docker_start_cmd"]
-        if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
-            raise ValueError("docker_start_cmd must be a list of words")
-        metadata = raw.get("metadata", {})
-        if not isinstance(metadata, dict) or not all(
-            isinstance(key, str) and isinstance(value, str) for key, value in metadata.items()
-        ):
-            raise ValueError("metadata must map words to words")
-        interruptible = raw.get("interruptible", False)
-        recovery_only = raw.get("recovery_only", False)
-        if not isinstance(interruptible, bool) or not isinstance(recovery_only, bool):
-            raise ValueError("interruptible and recovery_only must be true or false")
-        deadline = datetime.fromisoformat(str(raw["hard_deadline"]).replace("Z", "+00:00"))
-        return PodCreateRequest(
-            name=raw["name"],
-            gpu_type=raw["gpu_type"],
-            image=raw["image"],
-            volume_id=raw["volume_id"],
-            volume_mount_path=raw["volume_mount_path"],
-            docker_start_cmd=tuple(command),
-            hard_deadline=require_utc(deadline, "hard deadline"),
-            repository_commit=raw["repository_commit"],
-            # Absent falls back to the reviewed default, not the provider's.
-            container_disk_gb=raw.get("container_disk_gb", container_disk_gb_for_tier(None)),
-            template=raw.get("template"),
-            metadata=metadata,
-            interruptible=interruptible,
-            recovery_only=recovery_only,
-        )
-    except (KeyError, TypeError, ValueError) as error:
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND,
-            detail=f"the reviewed pod request is incomplete or invalid: {error}",
-        ) from error
-
-
 def _network_volume(value: str | None, *, verb: str) -> VolumeSpec | None:
     """Read `DATACENTER:VOLUME_ID` without letting a typo become a raw traceback.
 
@@ -1557,7 +1435,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, launch, boot, upload, run, fetch-run, export, close, status, spend, review, decide, advance, backup, or clear-leftovers."
+        "Choose one word: ingest, triage, upload, run, fetch-run, export, status, spend, review, decide, advance, backup, or clear-leftovers."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1567,22 +1445,6 @@ def _interactive_arguments() -> list[str]:
     if not verb:
         _print("No action was chosen. Nothing changed.")
         return []
-    if verb == "launch":
-        request = _ask("Path to the reviewed pod request file")
-        spend = _ask("Path to the reviewed spending-policy file")
-        if not request or not spend:
-            _print(
-                "Launch needs both a reviewed pod request and a reviewed spending policy. "
-                "One of them was left blank, so nothing changed or billed."
-            )
-            return []
-        adoption_id = _ask(
-            "Recorded fixture pod ID to adopt (leave blank to create a new fixture pod)"
-        )
-        arguments = ["launch", "--request", request, "--spend", spend]
-        if adoption_id:
-            arguments.extend(("--adopt-pod", adoption_id))
-        return arguments
     if verb == "upload":
         source = _ask("Folder containing the submitted files")
         if not source:
@@ -1745,8 +1607,6 @@ def _interactive_arguments() -> list[str]:
         return arguments
     if verb == "export":
         return ["export"]
-    if verb == "close":
-        return ["close"]
     if verb == "spend":
         policy = _ask("Reviewed spending-policy file (leave blank for config/spend.toml)")
         arguments = ["spend", "show"]
@@ -1829,20 +1689,6 @@ def _ask(label: str, *, default: str | None = None) -> str:
     except EOFError:
         answer = ""
     return answer or (default or "")
-
-
-def _typed_paid_confirmation() -> str | None:
-    try:
-        return input("Type the confirmation shown above to continue with this paid action: ")
-    except EOFError:
-        return None
-
-
-def _typed_close_confirmation(phrase: str) -> str | None:
-    try:
-        return input(f"Type this line exactly, with no quotation marks:\n{phrase}\n> ")
-    except EOFError:
-        return None
 
 
 def _typed_decide_confirmation(phrase: str) -> str | None:

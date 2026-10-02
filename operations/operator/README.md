@@ -10,28 +10,25 @@ folder, or `verbatus <word>` once the project is installed, runs the same code.
 
 ## Read this first: what this is today
 
-This is a **rehearsal**. It refuses to start, inspect, or pay for a pod: the prices, the
-pod, the boot checks and the default upload target are local stand-ins, so you can
-practise the whole flow without a bill. Every screen says "fixture" where a real run
-would name a real resource. The first real run needs the project lead's approval.
+Verbatus never starts, inspects or pays for a pod. A pod is started and closed outside
+it (`operations/pod/README.md`), and only with the project lead's permission. Without a
+named network volume, `upload` sends to a local folder.
 
-Two words really reach a RunPod network volume:
+Two words reach a RunPod network volume:
 
 - `upload --network-volume` sends only the files named by the sealed submission record.
 - `fetch-run` brings back a pod-written run tree and the launch evidence you name; it never
   fetches the uploaded images or their manifest.
 
-## The sixteen words
+## The thirteen words
 
-Thirteen things this tool can do, in the order a normal run uses them, plus two you can run
-any time to check on things and one that tidies up.
+Ten things this tool can do, in the order a normal run uses them, plus two you can run any
+time to check on things and one that tidies up.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
 | `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
 | `triage` | Shows the review queue `ingest` produced — each candidate with its evidence and proxy image — and records your accept or decline against it. | No — podless and offline. It shows and it records; it never opens a master and never decides for you. The double-click window shows the queue only; a decision is recorded from the command line. |
-| `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
-| `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No rented machine is needed — do it first if you like. With `--network-volume`, the volume itself costs money for as long as it exists, pod or no pod. |
 | `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. A real chair selection is the trio `--models-config config/models-real.toml`, `--serving-recipes-config config/serving_recipes_real.toml`, and `--witness-context-config config/witness_context-real.toml`; all three are sealed into the run and a partial trio is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
 | `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. You have to name the volume. |
@@ -40,22 +37,22 @@ any time to check on things and one that tidies up.
 | `decide` | Appends the project lead's confirmed review decision about one held unit or page of a run: release it to export, correct its text, exclude it, hold it with a finding, or ask for it to be read again. | No. It shows the review it binds to and makes you type a line back naming the decision, the subject, the run and that review's digest. The Recensor applies it when the run resumes. |
 | `advance` | Appends the project lead's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record is permanent and never retracted. |
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded publication temporaries in the snapshot. |
-| `close` | Shuts the rented machine down. This build closes its fixture pod only. | A real close is what **stops** the pod cost. Always safe to run. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
 | `clear-leftovers` | Lists what an interrupted publication left under one folder you name (a run tree, a volume mount or an export folder): `.<name>.tmp-<id>` files and `.<name>.publishing-<id>` folders. `--apply` removes them; run it only when nothing is writing to that folder. | No. It follows no symbolic link inside the folder, and refuses one as the folder's own last name; it touches no other name, and leaves alone any file, or any folder whose content, changed within the last hour. |
-| `spend show` | Shows the reviewed ceilings and hard-stop floor, then saved balance observations and notification-only alert outcomes. | No — it reads the policy and immutable local receipts only; it does not contact a provider or edit the policy. |
+| `spend show` | Shows the reviewed pod spending policy: its ceilings, hard-stop balance floor and alert threshold. | No — it reads the policy only; it does not contact a provider or edit the policy. |
 
 **The normal order.** `ingest` and `upload` need no rented machine, so do them first:
 `ingest` the submitted folder, work its queue with `triage`, `upload` the images.
 
 - **On this computer:** `run`, then `export` and `backup`.
-- **On a pod:** `launch`, `boot`; the pod runs `python -m operations.pod.pod_run`, which
-  writes its tree to the volume; `fetch-run` brings that tree home (`export` reads only a
-  local tree); then `export`, `backup`, and `close` the moment you are done. Use `review` to read
-a run tree without changing it, `advance` only once you have decided to pass a sealed
-boundary, and `status` whenever you are unsure what is happening or costing money.
+- **On a pod:** the pod runs `python -m operations.pod.pod_run`, which writes its tree to
+  the volume; `fetch-run` brings that tree home (`export` reads only a local tree); then
+  `export` and `backup`.
 
-`run`, `boot`, `ingest`, `triage`, `launch` and `spend` read configuration, stage code or
+Use `review` to read a run tree without changing it, `advance` only once you have decided
+to pass a sealed boundary, and `status` whenever you are unsure what this tool has done.
+
+`run`, `ingest`, `triage` and `spend` read configuration, stage code or
 proof material from the workspace, and refuse (`not-a-checkout`) when the folder they run
 in, or the one named with `--workspace`, lacks the `pipeline/`, `config/` or `proof/` they
 need. The other words never read those and run from anywhere.
@@ -208,34 +205,9 @@ It shows, in order:
 Every image named is re-read and re-digested as the view is built; moved bytes, or a
 record that changes mid-build, are refused by name. Opening a run changes nothing.
 
-Two limits:
-
 - **Long text is cut in the plain view** to 300 characters, and the line says
   `(first 300 characters as shown, of an N-character value)`. Use `--json` for the whole
   value.
-
-## Before anything bills, it asks
-
-`launch` is the only word that starts a bill. Before it rents anything it shows the
-machine's and the volume's price per hour, their total over the booked lifetime, every
-configured spending limit, and **a line of text to type back exactly**. That line is built
-from the prices just shown, so it cannot be typed from memory or pasted from an old note.
-Get it wrong or close the window and nothing happened.
-
-It refuses:
-
-- **without a reviewed pod-request file and spending-policy file.** Do not invent a GPU
-  class or a limit to get past this: those are the project lead's to set.
-- **while another machine is recorded as open.** Run `close` for that one first.
-- **after a launch that never came back.** If a launch reached the provider and lost the
-  answer, no machine record exists but the safety lease armed before it does, and a
-  machine may be billing. `launch` names that lease and `status` shows it. Do not start
-  another machine: tell the project lead and check the provider's own console. The safety
-  timers hold that machine only until its booked deadline.
-- **in a second window** while the first is part-way through a paid launch. The second
-  spent nothing. When the first finishes, run `verbatus status`: if it created a machine,
-  close it (verified) before previewing again; if not, preview again so the price is
-  current.
 
 ## `fetch-run`: bring a pod's run tree home
 
@@ -316,33 +288,9 @@ call used and which arrived.
 ## `spend show`: inspect the reviewed guard
 
 `verbatus spend show` shows the policy's ceilings, hard-stop balance floor and
-notification-only alert threshold with the policy's SHA-256, then every recorded preview
-balance (source and staleness) and saved notification outcome with its receipt digest.
-Where a receipt's alert and outcome counts differ, both sides are shown unpaired rather
-than guessed; past 64 entries per receipt the rest are counted, not printed. It never
-fetches a balance or edits `config/spend.toml`. The checked-in policy is deliberately
-unconfigured and refuses rather than inventing values.
-
-## Shutting down, and what "closed" actually means
-
-`close` asks for its own confirmation, then (this rehearsal uses fixture evidence):
-
-1. says whether the machine is **confirmed gone** — the provider saying so twice,
-   independently, *and* non-empty billing records for that exact pod inside a declared
-   window — and what it cost to that point. Those records do not yet prove the billing
-   buckets fill the whole window; that stays unproven until real RunPod output is
-   recorded. Anything short of this is **UNVERIFIED CLOSE**, with what to check yourself;
-2. reminds you that **the storage volume keeps costing money** — closing the machine does
-   not delete or stop it;
-3. saves a record for `status`.
-
-**UNVERIFIED CLOSE is the one message to stop and act on:** open the provider's console
-and look. The tool never promises no future charge; it reports only what it could see.
-
-Close timing comes from the workspace's `config/spend.toml`; if that is missing, unreadable
-or still unconfigured (the checked-in state), close says so and uses the built-in
-operational deadline. It never reads the
-policy a `launch --spend` named, because no record keeps that path.
+notification-only alert threshold, each with the policy's SHA-256. It never fetches a
+balance or edits `config/spend.toml`. The checked-in policy is deliberately unconfigured
+and refuses rather than inventing values.
 
 ## When something goes wrong
 
@@ -365,10 +313,6 @@ recorded**, so it cannot drift from what is on file. Each run shows its id, root
 failure or hold reasons, last output lines, the `verbatus review` line and its record path;
 exports, fetches, uploads, backups and `unexpected` records show what they touched.
 
-It also lists every **safety lease** with no verified close, because that is where a
-machine can bill without a machine record. An unreadable lease is listed as such, never
-counted as closed.
-
 ## Phone notifications
 
 Off unless you add `--notify`. Then it sends one line when a `run` or `export` finishes and
@@ -389,12 +333,7 @@ elsewhere and still read.
 
 ## Alpha shortcuts this surface ships
 
-1. **No live pod provider path exists.** Every price, pod, volume and billing record is
-   the in-memory fake's. The one live path is `upload --network-volume` (and `fetch-run`),
-   which reach a real RunPod network volume over S3 (item 3).
-2. **`boot` measures no real machine.** A green boot means the local wiring is sound, not
-   that a GPU exists.
-3. **`upload` writes to a local folder by default**, through the same checksum-verified,
+1. **`upload` writes to a local folder by default**, through the same checksum-verified,
    resumable transfer a network volume uses; `--network-volume DATACENTER:VOLUME_ID`
    selects the S3-compatible target. RunPod's S3 endpoint discards custom SHA-256
    metadata on upload, so objects without it are verified by streaming their bytes under
@@ -405,18 +344,21 @@ elsewhere and still read.
    writes `batch-02/` and `batch-02-manifest.json`, and its pod request must name matching
    submission paths. Re-sending the same manifest is idempotent; a different manifest at
    an occupied prefix is refused before any image is written.
-4. **`run` runs on this computer, not on a pod**, so a real-roster run stops where a stage
+2. **`run` runs on this computer, not on a pod**, so a real-roster run stops where a stage
    first needs a served chair. Use the shipped real trio together; a custom roster needs
    an operator-authored witness declaration. The pod's run is
    `python -m operations.pod.pod_run`, and `fetch-run` brings its tree home.
-5. **`export` produces a base Armarium evidence bundle**, not the product export,
+3. **`export` produces a base Armarium evidence bundle**, not the product export,
    and says so on screen.
-6. **The fixture pod is given a fixed cost at close.** It measures nothing.
 
 ## For whoever maintains this tool
 
-- `cli.py` parses; `surface.py` is the whole behaviour; `entry.py` is thin enough to turn
-  even an import failure into the three-part message.
+- `entry.py` is thin enough to turn even an import failure into the three-part message;
+  `cli.py` parses each word and runs it; `surface.py` holds `upload`, `run`, `fetch-run`,
+  `export` and `status`.
+- `review.py` builds the read-only projection of a run tree and `review_text.py` reads it
+  out; `decide.py` and `advance.py` are the only modules that write an approval record.
+  `ingest.py`, `triage.py` and `backup.py` each hold one word.
 - `errors.py` holds every operator-facing state as a closed `ErrorCode` table;
   `test_errors.py` checks it against the modules that raise, so unused copy cannot pass as
   coverage.
@@ -424,7 +366,4 @@ elsewhere and still read.
   latest receipt. `status` uses its read paths only.
 - `notify_bridge.py` allows exactly `milestone` and `decision` and never raises into the
   calling verb.
-- `volume_cost.py` holds the storage-cost note and the documentation it came from.
-- A drill that needs close to give up quickly injects a fast clock (`monotonic=`,
-  `sleeper=`); it never shortens the shipped deadline.
 - Nothing in this package's tests makes a live call.
