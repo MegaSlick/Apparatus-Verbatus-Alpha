@@ -59,3 +59,15 @@ record".
 - **Standing:** they are not part of pagekit and are outside its allowed sources. No
   build-side agent may open them. Other open pull requests remove them, and they must
   be gone before any reading-side session starts.
+
+## 0004 — The commit gate refused a brief on a false match
+
+- **Who:** recorded by the build-side agent of entry 0002 at the host's direction.
+- **What happened:** when the host committed brief 0002a, the commit gate refused it.
+  The leak scan's copyright rule had matched a sentence in the brief that describes
+  the rule itself, not an actual copyright notice. Nothing from ScanTailor was
+  involved, and no incident was opened: this was the rule being too broad.
+- **What was done:** the rule was narrowed in commit a1cedf82 to match only real
+  notices (the word with (C), the copyright sign or a year, then a project or author
+  name), with tests that such prose passes and notices in several formats are caught.
+  The brief was then committed unchanged in 434deeb0.
