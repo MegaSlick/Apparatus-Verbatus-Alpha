@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import io
 import json
+import os
 import shutil
 import struct
 import types
@@ -1684,3 +1685,16 @@ def test_review_refuses_a_missing_required_armarium_projection_field(
     assert raised.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
     assert relative in raised.value.detail
     assert missing.split("-")[0] in raised.value.detail
+
+
+def test_a_fifo_at_an_image_path_is_refused_rather_than_blocking_review(tmp_path: Path) -> None:
+    """Review runs in the operator's process, so a planted FIFO must not hang it."""
+    (tmp_path / "run-1" / "images").mkdir(parents=True)
+    os.mkfifo(tmp_path / "run-1" / "images" / "page.png")
+    tree = RunTree(tmp_path, "run-1")
+
+    with pytest.raises(OperatorError) as failure:
+        review._image_digest(tree, "images/page.png", "page image")
+
+    assert failure.value.code is ErrorCode.CONSOLE_TREE_UNREADABLE
+    assert "regular file" in str(failure.value.detail)

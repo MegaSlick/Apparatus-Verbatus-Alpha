@@ -36,6 +36,7 @@ from common.stage import latest_attempt
 
 from .advance import ADVANCE_SUBJECT_PREFIX, verify_sealed_boundary
 from .errors import ErrorCode, OperatorError
+from .records import sha256_file
 from .surface import resume_command as resume_from_command
 
 MAX_REVIEW_ITEM_BYTES = 16 * 1024 * 1024
@@ -46,11 +47,10 @@ _REVIEW_ITEMS_MEMBER = "review-items.jsonl"
 
 
 def _image_digest(tree: RunTree, relative_path: str, what: str) -> str:
-    """The SHA-256 of one sealed image, streamed from disk so no image is held whole."""
+    """The SHA-256 of one sealed image, streamed from a regular file, never a FIFO or link."""
 
     try:
-        with tree.resolve(relative_path).open("rb") as handle:
-            return hashlib.file_digest(handle, "sha256").hexdigest()
+        return sha256_file(tree.resolve(relative_path))
     except OSError as error:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE, detail=f"{what} could not be read: {error}"
