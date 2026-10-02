@@ -34,7 +34,7 @@ from __future__ import annotations
 import unicodedata
 from typing import Any, Final
 
-from common.alignment import AlignmentStepLimit, StepCountedMatcher, markup_text_view
+from common.alignment import AlignmentStepLimit, StepCountedMatcher
 from common.contracts.errors import SchemaRefusal
 
 # `SequenceMatcher`'s alignment cost is not simply the product of the two
@@ -152,8 +152,9 @@ def dissent_against(reading: str, reported: str, *, max_comparison_steps: int) -
     if not isinstance(spans, list):
         return unaligned_row(reading, reported, max_comparison_steps)
     reading_view = comparison_view(reading)
-    markup_view = markup_text_view(reported)
-    witness_view = comparison_view(markup_view["text"])
+    # A witness unit is already the witness's text view (markup removed and
+    # references resolved where its format has them), so it is compared as is.
+    witness_view = comparison_view(reported)
     return {
         "compared": True,
         "departed": witness_view["normalized"] != reading_view["normalized"],
@@ -164,14 +165,10 @@ def dissent_against(reading: str, reported: str, *, max_comparison_steps: int) -
         # different questions.
         "departures": spans,
         "comparison_loss": {
-            # `reading_dropped_characters` charges collapsed whitespace only;
-            # `witness_dropped_characters` also charges markup and entity
-            # spelling removed from the report. Removal only, never
+            # Collapsed whitespace on each side. Removal only, never
             # re-encoding: NFC composition is not a loss (see `comparison_view`).
             "reading_dropped_characters": reading_view["dropped_characters"],
-            "witness_dropped_characters": witness_view["dropped_characters"]
-            + markup_view["loss"]["markup_characters"]
-            + markup_view["loss"]["whitespace_characters"],
+            "witness_dropped_characters": witness_view["dropped_characters"],
         },
     }
 

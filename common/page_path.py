@@ -1043,7 +1043,7 @@ def _comparison_text(text: str, capabilities: Any) -> str:
     witness's doubt, not a reading the Perlector departed from.
     """
     if isinstance(capabilities, Mapping) and capabilities.get("can_express_uncertainty") is True:
-        return bracket_marker_view(text)["text"]
+        return bracket_marker_view(text)
     return text
 
 

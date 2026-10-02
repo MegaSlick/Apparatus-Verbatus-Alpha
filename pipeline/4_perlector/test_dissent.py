@@ -229,12 +229,11 @@ def test_downstream_stages_do_not_directly_subscript_a_dissent_field():
 
 
 def test_a_bracket_marker_view_is_what_makes_a_doubt_marking_witness_comparable():
-    """`markup_text_view` removes tag markup, so it does nothing to a bracketed
-    `[UNCERTAIN]`; the page path compares DAI through
-    `common/alignment.py::bracket_marker_view`, and the counterfactual below is
-    why the strip has to happen at all."""
+    """The page path compares a doubt-marking witness (DAI) through
+    `bracket_marker_view`; the counterfactual below is why the strip has to
+    happen at all."""
     raw = "Marie [UNCERTAIN] Dupont"
-    stripped = bracket_marker_view(raw)["text"]
+    stripped = bracket_marker_view(raw)
     row = _dissent_against("Marie Dupont", stripped)
     assert row["compared"] is True
     # The bracket marker is gone, so what remains is a whitespace difference:
@@ -455,14 +454,15 @@ def test_a_decomposed_witness_report_is_not_charged_a_character_per_accent():
     }
 
 
-def test_markup_and_collapsed_whitespace_stay_in_the_witness_loss_account():
-    """The other direction: tags and a collapsed run are genuine removals, and
-    dropping them from the account would hide what the comparison view discarded.
-    """
-    row = _dissent_against(
-        "alpha beta",
-        "<b>alpha   beta</b>",
-    )
-
+def test_collapsed_whitespace_is_in_the_loss_account_and_tag_like_text_is_compared():
+    """A witness unit is already its witness's text view, so characters between a
+    `<` and a `>` in it are text the witness reported and are compared, never
+    stripped as markup: stripping them would hide a departure. A collapsed
+    whitespace run is a genuine removal and stays in the account."""
+    row = _dissent_against("alpha beta", "alpha   beta")
     assert row["departed"] is False
-    assert row["comparison_loss"]["witness_dropped_characters"] == len("<b>") + len("</b>") + 2
+    assert row["comparison_loss"]["witness_dropped_characters"] == 2
+
+    row = _dissent_against("alpha beta", "alpha <b> beta")
+    assert row["departed"] is True
+    assert row["comparison_loss"]["witness_dropped_characters"] == 0
