@@ -1,19 +1,14 @@
 # Paid infrastructure — pods, GPUs, and anything that bills
 
 **Read this before invoking anything that can start a meter**: RunPod, any GPU host, any
-hosted inference, any storage or egress that is charged. If your task appears to need one
-of these, this file is the whole rule; `AGENTS.md` ("Who decides") is why.
+hosted inference, any storage or egress that is charged.
 
 ## The rule
 
-**Unless the project lead has directed it in the current session, you do not invoke a
-billing action.** Not a launch, a resume, a resize, a persistent volume, or a "just to
-check" call that provisions anything.
-
-Permission covers **one exact action**, named with its cost. It is never inferred from
-another permission and never carried forward from an earlier session: permission to run a
-pod on Tuesday is not permission to run one on Wednesday, and permission to launch is not
-permission to resize.
+Who may start, switch or delete paid infrastructure, and what a permission covers, is
+`AGENTS.md`, "Who decides". It is stated there once and not restated here. In short: no
+billing action without the project lead's permission in the current session, and a
+permission never carries over from an earlier one.
 
 **Reading costs nothing and is always allowed**: listing pods, reading status, checking
 whether something is running, reading billing. "Is anything running right now?" is worth
