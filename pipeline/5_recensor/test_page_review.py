@@ -37,7 +37,6 @@ from conftest import (
     build_page_tree,
     file_bytes_snapshot,
     load_stage,
-    reask_recovery_config,
     rewitness_stage_boundary,
     run_stage,
 )
@@ -84,13 +83,7 @@ class Tree:
 
 
 def _tree(base: Path, scenario: str, floor: int = 3, reask: int = 0) -> Tree:
-    root, options = build_page_tree(
-        base,
-        scenario,
-        RUN_ID,
-        floor=floor,
-        recovery_config=reask_recovery_config(base / "reask", reask),
-    )
+    root, options = build_page_tree(base, scenario, RUN_ID, floor=floor, reask=reask)
     return Tree(root, scenario, options)
 
 
