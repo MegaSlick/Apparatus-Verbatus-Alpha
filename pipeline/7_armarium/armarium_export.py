@@ -3395,36 +3395,12 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                 sorted(metadata.items()),
             )
             for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
-                literal = act[CANONICAL_TEXT_FIELD]
-                text_hash = canonical_text_sha256(literal) if literal is not None else None
+                row = _database_row(act)
                 connection.execute(
-                    """
-                    INSERT INTO acts(
-                        act_id, act_key, category, canonical_clean_text,
-                        canonical_text_sha256, provenance_json, source_regions_json,
-                        uncertainty_json, uncertainty_status, text_status,
-                        evidence_json, approval_ref, reason, reading
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        act["act_id"],
-                        act["act_key"],
-                        act["category"],
-                        literal,
-                        text_hash,
-                        canonical_text(act["provenance"]) if literal is not None else None,
-                        canonical_text(act["source_regions"]) if literal is not None else None,
-                        canonical_text(act["uncertainty"]) if literal is not None else None,
-                        _UNCERTAINTY_AVAILABLE
-                        if literal is not None
-                        else _UNCERTAINTY_NOT_APPLICABLE,
-                        act["text_status"] if literal is not None else None,
-                        canonical_text(_act_evidence(act)),
-                        act.get("approval_ref"),
-                        _export_reason(act),
-                        act["reading"],
-                    ),
+                    f"INSERT INTO acts({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+                    tuple(row.values()),
                 )
+                literal, text_hash = row[CANONICAL_TEXT_FIELD], row["canonical_text_sha256"]
                 if literal is not None:
                     derived = search_fold(literal)
                     cursor = connection.execute(
@@ -3461,6 +3437,39 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
         return Path(path).read_bytes()
 
 
+def _row_head(reading: dict[str, Any]) -> dict[str, Any]:
+    """The fields every row of one reading carries, in every row-shaped member.
+
+    `acts.jsonl`, `other.jsonl`, `review-items.jsonl` and the acts database each
+    build their rows on this, so a field every row carries is added here once.
+    """
+    return {
+        "act_id": reading["act_id"],
+        "act_key": reading["act_key"],
+        "category": reading["category"],
+        "reason": _export_reason(reading),
+    }
+
+
+def _database_row(act: dict[str, Any]) -> dict[str, Any]:
+    """One `acts` table row, by column; text-derived columns are null without text."""
+    literal = act[CANONICAL_TEXT_FIELD]
+    delivered = literal is not None
+    return {
+        **_row_head(act),
+        CANONICAL_TEXT_FIELD: literal,
+        "canonical_text_sha256": canonical_text_sha256(literal) if delivered else None,
+        "provenance_json": canonical_text(act["provenance"]) if delivered else None,
+        "source_regions_json": canonical_text(act["source_regions"]) if delivered else None,
+        "uncertainty_json": canonical_text(act["uncertainty"]) if delivered else None,
+        "uncertainty_status": _UNCERTAINTY_AVAILABLE if delivered else _UNCERTAINTY_NOT_APPLICABLE,
+        "text_status": act["text_status"] if delivered else None,
+        "evidence_json": canonical_text(_act_evidence(act)),
+        "approval_ref": act.get("approval_ref"),
+        "reading": act["reading"],
+    }
+
+
 def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
@@ -3468,9 +3477,7 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
         records.append(
             {
                 "schema": ACT_RECORD_SCHEMA,
-                "act_id": act["act_id"],
-                "act_key": act["act_key"],
-                "category": act["category"],
+                **_row_head(act),
                 CANONICAL_TEXT_FIELD: literal,
                 "canonical_text_sha256": canonical_text_sha256(literal)
                 if literal is not None
@@ -3484,7 +3491,6 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 "text_status": act.get("text_status") if literal is not None else None,
                 **_act_evidence(act),
                 "approval_ref": act.get("approval_ref"),
-                "reason": _export_reason(act),
                 "reading": act["reading"],
             }
         )
@@ -3500,11 +3506,9 @@ def _other_json_records(others: tuple[dict[str, Any], ...]) -> list[dict[str, An
         records.append(
             {
                 "schema": OTHER_READING_SCHEMA,
-                "act_id": other["act_id"],
-                "act_key": other["act_key"],
+                **_row_head(other),
                 "kind": "other",
                 "page_ordinal": other["page_ordinal"],
-                "category": other["category"],
                 CANONICAL_TEXT_FIELD: literal,
                 "canonical_text_sha256": canonical_text_sha256(literal) if delivered else None,
                 "text_status": other.get("text_status") if delivered else None,
@@ -3512,7 +3516,6 @@ def _other_json_records(others: tuple[dict[str, Any], ...]) -> list[dict[str, An
                 "provenance": other.get("provenance") if delivered else None,
                 "source_regions": other.get("source_regions", []) if delivered else [],
                 **_act_evidence(other),
-                "reason": _export_reason(other),
             }
         )
     return records
@@ -3543,10 +3546,7 @@ def _review_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     return [
         {
             "schema": "armarium-review-item.v1",
-            "act_id": act["act_id"],
-            "act_key": act["act_key"],
-            "category": act["category"],
-            "reason": _export_reason(act),
+            **_row_head(act),
             "evidence_refs": act.get("evidence_refs", []),
         }
         for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"]))
