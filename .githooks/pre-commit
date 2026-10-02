@@ -42,3 +42,11 @@ if ! python3 "$ingress" --staged; then
   echo "" >&2
   exit 1
 fi
+
+# pagekit's clean-room gate: its HOLD and its leak scan over staged pagekit files.
+if [ -f pagekit/cleanroom/gate.py ] && ! python3 -m pagekit.cleanroom.gate; then
+  echo "" >&2
+  echo "  BLOCKED: pagekit's clean-room gate refused this commit." >&2
+  echo "" >&2
+  exit 1
+fi

@@ -506,3 +506,82 @@ def test_pre_commit_scans_the_index_not_the_working_copy(tmp_path):
     assert "[runpod-api-key]" in result.stdout + result.stderr
     git(repo, "add", "config.txt")
     assert run_hook(repo, "pre-commit").returncode == 0
+
+
+PAGEKIT_GATE = (
+    "pagekit/__init__.py",
+    "pagekit/cleanroom/__init__.py",
+    "pagekit/cleanroom/scan.py",
+    "pagekit/cleanroom/gate.py",
+    "pagekit/cleanroom/deny-hashes.txt",
+)
+
+
+def make_pagekit_repo(path):
+    """A repo with the pre-commit hook, pagekit's gate and one committed pagekit file."""
+    repo = make_precommit_repo(path)
+    for relative in PAGEKIT_GATE:
+        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, repo / relative)
+    (repo / "pagekit" / "check.py").write_text("VALUE = 1\n")
+    git(repo, "add", ".githooks", "pagekit")
+    git(repo, "commit", "-qm", "fixture")
+    return repo
+
+
+def stage(repo, relative, text):
+    (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+    (repo / relative).write_text(text)
+    git(repo, "add", relative)
+
+
+def test_pre_commit_holds_pagekit_until_the_lead_decides(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    hold = "pagekit/cleanroom/HOLD"
+    note = "pagekit/cleanroom/incidents/0001.md"
+    # An uncommitted HOLD in the working copy already holds pagekit.
+    (repo / hold).write_text("Suspected leak in the crop check.\n")
+    stage(repo, "pagekit/check.py", "VALUE = 2\n")
+    held = run_hook(repo, "pre-commit")
+    assert held.returncode == 1, held.stdout + held.stderr
+    assert "pagekit/check.py: pagekit is on HOLD" in held.stderr
+    git(repo, "reset", "-q", "pagekit/check.py")
+    git(repo, "checkout", "-q", "pagekit/check.py")
+
+    # The pause itself: HOLD and an undecided incident note may be committed.
+    git(repo, "add", hold)
+    stage(repo, note, "# Incident 0001\n\nDecision:\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+    git(repo, "commit", "-qm", "hold")
+
+    # While held, pagekit changes are refused; changes outside pagekit are not.
+    stage(repo, "pagekit/check.py", "VALUE = 3\n")
+    assert run_hook(repo, "pre-commit").returncode == 1
+    git(repo, "reset", "-q", "pagekit/check.py")
+    stage(repo, "notes.txt", "unrelated\n")
+    assert run_hook(repo, "pre-commit").returncode == 0, "a change outside pagekit was held"
+
+    # Removing HOLD needs the lead's decision in the same commit.
+    git(repo, "rm", "-q", hold)
+    undecided = run_hook(repo, "pre-commit")
+    assert undecided.returncode == 1
+    assert "Decision" in undecided.stderr
+    stage(repo, note, "# Incident 0001\n\nDecision: false flag, a common idiom.\n")
+    decided = run_hook(repo, "pre-commit")
+    assert decided.returncode == 0, decided.stdout + decided.stderr
+    git(repo, "commit", "-qm", "lift hold")
+
+    stage(repo, "pagekit/check.py", "VALUE = 4\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+
+
+def test_pre_commit_scans_staged_pagekit_files_without_echoing_the_hit(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    header = "under the GNU General " + "Public License, version 3"
+    stage(repo, "pagekit/deskew.py", f"# {header}\nVALUE = 1\n")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1
+    assert "pagekit/deskew.py:1: gpl_licence_header" in result.stderr
+    assert header not in result.stdout + result.stderr
+    stage(repo, "pagekit/deskew.py", "VALUE = 1\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
