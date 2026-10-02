@@ -493,12 +493,13 @@ keeps the run `partial` with its reason. Each delivered act's raised flags trave
 flag is never dropped.
 
 **Acts read on a re-ask.** An act a page's one re-ask recovered is counted in
-the act partition like any other, and labelled with the reading it came from:
-each counted row's `reading` is `first reading`, `read on re-ask` or `read on
-operator re-read`, from the `reading_attempt` of its row in the verified
-denominator (1, 2, or 3 on for a page a person had read again, whose current
-reading it is), and `null` for a `page-unread` or `page-blank` row, which stands
-for no entry. The other layer carries no such label: it is never counted as acts.
+the act partition like any other, and labelled with the reading it came from,
+by the `reading_attempt` of its row in the verified denominator: attempt 1 is
+the first reading (`first reading`), attempt 2 is read on re-ask (`read on
+re-ask`), and attempt 3 or later is an operator re-read, the current reading
+of a page a person had read again (`read on operator re-read`). A
+`page-unread` or `page-blank` row, which stands for no entry, names `null`. The
+other layer carries no such label: it is never counted as acts.
 
 **Manifest `armarium-export-manifest.v11`.** Its denominator is the reading acts,
 and it carries three claims beside the act partition:
