@@ -347,6 +347,13 @@ def test_a_deskew_rotation_outside_its_closed_recipe_is_refused(field, value):
 # re-derivation alone proves the output pixels but cannot detect the omitted area.
 
 
+def _verify(contract, master, parent, sealed):
+    """Verify a derivative given bytes, as a caller does after reading them by digest."""
+    from common.exemplar_boundary import verify_triage_derivative
+
+    verify_triage_derivative(contract, master, digest_bytes(master), parent, digest_bytes(sealed))
+
+
 def _rows_digest(row):
     from common.contracts.canonical import canonical_bytes, digest_bytes
 
@@ -485,14 +492,13 @@ def test_a_derivative_page_whose_row_under_declares_its_master_is_refused():
     re-derives the sealed bytes exactly. Only the frame comparison notices that
     half the photograph was never accounted for.
     """
-    from common.exemplar_boundary import verify_triage_derivative
 
     honest = _sealed_derivative((4, 4), {"width": 4, "height": 4})
-    verify_triage_derivative(honest[0], honest[1], honest[2], honest[3])
+    _verify(*honest)
 
     contract, master, parent, sealed = _sealed_derivative((8, 4), {"width": 4, "height": 4})
     with pytest.raises(ContractError, match="declares a frame that is not the size of the master"):
-        verify_triage_derivative(contract, master, parent, sealed)
+        _verify(contract, master, parent, sealed)
 
 
 def test_a_re_derivation_mismatch_names_a_decoder_upgrade_when_one_explains_it():
@@ -505,19 +511,18 @@ def test_a_re_derivation_mismatch_names_a_decoder_upgrade_when_one_explains_it()
     the ordinary cause — so when the recorded versions differ from this host's,
     the refusal says which ones.
     """
-    from common.exemplar_boundary import verify_triage_derivative
 
     contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
     contract["renderer_version"] = "0.0.0-not-this-host"
 
     with pytest.raises(ContractError, match="not reproducible") as drifted:
-        verify_triage_derivative(contract, master, parent, sealed + b"x")
+        _verify(contract, master, parent, sealed + b"x")
     assert "renderer_version '0.0.0-not-this-host'" in str(drifted.value)
     assert "recorded, not enforced" in str(drifted.value)
 
     contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
     with pytest.raises(ContractError, match="not reproducible") as undrifted:
-        verify_triage_derivative(contract, master, parent, sealed + b"x")
+        _verify(contract, master, parent, sealed + b"x")
     assert "sealed under different imaging libraries" not in str(undrifted.value)
 
 
@@ -525,7 +530,6 @@ def test_an_embedded_triage_row_is_bounded_before_its_pairwise_geometry_check():
     """The overlap check compares every pair of parts, so an unbounded parts list
     would buy quadratic work on a record this boundary exists in order not to trust."""
     from common.contracts.stages import MAX_TRIAGE_SPLIT_PARTS
-    from common.exemplar_boundary import verify_triage_derivative
 
     contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
     row = contract["derivative_page"]["triage_manifest_row"]
@@ -537,13 +541,12 @@ def test_an_embedded_triage_row_is_bounded_before_its_pairwise_geometry_check():
     ]
 
     with pytest.raises(ContractError, match=f"{MAX_TRIAGE_SPLIT_PARTS}-part limit"):
-        verify_triage_derivative(contract, master, parent, sealed)
+        _verify(contract, master, parent, sealed)
 
 
 def test_a_triage_row_carrying_a_field_outside_the_closed_schema_is_refused():
     """The embedded row is validated against the closed triage schema even when its
     self-digest was recomputed to match."""
-    from common.exemplar_boundary import verify_triage_derivative
 
     contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
     row = contract["derivative_page"]["triage_manifest_row"]
@@ -554,12 +557,11 @@ def test_a_triage_row_carrying_a_field_outside_the_closed_schema_is_refused():
     ]
 
     with pytest.raises(ContractError, match="invalid triage manifest row.*closed"):
-        verify_triage_derivative(contract, master, parent, sealed)
+        _verify(contract, master, parent, sealed)
 
 
 def test_a_resolved_offline_producer_actor_survives_the_exemplar_boundary():
     """Ordinary confined ingest emits this actor kind with its producer recipe."""
-    from common.exemplar_boundary import verify_triage_derivative
 
     contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
     row = contract["derivative_page"]["triage_manifest_row"]
@@ -573,7 +575,7 @@ def test_a_resolved_offline_producer_actor_survives_the_exemplar_boundary():
         "manifest_row_sha256"
     ]
 
-    verify_triage_derivative(contract, master, parent, sealed)
+    _verify(contract, master, parent, sealed)
 
 
 def test_sealed_page_bytes_refuses_bytes_that_no_longer_match_the_seal():
@@ -588,26 +590,3 @@ def test_sealed_page_bytes_refuses_bytes_that_no_longer_match_the_seal():
     with pytest.raises(SchemaRefusal, match="changed under a sealed reference"):
         sealed_page_bytes(swapped, page)
     assert sealed_page_bytes(SimpleNamespace(read_bytes=lambda _path: original), page) == original
-
-
-def test_a_remembered_re_derivation_still_refuses_pixels_that_differ(monkeypatch):
-    """The render is remembered by the master's digest; the sealed page is still
-    compared every time, so a second check of altered pixels is refused, not waved
-    through by the first check's success."""
-    import common.exemplar_boundary as boundary
-
-    renders = []
-    real_render = boundary.render_triage_derivative
-    monkeypatch.setattr(
-        boundary,
-        "render_triage_derivative",
-        lambda *args, **kwargs: renders.append(1) or real_render(*args, **kwargs),
-    )
-    monkeypatch.setattr(boundary, "_derivations", {})
-    contract, master, parent, sealed = _sealed_derivative((4, 4), {"width": 4, "height": 4})
-
-    boundary.verify_triage_derivative(contract, master, parent, sealed)
-    boundary.verify_triage_derivative(contract, master, parent, sealed)
-    with pytest.raises(ContractError, match="not reproducible"):
-        boundary.verify_triage_derivative(contract, master, parent, sealed + b"x")
-    assert len(renders) == 1

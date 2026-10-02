@@ -601,9 +601,16 @@ def _verify_admitted_blob(
         raise ContractError(
             "a derivative page does not input exactly its pixels and untouched master"
         )
-    blob = read_verified(tree.read_bytes, input_ref, "an admitted blob", ContractError)
+    # Read for its digest check: the blob on disk must be the bytes the Door admitted.
+    read_verified(tree.read_bytes, input_ref, "an admitted blob", ContractError)
     if is_derivative:
-        verify_triage_derivative(rendered_from["render_contract"], parent_bytes, parent, blob)
+        verify_triage_derivative(
+            rendered_from["render_contract"],
+            parent_bytes,
+            parent_ref["sha256"],
+            parent,
+            sealed_digest,
+        )
     return {"relative_path": stored_at, "sha256": sealed_digest}
 
 

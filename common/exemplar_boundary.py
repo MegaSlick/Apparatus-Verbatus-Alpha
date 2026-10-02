@@ -126,7 +126,8 @@ def verify_sealed_page_pixels(
         admission = validate_envelope(json.loads(admission_data.decode("utf-8")))
     except (SchemaRefusal, UnicodeDecodeError, ValueError, TypeError) as error:
         raise ContractError("the sealed page's Door admission is not a valid artifact") from error
-    _verify_admission(admission, run, source, ordinal, blob_ref, page_bytes, tree, rendered)
+    # `page_bytes` were read and hashed against `blob_ref`, so its digest stands for them.
+    _verify_admission(admission, run, source, ordinal, blob_ref, tree, rendered)
     return page_bytes
 
 
@@ -658,11 +659,9 @@ def _verify_admission(
     source: dict[str, Any],
     ordinal: int,
     blob_ref: dict[str, str],
-    page_bytes: bytes,
     tree: RunTree,
     page_rendered: Any,
 ) -> None:
-    """Check one Door admission against its page; ``page_bytes`` were read against ``blob_ref``."""
     if (
         admission.get("run_id") != run.get("run_id")
         or admission.get("stage") != DOOR
@@ -731,7 +730,7 @@ def _verify_admission(
     parent_bytes = read_verified(
         tree.read_bytes, parent_ref, "the derivative page's submitted master", ContractError
     )
-    _verify_triage_derivative(
+    verify_triage_derivative(
         rendered["render_contract"],
         parent_bytes,
         parent_digest,
@@ -777,18 +776,6 @@ def is_triage_derivative_contract(render_contract: Any) -> bool:
     )
 
 
-def verify_triage_derivative(
-    contract: dict[str, Any],
-    parent_bytes: bytes,
-    parent: dict[str, Any],
-    sealed_bytes: bytes,
-) -> None:
-    """A split page is valid only when its closed decision re-derives its bytes."""
-    _verify_triage_derivative(
-        contract, parent_bytes, digest_bytes(parent_bytes), parent, digest_bytes(sealed_bytes)
-    )
-
-
 # Re-rendering a split page from its master takes seconds for a full-size scan, and
 # every stage re-checks a page once per act on it. The render is a pure function of
 # the master's bytes, the frame index and the part, so its result is kept per process,
@@ -820,14 +807,18 @@ def _rederived(
     return remembered
 
 
-def _verify_triage_derivative(
+def verify_triage_derivative(
     contract: dict[str, Any],
     parent_bytes: bytes,
     parent_digest: str,
     parent: dict[str, Any],
     sealed_digest: str,
 ) -> None:
-    """`verify_triage_derivative`, given the digests of the master and sealed page bytes."""
+    """A split page is valid only when its closed decision re-derives its bytes.
+
+    ``parent_digest`` and ``sealed_digest`` are the digests the caller verified the
+    master's bytes and the sealed page's bytes against when it read them.
+    """
     contract_fields = {
         "renderer",
         "renderer_version",
