@@ -476,14 +476,66 @@ def test_a_dropped_original_or_forged_edit_is_refused_by_the_verifier(
         armarium_export.verify_export_bundle(_repacked(members), tmp_path / "forged")
 
 
-def _clean(corrected, tmp_path) -> tuple:
-    """The package extracted and verified, with what `_verify_corrections` reads."""
+def _drop_provenance_label(members: dict) -> None:
+    def drop(sources):
+        for citation in sources["act_citations"]:
+            if citation["act_key"] == "p1:1":
+                citation["provenance"] = citation["provenance"]["model_reading"]["provenance"]
+
+    _sources(members, drop)
+
+
+def _drop_basis_correction(members: dict) -> None:
+    def drop(sources):
+        sources["aggregate_basis"]["review_decisions"]["corrections"] = []
+
+    _sources(members, drop)
+
+
+def _text_no_edit_names(members: dict) -> None:
+    """The delivered text must be the one the edit records: the decision is rebuilt from it."""
+    rows = [json.loads(line) for line in members["acts.jsonl"].decode().splitlines()]
+    for row in rows:
+        if row["act_key"] == "p1:1":
+            row["canonical_clean_text"] = EDITED + " and more"
+            row["canonical_text_sha256"] = armarium_export.canonical_text_sha256(
+                row["canonical_clean_text"]
+            )
+    members["acts.jsonl"] = "".join(json.dumps(row) + "\n" for row in rows).encode()
+
+
+@pytest.mark.parametrize(
+    "forge, refusal",
+    [
+        # Changed in sources.json alone, these disagree first with the acts database
+        # and the sealed aggregate; `_verify_corrections` is held to them directly below.
+        (_drop_provenance_label, "does not retain exact delivered provenance"),
+        (_drop_basis_correction, "aggregate basis disagrees with its source accounting"),
+        (_text_no_edit_names, "that the edit its provenance names does not record"),
+    ],
+    ids=["dropped-label", "dropped-from-basis", "text-no-edit-names"],
+)
+def test_a_correction_the_package_misstates_is_refused_by_the_verifier(
+    corrected, tmp_path, forge, refusal
+):
+    members = dict(corrected.members)
+    forge(members)
+    with pytest.raises(SchemaRefusal, match=refusal):
+        armarium_export.verify_export_bundle(_repacked(members), tmp_path / "forged")
+
+
+def _verify_corrections_directly(corrected, tmp_path, forge) -> None:
+    """`_verify_corrections` over a verified package whose sources.json `forge` changes.
+
+    A forgery in sources.json alone is caught by the full verifier's earlier
+    cross-format checks (above); this holds the correction check itself to it.
+    """
     clean = tmp_path / "clean"
     manifest = armarium_export.verify_export_bundle(_repacked(dict(corrected.members)), clean)
-    return clean, manifest
-
-
-def _verify_corrections(clean, manifest) -> None:
+    path = clean / "sources.json"
+    members = {"sources.json": path.read_bytes()}
+    forge(members)
+    path.write_bytes(members["sources.json"])
     sources = armarium_export._load_sources(clean)
     armarium_export._verify_corrections(
         clean,
@@ -493,51 +545,19 @@ def _verify_corrections(clean, manifest) -> None:
     )
 
 
-def _rewrite_sources(clean, change) -> None:
-    path = clean / "sources.json"
-    sources = json.loads(path.read_text(encoding="utf-8"))
-    change(sources)
-    path.write_bytes(canonical_bytes(sources))
-
-
-def test_a_correction_label_dropped_from_the_provenance_is_refused(corrected, tmp_path):
-    clean, manifest = _clean(corrected, tmp_path)
-
-    def drop(sources):
-        for citation in sources["act_citations"]:
-            if citation["act_key"] == "p1:1":
-                citation["provenance"] = citation["provenance"]["model_reading"]["provenance"]
-
-    _rewrite_sources(clean, drop)
-    with pytest.raises(SchemaRefusal, match="disagree about whether a person corrected it"):
-        _verify_corrections(clean, manifest)
-
-
-def test_a_correction_dropped_from_the_aggregate_basis_is_refused(corrected, tmp_path):
-    clean, manifest = _clean(corrected, tmp_path)
-
-    def drop(sources):
-        sources["aggregate_basis"]["review_decisions"]["corrections"] = []
-
-    _rewrite_sources(clean, drop)
-    with pytest.raises(SchemaRefusal, match="does not name exactly the readings"):
-        _verify_corrections(clean, manifest)
-
-
-def test_a_text_no_edit_names_is_refused_by_the_verifier(corrected, tmp_path):
-    """The delivered text must be the one the edit records: the decision is rebuilt from it."""
-    clean, manifest = _clean(corrected, tmp_path)
-    path = clean / "acts.jsonl"
-    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    for row in rows:
-        if row["act_key"] == "p1:1":
-            row["canonical_clean_text"] = EDITED + " and more"
-            row["canonical_text_sha256"] = armarium_export.canonical_text_sha256(
-                row["canonical_clean_text"]
-            )
-    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
-    with pytest.raises(SchemaRefusal, match="that the edit its provenance names does not record"):
-        _verify_corrections(clean, manifest)
+@pytest.mark.parametrize(
+    "forge, refusal",
+    [
+        (_drop_provenance_label, "disagree about whether a person corrected it"),
+        (_drop_basis_correction, "does not name exactly the readings"),
+    ],
+    ids=["dropped-label", "dropped-from-basis"],
+)
+def test_the_correction_check_itself_refuses_a_misstated_correction(
+    corrected, tmp_path, forge, refusal
+):
+    with pytest.raises(SchemaRefusal, match=refusal):
+        _verify_corrections_directly(corrected, tmp_path, forge)
 
 
 def test_the_decide_command_records_an_edit_bound_to_its_text(reading_held, tmp_path, monkeypatch):
