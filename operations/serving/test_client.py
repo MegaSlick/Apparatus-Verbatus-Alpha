@@ -1464,6 +1464,18 @@ def test_a_failed_stop_on_exit_can_be_retried_through_the_client(tmp_path: Path)
     FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(chair).release()
 
 
+def test_a_failed_stop_never_hides_the_error_that_ended_the_block(tmp_path: Path) -> None:
+    client, endpoint, _, _chair = _built(tmp_path)
+    client._manager.shutdown_timeout_seconds = 0.01
+
+    with pytest.raises(RuntimeError, match="page 3 could not be read") as caught:
+        with client:
+            endpoint.sticky_after_stop = True
+            raise RuntimeError("page 3 could not be read")
+
+    assert isinstance(caught.value.__cause__, ServiceStopError)
+
+
 # --- never a retry ------------------------------------------------------------
 
 

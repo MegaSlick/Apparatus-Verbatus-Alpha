@@ -399,13 +399,25 @@ class ChairClient:
         self._exiting = False
         return self
 
-    def __exit__(self, *exc: object) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
         if self._handle is None:
             return
         self._prepared_chandra_dispatches.clear()
         self._exiting = True
         # Cleared only once the stop is verified, so a failed stop can be retried.
-        self._handle.stop()
+        try:
+            self._handle.stop()
+        except BaseException as stop_error:
+            # The error that ended the block names the page; an unverified stop
+            # rides along as its cause rather than replacing it.
+            if exc is not None:
+                raise exc from stop_error
+            raise
         self._handle = None
         self._exiting = False
 
