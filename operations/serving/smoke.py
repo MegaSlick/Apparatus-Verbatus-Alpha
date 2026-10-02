@@ -47,7 +47,7 @@ from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSamp
 
 from .errors import ServingConfigurationError, ServingError
 from .http import HttpResponse
-from .manager import ServiceHandle, _active_chat_image_bytes
+from .manager import ServiceHandle, _active_chat_image_bytes, _local_fixture_bytes
 from .witness import (
     PAGE_WITNESS_ALPHABET,
     PAGE_WITNESS_LENGTH,
@@ -266,12 +266,7 @@ def _golden_page_payload(fixture: Path, prompt: str) -> dict[str, object]:
     these bytes.
     """
 
-    try:
-        data = Path(fixture).read_bytes()
-    except OSError as error:
-        raise ServingConfigurationError(
-            f"cannot read golden-page fixture {fixture}: {error}"
-        ) from error
+    data = _local_fixture_bytes(fixture, "golden-page fixture")
     encoded = base64.b64encode(data).decode("ascii")
     return {
         "messages": [

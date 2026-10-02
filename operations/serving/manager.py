@@ -1410,7 +1410,6 @@ def _watchdog_timeout(
 
     tail = _redacted(process.read_tail())
     budget = f"{budget_seconds:.0f}s"
-    progress = None if tail.startswith(_LOG_UNREADABLE) else _progress_log_line(tail)
     if tail.startswith(_LOG_UNREADABLE):
         reason = tail.removeprefix(_LOG_UNREADABLE).strip()
         return ReadinessError(
@@ -1418,6 +1417,7 @@ def _watchdog_timeout(
             f"{last} -- log-unreadable: the launch log could not be read ({reason}), so "
             "this cannot say whether the engine was loading",
         )
+    progress = _progress_log_line(tail)
     if progress is not None and progress_advanced:
         code, sentence = (
             "still-loading",

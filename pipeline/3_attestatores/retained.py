@@ -42,7 +42,7 @@ def named_once(references: list[Any]) -> list[Any]:
 
     A repeat is not a second response and must not read as one.
     """
-    seen: list[str] = []
+    seen: set[str] = set()
     kept: list[Any] = []
     for reference in references:
         key = (
@@ -52,7 +52,7 @@ def named_once(references: list[Any]) -> list[Any]:
         )
         if key in seen:
             continue
-        seen.append(key)
+        seen.add(key)
         kept.append(reference)
     return kept
 

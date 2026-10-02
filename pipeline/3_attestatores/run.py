@@ -2092,15 +2092,12 @@ def _serve_detector_page(
             )
         else:
             response = client.read(built.request)
-            unread = live_witness.unmeasured_stop_reason(
-                response, what.replace("request", "response")
-            )
-            if unread is not None:
-                attempt = live_witness.unread_response_attempt(
-                    response, adapter=adapter, reason=unread
-                )
-            else:
-                attempt = live_witness.live_attempt_from_response(
+            attempt = live_witness.read_unless_unmeasured_stop(
+                response,
+                adapter=adapter,
+                what=f"the {resolved.witness_adapter} response for record {region['subject_id']}",
+                read=partial(
+                    live_witness.live_attempt_from_response,
                     context,
                     adapter,
                     resolved.witness_adapter,
@@ -2111,7 +2108,8 @@ def _serve_detector_page(
                     generation_declared=built.request.generation_declared,
                     parser="text",
                     generation_accounting=built.generation_accounting,
-                )
+                ),
+            )
             presented = built.presented
         witness_adapters.validate_adapter_presentation(resolved.witness_adapter, source, presented)
         served.append((region, presented, attempt))
@@ -2303,15 +2301,11 @@ def _serve_page_unit(
             )
         else:
             response = client.read(request)
-            unread = live_witness.unmeasured_stop_reason(
-                response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
-            )
-            if unread is not None:
-                attempt = live_witness.unread_response_attempt(
-                    response, adapter=adapter, reason=unread
-                )
-            else:
-                attempt = live_witness.captured_page_attempt(
+            attempt = live_witness.read_unless_unmeasured_stop(
+                response,
+                adapter=adapter,
+                what=f"the {resolved.witness_adapter} response for page {page_ordinal}",
+                read=lambda: live_witness.captured_page_attempt(
                     context,
                     page_ordinal,
                     chair,
@@ -2319,7 +2313,8 @@ def _serve_page_unit(
                     adapter,
                     response,
                     framing=framing,
-                )
+                ),
+            )
     publish_page_testimonium(
         context,
         chair=chair,

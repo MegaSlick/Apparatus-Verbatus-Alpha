@@ -128,7 +128,8 @@ def qualification_candidates(
     # placed, which is the whole roster or the narrowed selection an operator
     # asked for. A chair its stage runs itself has a placement in its row's kind
     # and no smoke receipt, and is never a candidate.
-    selected = _placed_chairs(preflight.get("placements"), models.chairs, identities)
+    placements = _rows_by_chair(preflight.get("placements"), "placements")
+    selected = _placed_chairs(placements, models.chairs, identities)
     profiles = {role: _profile_at_tier(recipes, identities[role], tier) for role in selected}
     unserved_states = {
         role: profile.kind for role, profile in profiles.items() if profile.kind in UNSERVED_KINDS
@@ -155,10 +156,7 @@ def qualification_candidates(
         preflight.get("cache_receipts"), {role: identities[role] for role in selected}
     )
     _verify_placements(
-        preflight.get("placements"),
-        {role: identities[role] for role in selected},
-        tier,
-        unserved_states,
+        placements, {role: identities[role] for role in selected}, tier, unserved_states
     )
     _verify_subprocess_receipts(
         preflight.get("subprocess_receipts"),
@@ -249,12 +247,11 @@ def qualification_candidates(
 
 
 def _placed_chairs(
-    raw_placements: object,
+    placed: Mapping[str, object],
     roster: Mapping[str, object],
     identities: Mapping[str, ChairIdentity],
 ) -> list[str]:
     """The configured chairs the preflight placed, in roster order."""
-    placed = _rows_by_chair(raw_placements, "placements")
     strangers = sorted(set(placed) - set(roster))
     if strangers:
         raise QualificationRefusal(f"placements name chairs outside the roster: {strangers}")
@@ -534,15 +531,14 @@ def _verify_measured_packages(role: str, measured: object, required: object) -> 
 
 
 def _verify_placements(
-    raw_placements: object,
+    placements: Mapping[str, list[Mapping[str, object]]],
     identities: Mapping[str, ChairIdentity],
     tier: str,
     unserved_states: Mapping[str, str],
 ) -> None:
-    placements = _rows_by_chair(raw_placements, "placements", selected=set(identities))
-    if set(placements) != set(identities):
-        raise QualificationRefusal("placements do not cover exactly the placed chairs")
-    for role, rows in placements.items():
+    """Each placed chair has exactly one placement, of its recipe, on the measured tier."""
+    for role in identities:
+        rows = placements[role]
         if (
             len(rows) != 1
             or rows[0].get("configured_serving_recipe") != identities[role].serving_recipe
@@ -552,9 +548,7 @@ def _verify_placements(
             raise QualificationRefusal(f"chair {role!r} was not planned on the measured tier")
 
 
-def _rows_by_chair(
-    value: object, label: str, *, selected: set[str] | None = None
-) -> dict[str, list[Mapping[str, object]]]:
+def _rows_by_chair(value: object, label: str) -> dict[str, list[Mapping[str, object]]]:
     if not isinstance(value, list):
         raise QualificationRefusal(f"{label} are not a list")
     rows: dict[str, list[Mapping[str, object]]] = {}
@@ -563,8 +557,7 @@ def _rows_by_chair(
         chair = row.get("chair")
         if not isinstance(chair, str) or not chair:
             raise QualificationRefusal(f"{label[:-1]} does not name a chair")
-        if selected is None or chair in selected:
-            rows.setdefault(chair, []).append(row)
+        rows.setdefault(chair, []).append(row)
     return rows
 
 

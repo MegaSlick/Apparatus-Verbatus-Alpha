@@ -1062,7 +1062,7 @@ def test_a_page_record_its_readers_would_refuse_is_never_published(
         return payload
 
     monkeypatch.setattr(attestatores, "page_testimonium_payload", misattributed)
-    with pytest.raises(SchemaRefusal):
+    with pytest.raises(SchemaRefusal, match="names a different page"):
         run_attestatores(live_run, run_root, factory=world.factory)
 
     assert (1, chair) not in page_records(RunTree(run_root, RUN_ID))

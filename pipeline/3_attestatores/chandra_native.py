@@ -812,6 +812,8 @@ def _with_chandra_trace(
             reason=(
                 "the pinned Chandra native recipe exhausted six retries and returned a "
                 "response still matching its repeat-token detector; retained as partial"
+                # The final answer's own reason (an unmeasured stop word) still holds.
+                + (f"; {attempt.reason}" if attempt.reason else "")
             ),
         )
     elif exhausted == "inference-error":

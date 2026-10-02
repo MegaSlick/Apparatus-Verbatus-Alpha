@@ -777,3 +777,16 @@ def unmeasured_stop_reason(response: Any, what: str) -> str | None:
         "measured a meaning for; whether the answer is whole is unknown, so it is retained "
         "and not read"
     )
+
+
+def read_unless_unmeasured_stop(
+    response: ChairResponse, *, adapter: Any, what: str, read: Callable[[], Attempt]
+) -> Attempt:
+    """`read()` the response, unless its stop word has no measured meaning.
+
+    Such a response is kept whole and unread, as a failed attempt naming the word.
+    """
+    unread = unmeasured_stop_reason(response, what)
+    if unread is not None:
+        return unread_response_attempt(response, adapter=adapter, reason=unread)
+    return read()
