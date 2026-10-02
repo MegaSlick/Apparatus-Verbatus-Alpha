@@ -296,7 +296,7 @@ def test_named_whole_manifest_refusals(case: str, match: str):
         produce([first], corpus_id="synthetic", mode="auto", transcribed_rows_by_path={"63": row})
 
 
-def test_cluster_member_and_span_refusals_are_named():
+def test_a_cluster_member_that_was_not_submitted_is_refused_by_name():
     frames = [frame(str(index)) for index in range(4)]
     wrong_member, wrong_recipe, wrong_manifest, wrong_evidence = confirmation(frames[:2])
     wrong_member["clusters"][0]["pages"][0]["member_frame_sha256"].append("f" * 64)
@@ -309,18 +309,6 @@ def test_cluster_member_and_span_refusals_are_named():
             instrument_recipe=wrong_recipe,
             evidence_manifest=wrong_manifest,
             evidence_records=wrong_evidence,
-        )
-    too_wide, wide_recipe, wide_manifest, wide_evidence = confirmation(frames)
-    with pytest.raises(ProducerRefusal, match="manual refusal cluster-span-over-cap"):
-        produce(
-            frames,
-            corpus_id="synthetic",
-            mode="auto",
-            confirmation=too_wide,
-            instrument_recipe=wide_recipe,
-            evidence_manifest=wide_manifest,
-            evidence_records=wide_evidence,
-            max_pages_per_shard=3,
         )
 
 

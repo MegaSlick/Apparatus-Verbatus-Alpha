@@ -48,9 +48,7 @@ evidence_manifest_sha256, clusters}`. Each cluster is `{pages, evidence_pairs}`;
 is `{volume_id, designation, member_frame_sha256}`. Every evidence pair must be a pair
 the supplied evidence records actually compared, under the supplied recipe and
 manifest, and every member must be a submitted frame the pass saw. The cluster id is
-derived from its physical page ids, so adding members cannot rename it. A confirmed
-cluster whose members span more Door ordinals (one per split part, ordered by path)
-than `max_pages_per_shard` is refused, since no shard could hold it.
+derived from its physical page ids, so adding members cannot rename it.
 
 `authority` is a claim the confirmation makes about who made it; nothing verifies it.
 What binds a confirmation to an operator's act is that it is a file a person supplied,

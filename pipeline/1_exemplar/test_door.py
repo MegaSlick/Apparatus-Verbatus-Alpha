@@ -3639,7 +3639,6 @@ def test_synthetic_63_64_65_plus_66_closes_instrument_confirmation_register_and_
         manifest_path=tmp_path / "manifest.json",
         clusters_path=tmp_path / "clusters.json",
         authority_path=tmp_path / "confirmation.json",
-        max_pages_per_shard=3,
     )
     assert len(produced.manifest["records"]) == 4
     assert set(produced.rows_by_digest) == set(digests_by_name.values())
@@ -3702,7 +3701,6 @@ def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_ou
         evidence_manifest=evidence_manifest,
         evidence_records=evidence,
         transcribed_rows_by_path=proposals,
-        max_pages_per_shard=10,
     )
     rows = produced.rows_by_digest
     assert len(produced.clusters) == 1
@@ -3725,43 +3723,6 @@ def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_ou
     )
     assert [source.triage_part_index for source in sources] == [0, 1, 2, 3, 4] * 2
     assert {source.ordinal for source in sources} == set(range(1, 11))
-
-
-def test_the_producer_measures_a_cluster_span_in_door_ordinals_not_in_frames():
-    """Two taped frames are ten Door ordinals, and a five-page cap cannot hold them.
-
-    A span counted in frames would have called this cluster two pages and passed it
-    to a Door that then has no legal seam anywhere inside it — the whole submission
-    refused, at the stage that can no longer explain why.
-    """
-    frames = _taped_frames()
-    proposals = {
-        item.path: door.triage_manifest.make_row(
-            corpus_id="parish-a",
-            source_frame_sha256=digest_bytes(item.data),
-            frame=dict(_TAPED_FRAME),
-            split=_taped_split(),
-            re_shoot_cluster_id=None,
-            confidence=0,
-            mode="manual",
-            actor={"kind": "human", "identity": "operator", "revision": None},
-            human_override=True,
-        )
-        for item in frames
-    }
-    confirmation, recipe, evidence_manifest, evidence = _taped_confirmation(frames)
-    with pytest.raises(producer.ProducerRefusal, match="cluster-span-over-cap"):
-        producer.produce(
-            frames,
-            corpus_id="parish-a",
-            mode="manual",
-            confirmation=confirmation,
-            instrument_recipe=recipe,
-            evidence_manifest=evidence_manifest,
-            evidence_records=evidence,
-            transcribed_rows_by_path=proposals,
-            max_pages_per_shard=5,
-        )
 
 
 def test_a_submitted_frame_with_no_triage_row_is_refused_and_a_row_outside_the_shard_is_not():

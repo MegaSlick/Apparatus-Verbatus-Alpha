@@ -666,18 +666,11 @@ def produce(
     evidence_manifest: Mapping[str, Any] | None = None,
     evidence_records: Sequence[Mapping[str, Any]] | None = None,
     transcribed_rows_by_path: Mapping[str, Mapping[str, Any]] | None = None,
-    max_pages_per_shard: int = 1000,
 ) -> ProducedTriage:
     """Produce exact-coverage rows and apply only an explicit confirmation."""
     _plain_string(corpus_id, "producer corpus_id")
     if mode not in TRIAGE_MODES:
         raise ProducerRefusal("producer triage mode is not declared")
-    if (
-        not isinstance(max_pages_per_shard, int)
-        or isinstance(max_pages_per_shard, bool)
-        or max_pages_per_shard < 1
-    ):
-        raise ProducerRefusal("producer max_pages_per_shard must be a positive integer")
     if (
         not isinstance(frames, Sequence)
         or isinstance(frames, (str, bytes))
@@ -718,10 +711,8 @@ def produce(
             "manual refusal coverage: submitted source digest appears more than once"
         )
     if len({frame.path for frame in frames}) != len(frames):
-        # The Door keys and orders submitted sources by relative path, so two frames
-        # at one path have no distinct place in its fan-out; the ambiguity would land
-        # as a cluster span this producer computed against an order the Door does not
-        # share.
+        # The Door keys submitted sources by relative path, so two frames at one
+        # path have no distinct place in its fan-out.
         raise ProducerRefusal(
             "manual refusal coverage: submitted source path appears more than once"
         )
@@ -786,27 +777,7 @@ def produce(
             evidence_manifest=evidence_manifest,
             evidence_records=evidence_records,
         )
-        # The span a shard has to hold is measured in Door ordinals, not in frames:
-        # the Door orders submitted sources by relative path and gives each split part
-        # its own ordinal, so three frames of five parts each occupy fifteen ordinals.
-        ordinal = 0
-        first_ordinal: dict[str, int] = {}
-        last_ordinal: dict[str, int] = {}
-        for position in sorted(range(len(frames)), key=lambda index: frames[index].path):
-            digest = digests[position]
-            first_ordinal[digest] = ordinal + 1
-            ordinal += len(by_digest[digest]["split"]["parts"])
-            last_ordinal[digest] = ordinal
         for cluster_id, (members, _pages) in confirmed.items():
-            span = (
-                max(last_ordinal[member] for member in members)
-                - min(first_ordinal[member] for member in members)
-                + 1
-            )
-            if span > max_pages_per_shard:
-                raise ProducerRefusal(
-                    "manual refusal cluster-span-over-cap: confirmed cluster exceeds shard limit"
-                )
             split_counts = {len(by_digest[member]["split"]["parts"]) for member in members}
             if len(split_counts) != 1:
                 raise ProducerRefusal("confirmation cluster members have incompatible split counts")
@@ -990,7 +961,6 @@ def commit_confirmed_production(
     clusters_path: str | Path,
     authority_path: str | Path,
     transcribed_rows_by_path: Mapping[str, Mapping[str, Any]] | None = None,
-    max_pages_per_shard: int = 1000,
 ) -> tuple[ProducedTriage, str]:
     """Retain authority, append the register, then publish Door documents.
 
@@ -1023,7 +993,6 @@ def commit_confirmed_production(
         evidence_manifest=evidence_manifest,
         evidence_records=evidence_records,
         transcribed_rows_by_path=transcribed_rows_by_path,
-        max_pages_per_shard=max_pages_per_shard,
     )
     if not produced.clusters:
         raise ProducerRefusal("confirmation names no cluster; no manifest documents were written")
