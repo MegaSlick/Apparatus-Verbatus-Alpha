@@ -16,7 +16,8 @@ Run this when the lead asks to close, or when plan usage reaches the wind-down p
    outside git (pods, running jobs), decisions and their reasons, real blockers with
    paths to the evidence, and anything waiting on the lead. Put it where AGENTS.md
    "Notes and handoffs" says, archiving the previous local one in
-   `workbench/archive/<date>_<topic>/`.
+   `workbench/archive/<date>_<topic>/` under a name no earlier handoff there uses;
+   never overwrite an archived handoff.
 3. **Park.** If the work continues, stay on its branch. If its pull request has merged,
    the tree is clean and the fetch succeeded, move to a fresh branch from `origin/main`.
    Delete the old local branch only if the pull request's head commit equals its tip.

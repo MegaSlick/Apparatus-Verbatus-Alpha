@@ -71,7 +71,9 @@ and export — not reading:
 Each stage writes its sealed output under the run root, ending in `7_armarium/`. This
 scenario ends with `run demo: partial` and exit code 3, by design: the synthetic act
 that crosses from page 1 to page 2 is flagged, not silently joined, so the export says it
-is partial. Exit codes: 0 complete, 2 failed or refused, 3 held for review or partial, 4 halted.
+is partial. Exit codes: 0 complete; 2 the run failed or was refused before it could finish; 3 held
+for review or partial, which includes an act refused inside an otherwise finished run;
+4 halted.
 
 **Real pages** need the real roster (`--models-config config/models-real.toml`) and a
 Linux GPU machine running vLLM; the RunPod
@@ -116,6 +118,9 @@ Somerville, project lead.
 
 The models are not part of this repository. They are fetched at a pinned revision when a
 run starts, each under its own terms, recorded beside each model in
-`config/models-real.toml`. Several allow research use only.
+`config/models-real.toml`. They differ: Churro's weights are for research only;
+Chandra's bar commercial use above a revenue threshold and competing use; the DAI reader
+declares no licence; the record detector's weights are AGPL-3.0; Surya's layout weights
+are OpenRAIL; the Qwen reader is Apache-2.0.
 The record detector runs through `ultralytics`, which is AGPL-3.0; it is installed
 only on the GPU machine, never in this repository's own environment.

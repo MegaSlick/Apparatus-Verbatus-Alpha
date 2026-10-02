@@ -55,8 +55,9 @@ PRINCIPLES.md, stop and say which rule and why.
 
 Real register images, transcriptions and personal data stay on the lead's machines and
 rented servers, in the gitignored `private/`, `scriptorium/` and `workbench/` folders.
-Never commit them, paste them into a prompt for an outside service, or send them
-anywhere beyond GitHub and CI.
+Never commit them, attach them to an issue or pull request, paste them into a prompt
+for an outside service, or send them anywhere else; GitHub and CI see only code and the
+synthetic fixtures.
 
 Some tools upload what they read. Before using a tool on this repository for the first
 time, check what it sends off the machine. For example, graphify is used here only as

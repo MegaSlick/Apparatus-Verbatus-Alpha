@@ -24,8 +24,9 @@ readable by anyone.
 
 ## 2. Pull requests (Settings → General → Pull Requests)
 
-- **Automatically delete head branches: on.** Merged branches then delete themselves,
-  so the stale-branch pile in issue #242 cannot build up again.
+- **Automatically delete head branches: on.** A branch then deletes itself when its pull
+  request merges. Branches of closed or superseded pull requests still need deleting by
+  hand, as in issue #242.
 - **Allow merge commits: on; squash and rebase: off.** The history is built from merge
   commits and the review rules assume them.
 - **Always suggest updating pull request branches: on.**
@@ -45,13 +46,18 @@ readable by anyone.
   so this is what guarantees the tested code is the merged code.
 - **Require conversation resolution before merging: on.**
 - **Block force pushes** and **restrict deletions** of `main`.
-- **No bypass list**, so the rule also binds sessions that push with the lead's token.
+- **Nobody may bypass it**, so the rule also binds sessions that push with the lead's
+  token. For a ruleset, leave the bypass list empty; for classic branch protection, tick
+  *Do not allow bypassing the above settings*, because administrators can bypass it by
+  default.
 
 ## 4. Security (Settings → Code security)
 
-- **Secret scanning: on**, with **push protection: on.** This refuses a push that
-  contains a known credential format before it lands, as a second line behind the
-  local commit hook.
+- **Secret scanning: on**, with **push protection: on.** It blocks a push containing a
+  credential of a format GitHub recognises, as a second line behind the local commit
+  hook. It is not a guarantee: it misses formats it does not know, and anyone with write
+  access can choose to bypass a block, which on a public repository publishes the
+  secret.
 - **Dependabot alerts: on** (already) and **Dependabot security updates: on.**
 - **Private vulnerability reporting: on**, so a stranger can report a problem without
   opening a public issue.
