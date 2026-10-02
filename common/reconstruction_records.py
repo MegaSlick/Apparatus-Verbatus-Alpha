@@ -41,6 +41,7 @@ from common.contracts.canonical import digest_bytes, text_sha256
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import CONIECTOR, PERLECTOR
+from common.contracts.uncertainty import from_page_perlectio
 from common.decoding import chair_decoding
 from common.reading_annotations import (
     ASSESSMENT_ASSESSED,
@@ -182,6 +183,7 @@ def diplomatic_entries(
             subject_id=row["act_id"],
         )
         payload = record["payload"]
+        from_page_perlectio(payload)
         assessment = payload["uncertainty_assessment"]
         raw = render_doubt_marks(payload["text"], assessment)
         if (
