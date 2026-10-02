@@ -78,11 +78,14 @@ class RunnableAdapter:
     from a different arm or presentation metadata alone. ``quantization`` is
     ``None`` where the response supplies no native geometry to convert at all.
 
-    Parsing is not an entry here: ``retain`` parses the response it keeps, through
-    `feeding.retain_model_view`.
+    A served response is parsed by ``retain``, through `feeding.retain_model_view`.
+    ``parse`` and ``fixture_parse`` name the same grammars for the fixture
+    declaration check (`proof/test_fixture_declaration_contract.py`), which reads
+    each declared answer through its own chair's adapter.
     """
 
     prompt: Callable[..., Any]
+    parse: Callable[..., Any]
     retain: Callable[..., Any]
     present: Callable[..., Any]
     observe: Callable[..., Any]
@@ -97,6 +100,9 @@ class RunnableAdapter:
     #: How this adapter resolves a declared framing name, or ``None`` where it
     #: has exactly one framing and there is nothing to choose.
     resolve_framing: Callable[..., str] | None = None
+    #: How the committed fixture's declared bytes are read where they are not in
+    #: the vendor grammar a served chair answers in; ``None`` where they are.
+    fixture_parse: Callable[..., Any] | None = None
 
 
 def _retain_dai_model_view(
@@ -301,16 +307,19 @@ def validate_adapter_presentation(
 RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
     "chandra.v1": RunnableAdapter(
         prompt=chandra.prompt,
+        parse=chandra.parse,
         retain=chandra.retain,
         present=chandra.present,
         observe=chandra.observe,
         quantization=chandra.QUANTIZATION_RULE,
         takes_page_size=True,
         format_capabilities=chandra.FORMAT_CAPABILITIES,
+        fixture_parse=chandra.parse_fixture_placeholder,
     ),
     "churro.v1": RunnableAdapter(
         prompt=churro.prompt,
         resolve_framing=churro.resolve_framing,
+        parse=churro.parse,
         retain=churro.retain,
         present=churro.present,
         observe=churro.observe,
@@ -320,6 +329,7 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
     ),
     "dai.v1": RunnableAdapter(
         prompt=feeding.dai_prompt,
+        parse=feeding.validate_dai_text,
         retain=_retain_dai_model_view,
         present=_dai_present,
         observe=_dai_observe,

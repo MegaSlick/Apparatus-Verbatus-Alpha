@@ -289,7 +289,7 @@ def test_dai_crop_names_a_sealed_page_that_carries_no_image_path(payload):
 def test_the_registry_binds_the_native_intake_contract_seams():
     adapters = load_stage("3_attestatores", "witness_adapters", isolate_path=True)
     fields = {field.name for field in dataclasses.fields(adapters.RunnableAdapter)}
-    # Quantization is data beside the four operations; `takes_page_size` says
+    # Quantization is data beside the five operations; `takes_page_size` says
     # whether this adapter's `observe` accepts the sealed page's own size, and
     # `resolve_framing` how it resolves a declared framing name (`None` where it
     # has one framing and a run has nothing to choose) -- all three read off the
@@ -299,6 +299,7 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     # stage and every reader of its page records share.
     assert fields == {
         "prompt",
+        "parse",
         "retain",
         "present",
         "observe",
@@ -306,6 +307,7 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         "takes_page_size",
         "resolve_framing",
         "format_capabilities",
+        "fixture_parse",
     }
     assert set(page_witness_units.UNIT_KINDS) == set(adapters.RUNNABLE_ADAPTERS)
     assert {

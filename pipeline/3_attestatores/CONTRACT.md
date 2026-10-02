@@ -242,9 +242,12 @@ A declared name joins `common/witness_adapters.KNOWN_WITNESS_ADAPTER_NAMES` and
 its binding joins `witness_adapters.RUNNABLE_ADAPTERS`; a configured chair with
 no binding is refused by name.
 
-Each binding carries four operations and the grammar's facts:
+Each binding carries five operations and the grammar's facts:
 
 - `prompt` frames the request;
+- `parse` reads one native response into its text (the fixture declaration
+  check reads declared answers through it, or through `fixture_parse` where the
+  fixture's bytes are not the vendor grammar);
 - `retain` records the raw bytes and the exact model view, parsing them through
   `feeding.retain_model_view`;
 - `present(context, presentation)` returns the closed `presented` block;
