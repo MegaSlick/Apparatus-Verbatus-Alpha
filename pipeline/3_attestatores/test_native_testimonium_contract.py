@@ -115,7 +115,6 @@ def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
         ),
         presented=presented,
         observed=observed,
-        testimonium_id="art_0123456789abcdef",
     )
 
     assert record["payload"] == raw.decode("utf-8")

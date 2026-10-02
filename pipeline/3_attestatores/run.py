@@ -579,6 +579,12 @@ def validate_page_testimonium_payload(
     payload: Any, *, testimonium_id: str | None = None
 ) -> dict[str, Any]:
     """The page-record seam is closed before publication and on later reads."""
+    _validate_stage_payload(payload)
+    return validate_shared_page_testimonium_payload(payload, testimonium_id=testimonium_id)
+
+
+def _validate_stage_payload(payload: Any) -> None:
+    """The page-record checks this stage adds to the shared schema."""
     if isinstance(payload, dict):
         for reference in payload.get("raw_response_refs", []):
             validate_raw_response_ref(reference)
@@ -586,7 +592,6 @@ def validate_page_testimonium_payload(
         validate_retained_response_pairing(payload)
         if problem := _confidence_problem(payload.get("witness_reported")):
             raise SchemaRefusal(problem)
-    return validate_shared_page_testimonium_payload(payload, testimonium_id=testimonium_id)
 
 
 def require_accounted_unrecordable_channel(record: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -1153,7 +1158,6 @@ def page_testimonium_payload(
     attempt: Attempt,
     presented: dict[str, Any],
     observed: list[dict[str, Any]],
-    testimonium_id: str,
     page_edge_overshoots: list[dict[str, Any]] | None = None,
     raw_response_refs: list[dict[str, str]] | None = None,
     adapter_metadata: dict[str, str] | None = None,
@@ -1189,8 +1193,6 @@ def page_testimonium_payload(
         unit_call_refs=unit_call_refs,
         serving_call_ref=attempt.serving_call_ref,
     )
-    validate_page_testimonium_payload(record, testimonium_id=testimonium_id)
-    validate_page_record_facts(record, attempt.outcome)
     return record
 
 
@@ -1213,7 +1215,14 @@ def validate_page_record_facts(payload: dict[str, Any], outcome: str) -> None:
 
 
 def _seal_page_testimonium(context, **fields: Any) -> None:
-    """Publish a page record only once it passes the check every reader applies to it."""
+    """Publish a page record only once it passes the check every reader applies to it.
+
+    Validated once, as the envelope `publish` will write: the stage's own checks,
+    then the shared record validator, which closes the payload schema itself.
+    `publish` builds that same envelope again from the same fields.
+    """
+    _validate_stage_payload(fields["payload"])
+    validate_page_record_facts(fields["payload"], fields["outcome"])
     validate_page_testimonium_record(context, context.envelope(kind="page-testimonium", **fields))
     context.publish(kind="page-testimonium", **fields)
 
@@ -1240,7 +1249,6 @@ def publish_page_testimonium(
     attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
     page_subject_id = page_subject(context, page_ordinal, page_ids=page_ids)
     page_attempt = attempt_id(page_subject_id, f"read:{chair}", ordinal)
-    page_artifact_id = artifact_id(ATTESTATORES, "page-testimonium", page_subject_id, page_attempt)
     presented: dict[str, Any] = {}
     adapter = None
     if attempted:
@@ -1269,7 +1277,6 @@ def publish_page_testimonium(
         attempt=attempt,
         presented=presented,
         observed=observed,
-        testimonium_id=page_artifact_id,
         # Absent for a page never presented: no box was reported to reject.
         page_edge_overshoots=edge_overshoots if presented else None,
         raw_response_refs=response_refs,
@@ -1961,9 +1968,6 @@ def publish_detector_page_testimonium(
         )
     page_subject_id = page_subject(context, page_ordinal, page_ids=page_ids)
     page_attempt_id = attempt_id(page_subject_id, f"read:{chair}", ordinal)
-    page_artifact_id = artifact_id(
-        ATTESTATORES, "page-testimonium", page_subject_id, page_attempt_id
-    )
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
     capabilities = witness_adapters.declared_format_capabilities(adapter)
     if not served:
@@ -2001,7 +2005,6 @@ def publish_detector_page_testimonium(
             attempt=attempt,
             presented={},
             observed=[],
-            testimonium_id=page_artifact_id,
         )
         inputs: list[dict[str, str]] = [] if census is None else [census]
     else:
@@ -2035,7 +2038,6 @@ def publish_detector_page_testimonium(
             attempt=attempt,
             presented=presentations[0],
             observed=observed,
-            testimonium_id=page_artifact_id,
             raw_response_refs=raw_refs,
             presentations=presentations,
             unit_captures=[a.native_capture for _r, _p, a in served],
