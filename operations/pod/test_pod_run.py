@@ -96,6 +96,7 @@ class PreflightedActions(FakeActions):
                         "attestator_2",
                         "attestator_3",
                         "perlector",
+                        "reconstructor",
                     )
                 ],
                 # The record detector runs in-process: a verified cache, no smoke read.
@@ -246,6 +247,10 @@ def _run_argv(
     if not ws.models_config.exists():
         ws.models_config.parent.mkdir(parents=True, exist_ok=True)
         ws.models_config.write_bytes((ROOT / "config" / "models.toml").read_bytes())
+    reconstruction = ws.repository / "config" / "reconstruction.toml"
+    if not reconstruction.exists():
+        reconstruction.parent.mkdir(parents=True, exist_ok=True)
+        reconstruction.write_bytes((ROOT / "config" / "reconstruction.toml").read_bytes())
     return [
         "--report-path",
         str(report_path or ws.volume / "pod-run-report.json"),
@@ -1111,7 +1116,34 @@ def test_big_models_maps_to_perlector_through_armarium(tmp_path: Path, monkeypat
         "--to",
         "armarium",
     ]
-    assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == ["perlector"]
+    # The selection runs the Coniector, which asks its chair: preflight checks it too.
+    assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == ["perlector", "reconstructor"]
+
+
+@pytest.mark.parametrize("mode", ["on", "off"])
+def test_a_selection_through_the_coniector_preflights_its_chair_only_when_it_asks(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str], mode: str
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    argv = _run_argv(ws, extra=("--stage", "coniector", "--dry-run"))
+    reconstruction = ws.repository / "config" / "reconstruction.toml"
+    text = reconstruction.read_text(encoding="utf-8")
+    assert 'mode = "on"' in text
+    reconstruction.write_text(text.replace('mode = "on"', f'mode = "{mode}"'), encoding="utf-8")
+    clock = Clock()
+
+    code = main(
+        argv,
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=_never_called,
+    )
+
+    assert code == EXIT_DRY_RUN
+    roles = json.loads(capsys.readouterr().out)["bootstrap"]["preflight_roles"]
+    assert roles == (["reconstructor"] if mode == "on" else [])
 
 
 def test_a_full_run_held_before_its_export_closes_without_paid_idle_time(tmp_path: Path) -> None:

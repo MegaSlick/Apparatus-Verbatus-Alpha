@@ -307,6 +307,10 @@ orchestrator and records it in the report. `--stage` runs one boundary, `--from`
 selects Door through Attestatores on a cheap card; `--models big` resumes Perlector
 through Armarium on a big card, after verifying this run's sealed Attestatores
 stage on the volume before bootstrap. The two model toggles use the same range validation.
+A selection preflights only the chairs its stages use: the Designator's, the witnesses,
+the Perlector, and the Coniector's `reconstructor` when `config/reconstruction.toml`
+has the stage ask it (`mode = "on"`); the run is refused unless each has green
+PREFLIGHT evidence.
 Any range is the orchestrator's semi mode, which stops at the first held stage. In every
 mode, auto included, a run whose Recensor holds anything stops there, before Archetypus
 and Armarium, after running the Coniector when the selection includes it

@@ -141,6 +141,7 @@ from common.chairs.models import ChairIdentity, is_witness_role
 from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import SEAL_PREDECESSORS
+from common.reconstruction import load_reconstruction_policy
 from common.runtree.store import RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import (
@@ -587,6 +588,18 @@ class RunPlan:
                 f"--models-config {self.models_config} cannot name selected chairs: {error}",
                 report_path=self.report_path,
             ) from error
+        if "coniector" in selected:
+            # The orchestrator reads the checkout's own reconstruction setting.
+            reconstruction = self.repository / "config" / "reconstruction.toml"
+            try:
+                mode = load_reconstruction_policy(reconstruction).mode
+            except ContractError as error:
+                raise RunRefusal(
+                    f"{reconstruction} cannot say whether the Coniector asks its chair: {error}",
+                    report_path=self.report_path,
+                ) from error
+            if mode == "on":
+                roles.add("reconstructor")
         if "attestatores" in selected:
             roles.update(role for role in configured if is_witness_role(role))
         if configured_only:
