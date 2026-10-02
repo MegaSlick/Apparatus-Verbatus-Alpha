@@ -1,5 +1,6 @@
-# R5b Pass-C audit policy.  Its values are sealed into every run, and every
-# page-reading records the audit as not run (`common/perlector_audit.py`).
+# The Perlector audit policy: how many audit rounds one page reading may run.
+# Its values are sealed into every run, and every page-reading records the audit
+# as not run (`common/perlector_audit.py`).
 #
 # `pipeline/4_perlector/audit.py` validates the policy: `round_cap` is bounded by
 # `absolute_round_cap`, a cap above `default_round_cap` needs an approval

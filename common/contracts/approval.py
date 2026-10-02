@@ -67,9 +67,9 @@ FINDINGS: Final = (
 REVIEW_FIELDS: Final = frozenset({"run_id", "scope", "page_id", "decision", "finding"})
 
 # Bounds make a planted object a named refusal, not an unbounded allocation.  Together
-# they keep the largest valid record, fully escaped, below the Perlector's
-# `MAX_SAMPLING_APPROVAL_RECEIPT_BYTES` read bound, so no valid approval is unreadable
-# there (`pipeline/4_perlector/test_sampling_approval_attacks.py` pins it).
+# they keep the largest valid record, fully escaped, below the run tree's record read
+# bound (`common.runtree.store.MAX_RECORD_READ_BYTES`), so no valid approval is
+# unreadable there (`common/contracts/test_contracts_approval.py` pins it).
 MAX_APPROVAL_SUBJECTS: Final = 384
 MAX_APPROVAL_SUBJECT_BYTES: Final = 1024
 MAX_APPROVAL_REASON_BYTES: Final = 256 * 1024

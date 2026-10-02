@@ -19,6 +19,7 @@ page_max_tokens = 12288
 # reconstructions not made. The value sent is cut to the context the prompt
 # leaves (`common/request_capacity.py`, `reconstruction_answer_bound`).
 answer_max_tokens = 8192
+
 [chandra_native_inference]
 # Exact upstream inference recipe admitted only for Attestator 1's Chandra
 # page-reading route. This is not an ambient retry or sampling switch.

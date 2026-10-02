@@ -18,12 +18,12 @@ from __future__ import annotations
 from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Final
 
+from common import page_edges
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.stages import RECENSOR
 from common.page_path import (
     DOUBT_MARKS_MALFORMED,
     ENTRY_NO_READABLE_TEXT,
-    FIRST_READING,
     READING_CLASS,
     UNPLACED,
 )
@@ -586,22 +586,15 @@ def review_notes(review: Mapping[str, Any]) -> list[dict[str, Any]]:
 
 
 def act_entries_by_page(acts: Sequence[Mapping[str, Any]]) -> dict[int, list[Mapping[str, Any]]]:
-    """Each page's first-reading `act` entries: the only entries a page break can join.
+    """Each page's first-reading `act` entries in answer order: the only entries a page
+    break can join.
 
     A page's edges are its first reading's. An entry the re-ask recovered
-    (`reading_attempt` 2) was asked about ids alone, with no continuation
-    flag allowed, so its place in page order is not established: it never
-    moves a page's act edge and is never a side of a page break.
+    (`common.page_edges.REASK_READING`) was asked about ids alone, with no
+    continuation flag allowed, so its place in page order is not established:
+    it never moves a page's act edge and is never a side of a page break.
     """
-    entries: dict[int, list[Mapping[str, Any]]] = {}
-    for act in acts:
-        if (
-            act["n"] is not None
-            and act["kind"] == "act"
-            and act["reading_attempt"] == FIRST_READING
-        ):
-            entries.setdefault(act["page_ordinal"], []).append(act)
-    return entries
+    return page_edges.act_entries_by_page(page_edges.first_attempt_entries(acts))
 
 
 def page_breaks(
@@ -610,18 +603,18 @@ def page_breaks(
     """Every page break an answer flags, as `(subject, payload)`, in page order.
 
     The last first-reading `act` entry of page p and the first of page p+1
-    (`act_entries_by_page`) are the break's two sides; either side's flag records the break, `agreed` only when both
-    say so, and a break whose sides disagree is still recorded. A side with no
-    `act` entry (a page not read, blank, of `other` entries only, or outside
-    the run) is null. The link holds no unit and joins nothing.
+    (`common.page_edges.page_edges`) are the break's two sides; either side's
+    flag records the break, `agreed` only when both say so, and a break whose
+    sides disagree is still recorded. A side with no `act` entry (a page not
+    read, blank, of `other` entries only, or outside the run) is null. The link holds no unit and joins nothing.
     """
-    entries = act_entries_by_page(acts)
+    edges = page_edges.page_edges(page_edges.first_attempt_entries(acts))
     ordinals = sorted(pages)
     links = []
     for left in range(ordinals[0] - 1, ordinals[-1] + 1):
         right = left + 1
-        last = max(entries.get(left, []), key=lambda act: act["n"], default=None)
-        first = min(entries.get(right, []), key=lambda act: act["n"], default=None)
+        last = edges[left][1] if left in edges else None
+        first = edges[right][0] if right in edges else None
         to_next = last is not None and last["continues_to_next_page"] is True
         from_previous = first is not None and first["continues_from_previous_page"] is True
         if not (to_next or from_previous):
@@ -688,7 +681,7 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
             row = counted.get(act_id) if isinstance(act_id, str) else None
             if row is None or row["act_key"] != act_key:
                 raise FatalAccounting(f"{what} names a reading this run does not count")
-            if row["reading_attempt"] != FIRST_READING:
+            if row["reading_attempt"] != page_edges.FIRST_READING:
                 raise FatalAccounting(
                     f"{what} names {act_key}, an entry the re-ask recovered; a page's edges "
                     "are its first reading's, and a recovered entry is never a side of a break"

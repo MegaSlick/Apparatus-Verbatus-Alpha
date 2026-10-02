@@ -25,6 +25,7 @@ from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
 from common.imaging import decode_grayscale_png
 from proof.build_fixture import (
+    _REASK_FIRST_READINGS,
     ACTS,
     CHURRO_PAGE_RESPONSES,
     PAGE_TESTIMONY,
@@ -405,6 +406,25 @@ def test_every_scenario_declares_the_reader_s_answer_to_every_page_it_reads(skel
         for ordinal in pages:
             if (name, ordinal) not in refused:
                 assert (name, ordinal) in answers, f"{name} has no answer for page {ordinal}"
+
+
+def test_every_reask_and_reconstruction_answer_is_read_by_a_declared_scenario(skeleton):
+    """These rows are read only for the running scenario, so a misspelt scenario
+    or a missing or repeated row would sit in the fixture unread."""
+    names = {name for name, _departure in SCENARIOS}
+    reask = [(row["scenario"], row["page_ordinal"]) for row in skeleton["page_reask_answer"]]
+    reconstruction = [
+        (row["scenario"], row["page_ordinal"], row["pages_are_consecutive"])
+        for row in skeleton["reconstruction_answer"]
+    ]
+    assert {scenario for scenario, _page in reask} <= names
+    assert {scenario for scenario, _page, _consecutive in reconstruction} <= names
+    assert len(set(reask)) == len(reask)
+    assert len(set(reconstruction)) == len(reconstruction)
+    # `reask-off` reads with the re-ask off, and `reask-cited-forgot` leaves nothing
+    # unaccounted for, so neither asks again; every other one re-asks page 1.
+    asked = set(_REASK_FIRST_READINGS) - {"reask-off", "reask-cited-forgot"}
+    assert {(scenario, 1) for scenario in asked} <= set(reask)
 
 
 def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(

@@ -34,6 +34,7 @@ from common.native_witness import (
     validate_presented_page_binding,
 )
 from common.page_feed import SCHEMA as PAGE_FEED_SCHEMA
+from common.page_path import PAGE_FEED_KIND
 from common.runtree.store import RunTree
 from common.stage import latest_attempt
 from operations.spike_perlector.models import OutputStatus
@@ -663,9 +664,9 @@ def page_feeds(tree: ReadOnlyRunTree) -> dict[int, dict[str, Any]]:
     """Every Perlector page feed of a page-read run, by page ordinal."""
     feeds: dict[int, dict[str, Any]] = {}
     for entry in tree.build_manifest(PERLECTOR)["artifacts"]:
-        if entry["kind"] != PAGE_FEED:
+        if entry["kind"] != PAGE_FEED_KIND:
             continue
-        feed = tree.read_artifact(PERLECTOR, PAGE_FEED, entry["artifact_id"])["payload"]
+        feed = tree.read_artifact(PERLECTOR, PAGE_FEED_KIND, entry["artifact_id"])["payload"]
         ordinal = feed.get("page_ordinal")
         if feed.get("schema") != PAGE_FEED_SCHEMA or not isinstance(ordinal, int):
             raise Refusal(

@@ -51,6 +51,7 @@ from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 from common.imaging import Bounds
 from common.page_answer import grammar_problems
+from common.page_edges import FIRST_READING, REASK_READING
 from common.page_witness_units import DETECTION_LETTERS
 from common.perlector_audit import TRUNCATION_COMPLETE
 from common.residual_ink import CoverageAuditPolicy, residual_ink_from_runs
@@ -718,7 +719,12 @@ def _combined(
     k = len(first["entries"])
     added = (
         [
-            {**entry, "n": k + entry["n"], "reading_attempt": 2, "reading_n": entry["n"]}
+            {
+                **entry,
+                "n": k + entry["n"],
+                "reading_attempt": REASK_READING,
+                "reading_n": entry["n"],
+            }
             for entry in sorted(validated["entries"], key=lambda entry: entry["n"])
         ]
         if stands
@@ -1533,7 +1539,7 @@ def page_accounting(
     for entry in entries:
         classification = (
             reask["entry_truncation"].get(entry["reading_n"])
-            if entry.get("reading_attempt") == 2
+            if entry.get("reading_attempt") == REASK_READING
             else entry_truncation.get(entry["n"])
         )
         if classification is None:
@@ -1992,7 +1998,7 @@ def _reask_rule(
         {"code": REASK_SET_ASIDE, "id": identifier, "reason": combined["set_aside"][identifier]}
         for identifier in sorted(combined["set_aside"], key=id_key)
     ]
-    added = [entry for entry in entries if entry.get("reading_attempt") == 2]
+    added = [entry for entry in entries if entry.get("reading_attempt") == REASK_READING]
     findings += [
         {"code": REASK_UNPLACED, "n": entry["n"], "reading_n": entry["reading_n"]}
         for entry in added
@@ -2003,7 +2009,7 @@ def _reask_rule(
         for entry in added
         if not normalized_text(entry["text"])
     ]
-    first = [entry for entry in entries if entry.get("reading_attempt") != 2]
+    first = [entry for entry in entries if entry.get("reading_attempt") != REASK_READING]
     findings += _reask_duplicates(first, added, units, policy)
     return _rule(findings)
 
@@ -2162,7 +2168,7 @@ def _record(
         "entries": [
             {
                 "n": entry["n"],
-                "reading_attempt": entry.get("reading_attempt", 1),
+                "reading_attempt": entry.get("reading_attempt", FIRST_READING),
                 "reading_n": entry.get("reading_n", entry["n"]),
                 "kind": entry["kind"],
                 "cited_ids": sorted(entry["cited_ids"], key=id_key),

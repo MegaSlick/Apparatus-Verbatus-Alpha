@@ -14,7 +14,7 @@ def _policy(tmp_path, share: str) -> dict:
     return load_review_policy(path)
 
 
-def test_the_committed_share_is_the_ruled_one_in_fifty():
+def test_the_committed_share_is_one_in_fifty():
     assert load_review_policy()["max_held_page_share"] == "1/50"
 
 

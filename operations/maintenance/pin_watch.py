@@ -51,7 +51,8 @@ def _pins(config_paths: tuple[Path, ...], vendor_path: Path) -> list[Pin]:
     ):
         repo = str(constants[repository]).removeprefix("github.com/")
         pins.append(Pin(repo, str(constants[revision]), "github"))
-    return pins
+    # Chairs that share one repository at one pin are watched once.
+    return list(dict.fromkeys(pins))
 
 
 def _upstream(pin: Pin, get_json: Callable[[str], Mapping[str, object]]) -> tuple[str, str]:

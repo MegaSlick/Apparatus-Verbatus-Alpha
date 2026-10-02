@@ -96,8 +96,9 @@ def make_receipt(*, endpoint="http://fixture.invalid/seat", started_at="2026-08-
         license_note="fixture only",
     )
     details = ServingDetails(
-        # A pin, not a label: `receipts.py` refuses a mutable name here on the same
-        # grounds `config.py` refuses a branch name for the model revision.
+        # A pin, not a label: `common/chairs/receipts.py` refuses a mutable name here
+        # on the same grounds `common/chairs/config.py` refuses a branch name for the
+        # model revision.
         tokenizer_revision="a" * 64,
         seed=0,
         context_cap=4096,
