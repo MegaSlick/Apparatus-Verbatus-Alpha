@@ -2724,7 +2724,7 @@ def _verify_rereads(
         )
         current = (payload, reference, plans, accounting, measured["holds"], list(supersedes))
         supersedes.append(reference)
-    assert current is not None
+    _require(current is not None, f"{what} has no operator re-read to stand on")
     return current
 
 
