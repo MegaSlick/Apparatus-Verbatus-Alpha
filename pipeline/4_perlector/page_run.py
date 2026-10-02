@@ -1169,7 +1169,8 @@ def _left_to_send(
     """
     context, hooks = state.context, state.hooks
     left, unrecorded, replies = 0, [], None
-    for page, request in ((page, request) for page in prepared for request in select(page)):
+    chosen = [(page, request) for page in prepared for request in select(page)]
+    for page, request in chosen:
         if not _sends(state, page, request):
             continue
         markers = hooks.sent_records(
