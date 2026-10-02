@@ -51,6 +51,10 @@ source, even by accident, stops at once; that is an incident (below).
 4. **Check and record.** The host runs the leak scan and the tests, and appends an
    entry to [LOG.md](LOG.md).
 
+Commits are marked by what they are. Build-side work carries `Clean-room: build`. The
+host's record commits (briefs, log entries, saved finding reports, incident notes)
+carry `Clean-room: record`, so the two kinds can be told apart in the history.
+
 ### What the build side may use
 
 - the slice's spec and the passed finding reports named in its brief;
@@ -116,7 +120,7 @@ build side.
 distinctive to ScanTailor or ScanTailor Advanced source, never the identifiers
 themselves. A reading-side agent produces them, answering with digests only. Both the
 report check and the leak scan refuse any word whose digest is on the list. The file
-starts empty.
+starts empty, and until it is filled this rule refuses nothing.
 
 ## Automatic checks, and what they cannot do
 
@@ -127,10 +131,21 @@ nothing was copied; together with the record they show the process was followed.
   or backticks; code tokens (double colons, arrows, include lines, `def` or `class`
   followed by a name and a bracket or colon); braces; lines ending in a semicolon;
   file names with source extensions; paths; links other than doi.org; line-number
-  references; or a word on the deny-hash list. It also requires the template's four
+  references; the ScanTailor Advanced maintainer's account name; or a word on the
+  deny-hash list. Outside the Source paragraph (the Source line and the lines wrapped
+  under it, where a citation may need such names) it also refuses the shapes of code
+  names and statements: a word with a capital inside it after a small letter (like
+  "estimateSkew"), a word with an underscore inside it (including upper-case constant
+  names), a word directly followed by an opening bracket (except a plural like
+  "page(s)"), "word = word", and "word.word(". It also requires the template's four
   sections, in order and not empty, a source line under the technique, and the reader
   brief's sha256. Plain English "class" is allowed; "line" followed by a digit is not,
   so lines of text on a page are numbered in words.
+
+  What still passes: plain numbers (a constant copied from their code looks like any
+  other number), steps of a method written out in plain English (pseudocode in words
+  looks like prose), and anything spelled to avoid the patterns. The script only stops
+  accidents; the host's reading of every report that passes is the real check.
 - **Leak scan** (`scan.py`). The host runs `python3 -m pagekit.cleanroom.scan` over
   pagekit's tracked files. It looks for the wording of a GPL licence header, a
   copyright header line (a line that begins with the notice) naming either project or
@@ -141,16 +156,24 @@ nothing was copied; together with the record they show the process was followed.
   matches only links that go into a repository (a file, a folder, a clone or raw
   address), so the credit links are allowed.
 - **Commit gate.** The pre-commit hook runs `python3 -m pagekit.cleanroom.gate`: the
-  HOLD rule below, and the leak scan over the staged pagekit files. A hook can be
-  skipped, so CI repeats both on every pull request; CI is the real gate.
-- **Agent settings** (`.claude/settings.json`). Refuse shell commands whose text
-  mentions the projects' names or the ScanTailor Advanced maintainer's account name,
-  in the spellings listed there. A command can be spelled to slip past them. Web
-  fetches can only be refused for a whole site, and refusing all of GitHub would stop
-  ordinary work, so web fetches of their repositories are not refused by settings:
-  they are forbidden by every builder brief, and builders work without network.
+  HOLD rule below, the rule that an incident note is never deleted, and the leak scan
+  over the staged pagekit files. A hook can be skipped (for example with
+  `--no-verify`), so CI repeats all of it on every pull request: it replays the HOLD
+  rule over every commit the branch adds, checks that every incident note on main is
+  still there with its text unchanged, and scans the tree. CI is the real gate.
+- **Agent settings** (`.claude/settings.json`). Refuse shell commands that look like
+  a download of the projects' source: a command containing curl, wget, git clone or
+  git fetch together with a project name or the ScanTailor Advanced maintainer's
+  account name, in the spellings listed there. Ordinary work that only names the
+  projects (removing the old bridge files, running tests, writing commit messages) is
+  not refused. A command can be spelled to slip past these patterns; they catch
+  accidents. Web fetches can only be refused for a whole site, and refusing all of
+  GitHub would stop ordinary work, so web fetches of their repositories are not refused
+  by settings: they are forbidden by every builder brief, and builders work without
+  network.
 - **The record tests.** CI fails if LOG.md's entries on main were changed rather than
-  added to, if a saved brief does not match its logged sha256, or if HOLD exists.
+  added to, if a saved brief or finding report is not named in the log by its sha256,
+  if a saved brief does not match its own header, or if HOLD exists.
 
 ### The release review
 
@@ -181,7 +204,10 @@ that is more than an idiom every image program uses is an incident.
 4. **Record and resume.** The lead's decision is written on the note's `Decision:`
    line, and HOLD is removed in the same commit. The commit gate refuses to remove
    HOLD without an incident note carrying a decision, and CI fails if any incident
-   note lacks one once HOLD is gone.
+   note lacks one once HOLD is gone. These checks can only see that a `Decision:` line
+   of the right form is there (purge, minor breach or false flag); they cannot tell
+   whether the lead wrote it. That rests on the host recording only the lead's own
+   answer. Once on main, an incident note is only ever added to.
 
 ## The record
 
@@ -195,7 +221,8 @@ that is more than an idiom every image program uses is an incident.
   brief. The sha256 of the text after the marker is in the header and in the log, and
   a test checks they match.
 - `specs/`, `findings/` and `incidents/` hold the specs, passed finding reports and
-  incident notes. Refused reports are not kept.
+  incident notes. Refused reports are not kept. Every saved finding report's sha256
+  is in the log, and a test checks it.
 
 ## What the record can and cannot show
 
@@ -211,13 +238,23 @@ lawyer, not for this process.
 ## Known pre-existing item
 
 Before pagekit existed, this repository gained a bridge to ScanTailor Advanced's
-project files: `operations/operator/scantailor_worker.py`,
-`operations/triage/scantailor_bridge.py`, `operations/triage/scantailor_project.py`,
-and the ScanTailor sections of `pipeline/0_triage/CONTRACT.md`. Their own comments say
-they were written from reading ScanTailor Advanced's project-file writer. They are not
-part of pagekit, they are outside pagekit's allowed sources, and no build-side agent
-may open them. Other open pull requests remove them; they must be gone before any
-reading-side session starts. Log entry 0003 records this.
+project files:
+
+- `operations/operator/scantailor.py`, `operations/operator/scantailor_worker.py`,
+  `operations/operator/test_scantailor.py` and
+  `operations/operator/test_scantailor_pin_writes.py`;
+- `operations/triage/scantailor_bridge.py`, `operations/triage/scantailor_project.py`
+  and `operations/triage/test_scantailor_bridge.py`;
+- the ScanTailor sections of `pipeline/0_triage/CONTRACT.md`.
+
+Related text also appears in `common/contracts/stages.py`,
+`pipeline/0_triage/manifest.py` and `pipeline/1_exemplar/CONTRACT.md`. The bridge's own
+comments say it was written from reading ScanTailor Advanced's project-file writer. It
+is not part of pagekit and is outside pagekit's allowed sources. No build-side agent
+may read any of these files. The bridge must be removed from main before pagekit
+merges; other open pull requests remove it. Log entry 0003 records the item, and log
+entry 0009 records that an earlier form of this rule was broken and why it was
+rewritten.
 
 ## Credit
 
