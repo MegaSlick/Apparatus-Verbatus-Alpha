@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +26,12 @@ def test_pod_run_and_bootstrap_main_load_no_managed_route_module() -> None:
         "print(json.dumps(sorted(sys.modules)))\n"
     )
     result = subprocess.run(
-        [sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, check=True
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=True,
     )
     loaded = json.loads(result.stdout)
 
