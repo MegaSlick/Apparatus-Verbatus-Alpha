@@ -1386,13 +1386,13 @@ def test_a_selection_whose_records_did_not_come_home_is_held_not_complete(
     assert not (ws.volume / "pod-run-report-hold.json").exists()
 
 
-def test_an_operator_re_read_runs_on_the_pod_as_a_selection_from_the_perlector(
+def test_a_selection_from_the_perlector_passes_through_to_the_orchestrator_on_the_pod(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """A person's page re-ask is read on the pod through the existing route, never a new one.
-
-    The run resumes from the Perlector, which reads the page again; nothing
-    here starts a pod: the provider and the runner are fakes.
+    """The route a person's page re-ask is read on: pod_run hands a selection from the
+    Perlector to the orchestrator unchanged. It checks the pass-through only; the
+    re-read itself is the Perlector's (`pipeline/test_operator_reread_e2e.py`). The
+    provider and the runner are fakes.
     """
     ws = _prepared(tmp_path)
     monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
