@@ -83,6 +83,28 @@ otherwise build one entry per page with no ceiling at all."""
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
 _COPY_CHUNK_BYTES = 1024 * 1024
 FETCH_RUN_PREFIX = DEFAULT_RUNS_DIRECTORY
+# A resumed range always ends at the export, so its outcome is this run's.
+RESUME_TO_STAGE: Final = "armarium"
+# The orchestrator flags that bind a run, reused when it is resumed.
+_RESUMED_BINDINGS: Final = frozenset(
+    {
+        "--scenario",
+        "--fixture",
+        "--submission-folder",
+        "--submission-manifest",
+        "--data-gate-policy",
+        "--models-config",
+        "--serving-recipes-config",
+        "--witness-context-config",
+    }
+)
+
+
+def resume_command(run_id: str, from_stage: str) -> str:
+    """The one spelling of the command that resumes `run_id` from `from_stage`."""
+    return f"`verbatus run --run-id {run_id} --from {from_stage} --to {RESUME_TO_STAGE}`"
+
+
 """Where `pod_run` writes run trees on the volume, relative to its mount:
 `<volume>/runs/<run_id>` (`operations/pod/pod_run.py`, `DEFAULT_RUNS_DIRECTORY`)."""
 FETCH_EVIDENCE_PREFIX = "preflight"
@@ -699,15 +721,33 @@ class OperatorSurface:
     ) -> RunOutcome:
         """Run or resume `run_id` under this state's run root.
 
-        `from_stage` and `to_stage` resume only that inclusive range of stages,
-        as the orchestrator's `--from`/`--to` do: after a review decision, from
-        the Recensor (or the Perlector for a page re-ask) to the Armarium.
+        `from_stage` and `to_stage` resume a run this state started over only
+        that inclusive range of stages, ending at the Armarium: after a review
+        decision, from the Recensor (or the Perlector for a page re-ask). A
+        resume runs under the bindings the run was started with (scenario,
+        fixture, real submission and roster), read from its own latest run
+        receipt, never under the defaults of the command that resumes it.
         """
         if (from_stage is None) != (to_stage is None):
             raise OperatorError(
                 ErrorCode.INVALID_COMMAND,
                 detail="--from and --to name a range of stages together; give both or neither",
             )
+        if to_stage is not None and to_stage != RESUME_TO_STAGE:
+            raise OperatorError(
+                ErrorCode.INVALID_COMMAND,
+                detail=f"a resumed range ends at {RESUME_TO_STAGE}, so its export is this run's",
+            )
+        if from_stage is not None:
+            recorded = self._recorded_bindings(run_id)
+            scenario = recorded.get("--scenario", scenario)
+            fixture = recorded.get("--fixture", fixture)
+            submission_folder = recorded.get("--submission-folder")
+            submission_manifest = recorded.get("--submission-manifest")
+            data_gate_policy = recorded.get("--data-gate-policy")
+            models_config = recorded.get("--models-config")
+            serving_recipes_config = recorded.get("--serving-recipes-config")
+            witness_context_config = recorded.get("--witness-context-config")
         if submission_folder is None:
             for flag, value in (
                 ("--submission-manifest", submission_manifest),
@@ -762,7 +802,12 @@ class OperatorSurface:
             opening = f"Run started. {extent}"
         self.present(opening)
 
-        if submission_folder is None:
+        if from_stage is not None:
+            self.present(
+                f"Working next: stages {from_stage} through {to_stage} only, under the run's "
+                "recorded bindings; every earlier stage's sealed records are reused."
+            )
+        elif submission_folder is None:
             self.present("Working next: reading each page; the page reading names its acts.")
             self.present(
                 "This rehearsal uses declared synthetic pages, not an uploaded real submission."
@@ -1530,6 +1575,28 @@ class OperatorSurface:
                 },
             },
             descriptor_action="advance",
+        )
+
+    def _recorded_bindings(self, run_id: str) -> dict[str, str]:
+        """The run's bindings as its latest run receipt's orchestrator argv names them."""
+
+        for _path, payload in reversed(self._run_receipts()):
+            if payload.get("run_id") != run_id:
+                continue
+            argv = payload.get("argv")
+            if not isinstance(argv, list) or not all(isinstance(word, str) for word in argv):
+                break
+            return {
+                flag: argv[index + 1]
+                for index, flag in enumerate(argv[:-1])
+                if flag in _RESUMED_BINDINGS
+            }
+        raise OperatorError(
+            ErrorCode.INVALID_COMMAND,
+            detail=(
+                f"no readable run receipt for run {run_id} is saved in this state, so its "
+                "bindings are unknown; --from resumes a run this state started"
+            ),
         )
 
     def _prior_run_state(self, run_id: str) -> str | None:

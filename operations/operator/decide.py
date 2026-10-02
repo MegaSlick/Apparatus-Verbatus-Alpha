@@ -47,6 +47,8 @@ from common.page_review import override_refusal, published_units
 from common.review_decisions import CURRENT, published_basis, review_decision
 from common.runtree.store import RunTree
 
+from .surface import resume_command
+
 # What each decision asks of the run after it, in words.
 NEXT_STEP: Final = {
     "release": "the Recensor clears the unit's own holds",
@@ -271,8 +273,8 @@ def _next_step(run_id: str, reread: bool) -> str:
         else "applies every decision recorded"
     )
     return (
-        f"Next: resume the run from the {stage}, which {what}: `verbatus run --run-id {run_id} "
-        f"--from {stage} --to armarium` for a run this tool started, or `pod_run --from "
+        f"Next: resume the run from the {stage}, which {what}: "
+        f"{resume_command(run_id, stage)} for a run this tool started, or `pod_run --from "
         f"{stage} --to armarium` on its pod. It goes on to export once nothing is held, or "
         "once `verbatus advance --stage recensor` passes its new seal."
     )

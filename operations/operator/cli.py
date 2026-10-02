@@ -38,7 +38,7 @@ from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .ingest import ingest
 from .records import DescriptorStore, ReceiptStore
 from .review import ReadOnlyRun
-from .surface import DEFAULT_FIXTURE, OperatorSurface, bounded_tail
+from .surface import DEFAULT_FIXTURE, RESUME_TO_STAGE, OperatorSurface, bounded_tail
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -530,7 +530,10 @@ def build_parser() -> PlainParser:
         help="resume only from this stage (with --to), e.g. recensor after a review decision",
     )
     run.add_argument(
-        "--to", dest="to_stage", choices=STAGES, help="the last stage of the --from range"
+        "--to",
+        dest="to_stage",
+        choices=(RESUME_TO_STAGE,),
+        help="the last stage of the --from range: always armarium",
     )
     run.add_argument("--scenario", default="happy", help="declared fixture scenario")
     run.add_argument("--fixture", default=DEFAULT_FIXTURE, help="declared fixture name")

@@ -5263,22 +5263,37 @@ def test_a_held_run_resumes_from_the_recensor_through_verbatus_run(tmp_path: Pat
     assert not (run_root / "resumed" / "7_armarium").exists()
 
     advance_held_recensor(run_root, "resumed")
+    messages: list[str] = []
+    surface._present = messages.append
+    # No scenario is named: the resume runs under the one the run was started with.
     with pytest.raises(OperatorError) as partial:
-        surface.run(
-            run_id="resumed", scenario="page-review", from_stage="recensor", to_stage="armarium"
-        )
+        surface.run(run_id="resumed", from_stage="recensor", to_stage="armarium")
 
     assert partial.value.code is ErrorCode.RUN_HELD
     assert (run_root / "resumed" / "7_armarium").is_dir()
     argv = surface.receipts.read(surface._descriptor_receipt("run"))["payload"]["argv"]
+    assert argv[argv.index("--scenario") + 1] == "page-review"
     assert argv[argv.index("--from") :][:4] == ["--from", "recensor", "--to", "armarium"]
+    assert any("stages recensor through armarium only" in line for line in messages)
 
 
-def test_a_resume_range_names_both_of_its_ends(tmp_path: Path) -> None:
-    with pytest.raises(OperatorError) as refused:
-        _surface(tmp_path).run(run_id="half", from_stage="recensor")
-    assert refused.value.code is ErrorCode.INVALID_COMMAND
-    assert "give both or neither" in (refused.value.detail or "")
+def test_a_resume_range_names_both_ends_ends_at_the_export_and_needs_a_known_run(
+    tmp_path: Path,
+) -> None:
+    surface = _surface(tmp_path)
+    for kwargs, refusal in (
+        ({"from_stage": "recensor"}, "give both or neither"),
+        ({"from_stage": "recensor", "to_stage": "recensor"}, "ends at armarium"),
+        ({"from_stage": "recensor", "to_stage": "armarium"}, "no readable run receipt"),
+    ):
+        with pytest.raises(OperatorError) as refused:
+            surface.run(run_id="unknown", **kwargs)
+        assert refused.value.code is ErrorCode.INVALID_COMMAND
+        assert refusal in (refused.value.detail or "")
+    with pytest.raises(OperatorError, match="not understood"):
+        cli.build_parser().parse_args(
+            ["run", "--run-id", "r", "--from", "recensor", "--to", "recensor"]
+        )
     parsed = cli.build_parser().parse_args(
         ["run", "--run-id", "r", "--from", "recensor", "--to", "armarium"]
     )

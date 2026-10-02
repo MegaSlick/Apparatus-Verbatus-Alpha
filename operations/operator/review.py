@@ -36,6 +36,7 @@ from common.stage import latest_attempt
 
 from .advance import ADVANCE_SUBJECT_PREFIX, verify_sealed_boundary
 from .errors import ErrorCode, OperatorError
+from .surface import resume_command as resume_from_command
 
 MAX_REVIEW_ITEM_BYTES = 16 * 1024 * 1024
 REVIEW_PAGE_SIZE = 500
@@ -1146,7 +1147,7 @@ def _next_action(
                 f"{census} The run stopped at a held Recensor, before the Archetypus: nothing "
                 "is established or exported until the holds below are decided. Record review "
                 "decisions about them in this run, then resume it from the Recensor ("
-                f"{resume_command[:-1]} --from recensor --to armarium`{resume_where}, or "
+                f"{resume_from_command(run_id, RECENSOR)} for a run this tool started, or "
                 "`pod_run --from recensor --to armarium` on its pod); the Recensor applies "
                 "every decision and the run continues "
                 "once nothing is held. To export with holds remaining, `advance` the Recensor "
