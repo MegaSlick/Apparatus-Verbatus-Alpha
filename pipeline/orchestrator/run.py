@@ -77,6 +77,7 @@ from common.stage import (  # noqa: E402
     DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
+    EXIT_FATAL,
     EXIT_HELD,
     EXIT_RUN_HALTED,
     RUN_MODES,
@@ -833,7 +834,9 @@ def main() -> int:
         _require_sealed_hard_failure_policy(tree.read_run(), hard_failure_policy)
         halted = checkpoint(args, "resume-preflight", hard_failure_policy)
         if halted is not None:
-            return _halt(args, halted)
+            exit_code = _halt(args, halted)
+            _record_stop(args, exit_code, exported=False)
+            return exit_code
     return run_sequence(args, names, mode, hard_failure_policy)
 
 
@@ -869,6 +872,12 @@ def _require_fresh_stop_record(args: argparse.Namespace) -> None:
             f"--stop-record {record_path} already exists; it must be new, so no earlier "
             "invocation's stop can be read as this one's"
         )
+    parent = record_path.parent
+    if not parent.is_dir() or not os.access(parent, os.W_OK | os.X_OK):
+        raise ContractError(
+            f"--stop-record {record_path} cannot be written: {parent} is not an existing, "
+            "writable directory"
+        )
 
 
 def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) -> None:
@@ -877,8 +886,10 @@ def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) ->
     `exported` is true only when this invocation ran the Armarium and proved its
     sealed export; a stop before it is false whatever export the tree already
     holds. `systemic` is the systemic alarm line this invocation printed, at a
-    held Recensor or at an advance past it, or null. A record that cannot be written is said on stderr and leaves the run
-    as it is: its caller reads no record as no export.
+    held Recensor or at an advance past it, or null. A record that cannot be
+    written is refused: its caller cannot tell a stop with no alarm from one
+    whose alarm was lost, so the invocation ends fatally and the refusal names
+    the exit, export and alarm the record would have held.
     """
     record = getattr(args, "stop_record", None)
     if record is None:
@@ -895,7 +906,11 @@ def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) ->
     try:
         atomic_create(Path(record), json.dumps(payload, sort_keys=True).encode("utf-8"))
     except OSError as error:
-        print(f"run {args.run_id}: the stop record could not be written: {error}", file=sys.stderr)
+        raise ContractError(
+            f"run {args.run_id}: the stop record {record} could not be written ({error}); "
+            f"this invocation ended with exit {exit_code}, exported {exported}, systemic "
+            f"{payload['systemic']!r}"
+        ) from error
 
 
 def _require_declared_fixture(args: argparse.Namespace) -> None:
@@ -945,8 +960,20 @@ def run_sequence(
     mode: str,
     hard_failure_policy: dict,
 ) -> int:
-    """Run one contiguous selection (`_drive`), and record how it ended (`_record_stop`)."""
-    exit_code, exported = _drive(args, names, mode, hard_failure_policy)
+    """Run one contiguous selection (`_drive`), and record how it ended (`_record_stop`).
+
+    A refusal raised inside the selection is recorded too, as a fatal stop with
+    no export and whatever systemic alarm was already printed, and then raised
+    as it was.
+    """
+    try:
+        exit_code, exported = _drive(args, names, mode, hard_failure_policy)
+    except ContractError:
+        try:
+            _record_stop(args, EXIT_FATAL, exported=False)
+        except ContractError as lost:
+            print(f"{type(lost).__name__}: {lost}", file=sys.stderr)
+        raise
     _record_stop(args, exit_code, exported=exported)
     return exit_code
 

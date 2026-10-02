@@ -11,6 +11,7 @@ tests in `test_orchestrator_acceptance.py` use to reach a state the fixture
 cannot.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -121,9 +122,13 @@ def test_more_than_two_hard_failures_halts_the_run_at_the_next_checkpoint(tmp_pa
     forge_perlector_failure(tree, "fake-hard-failure-subject-2")
     forge_perlector_failure(tree, "fake-hard-failure-subject-3")
 
-    result = orchestrate(root, "r", "happy")
+    stop = tmp_path / "stop.json"
+    result = orchestrate(root, "r", "happy", stop_record=stop)
     assert result.returncode == 4, result.stdout + result.stderr
     assert "halted at the" in result.stdout
+    # The halt before the sequence still says how this invocation ended.
+    record = json.loads(stop.read_text(encoding="utf-8"))
+    assert (record["exit_code"], record["exported"], record["systemic"]) == (4, False, None)
     # Durable failure evidence already on the tree is found before any stage is
     # re-entered, so the halt is the resume preflight's, not a later boundary's.
     # What happens when the third failure appears *during* a run is a different

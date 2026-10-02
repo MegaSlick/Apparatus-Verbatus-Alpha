@@ -293,9 +293,27 @@ def test_the_guard_topic_is_read_from_its_file_and_refused_when_malformed(tmp_pa
     path.write_text("a-topic_1\n", encoding="utf-8")
     assert guard_topic(tmp_path) == "a-topic_1"
     assert notify_environment("a-topic_1")["NTFY_TOPIC"] == "a-topic_1"
-    for bad in ("two words", "x" * 65, "a/slash", "x" * 4096):
+    for bad in ("x" * 65, "a/slash", "tab\there", "x" * 4096):
         path.write_text(bad, encoding="utf-8")
         assert guard_topic(tmp_path) is None
+
+
+def test_the_guard_topic_is_normalised_as_the_pod_guard_normalises_it(tmp_path) -> None:
+    """Spaces, CRs and newlines go wherever they stand, as `tr -d ' \\r\\n'` removes them."""
+    from .models import POD_GUARD_DIRECTORY
+    from .notify_hooks import guard_topic
+
+    path = tmp_path / POD_GUARD_DIRECTORY / "ntfy_topic"
+    path.parent.mkdir(parents=True)
+    longest = "x" * 64
+    for written, read in (
+        (longest + "\r\n", longest),
+        (" a-topic_1 \r\n", "a-topic_1"),
+        ("two words\n", "twowords"),
+        ("split\r\nline\n", "splitline"),
+    ):
+        path.write_bytes(written.encode("utf-8"))
+        assert guard_topic(tmp_path) == read
 
 
 def test_the_guard_topic_is_read_only_from_a_regular_file_never_a_link_or_fifo(tmp_path) -> None:

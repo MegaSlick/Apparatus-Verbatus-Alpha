@@ -366,7 +366,7 @@ pod.
 selection ending before Armarium also closes promptly, and so does a full run held
 before its export (a held Attestatores or Recensor), since it waits for a person, not
 for the card. A full `complete`, or a `held` run whose orchestrator says in this
-invocation's own stop record (`--stop-record`, read by `exported_this_invocation`) that
+invocation's own stop record (`--stop-record`, read by `read_stop_record`) that
 it reached a sealed export, holds toward the hard deadline (paid idle time); an export
 an earlier pass left in the run tree never counts. It holds
 because the pod timer
@@ -415,14 +415,19 @@ stops with more of its pages held than its sealed review policy allows, or expor
 that stop on a person's advance, sends the systemic alarm as a `decision`
 (`notify_systemic`), the line `verbatus run --notify` sends for a run on this computer.
 `pod_run` reads the alarm from its invocation's stop record (`systemic`) and records the
-line and the notification outcome in its run report; without `--notify` the line is
+line and the notification outcome in its run report. If the orchestrator ran but left no
+usable stop record (`read_stop_record`), whether it sounded the alarm is unknown. The
+report then names why in `stop_record_problem` and `detail`, and such a run is never
+`complete`: a complete exit is recorded as `held`, which returns at once like any run
+that held before its export. Without `--notify` the line is
 recorded and nothing is sent. `notify.sh` reads its topic only from `NTFY_TOPIC` or the
 repository's `private/ntfy.conf`, which a pod does not have, so `pod_run` reads the
 guard's topic file (`/workspace/private/.pod_guard/ntfy_topic`, below) and passes it as
 `NTFY_TOPIC` in that one notification command's environment, beside only `PATH` and the
-proxy and CA variables it needs (`notify_hooks.guard_topic`, `notify_environment`). The
+proxy and CA variables it needs (`notify_hooks.guard_topic`, `notify_environment`). Like
+the guard, it removes every space, carriage return and newline before checking the topic. The
 topic is never an argument, a log or report line, or part of the orchestrator's or a
-stage's environment. With no readable topic file, a link or anything but a regular file there, nothing runs at all, so `notify.sh` never falls back to a topic of the checkout's; the report says "not sent (no guard topic)".
+stage's environment. With no readable topic file, a link or anything but a regular file there, nothing runs at all, so `notify.sh` never falls back to a topic of the checkout's; the report says "not sent (no usable guard topic)".
 
 ### `spend.py`: prices, ceilings and the typed phrase
 

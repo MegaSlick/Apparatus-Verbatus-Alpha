@@ -148,9 +148,12 @@ def notify_systemic(*, run_id: str, alarm_line: str, runner: Runner = client.run
 # pings (`operations/pod/README.md`, "Arming the ping").
 GUARD_TOPIC_NAME: Final = "ntfy_topic"
 _TOPIC: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
-# A topic is at most 64 characters and a line ending; a file larger than that is
-# not one, and nothing more is read.
-_TOPIC_READ_BYTES: Final = 65
+# Removed from anywhere in the file before the format check, as the pod guard
+# removes them before it pings.
+_TOPIC_IGNORED_BYTES: Final = b" \r\n"
+# A topic is at most 64 characters; this leaves room for a line ending and stray
+# spaces. A file larger than this is not a topic, and nothing more is read.
+_TOPIC_READ_BYTES: Final = 256
 # What the notification command needs from the pod's environment to reach the
 # service; nothing else of it is passed on.
 _PASSED_ENVIRONMENT: Final = (
@@ -160,7 +163,7 @@ _PASSED_ENVIRONMENT: Final = (
     "SSL_CERT_FILE",
     "CURL_CA_BUNDLE",
 )
-NO_GUARD_TOPIC: Final = "no guard topic"
+NO_GUARD_TOPIC: Final = "no usable guard topic"
 
 
 def guard_topic_path(volume_mount: Path) -> Path:
@@ -171,7 +174,9 @@ def guard_topic_path(volume_mount: Path) -> Path:
 def guard_topic(volume_mount: Path) -> str | None:
     """The topic the pod guard pings, read from its file on the volume; None when absent or bad.
 
-    Only a regular file, never followed through a link, and at most
+    Spaces, carriage returns and newlines are removed wherever they stand, as
+    the pod guard removes them, and what is left must be a topic. Only a
+    regular file, never followed through a link, and at most
     `_TOPIC_READ_BYTES` of it, so a FIFO, a device or a huge file cannot hold
     the run.
     """
@@ -187,7 +192,7 @@ def guard_topic(volume_mount: Path) -> str | None:
         finally:
             os.close(descriptor)
         topic = (
-            data[:_TOPIC_READ_BYTES].decode("utf-8").strip()
+            data.translate(None, _TOPIC_IGNORED_BYTES).decode("utf-8")
             if len(data) <= _TOPIC_READ_BYTES
             else ""
         )
@@ -215,7 +220,7 @@ def notify_systemic_from_guard(
     *, run_id: str, alarm_line: str, volume_mount: Path, runner_factory: RunnerFactory
 ) -> NotifyOutcome:
     """The systemic alarm sent with the pod guard's topic, in the notification command's own
-    environment; with no guard topic nothing runs, so the command never falls back to a
+    environment; with no usable guard topic nothing runs, so the command never falls back to a
     topic of the checkout's."""
     topic = guard_topic(volume_mount)
     if topic is None:

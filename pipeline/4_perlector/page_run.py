@@ -1140,24 +1140,36 @@ def publish_page_accounting(
 # --- the pass ---------------------------------------------------------------------
 
 
-def _left_to_send(state: _PagePass, prepared: list[_Page], select) -> int:
+def _first_requests(page: _Page) -> list[_Request]:
+    """The page's first reading request, if it has one."""
+    return [] if page.first is None else [page.first]
+
+
+def _reask_requests(page: _Page) -> list[_Request]:
+    """The page's re-ask request, if it has one."""
+    return [] if page.reask is None else [page.reask]
+
+
+def _reread_requests(page: _Page) -> list[_Request]:
+    """Every operator re-read request of the page, each of which the window sends."""
+    return list(page.rereads)
+
+
+def _left_to_send(
+    state: _PagePass, prepared: list[_Page], select: Callable[[_Page], list[_Request]]
+) -> int:
     """Count the requests this live pass will send, refusing any it cannot resume.
 
-    `select` gives a page's requests of this phase: one, a list (a page's
-    operator re-reads, every one of which the window may send), or `None`.
-    Only a request it sends is counted: not one already read, not one it does
-    not ask, and not one over the row's capacity. A request with sends and no
-    reading is sent again only when no retained reply could be its answer.
+    `select` gives a page's requests of this phase. Only a request it sends is
+    counted: not one already read, not one it does not ask, and not one over
+    the row's capacity. A request with sends and no reading is sent again only
+    when no retained reply could be its answer.
     """
     context, hooks = state.context, state.hooks
     left, unrecorded, replies = 0, [], None
-    chosen = [
-        (page, request)
-        for page in prepared
-        for request in (lambda found: found if isinstance(found, list) else [found])(select(page))
-    ]
+    chosen = [(page, request) for page in prepared for request in select(page)]
     for page, request in chosen:
-        if request is None or not _sends(state, page, request):
+        if not _sends(state, page, request):
             continue
         markers = hooks.sent_records(
             context, page.page_id, page_key(page.ordinal), request.ordinal, request.pass_name
@@ -1218,7 +1230,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
     )
     prepared = [_prepare(state, ordinal, page_id) for ordinal, page_id in pages.items()]
     if state.live and state.chair_present:
-        left = _left_to_send(state, prepared, lambda page: page.first)
+        left = _left_to_send(state, prepared, _first_requests)
         if left:
             _refuse_past_phase_deadline(state, left, "reading")
     print(f"perlector: reading {len(pages)} pages whole", file=sys.stderr)
@@ -1229,7 +1241,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
     planned = [page for page in prepared if page.reask is not None]
     if planned:
         if state.live:
-            left = _left_to_send(state, planned, lambda page: page.reask)
+            left = _left_to_send(state, planned, _reask_requests)
             if left:
                 _refuse_past_phase_deadline(state, left, "re-asking")
         print(f"perlector: re-asking {len(planned)} pages", file=sys.stderr)
@@ -1245,7 +1257,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
     if not reread:
         return
     if state.live:
-        left = _left_to_send(state, reread, lambda page: list(page.rereads))
+        left = _left_to_send(state, reread, _reread_requests)
         if left:
             _refuse_past_phase_deadline(state, left, "re-reading")
     print(f"perlector: reading {len(reread)} pages again as a person asked", file=sys.stderr)
@@ -1254,6 +1266,6 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         (
             _job(state, page, request, partial(_finish_reread, state, page, request))
             for page in reread
-            for request in page.rereads
+            for request in _reread_requests(page)
         ),
     )

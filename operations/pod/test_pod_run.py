@@ -132,15 +132,16 @@ class RecordedRunner:
     # fake that left neither would make every run read as one whose records
     # never came home.
     write_transcript: bool = True
+    transcript_text: bytes = b"orchestrator output\n"
     journal_run_id: str | None = "first-real-run"
     journal_entries: int = 1
     transcript_failure: str | None = None
     dropped_bytes: int = 0
     tick_liveness: bool = True
-    # The stop record the orchestrator leaves at its `--stop-record`: None
-    # leaves none, a bool says whether this invocation reached its export, and
-    # text is written as it stands.
-    stop: bool | str | None = None
+    # The stop record the orchestrator leaves at its `--stop-record`, as a real
+    # one does on every return: a bool says whether this invocation reached its
+    # export, text is written as it stands, and None leaves none.
+    stop: bool | str | None = False
     # The systemic alarm line the stop record names, or None.
     systemic: str | None = None
     calls: list[tuple[list[str], Path, dict[str, str]]] = field(default_factory=list)
@@ -157,7 +158,7 @@ class RecordedRunner:
             raise OSError("no such interpreter")
         transcript = Path(transcript)
         if self.write_transcript:
-            transcript.write_bytes(b"orchestrator output\n")
+            transcript.write_bytes(self.transcript_text)
         if self.journal_run_id is not None:
             journal = transcript.with_name(
                 transcript.name.replace("-transcript.log", "-timings.json")
@@ -1142,45 +1143,45 @@ def test_a_full_run_held_before_its_export_closes_without_paid_idle_time(tmp_pat
     assert not (ws.volume / "pod-run-report-hold.json").exists()
 
 
+def _stop_reading(path: Path, **fields: object) -> dict | None:
+    """This run's stop record as `read_stop_record` reads it, written with `fields`."""
+    record = {
+        "schema": STOP_RECORD_SCHEMA,
+        "run_id": "r",
+        "exit_code": 3,
+        "exported": False,
+        "systemic": None,
+        **fields,
+    }
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return pod_run.read_stop_record(path, "r", 3)[0]
+
+
 def test_only_this_invocations_stop_record_saying_exported_reads_as_reached(
     tmp_path: Path,
 ) -> None:
     """The stop record decides, never an export the run tree already holds."""
     path = tmp_path / "stop.json"
-
-    def stop(**fields: object) -> bool:
-        record = {"schema": STOP_RECORD_SCHEMA, "run_id": "r", "exit_code": 3, **fields}
-        path.write_text(json.dumps(record), encoding="utf-8")
-        return pod_run.exported_this_invocation(path, "r")
-
-    assert pod_run.exported_this_invocation(path, "r") is False  # no record
-    assert stop(exported=True) is True  # its sealed export
-    assert stop(exported=False) is False  # held at the Recensor, whatever the tree holds
-    assert stop(exported=True, run_id="another") is False
-    assert stop(exported=True, schema="another.v1") is False
+    assert pod_run.read_stop_record(path, "r", 3)[0] is None  # no record
+    assert _stop_reading(path, exported=True)["exported"] is True  # its sealed export
+    # Held at the Recensor, whatever the tree holds.
+    assert _stop_reading(path, exported=False)["exported"] is False
+    assert _stop_reading(path, exported=True, run_id="another") is None
+    assert _stop_reading(path, exported=True, schema="another.v1") is None
     for unreadable in ("[]", "{", "\udcff", "null"):
         path.write_text(unreadable, encoding="utf-8", errors="surrogateescape")
-        assert pod_run.exported_this_invocation(path, "r") is False, unreadable
+        assert pod_run.read_stop_record(path, "r", 3)[0] is None, unreadable
 
 
 def test_only_this_invocations_stop_record_names_its_systemic_alarm(tmp_path: Path) -> None:
     path = tmp_path / "stop.json"
     line = "run r: systemic: 1 of 2 page(s) are held after the recensor"
-
-    def stop(**fields: object) -> str | None:
-        record = {"schema": STOP_RECORD_SCHEMA, "run_id": "r", "exit_code": 3, **fields}
-        path.write_text(json.dumps(record), encoding="utf-8")
-        return pod_run.systemic_this_invocation(path, "r")
-
-    assert pod_run.systemic_this_invocation(path, "r") is None  # no record
-    assert stop(systemic=line) == line
-    assert stop(systemic=None) is None
-    assert stop(systemic="  ") is None
-    assert stop(systemic=3) is None
-    assert stop(systemic=line, run_id="another") is None
-    assert stop(systemic=line, schema="orchestrator-stop.v1") is None
-    path.write_text("{", encoding="utf-8")
-    assert pod_run.systemic_this_invocation(path, "r") is None
+    assert _stop_reading(path, systemic=line)["systemic"] == line
+    assert _stop_reading(path, systemic=None)["systemic"] is None
+    for unusable in ("  ", 3):
+        assert _stop_reading(path, systemic=unusable) is None
+    assert _stop_reading(path, systemic=line, run_id="another") is None
+    assert _stop_reading(path, systemic=line, schema="orchestrator-stop.v1") is None
 
 
 class NotifyRecorder:
@@ -1308,7 +1309,10 @@ def test_with_no_guard_topic_the_pod_sends_nothing_and_says_so(tmp_path: Path) -
     )
     assert code == EXIT_HELD
     assert (notify.environments, notify.calls) == ([], [])
-    assert _report(ws)["systemic_notification"] == "Phone notification: not sent (no guard topic)."
+    assert (
+        _report(ws)["systemic_notification"]
+        == "Phone notification: not sent (no usable guard topic)."
+    )
 
 
 def test_a_run_with_no_systemic_alarm_sends_no_decision(tmp_path: Path) -> None:
@@ -1353,6 +1357,118 @@ def test_a_full_held_run_holds_only_on_its_own_stop_record(
     assert report["state"] == "held" and report["finished_at"] is not None
     assert report["held_to_hard_deadline"] is holding
     assert clock.seconds == (4.0 if holding else 0)
+    assert ("stop_record_problem" in report) is (not isinstance(stop, bool))
+
+
+@pytest.mark.parametrize(
+    ("returncode", "code", "state", "opening"),
+    [
+        (orchestrator.EXIT_COMPLETE, EXIT_HELD, "held", "the orchestrator completed, but"),
+        (pod_run.ORCHESTRATOR_FATAL, EXIT_FAILED, "failed", "the orchestrator exited EXIT_FATAL"),
+    ],
+    ids=["exit-complete", "exit-fatal"],
+)
+def test_a_run_whose_stop_record_was_not_written_is_never_complete_and_says_why(
+    tmp_path: Path, returncode: int, code: int, state: str, opening: str
+) -> None:
+    """A systemic run whose stop record could not be written: the orchestrator ends
+    fatally (`_record_stop`), and even an exit of complete with no record is not
+    called complete, since the alarm it sounded is unknown. With a guard topic
+    and --notify, nothing is sent: the alarm is read from the record alone, never
+    from the transcript that printed it."""
+    alarm = "run first-real-run: systemic: 1 of 2 page(s) are held after the recensor"
+    ws = _prepared(tmp_path)
+    topic = ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic"
+    topic.parent.mkdir(parents=True, exist_ok=True)
+    topic.write_text("a-topic\n", encoding="utf-8")
+    clock = Clock()
+    notify = NotifyRecorder()
+    result = main(
+        _run_argv(ws, extra=("--notify",)),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        # The alarm was printed, so it is in the transcript, but no record names it.
+        runner=RecordedRunner(
+            returncode=returncode, stop=None, transcript_text=f"{alarm}\n".encode("utf-8")
+        ),
+        notify_runner=notify.factory,
+    )
+    assert result == code
+    report = _report(ws)
+    assert report["state"] == state
+    assert report["stop_record_problem"] == "the orchestrator left no stop record"
+    assert report["detail"].startswith(opening)
+    assert "whether this invocation sounded the systemic alarm" in report["detail"]
+    assert report["held_to_hard_deadline"] is False
+    assert clock.seconds == 0
+    assert (notify.environments, notify.calls) == ([], [])
+    assert "systemic" not in report and "systemic_notification" not in report
+    if state == "held":
+        assert report["hold_detail"].startswith("the run held, and with no usable stop record")
+
+
+def test_a_stop_record_of_another_exit_never_holds_the_pod(tmp_path: Path) -> None:
+    """`exported` decides the paid hold only when the record's exit is the one observed."""
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    record = {
+        "schema": STOP_RECORD_SCHEMA,
+        "run_id": "first-real-run",
+        "exit_code": orchestrator.EXIT_COMPLETE,
+        "exported": True,
+        "systemic": None,
+    }
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=orchestrator.EXIT_HELD, stop=json.dumps(record)),
+    )
+    assert code == EXIT_HELD
+    report = _report(ws)
+    assert report["stop_record_problem"] == (
+        "the orchestrator's stop record says exit 0, but it exited 3"
+    )
+    assert report["held_to_hard_deadline"] is False
+    assert clock.seconds == 0
+
+
+def test_a_stop_record_is_usable_only_as_this_runs_v2_record(tmp_path: Path) -> None:
+    path = tmp_path / "stop.json"
+    good = {"schema": STOP_RECORD_SCHEMA, "run_id": "r", "exit_code": 3, "exported": False}
+
+    def read(text: str) -> tuple[dict | None, str | None]:
+        path.write_text(text, encoding="utf-8", errors="surrogateescape")
+        return pod_run.read_stop_record(path, "r", 3)
+
+    assert read(json.dumps({**good, "systemic": None})) == ({**good, "systemic": None}, None)
+    assert pod_run.read_stop_record(tmp_path / "none.json", "r", 3) == (
+        None,
+        "the orchestrator left no stop record",
+    )
+    for text, reason in (
+        ("{", "could not be read"),
+        ("\udcff", "could not be read"),
+        ("null", "is not an orchestrator-stop.v2 record"),
+        (json.dumps({**good, "systemic": None, "run_id": "x"}), "is not run r's"),
+        (json.dumps(good), "no usable exported or systemic field"),
+        (json.dumps({**good, "systemic": "  "}), "no usable exported or systemic field"),
+        (json.dumps({**good, "systemic": None, "exported": 1}), "no usable"),
+        (json.dumps({**good, "systemic": None, "exit_code": None}), "no integer exit_code"),
+        (json.dumps({**good, "systemic": None, "exit_code": "3"}), "no integer exit_code"),
+        (json.dumps({**good, "systemic": None, "exit_code": True}), "no integer exit_code"),
+        (
+            json.dumps({k: v for k, v in {**good, "systemic": None}.items() if k != "exit_code"}),
+            "no integer exit_code",
+        ),
+        (json.dumps({**good, "systemic": None, "exit_code": 0}), "says exit 0, but it exited 3"),
+    ):
+        record, problem = read(text)
+        assert record is None and reason in problem, text
 
 
 def test_a_held_selection_closes_without_paid_idle_time(tmp_path: Path, monkeypatch) -> None:

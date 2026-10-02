@@ -2006,7 +2006,7 @@ def test_with_the_perlector_chair_absent_every_page_is_fed_and_accounted_not_rea
 
 
 def test_the_deadline_count_takes_every_operator_re_read_the_window_may_send():
-    """Every request in a page's re-reads is counted, not only the last."""
+    """The live deadline count takes every operator re-read request of a page."""
     sends = []
     hooks = SimpleNamespace(sent_records=lambda *args: sends.append(args) or [])
     state = SimpleNamespace(context=SimpleNamespace(), hooks=hooks, live=True)
@@ -2019,5 +2019,5 @@ def test_the_deadline_count_takes_every_operator_re_read_the_window_may_send():
             page_run._Request(4, page_run.PAGE_REREAD_PASS),
         ],
     )
-    assert page_run._left_to_send(state, [page], lambda page: list(page.rereads)) == 2
+    assert page_run._left_to_send(state, [page], page_run._reread_requests) == 2
     assert [args[3] for args in sends] == [3, 4]
