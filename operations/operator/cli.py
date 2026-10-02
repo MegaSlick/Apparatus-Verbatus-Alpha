@@ -1511,11 +1511,20 @@ def _decide_with_confirmation(
 
     from . import decide as decide_module
 
-    if (decision == "edit") != (text_file is not None) or (note is not None and decision != "edit"):
+    if decision == "edit" and text_file is None:
         raise OperatorError(
             ErrorCode.DECISION_REFUSED,
-            detail="an edit names its corrected text with --text-file, and only an edit "
-            "takes --text-file or --note",
+            detail="an edit names its corrected text with --text-file",
+        )
+    if decision != "edit" and text_file is not None:
+        raise OperatorError(
+            ErrorCode.DECISION_REFUSED,
+            detail=f"only an edit takes --text-file; a {decision} names no text",
+        )
+    if decision != "edit" and note is not None:
+        raise OperatorError(
+            ErrorCode.DECISION_REFUSED,
+            detail=f"only an edit takes --note; a {decision} carries no note",
         )
     text = None
     if text_file is not None:
