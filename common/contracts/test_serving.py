@@ -67,6 +67,7 @@ def test_chair_call_record_field_set_is_closed_and_exact() -> None:
             "parse_problem",
             "capacity",
             "sampling_effective",
+            "usage_reconciliation",
         }
     )
     assert RETIRED_CALL_RECORD_SCHEMAS == {

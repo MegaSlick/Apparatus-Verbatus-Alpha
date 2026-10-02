@@ -43,6 +43,9 @@ CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
         # The request-capacity record checked before the request was built, or
         # null (readiness probe, smoke path).
         "capacity",
+        # The engine's reported token counts beside the capacity record's, with
+        # named disagreements, or null when either side is missing.
+        "usage_reconciliation",
     }
 )
 

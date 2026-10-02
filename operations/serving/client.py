@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Callable, Mapping, Protocol, cast
+from typing import Any, Callable, Mapping, Protocol, cast
 
 from common.chair_wire import chandra_wire_fields
 from common.chairs.models import ChairIdentity
@@ -639,6 +639,7 @@ class ChairClient:
                 "capacity": (
                     thawed_json(request.capacity) if request.capacity is not None else None
                 ),
+                "usage_reconciliation": None,
                 "transport_problem": transport_problem,
             }
             if native_dispatch is not None:
@@ -739,6 +740,7 @@ class ChairClient:
             # caller passed: the canonical writer holds dicts and lists, and
             # what is written is exactly the evidence the request carried.
             "capacity": thawed_json(request.capacity) if request.capacity is not None else None,
+            "usage_reconciliation": usage_against_capacity(usage, request.capacity),
         }
         if native_dispatch is not None:
             record["native_attempt_intent_ref"] = native_intent_ref
@@ -779,6 +781,75 @@ class ChairClient:
             launch_audit_ref=dict(handle.audit_reference),
             parse_problem=parse_problem,
         )
+
+
+def usage_against_capacity(
+    usage: Mapping[str, object] | None, capacity: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """The engine's own token counts set beside the counts the request was admitted on.
+
+    A served image is resized by the engine under the row's pixel bounds; if
+    those bounds never reached it, the page is read at another scale and the
+    reading itself shows no error. The engine's reported image-token count is
+    the one place that shows, so each call record carries the comparison and
+    names what disagrees. It is evidence only: the reading is kept as it came.
+
+    `None` when there is nothing to compare: no capacity record (readiness
+    probe, smoke) or no parsed usage (the parser keeps usage only when its three
+    counters are counts). Findings:
+    - `image-tokens-differ`: the engine counted other image tokens than the
+      resize arithmetic predicts.
+    - `image-tokens-unreported`: the request carried images and the engine gave
+      no per-modality count.
+    - `prompt-tokens-above-admitted`: the engine counted more prompt tokens than
+      admission allowed for, so the capacity check rested on an undercount.
+    """
+
+    if usage is None or capacity is None:
+        return None
+    expected_image = capacity.get("image_prompt_tokens")
+    text_bound = capacity.get("prompt_tokens")
+    if not _is_count(expected_image) or not _is_count(text_bound):
+        return None
+    observed_prompt = cast(int, usage["prompt_tokens"])
+    observed_image = _reported_image_tokens(usage)
+    admitted_prompt = expected_image + text_bound
+    findings = []
+    if observed_image is None:
+        if expected_image > 0:
+            findings.append("image-tokens-unreported")
+    elif observed_image != expected_image:
+        findings.append("image-tokens-differ")
+    if observed_prompt > admitted_prompt:
+        findings.append("prompt-tokens-above-admitted")
+    return {
+        "expected_image_tokens": expected_image,
+        "observed_image_tokens": observed_image,
+        "admitted_prompt_tokens": admitted_prompt,
+        "observed_prompt_tokens": observed_prompt,
+        "findings": findings,
+    }
+
+
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _reported_image_tokens(usage: Mapping[str, object]) -> int | None:
+    """vLLM's `usage.prompt_tokens_details.multimodal_tokens.image`, or None.
+
+    The engine adds it when launched with `--enable-prompt-tokens-details` and
+    the request carried an image.
+    """
+
+    details = usage.get("prompt_tokens_details")
+    if not isinstance(details, Mapping):
+        return None
+    multimodal = details.get("multimodal_tokens")
+    if not isinstance(multimodal, Mapping):
+        return None
+    value = multimodal.get("image")
+    return value if _is_count(value) else None
 
 
 def _refuse_unbuildable_request(request: ChairRequest) -> None:

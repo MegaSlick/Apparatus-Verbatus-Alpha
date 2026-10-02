@@ -115,11 +115,9 @@ from .manager import (
 )
 from .preflight import (
     ServingSmokeReader,
-    UsageReconciliation,
     assert_generation_config_key_coverage,
     assert_resized_pixels_within_trained_geometry,
     prepare_log_root,
-    reconcile_usage_against_capacity,
 )
 from .process import SubprocessLauncher
 from .residency import FileResidencyLease
@@ -5516,143 +5514,6 @@ def test_assert_generation_config_key_coverage_names_every_unaccounted_key() -> 
             vendor_generation_config=vendor,
             sent_keys=("temperature", "top_k"),
             deliberately_not_sent={"top_k": "recorded reason"},
-        )
-
-
-def test_reconcile_usage_against_capacity_within_tolerance_has_no_finding() -> None:
-    reconciled = reconcile_usage_against_capacity(
-        chair="attestator_1",
-        usage={"prompt_tokens": 6045, "completion_tokens": 10, "total_tokens": 6055},
-        expected_image_tokens=6000,
-        expected_text_tokens=45,
-        tolerance=5,
-    )
-    assert isinstance(reconciled, UsageReconciliation)
-    assert reconciled.within_tolerance
-    assert reconciled.to_finding() is None
-
-
-@pytest.mark.parametrize(
-    (
-        "chair",
-        "usage",
-        "image_tokens",
-        "text_tokens",
-        "tolerance",
-        "localized",
-        "observed_image",
-        "discrepancy",
-    ),
-    (
-        ("attestator_3", {"prompt_tokens": 5200}, 5100, 0, 5, "image", None, 100),
-        ("reader", {"prompt_tokens": 30}, 0, 4, 1, "text", None, None),
-        ("attestator_2", {"prompt_tokens": 5200}, 4059, 1024, 5, "unlocalized", None, None),
-        (
-            "attestator_2",
-            {
-                "prompt_tokens": 5183,
-                "prompt_tokens_details": {"multimodal_tokens": {"image": 4159}},
-            },
-            4059,
-            1024,
-            5,
-            "image",
-            4159,
-            None,
-        ),
-        (
-            "attestator_2",
-            {
-                "prompt_tokens": 5200,
-                "prompt_tokens_details": {"multimodal_tokens": {"image": 4059}},
-            },
-            4059,
-            1024,
-            5,
-            "text",
-            None,
-            None,
-        ),
-        (
-            "attestator_2",
-            {
-                "prompt_tokens": 5300,
-                "prompt_tokens_details": {"multimodal_tokens": {"image": 4159}},
-            },
-            4059,
-            1024,
-            5,
-            "unlocalized",
-            None,
-            None,
-        ),
-    ),
-)
-def test_reconcile_usage_against_capacity_localizes_mismatch(
-    chair: str,
-    usage: dict[str, object],
-    image_tokens: int,
-    text_tokens: int,
-    tolerance: int,
-    localized: str,
-    observed_image: int | None,
-    discrepancy: int | None,
-) -> None:
-    reconciled = reconcile_usage_against_capacity(
-        chair=chair,
-        usage=usage,
-        expected_image_tokens=image_tokens,
-        expected_text_tokens=text_tokens,
-        tolerance=tolerance,
-    )
-    finding = reconciled.to_finding()
-    assert finding is not None
-    assert finding["kind"] == "usage-capacity-mismatch"
-    assert finding["localized_to"] == localized
-    if observed_image is not None:
-        assert finding["observed_image_tokens"] == observed_image
-    if discrepancy is not None:
-        assert finding["discrepancy"] == discrepancy
-
-
-def test_reconcile_usage_against_capacity_ignores_a_malformed_multimodal_breakdown() -> None:
-    reconciled = reconcile_usage_against_capacity(
-        chair="attestator_2",
-        usage={"prompt_tokens": 5200, "prompt_tokens_details": {"multimodal_tokens": "image"}},
-        expected_image_tokens=4059,
-        expected_text_tokens=1024,
-        tolerance=5,
-    )
-    assert reconciled.observed_image_tokens is None
-    finding = reconciled.to_finding()
-    assert finding is not None
-    assert finding["localized_to"] == "unlocalized"
-
-
-def test_reconcile_usage_against_capacity_refuses_missing_or_malformed_usage() -> None:
-    with pytest.raises(ServingConfigurationError, match="prompt_tokens"):
-        reconcile_usage_against_capacity(
-            chair="reader",
-            usage=None,
-            expected_image_tokens=0,
-            expected_text_tokens=4,
-            tolerance=0,
-        )
-    with pytest.raises(ServingConfigurationError, match="prompt_tokens"):
-        reconcile_usage_against_capacity(
-            chair="reader",
-            usage={"prompt_tokens": "6045"},
-            expected_image_tokens=0,
-            expected_text_tokens=4,
-            tolerance=0,
-        )
-    with pytest.raises(ServingConfigurationError, match="non-negative"):
-        reconcile_usage_against_capacity(
-            chair="reader",
-            usage={"prompt_tokens": 10},
-            expected_image_tokens=-1,
-            expected_text_tokens=4,
-            tolerance=0,
         )
 
 

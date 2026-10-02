@@ -54,7 +54,7 @@ class ScriptedAnswer:
 
     content: str | None = None
     finish_reason: Any = ABSENT
-    usage: Mapping[str, int] | None = None
+    usage: Mapping[str, object] | None = None
     model: str | None = None
     status: int = 200
     body: bytes | None = None
