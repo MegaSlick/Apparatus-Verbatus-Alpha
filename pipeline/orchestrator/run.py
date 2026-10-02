@@ -833,7 +833,9 @@ def main() -> int:
         _require_sealed_hard_failure_policy(tree.read_run(), hard_failure_policy)
         halted = checkpoint(args, "resume-preflight", hard_failure_policy)
         if halted is not None:
-            return _halt(args, halted)
+            exit_code = _halt(args, halted)
+            _record_stop(args, exit_code, exported=False)
+            return exit_code
     return run_sequence(args, names, mode, hard_failure_policy)
 
 
@@ -877,8 +879,10 @@ def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) ->
     `exported` is true only when this invocation ran the Armarium and proved its
     sealed export; a stop before it is false whatever export the tree already
     holds. `systemic` is the systemic alarm line this invocation printed, at a
-    held Recensor or at an advance past it, or null. A record that cannot be written is said on stderr and leaves the run
-    as it is: its caller reads no record as no export.
+    held Recensor or at an advance past it, or null. A record that cannot be
+    written is refused: its caller cannot tell a stop with no alarm from one
+    whose alarm was lost, so the invocation ends fatally and the refusal names
+    the exit, export and alarm the record would have held.
     """
     record = getattr(args, "stop_record", None)
     if record is None:
@@ -895,7 +899,11 @@ def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) ->
     try:
         atomic_create(Path(record), json.dumps(payload, sort_keys=True).encode("utf-8"))
     except OSError as error:
-        print(f"run {args.run_id}: the stop record could not be written: {error}", file=sys.stderr)
+        raise ContractError(
+            f"run {args.run_id}: the stop record {record} could not be written ({error}); "
+            f"this invocation ended with exit {exit_code}, exported {exported}, systemic "
+            f"{payload['systemic']!r}"
+        ) from error
 
 
 def _require_declared_fixture(args: argparse.Namespace) -> None:

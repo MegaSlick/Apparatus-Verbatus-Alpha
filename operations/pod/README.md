@@ -415,7 +415,11 @@ stops with more of its pages held than its sealed review policy allows, or expor
 that stop on a person's advance, sends the systemic alarm as a `decision`
 (`notify_systemic`), the line `verbatus run --notify` sends for a run on this computer.
 `pod_run` reads the alarm from its invocation's stop record (`systemic`) and records the
-line and the notification outcome in its run report; without `--notify` the line is
+line and the notification outcome in its run report. If the orchestrator ran but left no
+usable stop record (`read_stop_record`), whether it sounded the alarm is unknown. The
+report then names why in `stop_record_problem` and `detail`, and such a run is never
+`complete`: a complete exit is recorded as `held`, which returns at once like any run
+that held before its export. Without `--notify` the line is
 recorded and nothing is sent. `notify.sh` reads its topic only from `NTFY_TOPIC` or the
 repository's `private/ntfy.conf`, which a pod does not have, so `pod_run` reads the
 guard's topic file (`/workspace/private/.pod_guard/ntfy_topic`, below) and passes it as

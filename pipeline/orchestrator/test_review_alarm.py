@@ -21,7 +21,7 @@ from common.contracts.stages import ARMARIUM
 from common.page_review import held_pages_after_review
 from common.review_policy import alarm_line, load_review_policy
 from common.runtree.store import RunTree
-from common.stage import EXIT_HELD
+from common.stage import EXIT_FATAL, EXIT_HELD
 from conftest import HELD_RECENSOR_STOP, advance_held_recensor
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -76,6 +76,19 @@ def test_the_stop_record_names_the_systemic_alarm_for_a_caller_without_the_trans
     assert result.returncode == EXIT_HELD, result.stderr
     [line] = [line for line in result.stdout.splitlines() if "systemic:" in line]
     assert json.loads(stop.read_text(encoding="utf-8"))["systemic"] == line
+
+
+def test_a_stop_record_that_cannot_be_written_ends_the_run_fatally_and_names_its_alarm(
+    tmp_path,
+):
+    """A caller reading no record cannot tell no alarm from a lost one, so none is not a stop."""
+    stop = tmp_path / "no-such-directory" / "stop.json"
+    result = _orchestrate(tmp_path / "runs", "--stop-record", str(stop))
+    assert result.returncode == EXIT_FATAL, result.stderr
+    assert not stop.exists()
+    [line] = [line for line in result.stdout.splitlines() if "systemic:" in line]
+    assert "the stop record" in result.stderr and "could not be written" in result.stderr
+    assert f"exit {EXIT_HELD}, exported False, systemic {line!r}" in result.stderr
 
 
 def test_a_held_share_at_the_sealed_limit_raises_no_alarm(tmp_path):

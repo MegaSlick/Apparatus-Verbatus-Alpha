@@ -259,15 +259,30 @@ _ORCHESTRATOR_EXITS = {
 _HOLD_AFTER_EXITS = frozenset({EXIT_COMPLETE, EXIT_HELD})
 
 
-def _stop(stop_record: Path, run_id: str) -> dict | None:
-    """This invocation's stop record for this run, or None when it is missing or unreadable."""
+def read_stop_record(stop_record: Path, run_id: str) -> tuple[dict | None, str | None]:
+    """This invocation's stop record for this run, or None and why it cannot be used.
+
+    A usable record is this run's `STOP_RECORD_SCHEMA` record, with `exported` true
+    or false and `systemic` an alarm line or null. Anything else -- no record, one
+    that cannot be read, another run's, or one of another shape -- leaves both
+    the export and the alarm unknown, and the reason says which.
+    """
     try:
         record = json.loads(stop_record.read_text(encoding="utf-8"))
-        if record.get("schema") == STOP_RECORD_SCHEMA and record.get("run_id") == run_id:
-            return record
-    except Exception:
-        pass
-    return None
+    except FileNotFoundError:
+        return None, "the orchestrator left no stop record"
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        return None, f"the orchestrator's stop record could not be read ({error})"
+    if not isinstance(record, dict) or record.get("schema") != STOP_RECORD_SCHEMA:
+        return None, f"the orchestrator's stop record is not an {STOP_RECORD_SCHEMA} record"
+    if record.get("run_id") != run_id:
+        return None, f"the orchestrator's stop record is not run {run_id}'s"
+    systemic = record.get("systemic", "")
+    if not isinstance(record.get("exported"), bool) or not (
+        systemic is None or (isinstance(systemic, str) and systemic.strip())
+    ):
+        return None, "the orchestrator's stop record has no usable exported or systemic field"
+    return record, None
 
 
 def systemic_this_invocation(stop_record: Path, run_id: str) -> str | None:
@@ -275,12 +290,11 @@ def systemic_this_invocation(stop_record: Path, run_id: str) -> str | None:
 
     It sounds at a Recensor held on more of the run's pages than its sealed
     review policy allows, and at a person's advance past that stop, so the run
-    reaches its export still carrying it. Read like `exported_this_invocation`:
-    no record, an unreadable one, or a line that is not text reads as none.
+    reaches its export still carrying it. None as well when the record is not
+    usable (`read_stop_record`), which `main` reports as missing stop evidence.
     """
-    record = _stop(stop_record, run_id)
-    line = record.get("systemic") if record is not None else None
-    return line if isinstance(line, str) and line.strip() else None
+    record, _ = read_stop_record(stop_record, run_id)
+    return None if record is None else record["systemic"]
 
 
 def exported_this_invocation(stop_record: Path, run_id: str) -> bool:
@@ -289,12 +303,12 @@ def exported_this_invocation(stop_record: Path, run_id: str) -> bool:
     A run held before its export (at a held Attestatores or Recensor) waits for
     a person, and the pod must not bill while it waits. The orchestrator writes
     its stop record to a path made fresh for this invocation, so an export an
-    earlier pass sealed never reads as this run's. No record, an unreadable one,
-    or another run's is read as not reached, whatever goes wrong reading it: the
-    worst that costs is a pod closed early.
+    earlier pass sealed never reads as this run's. A record that is not usable
+    (`read_stop_record`) is read as not reached: the worst that costs is a pod
+    closed early.
     """
-    record = _stop(stop_record, run_id)
-    return record is not None and record.get("exported") is True
+    record, _ = read_stop_record(stop_record, run_id)
+    return record is not None and record["exported"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -1754,8 +1768,13 @@ def main(
         failure_detail = f"the orchestrator could not start: {error}"
         transcript_failure = None
         transcript_dropped_bytes = 0
-    exported = exported_this_invocation(stop_record, plan.run_id)
-    systemic = systemic_this_invocation(stop_record, plan.run_id)
+    stop, stop_problem = read_stop_record(stop_record, plan.run_id)
+    exported = stop is not None and stop["exported"]
+    systemic = None if stop is None else stop["systemic"]
+    if orchestrator_exit is None:
+        # The orchestrator writes its stop record on every return; one that
+        # never started has none to write.
+        stop_problem = None
     stop_directory.cleanup()
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
     if exit_code == EXIT_COMPLETE and plan.ends_before_armarium:
@@ -1806,6 +1825,18 @@ def main(
             failure_detail = f"the orchestrator completed, but {absence}"
         else:
             failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
+    if stop_problem is not None:
+        # Without its stop record the run cannot say whether it sounded the
+        # systemic alarm or reached its export, so it is never complete.
+        unknown = (
+            f"{stop_problem}, so whether this invocation sounded the systemic alarm or "
+            f"reached its export is unknown; read {plan.transcript_path}"
+        )
+        if exit_code in (EXIT_COMPLETE, EXIT_SELECTION_COMPLETE):
+            exit_code = EXIT_HELD
+            failure_detail = f"the orchestrator completed, but {unknown}"
+        else:
+            failure_detail = unknown if failure_detail is None else f"{failure_detail}. {unknown}"
     state = _STATE_FOR_EXIT[exit_code]
     held_before_export = exit_code == EXIT_HELD and not plan.ends_before_armarium and not exported
     holding = (
@@ -1862,6 +1893,8 @@ def main(
         "hold_detail": hold_detail,
         "finished_at": _stamp(now()),
     }
+    if stop_problem is not None:
+        final = {**final, "stop_record_problem": stop_problem}
     if systemic is not None:
         # The run stopped on, or exported past, more held pages than its sealed
         # review policy allows: a person must decide. With --notify the phone
