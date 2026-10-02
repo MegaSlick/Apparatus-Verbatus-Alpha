@@ -68,6 +68,9 @@ candidate evidence, triage documents and a final `ingest-ready.json`.
 - **The confirmation file is your act.** Verbatus never makes one and never promotes an
   instrument verdict on its own; it repeats the confirmation check's refusal word for
   word. A blank confirmation path is valid: no cluster is written.
+- **A confirmed re-shoot cluster cannot go to the Door.** The Door refuses, whole, any
+  submission whose triage names a re-shoot cluster, since no later stage links two
+  captures of one leaf (`pipeline/1_exemplar/CONTRACT.md`). Submit one capture per leaf.
 - **The write is pinned to the preview.** The write reads everything again. If any source file, the confirmation, the instrument settings, the policy or
   the output folder changes in between, the write refuses rather than commit something
   other than what you approved.
