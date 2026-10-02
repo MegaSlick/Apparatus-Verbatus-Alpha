@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import errno
-import hashlib
 import json
 import os
 import subprocess
@@ -17,6 +16,7 @@ import pytest
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import act_id, page_id
+from conftest import tree_snapshot
 from gold import cli
 from gold.core import (
     ILLEGIBLE,
@@ -680,9 +680,8 @@ def test_page_dimension_refusals_name_the_missing_fact_and_remedy(tmp_path):
         validate_sample(sample)
 
 
-def test_dimension_bearing_records_use_a_new_schema_identity(tmp_path):
-    """Adding dimensions changes self-hashed record meaning. The new reader must
-    never reinterpret a dimensionless v1 record as its dimension-bearing format."""
+def test_a_record_under_another_schema_version_is_refused(tmp_path):
+    """A self-hashed record is read only under the schema it names."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     legacy = json.loads(json.dumps(sample))
@@ -697,13 +696,9 @@ def test_dimension_bearing_records_use_a_new_schema_identity(tmp_path):
         )
     )
     legacy["self_hash"] = self_hash(legacy)
-    with pytest.raises(
-        SchemaRefusal, match="predates required page dimensions.*Preserve.*do not edit"
-    ):
+    with pytest.raises(SchemaRefusal, match="sample schema is not recognized"):
         validate_sample(legacy)
-    with pytest.raises(
-        SchemaRefusal, match="predates required page dimensions.*Preserve.*do not edit"
-    ):
+    with pytest.raises(SchemaRefusal, match="'gold-page-sample.v1' is not a gold record schema"):
         validate_record(legacy)
 
 
@@ -744,16 +739,16 @@ def test_a_disagreement_records_the_adjudicators_own_reading_and_keeps_both(tmp_
     transcription, and both transcriptions are retained unaltered."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
-    first, second = _pair(sample, "Marie Anne Dubois", "Marie Anne Dubais", path)
+    first, second = _pair(sample, "alpha beta gamma", "alpha beta gamna", path)
     with pytest.raises(SchemaRefusal, match="reading they established from the ink"):
         adjudicate(first, second)
-    record = adjudicate(first, second, adjudicator="hand-c", text="Marie Anne Duboís")
+    record = adjudicate(first, second, adjudicator="hand-c", text="alpha beta gamná")
     assert record["outcome"] == "adjudicated"
     assert record["text"] not in {first["text"], second["text"]}
     assert record["transcriptions"] == [first, second]
     assert validate_adjudication(record) == record
     with pytest.raises(SchemaRefusal, match="cannot be its own reconciliation"):
-        adjudicate(first, second, adjudicator="hand-a", text="Marie Anne Dubois")
+        adjudicate(first, second, adjudicator="hand-a", text="alpha beta gamma")
 
 
 def test_an_adjudication_cannot_assert_an_outcome_its_transcriptions_deny(tmp_path):
@@ -761,7 +756,7 @@ def test_an_adjudication_cannot_assert_an_outcome_its_transcriptions_deny(tmp_pa
     discipline `set` gets. Resealing the self-hash launders neither."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
-    first, second = _pair(sample, "Jean Baptiste", "Jean Baptiste", path)
+    first, second = _pair(sample, "delta epsilon", "delta epsilon", path)
     agreed = adjudicate(first, second)
     forged = json.loads(json.dumps(agreed))
     forged["outcome"] = "adjudicated"
@@ -770,9 +765,9 @@ def test_an_adjudication_cannot_assert_an_outcome_its_transcriptions_deny(tmp_pa
     with pytest.raises(SchemaRefusal, match="the outcome is 'agreed'"):
         validate_adjudication(forged)
     differing = adjudicate(
-        *_pair(sample, "Jean Baptiste", "Jean Batiste", path),
+        *_pair(sample, "delta epsilon", "delta epsilom", path),
         adjudicator="hand-c",
-        text="Jean Baptiste",
+        text="delta epsilon",
     )
     forged = json.loads(json.dumps(differing))
     forged["outcome"] = "agreed"
@@ -781,9 +776,9 @@ def test_an_adjudication_cannot_assert_an_outcome_its_transcriptions_deny(tmp_pa
     with pytest.raises(SchemaRefusal, match="the outcome is 'adjudicated'"):
         validate_adjudication(forged)
     with pytest.raises(SchemaRefusal, match="not independent"):
-        adjudicate(first, transcribe(sample, _act(), "hand-a", "Jean Baptiste", path))
+        adjudicate(first, transcribe(sample, _act(), "hand-a", "delta epsilon", path))
     with pytest.raises(SchemaRefusal, match="different acts"):
-        adjudicate(first, transcribe(sample, _act(3), "hand-b", "Jean Baptiste", path))
+        adjudicate(first, transcribe(sample, _act(3), "hand-b", "delta epsilon", path))
 
 
 def test_illegible_is_the_one_spelling_and_a_transcription_is_never_blank(tmp_path):
@@ -907,7 +902,7 @@ def test_a_byte_order_mark_may_not_fake_a_disagreement(tmp_path):
     stripped where nobody would see it."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
-    reading = "Marie Anne"
+    reading = "alpha beta"
     with_mark = tmp_path / "hand-a.txt"
     with_mark.write_bytes((reading + "\n").encode("utf-8-sig"))
     marked = read_transcription_text(with_mark)
@@ -928,10 +923,10 @@ def test_gold_may_not_be_made_of_the_pipelines_own_output(tmp_path):
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
     with pytest.raises(SchemaRefusal, match="pipeline identity, not a person"):
-        transcribe(sample, _act(), _act(7), "Jean", path)
-    first, second = _pair(sample, "Jean", "Jehan", path)
+        transcribe(sample, _act(), _act(7), "zeta", path)
+    first, second = _pair(sample, "zeta", "zita", path)
     with pytest.raises(SchemaRefusal, match="pipeline identity, not a person"):
-        adjudicate(first, second, adjudicator=_act(7), text="Jean")
+        adjudicate(first, second, adjudicator=_act(7), text="zeta")
 
 
 def test_a_page_layout_or_padding_record_may_not_be_empty(tmp_path):
@@ -1254,7 +1249,7 @@ def test_cli_walks_one_act_from_two_transcriptions_to_an_adjudication(tmp_path):
     sample_file = records / "sample.json"
     sample_file.write_text(json.dumps(sample), encoding="utf-8")
     outputs = {}
-    for hand, reading in (("hand-a", "Marie Anne"), ("hand-b", "Marie Jeanne")):
+    for hand, reading in (("hand-a", "alpha beta"), ("hand-b", "alpha delta")):
         text_file = tmp_path / f"{hand}.txt"
         # As a text editor writes it: one trailing newline, which is the file's.
         text_file.write_text(reading + "\n", encoding="utf-8")
@@ -1281,7 +1276,7 @@ def test_cli_walks_one_act_from_two_transcriptions_to_an_adjudication(tmp_path):
         )
         assert json.loads(outputs[hand].read_text())["text"] == reading
     established = tmp_path / "established.txt"
-    established.write_text("Marie Anne\n", encoding="utf-8")
+    established.write_text("alpha beta\n", encoding="utf-8")
     adjudication = records / "adjudication.json"
     with pytest.raises(SchemaRefusal, match="reading they established"):
         cli.main(
@@ -1316,8 +1311,8 @@ def test_cli_walks_one_act_from_two_transcriptions_to_an_adjudication(tmp_path):
     written = json.loads(adjudication.read_text())
     assert written["outcome"] == "adjudicated"
     assert [record["text"] for record in written["transcriptions"]] == [
-        "Marie Anne",
-        "Marie Jeanne",
+        "alpha beta",
+        "alpha delta",
     ]
     assert cli.main(["validate", str(adjudication)]) == 0
     assert cli.main(["validate-corpus", str(records), "--run", str(path)]) == 0
@@ -1354,16 +1349,16 @@ def test_cli_refuses_a_contradicting_record_before_it_becomes_immutable(tmp_path
             str(path),
         ]
 
-    assert cli.main(transcription("hand-a", "Marie Anne", "first")) == 0
+    assert cli.main(transcription("hand-a", "alpha beta", "first")) == 0
     # The same hand reading the same act twice: the act no longer has one
     # independent reading from that person, and the corpus cannot say which.
     with pytest.raises(SchemaRefusal, match="two transcription records"):
-        cli.main(transcription("hand-a", "Marie Jeanne", "restated"))
+        cli.main(transcription("hand-a", "alpha delta", "restated"))
     assert not (records / "restated.json").exists()
 
     # An open custody chain is still publishable -- that is the whole reason
     # closure is waived here rather than the reconciliation being skipped.
-    assert cli.main(transcription("hand-b", "Marie Jeanne", "second")) == 0
+    assert cli.main(transcription("hand-b", "alpha delta", "second")) == 0
 
     def adjudication(name, reading):
         established = tmp_path / f"{name}.txt"
@@ -1382,14 +1377,14 @@ def test_cli_refuses_a_contradicting_record_before_it_becomes_immutable(tmp_path
             str(records / f"{name}.json"),
         ]
 
-    assert cli.main(adjudication("adjudication", "Marie Anne")) == 0
+    assert cli.main(adjudication("adjudication", "alpha beta")) == 0
     # Gold has one established reading per act. A second adjudication that
     # establishes a *different* reading is the contradiction: it is refused at
     # the door rather than published and named by a later validate-corpus.
     # (An identical one would carry the same self-hash and be reuse, not
     # conflict, exactly as a repeated sample record is.)
     with pytest.raises(SchemaRefusal, match="two conflicting adjudications"):
-        cli.main(adjudication("second-adjudication", "Marie Jeanne"))
+        cli.main(adjudication("second-adjudication", "alpha delta"))
     assert not (records / "second-adjudication.json").exists()
     assert cli.main(["validate-corpus", str(records), "--run", str(path)]) == 0
 
@@ -1429,7 +1424,7 @@ def test_cli_publishes_into_a_corpus_whose_custody_chain_is_still_open(tmp_path)
     (records / "sample.json").write_text(json.dumps(sample), encoding="utf-8")
 
     text_file = tmp_path / "hand-a.txt"
-    text_file.write_text("Marie Anne\n", encoding="utf-8")
+    text_file.write_text("alpha beta\n", encoding="utf-8")
     assert (
         cli.main(
             [
@@ -1485,7 +1480,7 @@ def test_cli_publishes_into_a_corpus_whose_custody_chain_is_still_open(tmp_path)
     assert (records / "manual.json").exists()
 
     second_text = tmp_path / "hand-b.txt"
-    second_text.write_text("Marie Jeanne\n", encoding="utf-8")
+    second_text.write_text("alpha delta\n", encoding="utf-8")
     assert (
         cli.main(
             [
@@ -1507,7 +1502,7 @@ def test_cli_publishes_into_a_corpus_whose_custody_chain_is_still_open(tmp_path)
         == 0
     )
     established = tmp_path / "established.txt"
-    established.write_text("Marie Anne\n", encoding="utf-8")
+    established.write_text("alpha beta\n", encoding="utf-8")
     assert (
         cli.main(
             [
@@ -1568,18 +1563,18 @@ def test_corpus_refuses_orphaned_or_conflicting_adjudication_custody(tmp_path):
     """
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
-    first, second = _pair(sample, "Marie Anne", "Marie Jeanne", path)
-    established = adjudicate(first, second, adjudicator="hand-c", text="Marie Anne")
+    first, second = _pair(sample, "alpha beta", "alpha delta", path)
+    established = adjudicate(first, second, adjudicator="hand-c", text="alpha beta")
 
     with pytest.raises(SchemaRefusal, match="absent as independent gold records"):
         validate_corpus([sample, established], path)
     assert validate_corpus([sample, first, second, established], path)
 
-    conflict = adjudicate(first, second, adjudicator="hand-d", text="Marie Jeanne")
+    conflict = adjudicate(first, second, adjudicator="hand-d", text="alpha delta")
     with pytest.raises(SchemaRefusal, match="two conflicting adjudications"):
         validate_corpus([sample, first, second, established, conflict], path)
 
-    revised = transcribe(sample, _act(), "hand-a", "Marie Annette", path)
+    revised = transcribe(sample, _act(), "hand-a", "alpha betta", path)
     with pytest.raises(SchemaRefusal, match="supplied two transcription records"):
         validate_corpus([sample, first, revised], path)
 
@@ -1598,11 +1593,11 @@ def test_corpus_refuses_a_started_reading_chain_without_its_adjudication(tmp_pat
     wear the same success as completed custody."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
-    first, second = _pair(sample, "Marie Anne", "Marie Jeanne", path)
+    first, second = _pair(sample, "alpha beta", "alpha delta", path)
     for partial in ([sample, first], [sample, first, second]):
         with pytest.raises(SchemaRefusal, match="custody chain is incomplete.*adjudicate"):
             validate_corpus(partial, path)
-    established = adjudicate(first, second, adjudicator="hand-c", text="Marie Anne")
+    established = adjudicate(first, second, adjudicator="hand-c", text="alpha beta")
     assert validate_corpus([sample, first, second, established], path)
 
 
@@ -1793,8 +1788,8 @@ def test_corpus_refuses_two_established_readings_for_one_act(tmp_path):
     act = _act()
     records = [draw, *selected, picked]
     for sample, readings, established in (
-        (picked, ("Jean Dupont", "Jean Dupond"), "Jean Dupont"),
-        (seeded, ("Marie Cure", "Marie Curee"), "an entirely different reading"),
+        (picked, ("zeta eta", "zeta eda"), "zeta eta"),
+        (seeded, ("theta iota", "theta iotta"), "an entirely different reading"),
     ):
         first = transcribe(sample, act, "hand-a", readings[0], path)
         second = transcribe(sample, act, "hand-b", readings[1], path)
@@ -1810,8 +1805,8 @@ def test_corpus_refuses_two_established_readings_for_one_act(tmp_path):
     # refusal comes from the act's own custody, which admits two readings only.
     records = [draw, *selected, picked]
     for sample, hands, readings, established in (
-        (picked, ("hand-a", "hand-b"), ("Jean Dupont", "Jean Dupond"), "Jean Dupont"),
-        (seeded, ("hand-d", "hand-e"), ("Marie Cure", "Marie Curee"), "another reading"),
+        (picked, ("hand-a", "hand-b"), ("zeta eta", "zeta eda"), "zeta eta"),
+        (seeded, ("hand-d", "hand-e"), ("theta iota", "theta iotta"), "another reading"),
     ):
         first = transcribe(sample, act, hands[0], readings[0], path)
         second = transcribe(sample, act, hands[1], readings[1], path)
@@ -1923,21 +1918,6 @@ def test_corpus_transaction_lock_serializes_check_and_publish(tmp_path):
     assert acquired.is_set()
 
 
-def _tree_snapshot(root: Path) -> dict[str, str]:
-    """Every byte under `root`, so a refusal's own claim can be checked.
-
-    Each refusal below tells the operator that no gold record was written. That is a
-    statement about this directory, and until it is compared against the directory it
-    is a statement the suite takes on trust, since a publication that landed a
-    record and then refused on the way out would still print it.
-    """
-    return {
-        str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-    }
-
-
 def _stray_writes(before: dict[str, str], after: dict[str, str]) -> list[str]:
     """The paths a refusal moved, named -- a count would not say which file to look at."""
     return sorted(
@@ -1985,7 +1965,7 @@ def test_corpus_lock_failures_are_named_before_any_record_is_written(tmp_path, m
     names the paths that moved, because "one file changed" does not say which.
     """
     directory, named = build(tmp_path, monkeypatch)
-    before = _tree_snapshot(tmp_path)
+    before = tree_snapshot(tmp_path)
 
     with pytest.raises(SchemaRefusal) as refusal:
         with cli._locked_corpus(directory):
@@ -1993,7 +1973,7 @@ def test_corpus_lock_failures_are_named_before_any_record_is_written(tmp_path, m
 
     assert named in str(refusal.value)
     assert "no gold record was written" in str(refusal.value)
-    assert _stray_writes(before, _tree_snapshot(tmp_path)) == [], (
+    assert _stray_writes(before, tree_snapshot(tmp_path)) == [], (
         "the refusal wrote to the corpus it disowned"
     )
 
@@ -2019,14 +1999,14 @@ def test_a_publication_refused_for_an_unlistable_directory_wrote_no_record(tmp_p
         return real_listdir(target)
 
     monkeypatch.setattr(os, "listdir", refuse_descriptor_listing)
-    before = _tree_snapshot(tmp_path)
+    before = tree_snapshot(tmp_path)
 
     with pytest.raises(SchemaRefusal) as refusal:
         write_append_only(records / "second.json", {"example": "another"})
 
     assert "could not be listed through" in str(refusal.value)
     assert "no record was written" in str(refusal.value)
-    assert _stray_writes(before, _tree_snapshot(tmp_path)) == [], (
+    assert _stray_writes(before, tree_snapshot(tmp_path)) == [], (
         "the refusal wrote to the directory it disowned"
     )
 
@@ -2445,7 +2425,7 @@ def test_gold_rederivation_honours_an_explicitly_absent_computed_digest(tmp_path
 
 def _cli_transcription(tmp_path, records, run_path, hand, name):
     text_file = tmp_path / f"{name}.txt"
-    text_file.write_text("Marie\n", encoding="utf-8")
+    text_file.write_text("alpha\n", encoding="utf-8")
     return [
         "transcribe",
         "--sample",
@@ -2494,7 +2474,7 @@ def test_a_third_transcriber_is_refused_before_the_act_becomes_unclosable(tmp_pa
     assert not (records / "t2.json").exists()
     assert cli.main(["validate-corpus", str(records), "--run", str(path)]) == 0
 
-    three = [transcribe(sample, _act(), hand, "Marie") for hand in ("hand-a", "hand-b", "hand-c")]
+    three = [transcribe(sample, _act(), hand, "alpha") for hand in ("hand-a", "hand-b", "hand-c")]
     with pytest.raises(SchemaRefusal, match="already has two independent transcriptions"):
         validate_corpus([sample, *three], require_closure=False)
 
@@ -2504,18 +2484,18 @@ def test_a_person_has_one_spelling_and_is_compared_ignoring_case(tmp_path):
     person, so neither can pass as a second, independent reader."""
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
-    decomposed = unicodedata.normalize("NFD", "Hélène")
+    decomposed = unicodedata.normalize("NFD", "hand-é")
     with pytest.raises(SchemaRefusal, match="transcriber is not in Unicode NFC"):
-        transcribe(sample, _act(), decomposed, "Marie")
-    first = transcribe(sample, _act(), "hand-a", "Marie")
-    second = transcribe(sample, _act(), "hand-b", "Marie Anne")
+        transcribe(sample, _act(), decomposed, "alpha")
+    first = transcribe(sample, _act(), "hand-a", "alpha")
+    second = transcribe(sample, _act(), "hand-b", "alpha beta")
     with pytest.raises(SchemaRefusal, match="adjudicator is not in Unicode NFC"):
-        adjudicate(first, second, adjudicator=decomposed, text="Marie")
+        adjudicate(first, second, adjudicator=decomposed, text="alpha")
     with pytest.raises(SchemaRefusal, match="cannot be its own reconciliation"):
-        adjudicate(first, second, adjudicator="HAND-A", text="Marie")
+        adjudicate(first, second, adjudicator="HAND-A", text="alpha")
 
-    upper = transcribe(sample, _act(), "HÉLÈNE", "Marie")
-    lower = transcribe(sample, _act(), "Hélène", "Marie")
+    upper = transcribe(sample, _act(), "HAND-É", "alpha")
+    lower = transcribe(sample, _act(), "hand-é", "alpha")
     with pytest.raises(SchemaRefusal, match="not independent"):
         adjudicate(upper, lower)
     with pytest.raises(SchemaRefusal, match="supplied two transcription records"):
@@ -2568,7 +2548,7 @@ def test_a_draw_checked_offline_refuses_ordinals_that_name_no_one_page(ordinals,
 def test_validate_refuses_run_for_a_record_that_names_its_sample_by_digest(tmp_path):
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
-    first, second = _pair(sample, "Marie", "Marie")
+    first, second = _pair(sample, "alpha", "alpha")
     for name, record in (
         ("transcription", first),
         ("adjudication", adjudicate(first, second)),
@@ -2614,7 +2594,7 @@ def test_a_draw_or_transcription_with_a_broken_self_hash_is_refused(tmp_path):
     draw, selected = build_sampling_draw(path, rows, plan_for(frame, rows))
     with pytest.raises(SchemaRefusal, match="sampling draw fails its self-hash"):
         validate_sampling_draw({**draw, "self_hash": _sha("0")})
-    first, _second = _pair(selected[0], "Marie", "Marie")
+    first, _second = _pair(selected[0], "alpha", "alpha")
     with pytest.raises(SchemaRefusal, match="transcription fails its self-hash"):
         validate_record({**first, "self_hash": _sha("0")})
 
@@ -2622,7 +2602,7 @@ def test_a_draw_or_transcription_with_a_broken_self_hash_is_refused(tmp_path):
 def test_custody_records_naming_an_absent_sample_are_refused(tmp_path):
     path, frame, pages = run_file(tmp_path)
     sample = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))[0]
-    first, second = _pair(sample, "Marie", "Marie")
+    first, second = _pair(sample, "alpha", "alpha")
     with pytest.raises(
         SchemaRefusal, match=r"transcription \w+ names sample \w+, but that sample is absent"
     ):
@@ -2636,8 +2616,8 @@ def test_custody_records_naming_an_absent_sample_are_refused(tmp_path):
 def test_an_adjudication_refuses_transcriptions_of_different_samples(tmp_path):
     path, frame, pages = run_file(tmp_path)
     samples = sample_stratified(path, catalog(pages), plan_for(frame, catalog(pages)))
-    first = transcribe(samples[0], _act(), "hand-a", "Marie")
-    second = transcribe(samples[1], _act(), "hand-b", "Marie")
+    first = transcribe(samples[0], _act(), "hand-a", "alpha")
+    second = transcribe(samples[1], _act(), "hand-b", "alpha")
     with pytest.raises(SchemaRefusal, match="different gold samples"):
         adjudicate(first, second)
 
