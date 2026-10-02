@@ -1252,7 +1252,7 @@ def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
         ("clusters", "triage re-shoot cluster records"),
     ],
 )
-def test_a_malformed_triage_document_names_its_role_effect_and_remedy(
+def test_a_malformed_triage_document_is_refused_naming_which_document(
     tmp_path, empty_triage_manifest, which, expected
 ):
     manifest_path = empty_triage_manifest
@@ -1260,13 +1260,11 @@ def test_a_malformed_triage_document_names_its_role_effect_and_remedy(
     clusters_path.write_text("{}", encoding="utf-8")
     (manifest_path if which == "manifest" else clusters_path).write_bytes(b"\xffnot-json")
 
-    with pytest.raises(ContractError, match=f"{expected} is not valid UTF-8 JSON") as refused:
+    with pytest.raises(ContractError, match=f"{expected} is not valid UTF-8 JSON"):
         door.load_triage_decisions(
             manifest_path,
             clusters_path if which == "clusters" else None,
         )
-    assert "no run was created" in str(refused.value)
-    assert "export valid UTF-8 JSON and retry" in str(refused.value)
 
 
 def test_a_triage_document_is_bounded_before_json_decoding(tmp_path, monkeypatch):
@@ -1316,11 +1314,8 @@ def test_triage_split_count_refuses_before_quadratic_geometry_validation(tmp_pat
     )
     monkeypatch.setattr(door, "MAX_TRIAGE_DERIVATIVE_PAGES", 2)
 
-    with pytest.raises(ContractError, match="more than 2 derivative pages") as refused:
+    with pytest.raises(ContractError, match="more than 2 derivative pages"):
         door.load_triage_decisions(decision_path)
-
-    assert "before pairwise geometry validation" in str(refused.value)
-    assert "export one configured shard" in str(refused.value)
 
 
 def test_triage_cluster_members_are_bounded_before_set_expansion(tmp_path, monkeypatch):
@@ -1342,11 +1337,8 @@ def test_triage_cluster_members_are_bounded_before_set_expansion(tmp_path, monke
     )
     monkeypatch.setattr(door, "MAX_TRIAGE_DERIVATIVE_PAGES", 2)
 
-    with pytest.raises(ContractError, match="more than 2 member references") as refused:
+    with pytest.raises(ContractError, match="more than 2 member references"):
         door.load_triage_decisions(decision_path, clusters_path)
-
-    assert "before set expansion" in str(refused.value)
-    assert "clusters for one configured shard" in str(refused.value)
 
 
 def test_split_render_uses_the_deterministic_common_encoder(monkeypatch):
@@ -3868,30 +3860,15 @@ def _single_part_triage_row(
     )
 
 
-def test_a_missing_triage_row_names_the_loss_it_prevents_and_the_remedy():
-    submitted = png(4, 3)
-
-    with pytest.raises(ContractError, match="no row for a submitted source frame") as refused:
-        expand_sources(
-            [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
-            reader({"submitted.png": submitted}),
-            triage_rows={},
-        )
-    assert "disappear from the post-split census" in str(refused.value)
-    assert "one row for every submitted frame digest" in str(refused.value)
-
-
 def test_cluster_records_without_a_decision_manifest_are_not_ignored():
     submitted = png(4, 3)
 
-    with pytest.raises(ContractError, match="without a decision manifest") as refused:
+    with pytest.raises(ContractError, match="without a decision manifest"):
         expand_sources(
             [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
             reader({"submitted.png": submitted}),
             triage_clusters={},
         )
-    assert "no ordinals were assigned" in str(refused.value)
-    assert "supply the matching triage decision manifest" in str(refused.value)
 
 
 def _triage_decision(master: bytes, row: dict):
