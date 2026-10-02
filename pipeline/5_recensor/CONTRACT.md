@@ -85,6 +85,19 @@ nothing else may hold the row. A confirmed blank is `confirmed-blank`; a confirm
 blankness and every failure. An unconfirmed one stays held with its code and the
 failures in `reason`.
 
+**What a run with no record detector cannot see.** Where one act ends and the next
+begins is measured only by the record detector: page accounting rule (i) holds two
+records inside one reading region (`merged-detection`) and a record inside only an
+`other` region (`record-read-as-other`). With no record detector in the sealed roster,
+rule (i) does not apply, and nothing else on the page measures act boundaries: a
+witness's units are layout blocks or lines, and one act routinely spans several of them
+(a margin name and its body, say), so counting them against entries would hold
+ordinary pages. On such a run a reading that merges two acts into one entry, citing and
+transcribing both, or reads an act as an `other` entry on a page that keeps another
+act, is held by nothing here. No text is lost: every cited id and its text stays in an
+entry the export delivers, the merged acts as one act and the relabelled one in the
+other layer, but the run's act count is the reading's word alone.
+
 The closed `kind="review"` payload (`common/page_review.py`'s `PAGE_REVIEW_FIELDS`,
 plus the `attempt_ordinal` every review carries; that module also holds the link
 fields below and is how the Archetypus and the Armarium read both records):
