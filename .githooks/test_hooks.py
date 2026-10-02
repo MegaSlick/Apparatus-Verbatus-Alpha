@@ -585,3 +585,20 @@ def test_pre_commit_scans_staged_pagekit_files_without_echoing_the_hit(tmp_path)
     assert header not in result.stdout + result.stderr
     stage(repo, "pagekit/deskew.py", "VALUE = 1\n")
     assert run_hook(repo, "pre-commit").returncode == 0
+
+
+def test_pre_commit_refuses_when_the_clean_room_has_no_gate(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    stage(repo, "pagekit/check.py", "VALUE = 2\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+    git(repo, "rm", "-q", "pagekit/cleanroom/gate.py")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "pagekit/cleanroom/gate.py is missing" in result.stderr
+
+
+def test_pre_commit_runs_without_the_gate_where_there_is_no_clean_room(tmp_path):
+    repo = make_precommit_repo(tmp_path / "repo")
+    stage(repo, "pagekit/check.py", "VALUE = 1\n")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 0, result.stdout + result.stderr
