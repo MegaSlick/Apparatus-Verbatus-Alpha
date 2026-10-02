@@ -39,8 +39,8 @@ detector's census (Attestatores CONTRACT, "A page the detector found nothing on"
 counts toward the floor, and the validation above re-derives the census it rests on.
 On a page with no detector record, DAI's witness is therefore the detector's look, not
 a reading of the page's text: under the sealed roster of three page witnesses and a
-floor of 3, it is the page's third witness. On a page whose reading establishes acts, the page accounting's rule (i) holds every
-unit (`no-detector-record-on-act-page`), so no unit there is accepted on DAI's
+floor of 3, it is the page's third witness. On a page whose reading establishes acts,
+the page accounting's rule (i) holds every unit (`no-detector-record-on-act-page`), so no unit there is accepted on DAI's
 silence. A DAI page whose detector's run facts state no cap, or whose records enclosed
 no crop, is `not-run` and does not count.
 
@@ -76,8 +76,8 @@ accounting's rules (d), (e) and (f) pass. A page of `other` entries also needs r
 or not apply, no detected Surya line, and every witness that read the page to have
 retained blank text, with at least one such witness that is not a census: DAI's page on
 which its detector found nothing is such a witness, but a census is never the only one,
-so a page no witness read as blank text stays held. Blankness is measured from each witness's retained
-text (`payload`), never its `content_health`; a witness whose retained payload is not
+so a page no witness read as blank text stays held. Blankness is measured from each
+witness's retained text (`payload`), never its `content_health`; a witness whose retained payload is not
 text cannot confirm a blank. The floor and residual ink must hold as for any unit, and
 nothing else may hold the row. A confirmed blank is `confirmed-blank`; a confirmed
 `other` entry is `accepted`. Either names the released code and why in `release`;
@@ -156,8 +156,7 @@ with a one-sided break exits held, and the receipt names it. A continuation flag
 nothing; its review records it in `notes`.
 
 **No recovery request.** The stage asks for no reading again. A page's one re-ask is
-stage 4's own (`pipeline/4_perlector/CONTRACT.md`,
-"The re-ask"): every review of a unit on the page carries `recoveries_used`, the
+stage 4's own (`pipeline/4_perlector/CONTRACT.md`, "The re-ask"): every review of a unit on the page carries `recoveries_used`, the
 page's re-asks from its `page_readings` row (1 when it names a `reask_ref`, else 0),
 and the receipt measures it again with the rest of the review.
 
