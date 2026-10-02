@@ -79,6 +79,7 @@ from .models import (
     LeaseFormatError,
     PendingCreateIntent,
     PodCreateRequest,
+    PodEstimate,
     PodRecord,
     Presence,
     ProviderFailure,
@@ -6637,12 +6638,71 @@ def test_preflight_environment_failures_are_red_with_named_remediation(
         assert any(issue.code == "disk-missing" for issue in report.issues)
 
 
-def test_the_shipped_spend_policy_loads_as_configured() -> None:
-    """The checked-in policy passes the loader every paid gate reads it through."""
+def _shipped_spend_policy():
     from .spend import load_spend_policy
 
-    root = Path(__file__).resolve().parents[2]
-    assert load_spend_policy(root / "config/spend.toml").configured
+    return load_spend_policy(Path(__file__).resolve().parents[2] / "config/spend.toml")
+
+
+def test_the_shipped_spend_policy_carries_the_reviewed_ceilings() -> None:
+    """Read through the loader every paid gate uses: a drift here is a drift in every gate."""
+    policy = _shipped_spend_policy()
+
+    assert policy.configured
+    assert policy.max_hourly_usd == Decimal("0.50")
+    assert policy.max_estimated_metered_cost_usd == Decimal("2.00")
+    assert policy.account_balance_floor_usd == Decimal("50.00")
+    assert policy.account_balance_alert_usd == Decimal("75.00")
+    assert policy.hard_lifetime_seconds == 14400
+    assert policy.laptop_heartbeat_timeout_seconds == 900
+    assert policy.shutdown_poll_interval_seconds == 30
+    assert policy.shutdown_deadline_seconds == 900
+    assert policy.billing_cutoff_margin_seconds == 3600
+
+
+@pytest.mark.parametrize(
+    ("gpu_type_id", "admitted"),
+    [
+        ("NVIDIA RTX A5000", True),
+        ("NVIDIA A40", True),
+        # The next reviewed card up the price list.
+        ("NVIDIA RTX 6000 Ada Generation", False),
+    ],
+)
+def test_the_shipped_spend_policy_admits_the_cards_it_names_and_refuses_the_next_one_up(
+    gpu_type_id: str, admitted: bool
+) -> None:
+    """The cards spend.toml says its hourly ceiling admits, priced by the reviewed table,
+    beside the largest volume rate it allows for ($0.06/h)."""
+    from .spend import assess_spend
+
+    now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    table = load_placement_table(Path(__file__).resolve().parents[2] / "config/pod_placement.toml")
+    estimate = PodEstimate(
+        pod_hourly_usd=table.price_for(gpu_type_id),
+        volume_hourly_usd=Decimal("0.06"),
+        source="reviewed placement table",
+        observed_at=now,
+    )
+
+    assessment = assess_spend(
+        _shipped_spend_policy(),
+        estimate,
+        requested_deadline=now + timedelta(hours=1),
+        now=now,
+        balance_observation=AccountBalanceObservation("1000.00", now, "test balance"),
+    )
+
+    assert assessment.allowed is admitted, assessment.reasons
+    if not admitted:
+        assert any("hourly price exceeds configured ceiling" in r for r in assessment.reasons)
+
+
+def test_a_card_the_reviewed_table_does_not_list_cannot_be_priced() -> None:
+    table = load_placement_table(Path(__file__).resolve().parents[2] / "config/pod_placement.toml")
+
+    with pytest.raises(PlacementRefusal, match="no reviewed card_profile"):
+        table.price_for("NVIDIA H100 80GB HBM3")
 
 
 def test_system_gpu_probe_measures_fields_or_returns_red_input_without_a_gpu() -> None:
