@@ -36,7 +36,7 @@ from common.background import (
     validate_ink_not_measurable_payload,
     validate_measured_ink_map_payload,
 )
-from common.chairs.models import ChairIdentity
+from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.canonical import digest_bytes, digest_of, is_plain_int
 from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
@@ -228,6 +228,30 @@ def refs_by_path(references: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 # --- pages not asked, and the fixture's declared answers --------------------------
+
+
+def refuse_unlive_real_reading(
+    context, chair: Any, serving_mode: str, *, stage: str = "Perlector"
+) -> None:
+    """Refuse a non-live serving row on a real submission, before anything is published.
+
+    The Perlector and the Coniector read the synthetic fixture's declared answers when
+    their chair's sealed row is not live. A real submission has no declarations, and
+    a declared answer cannot stand in for a model's reply to real ink. A fixture run,
+    a live row and an absent chair, which reads nothing, all pass.
+    """
+    # `common.stage` reads this module.
+    from common.stage import is_real_ingress
+
+    if serving_mode == "live" or not is_real_ingress(context.run) or isinstance(chair, AbsentChair):
+        return
+    raise ContractError(
+        f"the {stage} cannot read a real submission from declared fixture answers: the "
+        f"sealed serving-recipe row for chair {chair.role!r} is not a live row, and a "
+        "declared answer cannot stand in for a model's reply to real ink. Start a new run "
+        f"sealed under a catalogue whose {stage} row is live; a sealed run's catalogue "
+        "cannot be changed"
+    )
 
 
 def not_run_problems(

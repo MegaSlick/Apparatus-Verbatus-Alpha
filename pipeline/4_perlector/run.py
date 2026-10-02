@@ -8,7 +8,8 @@ reads it back, is `live_calls.py`.
 The sealed serving-recipe row picks the reader. A `kind = "vllm"` row for the
 Perlector chair reads live; any other row reads the fixture's declared page
 answers, which prove wiring only. A real submission has no fixture
-declaration, so a non-live row there refuses (`refuse_unlive_real_reading`).
+declaration, so a non-live row there refuses before anything is published
+(`common.page_path.refuse_unlive_real_reading`).
 
     python pipeline/4_perlector/run.py --run-root <dir> --run-id <id>
 """
@@ -33,10 +34,10 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.stages import PERLECTOR  # noqa: E402
 from common.decoding import load_decoding_policy, perlector_page_max_tokens  # noqa: E402
+from common.page_path import refuse_unlive_real_reading  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     PERLECTOR_CHAIR,
-    is_real_ingress,
     open_stage_context,
     run_stage,
     stage_parser,
@@ -49,24 +50,6 @@ from operations.serving.client import ChairClient, serving_mode_for  # noqa: E40
 from operations.serving.errors import ChairResponseRefusal  # noqa: E402
 
 DESCRIPTION = "Perlector: reads each sealed page whole, with the testimonia as fallible clues."
-
-
-def refuse_unlive_real_reading(
-    context, chair: ChairIdentity | AbsentChair, serving_mode: str
-) -> None:
-    """Refuse a non-live row on a real submission, before anything is published.
-
-    A declared page answer cannot stand in for real ink. A fixture run, a live row and
-    an absent chair, which reads nothing, all pass.
-    """
-    if serving_mode == "live" or not is_real_ingress(context.run) or isinstance(chair, AbsentChair):
-        return
-    raise ContractError(
-        f"the Perlector cannot read a real submission from declared fixture answers: the "
-        f"sealed serving-recipe row for chair {chair.role!r} is not a live row, and a declared text "
-        "cannot stand in for a reading of real ink. Start a new run sealed under a catalogue "
-        "whose Perlector row is live; a sealed run's catalogue cannot be changed"
-    )
 
 
 def perlector_chair(context) -> ChairIdentity | AbsentChair:

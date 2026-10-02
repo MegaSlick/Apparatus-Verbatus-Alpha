@@ -19,6 +19,8 @@ from zipfile import ZipFile
 
 import pytest
 
+from common.contracts.approval import real_ingress_record
+from common.contracts.errors import ContractError
 from common.contracts.stages import CONIECTOR
 from common.page_review import held_by_recensor
 from common.reconstruction import load_reconstruction_policy
@@ -825,3 +827,64 @@ def test_the_recompute_refuses_a_forged_live_call(live, tmp_path, change, refusa
     _tamper(root, CALL_KIND, 1, lambda payload: change(payload, root))
     with pytest.raises(FatalAccounting, match=refusal):
         _verified(root, options)
+
+
+def _main_on_a_real_submission(monkeypatch, *, calls: list, serving_mode: str):
+    """The Coniector's `main` over a real-ingress context, its plan and chair stubbed.
+
+    Returns what it published, in order, and the error it raised, if any.
+    """
+    coniector = load_stage("4b_coniector")
+    published: list[str] = []
+    context = SimpleNamespace(
+        run={"ingress": real_ingress_record()},
+        require_sealed_config=lambda *_args: None,
+        seal_boundary=lambda: published.append("seal"),
+        finish=lambda: None,
+    )
+    args = SimpleNamespace(reconstruction_config=None, decoding_config=None)
+    monkeypatch.setattr(
+        coniector, "stage_parser", lambda _d: SimpleNamespace(parse_args=lambda: args)
+    )
+    monkeypatch.setattr(coniector, "open_stage_context", lambda *_a, **_k: context)
+    monkeypatch.setattr(
+        coniector, "load_reconstruction_policy", lambda _p: SimpleNamespace(sha256="0", mode="on")
+    )
+    monkeypatch.setattr(coniector, "load_decoding_policy", lambda _p: ({}, "0"))
+    monkeypatch.setattr(coniector, "reading_acts", lambda _c: [])
+    monkeypatch.setattr(coniector, "diplomatic_entries", lambda _c, _r: ([], {}))
+    monkeypatch.setattr(coniector, "plan_payload", lambda _p, _e: {"calls": calls})
+    monkeypatch.setattr(
+        coniector,
+        "_Chair",
+        lambda *_a: SimpleNamespace(
+            identity=SimpleNamespace(role="reconstructor"), serving_mode=serving_mode
+        ),
+    )
+    monkeypatch.setattr(coniector, "_publish_plan", lambda *_a: published.append("plan"))
+    monkeypatch.setattr(coniector, "reconstructor_max_tokens", lambda _d: 1)
+    monkeypatch.setattr(coniector, "_publish_call", lambda *_a: pytest.fail("a call was asked"))
+    try:
+        coniector.main()
+    except ContractError as error:
+        return published, error
+    return published, None
+
+
+def test_a_real_submission_on_a_non_live_row_is_refused_before_the_plan(monkeypatch):
+    """A declared answer cannot stand in for a reply to real ink, so the stage refuses
+    by name before it publishes anything, not part-way through its calls."""
+    published, error = _main_on_a_real_submission(
+        monkeypatch, calls=[{"page_ordinal": 1}], serving_mode="fixture"
+    )
+    assert published == []
+    assert error is not None
+    assert "the Coniector cannot read a real submission from declared fixture answers" in str(error)
+    assert "'reconstructor'" in str(error)
+
+
+def test_a_real_submission_that_asks_nothing_is_not_refused(monkeypatch):
+    """With nothing to ask, a non-live row has nothing to answer, and the stage seals."""
+    published, error = _main_on_a_real_submission(monkeypatch, calls=[], serving_mode="fixture")
+    assert error is None
+    assert published == ["plan", "seal"]

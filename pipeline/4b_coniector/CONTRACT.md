@@ -24,7 +24,9 @@ reconstruction is counted in any denominator.
   `reading` and `reading-unplaced`), each read through its `perlectio.v3`. Its diplomatic text is the Perlectio's text with its doubt
   marks rendered back (`render_doubt_marks`).
 - The `reconstructor` chair from the run's roster: the Perlector's model at the
-  Perlector's revision, asked text only.
+  Perlector's revision, asked text only. A serving row that is not live reads the
+  synthetic fixture's declared replies; on a real submission whose plan asks any
+  call, such a row is refused before anything is published.
 
 ## Records
 
