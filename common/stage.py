@@ -2566,7 +2566,7 @@ def _verify_page_reading(
             supersedes=superseded,
             measure=measure,
         )
-        payload, reading_ref, act_plans, last, page_holds = current
+        payload, reading_ref, act_plans, last, page_holds, superseded = current
         codes = _problem_codes(payload.get("problems"), f"{what}'s current page reading")
         accounting_ref, reask_ref, named = index.ref(last), None, None
         by_reading = {payload["attempt_ordinal"]: (payload, reading_ref)}
@@ -2659,14 +2659,22 @@ def _verify_rereads(
     feed_ref: dict[str, str],
     supersedes: list[dict[str, str]],
     measure,
-) -> tuple[Mapping[str, Any], dict[str, str], list[dict[str, Any]], Mapping[str, Any], list[str]]:
+) -> tuple[
+    Mapping[str, Any],
+    dict[str, str],
+    list[dict[str, Any]],
+    Mapping[str, Any],
+    list[str],
+    list[dict[str, str]],
+]:
     """A page's operator re-reads, each proven like a first reading, in attempt order.
 
     Each must answer stored page re-asks of this page that no other re-read
     answers, supersede exactly the page's earlier readings, input them and its
     decisions, and be the first reading's request over the same feed; its own
     accounting is measured again. Returns the last one's payload, reference,
-    entry plans, accounting record and page holds: the page's current reading.
+    entry plans, accounting record and page holds: the page's current reading,
+    and every reading it supersedes, earlier re-reads included.
     """
     ordinal, page_id = feed["page_ordinal"], feed["page_id"]
     answered: set[str] = set()
@@ -2714,7 +2722,7 @@ def _verify_rereads(
             plans=plans,
             attempt=attempt,
         )
-        current = (payload, reference, plans, accounting, measured["holds"])
+        current = (payload, reference, plans, accounting, measured["holds"], list(supersedes))
         supersedes.append(reference)
     assert current is not None
     return current
