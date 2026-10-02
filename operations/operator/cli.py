@@ -799,18 +799,6 @@ def build_parser() -> PlainParser:
         "--root", type=Path, required=True, help="run tree, volume mount or export folder"
     )
     clear.add_argument("--apply", action="store_true", help="remove them instead of listing")
-    scantailor = verbs.add_parser(
-        "scantailor",
-        help="name the separate ScanTailor desktop handoff, then import its saved geometry",
-    )
-    scantailor.add_argument(
-        "--project", type=Path, required=True, help="saved ScanTailor Advanced project XML"
-    )
-    scantailor.add_argument(
-        "--geometry-out",
-        type=Path,
-        help="existing folder to receive the immutable imported geometry document",
-    )
     return parser
 
 
@@ -976,22 +964,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             _triage_queue(args, workspace)
         elif args.verb == "clear-leftovers":
             _clear_leftovers(args.root, apply=args.apply)
-        elif args.verb == "scantailor":
-            from .scantailor import import_in_custody, instruction
-
-            if args.geometry_out is not None:
-                _print(
-                    "Importing the ScanTailor project as it is saved right now. "
-                    "If you have not yet saved its page-split geometry, stop and do that first."
-                )
-                import_in_custody(
-                    project=args.project,
-                    output_dir=args.geometry_out,
-                    workspace=workspace,
-                    printer=_print,
-                )
-            else:
-                _print(instruction(args.project, workspace=workspace))
         else:
             raise OperatorError(
                 ErrorCode.INVALID_COMMAND, detail="the requested word has no action"
@@ -1697,7 +1669,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, fetch-run, export, close, status, spend, review, decide, advance, backup, or clear-leftovers."
+        "Choose one word: ingest, triage, launch, boot, upload, run, fetch-run, export, close, status, spend, review, decide, advance, backup, or clear-leftovers."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1817,20 +1789,6 @@ def _interactive_arguments() -> list[str]:
             "--mode-record",
             mode_record,
         ]
-    if verb == "scantailor":
-        project = _ask("Saved ScanTailor Advanced project XML")
-        output = _ask(
-            "Existing folder for the imported geometry document (leave blank for instructions only)"
-        )
-        if not project:
-            _print(
-                "ScanTailor needs its saved project file. It was left blank, so nothing changed."
-            )
-            return []
-        arguments = ["scantailor", "--project", project]
-        if output:
-            arguments.extend(("--geometry-out", output))
-        return arguments
     if verb == "clear-leftovers":
         root = _ask("Folder to check for leftovers")
         if not root:

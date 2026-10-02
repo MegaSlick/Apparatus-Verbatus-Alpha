@@ -21,16 +21,15 @@ Two words really reach a RunPod network volume:
 - `fetch-run` brings back a pod-written run tree and the launch evidence you name; it never
   fetches the uploaded images or their manifest.
 
-## The seventeen words
+## The sixteen words
 
-Fourteen things this tool can do, in the order a normal run uses them, plus two you can run
+Thirteen things this tool can do, in the order a normal run uses them, plus two you can run
 any time to check on things and one that tidies up.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
 | `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
 | `triage` | Shows the review queue `ingest` produced — each candidate with its evidence and proxy image — and records your accept or decline against it. | No — podless and offline. It shows and it records; it never opens a master and never decides for you. The double-click window shows the queue only; a decision is recorded from the command line. |
-| `scantailor` | Names the separate desktop handoff and records a saved ScanTailor project's geometry by digest. | No. It does not launch ScanTailor or use its output images. |
 | `launch` | Rents a machine with a GPU to run the pipeline on. This build rehearses that gate with a fixture. | **Yes in a real run; no in this rehearsal.** It shows the price per hour and every limit, and makes you type a confirmation back first. |
 | `boot` | Gets the rented machine ready and checks it over. This build checks fixture wiring only. | No new cost beyond a machine already running. |
 | `upload` | Sends your images to storage. | No rented machine is needed — do it first if you like. With `--network-volume`, the volume itself costs money for as long as it exists, pod or no pod. |
@@ -218,16 +217,6 @@ Two limits:
 - **It handles small runs only.** Every page and crop is read and digested in one pass
   under a 256 MiB allowance, so a parish-sized run is refused by name. A console for real
   volumes has to verify one image at a time as it renders.
-
-## The ScanTailor seam
-
-**ScanTailor Advanced is a separate desktop program; Verbatus does not pretend it is built
-in.** Choose `scantailor`, give the saved project XML, and Verbatus tells you which project
-to open and what to do there. After you save it, give an existing geometry folder (the
-console never creates one) to import the split geometry. The imported document is
-immutable and bound to the project-file digest shown before the write. It records geometry
-only: no preferred page, no crop, no ScanTailor output images. The submitted masters remain
-the Exemplar.
 
 ## Before anything bills, it asks
 
