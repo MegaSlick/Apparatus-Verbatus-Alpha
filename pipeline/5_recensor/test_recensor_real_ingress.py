@@ -147,7 +147,7 @@ def test_each_stage_opens_through_the_shared_constructor_and_owns_no_opener(
         module.main(registry_factory=registry_factory)
     reader = {} if stage == PERLECTOR else {"serving_reader": SERVING_READER}
     assert opened == [(args, stage, registry_factory, reader)]
-    assert not hasattr(module, "_open"), "a stage-private opener is the drift this closes"
+    assert not hasattr(module, "_open"), "the stage opens through the shared opener only"
 
 
 # --- the Perlector's refusal of an unlive real reading ------------------------------

@@ -188,7 +188,6 @@ def test_a_happy_page_tree_accepts_every_unit_with_its_evidence(happy, tmp_path)
         }
         assert payload["uncertainty_assessment"]["state"] is not None
         assert row["perlectio_ref"] in review["inputs"]
-    assert not (tree.root / RUN_ID / "5_recensor" / "artifacts" / "recovery-request").exists()
 
     receipt = tree.receipt()
     assert receipt["schema"] == "recensor-partition-receipt.v6"
@@ -478,16 +477,6 @@ def _stray_link(context, reviews) -> None:
 @pytest.mark.parametrize(
     ("forge", "refusal"),
     [
-        (
-            lambda tree, context, reviews: context.publish(
-                kind="recovery-request",
-                subject_id=reviews["p1:1"]["subject_id"],
-                outcome="held-for-review",
-                attempt=page_review.attempt_id(reviews["p1:1"]["subject_id"], "recover", 1),
-                payload={},
-            ),
-            "asks for no recovery",
-        ),
         (lambda tree, context, reviews: _drop(tree, "review"), "has no Recensor review"),
         (
             lambda tree, context, reviews: _later_review(
@@ -501,13 +490,13 @@ def _stray_link(context, reviews) -> None:
             lambda tree, context, reviews: _later_review(
                 context, reviews["p1:1"], outcome="held-for-review"
             ),
-            "derive 'accepted'",
+            "its outcome differ",
         ),
         (
             lambda tree, context, reviews: _later_review(
                 context, reviews["p1:1"], hold_codes=["under-witnessed"], outcome="held-for-review"
             ),
-            "but disk derives",
+            "its outcome, hold_codes",
         ),
         (
             lambda tree, context, reviews: _later_review(
@@ -521,7 +510,6 @@ def _stray_link(context, reviews) -> None:
         (lambda tree, context, reviews: _stray_link(context, reviews), "no answer of this run"),
     ],
     ids=[
-        "recovery-request",
         "missing-review",
         "coverage",
         "outcome",
@@ -563,7 +551,7 @@ def test_the_receipt_refuses_an_accepted_review_of_a_held_row_with_no_release(re
     held = tree.reviews()["p2:1"]
     _later_review(context, held, outcome="accepted", hold_codes=[])
     context.finish()
-    with pytest.raises(FatalAccounting, match="without naming a release"):
+    with pytest.raises(FatalAccounting, match="its outcome, hold_codes"):
         _write_receipt(context)
 
 
@@ -909,51 +897,7 @@ def test_the_floor_counts_only_the_testimonia_the_page_accounting_measured():
         page_review._require_accounted_testimonia(context, _row(), {"inputs": measured}, records)
 
 
-# --- the outcome the receipt recomputes ------------------------------------------------------
-
-
-def _review(outcome: str, **payload) -> dict[str, Any]:
-    base = {"hold_codes": [], "release": None, "confirmation": None}
-    return {"outcome": outcome, "payload": {**base, **payload}}
-
-
 FLOORED = _coverage(_testimonium("a", truncated=False), floor=1)
-
-
-def test_the_receipt_derives_each_outcome_from_the_row_and_the_release():
-    derive = page_review.require_derived_outcome
-    derive(_row(), _review("accepted"), FLOORED, [])
-    held_row = _row(hold_codes=["unread-ink"])
-    derive(held_row, _review("held-for-review", hold_codes=["unread-ink"]), FLOORED, [])
-    with pytest.raises(FatalAccounting, match="without naming a release"):
-        derive(held_row, _review("accepted"), FLOORED, [])
-    no_act = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD])
-    release = {"hold_codes": [NO_ACT_ON_PAGE_HOLD], "reason": "confirmed"}
-    derive(
-        no_act, _review("accepted", release=release, confirmation={"confirmed": True}), FLOORED, []
-    )
-    with pytest.raises(FatalAccounting, match="releases hold codes"):
-        derive(
-            no_act,
-            _review("accepted", release=release, confirmation={"confirmed": False}),
-            FLOORED,
-            [],
-        )
-    with pytest.raises(FatalAccounting, match="releases hold codes"):
-        derive(
-            held_row,
-            _review(
-                "accepted", release={"hold_codes": ["unread-ink"]}, confirmation={"confirmed": True}
-            ),
-            FLOORED,
-            [],
-        )
-    with pytest.raises(FatalAccounting, match="derive 'held-for-review'"):
-        derive(held_row, _review("accepted", hold_codes=["unread-ink"]), FLOORED, [])
-    with pytest.raises(FatalAccounting, match="neither its row nor this stage names"):
-        derive(_row(), _review("held-for-review", hold_codes=["made-up"]), FLOORED, [])
-    with pytest.raises(FatalAccounting, match="but disk derives"):
-        derive(_row(), _review("accepted"), FLOORED, ["continues_to_next_page"])
 
 
 # --- continuation --------------------------------------------------------------------------

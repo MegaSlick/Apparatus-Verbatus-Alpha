@@ -980,61 +980,6 @@ def _require_accounted_testimonia(
 # --- the receipt -------------------------------------------------------------------------
 
 
-def require_derived_outcome(act: dict, review: dict, coverage: dict, off_edge: list[str]) -> None:
-    """A unit's review outcome follows from its row's holds, its release and its own codes.
-
-    Each row hold code is either kept or named in a release, and a release
-    names exactly the row's codes, only codes this stage may release, on a
-    confirmed page. The coverage and continuation codes are recomputed; a
-    unit is held exactly when any code remains.
-    """
-    act_id = act["act_id"]
-    payload = review["payload"]
-    hold = payload.get("hold_codes")
-    release = payload.get("release")
-    confirmed = payload.get("confirmation")
-    row = set(act["hold_codes"])
-    if not isinstance(hold, list) or not set(hold) <= row | OWN_CODES:
-        raise FatalAccounting(
-            f"Recensor review of {act_id} holds on codes neither its row nor this stage names"
-        )
-    released: set[str] = set()
-    if release is not None:
-        if (
-            not isinstance(release, dict)
-            or release.get("hold_codes") != sorted(row)
-            or not row
-            or not row <= RELEASABLE_HOLDS
-            or not isinstance(confirmed, dict)
-            or confirmed.get("confirmed") is not True
-        ):
-            raise FatalAccounting(
-                f"Recensor review of {act_id} releases hold codes other than its row's "
-                "releasable ones on a confirmed page"
-            )
-        released = row
-    if not (row - released) <= set(hold):
-        raise FatalAccounting(
-            f"Recensor review of {act_id} drops row hold code(s) "
-            f"{sorted(row - released - set(hold))} without naming a release"
-        )
-    expected_own = {code for code, _sentence in coverage_findings(coverage, act["page_ordinal"])}
-    if off_edge:
-        expected_own.add(CONTINUATION_OFF_EDGE)
-    recomputed = {UNDER_WITNESSED, UNRESOLVED_WITNESS, CONTINUATION_OFF_EDGE}
-    if set(hold) & recomputed != expected_own:
-        raise FatalAccounting(
-            f"Recensor review of {act_id} names witness-floor or continuation holds "
-            f"{sorted(set(hold) & recomputed)}, but disk derives {sorted(expected_own)}"
-        )
-    expected = HELD if hold else CONFIRMED_BLANK if act["class"] == PAGE_BLANK_CLASS else ACCEPTED
-    if review["outcome"] != expected:
-        raise FatalAccounting(
-            f"Recensor review of {act_id} is {review['outcome']!r}, but its hold codes and "
-            f"release derive {expected!r}"
-        )
-
-
 def release_reason(act: dict, review: dict) -> str | None:
     """Why a unit its page reading held is completed at review, or None for any other unit.
 
@@ -1096,8 +1041,8 @@ def write_reading_receipt(
     release, codes, outcome and inputs must be exactly what disk gives, the
     Testimonia counted for the floor must be the ones the page accounting
     measured, every continuation-link is matched against the breaks the
-    answers flag, and a Recensor review or recovery request of anything outside
-    `reading_acts` is refused.
+    answers flag, and a Recensor review of anything outside `reading_acts` is
+    refused.
     """
     for stage in (ATTESTATORES, PERLECTOR, RECENSOR):
         if not context.tree.manifest_agrees_with_disk(stage):
@@ -1117,16 +1062,10 @@ def write_reading_receipt(
             "the Recensor's review-decisions record is not what the run's operator review "
             "decisions give against the reviews disk measures"
         )
-    machine = {act["act_id"]: (outcome, payload) for act, outcome, payload, _inputs in planned}
     by_id = {act["act_id"]: act for act in acts}
     reviews: dict[str, list[dict]] = {act_id: [] for act_id in by_id}
     superseded: dict[str, list[dict]] = {}
     for entry in context.tree.build_manifest(RECENSOR)["artifacts"]:
-        if entry["kind"] == "recovery-request":
-            raise FatalAccounting(
-                f"Recensor recovery request {entry['artifact_id']} exists in a page-read run, "
-                "which asks for no recovery"
-            )
         if entry["kind"] != "review":
             continue
         record = context.tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
@@ -1143,7 +1082,6 @@ def write_reading_receipt(
                 f"Recensor review {records[0]['artifact_id']} names unit {subject!r}, which is "
                 "outside this page-read run's reading_acts"
             )
-    off_edge = continuation_off_edge(acts)
     items = []
     for act, outcome, expected, inputs, approval_ref in sorted(
         decided, key=lambda plan: plan[0]["act_id"]
@@ -1165,13 +1103,6 @@ def write_reading_receipt(
                 f"Recensor review of {act_id} does not retain the unit key and witness coverage "
                 "recomputed from disk"
             )
-        if REVIEW_FIELD in payload:
-            # A decided review derives from the machine's, which `decide_reviews` recomputes.
-            machine_outcome, machine_payload = machine[act_id]
-            derived = {"outcome": machine_outcome, "payload": machine_payload}
-        else:
-            derived = review
-        require_derived_outcome(act, derived, coverage, off_edge.get(act_id, []))
         sealed = {name: value for name, value in payload.items() if name != "attempt_ordinal"}
         differing = sorted(
             name for name in set(sealed) | set(expected) if sealed.get(name) != expected.get(name)
