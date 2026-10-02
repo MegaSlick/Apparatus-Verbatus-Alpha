@@ -27,10 +27,14 @@ reviews:
   poem: false
 
   auto_review:
-    enabled: true
+    # Outsider lock: no pull request is reviewed automatically. A pull request is reviewed
+    # once it carries the maintainer-only label `review-ok`, which only people with triage
+    # or write access can add; the lead adds it to an outsider's pull request to allow a
+    # review, and the lead's own sessions add it to theirs.
+    enabled: false
+    labels: ["review-ok"]
     auto_incremental_review: true
-    # This counts reviewed commits, not review runs. After two reviewed commits CodeRabbit
-    # pauses; a later material commit needs a manual incremental request and HEAD coverage check.
+    # Counts reviewed commits. After two, CodeRabbit pauses until asked to review again.
     auto_pause_after_reviewed_commits: 2
 
   pre_merge_checks:
@@ -208,3 +212,10 @@ knowledge_base:
     scope: local
   issues:
     scope: local
+
+chat:
+  # Only the maintainer may talk to CodeRabbit in comment threads. CodeRabbit documents
+  # this for organization repositories; on a personal one it may have no effect, so a
+  # stranger's `@coderabbitai review` comment is tested before the lock is relied on
+  # (docs/GITHUB_SETTINGS_PROPOSAL.md).
+  allow_non_org_members: false
