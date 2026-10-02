@@ -325,46 +325,19 @@ def check_algebra_is_total() -> None:
 TEXT_STATUSES: Final = frozenset({"established", "partial", "no_readable_text"})
 
 
-def derive_text_status(text: Any, annotations: Any) -> str:
-    """established | partial | no_readable_text, from the text and its gaps alone.
+def derive_record_text_status(text: Any, uncertainty: Any) -> str:
+    """established | partial | no_readable_text, from a record's text and its gaps.
 
-    A gap anywhere means some ink is known and unread, whether `text` is otherwise
-    empty or full: `partial`. No gap and no text is the only remaining case, and
-    the only one that may be called `no_readable_text` — a positive finding that
-    owes its own evidence (`pipeline/6_archetypus/run.py::validate_text_status`).
-
-    "We could not read it" must never quietly become "there was nothing to read".
+    A gap in the canonical `uncertainty` layer means some ink is known and unread,
+    whether `text` is otherwise empty or full: `partial`. No gap and no text is
+    the only remaining case, `no_readable_text`; no stage establishes or delivers
+    one. Gaps are read before the empty-text case, so a whole-act gap over empty
+    text is `partial`: "we could not read it" never becomes "there was nothing to
+    read". The text is type-checked on every path, so no status is returned over
+    a text nobody checked.
     """
     if not isinstance(text, str):
         raise SchemaRefusal("a text status requires exactly one string text field")
-    if not isinstance(annotations, (list, tuple)):
-        raise SchemaRefusal("a text status cannot be derived from a non-list annotation layer")
-    for index, note in enumerate(annotations):
-        if not isinstance(note, Mapping) or "kind" not in note:
-            raise SchemaRefusal(
-                f"annotation {index} carries no kind, so whether it records unread ink "
-                "cannot be decided; an unreadable damage layer is refused, never skipped"
-            )
-    if any(note["kind"] == "illegible" for note in annotations):
-        return "partial"
-    if text.strip() == "":
-        return "no_readable_text"
-    return "established"
-
-
-def derive_record_text_status(text: Any, annotations: Any, uncertainty: Any) -> str:
-    """The same three words over *both* damage layers a sealed record carries.
-
-    A record carries the canonical `uncertainty` layer (`gaps`, the shape every
-    Perlectio actually produces) and the older `annotations` layer (`illegible`
-    notes, which nothing upstream populates yet). Either one recording unread ink
-    makes the record `partial`, and neither can hide damage the other saw, so the
-    two travelling together is honest even where they are not identical: this
-    union is the one status both of them answer to.
-
-    Gaps are read before the empty-text case: a gap over empty text is ink
-    present and unread, `partial`, never `no_readable_text`.
-    """
     if not isinstance(uncertainty, Mapping) or not isinstance(
         uncertainty.get("gaps"), (list, tuple)
     ):
@@ -372,10 +345,10 @@ def derive_record_text_status(text: Any, annotations: Any, uncertainty: Any) -> 
             "a record text status requires the canonical uncertainty layer's own gap list"
         )
     if uncertainty["gaps"]:
-        # Still type-checks the text, so a malformed record cannot slip through here.
-        derive_text_status(text, annotations)
         return "partial"
-    return derive_text_status(text, annotations)
+    if text.strip() == "":
+        return "no_readable_text"
+    return "established"
 
 
 # --- Witness coverage: outcomes aggregate into counts, never into text ----------

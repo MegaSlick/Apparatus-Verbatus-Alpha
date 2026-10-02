@@ -64,6 +64,7 @@ def seal_record(**overrides) -> dict:
     the check under test.
     """
     record = {
+        "schema": "archetypus-record.v2",
         **ACT,
         "text": "Maria",
         "text_hash": digest_of("Maria"),
@@ -119,6 +120,7 @@ def test_exactly_one_field_holds_the_established_characters():
     # name rather than by a suffix scan that catches only two of the five.
     assert archetypus._RECORD_FIELDS == frozenset(
         {
+            "schema",
             "act_id",
             "act_key",
             "page_id",

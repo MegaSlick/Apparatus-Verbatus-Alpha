@@ -2545,7 +2545,8 @@ def _require_damage_record(
     """Recompute a delivered act's text status from the uncertainty layer beside it.
 
     A carried status is never believed: a package must not say `established` over
-    an act whose own gap list records unread ink.
+    an act whose own gap list records unread ink. A reading with no text and no
+    gap is never delivered: an empty reading is held before the Archetypus.
     """
     # Type before membership, so an unhashable JSON value is refused, not raised.
     if not isinstance(text_status, str) or text_status not in TEXT_STATUSES:
@@ -2554,11 +2555,16 @@ def _require_damage_record(
             f"not one of {sorted(TEXT_STATUSES)}"
         )
     try:
-        expected = derive_record_text_status(literal, [], uncertainty)
+        expected = derive_record_text_status(literal, uncertainty)
     except SchemaRefusal as error:
         raise SchemaRefusal(
             f"a delivered {subject}'s uncertainty layer cannot be read for the status of its text"
         ) from error
+    if expected == "no_readable_text":
+        raise SchemaRefusal(
+            f"a delivered {subject} has no text and no gap; an empty reading is held for "
+            "review, never delivered"
+        )
     if text_status != expected:
         raise SchemaRefusal(
             f"a delivered {subject} claims established-text status {text_status!r} over an "

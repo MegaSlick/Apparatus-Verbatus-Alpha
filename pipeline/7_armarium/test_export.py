@@ -231,6 +231,7 @@ def _page_record_case():
 
 def _sealed_page_record(armarium, row, reading_payload, region, **changes):
     payload = {
+        "schema": "archetypus-record.v2",
         "act_id": row["act_id"],
         "act_key": row["act_key"],
         "page_id": row["page_id"],

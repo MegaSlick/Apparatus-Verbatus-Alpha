@@ -3065,6 +3065,15 @@ def test_a_delivered_act_with_a_gap_reaches_every_selected_literal_format(tmp_pa
     assert manifest["claims"]["status"] == "partial"
 
 
+def test_an_empty_reading_is_never_delivered():
+    """No text and no gap is `no_readable_text`, which no stage delivers."""
+    projection = _damaged_delivered(
+        _projection(), text_status="no_readable_text", canonical_clean_text=""
+    )
+    with pytest.raises(SchemaRefusal, match="no text and no gap"):
+        build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+
+
 def test_a_projection_claiming_established_over_its_own_gap_is_refused():
     """The status is recomputed, never carried: the whole finding in one assertion."""
     projection = _partial_projection()

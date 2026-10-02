@@ -37,7 +37,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from common import page_path  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import (  # noqa: E402
-    SCHEMA_LABEL,
     digest_of,
     self_hash,
     verify_self_hash,
@@ -95,8 +94,12 @@ DESCRIPTION = "Archetypus: exactly one established reading per act, written once
 # The record's whole field set, closed, so "is there a second text-bearing field?"
 # is answered mechanically rather than by reading the constructor. Every field is
 # required, so the set never varies by act.
+# The record's and the index's schema ids; each moves with its closed field set.
+RECORD_SCHEMA = "archetypus-record.v2"
+INDEX_SCHEMA = "archetypus-index.v2"
 _RECORD_FIELDS = frozenset(
     {
+        "schema",
         "act_id",
         "act_key",
         "page_id",
@@ -215,6 +218,8 @@ def validate_record(record: dict) -> dict:
     validate_record_fields(record)
     if not verify_self_hash(record):
         raise SchemaRefusal("the Archetypus record fails its nested self-hash")
+    if record["schema"] != RECORD_SCHEMA:
+        raise SchemaRefusal(f"the Archetypus record is not a {RECORD_SCHEMA} record")
     for field in ("act_id", "act_key", "page_id"):
         if not isinstance(record[field], str) or not record[field]:
             raise SchemaRefusal(f"the Archetypus record has no {field}")
@@ -230,7 +235,7 @@ def validate_record(record: dict) -> dict:
     if record["status"] != "established":
         raise SchemaRefusal("the Archetypus record status is not the fixed 'established' literal")
     validate_uncertainty(record["uncertainty"], text)
-    derived_status = derive_record_text_status(text, [], record["uncertainty"])
+    derived_status = derive_record_text_status(text, record["uncertainty"])
     if record["text_status"] != derived_status:
         raise SchemaRefusal(
             f"the Archetypus text_status {record['text_status']!r} disagrees with its text "
@@ -465,10 +470,10 @@ def establish_from_accepted_page_reading(
             edits,
             perlectio_ref=reading_ref,
             model_text=model_text,
-            model_text_status=derive_record_text_status(model_text, [], model_uncertainty),
+            model_text_status=derive_record_text_status(model_text, model_uncertainty),
             model_provenance=payload.get("provenance"),
         )
-    text_status = derive_record_text_status(text, [], uncertainty)
+    text_status = derive_record_text_status(text, uncertainty)
     validate_text_status(text, text_status)
     validate_serving_provenance(
         context,
@@ -477,6 +482,7 @@ def establish_from_accepted_page_reading(
         require_receipt=True,
     )
     record = {
+        "schema": RECORD_SCHEMA,
         "act_id": act_id,
         "act_key": row["act_key"],
         "page_id": row["page_id"],
@@ -558,7 +564,7 @@ def build_index(context) -> dict:
     """
     rows = _archetypus_rows(context)
     index = {
-        "schema": SCHEMA_LABEL,
+        "schema": INDEX_SCHEMA,
         "run_id": context.tree.run_id,
         "stage": ARCHETYPUS,
         # The number of immutable records this index summarizes. `validate_index`
@@ -586,7 +592,7 @@ def validate_index(context, index, *, on_disk=None, accepted=None) -> dict:
     """
     if not isinstance(index, dict) or set(index) != _INDEX_FIELDS:
         raise FatalAccounting("the Archetypus index is not the closed derived-index shape")
-    if index["schema"] != SCHEMA_LABEL or index["run_id"] != context.tree.run_id:
+    if index["schema"] != INDEX_SCHEMA or index["run_id"] != context.tree.run_id:
         raise FatalAccounting("the Archetypus index belongs to a different schema or run")
     if index["stage"] != ARCHETYPUS or not verify_self_hash(index):
         raise FatalAccounting("the Archetypus index fails its own stage label or self-hash")

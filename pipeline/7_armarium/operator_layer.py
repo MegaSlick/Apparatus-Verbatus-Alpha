@@ -237,7 +237,7 @@ def verify_model_reading(row: Mapping[str, Any], model: Any, subject: str) -> di
         if (
             uncertainty["lectio_kind"] != PAGE_READ_LECTIO
             or status != named["text_status"]
-            or status != derive_record_text_status(text, [], uncertainty)
+            or status != derive_record_text_status(text, uncertainty)
         ):
             raise SchemaRefusal("layer")
     except (KeyError, TypeError, SchemaRefusal) as error:

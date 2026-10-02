@@ -769,6 +769,7 @@ def verify_established_page_record(
     if not isinstance(payload, dict) or not verify_self_hash(payload):
         raise FatalAccounting("an Archetypus payload fails its own self-hash before export")
     expected = {
+        "schema": "archetypus-record.v2",
         "act_id": row["act_id"],
         "act_key": row["act_key"],
         "page_id": row["page_id"],
@@ -837,11 +838,11 @@ def verify_established_page_record(
                 perlectio_ref=reading_ref,
                 model_text=reading_payload.get("text"),
                 model_text_status=derive_record_text_status(
-                    reading_payload.get("text"), [], model_uncertainty
+                    reading_payload.get("text"), model_uncertainty
                 ),
                 model_provenance=reading_payload.get("provenance"),
             )
-        text_status = derive_record_text_status(payload.get("text"), [], uncertainty)
+        text_status = derive_record_text_status(payload.get("text"), uncertainty)
     except SchemaRefusal as error:
         raise FatalAccounting(
             f"the damage layers of {row['act_key']} cannot be reconciled with its reading"
@@ -885,7 +886,7 @@ def model_reading_row(row: dict, reading: dict) -> dict:
         "label": ORIGINAL_LABEL,
         "text": payload["text"],
         "uncertainty": uncertainty,
-        "text_status": derive_record_text_status(payload["text"], [], uncertainty),
+        "text_status": derive_record_text_status(payload["text"], uncertainty),
         "perlectio_ref": row["perlectio_ref"],
     }
 

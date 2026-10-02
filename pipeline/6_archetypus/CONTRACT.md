@@ -79,9 +79,10 @@ refuses to run over a Recensor hold no person has passed.
 ## `kind="archetypus"`
 
 The artifact subject is the act identity. The payload is separately self-hashed and its
-field set is closed:
+field set is closed, under the schema id `archetypus-record.v2`, which moves with it:
 
 ```text
+schema = "archetypus-record.v2"
 act_id, act_key, page_id, kind
 text, text_hash
 status = "established", text_status
@@ -103,7 +104,8 @@ name at a time. There is exactly one `text`.
   by `common.contracts.outcomes.derive_record_text_status` from `text` and the
   `uncertainty` layer: any gap makes it `partial` (ink known and unread, whether or not
   `text` is otherwise empty); otherwise `established`. The derivation calls a reading
-  with no text and no gap `no_readable_text`, and the Archetypus refuses such a record:
+  with no text and no gap `no_readable_text`, and the Archetypus refuses such a record
+  (as the Armarium refuses to deliver one):
   an empty reading is held before it reaches this stage, and a blank page is
   `confirmed-blank` at page level. `status` and `text_status` answer different
   questions and are never mirrors.
@@ -140,7 +142,7 @@ same once-only identity.
 
 A rebuildable per-run summary derived from the immutable records on disk, exactly as
 `manifest.json` is, and never the only evidence. It is the closed set `{schema, run_id,
-stage, record_count, rows, self_hash}`; each row is `{act_id, act_key, kind,
+stage, record_count, rows, self_hash}`, `schema` being `archetypus-index.v2`; each row is `{act_id, act_key, kind,
 artifact_id, text_status, text_hash, relative_path, sha256}`. The stage writes it, reads
 it back and reconciles it before finishing: rows, records on disk and the readings the
 Recensor accepted (recomputed from the review records) must be the same set. A missing
