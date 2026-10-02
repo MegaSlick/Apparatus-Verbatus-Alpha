@@ -16,10 +16,6 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from common.decoding import decoded_wire_decimals
 
 SCHEMA: Final = "perlector-audit.v3"
-LEGACY_SCHEMA: Final = "perlector-audit.v2"
-# Refused by name: a v1 declaration cannot say whether a delivered re-proof
-# completed, and inferring it from silence would be the claim it could not make.
-RETIRED_SCHEMAS: Final = frozenset({"perlector-audit.v1"})
 
 # The truncation instrument's verdicts; `common/truncation.py` classifies with them.
 TRUNCATION_COMPLETE: Final = "complete"
@@ -42,15 +38,14 @@ def audit_not_run(audit_policy: dict[str, Any], audit_sha256: str) -> dict[str, 
     }
 
 
-def length_judged(*, smallest_page_pixels: int, legible_page_pixels: int) -> bool:
-    """Whether the length signal applies: every page the reading spans is legible-sized.
+def length_judged(*, page_pixels: int, legible_page_pixels: int) -> bool:
+    """Whether the length signal applies: the page the reading is of is legible-sized.
 
     The floor is a density per page, a page's lines times a line's characters; a
     page below the sealed legible size cannot hold that many lines, so there is
-    no density for a reading to fall short of. The smallest page decides, since
-    one sub-legible page makes the summed area misleading.
+    no density for a reading to fall short of.
     """
-    return smallest_page_pixels >= legible_page_pixels
+    return page_pixels >= legible_page_pixels
 
 
 def length_signal(*, characters: int, region_pixels: int, page_pixels: int, floor: int) -> bool:

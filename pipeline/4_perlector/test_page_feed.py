@@ -16,7 +16,7 @@ from PIL import Image, ImageColor, ImageDraw
 
 from common import page_feed, page_overlay, page_prompt, page_testimonia, page_witness_units
 from common.churro_document import churro_system_prompt
-from common.contracts.canonical import code_digest, digest_bytes
+from common.contracts.canonical import code_digest, digest_bytes, digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
@@ -396,7 +396,8 @@ def test_the_default_feed_shows_each_witness_in_its_own_units():
         "act_entries": 3,
         "surya_lines": 3,
     }
-    page_feed.verify_feed_digest(feed)
+    body = {key: value for key, value in feed.items() if key != "feed_digest"}
+    assert feed["feed_digest"] == digest_of(body)
 
 
 def test_box_1000_rounds_half_to_even_from_page_pixels():
@@ -1650,7 +1651,6 @@ def test_every_reported_string_is_a_part_charged_per_byte_and_the_parts_join_to_
 
 def test_the_renderer_digest_names_the_overlay_code_and_its_encoder():
     from common import imaging
-    from common.contracts.canonical import digest_of
 
     assert page_overlay.RENDERER_SHA256 == digest_of(
         {

@@ -808,10 +808,3 @@ def request_image_sizes(feed: dict[str, Any]) -> list[tuple[int, int]]:
     if feed["overlay"] is not None:
         sizes.append((feed["overlay"]["dimensions"]["w"], feed["overlay"]["dimensions"]["h"]))
     return sizes
-
-
-def verify_feed_digest(feed: dict[str, Any]) -> None:
-    """Refuse a feed whose recorded digest is not the digest of its other fields."""
-    body = {key: value for key, value in feed.items() if key != "feed_digest"}
-    if feed.get("feed_digest") != digest_of(body):
-        raise SchemaRefusal("a page feed's feed_digest is not the digest of its contents")

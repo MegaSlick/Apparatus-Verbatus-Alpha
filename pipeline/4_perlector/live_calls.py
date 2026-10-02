@@ -26,7 +26,6 @@ from common.contracts.serving import (
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
 from common.contracts.stages import PERLECTOR
-from common.decoding import refuse_retired_call_record
 from common.image_sniff import PNG_SIGNATURE
 from common.stage import verify_retained_call_sampling
 from operations.serving.chat_request import EngineSignalRefusal
@@ -237,9 +236,6 @@ def unrecorded_replies(context) -> tuple[list[dict[str, Any]], bool]:
             continue
         record = _json_object(data)
         schema = record.get("schema") if record is not None else None
-        # A call record from before the decoding bump is refused by its name, not
-        # counted as a reply no record binds.
-        refuse_retired_call_record(schema, subject=f"retained blob {path}")
         if schema in {CHAIR_CALL_RECORD_SCHEMA, CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA}:
             reply = record.get("raw_response_ref")
             if reply is not None:

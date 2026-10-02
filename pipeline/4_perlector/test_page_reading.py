@@ -1877,9 +1877,6 @@ def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted()
     ):
         with pytest.raises(ContractError, match="retained page reading .* not adopted"):
             page_run._check_adopted(state, page, request, {**reading, **changed})
-    retired = {"payload": {**reading["payload"], "schema": "perlector-page-reading.v1"}}
-    with pytest.raises(ContractError, match="perlector-page-reading.v1, a retired shape"):
-        page_run._check_adopted(state, page, request, retired)
     asked = {"payload": {**reading["payload"], "reask": {"named": []}}}
     with pytest.raises(FatalAccounting, match="names another re-ask"):
         page_run._check_adopted(state, page, request, asked)

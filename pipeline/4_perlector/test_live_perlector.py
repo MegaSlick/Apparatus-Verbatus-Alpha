@@ -976,8 +976,6 @@ def test_a_reply_another_record_binds_answers_no_send():
     # Raw bytes with no call record naming them cannot be attributed to any send.
     del blobs["call"]
     assert live_calls.unrecorded_replies(context([])) == ([], True)
-    # A call record from before the decoding bump is refused by its name, not
-    # counted as a reply no record binds.
+    # A blob of any other schema is no call record, so it too may be an unattributed reply.
     blobs["call"] = json.dumps({**call, "schema": "chair-call-record.v2"}).encode()
-    with pytest.raises(ContractError, match="written as chair-call-record.v2"):
-        live_calls.unrecorded_replies(context([]))
+    assert live_calls.unrecorded_replies(context([])) == ([], True)

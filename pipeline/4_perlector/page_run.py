@@ -98,7 +98,6 @@ from common.page_path import (
     PERLECTIO_KIND,
     READ,
     REFUSED_CAPACITY,
-    RETIRED_PAGE_READING_SCHEMAS,
 )
 from common.page_testimonia import (
     current_page_testimonia,
@@ -889,11 +888,6 @@ def _check_adopted(
     """
     payload = record["payload"]
     schema = payload.get("schema") if isinstance(payload, dict) else None
-    if schema in RETIRED_PAGE_READING_SCHEMAS:
-        raise ContractError(
-            f"page {page.page_id}'s retained page reading is {schema}, a retired shape; it is "
-            "not adopted and the page is not asked again. Read this page in a new run"
-        )
     if (
         schema != PAGE_READING_SCHEMA
         or payload.get("feed_ref") != page.feed_ref
@@ -1181,8 +1175,8 @@ def publish_page_accounting(
 
 
 def _first_requests(page: _Page) -> list[_Request]:
-    """The page's first reading request, if it has one."""
-    return [] if page.first is None else [page.first]
+    """The page's first reading request."""
+    return [page.first]
 
 
 def _reask_requests(page: _Page) -> list[_Request]:

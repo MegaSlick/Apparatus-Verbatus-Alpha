@@ -66,8 +66,6 @@ PAGE_ACCOUNTING_KIND: Final = "page-accounting"
 ACT_REGION_KIND: Final = "act-region"
 PERLECTIO_KIND: Final = "perlectio"
 PAGE_READING_SCHEMA: Final = "perlector-page-reading.v2"
-# A page reading of a retired shape is refused by its name, never read as the current one.
-RETIRED_PAGE_READING_SCHEMAS: Final = frozenset({"perlector-page-reading.v1"})
 ACT_REGION_SCHEMA: Final = "perlector-act-region.v2"
 PERLECTIO_SCHEMA: Final = "perlectio.v3"
 # Every field a sealed Perlectio holds: what `expected_perlectio` names, and the
@@ -229,7 +227,7 @@ def refs_by_path(references: list[dict[str, str]]) -> list[dict[str, str]]:
     return sorted(references, key=lambda reference: reference["relative_path"])
 
 
-# --- the reply ------------------------------------------------------------------
+# --- pages not asked, and the fixture's declared answers --------------------------
 
 
 def not_run_problems(

@@ -93,11 +93,10 @@ class TruncationSignals(TypedDict):
 class TruncationMeasure(TypedDict):
     """What the length signal was judged from, recorded so it can be re-judged.
 
-    Carries every term of the predicate -- region pixels, page pixels (also
-    recorded as `smallest_page_pixels`, the size the legibility gate is judged
-    on), character count, floor, legibility gate -- so a consumer holding
-    nothing but this block
-    recomputes `length_suspicious` rather than trusting it. The floor travels
+    Carries every term of the predicate -- region pixels, page pixels (the size
+    the legibility gate is judged on), character count, floor, legibility gate --
+    so a consumer holding nothing but this block recomputes `length_suspicious`
+    rather than trusting it. The floor travels
     on the record and not only in the run's config_digest because
     configuration protects reproducibility going forward while the record
     protects the past: a reader with the record but not that
@@ -107,7 +106,6 @@ class TruncationMeasure(TypedDict):
 
     region_pixels: int
     page_pixels: int
-    smallest_page_pixels: int
     characters: int
     length_floor_characters_per_page: int
     legible_page_pixels: int
@@ -204,9 +202,9 @@ def classify(
     """Classify one reading attempt `complete | truncated | unknown`.
 
     The legibility gate is judged on `page_pixels`, the page the reading is
-    of. `truncation_policy` is the sealed `[truncation]` table, keyword-only with
-    no default: a caller that forgets it fails loudly rather than judging under
-    a floor nobody sealed, the shape `coverage_flag`'s gates already take.
+    of. `truncation_policy` is the sealed `[truncation]` table as the protocol
+    loader validated it, keyword-only with no default: a caller that forgets it
+    fails loudly rather than judging under a floor nobody sealed.
 
     The engine's declared stop-reason is authoritative when it says `length`:
     an engine that reports it ran out of budget is not something the other
@@ -223,29 +221,9 @@ def classify(
     is silence from the engine: neither is resolved toward `complete`, because
     an ambiguous signal is exactly what "unknown holds" means.
     """
-    # Absence is refused by name exactly as a wrong type is: the sealed path
-    # cannot reach it (`protocol.validate_truncation_table` guarantees the
-    # key), but a hand-built policy is what the tests pass, and a bare
-    # `KeyError` is the one boundary in this module that would escape unnamed.
-    if LENGTH_FLOOR_FIELD not in truncation_policy:
-        raise ContractError(f"the truncation policy declares no {LENGTH_FLOOR_FIELD}")
     floor = truncation_policy[LENGTH_FLOOR_FIELD]
-    # Refused here rather than left to `is_length_suspicious`, whose
-    # `ValueError` is not one of this boundary's named contract refusals: a
-    # floor of zero never fires and is the signal switched off by a value
-    # rather than by a decision.
-    if not isinstance(floor, int) or isinstance(floor, bool) or floor <= 0:
-        raise ContractError(
-            f"the truncation policy's {LENGTH_FLOOR_FIELD} is not a positive integer"
-        )
-    if LEGIBLE_PAGE_FIELD not in truncation_policy:
-        raise ContractError(f"the truncation policy declares no {LEGIBLE_PAGE_FIELD}")
     legible = truncation_policy[LEGIBLE_PAGE_FIELD]
-    if not isinstance(legible, int) or isinstance(legible, bool) or legible <= 0:
-        raise ContractError(
-            f"the truncation policy's {LEGIBLE_PAGE_FIELD} is not a positive integer"
-        )
-    judged = length_judged(smallest_page_pixels=page_pixels, legible_page_pixels=legible)
+    judged = length_judged(page_pixels=page_pixels, legible_page_pixels=legible)
     signals: TruncationSignals = {
         "stop_reason_declared": stop_reason,
         "unclosed_structure": has_unclosed_structure(text),
@@ -259,7 +237,6 @@ def classify(
     measure: TruncationMeasure = {
         "region_pixels": region_pixels,
         "page_pixels": page_pixels,
-        "smallest_page_pixels": page_pixels,
         "characters": len(text),
         "length_floor_characters_per_page": floor,
         "legible_page_pixels": legible,

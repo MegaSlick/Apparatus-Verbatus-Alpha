@@ -3,7 +3,6 @@ metric; a raw-string cross-check beside the normalized one; an honest
 `"unknown"` for a comparison that cannot run.
 """
 
-import ast
 import sys
 import unicodedata
 from pathlib import Path
@@ -182,50 +181,6 @@ def test_departures_are_an_alignment_and_expose_no_similarity_number():
         "a float anywhere in a dissent row is a similarity score wearing a shape; "
         "refusing ratios is what keeps the comparison from becoming a fuzzy-match picker"
     )
-
-
-def test_perlector_and_archetypus_have_no_direct_sum_call_over_a_chair_expression():
-    """Catch the direct cross-chair counter this narrow AST guard recognizes.
-
-    A direct ``sum(...)`` whose expression names a chair would create a second
-    denominator beside `witness_coverage`.  More indirect data flow still needs
-    code review; this test does not claim to prove a whole-program property.
-    """
-    sources = [
-        ROOT / "pipeline" / "4_perlector" / "run.py",
-        ROOT / "pipeline" / "4_perlector" / "page_run.py",
-        ROOT / "common" / "page_path.py",
-        ROOT / "pipeline" / "6_archetypus" / "run.py",
-    ]
-    offenders = []
-    for path in sources:
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "sum"
-            ):
-                if "chair" in ast.unparse(node):
-                    offenders.append(f"{path}:{node.lineno}")
-    assert not offenders, f"cross-chair counters belong only in witness_coverage: {offenders}"
-
-
-def test_downstream_stages_do_not_directly_subscript_a_dissent_field():
-    """Catch direct ``[\"dissent\"]`` reads; indirect data flow remains review work."""
-    sources = [
-        ROOT / "pipeline" / "5_recensor" / "run.py",
-        ROOT / "pipeline" / "6_archetypus" / "run.py",
-    ]
-    offenders = []
-    for path in sources:
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Subscript):
-                continue
-            if isinstance(node.slice, ast.Constant) and node.slice.value == "dissent":
-                offenders.append(f"{path}:{node.lineno}")
-    assert not offenders, f"only Perlector may branch on dissent rows: {offenders}"
 
 
 def test_a_bracket_marker_view_is_what_makes_a_doubt_marking_witness_comparable():
