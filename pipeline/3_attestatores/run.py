@@ -23,10 +23,10 @@ import witness_adapters  # noqa: E402
 from attempt import (  # noqa: E402
     NO_RESPONSE_HEALTH,
     Attempt,
-    _native_problem,
-    _unrecordable_health,
     content_health,
+    native_problem,
     no_response_health,
+    unrecordable_health,
 )
 from retained import (  # noqa: E402
     is_positive_int,
@@ -366,7 +366,7 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
 
     recordable = health["recordable"]
     if recordable is True:
-        if problem := _native_problem(native_payload):
+        if problem := native_problem(native_payload):
             raise SchemaRefusal(problem)
         expected = content_health(native_payload, completed=None)
         for field in ("native_type", "encoding", "recordable", "empty", "blank", "characters"):
@@ -434,7 +434,7 @@ def format_capabilities_for(row: dict[str, Any]) -> dict[str, Any]:
     for field in ("can_express_uncertainty", "can_express_layout"):
         if not isinstance(capabilities.get(field), bool):
             raise SchemaRefusal(f"witness format_capabilities.{field} is not a boolean")
-    if problem := _native_problem(capabilities, "format_capabilities"):
+    if problem := native_problem(capabilities, "format_capabilities"):
         raise SchemaRefusal(problem)
     return capabilities
 
@@ -460,7 +460,7 @@ def prepared_response(
     if health["recordable"] is not True:
         return None, None, None, health, str(health["truncation_basis"])
     witness_reported = row.get("witness_reported")
-    report_problem = _native_problem(witness_reported, "witness_reported")
+    report_problem = native_problem(witness_reported, "witness_reported")
     if report_problem is None:
         report_problem = _confidence_problem(witness_reported)
     if report_problem is not None:
@@ -797,7 +797,7 @@ def captured_churro_page_attempt(
             None,
             None,
             capabilities,
-            _unrecordable_health(basis),
+            unrecordable_health(basis),
             f"Churro response retained but not usable: {cut_note}{parse_refusal}",
         ),
         capture,
@@ -1035,7 +1035,7 @@ def fixture_page_attempt(
             None,
             None,
             DEFAULT_FORMAT_CAPABILITIES,
-            _unrecordable_health(reason),
+            unrecordable_health(reason),
             f"the provider response was refused without repair: {reason}",
         )
     if table == "witness_empty":
@@ -1864,7 +1864,7 @@ def fixture_detector_units(
                 None,
                 None,
                 capabilities,
-                _unrecordable_health(parsed["reason"]),
+                unrecordable_health(parsed["reason"]),
                 reason,
                 raw_response_ref=capture["raw_response_ref"],
                 native_capture=capture,

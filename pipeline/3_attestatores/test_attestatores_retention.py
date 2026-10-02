@@ -597,7 +597,7 @@ def test_a_deeply_nested_native_payload_becomes_failed_not_a_recursion_crash():
     for _ in range(5000):
         nested = [nested]
 
-    problem = attestatores._native_problem(nested)
+    problem = attestatores.native_problem(nested)
     assert problem is not None
     assert "nests deeper" in problem
 
@@ -615,7 +615,7 @@ def test_a_deeply_nested_native_payload_becomes_failed_not_a_recursion_crash():
     assert prepared_problem == problem
 
     reasonable = {"tokens": ["a", "b"], "layout": {"line": 4, "spans": [{"a": 1}, {"b": 2}]}}
-    assert attestatores._native_problem(reasonable) is None
+    assert attestatores.native_problem(reasonable) is None
 
 
 @pytest.mark.parametrize(

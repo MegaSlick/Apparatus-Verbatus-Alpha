@@ -67,7 +67,7 @@ from typing import Any, Callable, Final, Mapping
 
 import feeding
 import witness_adapters
-from attempt import Attempt, _unrecordable_health, content_health
+from attempt import Attempt, content_health, unrecordable_health
 
 from common.chair_wire import chandra_wire_fields
 from common.contracts.envelope import read_verified
@@ -584,7 +584,7 @@ def _live_attempt_from_capture(
     return Attempt(
         outcome="failed",
         native_payload=None,
-        health=_unrecordable_health(basis),
+        health=unrecordable_health(basis),
         reason=f"the provider response was retained but not usable: {reason_suffix}",
         **base,
     )
@@ -617,7 +617,7 @@ def unread_response_attempt(response: ChairResponse, *, adapter: Any, reason: st
         native_payload=None,
         witness_reported=None,
         format_capabilities=_capabilities(adapter),
-        health=_unrecordable_health(reason),
+        health=unrecordable_health(reason),
         reason=reason,
         raw_response_ref=dict(response.raw_response_ref),
         native_capture=None,

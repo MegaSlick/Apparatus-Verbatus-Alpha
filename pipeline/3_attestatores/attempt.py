@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any, NamedTuple
 
 # A witness response is untrusted: deep nesting would raise an uncaught
-# `RecursionError` in `_native_problem` and kill the whole run, not one attempt.
+# `RecursionError` in `native_problem` and kill the whole run, not one attempt.
 # Real output nests a few levels, so this is headroom.
 _MAX_NATIVE_DEPTH = 64
 
@@ -42,7 +42,7 @@ class Attempt(NamedTuple):
     retained_responses: tuple[tuple[bytes, dict[str, str]], ...] = ()
 
 
-def _native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str | None:
+def native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str | None:
     """Return why a native response cannot be retained as canonical JSON.
 
     Checked here so a bad response becomes a retained ``failed`` attempt rather than
@@ -60,7 +60,7 @@ def _native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str
         return None
     if isinstance(value, list):
         for index, item in enumerate(value):
-            if problem := _native_problem(item, f"{path}[{index}]", depth=depth + 1):
+            if problem := native_problem(item, f"{path}[{index}]", depth=depth + 1):
                 return problem
         return None
     if isinstance(value, dict):
@@ -71,7 +71,7 @@ def _native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str
                 key.encode("utf-8", "strict")
             except UnicodeEncodeError:
                 return f"{path} has an object key that is not valid UTF-8"
-            if problem := _native_problem(item, f"{path}.{key}", depth=depth + 1):
+            if problem := native_problem(item, f"{path}.{key}", depth=depth + 1):
                 return problem
         return None
     return f"{path} has unsupported native type {type(value).__name__!r}"
@@ -110,7 +110,7 @@ def no_response_health(*, reason: str) -> dict[str, Any]:
     return {**NO_RESPONSE_HEALTH, "truncation_basis": reason}
 
 
-def _unrecordable_health(basis: str, *, native_type: str = "unrecordable") -> dict[str, Any]:
+def unrecordable_health(basis: str, *, native_type: str = "unrecordable") -> dict[str, Any]:
     return {
         "native_type": native_type,
         "encoding": "invalid-or-unrecordable",
@@ -129,8 +129,8 @@ def content_health(native_payload: Any, *, completed: bool | None = None) -> dic
     ``witness_reported`` is deliberately not an input: a self-report never becomes
     health. ``completed`` must come from a trusted response boundary, or be None.
     """
-    if (problem := _native_problem(native_payload)) is not None:
-        return _unrecordable_health(problem, native_type=_native_type(native_payload))
+    if (problem := native_problem(native_payload)) is not None:
+        return unrecordable_health(problem, native_type=_native_type(native_payload))
 
     if isinstance(native_payload, str):
         empty = native_payload == ""

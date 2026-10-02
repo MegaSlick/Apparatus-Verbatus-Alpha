@@ -14,10 +14,7 @@ from typing import Any, Final, Mapping, NamedTuple
 
 import live_witness
 import witness_adapters
-from attempt import (
-    Attempt,
-    no_response_health,
-)
+from attempt import Attempt, no_response_health, unrecordable_health
 from retained import (
     is_positive_int,
     named_once,
@@ -182,10 +179,14 @@ def _chandra_application_refusal_attempt(
     reason = _CHANDRA_APPLICATION_REFUSAL_PREFIX + str(error)
     if attempt is not None:
         return attempt._replace(outcome="failed", reason=reason)
-    return _chandra_retained_failure(context, response, adapter, reason)
+    return _chandra_retained_failure(
+        context, response, adapter, reason, health=no_response_health(reason=reason)
+    )
 
 
-def _chandra_retained_failure(context, response: Any, adapter: Any, reason: str) -> Attempt:
+def _chandra_retained_failure(
+    context, response: Any, adapter: Any, reason: str, *, health: dict[str, Any]
+) -> Attempt:
     """A failed attempt over a response that is kept but not read: its model output
     retained as terminal evidence, with no capture and no text."""
     model_output_ref = retain_chair_bytes(context, response.content.encode("utf-8"))
@@ -194,7 +195,7 @@ def _chandra_retained_failure(context, response: Any, adapter: Any, reason: str)
         native_payload=None,
         witness_reported=None,
         format_capabilities=witness_adapters.declared_format_capabilities(adapter),
-        health=no_response_health(reason=reason),
+        health=health,
         reason=reason,
         raw_response_ref=model_output_ref,
         observation_payload=None,
@@ -892,7 +893,10 @@ def _read_chandra_native_result(
             response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
         )
         if unread is not None:
-            attempt = _chandra_retained_failure(context, response, adapter, unread)
+            # The same health every chair records for an answer kept unread.
+            attempt = _chandra_retained_failure(
+                context, response, adapter, unread, health=unrecordable_health(unread)
+            )
         else:
             try:
                 live = live_witness.captured_page_attempt(

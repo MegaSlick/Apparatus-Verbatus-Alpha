@@ -1817,6 +1817,10 @@ def test_an_engine_stop_word_this_pipeline_cannot_read_fails_that_page_alone(
     assert "'abort'" in json.dumps(payload)
     # A whole page answer is not read at all; DAI's page joins its other records.
     assert payload["payload"] is None or chair == "attestator_2"
+    # A whole-page chair's record is that one answer, kept unread: the same
+    # unrecordable health DAI's unit attempt carries, its basis the reason.
+    if chair != "attestator_2":
+        assert payload["content_health"] == attestatores.unrecordable_health(payload["reason"])
     assert records[(2, chair)]["outcome"] == "read"
     assert all(
         records[(page, other)]["outcome"] == "read"
