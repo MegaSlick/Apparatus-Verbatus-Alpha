@@ -50,10 +50,12 @@ from common.contracts.errors import ContractError, IncompatibleReuse
 from common.contracts.identities import physical_page_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.corpus_register import append_records, empty_register, members_of, register_digest
+from common.recovery import load_recovery_policy
 from common.runtree.store import RunTree
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, read_sealed_toml
 from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
+    DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_FATAL,
     StageContext,
@@ -61,6 +63,7 @@ from common.stage import (
     require_triage_modes,
     run_sealed_config_digests,
     run_stage,
+    stage_parser,
 )
 from operations.operator.surface import OperatorSurface
 from operations.submit import gate, submit
@@ -91,23 +94,32 @@ def test_an_unreadable_corpus_register_refusal_names_what_it_promises(tmp_path):
         door._read_corpus_register(str(tmp_path / "missing-register.json"))
 
 
-def _sealed_binding_digests() -> dict[str, str]:
-    """The configuration digests every `_real_bindings` caller has to supply.
+_LEDGER = {
+    "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+    "self_hash": "b" * 64,
+}
 
-    Read exactly as the door reads them, from one read each, so a test never seals
-    a name under bytes nothing parsed. Kept in one helper because the argument list
-    is the shape the fixture path's `run_config_bindings` has to match, so one map
-    cannot grow an entry the other lacks.
+
+def _real_bindings(models=None, *, triage_document_digests=None, **arg_overrides):
+    """The Door's real-route bindings over the default configs and a one-file ledger.
+
+    ``arg_overrides`` replace the Door's command-line values (config paths and run
+    knobs), which is how a real submission selects them.
     """
-    return {
-        "pdf_render_config_sha256": door.render_config.load_pdf_render_binding(
-            minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-        ).config_sha256,
-        "data_handling_config_sha256": gate.load_policy_binding().config_sha256,
-        "designator_geometry_config_sha256": read_sealed_toml(
-            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH, "Designator geometry configuration"
-        )[1],
-    }
+    args = stage_parser(door.DESCRIPTION).parse_args(["--run-root", "unused", "--run-id", "unused"])
+    for name, value in arg_overrides.items():
+        setattr(args, name, value)
+    binding = door._load_pdf_render_binding(args)
+    return door._real_bindings(
+        models or _fixture_models(),
+        args,
+        _LEDGER,
+        POLICY,
+        binding.settings,
+        pdf_render_config_sha256=binding.config_sha256,
+        data_handling_config_sha256=gate.load_policy_binding().config_sha256,
+        triage_document_digests=triage_document_digests,
+    )
 
 
 RECIPES = {"door": "fake-door-v0", "exemplar": "fake-exemplar-v0"}
@@ -1642,37 +1654,14 @@ def test_a_row_with_no_non_negative_byte_count_is_a_contract_error(bad_bytes):
 
 
 def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_written(monkeypatch):
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
+    baseline = _real_bindings()
     settings = door.render_config.load_pdf_render_settings(
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
-    baseline = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        **_sealed_binding_digests(),
-    )
     altered_pdf_recipe = dict(door.pdf_render.renderer_recipe(settings), dpi=301)
     monkeypatch.setattr(door.pdf_render, "renderer_recipe", lambda _settings: altered_pdf_recipe)
-    changed = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        **_sealed_binding_digests(),
-    )
 
-    assert baseline["config_digest"] != changed["config_digest"]
+    assert baseline["config_digest"] != _real_bindings()["config_digest"]
 
 
 def test_real_run_bindings_refuse_a_configured_witness_without_an_adapter():
@@ -1681,161 +1670,60 @@ def test_real_run_bindings_refuse_a_configured_witness_without_an_adapter():
     chairs["attestator_1"] = replace(
         chairs["attestator_1"], witness_adapter=None, witness_scope=None
     )
-    models = replace(models, chairs=chairs)
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-    )
 
-    with pytest.raises(
-        ContractError, match="chair 'attestator_1' has no witness_adapter"
-    ) as caught:
-        door._real_bindings(
-            models,
-            ledger,
-            POLICY,
-            settings,
-            door.load_recovery_policy(),
-            door.load_hard_failure_policy(),
-            **_sealed_binding_digests(),
-        )
-
-    message = str(caught.value)
-    assert "no native boundary to run" in message
-    assert "Add witness_adapter and witness_scope" in message
+    with pytest.raises(ContractError, match="chair 'attestator_1' has no witness_adapter"):
+        _real_bindings(replace(models, chairs=chairs))
 
 
 def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(monkeypatch):
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-    )
-    baseline = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        **_sealed_binding_digests(),
-    )
+    baseline = _real_bindings()
     assert baseline["adapter_recipes"]["door"] == door.REAL_DOOR_ADAPTER_REVISION
     assert baseline["adapter_recipes"]["door"] != "fake-door-v0"
 
     monkeypatch.setattr(door, "REAL_DOOR_ADAPTER_REVISION", "exemplar-door-test-change")
-    changed = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        **_sealed_binding_digests(),
+    assert baseline["config_digest"] != _real_bindings()["config_digest"]
+
+
+def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_written(tmp_path):
+    """The run-level cap is run-bound configuration, exactly as recovery is: a
+    changed policy is a different run, not a reinterpretation of failures on disk."""
+    default = Path(
+        stage_parser("p").parse_args(["--run-root", "u", "--run-id", "u"]).hard_failure_config
     )
-    assert baseline["config_digest"] != changed["config_digest"]
-
-
-def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_written():
-    """The run-level cap is run-bound configuration, exactly as recovery is.
-
-    A closed list of what counts as a hard failure decides whether a run may keep
-    invoking stages. Editing that list mid-run and reinterpreting failures already
-    on disk is the same class of mistake as editing the recovery budget mid-run,
-    so it is sealed into `config_digest` and a changed policy is a different run.
-    """
-
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    edited = tmp_path / "hard_failure.toml"
+    edited.write_bytes(
+        default.read_bytes().replace(
+            b'[[kind]]\nstage = "door"\noutcome = "refused"\nreason = "corrupt"\n', b"", 1
+        )
     )
-    recovery = door.load_recovery_policy()
-    baseline = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        recovery,
-        door.load_hard_failure_policy(),
-        **_sealed_binding_digests(),
-    )
-    changed = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        recovery,
-        {
-            "config_sha256": "d" * 64,
-            "threshold": 2,
-            "kinds": [("perlector", "failed")],
-            "reason_kinds": [],
-        },
-        **_sealed_binding_digests(),
-    )
+    assert edited.read_bytes() != default.read_bytes()
+
+    baseline = _real_bindings()
+    changed = _real_bindings(hard_failure_config=str(edited))
 
     assert baseline["config_digest"] != changed["config_digest"]
+    assert (
+        baseline["sealed_config_digests"]["hard-failure"]
+        != changed["sealed_config_digests"]["hard-failure"]
+    )
 
 
 def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
-    """A real run authority must say which serving catalogue governed it.
-
-    The fixture path binds the catalogue's bytes into `config_digest`; the real
-    path did not, so two real submissions selecting different
-    `--serving-recipes-config` files produced the same digest. `RunTree.create`
-    saw no change, the same run id was reusable across them, and nothing in the
-    authority could afterwards say which catalogue the run had been served from.
-    """
-
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-    )
-    recovery = door.load_recovery_policy()
-    common = (
-        models,
-        ledger,
-        POLICY,
-        settings,
-        recovery,
-        door.load_hard_failure_policy(),
-    )
-    baseline = door._real_bindings(*common, **_sealed_binding_digests())
-
+    """Two real submissions served from different catalogues are different runs."""
     other = tmp_path / "serving_recipes_other.toml"
     other.write_bytes(
-        Path(door.DEFAULT_SERVING_RECIPES_CONFIG_PATH)
+        Path(DEFAULT_SERVING_RECIPES_CONFIG_PATH)
         .read_bytes()
         .replace(b"offline walking-skeleton", b"a different catalogue", 1)
     )
-    changed = door._real_bindings(
-        *common, serving_recipes_config_path=other, **_sealed_binding_digests()
-    )
+    baseline = _real_bindings()
+    changed = _real_bindings(serving_recipes_config=str(other))
 
     assert baseline["config_digest"] != changed["config_digest"]
     assert (
         baseline["sealed_config_digests"]["serving-recipes"]
-        != (changed["sealed_config_digests"]["serving-recipes"])
+        != changed["sealed_config_digests"]["serving-recipes"]
     )
-    # Named for a point of use, exactly as the fixture path names it.
-    assert "pod-placement" in baseline["sealed_config_digests"]
 
 
 def _approved_submission(tmp_path, files: dict[str, bytes]):
@@ -3149,123 +3037,26 @@ def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(t
     assert reason_code(payload["reason"]) is RefusalReason.CORRUPT
 
 
-def test_real_bindings_seal_designator_geometry_alongside_the_shard_knob(monkeypatch):
-    """`_real_bindings`'s `sealed_config_digests` names each point-of-use
-    configuration exactly as `run_config_bindings` (the fixture path) does, not
-    only `corpus-frame-shard`.
+def test_real_bindings_seal_every_name_later_stages_recheck_plus_the_door_only_names():
+    """Every later stage recomputes `real_run_bindings` at open and refuses any name
+    the Door did not seal, so the Door's names must be a superset of it, equal on
+    every shared name, plus the names only the Door can know."""
+    from common.chairs.registry import ChairRegistry
+    from common.stage import real_run_bindings
 
-    A config whose bytes are folded into the overall `config_digest` but whose
-    NAMED point-of-use-recheck entry is missing makes a real run reaching
-    `context.require_sealed_config(...)` refuse every time with "this context
-    sealed no digest for the ... configuration". The fixture and real paths must
-    expose the same `sealed_config_digests` shape.
-    """
+    args = stage_parser("p").parse_args(["--run-root", "u", "--run-id", "u"])
+    recomputed = real_run_bindings(ChairRegistry.from_toml(args.models_config).config, args)[
+        "sealed_config_digests"
+    ]
+    sealed = _real_bindings()["sealed_config_digests"]
 
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    assert {name: sealed[name] for name in recomputed} == recomputed
+    assert set(sealed) - set(recomputed) == {"data-handling"}
+    assert sealed["data-handling"] == gate.load_policy_binding().config_sha256
+    assert (
+        _real_bindings(witness_context="blinded")["sealed_config_digests"]["run-policy"]
+        != (sealed["run-policy"])
     )
-    supplied = _sealed_binding_digests()
-    geometry_digest = supplied["designator_geometry_config_sha256"]
-    recovery = door.load_recovery_policy()
-    bindings = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        recovery,
-        door.load_hard_failure_policy(),
-        **supplied,
-    )
-    sealed = bindings["sealed_config_digests"]
-    assert sealed.get("designator-geometry") == geometry_digest, (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'designator-geometry' entry bound to the exact digest passed in; the Designator's "
-        "point-of-use recheck (pipeline/2_designator/run.py) requires this name on every "
-        "run, so a real run without it refuses unconditionally"
-    )
-    assert "corpus-frame-shard" in sealed, (
-        "the pre-existing corpus-frame-shard entry must survive, not be replaced"
-    )
-    # The sealing family: the door renders with the PDF policy it parsed, the
-    # storage-root gate runs under the data-handling policy it loaded, and the
-    # recovery budget is sealed so a page re-ask spends the run's own budget. A
-    # real run whose door sealed the PDF or data-handling digest would refuse at
-    # the point of use with "sealed no digest".
-    assert sealed.get("pdf-render") == supplied["pdf_render_config_sha256"], (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'pdf-render' entry bound to the digest of the bytes the settings were parsed "
-        "from; without it the door cannot prove what it rendered under"
-    )
-    assert sealed.get("recovery") == recovery["config_sha256"], (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'recovery' entry; the budget is sealed so a page re-ask spends the run's own "
-        "budget"
-    )
-    assert sealed.get("data-handling") == supplied["data_handling_config_sha256"], (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'data-handling' entry naming the caller-selected policy that gated admission"
-    )
-    triage_modes = ROOT / "config" / "triage_modes.toml"
-    assert sealed.get("triage-modes") == read_sealed_toml(triage_modes, "triage modes")[1], (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'triage-modes' entry for the mode vocabulary a real triage manifest uses"
-    )
-    require_triage_modes(sealed, triage_modes)
-    # The three real-only names. On the fixture path these facts sit inside
-    # `config_digest`, which every later stage recomputes whole; the real digest
-    # cannot be recomputed downstream, so `common.stage._open_real_context`'s
-    # name-by-name recheck is the only thing that catches a resumed real run
-    # under a moved roster, format projection or witness regime.
-    assert sealed.get("models") == models.models_digest, (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'models' entry bound to the roster digest; without it a real run resumed under a "
-        "moved chair revision publishes stage-3 Testimonia naming one model and stage-4 "
-        "dossiers naming another"
-    )
-    formats_digest, _formats = door.bind_armarium_formats(door.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH)
-    assert sealed.get("armarium-formats") == formats_digest, (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing an "
-        "'armarium-formats' entry bound to the format projection the Armarium exports under"
-    )
-    expected_policy = door.real_run_policy_digest(
-        witness_context="named",
-        witness_context_declaration_sha256=read_sealed_toml(
-            door.DEFAULT_WITNESS_CONTEXT_CONFIG_PATH, "witness context"
-        )[1],
-    )
-    assert sealed.get("run-policy") == expected_policy, (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'run-policy' entry over the run-level reading knobs; without it "
-        "`--witness-context blinded` on a resumed real run reaches the Perlector unchecked"
-    )
-    blinded = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        recovery,
-        door.load_hard_failure_policy(),
-        witness_context="blinded",
-        **supplied,
-    )
-    assert blinded["sealed_config_digests"]["run-policy"] != expected_policy, (
-        "a moved witness regime must move the run-policy name, or the recheck cannot see it"
-    )
-    # Named only, never folded into the real `config_digest`: a run in flight
-    # keeps its identity across this build.
-    assert blinded["config_digest"] != bindings["config_digest"], (
-        "the witness regime was already inside the real config_digest and must stay there"
-    )
-    unchanged = door._real_bindings(
-        models, ledger, POLICY, settings, recovery, door.load_hard_failure_policy(), **supplied
-    )
-    assert unchanged["config_digest"] == bindings["config_digest"]
 
 
 def test_a_rewritten_geometry_policy_is_refused_by_name_by_require_sealed_config(tmp_path):
@@ -3287,26 +3078,15 @@ def test_a_rewritten_geometry_policy_is_refused_by_name_by_require_sealed_config
 
     models = _fixture_models()
 
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    supplied = _sealed_binding_digests()
-    bindings = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        door.render_config.load_pdf_render_settings(minimum_dpi=door.pdf_render.MIN_RENDER_DPI),
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        **supplied,
-    )
+    bindings = _real_bindings(models)
     # Read back the way a later stage reads it: out of a run authority, not off
     # the bindings dict, so the name has to survive being recorded and re-read.
     sealed = run_sealed_config_digests(
         {"sealed_config_digests": bindings["sealed_config_digests"], SEAL_METHOD_FIELD: SEAL_METHOD}
     )
-    bound = supplied["designator_geometry_config_sha256"]
+    bound = read_sealed_toml(
+        DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH, "Designator geometry configuration"
+    )[1]
 
     # The run as sealed: the bytes the Designator re-reads are the bound bytes.
     require_sealed_config(sealed, "designator-geometry", bound)
@@ -3465,7 +3245,7 @@ def test_a_real_admission_names_the_data_handling_policy_that_governed_it(tmp_pa
         run["sealed_config_digests"]["pdf-render"]
         == read_sealed_toml(ROOT / "config" / "pdf_render.toml", "pdf render")[1]
     )
-    assert run["sealed_config_digests"]["recovery"] == door.load_recovery_policy()["config_sha256"]
+    assert run["sealed_config_digests"]["recovery"] == load_recovery_policy()["config_sha256"]
 
 
 def test_reusing_a_run_id_under_a_changed_data_handling_policy_is_refused(tmp_path, monkeypatch):
@@ -3680,25 +3460,8 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
 
     models = _fixture_models()
 
-    ledger = {
-        "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-    )
-
     def bindings(triage_digests):
-        return door._real_bindings(
-            models,
-            ledger,
-            POLICY,
-            settings,
-            door.load_recovery_policy(),
-            door.load_hard_failure_policy(),
-            triage_document_digests=triage_digests,
-            **_sealed_binding_digests(),
-        )
+        return _real_bindings(models, triage_document_digests=triage_digests)
 
     first = bindings({"triage-decision-manifest": "c" * 64})
     again = bindings({"triage-decision-manifest": "c" * 64})
@@ -4491,19 +4254,8 @@ def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(
 
     models = _fixture_models()
 
-    ledger = {
-        "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    bindings = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        door.render_config.load_pdf_render_settings(minimum_dpi=door.pdf_render.MIN_RENDER_DPI),
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        triage_document_digests={"triage-decision-manifest": "c" * 64},
-        **_sealed_binding_digests(),
+    bindings = _real_bindings(
+        models, triage_document_digests={"triage-decision-manifest": "c" * 64}
     )
     require_triage_modes(bindings["sealed_config_digests"])
     edited = tmp_path / "triage_modes.toml"

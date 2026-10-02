@@ -57,12 +57,6 @@ from image_formats import (  # noqa: E402
     sniff,
 )
 
-from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_dissent_limits  # noqa: E402
-from common.armarium_formats import (  # noqa: E402
-    DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
-    bind_armarium_formats,
-)
-from common.background import DEFAULT_INK_MAP_CONFIG_PATH  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
     real_ingress_record,
@@ -75,7 +69,6 @@ from common.contracts.canonical import (  # noqa: E402
     self_hash,
 )
 from common.contracts.errors import ContractError  # noqa: E402
-from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.corpus_register import (  # noqa: E402
     membership_heads,
@@ -83,31 +76,12 @@ from common.corpus_register import (  # noqa: E402
     read_snapshot,
     validate_register_bytes,
 )
-from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.image_sniff import SIGNATURE_PREFIX_BYTES  # noqa: E402
-from common.page_accounting import (  # noqa: E402
-    DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
-    load_page_accounting_policy,
-)
-from common.reconstruction import (  # noqa: E402
-    DEFAULT_RECONSTRUCTION_CONFIG_PATH,
-    load_reconstruction_policy,
-)
-from common.recovery import load_recovery_policy  # noqa: E402
-from common.residual_ink import ink_map_config_digest  # noqa: E402
-from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, load_review_policy  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
-from common.sealed_config import read_sealed_toml  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
-    DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
-    DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
-    DEFAULT_POD_PLACEMENT_CONFIG_PATH,
-    DEFAULT_SERVING_RECIPES_CONFIG_PATH,
-    DEFAULT_TRIAGE_MODES_CONFIG_PATH,
-    DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     REAL_DOOR_ADAPTER_REVISION,
     REAL_SCENARIO,
@@ -115,8 +89,7 @@ from common.stage import (  # noqa: E402
     adapter_recipe_for,
     load_corpus_frame_policy,
     load_fixture,
-    load_triage_modes,
-    real_run_policy_digest,
+    real_run_bindings,
     refuse_halted_run,
     require_corpus_frame_shard,
     require_triage_modes,
@@ -126,7 +99,6 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_witness_context_bindings,
 )
-from common.witness_adapters import validate_witness_adapter_bindings  # noqa: E402
 from operations.submit import gate, inventory  # noqa: E402
 from operations.submit import submit as submission_ledger  # noqa: E402
 
@@ -1915,30 +1887,13 @@ def real_submission(args, registry) -> int:
 
     bindings = _real_bindings(
         registry.config,
+        args,
         ledger,
         format_policy,
         pdf_settings,
-        load_recovery_policy(args.recovery_config),
-        load_hard_failure_policy(args.hard_failure_config),
-        args.formats_config,
-        review_config_path=args.review_config,
         pdf_render_config_sha256=pdf_render_binding.config_sha256,
         data_handling_config_sha256=data_policy_binding.config_sha256,
-        designator_geometry_config_sha256=read_sealed_toml(
-            args.designator_geometry_config, "Designator geometry configuration"
-        )[1],
-        alignment_config_path=args.alignment_config,
-        page_accounting_config_path=args.page_accounting_config,
-        ink_map_config_path=args.ink_map_config,
-        reconstruction_config_path=args.reconstruction_config,
-        serving_recipes_config_path=args.serving_recipes_config,
         triage_document_digests=triage_digests,
-        witness_context=args.witness_context,
-        witness_context_config_path=args.witness_context_config,
-        perlector_protocol_config_path=args.perlector_protocol_config,
-        perlector_audit_config_path=args.perlector_audit_config,
-        decoding_config_path=args.decoding_config,
-        mechanics_qualification=getattr(args, "mechanics_qualification", False),
         canary_ledger=canary_ledger,
     )
     # The modes seal must be proved before triage rows can shape master-frame geometry.
@@ -2071,158 +2026,85 @@ def _announce_duplicate_report(duplicate_report: Report | None) -> None:
 
 def _real_bindings(
     models,
-    ledger,
+    args,
+    ledger: dict[str, Any],
     format_policy,
-    pdf_settings,
-    recovery_policy,
-    hard_failure_policy,
-    armarium_formats_config_path=DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
-    corpus_frame_config_path=DEFAULT_CORPUS_FRAME_CONFIG_PATH,
+    pdf_settings: render_config.PdfRenderSettings,
     *,
     pdf_render_config_sha256: str,
     data_handling_config_sha256: str,
-    designator_geometry_config_sha256: str,
-    alignment_config_path=DEFAULT_ALIGNMENT_CONFIG_PATH,
-    page_accounting_config_path=DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
-    ink_map_config_path=DEFAULT_INK_MAP_CONFIG_PATH,
-    reconstruction_config_path=DEFAULT_RECONSTRUCTION_CONFIG_PATH,
     triage_document_digests: dict[str, str] | None = None,
-    witness_context: str = "named",
-    witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
-    perlector_protocol_config_path=DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
-    perlector_audit_config_path=DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
-    decoding_config_path=DEFAULT_DECODING_CONFIG_PATH,
-    mechanics_qualification: bool = False,
-    serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
-    pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     canary_ledger: dict[str, Any] | None = None,
-    review_config_path: str | Path = DEFAULT_REVIEW_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
-    The source manifest binds the bytes; `config_digest` binds everything else
-    that shaped the door's output, so `RunTree.create` refuses a resume under
-    different settings. The data-handling policy digest is provenance, not an
-    approval.
+    Composes `common.stage.real_run_bindings`, the names every later stage
+    recomputes at open, and adds what only the Door knows: the data-handling
+    policy that gated the input, the canary ledger, the PDF render settings it
+    rendered with, and `config_digest`. That digest binds the submission ledger
+    and everything that shaped the Door's output, so `RunTree.create` refuses a
+    resume under different settings; no later stage can recompute it.
     """
-    validate_witness_adapter_bindings(models)
-    # Bound as on the fixture path, so a changed serving catalogue changes `config_digest`.
-    serving_recipes_config_digest = read_sealed_toml(
-        serving_recipes_config_path, "serving recipes configuration"
-    )[1]
-    pod_placement_config_digest = read_sealed_toml(
-        pod_placement_config_path, "pod placement configuration"
-    )[1]
+    base = real_run_bindings(models, args)
+    sealed = dict(base["sealed_config_digests"])
+    sealed["pdf-render"] = pdf_render_config_sha256
+    sealed["data-handling"] = data_handling_config_sha256
+    if canary_ledger:
+        sealed["canary-ledger"] = canary_ledger["self_hash"]
+    corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
+        DEFAULT_CORPUS_FRAME_CONFIG_PATH
+    )
     witness_context_declaration_sha256 = validate_witness_context_bindings(
         models,
-        witness_context=witness_context,
-        witness_context_config_path=witness_context_config_path,
+        witness_context=args.witness_context,
+        witness_context_config_path=args.witness_context_config,
     )
-    _, alignment_config_sha256 = load_dissent_limits(alignment_config_path)
-    page_accounting_config_sha256 = load_page_accounting_policy(page_accounting_config_path).sha256
-    reconstruction_config_sha256 = load_reconstruction_policy(reconstruction_config_path).sha256
-    ink_map_config_sha256 = ink_map_config_digest(ink_map_config_path)
-    _decoding_policy, decoding_config_sha256 = load_decoding_policy(decoding_config_path)
-    adapter_recipes = dict(sorted(models.adapter_recipes.items()))
-    adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
-    armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
-    corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
-        corpus_frame_config_path
+    config_digest = digest_of(
+        {
+            "submission": [
+                {
+                    "relative_path": source["relative_path"],
+                    "sha256": source["sha256"],
+                    "bytes": source["bytes"],
+                }
+                for source in ledger["files"]
+            ],
+            "submission_ledger_sha256": ledger["self_hash"],
+            **({"canary_ledger_sha256": canary_ledger["self_hash"]} if canary_ledger else {}),
+            "format_policy": format_policy,
+            "pdf_render_config_sha256": pdf_render_config_sha256,
+            "data_handling_policy_sha256": data_handling_config_sha256,
+            "door_execution_recipe": _door_execution_recipe(pdf_settings),
+            "door_implementation_revision": REAL_DOOR_ADAPTER_REVISION,
+            "armarium_formats_config_sha256": sealed["armarium-formats"],
+            "armarium_formats": base["armarium_formats"].to_record(),
+            "recovery_policy": base["recovery_policy"],
+            "hard_failure_policy": load_hard_failure_policy(args.hard_failure_config),
+            "designator_geometry_config_sha256": sealed["designator-geometry"],
+            "alignment_config_sha256": sealed["alignment"],
+            "page_accounting_config_sha256": sealed["page-accounting"],
+            "reconstruction_config_sha256": sealed["reconstruction"],
+            "ink_map_config_sha256": sealed["ink-map"],
+            "triage_modes_config_sha256": sealed["triage-modes"],
+            # Triage decisions shape pixels, so a re-run triage pass under one run
+            # id is refused by name. Empty without split decisions.
+            "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
+            "corpus_frame_policy": corpus_frame_policy,
+            "corpus_frame_config_sha256": corpus_frame_config_sha256,
+            "decoding_config_sha256": sealed["decoding"],
+            "models": models.to_record(),
+            "witness_context_regime": args.witness_context,
+            "witness_context_declaration_sha256": witness_context_declaration_sha256,
+            "perlector_protocol_config_sha256": sealed["perlector-protocol"],
+            "perlector_audit_config_sha256": sealed["perlector-audit"],
+            "serving_config_inputs": base["serving_config_inputs"],
+        }
     )
-    perlector_protocol_config_sha256 = read_sealed_toml(
-        perlector_protocol_config_path, "Perlector protocol configuration"
-    )[1]
-    perlector_audit_config_sha256 = read_sealed_toml(
-        perlector_audit_config_path, "Perlector audit configuration"
-    )[1]
-    # The shared default that `require_triage_modes` also reads; a second
-    # spelling could drift and refuse every triage run as "changed".
-    triage_modes_config_sha256 = load_triage_modes(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
     return {
-        "witness_chairs": list(models.witness_chairs),
-        "config_digest": digest_of(
-            {
-                "submission": [
-                    {
-                        "relative_path": source["relative_path"],
-                        "sha256": source["sha256"],
-                        "bytes": source["bytes"],
-                    }
-                    for source in ledger["files"]
-                ],
-                "submission_ledger_sha256": ledger["self_hash"],
-                **({"canary_ledger_sha256": canary_ledger["self_hash"]} if canary_ledger else {}),
-                "format_policy": format_policy,
-                "pdf_render_config_sha256": pdf_render_config_sha256,
-                # Provenance, not a gate: which policy did the storage-root check.
-                "data_handling_policy_sha256": data_handling_config_sha256,
-                "door_execution_recipe": _door_execution_recipe(pdf_settings),
-                "door_implementation_revision": REAL_DOOR_ADAPTER_REVISION,
-                "armarium_formats_config_sha256": armarium_formats_digest,
-                "armarium_formats": armarium_formats.to_record(),
-                "recovery_policy": recovery_policy,
-                "hard_failure_policy": hard_failure_policy,
-                "designator_geometry_config_sha256": designator_geometry_config_sha256,
-                "alignment_config_sha256": alignment_config_sha256,
-                "page_accounting_config_sha256": page_accounting_config_sha256,
-                "reconstruction_config_sha256": reconstruction_config_sha256,
-                "ink_map_config_sha256": ink_map_config_sha256,
-                "triage_modes_config_sha256": triage_modes_config_sha256,
-                # Triage decisions shape pixels, so a re-run triage pass under one
-                # run id is refused by name. Empty without split decisions.
-                "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
-                "corpus_frame_policy": corpus_frame_policy,
-                "corpus_frame_config_sha256": corpus_frame_config_sha256,
-                "decoding_config_sha256": decoding_config_sha256,
-                "models": models.to_record(),
-                # Run-level witness settings, validated and bound as on the
-                # fixture path, so a bad declaration refuses before any paid work.
-                "witness_context_regime": witness_context,
-                "witness_context_declaration_sha256": witness_context_declaration_sha256,
-                "perlector_protocol_config_sha256": perlector_protocol_config_sha256,
-                "perlector_audit_config_sha256": perlector_audit_config_sha256,
-                "serving_config_inputs": {
-                    "schema": SERVING_CONFIG_INPUTS_SCHEMA,
-                    "serving_recipes_sha256": serving_recipes_config_digest,
-                    "pod_placement_sha256": pod_placement_config_digest,
-                },
-            }
-        ),
-        "adapter_recipes": adapter_recipes,
-        # Named as on the fixture path, so point-of-use rechecks find them on
-        # real runs too.
-        "sealed_config_digests": {
-            "designator-geometry": designator_geometry_config_sha256,
-            "alignment": alignment_config_sha256,
-            "page-accounting": page_accounting_config_sha256,
-            "reconstruction": reconstruction_config_sha256,
-            "ink-map": ink_map_config_sha256,
-            "corpus-frame-shard": corpus_frame_config_sha256,
-            "decoding": decoding_config_sha256,
-            "perlector-protocol": perlector_protocol_config_sha256,
-            "perlector-audit": perlector_audit_config_sha256,
-            "pdf-render": pdf_render_config_sha256,
-            "recovery": recovery_policy["config_sha256"],
-            "hard-failure": hard_failure_policy["config_sha256"],
-            "review": load_review_policy(review_config_path)["config_sha256"],
-            "triage-modes": triage_modes_config_sha256,
-            # Real ingress only: the fixture route is not gated.
-            "data-handling": data_handling_config_sha256,
-            "serving-recipes": serving_recipes_config_digest,
-            "pod-placement": pod_placement_config_digest,
-            # Real ingress only: downstream stages cannot recompute the real
-            # `config_digest` (it binds the ledger and this machine's decoder),
-            # so the facts stages 3-7 act on are rechecked by these names at
-            # every open.
-            "models": models.models_digest,
-            "armarium-formats": armarium_formats_digest,
-            "run-policy": real_run_policy_digest(
-                witness_context=witness_context,
-                witness_context_declaration_sha256=witness_context_declaration_sha256,
-                mechanics_qualification=mechanics_qualification,
-            ),
-            **({"canary-ledger": canary_ledger["self_hash"]} if canary_ledger else {}),
-        },
+        "witness_chairs": base["witness_chairs"],
+        "config_digest": config_digest,
+        "adapter_recipes": base["adapter_recipes"],
+        "sealed_config_digests": sealed,
     }
 
 
