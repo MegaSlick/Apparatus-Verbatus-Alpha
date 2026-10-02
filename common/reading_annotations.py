@@ -15,7 +15,7 @@ import re
 from typing import Any, Final
 
 from common.contracts.errors import SchemaRefusal
-from common.contracts.uncertainty import is_trailing_offset
+from common.contracts.uncertainty import PAGE_READ_LECTIO, is_trailing_offset, validate
 
 # The reader's own doubt report. `assessed`: the reader was asked and its spans and
 # gaps anchor to the text. `malformed`: a report that could not be anchored, kept as
@@ -25,6 +25,7 @@ from common.contracts.uncertainty import is_trailing_offset
 # reports it.
 ASSESSMENT_ASSESSED: Final = "assessed"
 ASSESSMENT_MALFORMED: Final = "malformed"
+_REPORT_FIELDS: Final = frozenset({"state", "uncertain_spans", "gaps", "problem"})
 
 
 def malformed_assessment(problem: str) -> dict[str, Any]:
@@ -111,10 +112,23 @@ def render_doubt_marks(clean_text: str, uncertainty: dict[str, Any]) -> str:
     reading. A gap in a reading with no text is not recorded by `read_doubt_marks`,
     so there is nothing to render back for it.
 
-    The report is one `common.contracts.uncertainty.validate` has accepted; a report
-    no marked reading reads back to, such as overlapping spans or a gap carrying
-    witness evidence, is refused.
+    The report is refused unless it is the closed four-field record and its layers
+    meet `common.contracts.uncertainty.validate` over `clean_text`; a report no
+    marked reading reads back to, such as overlapping spans or a gap carrying
+    witness evidence, is refused too.
     """
+    if not isinstance(uncertainty, dict) or set(uncertainty) != _REPORT_FIELDS:
+        raise SchemaRefusal("a doubt report is not its closed record")
+    validate(
+        {
+            "uncertain_spans": uncertainty["uncertain_spans"],
+            "gaps": uncertainty["gaps"],
+            "self_revisions": None,
+            "assessment": {"state": uncertainty["state"], "problem": uncertainty["problem"]},
+            "lectio_kind": PAGE_READ_LECTIO,
+        },
+        clean_text,
+    )
     if uncertainty["state"] != ASSESSMENT_ASSESSED:
         return clean_text
     # (offset, 0 for a gap or 1 for a span, tiebreak, mark): gaps first at a shared offset.

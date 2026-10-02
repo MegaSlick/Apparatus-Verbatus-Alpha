@@ -173,3 +173,16 @@ def test_a_span_that_cannot_be_written_as_a_mark_is_refused():
     }
     with pytest.raises(SchemaRefusal):
         render_doubt_marks(text, assessment)
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"state": "assessed", "uncertain_spans": [], "gaps": []},
+        {"state": "assessed", "uncertain_spans": [{"start": 0}], "gaps": [], "problem": None},
+        {"state": "assessed", "uncertain_spans": [], "gaps": [], "problem": "why"},
+    ],
+)
+def test_a_malformed_doubt_report_is_refused_by_name(report):
+    with pytest.raises(SchemaRefusal):
+        render_doubt_marks("text", report)
