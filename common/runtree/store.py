@@ -507,9 +507,12 @@ class RunTree:
         A replace, not a compare-and-swap: of two racing Recensor passes the last
         write wins.  The race is bounded, not fixed.  `expected_unit_count` is
         sealed by the Perlector's page readings before the Recensor runs, so a
-        write changing it is refused unless it binds another current reading of
-        some page (an operator re-read, `common.page_path`), which is what may
-        change the count.  A stale write can under-state completeness
+        write changing it is refused when its `pages` name the same
+        `reading_ref` for every page, in the same order, as the receipt on disk.
+        A write that names another reading for some page (an operator re-read,
+        `common.page_path`, makes a new current reading) may change the count;
+        which reading is current is the page-read denominator's to prove, not
+        this store's.  A stale write can under-state completeness
         but never claim it, because the reviews it cites are append-only and a
         unit's class only moves toward resolution.  Concurrent Recensor passes are still unsafe.
         """
