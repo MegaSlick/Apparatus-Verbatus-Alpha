@@ -47,7 +47,7 @@ unreadable doubt marks or no text.
 **correction** — a person's corrected text for a held reading, bound to the reading it
 corrects. Once the Recensor accepts it, the person's text is the established reading,
 taken as the truth with no machine doubt, labelled "corrected by a person" with who,
-when and an optional note; the model's reading stays beside it in the export as "model
+when, why and an optional note; the model's reading stays beside it in the export as "model
 reading (original)". It is delivered and counted like any accepted act and never by
 itself makes a run partial.
 

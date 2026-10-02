@@ -160,7 +160,7 @@ against and goes stale when that review changes. The decisions are:
   cleared;
 - a **correction**, which sends a person's corrected text to export as the reading,
   taken as the truth with no machine doubt, labelled "corrected by a person" with who,
-  when and an optional note, with the model's reading beside it as "model reading
+  when, why and an optional note, with the model's reading beside it as "model reading
   (original)";
 - an **exclusion**, which keeps a unit out of the delivered text but in the record,
   citing the decision;
