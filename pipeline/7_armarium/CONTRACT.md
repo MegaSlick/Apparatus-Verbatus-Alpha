@@ -349,8 +349,15 @@ stored beside them. A held page is a coverage finding, not a change to any text.
 
 **Damage.** A delivered reading's `text_status` is recomputed from its uncertainty
 layer in every format; a reading whose layer records a gap is `partial`, and the
-aggregate names it. How a reader is shown the gaps inside a text is not yet decided;
-the uncertainty layer beside each literal carries them.
+aggregate names it.
+
+**The lead's rulings on what a reader is shown.** The established text is diplomatic,
+with brackets only where the ink is: `[illegible]` for a gap and `[word?]` for a
+doubtful reading. Informed guesses are Coniector reconstructions, kept in their own
+field and never in the established text. No Obsidian vault ships. This build carries
+the gaps and doubts in the uncertainty layer beside each literal and does not yet
+render the brackets; the rendering, a CSV format and a per-row `lot` tying each row to
+its run land in the export follow-up.
 
 **Other readings.** `claims.other_readings` is `{layer, counted_as_acts: false, count,
 by_category, act_ids, carried_by}`. On a page with acts, an other reading not delivered
