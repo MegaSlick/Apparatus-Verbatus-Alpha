@@ -18,10 +18,10 @@ from common.contracts.errors import SchemaRefusal
         ("ǣ", "ae"),
         ("Ǽ", "ae"),
         ("ǽ", "ae"),
-        ("d’Amours", "damours"),
+        ("d’Exemple", "dexemple"),
         ("Straße", "strasse"),
-        ("ȣa8atchin8tin", "8a8atchin8tin"),
-        ("  père, Québec! ", "pere quebec"),
+        ("ȣa8e8a", "8a8e8a"),
+        ("  père, Évêché! ", "pere eveche"),
     ],
 )
 def test_search_fold_keeps_the_harvested_search_behaviour(literal, expected):
@@ -32,8 +32,8 @@ def test_search_fold_is_idempotent_for_the_regression_population():
     examples = [
         "",
         "Cǣsar",
-        "ȣa8atchin8tin",
-        "d'Amours",
+        "ȣa8e8a",
+        "d'Exemple",
         "œuvre — déjà vu",
         "Straße",
         "...",
@@ -53,7 +53,7 @@ def test_search_fold_never_empties_a_string_that_carries_a_letter_or_digit():
         "Cǣsar",
         "ȣ",
         "8",
-        "d’Amours",
+        "d’Exemple",
         "  — é —  ",
         "Κόσμε",
         "\u0301a",

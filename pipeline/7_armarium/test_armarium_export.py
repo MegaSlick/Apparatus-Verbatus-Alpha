@@ -269,7 +269,7 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "act_key": "p1:1",
                 "category": "delivered",
                 "reading": "first reading",
-                "canonical_clean_text": "Cǣsar d’Amours",
+                "canonical_clean_text": "Cǣsar d’Exemple",
                 "uncertainty": {
                     "lectio_kind": "page-read",
                     "uncertain_spans": [],
@@ -496,18 +496,18 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
         assert archive.namelist()[0] == EXPORT_MANIFEST_NAME
         assert not [name for name in archive.namelist() if name.startswith("pixels/")]
         text = archive.read(TEXT_REGISTER).decode("utf-8")
-        assert "Cǣsar d’Amours" in text
+        assert "Cǣsar d’Exemple" in text
         assert f"display_convention: {DISPLAY_CONVENTION}" in text
         # Twice: the canonical field, and the rendering beside it, which with no
         # uncertainty layer in the Archetypus record is the same text unchanged.
-        assert text.count(json.dumps("Cǣsar d’Amours", ensure_ascii=False)) == 2
+        assert text.count(json.dumps("Cǣsar d’Exemple", ensure_ascii=False)) == 2
 
     manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
     assert manifest["claims"]["status"] == "partial"
     assert manifest["claims"]["partial_reasons"][0].startswith("act act-2 is held-for-review")
     assert manifest["claims"]["pixels"]["resolution_claim"].startswith("reference validity")
     assert verify_projection_identity(bundle.data, tmp_path / "identity") == {
-        "act-1": "Cǣsar d’Amours"
+        "act-1": "Cǣsar d’Exemple"
     }
 
 
@@ -1461,7 +1461,7 @@ def test_a_full_text_index_repointed_at_a_decoy_content_table_is_refused(tmp_pat
             """
             CREATE TABLE decoy(rowid INTEGER PRIMARY KEY, derived_search_text TEXT);
             INSERT INTO decoy(rowid, derived_search_text)
-                VALUES (1, 'caesar damours and fabricated terms');
+                VALUES (1, 'caesar dexemple and fabricated terms');
             DROP TABLE acts_fts;
             CREATE VIRTUAL TABLE acts_fts USING fts5(
                 derived_search_text,
@@ -2290,7 +2290,7 @@ def test_database_keeps_literal_and_derived_search_layers_separate(tmp_path):
     finally:
         connection.close()
 
-    assert literal == "Cǣsar d’Amours"
+    assert literal == "Cǣsar d’Exemple"
     assert literal_hash == canonical_text_sha256(literal)
     assert derived == search_fold(literal)
     assert revision == TEXTNORM_REVISION
@@ -2712,7 +2712,7 @@ def test_a_display_that_does_not_strip_back_to_the_canonical_field_is_refused(tm
     members = _members(bundle.data)
     lines = members[TEXT_REGISTER].decode("utf-8").splitlines()
     display_at = lines.index("display:") + 1
-    lines[display_at] = json.dumps("Caesar d'Amours", ensure_ascii=False)
+    lines[display_at] = json.dumps("Caesar d'Exemple", ensure_ascii=False)
     members[TEXT_REGISTER] = ("\n".join(lines) + "\n").encode("utf-8")
     _refresh_manifest_member(members, TEXT_REGISTER)
 
