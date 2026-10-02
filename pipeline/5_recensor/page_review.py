@@ -15,7 +15,8 @@ what it measures itself:
   at its page's act edge names is recorded as a `continuation-link` between
   `act` entries, held when only one side says the text runs across; a flag on
   an `act` entry off that edge holds the entry, and a flag on an `other` entry
-  is a note in its review. A page's edges are its first reading's: an entry
+  is a note in its review. A page's edges are its current whole-page
+  reading's (its first, or the operator re-read that superseded it): an entry
   the Perlector's re-ask recovered never moves them and is never a side.
 
 A unit is `accepted` only when its row is `read`, the floor holds, no chair is
@@ -339,7 +340,7 @@ def _flags(act: dict) -> list[str]:
 def continuation_off_edge(acts: list[dict]) -> dict[str, list[str]]:
     """Each `act` entry whose continuation flag is not at its page's act edge, flags named.
 
-    A page's act edge is its last first-reading `act` entry (for running on)
+    A page's act edge is its last whole-page `act` entry (for running on)
     and its first (for running on from before), `act_entries_by_page`'s; the
     `other` entries around them, a catchword for one, and an entry the
     re-ask recovered do not move it.

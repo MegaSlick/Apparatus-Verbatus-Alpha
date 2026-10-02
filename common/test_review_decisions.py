@@ -500,7 +500,7 @@ def test_a_stale_edit_corrects_nothing():
 
 
 @pytest.mark.parametrize("finding", ["text-misread", "split-needed", "merge-needed"])
-def test_a_correction_split_or_merge_is_a_finding_and_the_unit_stays_held(finding):
+def test_a_misread_split_or_merge_held_with_a_finding_keeps_the_unit_held(finding):
     derived = derived_review()
     result = apply_decisions(derived, [decide(derived, "unit", "b1", "hold", finding=finding)])
     b1 = result["units"]["b1"]

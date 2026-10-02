@@ -749,7 +749,7 @@ def page_breaks(
 ) -> list[tuple[str, dict[str, Any]]]:
     """Every page break an answer flags, as `(subject, payload)`, in page order.
 
-    The last first-reading `act` entry of page p and the first of page p+1
+    The last whole-page `act` entry of page p and the first of page p+1
     (`common.page_edges.page_edges`) are the break's two sides; either side's
     flag records the break, `agreed` only when both say so, and a break whose
     sides disagree is still recorded. A side with no `act` entry (a page not
@@ -896,7 +896,8 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
             if not is_whole_page_reading(row["reading_attempt"]):
                 raise FatalAccounting(
                     f"{what} names {act_key}, an entry the re-ask recovered; a page's edges "
-                    "are its first reading's, and a recovered entry is never a side of a break"
+                    "are its current whole-page reading's, and a recovered entry is never a "
+                    "side of a break"
                 )
             if row["page_ordinal"] != payload[f"{side}_page_ordinal"]:
                 raise FatalAccounting(

@@ -17,8 +17,9 @@ never about blankness.
 **A witness variant is evidence beside a gap, never a substitute inside `text`.**
 
 **Write-once is enforced a layer down**, by the run tree refusing different
-bytes under one identity; this stage adds only that it never tries -- a
-revised reading is a new run over the same Exemplar. A person's correction (a
+bytes under one identity; this stage adds only that it never tries. A page a
+person had read again (an operator re-read) is a new reading with its own act
+ids, so its records take identities of their own. A person's correction (a
 current `edit` the Recensor applied) is established here as the reading,
 labelled "corrected by a person" in its provenance, which names the model's
 reading it corrects; that reading stays in the run tree as read
