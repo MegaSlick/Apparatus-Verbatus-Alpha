@@ -2,8 +2,7 @@
 
 The only source of delivered act text is ``canonical_clean_text`` from the checked
 Archetypus record; every writer receives it from one projection object and none reads
-a witness, Perlectio or other text-shaped field. Salvage records carry their own
-harvested ``content``, written only as salvage, never as act text.
+a witness, Perlectio or other text-shaped field.
 
 ``EXPORT_MANIFEST.json`` is always the first member. The ZIP is stored with fixed
 metadata, so the container adds no nondeterminism. The bytes are still not
@@ -114,7 +113,7 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # whole (`common.stage.reading_acts`), and carries its `other` readings, a
 # labelled layer beside the acts, each page's accounting, and its acts counted by
 # the reading they came from (`reask`).
-EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v11"
+EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v12"
 # The act row and SQLite ids move with the row shape, so a consumer keying on the
 # id never reads an old shape out of a new row.
 ACT_RECORD_SCHEMA: Final = "armarium-act.v5"
@@ -163,7 +162,7 @@ _ACT_READING_FIELDS: Final = frozenset({"act_id", "act_key", "page_ordinal", "re
 # A counted page-read act's key, `p<page>:<entry n>`, or a page row with no entry.
 _PAGE_ACT_KEY: Final = re.compile(r"p([1-9][0-9]*):(?:([1-9][0-9]*)|unread|blank)")
 # Field sets are checked exactly, so each shape change needs a new id.
-SOURCES_SCHEMA: Final = "armarium-sources.v5"
+SOURCES_SCHEMA: Final = "armarium-sources.v6"
 # The `other` readings of a page-read run travel in their own member, never in
 # `acts.jsonl`: that file is one row per counted act, and its row count is the act
 # partition a consumer reconciles against.
@@ -210,7 +209,6 @@ _PAGE_ACCOUNTING_DENOMINATOR: Final = "every real sealed page, read whole"
 _PAGE_ACCOUNTING_ROW_FIELDS: Final = frozenset(
     {"ordinal", "page_id", "rules", "hold_codes", "policy_sha256", "accounting_ref"}
 )
-SALVAGE_RECORD_SCHEMA: Final = "armarium-salvage-item.v1"
 # Code never joins text across a page break: a join row records only that an
 # act may cross it. The Coniector alone reconstructs across one, and only on a
 # run sealed `pages_are_consecutive` (`coniector_layer`).
@@ -290,10 +288,6 @@ _CONTAINER_GRANULARITY_LIMIT: Final = (
 )
 _ACT_PARTITION_DENOMINATOR: Final = "page-read reading acts"
 _PAGE_CENSUS_DENOMINATOR: Final = "run.json source-page/frame rows"
-_SALVAGE_PROMOTION_CLAIM: Final = (
-    "recorded approval then pipeline re-entry; never export-time act promotion"
-)
-_SALVAGE_ABSENCE_REASON: Final = "this run has no sealed salvage inventory to account for"
 _DISPLAY_REASON: Final = (
     "the rendering is not fed this package's canonical uncertainty layer, which travels "
     "beside each literal instead; no span-marking convention has been chosen for "
@@ -310,25 +304,6 @@ _KNOWN_CATEGORIES: Final = frozenset(category.value for category in ArmariumCate
 _REVIEW_CATEGORIES: Final = frozenset(
     {ArmariumCategory.HELD_FOR_REVIEW.value, ArmariumCategory.REFUSED_WITH_REASON.value}
 )
-# Any one of these marks a record as salvage-tier, so a salvage item cannot pass
-# as an act.
-_SALVAGE_DISCRIMINANT_FIELDS: Final = frozenset(
-    {"salvage_id", "harvested_content", "harvest_kind", "content", "promotion"}
-)
-_SALVAGE_RESERVED_FIELDS: Final = frozenset(
-    {
-        "act_id",
-        "act_key",
-        "canonical_clean_text",
-        "canonical_text_sha256",
-        "category",
-        "dissent_ref",
-        "perlectio_ref",
-        "recensor_ref",
-        "approval_ref",
-        "text",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -336,8 +311,7 @@ class ArmariumProjection:
     """The one checked record every product writer is allowed to see.
 
     Only delivered acts have a literal ``canonical_clean_text``; every other act
-    carries ``None`` rather than an invented empty reading. Salvage items are kept
-    apart from acts.
+    carries ``None`` rather than an invented empty reading.
     """
 
     # Exactly one of ``fixture_id``/``submission_id`` is set, so a real corpus
@@ -356,8 +330,6 @@ class ArmariumProjection:
     aggregate_basis: dict[str, Any]
     # The filename ledger's self-hash (``common.stage.submission_identity``).
     submission_id: str | None = None
-    # ``None`` (no sealed inventory) must not be exported as a count of zero.
-    salvage_items: tuple[dict[str, Any], ...] | None = None
     # The held set is derived from these rows, never stored beside them.
     ink_map_pages: tuple[dict[str, Any], ...] = ()
     # `None` means the basis is missing, not that everything was measured;
@@ -532,10 +504,6 @@ def build_armarium_bundle(
     upstream boundary.  It is never used to discover or recover text.
     """
     _validate_projection(projection)
-    if projection.salvage_items is not None:
-        _validate_salvage_items(projection.salvage_items)
-    if projection.salvage_items and "salvage-tier" not in formats.formats:
-        raise SchemaRefusal("a non-empty sealed salvage inventory requires the salvage-tier format")
     _validate_projection_region_bindings(projection)
 
     members: dict[str, bytes] = {}
@@ -546,19 +514,11 @@ def build_armarium_bundle(
     projected_others, embedded_other_crops = _acts_with_source_references(
         projection.other_readings, formats.embed_pixels, read_bytes
     )
-    projected_salvage, embedded_salvage = _salvage_with_source_references(
-        projection.salvage_items, formats.embed_pixels, read_bytes
-    )
     projection = replace(
         projection,
         acts=tuple(_mark_retained_references(record) for record in projected_acts),
         other_readings=tuple(_mark_retained_references(record) for record in projected_others),
         page_accounting=tuple(_mark_retained_references(list(projection.page_accounting))),
-        salvage_items=(
-            tuple(_mark_retained_references(record) for record in projected_salvage)
-            if projected_salvage is not None
-            else None
-        ),
     )
     sources_record: dict[str, Any] = {
         "schema": SOURCES_SCHEMA,
@@ -569,7 +529,6 @@ def build_armarium_bundle(
         "aggregate_basis": projection.aggregate_basis,
         "witness_chairs": list(projection.witness_chairs),
         "witness_floor": projection.witness_floor,
-        "salvage_regions": _salvage_regions(projection.salvage_items),
         # Lets a clean-machine verifier derive the page-level hold itself.
         "ink_map_pages": list(projection.ink_map_pages),
         "other_outcomes": _other_outcomes(projection.other_readings),
@@ -636,14 +595,9 @@ def build_armarium_bundle(
         )
     if "review-items" in formats.formats:
         members["review-items.jsonl"] = _jsonl_bytes(_review_records(projection.acts))
-    if "salvage-tier" in formats.formats:
-        members["salvage/items.jsonl"] = _jsonl_bytes(
-            _salvage_records(projection.salvage_items or ())
-        )
     members.update(embedded)
     members.update(embedded_crops)
     members.update(embedded_other_crops)
-    members.update(embedded_salvage)
 
     manifest = _export_manifest(projection, formats, members)
     archive_members = {EXPORT_MANIFEST_NAME: canonical_bytes(manifest), **members}
@@ -741,7 +695,6 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     sources = _load_sources(root)
     _verify_source_references(sources["pages"], root)
     _verify_region_references(sources, root)
-    _verify_salvage_region_references(sources, root)
     _act_citation_sources(sources)
     _act_outcome_sources(sources)
     _verify_retained_references_bounded(sources)
@@ -1070,7 +1023,6 @@ _MANIFEST_CLAIM_FIELDS: Final = frozenset(
         "transcription_annotations",
         "uncertainty",
         "display",
-        "salvage",
         "ink_map",
         "not_measured",
         "other_readings",
@@ -1103,14 +1055,6 @@ _CLAIM_SUBFIELDS: Final = {
             "exercised_against_real_spans",
             "reason",
         }
-    ),
-}
-# Two closed sets, not a union: an `accounted` claim carrying an absence reason is
-# refused.
-_SALVAGE_CLAIM_FIELDS: Final = {
-    "accounted": frozenset({"namespace", "status", "count", "promotion"}),
-    "not-produced-no-sealed-salvage-inventory": frozenset(
-        {"namespace", "status", "count", "reason", "promotion"}
     ),
 }
 
@@ -1281,14 +1225,6 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     )
     if act_partition["denominator"] != _ACT_PARTITION_DENOMINATOR:
         raise SchemaRefusal("the manifest act denominator is not this build's fixed claim")
-    salvage = claims["salvage"]
-    if not isinstance(salvage, dict):
-        raise SchemaRefusal("the manifest salvage claim is not an object")
-    status = salvage.get("status")
-    expected = _SALVAGE_CLAIM_FIELDS.get(status) if isinstance(status, str) else None
-    if expected is None:
-        raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid salvage-tier status")
-    _require_exact_fields(salvage, expected, subject="the manifest salvage claim")
     rows = claims["act_partition"]["categories"]
     if not isinstance(rows, list):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no category rows")
@@ -2614,7 +2550,6 @@ def _validate_projection_act(act: dict[str, Any]) -> None:
         )
     if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
         require_approval(ARMARIUM, category, act.get("approval_ref"))
-    _reject_act_salvage_namespace(act)
 
 
 def _delivered_doubt_counts(acts: tuple[dict[str, Any], ...]) -> dict[str, int]:
@@ -2946,70 +2881,6 @@ def _aggregate_from_basis(
         raise SchemaRefusal("an Armarium aggregate basis cannot be reconciled") from error
 
 
-def _validate_salvage_items(items: tuple[dict[str, Any], ...]) -> None:
-    seen: set[str] = set()
-    for item in items:
-        if not isinstance(item, dict):
-            raise SchemaRefusal("a salvage-tier item is not an object")
-        _reject_salvage_act_namespace(item, subject="item")
-        salvage_id = item.get("salvage_id")
-        if not _is_safe_path_segment(salvage_id) or salvage_id in seen:
-            raise SchemaRefusal("a salvage-tier item has no unique, safe salvage identity")
-        if not isinstance(item.get("content"), str):
-            raise SchemaRefusal("a salvage-tier item has no separately named content")
-        regions = item.get("source_regions")
-        if not isinstance(regions, list) or not regions:
-            raise SchemaRefusal("a salvage-tier item has no source-region provenance")
-        if not isinstance(item.get("provenance"), dict) or not item["provenance"]:
-            raise SchemaRefusal("a salvage-tier item has no collection provenance")
-        for region in regions:
-            _validate_salvage_region(region)
-        seen.add(salvage_id)
-
-
-def _reject_act_salvage_namespace(act: dict[str, Any]) -> None:
-    """The salvage firewall in the other direction: no salvage record becomes an act.
-
-    A salvage record arriving as an act would have its harvested scrap written as
-    established text. This stage never writes act text; promotion is a pipeline
-    re-entry the project lead approves.
-    """
-    reached = sorted(set(act) & _SALVAGE_DISCRIMINANT_FIELDS)
-    if reached:
-        raise SchemaRefusal(
-            f"an Armarium projection act carries salvage-tier field(s) {reached}; "
-            "salvage is promoted by re-entering the pipeline, never by export"
-        )
-
-
-def _reject_salvage_act_namespace(value: Any, *, subject: str) -> None:
-    """The salvage firewall applies to nested provenance as well as record headers."""
-    try:
-        _reject_salvage_act_namespace_walk(value, subject=subject)
-    except RecursionError as error:
-        # Runs on unvalidated harvested content, which can nest past the
-        # recursion limit.
-        raise SchemaRefusal(
-            f"a salvage-tier {subject} nests too deeply for this machine to walk, so its "
-            "acts-namespace screen was never computable"
-        ) from error
-
-
-def _reject_salvage_act_namespace_walk(value: Any, *, subject: str) -> None:
-    if isinstance(value, dict):
-        forbidden = sorted(set(value) & _SALVAGE_RESERVED_FIELDS)
-        if forbidden:
-            raise SchemaRefusal(
-                f"a salvage-tier {subject} reaches into the acts namespace through "
-                f"reserved field(s) {forbidden}"
-            )
-        for item in value.values():
-            _reject_salvage_act_namespace_walk(item, subject=subject)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            _reject_salvage_act_namespace_walk(item, subject=subject)
-
-
 def _validate_cited_region(region: object, *, subject: str) -> None:
     """Validate a crop citation before it is attached to any export namespace."""
     if not isinstance(region, dict):
@@ -3036,13 +2907,6 @@ def _validate_cited_region(region: object, *, subject: str) -> None:
     transform = region.get("transform")
     if not isinstance(transform, dict) or transform.get("operation") != "crop":
         raise SchemaRefusal(f"a {subject} source region has no crop transform")
-
-
-def _validate_salvage_region(region: object) -> None:
-    """Keep tier-only material cited to ink without turning it into an act."""
-    if isinstance(region, dict):
-        _reject_salvage_act_namespace(region, subject="source region")
-    _validate_cited_region(region, subject="salvage-tier")
 
 
 def _pages_by_ordinal(
@@ -3095,10 +2959,6 @@ def _validate_projection_region_bindings(projection: ArmariumProjection) -> None
         for region in act.get("source_regions", []):
             _validate_cited_region(region, subject="exported act")
             _verify_region_page_binding(region, pages, subject="exported act")
-    for item in projection.salvage_items or ():
-        for region in item["source_regions"]:
-            _validate_salvage_region(region)
-            _verify_region_page_binding(region, pages, subject="salvage-tier")
 
 
 def _source_rows(
@@ -3456,44 +3316,6 @@ def _acts_with_source_references(
     return tuple(projected), embedded
 
 
-def _salvage_with_source_references(
-    items: tuple[dict[str, Any], ...] | None,
-    embed_pixels: bool,
-    read_bytes: Callable[[str], bytes],
-) -> tuple[tuple[dict[str, Any], ...] | None, dict[str, bytes]]:
-    """Project cited salvage regions without ever constructing an act record."""
-    if items is None:
-        return None, {}
-    projected: list[dict[str, Any]] = []
-    embedded: dict[str, bytes] = {}
-    for item in items:
-        salvage_id = item["salvage_id"]
-        copied_item = dict(item)
-        regions: list[dict[str, Any]] = []
-        seen_regions: set[str] = set()
-        for region in item["source_regions"]:
-            _validate_salvage_region(region)
-            copied = dict(region)
-            region_id = copied["region_id"]
-            if region_id in seen_regions:
-                raise SchemaRefusal("a salvage-tier item repeats a source-region identity")
-            seen_regions.add(region_id)
-            copied["crop_image"] = _image_reference(
-                copied["image_path"],
-                copied["image_sha256"],
-                f"pixels/salvage/{salvage_id}/{region_id}.img",
-                embed_pixels,
-                read_bytes,
-                embedded,
-                changed="a salvage-tier source crop changed while export was built",
-                collision="two salvage source crops claim one package member",
-            )
-            regions.append(copied)
-        copied_item["source_regions"] = regions
-        projected.append(copied_item)
-    return tuple(projected), embedded
-
-
 _UNSAFE_PATH_CHARACTERS: Final = frozenset({"\\", "\x00"})
 
 
@@ -3842,20 +3664,6 @@ def _review_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
         }
         for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"]))
         if act["category"] in _REVIEW_CATEGORIES
-    ]
-
-
-def _salvage_records(items: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
-    return [
-        {
-            "schema": SALVAGE_RECORD_SCHEMA,
-            "salvage_id": item["salvage_id"],
-            "content": item["content"],
-            "source_regions": item["source_regions"],
-            "provenance": item.get("provenance"),
-            "promotion": "requires-recorded-approval-and-pipeline-re-entry",
-        }
-        for item in sorted(items, key=lambda item: item["salvage_id"])
     ]
 
 
@@ -4616,14 +4424,6 @@ def _export_manifest(
         for row in projection.source_manifest
         if isinstance(row, dict) and isinstance(row.get("relative_path"), str)
     }
-    if projection.salvage_items is None:
-        salvage_status = {
-            "status": "not-produced-no-sealed-salvage-inventory",
-            "count": None,
-            "reason": _SALVAGE_ABSENCE_REASON,
-        }
-    else:
-        salvage_status = {"status": "accounted", "count": len(projection.salvage_items)}
     ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
     edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     unmeasurable_ink_map_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
@@ -4692,11 +4492,6 @@ def _export_manifest(
                 "exercised_against_real_spans": False,
                 "reason": _DISPLAY_REASON,
             },
-            "salvage": {
-                "namespace": "salvage",
-                **salvage_status,
-                "promotion": _SALVAGE_PROMOTION_CLAIM,
-            },
             "not_measured": _not_measured_claim(projection),
             "other_readings": _other_readings_claim(other_outcomes, formats.formats),
             "page_accounting": _page_accounting_claim(
@@ -4744,7 +4539,6 @@ _SOURCES_LIST_FIELDS: Final = (
     "regions",
     "act_citations",
     "act_outcomes",
-    "salvage_regions",
     "other_outcomes",
     "other_citations",
     "page_accounting",
@@ -4759,7 +4553,6 @@ _SOURCES_FIELDS: Final = (
     "ink_map_pages",
     "witness_chairs",
     "witness_floor",
-    "salvage_regions",
     "other_outcomes",
     "other_citations",
     "page_accounting",
@@ -4862,8 +4655,6 @@ def _required_format_members(
         required["jsonl"] = {"acts.jsonl"}
     if "review-items" in formats.formats:
         required["review-items"] = {"review-items.jsonl"}
-    if "salvage-tier" in formats.formats:
-        required["salvage-tier"] = {"salvage/items.jsonl"}
     return required
 
 
@@ -4877,11 +4668,6 @@ def _all_pixel_references(sources: dict[str, list[dict[str, Any]]]) -> list[Any]
     ]
     references.extend(
         region.get("crop_image") for region in sources["regions"] if isinstance(region, dict)
-    )
-    references.extend(
-        region.get("crop_image")
-        for region in sources["salvage_regions"]
-        if isinstance(region, dict)
     )
     return references
 
@@ -5737,57 +5523,6 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
     return records
 
 
-def _salvage_product_records(path: Path) -> tuple[dict[str, Any], ...]:
-    """Read the tier-only JSONL and reapply its no-acts firewall."""
-    records: list[dict[str, Any]] = []
-    for record in _jsonl_rows(path, "salvage-tier JSONL", "a salvage-tier JSONL row"):
-        if not isinstance(record, dict) or record.get("schema") != SALVAGE_RECORD_SCHEMA:
-            raise SchemaRefusal("a salvage-tier JSONL row has no recognized schema")
-        _verify_retained_references_bounded(record)
-        if set(record) != {
-            "schema",
-            "salvage_id",
-            "content",
-            "source_regions",
-            "provenance",
-            "promotion",
-        }:
-            raise SchemaRefusal("a salvage-tier JSONL row has an unrecognized field set")
-        records.append({key: value for key, value in record.items() if key != "schema"})
-    _validate_salvage_items(tuple(records))
-    return tuple(records)
-
-
-def _verify_salvage_claim(
-    manifest: dict[str, Any],
-    records: tuple[dict[str, Any], ...],
-    sources: dict[str, list[dict[str, Any]]],
-) -> None:
-    salvage = _manifest_claim(manifest, "salvage")
-    if not isinstance(salvage, dict) or salvage.get("namespace") != "salvage":
-        raise SchemaRefusal("EXPORT_MANIFEST.json has no salvage-tier claim")
-    status, count = salvage.get("status"), salvage.get("count")
-    if salvage.get("promotion") != _SALVAGE_PROMOTION_CLAIM:
-        raise SchemaRefusal("the salvage-tier promotion claim is not this build's fixed claim")
-    if status == "accounted":
-        if not is_plain_int(count) or count != len(records):
-            raise SchemaRefusal("the salvage-tier count does not reconcile to its records")
-    elif status == "not-produced-no-sealed-salvage-inventory":
-        if (
-            count is not None
-            or records
-            or sources["salvage_regions"]
-            or salvage.get("reason") != _SALVAGE_ABSENCE_REASON
-        ):
-            raise SchemaRefusal("an unproduced salvage tier claims or carries material")
-    else:
-        raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid salvage-tier status")
-
-    flattened = _salvage_regions(records)
-    if canonical_text(flattened) != canonical_text(sources["salvage_regions"]):
-        raise SchemaRefusal("salvage-tier records do not reconcile to their source citations")
-
-
 def _product_categories(records: dict[str, dict[str, Any]]) -> dict[str, str]:
     return {act_id: record["category"] for act_id, record in records.items()}
 
@@ -6072,14 +5807,6 @@ def _verify_product_accounting(
             {act_id: outcomes[act_id] for act_id in expected_review},
             subject="review-items JSONL",
         )
-    if "salvage-tier" in formats.formats:
-        _verify_salvage_claim(
-            manifest,
-            _salvage_product_records(root / "salvage/items.jsonl"),
-            sources,
-        )
-    else:
-        _verify_salvage_claim(manifest, (), sources)
     return search_fold_verification
 
 
@@ -6245,24 +5972,6 @@ def _verify_region_references(sources: dict[str, list[dict[str, Any]]], root) ->
         _verify_reference(region.get("crop_image"), root)
 
 
-def _verify_salvage_region_references(sources: dict[str, list[dict[str, Any]]], root) -> None:
-    """Verify cited salvage ink separately from, and never as, an act region."""
-    pages = _pages_by_ordinal(sources["pages"])
-    seen: set[tuple[str, str]] = set()
-    for region in sources["salvage_regions"]:
-        if not isinstance(region, dict) or not isinstance(region.get("salvage_id"), str):
-            raise SchemaRefusal("a salvage-tier source region has no tier identity")
-        _validate_salvage_region(region)
-        key = (region["salvage_id"], region["region_id"])
-        if key in seen:
-            raise SchemaRefusal("a salvage-tier source region repeats its tier identity")
-        seen.add(key)
-        _verify_region_page_binding(region, pages, subject="salvage-tier")
-        page_reference = pages[region["source_page_ordinal"]].get("page_image")
-        _verify_reference(page_reference, root)
-        _verify_reference(region.get("crop_image"), root)
-
-
 def _act_outcomes(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     """Keep the non-text terminal reason that review-items must reproduce exactly.
 
@@ -6308,22 +6017,6 @@ def _source_regions(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 raise SchemaRefusal("one source-region identity carries conflicting provenance")
             regions[region_id] = region
     return [regions[region_id] for region_id in sorted(regions)]
-
-
-def _salvage_regions(items: tuple[dict[str, Any], ...] | None) -> list[dict[str, Any]]:
-    """Flatten cited salvage regions with their tier identity, never an act id."""
-    if items is None:
-        return []
-    regions: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for item in sorted(items, key=lambda record: record["salvage_id"]):
-        for region in item["source_regions"]:
-            key = (item["salvage_id"], region["region_id"])
-            if key in seen:
-                raise SchemaRefusal("a salvage-tier source region repeats its tier identity")
-            seen.add(key)
-            regions.append({"salvage_id": item["salvage_id"], **region})
-    return sorted(regions, key=lambda record: (record["salvage_id"], record["region_id"]))
 
 
 def _verify_reference(reference: Any, root) -> None:

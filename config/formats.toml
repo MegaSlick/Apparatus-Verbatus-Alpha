@@ -6,7 +6,7 @@
 #
 # EXPORT_MANIFEST.json is always the first member and is not optional.
 schema = "armarium-formats.v1"
-formats = ["text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"]
+formats = ["text-bundle", "acts-database", "jsonl", "review-items"]
 
 # False means the bundle carries digest-checked references to its pages and crops and
 # says plainly that resolving the pixels needs source access. True copies the verified

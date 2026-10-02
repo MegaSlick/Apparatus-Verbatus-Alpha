@@ -239,7 +239,7 @@ def _basis_for_acts(acts, *, sealed_pages=1):
     return basis
 
 
-def _projection(*, salvage_items=()) -> ArmariumProjection:
+def _projection() -> ArmariumProjection:
     page = _source_bytes("1_exemplar/blobs/sha256/page")
     crop = _source_bytes("2_designator/blobs/sha256/crop")
     region = {
@@ -350,7 +350,6 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
             "continuation_flags": {},
             "page_witness_chairs": ["attestator_1"],
         },
-        salvage_items=tuple(salvage_items),
         ink_map_pages=(_mapped_page(),),
         page_accounting=_page_accounting(1),
     )
@@ -421,20 +420,9 @@ def _two_region_projection() -> ArmariumProjection:
 
 def _formats(*, embed_pixels: bool) -> ArmariumFormats:
     return ArmariumFormats(
-        ("text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"),
+        ("text-bundle", "acts-database", "jsonl", "review-items"),
         embed_pixels,
     )
-
-
-def _salvage_item(content: str) -> dict:
-    region = dict(_projection().acts[0]["source_regions"][0])
-    region["region_id"] = "salvage-region-1"
-    return {
-        "salvage_id": "salvage-1",
-        "content": content,
-        "source_regions": [region],
-        "provenance": {"collection": "separate tier"},
-    }
 
 
 def test_act_key_sort_key_is_reading_order_past_ten_pages_and_ten_readings():
@@ -582,7 +570,7 @@ def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
         ).data
     )
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    assert manifest["schema"] == "armarium-export-manifest.v11"
+    assert manifest["schema"] == "armarium-export-manifest.v12"
 
     for stale in (
         "armarium-export-manifest.v2",
@@ -808,7 +796,7 @@ def test_a_flagged_page_with_no_re_measurement_cannot_reach_an_export():
 
 
 def test_manifest_uncertainty_status_reflects_no_literal_format_carriage(tmp_path):
-    formats = ArmariumFormats(("review-items", "salvage-tier"), embed_pixels=False)
+    formats = ArmariumFormats(("review-items",), embed_pixels=False)
     bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
     manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
 
@@ -820,7 +808,7 @@ def test_manifest_uncertainty_status_reflects_no_literal_format_carriage(tmp_pat
 
 
 def test_manifest_refuses_available_uncertainty_with_no_literal_carrier(tmp_path):
-    formats = ArmariumFormats(("review-items", "salvage-tier"), embed_pixels=False)
+    formats = ArmariumFormats(("review-items",), embed_pixels=False)
     bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
     members = _members(bundle.data)
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
@@ -1020,7 +1008,7 @@ def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(
     package may legally select the text bundle as its one literal format, and
     there this section is the whole reading of the act.
     """
-    formats = ArmariumFormats(("text-bundle", "review-items", "salvage-tier"), False)
+    formats = ArmariumFormats(("text-bundle", "review-items"), False)
     original = _projection()
     literal = original.acts[0]["canonical_clean_text"]
     delivered = {
@@ -1152,8 +1140,8 @@ def test_a_deeply_nested_retained_reference_is_refused_by_name_not_a_recursion_e
     dict/list/tuple value, not only 'evidence') must still be refused by name
     rather than reaching callers as a bare `RecursionError`. Testing the
     shared `_verify_retained_references_bounded` wrapper directly, once,
-    covers all six call sites that use it (acts JSONL, acts database,
-    review-items JSONL, salvage-tier JSONL, act-citation evidence, and
+    covers all five call sites that use it (acts JSONL, acts database,
+    review-items JSONL, act-citation evidence, and
     `_export_bundle`'s sources.json check)."""
     nested: object = "leaf"
     for _ in range(5000):
@@ -1206,7 +1194,7 @@ def test_a_single_literal_format_package_still_reads_back_its_uncertainty(tmp_pa
     verified: the same defect `verify_delivered_bundle` exists to refuse for the
     one text.
     """
-    formats = ArmariumFormats(("jsonl", "review-items", "salvage-tier"), False)
+    formats = ArmariumFormats(("jsonl", "review-items"), False)
     bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
     members = _members(bundle.data)
     records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
@@ -2391,118 +2379,6 @@ def test_embedded_page_and_crop_pixels_open_on_a_clean_machine(tmp_path):
     assert manifest["claims"]["pixels"]["embedded"] is True
 
 
-def test_salvage_stays_out_of_every_act_projection(tmp_path):
-    salvage_content = "marginal material, not an established act"
-    projection = _projection(salvage_items=(_salvage_item(salvage_content),))
-    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
-    with ZipFile(BytesIO(bundle.data)) as archive:
-        assert salvage_content in archive.read("salvage/items.jsonl").decode("utf-8")
-        assert salvage_content not in archive.read("acts.jsonl").decode("utf-8")
-        assert salvage_content not in archive.read(TEXT_REGISTER).decode("utf-8")
-        assert salvage_content.encode("utf-8") not in archive.read("acts.sqlite")
-
-    leaked = replace(
-        projection,
-        salvage_items=(
-            {
-                **_salvage_item(salvage_content),
-                "act_id": "act-1",
-            },
-        ),
-    )
-    with pytest.raises(SchemaRefusal, match="acts namespace"):
-        build_armarium_bundle(leaked, _formats(embed_pixels=False), _source_bytes)
-
-    region_leak = replace(
-        projection,
-        salvage_items=(
-            {
-                **_salvage_item(salvage_content),
-                "source_regions": [
-                    {
-                        **_salvage_item(salvage_content)["source_regions"][0],
-                        "canonical_clean_text": "not-an-act",
-                    }
-                ],
-            },
-        ),
-    )
-    with pytest.raises(SchemaRefusal, match="salvage-tier .*reaches into the acts namespace"):
-        build_armarium_bundle(region_leak, _formats(embed_pixels=False), _source_bytes)
-
-    false_page_binding = replace(
-        projection,
-        salvage_items=(
-            {
-                **_salvage_item(salvage_content),
-                "source_regions": [
-                    {
-                        **_salvage_item(salvage_content)["source_regions"][0],
-                        "declared_path": "other-folio.png",
-                    }
-                ],
-            },
-        ),
-    )
-    with pytest.raises(SchemaRefusal, match="disagrees with its cited source page"):
-        build_armarium_bundle(false_page_binding, _formats(embed_pixels=False), _source_bytes)
-
-    nested_provenance_leak = replace(
-        projection,
-        salvage_items=(
-            {
-                **_salvage_item(salvage_content),
-                "provenance": {
-                    "collection": "separate tier",
-                    "act_id": "act-1",
-                    "canonical_clean_text": "purported act text",
-                },
-            },
-        ),
-    )
-    with pytest.raises(SchemaRefusal, match="salvage-tier item reaches into the acts namespace"):
-        build_armarium_bundle(nested_provenance_leak, _formats(embed_pixels=False), _source_bytes)
-
-
-def test_nonempty_salvage_inventory_requires_the_salvage_tier_format():
-    projection = _projection(salvage_items=(_salvage_item("marginal material"),))
-    formats = ArmariumFormats(
-        ("text-bundle", "acts-database", "jsonl", "review-items"),
-        False,
-    )
-
-    with pytest.raises(SchemaRefusal, match="non-empty sealed salvage inventory requires"):
-        build_armarium_bundle(projection, formats, _source_bytes)
-
-
-def test_salvage_requires_cited_ink_and_collection_provenance():
-    content = "marginal material, not an established act"
-    missing_regions = {**_salvage_item(content), "source_regions": []}
-    missing_provenance = {**_salvage_item(content), "provenance": {}}
-    for item, message in (
-        (missing_regions, "source-region provenance"),
-        (missing_provenance, "collection provenance"),
-    ):
-        with pytest.raises(SchemaRefusal, match=message):
-            build_armarium_bundle(
-                _projection(salvage_items=(item,)), _formats(embed_pixels=False), _source_bytes
-            )
-
-
-def test_missing_sealed_salvage_inventory_is_visible_not_an_invented_zero(tmp_path):
-    bundle = build_armarium_bundle(
-        replace(_projection(), salvage_items=None), _formats(embed_pixels=False), _source_bytes
-    )
-    manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
-    assert manifest["claims"]["salvage"] == {
-        "namespace": "salvage",
-        "status": "not-produced-no-sealed-salvage-inventory",
-        "count": None,
-        "reason": "this run has no sealed salvage inventory to account for",
-        "promotion": "recorded approval then pipeline re-entry; never export-time act promotion",
-    }
-
-
 def test_bundle_bytes_are_deterministic_for_the_same_sealed_projection():
     first = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     second = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
@@ -2814,48 +2690,6 @@ def test_the_manifest_says_whether_projection_identity_was_actually_checked(tmp_
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
-@pytest.mark.parametrize(
-    "field", ["salvage_id", "harvested_content", "harvest_kind", "content", "promotion"]
-)
-def test_a_salvage_shaped_record_cannot_enter_the_acts_namespace(field, tmp_path):
-    """Spec 11 test 4, in the direction the reserved-field guard does not cover.
-
-    A salvage item that resembles an act must be refused by name, not left to fail on
-    a missing key somewhere downstream. Promotion re-enters the pipeline under the
-    project lead's recorded approval; there is no export-time promotion.
-    """
-    base = _projection()
-    smuggled = {**base.acts[0], field: "a grid tiling nobody established"}
-    with pytest.raises(SchemaRefusal, match="carries salvage-tier field"):
-        build_armarium_bundle(
-            replace(base, acts=(smuggled, base.acts[1])),
-            _formats(embed_pixels=False),
-            _source_bytes,
-        )
-
-
-def test_a_deeply_nested_salvage_item_becomes_a_refusal_not_a_recursion_crash(tmp_path):
-    """`_reject_salvage_act_namespace` walks a harvested salvage item whole, before
-    any of its own field checks (`_validate_salvage_items`), so unvalidated
-    provenance can nest past Python's recursion limit. That must become a
-    `SchemaRefusal`, never an uncaught `RecursionError` that would crash the
-    whole export and take every other act down with it."""
-    nested: object = "leaf"
-    for _ in range(5000):
-        nested = {"nested": nested}
-    item = {**_salvage_item("scrap"), "provenance": {"collection": "tier", "detail": nested}}
-    base = _projection()
-    # The salvage walk's own wording, not the shared "nests too deeply" prefix:
-    # the retained-reference walk and the sources.json parser raise refusals
-    # carrying that prefix too, so a bare match could not prove which guard held.
-    with pytest.raises(SchemaRefusal, match="salvage-tier .* nests too deeply for this machine"):
-        build_armarium_bundle(
-            replace(base, salvage_items=(item,)),
-            _formats(embed_pixels=False),
-            _source_bytes,
-        )
-
-
 def test_bytes_that_are_not_an_archive_are_refused_rather_than_raising_out_of_the_verifier(
     tmp_path,
 ):
@@ -2996,7 +2830,7 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
 
     manifest = verify_export_bundle(bundle.data, clean)
 
-    assert manifest["schema"] == "armarium-export-manifest.v11"
+    assert manifest["schema"] == "armarium-export-manifest.v12"
     assert outside.read_bytes() == b"bytes outside the extraction root"
     assert linked.stat().st_ino != shared_inode
 
@@ -3809,7 +3643,7 @@ def test_perlector_basis_counts_must_reconcile_with_the_projected_acts():
 
 
 _HEAD_TEXT, _TAIL_TEXT = "Cǣsar d’Amo-", "urs fils"
-_FORMATS_WITHOUT_TEXT = ArmariumFormats(("review-items", "salvage-tier"), False)
+_FORMATS_WITHOUT_TEXT = ArmariumFormats(("review-items",), False)
 
 
 def _later_page(
@@ -4213,7 +4047,6 @@ def recipient_happy_run(tmp_path_factory):
         ("real-run-type", "non-blank submission and scenario identities"),
         ("real-run-blank", "non-blank submission and scenario identities"),
         ("real-run-extra", "unrecognized field set"),
-        ("salvage-status-type", "invalid salvage-tier status"),
         ("fixture-run-type", "non-blank fixture and scenario identities"),
         ("scenario-run-type", "non-blank fixture and scenario identities"),
         ("run-both-identities", "both a fixture identifier and a submission"),
@@ -4227,7 +4060,6 @@ def recipient_happy_run(tmp_path_factory):
         ("manifest-act-denominator", "not this build's fixed claim"),
         ("manifest-page-denominator", "not this build's fixed claim"),
         ("manifest-display-reason", "display claim"),
-        ("manifest-salvage-promotion", "not this build's fixed claim"),
         ("not-measured-status", "status.*disagrees with its detail"),
         ("geometry-configurations", "canonical order"),
         ("geometry-zero-samples", "sample_count is zero"),
@@ -4254,7 +4086,6 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
         "real-run-type": lambda m: m["run"].update(submission_id=["not", "an", "identity"]),
         "real-run-blank": lambda m: m["run"].update(submission_id="   "),
         "real-run-extra": lambda m: m["run"].update(operator="nobody"),
-        "salvage-status-type": lambda m: m["claims"]["salvage"].update(status=["accounted"]),
         "fixture-run-type": lambda m: m["run"].update(fixture_id=["not", "an", "identity"]),
         "scenario-run-type": lambda m: m["run"].update(scenario=["not", "an", "identity"]),
         "run-both-identities": lambda m: m["run"].update(submission_id="a" * 64),
@@ -4274,9 +4105,6 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
             denominator="other"
         ),
         "manifest-display-reason": lambda m: m["claims"]["display"].update(reason="approved"),
-        "manifest-salvage-promotion": lambda m: m["claims"]["salvage"].update(
-            promotion="automatic"
-        ),
         "not-measured-status": lambda m: _entry(m["claims"]["not_measured"], "perlector-pass-c")[
             "detail"
         ].update(pages_audit_not_run=0),
