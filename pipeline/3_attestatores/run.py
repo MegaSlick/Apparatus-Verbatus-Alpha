@@ -3724,72 +3724,48 @@ def live_pass(
             settled = len(pages) - len(to_read[chair])
         recorded += settled
 
-    # One schedule per chair keeps each page unit with its resident chair.
-    units: dict[tuple[str, str], int] = {}
-    schedule: list[dict[str, str]] = []
-    for chair in sorted(to_read):
-        rows = []
-        for page_ordinal in to_read[chair]:
-            unit_id = page_ids[page_ordinal]
-            units[(chair, unit_id)] = page_ordinal
-            rows.append({"unit_id": unit_id, "page_ordinal": page_ordinal})
-        schedule.extend(feeding.stage_major_schedule(context.tree.run_id, rows, [chair]))
     # `None` for an adapter with a single framing.
     framings = {
         chair: witness_adapters.framing_for(context.registry.config, chair) for chair in roster
     }
-
-    def serve(client: ChairClient, row: dict[str, str]) -> None:
-        nonlocal recorded
-        chair = row["chair"]
-        resolved = context.registry.resolve(chair)
-        adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
-        page_ordinal = units[(chair, row["unit_id"])]
-        if chair in detector_chairs:
-            _serve_detector_page(
-                context,
-                client=client,
-                chair=chair,
-                resolved=resolved,
-                adapter=adapter,
-                page_ordinal=page_ordinal,
-                ordinal=ordinal,
-                units=detector[0][page_ordinal],
-                page_ids=page_ids,
-            )
-        else:
-            _serve_page_unit(
-                context,
-                client=client,
-                chair=chair,
-                resolved=resolved,
-                adapter=adapter,
-                page_ordinal=page_ordinal,
-                ordinal=ordinal,
-                page_ids=page_ids,
-                framing=framings[chair],
-            )
-        recorded += 1
-
-    def load(chair: str) -> ChairClient:
-        client = serving_factory(context, context.registry.resolve(chair), tier)
-        client.__enter__()
-        return client
-
-    def unload(chair: str, client: ChairClient) -> None:
-        del chair
-        client.__exit__(None, None, None)
-
-    if schedule:
-        try:
-            feeding.execute_stage_major_schedule(
-                schedule,
-                residency=feeding.SingleChairResidency(load, unload),
-                serve=serve,
-            )
-        except ServingError as error:
-            # Reported as a refusal; everything that arrived is already sealed.
-            raise ContractError(f"a live witness reading was refused: {error}") from error
+    try:
+        # One chair resident at a time, its pages in order; a chair with
+        # nothing left to read is never loaded.
+        for chair in sorted(to_read):
+            if not to_read[chair]:
+                continue
+            resolved = context.registry.resolve(chair)
+            adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+            with serving_factory(context, resolved, tier) as client:
+                for page_ordinal in sorted(to_read[chair]):
+                    if chair in detector_chairs:
+                        _serve_detector_page(
+                            context,
+                            client=client,
+                            chair=chair,
+                            resolved=resolved,
+                            adapter=adapter,
+                            page_ordinal=page_ordinal,
+                            ordinal=ordinal,
+                            units=detector[0][page_ordinal],
+                            page_ids=page_ids,
+                        )
+                    else:
+                        _serve_page_unit(
+                            context,
+                            client=client,
+                            chair=chair,
+                            resolved=resolved,
+                            adapter=adapter,
+                            page_ordinal=page_ordinal,
+                            ordinal=ordinal,
+                            page_ids=page_ids,
+                            framing=framings[chair],
+                        )
+                    recorded += 1
+    except ServingError as error:
+        # Reported as a refusal; everything that arrived is already sealed.
+        raise ContractError(f"a live witness reading was refused: {error}") from error
     return recorded
 
 

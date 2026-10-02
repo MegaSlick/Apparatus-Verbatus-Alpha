@@ -1379,9 +1379,8 @@ def test_a_live_roster_reads_each_chair_once_through_its_own_scope(live_run, tmp
 
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
 
-    # One load per chair, in the deterministic chair-outer order the schedule
-    # builds; a second load of an unloaded chair is what `SingleChairResidency`
-    # and `execute_stage_major_schedule` exist to refuse.
+    # One load per chair, chair by chair in a fixed order; a chair is never
+    # loaded a second time.
     assert world.loads == sorted(LIVE_CHAIRS)
     # Two sealed pages, so a whole-page chair answers twice.
     assert len(world.requests("attestator_1")) == 2
