@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 import json
 import random
 
@@ -553,7 +555,12 @@ class _Tree:
     def build_manifest(self, stage, *, verify_inputs=True):
         return {
             "artifacts": [
-                {"kind": kind, "artifact_id": artifact}
+                {
+                    "kind": kind,
+                    "artifact_id": artifact,
+                    "relative_path": f"{stage}/{kind}/{artifact}.json",
+                    "sha256": "f" * 64,
+                }
                 for (s, kind, artifact) in self.records
                 if s == stage
             ]
@@ -985,8 +992,7 @@ def test_a_real_reasked_run_is_read_with_its_reask_as_the_receipt_binds_it(tmp_p
 
 
 class _PathTree(_Tree):
-    """`_Tree` whose manifest names each record's path, as a run tree's does, and
-    whose Recensor receipt binds page 1 to `bound`."""
+    """`_Tree` whose Recensor receipt binds page 1 to `bound`."""
 
     bound = f"{PERLECTOR}/page-reading/r3.json"
     bound_sha256 = "f" * 64
@@ -1000,18 +1006,6 @@ class _PathTree(_Tree):
                     "reading_ref": {"relative_path": self.bound, "sha256": self.bound_sha256},
                 }
                 for ordinal in self.receipt_pages
-            ]
-        }
-
-    def build_manifest(self, stage, *, verify_inputs=True):
-        return {
-            "artifacts": [
-                {
-                    **entry,
-                    "relative_path": f"{stage}/{entry['kind']}/{entry['artifact_id']}.json",
-                    "sha256": "f" * 64,
-                }
-                for entry in super().build_manifest(stage)["artifacts"]
             ]
         }
 
@@ -1087,6 +1081,7 @@ def test_a_page_a_person_had_read_again_is_judged_on_its_current_reading(monkeyp
     # The person's retry is reported apart: the first reading read two of the three.
     reread = result["operator_reread"]
     assert reread["page_ordinals"] == [1]
+    assert reread["earlier_reread_act_records_left_out"] == 0
     assert reread["before_reread"]["exactly_once"] == 2
     assert reread["after_reread"]["exactly_once"] == 3
     assert (reread["records_now_exactly_once"], reread["records_no_longer_exactly_once"]) == (1, 0)
@@ -1113,6 +1108,39 @@ def test_a_page_a_person_had_read_again_is_judged_on_its_current_reading(monkeyp
     other.receipt_pages = ()
     with pytest.raises(Refusal, match="receipt binds no one reading for page"):
         load_page_records(other)
+    # A receipt reference without a path or digest binds nothing, never None == None.
+    for missing in ("bound", "bound_sha256"):
+        other = _PathTree(records, {})
+        setattr(other, missing, None)
+        with pytest.raises(Refusal, match="without a path and digest"):
+            load_page_records(other)
+
+    # The machine's superseded accountings are scored too, so their policy is checked.
+    loaded_twice = load_page_records(_PathTree(records, {}))
+    for key in ("accounting", "first_accounting"):
+        [stale] = copy.deepcopy(loaded_twice)
+        stale["superseded"][key]["policy_sha256"] = "0" * 64
+        with pytest.raises(Refusal, match="another page-accounting policy"):
+            report([stale])
+
+    # A later re-read supersedes an earlier one: the earlier one's act records are
+    # scored by neither judgement, and the report counts them as left out.
+    later = dict(records)
+    r3 = records[(PERLECTOR, "page-reading", "r3")]
+    later[(PERLECTOR, "page-reading", "r4")] = {
+        **r3,
+        "payload": {**r3["payload"], "attempt_ordinal": 4},
+    }
+    later[(PERLECTOR, "page-accounting", "p4")] = {
+        "subject_id": "page-1",
+        "payload": {**built["accounting"], "answer_basis": "attempt-4"},
+    }
+    bound_later = _PathTree(later, {})
+    bound_later.bound = f"{PERLECTOR}/page-reading/r4.json"
+    [loaded_later] = load_page_records(bound_later)
+    assert loaded_later["act_regions"] == []
+    left_out = report([loaded_later])["operator_reread"]["earlier_reread_act_records_left_out"]
+    assert left_out == 2 * len(built["act_regions"]) == 6
 
     # An act record naming no reading of the page is refused, never dropped.
     stray = dict(records)

@@ -259,8 +259,8 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
             by_kind[entry["kind"]].append(
                 {
                     "subject_id": record["subject_id"],
-                    "relative_path": entry.get("relative_path"),
-                    "sha256": entry.get("sha256"),
+                    "relative_path": entry["relative_path"],
+                    "sha256": entry["sha256"],
                     **record,
                 }
             )
@@ -385,6 +385,10 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
                     )
             current = current["relative_path"]
             regions, perlectios = page["act_regions"], page["perlectios"]
+            judged = {current} | superseded
+            left_out = sum(
+                1 for record in (*regions, *perlectios) if not _of_reading(record, judged)
+            )
             page.update(
                 reading=readings[last],
                 usage=usages[last],
@@ -399,6 +403,7 @@ def load_page_records(tree: RunTree | ReadOnlyRunTree) -> list[dict[str, Any]]:
                     "act_regions": [r for r in regions if _of_reading(r, superseded)],
                     "perlectios": [r for r in perlectios if _of_reading(r, superseded)],
                 },
+                earlier_reread_act_records=left_out,
             )
         else:
             page.update(machine_view)
@@ -415,8 +420,17 @@ def _receipt_reading(tree: RunTree | ReadOnlyRunTree, page_id: str, ordinal: int
             f"malformed-record: the Recensor's receipt binds no one reading for page {page_id!r}, "
             "which a person had read again"
         )
-    reference = rows[0].get("reading_ref") or {}
-    return {"relative_path": reference.get("relative_path"), "sha256": reference.get("sha256")}
+    reference = rows[0].get("reading_ref")
+    if not (
+        isinstance(reference, Mapping)
+        and isinstance(reference.get("relative_path"), str)
+        and isinstance(reference.get("sha256"), str)
+    ):
+        raise Refusal(
+            f"malformed-record: the Recensor's receipt binds page {page_id!r}'s reading "
+            "without a path and digest"
+        )
+    return {"relative_path": reference["relative_path"], "sha256": reference["sha256"]}
 
 
 def _of_reading(payload: Mapping[str, Any], paths: Collection[str]) -> bool:
@@ -748,7 +762,13 @@ def exactly_once_report(
             "policy-mismatch: the run sealed another page-accounting policy than the one given"
         )
     for page in pages:
-        for accounting in (page["accounting"], page.get("first_accounting")):
+        machine = page.get("superseded", {})
+        for accounting in (
+            page["accounting"],
+            page.get("first_accounting"),
+            machine.get("accounting"),
+            machine.get("first_accounting"),
+        ):
             if accounting is not None and accounting["policy_sha256"] != policy.sha256:
                 raise Refusal(
                     f"policy-mismatch: page {page['feed']['page_id']!r} was accounted under "
@@ -767,9 +787,7 @@ def exactly_once_report(
     machine_pages = [
         {**page, **page["superseded"]} if "superseded" in page else page for page in pages
     ]
-    machine_rows = (
-        _score_records(machine_pages, gold, policy) if machine_pages != list(pages) else rows
-    )
+    machine_rows = _score_records(machine_pages, gold, policy)
     first_rows = _score_records([_first_reading_view(page) for page in machine_pages], gold, policy)
     reread = _reread_effect(pages, machine_rows, rows)
 
@@ -933,7 +951,9 @@ def _reread_effect(
 
     The same records judged on the machine's own readings each re-read
     superseded (`before_reread`) and on the readings the run counts
-    (`after_reread`, the gate's), with the pages a person had read again.
+    (`after_reread`, the gate's), with the pages a person had read again and
+    the count of act records from earlier operator re-reads, which a later
+    re-read superseded and neither judgement scores.
     """
     reread = [page for page in pages if "superseded" in page]
     if not reread:
@@ -943,6 +963,9 @@ def _reread_effect(
     return {
         "operator_reread": {
             "page_ordinals": sorted(page["feed"]["page_ordinal"] for page in reread),
+            "earlier_reread_act_records_left_out": sum(
+                page["earlier_reread_act_records"] for page in reread
+            ),
             "before_reread": _outcome_counts(before),
             "after_reread": _outcome_counts(after),
             "on_reread_pages": {
