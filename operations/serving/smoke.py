@@ -40,7 +40,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
-from common.chair_wire import direct_response_template_kwargs
+from common.chair_wire import chat_template_kwargs_for
 from common.chairs.models import ChairIdentity
 from common.durability import atomic_create
 from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSample
@@ -354,10 +354,9 @@ class VisionSmokeCall:
             )
 
         payload = _golden_page_payload(fixture, self.prompt)
-        # A checkpoint whose template can open in thinking mode is asked for a
-        # direct answer on every run call, so the smoke asks the same way; the
-        # witness check below still gates preflight.
-        template_kwargs = direct_response_template_kwargs(identity.repo)
+        # The template switch every run call to this chair carries, so the smoke
+        # reads the way the run will; the witness check below still gates preflight.
+        template_kwargs = chat_template_kwargs_for(identity.role)
         if template_kwargs is not None:
             payload["chat_template_kwargs"] = template_kwargs
         # Inspect the sealed payload, not the path: reopening the fixture could

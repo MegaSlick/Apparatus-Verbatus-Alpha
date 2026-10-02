@@ -1,9 +1,9 @@
 """Request fields a chair carries because of *who occupies it*.
 
-`datalab-to/chandra-ocr-2` fills `attestator_1` (`pipeline/3_attestatores/`), and
-the serving client (`operations/serving/client.py`) holds a Chandra request to
-the same call shape -- so a fact about how Chandra must be called lives here,
-once, rather than as two literals that can drift.
+The stages that build a chair's requests, the serving client that checks a
+Chandra request, and the golden-page smoke all need the same answer to "which
+template switch does this chair's call carry", so it lives here once rather than
+as literals that can drift.
 
 Nothing here decides anything about a *request*: the per-request arithmetic is
 `common/request_capacity.py`'s, and what a chair's own adapter carries from its
@@ -17,48 +17,30 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Any, Final, Mapping
 
-# Sent on every Chandra request. The two chat templates that
-# ship at the pinned revision disagree on whether a turn opens in thinking
-# mode -- read from the release's own template files, never seen running --
-# so forcing this off is a no-op under one template and decisive under the
-# other, and either way it is free -- a thinking turn would waste a tight page
-# budget, and the chair's parser refuses a body that opens with `<think>`.
-CHANDRA_CHAT_TEMPLATE_KWARGS: Final[Mapping[str, bool]] = MappingProxyType(
-    {"enable_thinking": False}
-)
+# Chairs whose occupant's chat template may open a turn in thinking mode, and
+# which every call therefore asks for a direct answer: Chandra (its two shipped
+# templates disagree on the default, and its parser refuses a body that opens
+# with `<think>`) and Qwen3.8 in the Perlector and reconstructor chairs (thinking
+# by default). Keyed by chair, as every run builder and the golden-page smoke
+# know the chair they call, so the smoke reads the way the run will whatever
+# source the checkpoint was resolved from.
+_DIRECT_RESPONSE_CHAIRS: Final = frozenset({"attestator_1", "perlector", "reconstructor"})
+_THINKING_OFF: Final[Mapping[str, bool]] = MappingProxyType({"enable_thinking": False})
 
 
-# Checkpoints whose chat template may open a turn in thinking mode, keyed by
-# repository rather than by chair: the same checkpoint can fill several chairs
-# (Qwen3.8 serves both the Perlector and the reconstructor), and each of them is
-# asked for a direct answer. Anything that reads a page from one of these
-# checkpoints outside its stage, such as the golden-page smoke, sends the same
-# switch so it reads the way the run will.
-_DIRECT_RESPONSE_TEMPLATE_KWARGS: Final[Mapping[str, Mapping[str, bool]]] = MappingProxyType(
-    {
-        "datalab-to/chandra-ocr-2": CHANDRA_CHAT_TEMPLATE_KWARGS,
-        "Qwen/Qwen3.8-27B": MappingProxyType({"enable_thinking": False}),
-    }
-)
+def chat_template_kwargs_for(chair: str) -> dict[str, bool] | None:
+    """The `chat_template_kwargs` every call to this chair carries, or None for none.
 
+    A fresh plain dict, since it goes onto a request record the client seals.
+    """
 
-def direct_response_template_kwargs(repo: str) -> dict[str, bool] | None:
-    """The `chat_template_kwargs` a checkpoint's calls carry, or None when it needs none."""
-
-    kwargs = _DIRECT_RESPONSE_TEMPLATE_KWARGS.get(repo)
-    return None if kwargs is None else dict(kwargs)
+    return dict(_THINKING_OFF) if chair in _DIRECT_RESPONSE_CHAIRS else None
 
 
 def chandra_wire_fields() -> dict[str, Any]:
-    """The extra request fields every Chandra call carries, as a fresh mapping.
+    """The extra request fields every Chandra call carries, as a fresh mapping."""
 
-    Returned as plain, mutable containers because it goes onto a
-    `ChairRequest.generation_sent` the client seals and records; a shared
-    read-only proxy would travel into a retained record as a different type
-    than every other value in it.
-    """
-
-    return {"chat_template_kwargs": dict(CHANDRA_CHAT_TEMPLATE_KWARGS)}
+    return {"chat_template_kwargs": chat_template_kwargs_for("attestator_1")}
 
 
 # `chat_template_content_format` is NOT sendable per request: vLLM sets it

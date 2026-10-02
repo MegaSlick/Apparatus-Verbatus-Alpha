@@ -349,6 +349,12 @@ class ChairClient:
             )
         return self._handle
 
+    @property
+    def identity(self) -> ChairIdentity:
+        """The chair this client reads."""
+
+        return self._identity
+
     def __enter__(self) -> "ChairClient":
         self._prepared_chandra_dispatches.clear()
         handle = self._manager.start(self._identity, self._tier)

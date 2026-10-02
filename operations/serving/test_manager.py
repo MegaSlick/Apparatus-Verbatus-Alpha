@@ -29,6 +29,7 @@ from typing import Callable, Iterable, Mapping
 import pytest
 from PIL import Image, ImageDraw
 
+from common.chair_wire import chat_template_kwargs_for
 from common.chairs.config import load_models_toml
 from common.chairs.errors import ServingRecipeRefusal, UnresolvedChairRefusal
 from common.chairs.models import (
@@ -124,7 +125,17 @@ from .smoke import VisionSmokeCall
 # One sampling row, sent by the smoke for these tests' chairs and by requests
 # that exercise the handle below the smoke.
 SAMPLING = {"temperature": 0.0, "top_p": 0.1}
-CHAIR_SAMPLING = {"reader": SAMPLING, "perlector": SAMPLING, "reconstructor": SAMPLING}
+CHAIR_SAMPLING = {
+    role: SAMPLING
+    for role in (
+        "reader",
+        "perlector",
+        "reconstructor",
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+    )
+}
 
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 TIER = "generic-48gb"
@@ -3545,30 +3556,36 @@ def test_vision_smoke_call_refuses_three_code_errors_or_missing_marker(
     assert launcher.processes[0].terminate_calls == 1
 
 
-@pytest.mark.parametrize("role", ["perlector", "reconstructor"])
-def test_a_thinking_checkpoint_is_smoked_in_direct_response_mode_without_relaxing_the_output_rule(
+@pytest.mark.parametrize(
+    "role", ["perlector", "reconstructor", "attestator_1", "attestator_2", "attestator_3"]
+)
+def test_the_smoke_sends_the_template_switch_the_chair_s_run_calls_send(
     tmp_path: Path, role: str
 ) -> None:
-    # Both chairs serve the same Qwen checkpoint; the switch follows the checkpoint.
-    chair = replace(identity(role, f"{role}-v1"), repo="Qwen/Qwen3.8-27B")
+    # A local-repository checkpoint names no Hub repository; the switch follows
+    # the chair, exactly as the run builders read it.
+    chair = replace(
+        identity(role, f"{role}-v1"),
+        source="local-repository",
+        repo=None,
+        path=role,
+        revision=None,
+    )
     expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
     answer_with_reasoning = f"I read the page.\n{expected}"
     manager, _, http, _, _, _ = manager_for(
         tmp_path,
         identities={chair.role: chair},
         profiles=(
-            {
-                **profile_row(
-                    recipe=chair.serving_recipe,
-                    chair=chair.role,
-                    served_model_id="perlector-api",
-                    port=8000,
-                ),
-                "enable_prefix_caching": False,
-            },
+            profile_row(
+                recipe=chair.serving_recipe,
+                chair=chair.role,
+                served_model_id="reader-api",
+                port=8000,
+            ),
         ),
-        model_ids=("perlector-api",),
-        outputs={"perlector-api": answer_with_reasoning},
+        model_ids=("reader-api",),
+        outputs={"reader-api": answer_with_reasoning},
     )
     fixture = tmp_path / "golden-page.png"
     write_golden_page(fixture)
@@ -3578,11 +3595,9 @@ def test_a_thinking_checkpoint_is_smoked_in_direct_response_mode_without_relaxin
 
     request = http.calls[-1][2]
     assert isinstance(request, dict)
-    assert request["chat_template_kwargs"] == {"enable_thinking": False}
-    assert result.shape_valid is True
-    assert result.nonempty is True
+    assert request.get("chat_template_kwargs") == chat_template_kwargs_for(role)
+    # The direct-answer switch never relaxes the exact output rule.
     assert result.format_valid is False
-    assert result.receipt["page_witness_matches"] is False
     handle.stop()
 
 

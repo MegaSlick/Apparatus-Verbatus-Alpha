@@ -257,6 +257,8 @@ def test_a_resumed_stage_republishes_the_same_records(unconsecutive, tmp_path):
 
 
 class _Client:
+    identity = SimpleNamespace(role="reconstructor")
+
     def __init__(self, reply=None, error=None):
         self.requests, self.reply, self.error = [], reply, error
 
