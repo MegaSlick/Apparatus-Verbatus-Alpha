@@ -349,6 +349,13 @@ def test_a_page_held_after_every_unit_on_it_was_excluded_holds_the_recensor(held
     assert held_by_recensor(RunTree(tree.root, RUN_ID)) == [
         {"subject_id": "operator-review", "what": "page 1", "hold_codes": page["hold_codes"]}
     ]
+    # The run-health receipt says so too: every unit is completed, the page is not.
+    receipt = RunTree(tree.root, RUN_ID).read_recensor_partition_receipt()
+    assert receipt["recensor_status"] == "partial"
+    assert (
+        f"page 1 is held after operator review ({', '.join(page['hold_codes'])})"
+        in receipt["reasons"]
+    )
 
 
 def test_decisions_are_re_applied_identically_on_a_re_run(held, tmp_path):
