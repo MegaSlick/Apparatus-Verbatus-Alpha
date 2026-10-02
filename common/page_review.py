@@ -43,6 +43,7 @@ from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_HOLD,
     boundary_advanced,
+    canary_ordinals,
     exemplar_page_ids,
     latest_attempt,
     stage_manifest,
@@ -772,6 +773,24 @@ def page_breaks(
     return links
 
 
+def run_page_breaks(context, acts: Sequence[Mapping[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+    """`page_breaks` over the run's real pages: a canary page is in no page break.
+
+    Canary pages are controls the Door appends after the real pages, so the
+    last real page and the first canary sit at adjacent ordinals with nothing
+    running between them. Leaving canaries out keeps a canary act from being
+    either side of a link (and so from a join in the real export), and keeps a
+    real run's breaks the same with or without canaries beside it.
+    """
+    canaries = canary_ordinals(context.run)
+    pages = {
+        ordinal: page_id
+        for ordinal, page_id in exemplar_page_ids(context).items()
+        if ordinal not in canaries
+    }
+    return page_breaks(pages, [act for act in acts if act["page_ordinal"] not in canaries])
+
+
 LINK_OPERATION: Final = "link"
 
 
@@ -844,12 +863,12 @@ def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[
     act entry. Each named side must be a counted row under its own key whose
     reading the link inputs; the link is `agreed` exactly when both flags say
     an act crosses the break, and is `accepted` exactly when it agrees. A break
-    has one link, and each link is a break `page_breaks` derives from `rows`,
+    has one link, and each link is a break `run_page_breaks` derives from `rows`,
     its sides its pages' act edges; a flagged break with no link is named by
     the aggregate (`unpaired_continuations`) and keeps the run partial.
     """
     counted = {row["act_id"]: row for row in rows}
-    derived = dict(page_breaks(exemplar_page_ids(context), rows))
+    derived = dict(run_page_breaks(context, rows))
     links: list[dict[str, Any]] = []
     subjects: set[str] = set()
     entries = {

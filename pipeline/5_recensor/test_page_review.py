@@ -15,6 +15,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import pytest
@@ -23,7 +24,13 @@ from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import EXEMPLAR, PERLECTOR, RECENSOR
-from common.page_review import CONTINUATION_LINK_FIELDS, continuation_links, reviewed_rows
+from common.page_review import (
+    CONTINUATION_LINK_FIELDS,
+    continuation_links,
+    page_breaks,
+    reviewed_rows,
+    run_page_breaks,
+)
 from common.runtree.store import RunTree
 from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
@@ -946,14 +953,14 @@ def test_an_act_the_re_ask_recovered_moves_no_page_edge_and_is_no_side():
     pages = {1: "pg_1", 2: "pg_2"}
     recovered = {**_link_row(1, 2), "reading_attempt": 2}
     rows = [_link_row(1, 1, following=True), recovered, _link_row(2, 1, previous=True)]
-    [(subject, link)] = page_review.page_breaks(pages, rows)
+    [(subject, link)] = page_breaks(pages, rows)
     assert subject == "page-break:1:2"
     assert (link["from_act_key"], link["to_act_key"], link["agreed"]) == ("p1:1", "p2:1", True)
     assert page_review.continuation_off_edge(rows) == {}
     # Recovered before a page's first reading, it moves the page's first edge no more.
     rows = [_link_row(1, 1, following=True), {**_link_row(2, 1), "reading_attempt": 2}]
     rows.append(_link_row(2, 2, previous=True))
-    [(_subject, link)] = page_review.page_breaks(pages, rows)
+    [(_subject, link)] = page_breaks(pages, rows)
     assert link["to_act_key"] == "p2:2" and page_review.continuation_off_edge(rows) == {}
 
 
@@ -966,7 +973,7 @@ def test_continuation_links_record_each_flagged_break_agreed_or_one_sided():
         _link_row(2, 2, following=True),
         _link_row(3, 1),
     ]
-    links = dict(page_review.page_breaks(pages, rows))
+    links = dict(page_breaks(pages, rows))
     assert sorted(links) == ["page-break:0:1", "page-break:1:2", "page-break:2:3"]
     assert links["page-break:1:2"]["agreed"] is True
     before = links["page-break:0:1"]
@@ -974,9 +981,41 @@ def test_continuation_links_record_each_flagged_break_agreed_or_one_sided():
     after = links["page-break:2:3"]
     assert (after["agreed"], after["from_act_key"], after["to_act_key"]) == (False, "p2:2", "p3:1")
     assert (after["continues_to_next_page"], after["continues_from_previous_page"]) == (True, False)
-    assert page_review.page_breaks(pages, [_link_row(1, 1), _link_row(2, 1)]) == []
+    assert page_breaks(pages, [_link_row(1, 1), _link_row(2, 1)]) == []
     assert set(links["page-break:1:2"]) == CONTINUATION_LINK_FIELDS
     assert page_review.continuation_off_edge(rows) == {}
+
+
+def test_a_canary_page_is_never_a_side_of_a_page_break(monkeypatch):
+    """The Door appends canary pages after the real ones, so the last real page
+    and the first canary are adjacent ordinals. Both flag an act running across
+    that break here, and two canary pages flag one between them: no link may name
+    a canary act, and the real page's flag is a one-sided break, as it would be
+    with no canary beside it."""
+    canary_ledger = "c" * 64
+    run = {
+        "sealed_config_digests": {"canary-ledger": canary_ledger},
+        "source_manifest": [
+            {"ordinal": 1, "ledger_sha256": "a" * 64},
+            {"ordinal": 2, "ledger_sha256": "a" * 64},
+            {"ordinal": 3, "ledger_sha256": canary_ledger},
+            {"ordinal": 4, "ledger_sha256": canary_ledger},
+        ],
+    }
+    pages = {1: "pg_1", 2: "pg_2", 3: "pg_3", 4: "pg_4"}
+    monkeypatch.setattr("common.page_review.exemplar_page_ids", lambda _context: pages)
+    rows = [
+        _link_row(1, 1),
+        _link_row(2, 1, following=True),
+        _link_row(3, 1, previous=True, following=True),
+        _link_row(4, 1, previous=True),
+    ]
+    links = dict(run_page_breaks(SimpleNamespace(run=run), rows))
+    assert list(links) == ["page-break:2:3"]
+    link = links["page-break:2:3"]
+    assert (link["from_act_key"], link["to_act_id"], link["agreed"]) == ("p2:1", None, False)
+    without_canaries = {1: "pg_1", 2: "pg_2"}
+    assert links == dict(page_breaks(without_canaries, rows[:2]))
 
 
 def test_a_link_joins_act_entries_past_a_catchword_and_notes_the_catchword_flag():
@@ -987,7 +1026,7 @@ def test_a_link_joins_act_entries_past_a_catchword_and_notes_the_catchword_flag(
         _link_row(2, 1, kind="other", previous=True),
         _link_row(2, 2, previous=True),
     ]
-    [(subject, link)] = page_review.page_breaks(pages, rows)
+    [(subject, link)] = page_breaks(pages, rows)
     assert subject == "page-break:1:2" and link["agreed"] is True
     assert (link["from_act_key"], link["to_act_key"]) == ("p1:1", "p2:2")
     assert page_review.continuation_off_edge(rows) == {}
@@ -1017,7 +1056,7 @@ def test_a_continuation_flag_off_the_act_edge_holds_its_entry():
         rows[3]["act_id"]: ["continues_from_previous_page"],
     }
     # Neither flag sits on a side of the break, so no link records it.
-    assert page_review.page_breaks({1: "pg_1", 2: "pg_2"}, rows) == []
+    assert page_breaks({1: "pg_1", 2: "pg_2"}, rows) == []
     outcome, payload = page_review.review_of(
         rows[0],
         coverage=FLOORED,
@@ -1033,7 +1072,7 @@ def test_a_continuation_flag_off_the_act_edge_holds_its_entry():
 
 def test_a_links_inputs_bind_a_null_sides_page_reading():
     rows = [_link_row(1, 1, following=True)]
-    [(_subject, link)] = page_review.page_breaks({1: "pg_1", 2: "pg_2"}, rows)
+    [(_subject, link)] = page_breaks({1: "pg_1", 2: "pg_2"}, rows)
     pages = {1: {"reading_ref": "reading-1"}, 2: {"reading_ref": "reading-2"}}
     by_id = {row["act_id"]: row for row in rows}
     assert page_review.link_inputs(link, by_id, pages) == [rows[0]["perlectio_ref"], "reading-2"]

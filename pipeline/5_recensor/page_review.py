@@ -77,9 +77,9 @@ from common.page_review import (
     of_superseded_reading,
     operator_correction,
     override_refusal,
-    page_breaks,
     require_establishable,
     reviewed_rows,
+    run_page_breaks,
     superseded_readings,
 )
 from common.page_testimonia import (
@@ -100,7 +100,6 @@ from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_CLASS,
     PAGE_BLANK_HOLD,
-    exemplar_page_ids,
     latest_attempt,
     reading_denominator,
 )
@@ -898,7 +897,7 @@ def review_pages(
     by_id = {act["act_id"]: act for act in acts}
     links = [
         (subject, payload, link_inputs(payload, by_id, pages))
-        for subject, payload in page_breaks(exemplar_page_ids(context), acts)
+        for subject, payload in run_page_breaks(context, acts)
     ]
 
     held = 0
@@ -1181,7 +1180,7 @@ def write_reading_receipt(
                 "coverage": coverage,
             }
         )
-    links = current_links(context, page_breaks(exemplar_page_ids(context), acts), by_id, pages)
+    links = current_links(context, run_page_breaks(context, acts), by_id, pages)
     receipt = build_recensor_reading_receipt(
         run_id=context.tree.run_id,
         config_digest=context.run["config_digest"],
