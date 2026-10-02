@@ -1096,7 +1096,7 @@ def _backup(run_root: Path, run_id: str, mac_directory: Path, surface: OperatorS
     it, `status` could not say a backup had ever happened.
     """
 
-    from .backup import BackupRefusal, sync_run_tree, verify_backup_snapshot
+    from .backup import BackupRefusal, BackupUnverified, sync_run_tree
 
     facts = {
         "run_id": run_id,
@@ -1105,14 +1105,12 @@ def _backup(run_root: Path, run_id: str, mac_directory: Path, surface: OperatorS
     }
     try:
         report = sync_run_tree(Path(run_root).resolve(), run_id, mac_directory)
+    except BackupUnverified as error:
+        surface.record_backup(state="unverified", facts=facts, detail=str(error))
+        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
     except (BackupRefusal, OSError, ValueError, TypeError, RecursionError) as refusal:
         surface.record_backup(state="refused", facts=facts, detail=str(refusal))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
-    try:
-        verify_backup_snapshot(Path(mac_directory).absolute().resolve(), run_id, report)
-    except (BackupRefusal, OSError, ValueError, TypeError, RecursionError) as error:
-        surface.record_backup(state="unverified", facts=facts, detail=str(error))
-        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
     receipt = surface.record_backup(state="complete", facts=facts, report=report.to_record())
     _print(
         "Mac backup complete: "

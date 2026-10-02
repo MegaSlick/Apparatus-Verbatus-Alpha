@@ -1161,7 +1161,7 @@ class OperatorSurface:
             capture_output=True,
             text=True,
             check=False,
-            env=_stage_environment(),
+            env=credential_free_environment(),
         )
 
     def _present_review_command(self, run_root: Path, run_id: str) -> None:
@@ -2097,20 +2097,15 @@ def _publish_if_absent(
 
 
 def credential_free_environment(source: dict[str, str] | None = None) -> dict[str, str]:
-    """Copy a process environment with every credential-shaped name removed."""
+    """A process environment with every credential-shaped name removed.
+
+    Stages and the ingest child decode untrusted images, so no credential may
+    reach them. The shared predicate means a credential shape added there is
+    stripped here too.
+    """
 
     values = dict(os.environ if source is None else source)
     return {key: value for key, value in values.items() if not looks_like_credential_env(key)}
-
-
-def _stage_environment() -> dict[str, str]:
-    """The ordinary environment with every provider credential stripped.
-
-    Stages decode untrusted images, so no credential may reach them. The shared
-    predicate means a credential shape added there is stripped here too.
-    """
-
-    return credential_free_environment()
 
 
 def _sha256_regular_file_nofollow(path: Path) -> str:

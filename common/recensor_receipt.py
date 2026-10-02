@@ -243,7 +243,6 @@ def _validate_page_readings(record: dict[str, Any]) -> None:
     did (`_validate_reask`).
     """
     rows = record["pages"]
-    fields = _PAGE_FIELDS
     if not isinstance(rows, list) or not rows:
         raise SchemaRefusal(
             "Recensor page-read receipt names no page reading; every sealed page's "
@@ -253,12 +252,12 @@ def _validate_page_readings(record: dict[str, Any]) -> None:
     for row in rows:
         if (
             not isinstance(row, dict)
-            or set(row) != fields
+            or set(row) != _PAGE_FIELDS
             or not is_plain_int(row["page_ordinal"])
             or row["page_ordinal"] < 1
         ):
             raise SchemaRefusal(
-                f"Recensor partition receipt page reading is not {{{', '.join(sorted(fields))}}} "
+                f"Recensor partition receipt page reading is not {{{', '.join(sorted(_PAGE_FIELDS))}}} "
                 "with a positive page ordinal"
             )
         _validate_reference(row["reading_ref"], "page-reading reference")
@@ -564,11 +563,10 @@ def _validate_reference(reference: Any, what: str) -> None:
 def _reasons(
     items: list[dict[str, Any]],
     *,
-    links: list[dict[str, Any]] = (),
-    page_holds: list[dict[str, Any]] = (),
+    links: list[dict[str, Any]],
+    page_holds: list[dict[str, Any]],
 ) -> list[str]:
     # A page-read run counts units: act entries, `other` entries and page rows.
-    counted = "unit"
     reasons: list[str] = []
     for item in items:
         act_id = item["act_id"]
@@ -578,16 +576,16 @@ def _reasons(
         ):
             reasons.append(f"unit {act_id} was held by its page reading and is not released")
         if item["partition_class"] != OutcomeClass.COMPLETED.value:
-            reasons.append(f"{counted} {act_id} is {item['partition_class']} at the Recensor")
+            reasons.append(f"unit {act_id} is {item['partition_class']} at the Recensor")
         coverage = item["coverage"]
         if coverage["under_witnessed"]:
             reasons.append(
-                f"{counted} {act_id} is under-witnessed "
+                f"unit {act_id} is under-witnessed "
                 f"({witnessed_count(coverage)} page reads of a floor of {coverage['floor']})"
             )
         if coverage["unresolved_chairs"]:
             reasons.append(
-                f"{counted} {act_id} has {coverage['unresolved_chairs']} chair(s) with no "
+                f"unit {act_id} has {coverage['unresolved_chairs']} chair(s) with no "
                 "outcome yet"
             )
     for link in links:

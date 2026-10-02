@@ -140,7 +140,7 @@ def test_unsealed_boundary_is_refused_before_an_advance_record_is_written(tmp_pa
     )
 
     with pytest.raises(ApprovalRefusal, match="no stored stage-seal"):
-        advance.record_advance(tree, "designator", reason="reviewed")
+        advance.record_advance(tree, "designator", reason="reviewed", expected_digest="c" * 64)
 
     assert not (tree.root / "receipts").exists()
 
@@ -200,19 +200,6 @@ def test_the_advance_refuses_a_wrong_digest_over_a_boundary_that_still_verifies(
     assert "changed after it was shown for confirmation" in (refusal.value.detail or "")
     # The boundary was never disturbed, so it still verifies afterwards.
     assert advance.sealed_boundary(tree, "armarium")[1] == current
-    assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
-
-
-def test_the_record_writer_refuses_a_missing_digest_before_any_record_is_written(
-    orchestrated_run, tmp_path
-):
-    run_root, run_id = _make_run(orchestrated_run, tmp_path)
-    tree = RunTree(run_root, run_id)
-    before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
-
-    with pytest.raises(ApprovalRefusal, match="no reviewed stage-seal digest"):
-        advance.record_advance(tree, "armarium", reason="there was no boundary digest to bind")
-
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 
 
@@ -410,7 +397,7 @@ def _tree_serving(tmp_path: Path, data: bytes) -> types.SimpleNamespace:
 
     The projection measures a file before it reads it, so a `read_bytes` stub
     that returned bytes from nowhere would no longer be exercising the path the
-    console takes. The projection also checks a claimed path against the
+    review takes. The projection also checks a claimed path against the
     content-addressed one before any read, so the stand-in answers `blob_path`
     the way a real tree lays its blobs out.
     """
@@ -1060,7 +1047,7 @@ def test_operator_advance_requires_exact_confirmation_of_the_observed_digest(
             run_root,
             run_id,
             "armarium",
-            reason="reviewed in the console",
+            reason="reviewed in review",
         )
 
     assert excinfo.value.code == ErrorCode.ADVANCE_REFUSED
@@ -1078,12 +1065,12 @@ def test_a_confirmed_operator_advance_reports_its_record(
         run_root,
         run_id,
         "armarium",
-        reason="reviewed in the console",
+        reason="reviewed in review",
     )
 
     projected = review.ReadOnlyRun(run_root, run_id).projection()
     assert len(projected.advance_records) == 1
-    assert projected.advance_records[0]["reason"] == "reviewed in the console"
+    assert projected.advance_records[0]["reason"] == "reviewed in review"
     assert "Advance record:" in capsys.readouterr().out
 
 
@@ -1257,7 +1244,7 @@ def test_an_advance_naming_a_stage_that_is_not_one_writes_nothing(orchestrated_r
     before = {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")}
 
     with pytest.raises(ApprovalRefusal, match="unknown stage"):
-        advance.record_advance(tree, "../../etc", reason="reviewed")
+        advance.record_advance(tree, "../../etc", reason="reviewed", expected_digest="c" * 64)
 
     assert {path.name for path in (tree.root / "receipts" / "sha256").glob("*.json")} == before
 

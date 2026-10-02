@@ -44,7 +44,7 @@ def show(policy_path: str | Path) -> list[str]:
     assert policy.account_balance_floor_usd is not None
     assert policy.account_balance_alert_usd is not None
     assert policy.hard_lifetime_seconds is not None
-    lines = [
+    return [
         "Reviewed spend policy (read-only):",
         # POSIX paths may contain newlines, which `cli._print` preserves for
         # refusal framing; contain the path so it cannot forge a ceiling line.
@@ -59,7 +59,6 @@ def show(policy_path: str | Path) -> list[str]:
         f"- Hard lifetime ceiling: {policy.hard_lifetime_seconds} seconds "
         f"(policy SHA-256 {policy_digest})",
     ]
-    return lines
 
 
 def _recorded_text(value: str) -> str:

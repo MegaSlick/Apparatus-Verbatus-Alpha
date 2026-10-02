@@ -127,17 +127,6 @@ ASSESSMENT_MALFORMED: Final = "uncertainty-assessment-malformed"
 CONTINUATION_OFF_EDGE: Final = "continuation-off-page-edge"
 # A continuation flag on an `other` entry: recorded as a note, never a hold.
 CONTINUATION_ON_OTHER: Final = "continuation-flag-on-other"
-OWN_CODES: Final = frozenset(
-    {
-        UNDER_WITNESSED,
-        UNRESOLVED_WITNESS,
-        RESIDUAL_INK,
-        RESIDUAL_INK_NOT_MEASURABLE,
-        RESIDUAL_INK_NOT_MEASURED,
-        ASSESSMENT_MALFORMED,
-        CONTINUATION_OFF_EDGE,
-    }
-)
 
 # The page accounting rules a page said to hold no act must pass. A blank page
 # has no entry for a detector record to be read as, so without a record

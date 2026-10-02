@@ -849,3 +849,24 @@ def test_an_unexpected_copy_failure_is_a_recorded_backup_refusal(
     assert failure.value.code is ErrorCode.BACKUP_FAILED
     payload = surface.receipts.read(surface._descriptor_receipt("backup"))["payload"]
     assert payload["state"] == "refused"
+
+
+def test_a_snapshot_that_does_not_read_back_is_recorded_unverified(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Read-back runs on the destination the copy opened, so a failure there is
+    `unverified`, never `complete`."""
+    volume, run_id = _run_tree(tmp_path)
+    surface = _surface(tmp_path)
+
+    def unreadable(*_args, **_kwargs):
+        raise BackupRefusal("an object did not read back")
+
+    monkeypatch.setattr(backup_module, "_verify_backup_snapshot", unreadable)
+    with pytest.raises(OperatorError) as failure:
+        cli._backup(volume, run_id, tmp_path / "mac", surface)
+
+    assert failure.value.code is ErrorCode.BACKUP_FAILED
+    payload = surface.receipts.read(surface._descriptor_receipt("backup"))["payload"]
+    assert payload["state"] == "unverified"
+    assert "did not read back" in payload["detail"]

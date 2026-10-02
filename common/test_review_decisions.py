@@ -168,7 +168,16 @@ def test_a_hold_of_unknown_scope_is_refused():
 
 def test_every_code_the_recensor_adds_has_a_scope():
     page_review = load_stage("5_recensor", "page_review")
-    assert RECENSOR_UNIT_CODES | RECENSOR_PAGE_CODES == page_review.OWN_CODES
+    added = {
+        page_review.UNDER_WITNESSED,
+        page_review.UNRESOLVED_WITNESS,
+        page_review.RESIDUAL_INK,
+        page_review.RESIDUAL_INK_NOT_MEASURABLE,
+        page_review.RESIDUAL_INK_NOT_MEASURED,
+        page_review.ASSESSMENT_MALFORMED,
+        page_review.CONTINUATION_OFF_EDGE,
+    }
+    assert RECENSOR_UNIT_CODES | RECENSOR_PAGE_CODES == added
     assert not RECENSOR_UNIT_CODES & RECENSOR_PAGE_CODES
 
 

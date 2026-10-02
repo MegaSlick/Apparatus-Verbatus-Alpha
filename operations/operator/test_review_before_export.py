@@ -1162,7 +1162,7 @@ def test_a_gap_names_the_chairs_that_corroborate_it():
 
 
 def _advance_the_recensor(run_root: Path) -> None:
-    """A person's advance of the Recensor's current seal, recorded as the worker records it."""
+    """A person's advance of the Recensor's current seal, recorded as `advance` records it."""
     tree = RunTree(run_root, RUN_ID)
     _seal, digest = advance.stored_boundary(tree, "recensor")
     advance.record_advance(

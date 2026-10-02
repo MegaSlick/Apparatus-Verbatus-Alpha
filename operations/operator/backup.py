@@ -68,6 +68,10 @@ class BackupRefusal(RuntimeError):
     """The backup is incomplete or cannot be verified; it is never called current."""
 
 
+class BackupUnverified(BackupRefusal):
+    """The snapshot was published but did not read back; it is never called current."""
+
+
 @dataclass(frozen=True, slots=True)
 class BackupReport:
     snapshot_sha256: str
@@ -84,7 +88,8 @@ class BackupReport:
 
 
 def sync_run_tree(run_root: Path, run_id: str, mac_directory: Path) -> BackupReport:
-    """Copy one run's regular files into a verified, append-only local store.
+    """Copy one run's regular files into a verified, append-only local store, then
+    read the snapshot and every object back through the same opened destination.
 
     A run may be resumed while this command is running.  We therefore scan it
     before and after the copy and refuse to publish a snapshot if either view
@@ -155,7 +160,12 @@ def sync_run_tree(run_root: Path, run_id: str, mac_directory: Path) -> BackupRep
                 data,
             )
             _sync_directory(destination.snapshots, root / "snapshots" / "sha256")
-            return BackupReport(snapshot_sha256, copied, reused)
+            report = BackupReport(snapshot_sha256, copied, reused)
+            try:
+                _verify_backup_snapshot(destination, run_id, report)
+            except (BackupRefusal, OSError, ValueError, TypeError, RecursionError) as error:
+                raise BackupUnverified(str(error)) from error
+            return report
 
 
 def resolve_backup_paths(run_root: Path, run_id: str, mac_directory: Path) -> tuple[Path, Path]:

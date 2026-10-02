@@ -588,7 +588,7 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
 
     for label, built in (
         ("orchestrator", orchestrator.stage_environment()),
-        ("operator surface", surface._stage_environment()),
+        ("operator surface", surface.credential_free_environment()),
     ):
         leaked = volume_s3.TRANSFER_CREDENTIAL_ENV.intersection(built)
         assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
@@ -625,7 +625,7 @@ def test_orchestrator_and_surface_strip_every_provider_credential(
     reference = credential_free_environment()
     for label, built in (
         ("orchestrator", orchestrator.stage_environment()),
-        ("operator surface", surface._stage_environment()),
+        ("operator surface", surface.credential_free_environment()),
     ):
         leaked = set(representative_names) & set(built)
         assert not leaked, f"{label} passed {sorted(leaked)} to a stage"

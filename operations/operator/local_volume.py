@@ -20,13 +20,11 @@ from .records import BLOCK_BYTES
 
 
 class LocalFixtureObjectStore(TransferTarget):
-    """A file-backed implementation of the transfer seam for offline rehearsals.
+    """A file-backed implementation of the transfer seam: a local folder as the volume.
 
     This is the default target of `verbatus upload`, not test scaffolding, so
     it moves real submitted material. Nothing here holds a whole file in
-    memory: a submission is sized by what a person photographed, and reading
-    one whole was the difference between 21 MiB resident and 533 MiB for a
-    single 512 MiB page set.
+    memory: a submission is sized by what a person photographed.
     """
 
     def __init__(self, root: str | Path, *, fail_once_for: str | None = None) -> None:

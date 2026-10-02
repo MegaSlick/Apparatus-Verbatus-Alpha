@@ -184,29 +184,31 @@ def record_advance(
     stage: str,
     *,
     reason: str,
+    expected_digest: str,
     timestamp: str | None = None,
-    expected_digest: str | None = None,
 ) -> ApprovalRecordReference:
     """Append the advance record binding the stored seal the operator reviewed.
 
     Verifying the seal against the run tree is `trigger_advance`'s, before
-    this is called; here the stored seal's digest must still be the one the
-    operator confirmed. A seal rewritten between that read and the write
+    this is called; here, the one place the digest is compared, the stored
+    seal's digest must still be the one the operator confirmed. A caller
+    handing over no digest would bind the advance to whatever seal is current,
+    the substitution the typed confirmation exists to prevent. A seal rewritten between that read and the write
     leaves a record binding a digest that is already stale: `verify_advance`
     refuses such a record, and `review` names it stale every time it is read.
     """
 
     reason = validate_advance_reason(reason)
     _seal, seal_digest = stored_boundary(tree, stage)
-    if expected_digest is None:
+    if not isinstance(expected_digest, str) or not expected_digest:
         raise ApprovalRefusal(
             "advance refuses because no reviewed stage-seal digest was supplied; "
             "no boundary was advanced"
         )
     if seal_digest != expected_digest:
         raise ApprovalRefusal(
-            "advance refuses because the stage seal changed after the operator reviewed it; "
-            "no boundary was advanced"
+            "advance refuses because the stage seal changed after it was shown for "
+            "confirmation; no boundary was advanced"
         )
     record = build_approval_record(
         [advance_subject(stage)],
@@ -261,28 +263,7 @@ def trigger_advance(
 
     tree = RunTree(Path(run_root).resolve(), run_id)
     try:
-        _seal, current_digest = sealed_boundary(tree, stage)
-    except (ApprovalRefusal, OSError) as error:
-        raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
-    # Checked after the seal is read, so an unsealed boundary is still refused
-    # as unsealed rather than reported as a malformed request.
-    if not isinstance(expected_digest, str) or not expected_digest:
-        raise OperatorError(
-            ErrorCode.ADVANCE_REFUSED,
-            detail=(
-                "no reviewed stage-seal digest was supplied; a caller may not bind an "
-                "advance to whatever boundary happens to be current"
-            ),
-        )
-    if expected_digest != current_digest:
-        raise OperatorError(
-            ErrorCode.ADVANCE_REFUSED,
-            detail=(
-                "the stage seal changed after it was shown for confirmation; no advance "
-                "record was written"
-            ),
-        )
-    try:
+        sealed_boundary(tree, stage)
         reference = record_advance(tree, stage, reason=reason, expected_digest=expected_digest)
     except (ContractError, OSError) as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
