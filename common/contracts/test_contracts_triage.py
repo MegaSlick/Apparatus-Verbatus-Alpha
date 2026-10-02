@@ -31,7 +31,7 @@ DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64
 DIGEST_C = "c" * 64
 ACTOR = {"kind": "model", "identity": "triage-model", "revision": "r17"}
-CORPUS_ID = "montebello"
+CORPUS_ID = "parish-a"
 
 
 def make_part(region, crop_box, rotation_millidegrees, *, colour_mode="keep"):
@@ -432,7 +432,7 @@ def test_partition_validation_does_not_scale_with_the_pixels_of_a_master():
 def cluster(members, split_count=1, cluster_id="opening-35"):
     return {
         "schema": CLUSTER_SCHEMA,
-        "corpus_id": "montebello",
+        "corpus_id": "parish-a",
         "cluster_id": cluster_id,
         "member_frame_sha256": members,
         "split_count": split_count,
