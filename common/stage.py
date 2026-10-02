@@ -2678,7 +2678,8 @@ def _verify_rereads(
     entry plans, accounting record and page holds: the page's current reading,
     and every reading it supersedes, earlier re-reads included. `counted` is the
     entry plans the page counted before its first re-read; each re-read is
-    planned against the plans counted before it, as stage 4 plans it.
+    planned against those, or the last re-read's that kept every act it replaced
+    (`page_path.keeps_counted`), as stage 4 plans it.
     """
     ordinal, page_id = feed["page_ordinal"], feed["page_id"]
     answered: set[str] = set()
@@ -2719,7 +2720,7 @@ def _verify_rereads(
         plans = _entry_plans(
             index, reading_what, payload, feed, page_id, attempt=attempt, superseded=counted
         )
-        if plans:
+        if page_path.keeps_counted(plans):
             counted = plans
         reference = index.ref(reading)
         measured = measure(

@@ -820,13 +820,18 @@ def superseded_acts_kept(
 ) -> bool:
     """Whether a re-read reads every act of the reading it replaces as one act of its own.
 
-    An `act` entry of `superseded` is followed by its own ids, those no other
-    superseded act cites: all of them must be cited by exactly one `act` entry of
-    the re-read, and that entry may cite no other superseded act's own ids. An act
-    whose every id another act also cites cannot be followed that way, so the
-    re-read must also name at least as many acts as the reading it replaces. A
-    merge, a relabel as anything but an act, a split, and an act left out or set
-    aside each fail.
+    The rule follows acts by the ids they cite, and only by them. An `act` entry
+    of `superseded` is followed by its own ids, those no other superseded act
+    cites: all of them must be cited by exactly one `act` entry of the re-read,
+    and that entry may cite no other superseded act's own ids. The re-read must
+    name at least as many acts as the reading it replaces. An act with no id of
+    its own (none at all, or only ids another act shares) cannot be followed; while
+    there is one, the re-read's acts may cite no id the superseded acts did not,
+    so a new act cannot stand in for it. A merge, a split, a relabel as anything
+    but an act, an act left out or set aside, and a moved boundary each fail.
+
+    What it cannot see: text. An act read again over the same ids with other
+    words, or two acts whose texts are swapped between their entries, keeps.
     """
     acts = [entry for entry in superseded if entry["act"]["kind"] == "act"]
     readings = [set(plan["cited_ids"]) for plan in plans if plan["act"]["kind"] == "act"]
@@ -837,6 +842,8 @@ def superseded_acts_kept(
         for cited in set(entry["cited_ids"]):
             owners[cited] = owners.get(cited, 0) + 1
     own = [{cited for cited in entry["cited_ids"] if owners[cited] == 1} for entry in acts]
+    if any(not ids for ids in own) and not set().union(*readings) <= set(owners):
+        return False
     for index, ids in enumerate(own):
         if not ids:
             continue
@@ -845,6 +852,13 @@ def superseded_acts_kept(
         if len(covering) != 1 or not ids <= covering[0] or covering[0] & others:
             return False
     return True
+
+
+def keeps_counted(plans: list[Mapping[str, Any]]) -> bool:
+    """Whether an operator re-read's plans become what the page's next re-read is planned
+    against: it read something and kept every act it replaced. A re-read that dropped
+    one never does, so a later re-read cannot launder the drop."""
+    return bool(plans) and SUPERSEDED_ACT_NOT_READ not in plans[0]["reading_holds"]
 
 
 def reask_act_plans(

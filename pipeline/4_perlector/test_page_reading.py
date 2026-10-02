@@ -2057,3 +2057,32 @@ def test_an_act_whose_ids_another_act_also_cites_is_followed_by_the_count():
     replaced = _entries(("act", ["A1"]), ("act", ["A1", "A2"]))
     assert page_path.superseded_acts_kept(replaced, _entries(("act", ["A1"]), ("act", ["A2"])))
     assert not page_path.superseded_acts_kept(replaced, _entries(("act", ["A1", "A2"])))
+
+
+@pytest.mark.parametrize(
+    ("replaced", "reread"),
+    [
+        # B has no id of its own; a new act Y stands where B was.
+        (
+            (("act", ["1", "2"]), ("act", ["2"])),
+            (("act", ["1", "2"]), ("act", ["9"])),
+        ),
+        # A cites nothing; a new act Z stands where A was.
+        ((("act", []), ("act", ["5"])), (("act", ["5"]), ("act", ["7"]))),
+        # B has no id of its own and is read as `other`; a new act Z makes the count.
+        (
+            (("act", ["1", "2"]), ("act", ["2"])),
+            (("act", ["1", "2"]), ("other", ["2"]), ("act", ["9"])),
+        ),
+    ],
+)
+def test_an_act_with_no_id_of_its_own_cannot_be_replaced_by_a_new_act(replaced, reread):
+    assert not page_path.superseded_acts_kept(_entries(*replaced), _entries(*reread))
+
+
+def test_only_a_re_read_that_kept_its_acts_becomes_the_next_ones_baseline():
+    kept = [{"reading_holds": []}]
+    dropped = [{"reading_holds": [page_path.SUPERSEDED_ACT_NOT_READ]}]
+    assert page_path.keeps_counted(kept)
+    assert not page_path.keeps_counted(dropped)
+    assert not page_path.keeps_counted([])

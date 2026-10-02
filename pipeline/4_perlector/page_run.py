@@ -232,9 +232,9 @@ class _Page:
     plans: list[dict[str, Any]] = field(default_factory=list)
     # The page's operator re-reads in attempt order: those already read, then a new one.
     rereads: list[_Request] = field(default_factory=list)
-    # The entry plans the page counts so far: its first reading's with any the re-ask
-    # added, then the last operator re-read's that read anything. An operator re-read
-    # is planned against them.
+    # The entry plans an operator re-read is planned against: the first reading's
+    # with any the re-ask added, then the last operator re-read's that read anything
+    # and kept every act it replaced.
     counted: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -675,7 +675,7 @@ def _finish_reread(
     )
     accounting = publish_page_accounting(state, page, reading, plans, attempt=request.ordinal)
     publish_act_records(state, page, reading, plans, accounting)
-    if plans:
+    if page_path.keeps_counted(plans):
         page.counted = plans
 
 

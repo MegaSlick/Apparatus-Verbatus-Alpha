@@ -206,15 +206,21 @@ attempt, and becomes the page's current reading: the page-read denominator count
 entries alone. The earlier readings and their records stay as read, marked
 superseded.
 
-A re-read is planned against the entries the page counted before it (its first
-reading with any the re-ask added, or the last re-read that read anything). Each
-`act` entry of those is followed by its own ids, the ones no other act of it cites:
-they must all be cited by exactly one `act` entry of the re-read, which cites no other
-replaced act's own ids, and the re-read must name at least as many acts. Otherwise
-every entry of the re-read holds `superseded-act-not-read`, a page-wide hold a page
-decision clears: an act may not leave the count by being left out, set aside, merged
-into another entry, split, or read as `other`, with or without a record detector. The
-re-read is also accounted against the page's evidence like any reading.
+A re-read is planned against the entries the page counted before it: its first
+reading with any the re-ask added, or the last re-read that read something and kept
+every act it replaced. A re-read that dropped an act never becomes that baseline, so a
+later re-read cannot launder the drop. Each `act` entry of the baseline is followed by
+its own ids, the ones no other act of it cites: they must all be cited by exactly one
+`act` entry of the re-read, which cites no other replaced act's own ids, and the
+re-read must name at least as many acts. While any replaced act has no id of its own,
+the re-read's acts may cite no id the baseline's acts did not. Otherwise every entry of
+the re-read holds `superseded-act-not-read`, a page-wide hold a page decision clears.
+The rule follows ids, never text, with or without a record detector: an act may not
+leave the count by being left out, set aside, merged, split, or read as `other`. It is
+strict on purpose: a re-read that moves act boundaries, splits an act or cites
+different ids for one is held for a page decision too. A re-read with no entry at all
+carries no entry to hold; its page accounting measures the page like any reading's.
+The re-read is also accounted against the page's evidence like any reading.
 
 ## Resume
 

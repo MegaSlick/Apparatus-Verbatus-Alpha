@@ -27,7 +27,7 @@ from pathlib import Path
 import pytest
 from test_live_reading_seam_e2e import PAGE_ANSWERS, designated  # noqa: F401
 from test_operator_actions_e2e import reading_held  # noqa: F401
-from test_operator_reread_e2e import _page_readings, _read_again
+from test_operator_reread_e2e import _ask_again, _page_readings, _read_again
 from test_review_decisions_e2e import RUN_ID, _copy, _decide, _recense
 
 from common.contracts.stages import PERLECTOR
@@ -130,3 +130,33 @@ def _reread_perlectios(root: Path, reading: dict) -> list[dict]:
         if record["payload"]["page_reading_ref"]["relative_path"] == reading["relative_path"]:
             found.append(record)
     return found
+
+
+@pytest.mark.parametrize("second", ["dropped-again", "restored"])
+def test_a_second_re_read_is_planned_against_the_last_reading_that_kept_its_acts(
+    reading_held,  # noqa: F811
+    tmp_path,
+    second,
+):
+    """A held re-read never becomes the baseline: a second re-read that drops the same
+    act holds again, and one that reads it again holds nothing for it."""
+    tree = _copy(reading_held, tmp_path)
+    _ask_again(tree)
+    answer = _without_act_two("merged-with-text")
+    assert _read_again(tree, tmp_path / "reader-3", answer) == EXIT_COMPLETE
+    third = _page_readings(tree.root)[3]
+    assert all(
+        SUPERSEDED_ACT_NOT_READ in p["payload"]["holds"]
+        for p in _reread_perlectios(tree.root, third)
+    )
+    assert _recense(tree) == EXIT_HELD
+
+    _ask_again(tree)
+    again = answer if second == "dropped-again" else PAGE_ANSWERS[1]
+    assert _read_again(tree, tmp_path / "reader-4", again) == EXIT_COMPLETE
+    fourth = _page_readings(tree.root)[4]
+    perlectios = _reread_perlectios(tree.root, fourth)
+    assert perlectios
+    held = [SUPERSEDED_ACT_NOT_READ in p["payload"]["holds"] for p in perlectios]
+    assert held == [second == "dropped-again"] * len(perlectios)
+    assert _recense(tree) == (EXIT_HELD if second == "dropped-again" else EXIT_COMPLETE)
