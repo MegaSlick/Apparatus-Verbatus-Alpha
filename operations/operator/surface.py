@@ -1236,12 +1236,12 @@ class OperatorSurface:
                 "reasons": (
                     [str(reason) for reason in reasons] if isinstance(reasons, list) else None
                 ),
-                "assumption": "Spec 11 is not in this tree; this is a copy of the base Armarium evidence, not a Spec 11 product bundle.",
+                "assumption": "This is a copy of the run's base Armarium evidence, not the product bundle the Armarium seals.",
             },
             descriptor_action="export",
         )
         self.present(f"Local Armarium evidence bundle: {destination}")
-        self.present("This is base Armarium evidence, not a Spec 11 product bundle.")
+        self.present("This is base Armarium evidence, not the product bundle.")
         self.present(f"Saved export receipt: {receipt}")
         if complete:
             self._notify(

@@ -66,7 +66,7 @@ def _approved_submission(tmp_path: Path) -> tuple[Path, Path, Path]:
 
     Every other upload test in this file starts from an already-sealed
     manifest; this is what `submit_and_upload` needs to seal a new one through
-    Spec 03's door itself, mirroring `operations/submit/test_submit.py`'s own
+    the submission door itself, mirroring `operations/submit/test_submit.py`'s own
     fixture shape.
     """
 
@@ -464,7 +464,7 @@ def test_inspect_refuses_a_symlink_planted_as_the_object_is_opened(
 
 
 def test_submit_and_upload_seals_a_new_manifest_then_transfers_it(tmp_path: Path) -> None:
-    """The `--manifest-out` route through Spec 03's door, end to end.
+    """The `--manifest-out` route through the submission door, end to end.
 
     Every other upload test in this file starts from an already-sealed
     manifest; nothing exercised the door itself — sealing a brand new one,

@@ -460,13 +460,11 @@ def build_parser() -> PlainParser:
     )
 
     reuse = upload.add_mutually_exclusive_group(required=True)
-    reuse.add_argument(
-        "--sealed-manifest", type=Path, help="existing sealed Spec 03 submission record"
-    )
+    reuse.add_argument("--sealed-manifest", type=Path, help="existing sealed submission record")
     reuse.add_argument(
         "--manifest-out",
         type=Path,
-        help="where Spec 03 should write a new sealed submission record",
+        help="where to write a new sealed submission record",
     )
     upload.add_argument("--policy", type=Path, help="data-handling policy used with --manifest-out")
     upload.add_argument(
@@ -520,7 +518,7 @@ def build_parser() -> PlainParser:
     ingest.add_argument(
         "--confirmation-file",
         type=Path,
-        help="canonical Unit 6B cluster-confirmation file; omit when confirming no cluster",
+        help="canonical cluster-confirmation file; omit when confirming no cluster",
     )
 
     run = verbs.add_parser("run", help="run or resume a recorded fixture or real submission")
