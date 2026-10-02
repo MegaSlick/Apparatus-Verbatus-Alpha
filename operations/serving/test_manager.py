@@ -1081,14 +1081,12 @@ def test_a_watchdog_timeout_while_the_engine_is_loading_says_so_and_carries_the_
 
     message = str(excinfo.value)
     assert "VLLM_WATCHDOG_TIMEOUT" in message
-    assert "still loading, not refused" in message
-    assert "it advanced while this start was waited on" in message
+    assert "still-loading:" in message
     assert "Loading safetensors checkpoint shards: 43% Completed | 12/28" in message
-    assert "budget, not a measurement of this row's load time" in message
     assert "Launch log tail:" in message
     assert launcher.processes[0].terminate_calls == 1
     assert publisher.calls == []
-    assert "still loading" in registry.refusals[0][1]
+    assert "still-loading:" in registry.refusals[0][1]
 
 
 def test_a_watchdog_timeout_with_no_sign_of_loading_says_connection_refused(
@@ -1108,8 +1106,7 @@ def test_a_watchdog_timeout_with_no_sign_of_loading_says_connection_refused(
         manager.start(chair, TIER)
 
     message = str(excinfo.value)
-    assert "connection refused, not still loading" in message
-    assert "raising startup_timeout_seconds is unlikely to help" in message
+    assert "refused:" in message
     assert "vLLM API server version 0.30.0" in message
     assert publisher.calls == []
 
@@ -1130,8 +1127,7 @@ def test_a_watchdog_timeout_on_an_answering_endpoint_claims_neither(tmp_path: Pa
     ) as excinfo:
         manager.start(chair, TIER)
 
-    assert "answered but never ready" in str(excinfo.value)
-    assert "connection refused" not in str(excinfo.value)
+    assert "answered-unready:" in str(excinfo.value)
     assert launcher.processes[0].terminate_calls == 1
     assert publisher.calls == []
 
@@ -1155,10 +1151,8 @@ def test_a_watchdog_timeout_over_an_unreadable_log_refuses_to_guess() -> None:
         budget_seconds=300.0,
     )
 
-    assert error.code == "VLLM_WATCHDOG_TIMEOUT"
-    assert "could not be read" in error.detail
-    assert "whether the engine was still loading or never started" in error.detail
-    assert "still loading, not refused" not in error.detail
+    assert (error.code, error.diagnosis) == ("VLLM_WATCHDOG_TIMEOUT", "log-unreadable")
+    assert "denied" in error.detail
 
 
 def test_an_empty_launch_log_says_it_is_empty_rather_than_appending_nothing() -> None:
@@ -1205,7 +1199,7 @@ def test_a_long_launch_log_is_carried_as_a_bounded_and_labelled_tail() -> None:
         budget_seconds=300.0,
     )
 
-    assert "still loading, not refused" in error.detail
+    assert error.diagnosis == "still-loading"
     assert f"[last {_WATCHDOG_TAIL_BYTES} bytes]" in error.detail
     assert len(error.detail) < 2_500
 
@@ -1227,11 +1221,9 @@ def test_a_loading_marker_that_never_moved_is_not_reported_as_current_progress(
         manager.start(chair, TIER)
 
     message = str(excinfo.value)
-    assert "loading was observed, and nothing since" in message
-    assert "did not change while the" in message
-    # The strong claim -- the one an operator raises the bound on -- is absent.
-    assert "it advanced while this start was waited on" not in message
-    assert "still loading, not refused" not in message
+    # Not the claim an operator raises the bound on.
+    assert "stalled:" in message
+    assert "still-loading" not in message
     # The evidence itself still travels: the claim is narrowed, not dropped.
     assert "Loading safetensors checkpoint shards: 43% Completed | 12/28" in message
     assert publisher.calls == []
@@ -1274,12 +1266,12 @@ def test_an_endpoint_that_timed_out_is_not_reported_as_a_refused_connection() ->
         budget_seconds=1.0,
     )
 
-    assert "did not answer, and nothing proved it empty" in timed_out.detail
-    assert "connection refused" not in timed_out.detail
-    assert "unlikely to help" not in timed_out.detail
-    assert "connection refused, not still loading" in refused.detail
-    assert "answered but never ready" in answered.detail
-    assert "no readiness probe was ever answered" in nothing.detail
+    assert [error.diagnosis for error in (timed_out, refused, answered, nothing)] == [
+        "unreachable",
+        "refused",
+        "answered-unready",
+        "no-probe",
+    ]
 
 
 def test_the_watchdog_tail_is_bounded_in_bytes_not_in_characters() -> None:
@@ -4980,9 +4972,7 @@ def test_a_budget_gone_before_the_first_probe_answers_claims_no_observation() ->
         budget_seconds=1.0,
     )
 
-    assert "no readiness probe was ever answered" in error.detail
-    assert "connection refused" not in error.detail
-    assert "answered but never ready" not in error.detail
+    assert error.diagnosis == "no-probe"
 
 
 def _nested_json(levels: int) -> dict[str, object]:

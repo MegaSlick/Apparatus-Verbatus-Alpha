@@ -1415,67 +1415,62 @@ def _watchdog_timeout(
     """
 
     tail = _redacted(process.read_tail())
+    budget = f"{budget_seconds:.0f}s"
+    progress = None if tail.startswith(_LOG_UNREADABLE) else _progress_log_line(tail)
     if tail.startswith(_LOG_UNREADABLE):
+        reason = tail.removeprefix(_LOG_UNREADABLE).strip()
         return ReadinessError(
             "VLLM_WATCHDOG_TIMEOUT",
-            f"{last} -- and after {budget_seconds:.0f}s this launch log could not be read "
-            f"({tail.removeprefix(_LOG_UNREADABLE).strip()}), so nothing here can say "
-            "whether the engine was still loading or never started",
+            f"{last} -- log-unreadable: the launch log could not be read ({reason}), so "
+            "this cannot say whether the engine was loading",
+            diagnosis="log-unreadable",
         )
-    progress = _progress_log_line(tail)
     if progress is not None and progress_advanced:
-        diagnosis = (
-            f"still loading, not refused: {last} -- but this launch log's most recent "
-            f"progress line is {progress!r} and it advanced while this start was waited "
-            f"on, so the engine was still starting when the {budget_seconds:.0f}s "
-            "startup_timeout_seconds bound expired. That bound is a "
-            "budget, not a measurement of this row's load time; size it from the chair's "
-            "weight bytes over the volume's measured read rate plus graph capture "
-            "(config/serving_recipes_real.toml records the derivation per row) rather than "
-            "reading this as a failure to start"
+        code, sentence = (
+            "still-loading",
+            f"the launch log's progress advanced to {progress!r} while this start waited; "
+            f"the {budget} startup_timeout_seconds ran out mid-load (it is a budget, sized "
+            "per row in config/serving_recipes_real.toml)",
         )
     elif progress is not None:
-        diagnosis = (
-            f"loading was observed, and nothing since: {last} -- this launch log's most "
-            f"recent progress line is {progress!r}, and it did not change while the "
-            f"{budget_seconds:.0f}s startup_timeout_seconds bound ran out, so nothing here "
-            "establishes the engine was still starting rather than stuck at that point. "
-            "Read the whole log on the pod before raising the bound and paying for another "
-            "wait"
+        code, sentence = (
+            "stalled",
+            f"the launch log shows loading at {progress!r}, and it did not move in {budget}",
         )
     elif endpoint_state == _ENDPOINT_REFUSED:
-        diagnosis = (
-            f"connection refused, not still loading: {last} -- and after "
-            f"{budget_seconds:.0f}s nothing in this launch log shows the engine loading "
-            "weights, capturing graphs or initializing, so raising "
-            "startup_timeout_seconds is unlikely to help"
+        code, sentence = (
+            "refused",
+            f"connections were refused and the log shows no loading after {budget}; a "
+            "longer startup_timeout_seconds is unlikely to help",
         )
     elif endpoint_state == _ENDPOINT_UNREACHABLE:
-        diagnosis = (
-            f"the endpoint did not answer, and nothing proved it empty: {last} -- after "
-            f"{budget_seconds:.0f}s no probe produced a response and no connection was "
-            "refused, so this says nothing about whether the engine is listening, and the "
-            "log shows no loading either"
+        code, sentence = (
+            "unreachable",
+            f"no probe got an answer or a refusal in {budget}, and the log shows no loading",
         )
     elif endpoint_state == _ENDPOINT_ANSWERED_UNREADY:
-        diagnosis = (
-            f"answered but never ready: {last} -- after {budget_seconds:.0f}s the endpoint "
-            "was reachable and nothing in this launch log shows the engine still loading"
+        code, sentence = (
+            "answered-unready",
+            f"the endpoint answered but was never ready in {budget}, and the log shows no loading",
         )
     else:
-        diagnosis = (
-            f"no readiness probe was ever answered: {last} -- the "
-            f"{budget_seconds:.0f}s startup_timeout_seconds bound was gone before the "
-            "first round completed, so nothing here observed the endpoint at all"
+        code, sentence = (
+            "no-probe",
+            f"the {budget} bound ran out before any readiness probe returned",
         )
+    diagnosis = f"{last} -- {code}: {sentence}"
     # Cut in bytes, not characters; a cut mid-character decodes as a replacement.
     encoded = tail.encode("utf-8")
     excerpt = encoded[-_WATCHDOG_TAIL_BYTES:].decode("utf-8", errors="replace").strip()
     if not excerpt:
-        return ReadinessError("VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. The launch log is empty")
+        return ReadinessError(
+            "VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. The launch log is empty", diagnosis=code
+        )
     if len(encoded) > _WATCHDOG_TAIL_BYTES:
         excerpt = f"[last {_WATCHDOG_TAIL_BYTES} bytes] {excerpt}"
-    return ReadinessError("VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. Launch log tail:\n{excerpt}")
+    return ReadinessError(
+        "VLLM_WATCHDOG_TIMEOUT", f"{diagnosis}. Launch log tail:\n{excerpt}", diagnosis=code
+    )
 
 
 def _is_deterministic_probe_rejection(error: ReadinessError) -> bool:
