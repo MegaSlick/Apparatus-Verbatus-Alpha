@@ -6382,7 +6382,7 @@ def _table() -> PlacementTable:
     return load_placement_table(root / "config/pod_placement.toml")
 
 
-def test_the_shipped_table_carries_a_prebuilt_profile_for_every_card_spec_04_names() -> None:
+def test_the_shipped_table_carries_a_prebuilt_profile_for_each_rented_card() -> None:
     names = {profile.name for profile in _table().card_profiles}
 
     assert {"RTX 6000 Ada", "RTX PRO 6000 Blackwell", "A40", "RTX A5000"} <= names
@@ -7660,7 +7660,7 @@ def test_a_confirmation_spent_before_a_restart_authorizes_nothing_after_one(
     )
 
 
-# -- provider_state: lifecycle is a separate fact from presence (pod-runtime U1) --
+# -- provider_state: lifecycle is a separate fact from presence --
 
 
 def test_an_exited_pod_is_still_present_with_its_lifecycle_word_named() -> None:
