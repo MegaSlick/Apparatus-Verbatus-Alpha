@@ -75,9 +75,12 @@ is partial. Exit codes: 0 complete; 2 the run failed or was refused before it co
 for review or partial, which includes an act refused inside an otherwise finished run;
 4 halted.
 
-**Real pages** need the real roster (`--models-config config/models-real.toml`) and a
-Linux GPU machine running vLLM; the RunPod
-tooling is in `operations/pod/`. Input can be most raster images, multi-page TIFF, HEIC
+**Real pages** need a Linux GPU machine running vLLM and the real model configuration,
+which is three files given together: `--models-config config/models-real.toml`,
+`--serving-recipes-config config/serving_recipes_real.toml` and
+`--witness-context-config config/witness_context-real.toml`; a partial set is refused.
+[operations/operator/README.md](operations/operator/README.md) describes a run, and the
+RunPod tooling is in `operations/pod/`. Input can be most raster images, multi-page TIFF, HEIC
 or PDF. Output is a sealed ZIP bundle with a manifest, and it can include a text bundle,
 a searchable SQLite database, JSONL, and the items held for human review
 (`config/formats.toml`).
