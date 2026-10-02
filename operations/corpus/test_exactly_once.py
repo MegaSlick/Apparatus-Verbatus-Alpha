@@ -985,7 +985,13 @@ def test_a_real_reasked_run_is_read_with_its_reask_as_the_receipt_binds_it(tmp_p
 
 
 class _PathTree(_Tree):
-    """`_Tree` whose manifest names each record's path, as a run tree's does."""
+    """`_Tree` whose manifest names each record's path, as a run tree's does, and
+    whose Recensor receipt binds page 1 to `bound`."""
+
+    bound = f"{PERLECTOR}/page-reading/r3.json"
+
+    def read_recensor_partition_receipt(self):
+        return {"pages": [{"page_ordinal": 1, "reading_ref": {"relative_path": self.bound}}]}
 
     def build_manifest(self, stage, *, verify_inputs=True):
         return {
@@ -1015,7 +1021,18 @@ def test_a_page_a_person_had_read_again_is_judged_on_its_current_reading(monkeyp
                 **built["reading"],
                 **base,
                 "attempt_ordinal": 3,
-                "operator_reread": {"decisions": [], "supersedes": [{"relative_path": path}]},
+                "operator_reread": {
+                    "decisions": [
+                        {
+                            "decision_hash": "d" * 64,
+                            "approval_ref": {
+                                "relative_path": f"receipts/sha256/{'e' * 64}.json",
+                                "sha256": "e" * 64,
+                            },
+                        }
+                    ],
+                    "supersedes": [{"relative_path": path, "sha256": "0" * 64}],
+                },
             },
         },
         (PERLECTOR, "page-accounting", "p1"): {
@@ -1053,9 +1070,19 @@ def test_a_page_a_person_had_read_again_is_judged_on_its_current_reading(monkeyp
     assert len(loaded["act_regions"]) == len(built["act_regions"])
     result = report([loaded])
     assert result["gate"]["passed"] is True
-    assert result["pages"]["operator_reread_ordinals"] == [1]
+    # The person's retry is reported apart: the first reading alone read fewer.
+    reread = result["operator_reread"]
+    assert reread["page_ordinals"] == [1]
+    assert reread["after_reread"]["exactly_once"] == 3
+    assert reread["before_reread"]["exactly_once"] < 3
+    assert reread["records_now_exactly_once"] == 3 - reread["before_reread"]["exactly_once"]
     # A run with no re-read says nothing of one.
-    assert (
-        "operator_reread_ordinals"
-        not in report(load_page_records(_Tree(_reask_tree_records(built, first), {})))["pages"]
+    assert "operator_reread" not in report(
+        load_page_records(_Tree(_reask_tree_records(built, first), {}))
     )
+
+    # The re-read judged must be the reading the Recensor's receipt binds.
+    other = _PathTree(records, {})
+    other.bound = path
+    with pytest.raises(Refusal, match="not the reading the Recensor's receipt binds"):
+        load_page_records(other)
