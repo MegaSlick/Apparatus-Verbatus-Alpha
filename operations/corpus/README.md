@@ -1,13 +1,13 @@
 # corpus
 
-RecordGold in: a third-party expert-annotated corpus fetched, sealed, and joined
+RecordGold in: a third-party expert-annotated corpus admitted, sealed, and joined
 to pipeline output without ever pretending to be `gold/`.
 
 `Teklia/DAI-CReTDHI-RecordGold-ATR` is 7,720 expert-annotated records over French
 parish and civil registers (1548–1835), shipped as three parquets of text and IIIF
-references — no embedded images. This package turns that into fetched pages the
-Door can admit, a reference-truth record family the Designator and Perlector can be
-scored against, and a comparator that does the scoring after the fact. It never
+references — no embedded images. This package admits the RecordGold page sets already
+on this machine as a reference-truth record family the Designator and Perlector can be
+scored against, and scores a sealed run against it after the fact. It never
 transcribes anything and never adjudicates anything; every human-custody act stays
 `gold/`'s.
 
@@ -17,28 +17,13 @@ transcribes anything and never adjudicates anything; every human-custody act sta
   by a one-shot scratch converter outside this package (no `pyarrow` in
   `pyproject.toml` for 1.9 MB of metadata), sealed into one canonical, self-hashed
   JSON file. Every later module reads this file, never a parquet.
-- `plan.py` — the fetch plan, `recordgold-fetch-plan.v1`. Parses each row's
-  `record_url` (a IIIF Image API 2 crop) into `{identifier, region}`, refusing any
-  host, size, rotation, quality, or format it does not recognise by name rather than
-  normalising it, and groups rows by the page identifier they share. Also mints each
-  page's `pac_` physical identity and records the measured page count, records-per-page
-  distribution, and split-overlap count under the plan's own `measurements` field —
-  turning the design consult's disk estimate into a fact before a byte is fetched.
-  Measured against the sealed row snapshot: 1,165 distinct pages (val 113, test 113,
-  train 939), 0 cross-split pages, and 40 rows refused `unsupported-rotation-parameter`
-  — against the consult's 2,200–3,100-page estimate.
-- `holdout.py` — the hold-out ledger, `recordgold-holdout.v1`, built from the row
-  snapshot alone: every IIIF identifier carrying a `test` record is held, and
-  `refuse_held_out_page` is the predicate later units call before writing a page
-  anywhere. This is the strongest of the hold-out's three layers (§ Hold-out below).
-- `fetch.py`, `cache.py` (Unit 2) — the polite, resumable, never-re-fetch fetcher.
-- `integrate.py` (the U2/U3 seam) — turns a sealed fetch log into the `FetchedPage`
-  objects `submission.py` takes, verifying each cache file against the digest its
-  own log entry declares.
-- `submission.py`, `sidecar.py` (Unit 3) — the submission builder: hard-links cached
-  bytes into a Door-shaped folder, writes sidecars outside it, and invokes
-  `operations/submit/submit.py`.
-- `reference.py`, `compare.py` (Unit 4) — the reference-record family and the
+- `record_url.py` — parses each row's `record_url` (a IIIF Image API 2 crop) into
+  `{identifier, region, rotation}`, refusing any host, size, rotation, quality, or
+  format it does not recognise by name rather than normalising it.
+- `cache.py` — `write_new_file`, the atomic create-only write every report here uses.
+- `normalization.py`, `scoring.py` — the `graphemic-v1` comparison form and the
+  CER/WER scorer every evaluation here uses.
+- `reference.py`, `compare.py` — the reference-record family and the
   offline IoU comparator.
 - `canary.py` — a private, pass/fail check over a fetched run whose Door sealed a
   canary ledger. It reads private reference text locally, reports only stage
@@ -72,8 +57,7 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   `recordgold_production_train_v1`: `pages/`, `page_manifest.jsonl`, `gold.jsonl`,
   `fetch_receipt.json`) admitted as reference truth, every record admitted or refused
   by name in a self-hashed `recordgold-local-admission.v1` ledger with its own
-  validator and loader. **Those sets were not written by `fetch.py` and their producer
-  is outside this repository**: the receipt's schema string is the only identity the
+  validator and loader. **Their producer is outside this repository**: the receipt's schema string is the only identity the
   material carries, so the receipt is trusted for one thing — that `gold.jsonl` and
   `page_manifest.jsonl` are the bytes it names — and everything else is measured
   against the stored pixels and the row's own `record_url`. Pass `--row-snapshot` and
@@ -83,14 +67,12 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   is the only witness. It holds the stored page's
   measured dimensions, so it carries the forty records stated in a 180-degree IIIF
   view into the stored frame by `(W - x - w, H - y - h, w, h)` and records the URL,
-  rotation, original box, carried box, page digest and dimensions of every crossing;
-  `plan.py`'s fetch-time parser still refuses those rows because it has no dimensions
-  to convert with. That carry was checked against real pixels on 2026-09-11: the stored
+  rotation, original box, carried box, page digest and dimensions of every crossing.
+  That carry was checked against real pixels on 2026-09-11: the stored
   page is the upright 180-delivered view, and the flipped box is the one that cuts the
   ink `gold.jsonl` transcribes. A rotation other than `0`/`180` stays a named refusal,
   every listed page ends in exactly one outcome (`pages_by_outcome`), and `--split test`
-  needs `--release-test-split` exactly as the fetcher does, refused under the fetcher's
-  own name (`holdout-ledger-required`) since it is the same condition. Measured over
+  needs `--release-test-split` (`holdout-ledger-required`). Measured over
   the local sets on 2026-09-10: 784 of 784 validation records admitted (769 at 0, 15 at
   180) and 6,178 of 6,178 training records (6,153 at 0, 25 at 180); nothing under
   `OCR_Gold` is written.
@@ -118,7 +100,7 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   is verified — every reference page must appear in it by `self_hash`. `code_ref`
   remains a declaration, and `code_ref_check` says whether it matched this checkout.
 
-  **An act excluded with Tyrel's approval is scored as a total loss against its
+  **An act excluded with the lead's approval is scored as a total loss against its
   reference.** That is the conservative choice and it is deliberate — an approved
   exclusion is still an act whose text this pipeline did not deliver — but it means the
   aggregate is not pure model reading quality: a run with approved exclusions scores
@@ -216,9 +198,6 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   the repository and an output inside it must be under `private/`; nothing leaves the
   machine.
 
-The fetch protocol, comparator and hold-out sections below describe behaviour that
-runs.
-
 ## A proof run, end to end
 
 On the Mac, before the pod run: admit the set, pick the pages, and submit
@@ -261,46 +240,15 @@ the others write their record or refuse by name. Every report is written outside
 run tree, carries counts and identifiers rather than reference text, and gives the same
 bytes for the same inputs.
 
-## `private/` and the fetch protocol
+## `private/` and the refusal vocabularies
 
-The RecordGold fetch tools write under `private/corpora/recordgold/`, which
-`.gitignore` excludes and `config/data_handling_policy.json` names as an approved
-storage root. The canary builder writes under `private/canary/` by default.
-Nothing here is tracked; nothing here needs to be.
+The corpus tools write under `private/corpora/recordgold/`, which `.gitignore`
+excludes and `config/data_handling_policy.json` names as an approved storage root.
+The canary builder writes under `private/canary/` by default. Nothing here is
+tracked; nothing here needs to be.
 
-```text
-private/corpora/recordgold/
-  rows/recordgold-rows.v1.json        the sealed snapshot
-  cache/<response-sha256>.jpg         content-addressed bodies, never re-fetched
-  cache/requests/<request-key>.json   request-key -> response digest, atomic create
-  info/<identifier-digest>.json       retained IIIF info.json per identifier
-  submissions/<shard-id>/<source>/<volume>/<page>.jpg    IMAGES ONLY
-  sidecars/<shard-id>/<source>/<volume>/<page>.json      OUTSIDE the submission folder
-  ledger/fetch-plan.json  holdout.json  fetch-log.json  refusals.json
-```
-
-Per identifier: fetch `info.json` once and retain it; request the full-resolution
-image (`full/full/0/default.jpg`, falling back to `max` on 400/501, and recording
-which one was used — the two differ on servers that cap size, and a corpus mixing
-them silently is a corpus whose boxes are wrong by a scale factor); verify the
-decoded JPEG's dimensions against `info.json`'s declared `width`/`height` before
-trusting a single region, because `record_url`'s `x,y,w,h` is stated in full-page
-pixels and a silently downsized page makes every box wrong with nothing downstream
-positioned to notice; refuse an EXIF-rotated image (the Door seals the stored raster
-as the coordinate space, so a display-rotation tag would put boxes in a different
-frame from the pixels); and refuse any record whose region falls outside the page.
-The fetch protocol's closed refusal vocabulary is `http-error`, `non-image-body`,
-`dimension-mismatch`, `exif-orientation`, `region-outside-page`,
-`duplicate-page-bytes`, `unexpected-host`, `unsupported-size-parameter`,
-`holdout-page`, `cross-split-page`.
-
-Every module in this package carries its own closed refusal set, not that one:
-`rows.ROW_REFUSAL_REASONS`, `plan.PLAN_REFUSAL_REASONS`,
-`holdout.HOLDOUT_REFUSAL_REASONS`, `cache.CACHE_REFUSAL_REASONS`,
-`fetch.FETCH_REFUSAL_REASONS` plus `fetch.FETCH_RUN_REFUSAL_REASONS` (a second,
-run-level set — a request-ceiling or 403-stop refusal never reaches a fetch-log
-entry, so it cannot share the per-page set), `integrate.INTEGRATE_REFUSAL_REASONS`,
-`submission.SUBMISSION_REFUSAL_REASONS`, `sidecar.SIDECAR_REFUSAL_REASONS`,
+Every module in this package carries its own closed refusal set:
+`rows.ROW_REFUSAL_REASONS`, `record_url.RECORD_URL_REFUSAL_REASONS`,
 `reference.REFERENCE_REFUSAL_REASONS`, `compare.COMPARE_REFUSAL_REASONS`,
 `local_admission.LOCAL_ADMISSION_REFUSAL_REASONS`,
 `evaluate.EVALUATION_REFUSAL_REASONS`,
@@ -310,16 +258,6 @@ entry, so it cannot share the per-page set), `integrate.INTEGRATE_REFUSAL_REASON
 `proof_pages.PROOF_PAGES_REFUSAL_REASONS`.
 Every refusal in this package is a `CorpusRefusal` whose message leads with its
 reason token, dispatched by `str(error).split(":", 1)[0]` (`__init__.py`).
-
-**Politeness is not optional.** One connection, sequential, at least a one-second
-delay between requests, `Retry-After` honoured, bounded exponential backoff on
-429/503, the whole run stopped on the first 403, a declared `User-Agent` naming the
-project and a contact, a per-run request ceiling. Stdlib `urllib.request`, an
-explicit opener, bounded reads, timeouts, no cross-host redirects — no new
-dependency for talking to one IIIF server politely. The request key is
-`sha256(identifier || region || size || rotation || quality || format)`;
-`cache/requests/<key>.json` is created atomically, so an interrupt loses at most
-one in-flight body and nothing already cached is ever requested again.
 
 ## The reference/gold boundary
 
@@ -350,10 +288,9 @@ deriving an `act_*` from it would verify against its own bindings and
 mean nothing. Reference acts are keyed instead by
 `physical_act_id(physical_page_id("recordgold", "<source>/<volume>",
 "<page>"), record_id)` — a `pac_` identity, disjoint from `act_*` by prefix,
-minted by declaration rather than by structure, and stable across re-fetch and
-re-shard. That ladder joins `source` and `volume` into one string before
+minted by declaration rather than by structure. That ladder joins `source` and `volume` into one string before
 minting the physical page identity, so `source` must itself be a safe single
-path segment carrying no `/` — `plan.py` refuses such a row per-row as
+path segment carrying no `/` — `local_admission.py` refuses such a row as
 `unsafe-source-value` before a page is ever minted, and `reference.py` raises
 the same name on both the build and the load path; without that screen, two
 distinct `source`/`volume` splits (`"Tours/geneanet"` joined with nothing, and
@@ -369,10 +306,8 @@ every reference box, takes the assignment maximising total IoU under a
 predeclared threshold, and writes `reference-comparison.v2` recording the whole
 matrix: matched pairs, unmatched reference acts (misses, scored), and
 unmatched pipeline acts (reported, never scored, because `completeness` already
-says they may be legitimately out of scope). Per-act CER/WER reuses the sealed
-instruments this project already has — `operations/spike_perlector/normalization.py`'s
-`graphemic-v1` and `scoring.py`'s bare rapidfuzz — rather than a second scorer
-invented for this corpus.
+says they may be legitimately out of scope). Per-act CER/WER comes from
+`normalization.py`'s `graphemic-v1` profile and `scoring.py`'s bare rapidfuzz.
 
 Why this is not a picker:
 it runs only after the pipeline's own output is sealed and cannot
@@ -384,50 +319,24 @@ just the docstring, is the import graph: `pipeline/` may not import
 `operations.corpus`, and `operations/corpus/` may not import `pipeline/` — the
 same one-way rule `operations/submit/` already carries — pinned by
 `test_compare.py::test_no_pipeline_module_imports_operations_corpus`, which
-walks `pipeline/` and fails on any import of this package. CodeRabbit has
-already flagged one picker instruction elsewhere in this repository's planning
-documents; that test is what keeps this module from being the next one.
+walks `pipeline/` and fails on any import of this package.
 
 ## Hold-out
 
-`test` (758 records) is never fetched by default and is never the GOVERNANCE 10
-acceptance corpus; it is the DAI-comparability set — the split this project's
-own number can honestly be compared against Teklia's published one, with a
-contamination control available (measure with `attestator_2` withheld). `val`
-(784 records) is the calibration and instrument-development split, fetched by
-default. `train` (6,178 records) is a fine-tune corpus per Tyrel's ruling and
-out of alpha measurement scope entirely.
+`test` (758 records) is never admitted by default and is not the acceptance corpus;
+it is the DAI-comparability set — the split this project's own number can honestly
+be compared against Teklia's published one, with a contamination control available
+(measure with `attestator_2` withheld). `val` (784 records) is the calibration and
+instrument-development split. `train` (6,178 records) is a fine-tune corpus per the
+lead's ruling and out of alpha measurement scope entirely.
 
-The hold-out is mechanical, in three layers, strongest first: `holdout.py`
-derives the ledger from the row snapshot alone, before a single image is
-fetched; the fetcher defaults to `--split val`, and `--split test` requires an
-explicit second flag, `--release-test-split`, writing to a distinct root —
-that flag releases the held split alone and is refused with any other
-`--split`, and hold-out enforcement now holds for every split it is on for
-(not just `val`), so a ledger is required whichever non-held split is being
-fetched; and the submission builder
-refuses any page the ledger names, by identifier, including a page that also
-carries a non-held split's records (`cross-split-page` — the case where a page
-cannot be used for calibration without exposing held-out material). Whether the
-splits are page-disjoint or record-disjoint is measured, not assumed: U1's row
-snapshot shows the three splits page-disjoint today, so `cross-split-page`
-never fires against the real corpus, but the refusal stays load-bearing rather
-than decorative because a future re-export is not bound by today's measurement.
-Release from hold is an appended, named record — an `advance`, never a
-permanent bar.
-
-**The local-admission route carries one of those three layers, and it is worth
-naming which.** `local_admission.py` mirrors the second layer exactly — `--split
-test` requires `--release-test-split`, that flag is refused with any other
-split, and each row's own `split` is checked against the split the set is being
-admitted as, so a `test`-labelled row can never enter a `val` ledger. It does not
-consult `holdout.py`'s ledger: the sets it reads carry their own split labels and
-were not produced by the fetcher, so there is no plan to reconcile them against.
-Hold-out protection on this route therefore rests on those labels being honest,
-and the only witness from outside the set's own directory is `--row-snapshot`,
-which is optional and whose file is not tracked here. That is a deliberate
-limit, not an oversight, and a ledger built without the snapshot says so in
-`row_snapshot.consulted`.
+`local_admission.py` admits `--split test` only with `--release-test-split`, that
+flag is refused with any other split, and each row's own `split` is checked against
+the split the set is being admitted as, so a `test`-labelled row can never enter a
+`val` ledger. The sets carry their own split labels, so hold-out protection rests on
+those labels being honest; the only witness from outside the set's own directory is
+`--row-snapshot`, which is optional and whose file is not tracked here. A ledger
+built without the snapshot says so in `row_snapshot.consulted`.
 
 ## The DAI contamination risk
 
@@ -452,24 +361,22 @@ corpus for exactly that reason: `attestator_2`'s testimony would approximate
 the reference, so a Perlector that copies it would look like it is reading
 well. This is a risk about the corpus and the two drafted chairs, taken under
 that unresolved asymmetry, not a proven fact and not an argument against
-RecordGold — Tyrel ruled RecordGold in, training included. It is the reason
+RecordGold — the lead ruled RecordGold in, training included. It is the reason
 `test` is named the DAI-comparability set rather than an acceptance corpus,
 and the reason any number this package's comparator produces against
 `attestator_2` or `secondary_proposer` output needs that caveat stated
 beside it, not implied. The finding, its evidence, and its limits are
 recorded in `workbench/standing/RECORDGOLD_CONTAMINATION_LEDGER.md`.
 
-## The acceptance corpus is Tyrel's call
+## The acceptance corpus is the lead's call
 
 Nothing this package builds decides whether RecordGold may stand in for, or
-alongside, the Quebec gold corpus as the GOVERNANCE 10 acceptance measurement.
-That is rule 1's, not a session's, and the design consult that shaped this
-package recommends against it: Quebec mission registers with a human-adjudicated
-`gold/` corpus remain the acceptance corpus, and RecordGold is a comparability
-and calibration set until Tyrel rules otherwise. This package is built so that
-ruling, whenever it comes, is a decision about which corpus a number is drawn
-from — not a schema migration, because RecordGold truth was never filed where
-`gold/` truth lives.
+alongside, the Quebec gold corpus as the acceptance measurement; that is the
+project lead's decision. Until then, Quebec mission registers with a
+human-adjudicated `gold/` corpus remain the acceptance corpus, and RecordGold is a
+comparability and calibration set. Because RecordGold truth was never filed where
+`gold/` truth lives, that ruling is a decision about which corpus a number is drawn
+from, not a schema migration.
 
 ## The crop census
 
