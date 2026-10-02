@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -91,6 +92,45 @@ def test_a_stop_record_path_that_cannot_be_written_is_refused_before_any_stage(t
         assert result.returncode == EXIT_FATAL, result.stderr
         assert "is not an existing, writable directory" in result.stderr
         assert not (root / "r").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root writes through any directory mode")
+def test_a_stop_record_in_an_unwritable_directory_is_refused_before_any_stage(tmp_path):
+    root = tmp_path / "runs"
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    try:
+        result = _orchestrate(root, "--stop-record", str(locked / "stop.json"))
+    finally:
+        locked.chmod(0o700)
+    assert result.returncode == EXIT_FATAL, result.stderr
+    assert "is not an existing, writable directory" in result.stderr
+    assert not (root / "r").exists()
+
+
+def test_a_stop_record_that_cannot_be_written_after_a_refusal_keeps_the_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    """The refusal that ended the selection is the one raised; the lost record is said."""
+    orchestrator = load_stage("orchestrator")
+    refusal = ContractError("the final seal does not verify")
+
+    def drive(args, names, mode, policy):
+        args.systemic_line = ALARM
+        raise refusal
+
+    def unwritable(path, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(orchestrator, "_drive", drive)
+    monkeypatch.setattr(orchestrator, "atomic_create", unwritable)
+    args = argparse.Namespace(stop_record=str(tmp_path / "stop.json"), run_id="r")
+    with pytest.raises(ContractError) as raised:
+        orchestrator.run_sequence(args, ("armarium",), "manual", {})
+    assert raised.value is refusal
+    error = capsys.readouterr().err
+    assert "could not be written" in error and repr(ALARM) in error
 
 
 def test_a_stop_record_that_cannot_be_written_is_refused_naming_its_alarm(tmp_path, monkeypatch):

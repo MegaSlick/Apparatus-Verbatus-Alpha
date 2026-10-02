@@ -132,6 +132,7 @@ class RecordedRunner:
     # fake that left neither would make every run read as one whose records
     # never came home.
     write_transcript: bool = True
+    transcript_text: bytes = b"orchestrator output\n"
     journal_run_id: str | None = "first-real-run"
     journal_entries: int = 1
     transcript_failure: str | None = None
@@ -157,7 +158,7 @@ class RecordedRunner:
             raise OSError("no such interpreter")
         transcript = Path(transcript)
         if self.write_transcript:
-            transcript.write_bytes(b"orchestrator output\n")
+            transcript.write_bytes(self.transcript_text)
         if self.journal_run_id is not None:
             journal = transcript.with_name(
                 transcript.name.replace("-transcript.log", "-timings.json")
@@ -1373,7 +1374,9 @@ def test_a_run_whose_stop_record_was_not_written_is_never_complete_and_says_why(
     """A systemic run whose stop record could not be written: the orchestrator ends
     fatally (`_record_stop`), and even an exit of complete with no record is not
     called complete, since the alarm it sounded is unknown. With a guard topic
-    and --notify, nothing is sent: there is no alarm line to send."""
+    and --notify, nothing is sent: the alarm is read from the record alone, never
+    from the transcript that printed it."""
+    alarm = "run first-real-run: systemic: 1 of 2 page(s) are held after the recensor"
     ws = _prepared(tmp_path)
     topic = ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic"
     topic.parent.mkdir(parents=True, exist_ok=True)
@@ -1386,8 +1389,9 @@ def test_a_run_whose_stop_record_was_not_written_is_never_complete_and_says_why(
         now=clock.now,
         sleeper=clock.sleep,
         actions_factory=lambda plan: PreflightedActions(),
+        # The alarm was printed, so it is in the transcript, but no record names it.
         runner=RecordedRunner(
-            returncode=returncode, stop=None, systemic="run first-real-run: systemic: lost"
+            returncode=returncode, stop=None, transcript_text=f"{alarm}\n".encode("utf-8")
         ),
         notify_runner=notify.factory,
     )

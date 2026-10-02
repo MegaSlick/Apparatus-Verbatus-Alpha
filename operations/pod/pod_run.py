@@ -1753,8 +1753,9 @@ def main(
         failure_detail = f"the orchestrator could not start: {error}"
         transcript_failure = None
         transcript_dropped_bytes = 0
-    # The orchestrator writes its stop record on every return; one that never
-    # started has none to write.
+    # Once its selection starts, the orchestrator writes its stop record on
+    # every return. A refusal before that, or an orchestrator that never
+    # started, leaves none.
     stop, stop_problem = (
         (None, None)
         if orchestrator_exit is None
