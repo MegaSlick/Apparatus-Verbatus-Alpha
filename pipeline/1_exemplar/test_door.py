@@ -2717,6 +2717,19 @@ def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventor
     assert not (source / "runs").exists()
 
 
+def test_containment_is_decided_by_filesystem_identity_not_path_spelling(tmp_path):
+    """Two spellings of one directory (a case-insensitive volume's `Sub` and `sub`,
+    here a link) must not let a run root land inside the submitted folder."""
+    submitted = tmp_path / "sub"
+    submitted.mkdir()
+    alias = tmp_path / "Sub"
+    alias.symlink_to(submitted, target_is_directory=True)
+
+    with pytest.raises(ContractError, match="cannot live inside the submitted folder"):
+        door._refuse_inside_submission(alias / "run", submitted, "run root")
+    door._refuse_inside_submission(tmp_path / "elsewhere" / "run", submitted, "run root")
+
+
 def test_a_real_submission_requires_the_local_filename_ledger(tmp_path, monkeypatch):
     approved, source, _policy, policy_path, _ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-2.png": png()}

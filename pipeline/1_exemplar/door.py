@@ -1789,10 +1789,8 @@ def real_submission(args, registry) -> int:
         canary_manifest_path = gate.require_approved_storage_location(
             Path(args.canary_manifest), roots, "canary filename ledger"
         )
-        if (
-            canary_folder == submission_folder
-            or canary_folder in submission_folder.parents
-            or submission_folder in canary_folder.parents
+        if gate.same_or_inside(canary_folder, submission_folder) or gate.same_or_inside(
+            submission_folder, canary_folder
         ):
             raise ContractError("canary and real submission folders must be disjoint")
         _refuse_inside_submission(canary_manifest_path, canary_folder, "canary filename ledger")
@@ -1971,7 +1969,12 @@ def real_submission(args, registry) -> int:
 
 
 def _refuse_inside_submission(location: Path, submission_folder: Path, label: str) -> None:
-    if location.is_relative_to(submission_folder):
+    """Refuse a record or run root inside a submitted folder, by filesystem identity.
+
+    Compared by device and inode, not spelling: on a case-insensitive volume
+    `private/Sub/run` lies inside `private/sub`.
+    """
+    if gate.same_or_inside(submission_folder, location):
         raise ContractError(
             f"the {label} cannot live inside the submitted folder; otherwise the next "
             "inventory includes pipeline-produced records as submitted sources"
