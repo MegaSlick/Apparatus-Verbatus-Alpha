@@ -8,7 +8,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 ARMARIUM_DIR = ROOT / "pipeline" / "7_armarium"
-_STAGE_MODULE_NAMES = ("armarium_export", "display", "textnorm")
+_STAGE_MODULE_NAMES = ("armarium_export", "textnorm")
 _MISSING = object()
 
 

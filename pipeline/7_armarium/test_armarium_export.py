@@ -40,7 +40,6 @@ from armarium_export import (
     verify_export_bundle,
     verify_projection_identity,
 )
-from display import DISPLAY_CONVENTION, render_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats
@@ -485,10 +484,7 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
         assert not [name for name in archive.namelist() if name.startswith("pixels/")]
         text = archive.read(TEXT_REGISTER).decode("utf-8")
         assert "Cǣsar d’Exemple" in text
-        assert f"display_convention: {DISPLAY_CONVENTION}" in text
-        # Twice: the canonical field, and the rendering beside it, which with no
-        # uncertainty layer in the Archetypus record is the same text unchanged.
-        assert text.count(json.dumps("Cǣsar d’Exemple", ensure_ascii=False)) == 2
+        assert text.count(json.dumps("Cǣsar d’Exemple", ensure_ascii=False)) == 1
 
     manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
     assert manifest["claims"]["status"] == "partial"
@@ -819,7 +815,7 @@ def test_manifest_refuses_available_uncertainty_with_no_literal_carrier(tmp_path
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
-def test_literal_display_markers_do_not_refuse_or_change_an_established_text(tmp_path):
+def test_markup_like_characters_in_a_literal_do_not_refuse_or_change_it(tmp_path):
     projection = _projection()
     literal = r"Act ⟨literal⟩, gap glyphs ⟦not markup⟧, and a \\ path"
     delivered = {**projection.acts[0], "canonical_clean_text": literal}
@@ -1003,7 +999,7 @@ def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(
     then declared a *second* `canonical_clean_text:` recorded the new literal
     beside the first literal's layer -- offsets into a text this act no longer
     carries -- and every remaining check passed: the second literal has its own
-    valid hash line and its own display that strips back to it. Two or more
+    valid hash line. Two or more
     literal formats show the drift as a projection-identity mismatch, but a
     package may legally select the text bundle as its one literal format, and
     there this section is the whole reading of the act.
@@ -1042,7 +1038,6 @@ def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(
         "canonical_clean_text:",
         json.dumps(replacement, ensure_ascii=False),
     ]
-    lines[lines.index("display:") + 1] = json.dumps(render_display(replacement), ensure_ascii=False)
     members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
     _refresh_manifest_member(members, TEXT_REGISTER)
 
@@ -2588,83 +2583,16 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
     ]
 
 
-def test_a_display_that_does_not_strip_back_to_the_canonical_field_is_refused(tmp_path):
-    """Spec 11 test 2's rendered half, on the written product.
-
-    A display convention that changed the reading -- rather than annotating it --
-    would be a second text leaving the pipeline, when every export must show the
-    same established reading. The verifier strips the rendering and requires the
-    canonical field back exactly.
-    """
+def test_a_section_that_drops_its_last_field_is_refused(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     lines = members[TEXT_REGISTER].decode("utf-8").splitlines()
-    display_at = lines.index("display:") + 1
-    lines[display_at] = json.dumps("Caesar d'Exemple", ensure_ascii=False)
-    members[TEXT_REGISTER] = ("\n".join(lines) + "\n").encode("utf-8")
-    _refresh_manifest_member(members, TEXT_REGISTER)
-
-    with pytest.raises(SchemaRefusal, match="does not strip back"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-def test_a_bundle_that_drops_its_rendering_is_refused(tmp_path):
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    lines = members[TEXT_REGISTER].decode("utf-8").splitlines()
-    convention_at = next(
-        index for index, line in enumerate(lines) if line.startswith("display_convention: ")
-    )
-    del lines[convention_at : convention_at + 3]
+    last = lines.index("transcription_annotations:")
+    del lines[last : last + 2]
     members[TEXT_REGISTER] = ("\n".join(lines) + "\n").encode("utf-8")
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="no completed literal record"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-def test_the_manifest_says_the_display_convention_is_only_proposed(tmp_path):
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
-
-    assert manifest["claims"]["display"] == {
-        "convention": DISPLAY_CONVENTION,
-        "status": "proposed-not-yet-chosen",
-        "alters_stored_text": False,
-        "renders_canonical_uncertainty": False,
-        "exercised_against_real_spans": False,
-        "reason": (
-            "the rendering is not fed this package's canonical uncertainty "
-            "layer, which travels beside each literal instead; no span-marking "
-            "convention has been chosen for displayed readings"
-        ),
-    }
-    # The same package says, two claims above, that it carries the canonical
-    # layer. Both statements are about this build's uncertainty; a manifest whose
-    # display claim contradicted its uncertainty claim would be a package arguing
-    # with itself about what it contains.
-    assert manifest["claims"]["uncertainty"]["status"] == "canonical-unicode-codepoint-offsets"
-    members = _members(bundle.data)
-    manifest["claims"]["display"]["status"] = "chosen"
-    _refresh_manifest(members, manifest)
-    with pytest.raises(SchemaRefusal, match="display claim is not the verified claim"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-def test_the_manifest_may_not_claim_the_rendering_carries_the_canonical_layer(tmp_path):
-    """The non-carriage declaration is verified, not merely written.
-
-    A package whose display claim said the rendering carried the layer would be
-    describing a `display:` line this build does not produce -- the failure mode
-    the claim exists to prevent, one field over from the convention itself.
-    """
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    manifest["claims"]["display"]["renders_canonical_uncertainty"] = True
-    _refresh_manifest(members, manifest)
-
-    with pytest.raises(SchemaRefusal, match="display claim is not the verified claim"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
@@ -2902,20 +2830,6 @@ def test_a_nul_in_a_declared_source_path_is_refused(tmp_path):
     _refresh_manifest_member(members, "sources.json")
 
     with pytest.raises(SchemaRefusal, match="is unsafe"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-def test_a_display_rendering_that_cannot_be_parsed_is_refused_not_raised(tmp_path):
-    """`strip_display` raises `ValueError` on markup it cannot parse. Every one of
-    those is reachable from a package a recipient was handed."""
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
-    lines[lines.index("display:") + 1] = json.dumps("⟨never closed", ensure_ascii=False)
-    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
-    _refresh_manifest_member(members, TEXT_REGISTER)
-
-    with pytest.raises(SchemaRefusal, match="not a renderable display convention"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
@@ -4059,7 +3973,6 @@ def recipient_happy_run(tmp_path_factory):
         ("manifest-pixels-extra", "unrecognized field set"),
         ("manifest-act-denominator", "not this build's fixed claim"),
         ("manifest-page-denominator", "not this build's fixed claim"),
-        ("manifest-display-reason", "display claim"),
         ("not-measured-status", "status.*disagrees with its detail"),
         ("geometry-configurations", "canonical order"),
         ("geometry-zero-samples", "sample_count is zero"),
@@ -4104,7 +4017,6 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
         "manifest-page-denominator": lambda m: m["claims"]["page_census"].update(
             denominator="other"
         ),
-        "manifest-display-reason": lambda m: m["claims"]["display"].update(reason="approved"),
         "not-measured-status": lambda m: _entry(m["claims"]["not_measured"], "perlector-pass-c")[
             "detail"
         ].update(pages_audit_not_run=0),

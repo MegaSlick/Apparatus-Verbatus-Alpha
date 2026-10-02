@@ -41,7 +41,6 @@ from coniector_layer import (
     text_bundle_placements,
     verify_row,
 )
-from display import DISPLAY_CONVENTION, render_display, strip_display
 from operator_layer import LABEL_LINE as OPERATOR_LABEL_LINE
 from operator_layer import (
     MODEL_READING_SCHEMA,
@@ -288,11 +287,6 @@ _CONTAINER_GRANULARITY_LIMIT: Final = (
 )
 _ACT_PARTITION_DENOMINATOR: Final = "page-read reading acts"
 _PAGE_CENSUS_DENOMINATOR: Final = "run.json source-page/frame rows"
-_DISPLAY_REASON: Final = (
-    "the rendering is not fed this package's canonical uncertainty layer, which travels "
-    "beside each literal instead; no span-marking convention has been chosen for "
-    "displayed readings"
-)
 _COMPLETED_CATEGORIES: Final = frozenset(
     {
         ArmariumCategory.DELIVERED.value,
@@ -700,7 +694,6 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_retained_references_bounded(sources)
     _verify_manifest_source_counts(manifest, sources)
     _verify_pixel_claims(manifest, formats, sources)
-    _verify_display_claim(manifest)
     _verify_retained_run_claim(manifest)
     _verify_canonical_text_claim(manifest)
     _verify_annotations_claims(manifest)
@@ -1022,7 +1015,6 @@ _MANIFEST_CLAIM_FIELDS: Final = frozenset(
         "semantic_annotations",
         "transcription_annotations",
         "uncertainty",
-        "display",
         "ink_map",
         "not_measured",
         "other_readings",
@@ -1046,16 +1038,6 @@ _CLAIM_SUBFIELDS: Final = {
     "page_census": frozenset({"denominator", "counted", "status"}),
     "ink_map": frozenset({"denominator", "held_pages", "unmeasurable_pages"}),
     "pixels": frozenset({"embedded", "resolution_claim"}),
-    "display": frozenset(
-        {
-            "convention",
-            "status",
-            "alters_stored_text",
-            "renders_canonical_uncertainty",
-            "exercised_against_real_spans",
-            "reason",
-        }
-    ),
 }
 
 
@@ -3120,11 +3102,6 @@ def _text_bundle_members(
                     json.dumps(
                         act["transcription_annotations"], ensure_ascii=False, sort_keys=True
                     ),
-                    # Beside the canonical field, never instead of it: the verifier
-                    # strips it back and requires the canonical text exactly.
-                    f"display_convention: {DISPLAY_CONVENTION}",
-                    "display:",
-                    json.dumps(render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False),
                     *notes.get(act["act_id"], []),
                     *(
                         lines_for(released[act["act_id"]], models.get(act["act_id"]))
@@ -3848,11 +3825,7 @@ def _text_bundle_records(
                 pending_annotations = _decode_json(
                     lines[index + 1], "a text-bundle transcription annotation layer is not JSON"
                 )
-            elif line == "display:":
-                # Stripping the display must return the canonical text exactly, so
-                # display markup never enters the hashed text.
-                if current_id is None or pending is None or index + 1 >= len(lines):
-                    raise SchemaRefusal("a text-bundle display has no literal to render")
+                # The section's last field completes its record.
                 if pending_uncertainty is None:
                     raise SchemaRefusal(
                         "a text-bundle section carries a literal with no uncertainty layer"
@@ -3871,20 +3844,6 @@ def _text_bundle_records(
                     pending[0],
                     subject="text-bundle section",
                 )
-                convention_line = lines[index - 1] if index else ""
-                if convention_line != f"display_convention: {DISPLAY_CONVENTION}":
-                    raise SchemaRefusal("a text-bundle display names no known convention")
-                rendered = _decode_json(lines[index + 1], "a text-bundle display is not JSON")
-                try:
-                    stripped = strip_display(rendered) if isinstance(rendered, str) else None
-                except ValueError as error:
-                    raise SchemaRefusal(
-                        "a text-bundle display is not a renderable display convention"
-                    ) from error
-                if stripped != pending[0]:
-                    raise SchemaRefusal(
-                        "a text-bundle display does not strip back to its canonical clean text"
-                    )
                 citation_folders = sorted(
                     {_source_folder_for_declared_path(path) for path, _digest in citations}
                 )
@@ -4481,17 +4440,6 @@ def _export_manifest(
             },
             "transcription_annotations": _transcription_annotations_claim(formats.formats),
             "uncertainty": _uncertainty_claim(formats.formats),
-            # A proposal: the display convention is the project lead's choice, and
-            # nothing hashed depends on it. The rendering does not show uncertainty;
-            # the `uncertainty:` field beside each literal carries it.
-            "display": {
-                "convention": DISPLAY_CONVENTION,
-                "status": "proposed-not-yet-chosen",
-                "alters_stored_text": False,
-                "renders_canonical_uncertainty": False,
-                "exercised_against_real_spans": False,
-                "reason": _DISPLAY_REASON,
-            },
             "not_measured": _not_measured_claim(projection),
             "other_readings": _other_readings_claim(other_outcomes, formats.formats),
             "page_accounting": _page_accounting_claim(
@@ -5830,21 +5778,6 @@ def _verify_pixel_claims(
             raise SchemaRefusal(
                 "a package source citation disagrees with its selected pixel-embedding setting"
             )
-
-
-def _verify_display_claim(manifest: dict[str, Any]) -> None:
-    """A rendering may be proposed; it may not be presented as settled or as text."""
-    display = _manifest_claim(manifest, "display")
-    if (
-        not isinstance(display, dict)
-        or display.get("convention") != DISPLAY_CONVENTION
-        or display.get("status") != "proposed-not-yet-chosen"
-        or display.get("alters_stored_text") is not False
-        or display.get("renders_canonical_uncertainty") is not False
-        or display.get("exercised_against_real_spans") is not False
-        or display.get("reason") != _DISPLAY_REASON
-    ):
-        raise SchemaRefusal("the package display claim is not the verified claim")
 
 
 def _verify_retained_run_claim(manifest: dict[str, Any]) -> None:
