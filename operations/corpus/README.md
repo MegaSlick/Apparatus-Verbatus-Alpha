@@ -20,7 +20,8 @@ transcribes anything and never adjudicates anything; every human-custody act sta
 - `record_url.py` — parses each row's `record_url` (a IIIF Image API 2 crop) into
   `{identifier, region, rotation}`, refusing any host, size, rotation, quality, or
   format it does not recognise by name rather than normalising it.
-- `cache.py` — `write_new_file`, the atomic create-only write every report here uses.
+- `cache.py` — `write_new_file`, the atomic create-only write the evaluation reports
+  and fetch-run's canary verdict use.
 - `normalization.py`, `scoring.py` — the `graphemic-v1` comparison form and the
   CER/WER scorer every evaluation here uses.
 - `reference.py`, `compare.py` — the reference-record family and the

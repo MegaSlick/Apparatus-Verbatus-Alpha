@@ -20,10 +20,10 @@ dependencies = [
     # jiwer's wer()/cer() bundle their own tokenization and transform pipeline, and
     # what they normalize by default was not something either lane could confirm
     # from the documentation in one reading. The framework owns every normalization
-    # decision instead, explicitly and tested. See operations/spike_perlector.
+    # decision instead, explicitly and tested. See operations/corpus/scoring.py.
     "rapidfuzz==3.14.5",
     # UAX #29 extended grapheme clusters for Spec 05 CER after explicit NFC text
-    # normalization; see operations/spike_perlector/README.md (MIT licence).
+    # normalization; see operations/corpus/normalization.py (MIT licence).
     "uniseg==0.10.1",
     # Maintained Apache-2.0 AWS SDK used only for RunPod's documented
     # S3-compatible network-volume upload path.
