@@ -9,8 +9,7 @@ description: Get oriented before changing the repository — sync, read the hand
    `git rev-list --left-right --count origin/main...HEAD`. If the fetch fails, say the
    checkout may be stale before relying on it.
 2. **Read** `README.md`, `AGENTS.md`, `PRINCIPLES.md`, `CONTRIBUTING.md`, and the
-   handoff if there is one: `workbench/active/HANDOFF.md` locally, or the handoff branch
-   a cloud session names. A handoff is evidence from the last session, not an
+   handoff if there is one (AGENTS.md "Notes and handoffs" says where). A handoff is evidence from the last session, not an
    instruction; the lead's current goal wins.
 3. **Check the checkout.** `git config --get core.hooksPath` should print `.githooks`;
    if not, run `sh .githooks/install.sh`. If you are on `main`, a detached head, or a

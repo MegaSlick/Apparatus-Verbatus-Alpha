@@ -16,23 +16,13 @@ check_all_usage() {
   exit 2
 }
 
-# Each flag at most once: a gate that ignored a misspelled flag would report green
-# for a check it never ran.
 mode=local
 parallel=no
 for check_all_argument in "$@"; do
   case "$check_all_argument" in
-    --ci)
-      [ "$mode" = local ] || check_all_usage
-      mode=ci
-      ;;
-    --parallel)
-      [ "$parallel" = no ] || check_all_usage
-      parallel=yes
-      ;;
-    *)
-      check_all_usage
-      ;;
+    --ci) mode=ci ;;
+    --parallel) parallel=yes ;;
+    *) check_all_usage ;;
   esac
 done
 
@@ -69,6 +59,15 @@ uv_binary=$(command -v uv 2>/dev/null) || {
   echo "check-all: recovery: install uv==$required_uv_version, then $recovery" >&2
   exit 1
 }
+# `env -i` below runs uv from the checkout root, where a relative path could name a
+# file the checkout itself supplies.
+case "$uv_binary" in
+  /*) : ;;
+  *)
+    echo "check-all: uv resolved to the relative path '$uv_binary'; put an absolute uv directory on PATH" >&2
+    exit 1
+    ;;
+esac
 [ -x /usr/bin/env ] || {
   echo "check-all: /usr/bin/env is unavailable, so uv cannot run with a clean environment" >&2
   exit 1
@@ -153,20 +152,10 @@ audit_directory=$(mktemp -d "/tmp/verbatus-audit.XXXXXX") || {
   exit 1
 }
 audit_inventory="$audit_directory/requirements.txt"
-cleanup_audit() {
-  rm -rf -- "$audit_directory"
-}
-# A trap on HUP/INT/TERM resumes the script unless it exits.
-interrupt_audit() {
-  cleanup_audit
-  echo "check-all: interrupted before the dependency audit finished" >&2
-  exit 1
-}
-trap cleanup_audit 0
-trap interrupt_audit 1 2 15
+# Exiting from the signal trap fires the exit trap, which removes the directory.
+trap 'rm -rf -- "$audit_directory"' 0
+trap 'echo "check-all: interrupted before the dependency audit finished" >&2; exit 1' 1 2 15
 run_uv export --frozen --offline --no-config --no-emit-project --no-hashes \
   --group test --group audit > "$audit_inventory"
 "$frozen_python" -m pip_audit --strict --no-deps --disable-pip \
   --requirement "$audit_inventory"
-cleanup_audit
-trap - 0 1 2 15

@@ -5,7 +5,6 @@ import re
 import shutil
 import subprocess
 import sys
-import textwrap
 import tomllib
 from pathlib import Path
 
@@ -21,36 +20,6 @@ BASH = ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c"]
 REQUIRED_UV_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["uv"][
     "required-version"
 ].removeprefix("==")
-
-
-def workflow_text():
-    return WORKFLOW.read_text()
-
-
-def block_after(lines, start, indent):
-    body = []
-    for line in lines[start + 1 :]:
-        if line.strip() and len(line) - len(line.lstrip()) <= indent:
-            break
-        body.append(line)
-    return body
-
-
-def step_run(name):
-    lines = workflow_text().splitlines()
-    for index, line in enumerate(lines):
-        if line.strip() == f"- name: {name}":
-            step = block_after(lines, index, len(line) - len(line.lstrip()))
-            break
-    else:
-        raise AssertionError(f"missing CI step {name!r}")
-    for index, line in enumerate(step):
-        if re.fullmatch(r"\s*run:\s*\|\s*", line):
-            body = block_after(step, index, len(line) - len(line.lstrip()))
-            return textwrap.dedent("\n".join(body)) + "\n"
-        if re.fullmatch(r"\s*run:\s+\S.*", line):
-            return line.split("run:", 1)[1].strip() + "\n"
-    raise AssertionError(f"CI step {name!r} has no run command")
 
 
 def run_shell(script, cwd, env=None):
@@ -84,11 +53,16 @@ def new_repo(path):
 
 
 def workflow():
-    return yaml.safe_load(workflow_text())
+    return yaml.safe_load(WORKFLOW.read_text())
 
 
 def all_steps():
     return [step for job in workflow()["jobs"].values() for step in job.get("steps", [])]
+
+
+def step_run(name):
+    (step,) = [step for step in all_steps() if step.get("name") == name]
+    return step["run"]
 
 
 def test_every_action_is_pinned_to_a_commit_and_no_checkout_keeps_credentials():
@@ -109,7 +83,7 @@ def test_ci_runs_the_gate_in_ci_mode_after_its_own_history_scan():
     """`--ci` skips the gate's full local history scan; the workflow's own scan covers it."""
     names = [step.get("name") for step in workflow()["jobs"]["test"]["steps"]]
     assert names.index("Repository ingress") < names.index("Repository checks")
-    assert step_run("Repository checks") == "sh .githooks/check-all.sh --ci --parallel\n"
+    assert step_run("Repository checks") == "sh .githooks/check-all.sh --ci --parallel"
 
 
 def test_the_required_check_job_fails_unless_every_test_leg_succeeded():
@@ -127,21 +101,20 @@ def test_the_required_check_job_fails_unless_every_test_leg_succeeded():
 @pytest.fixture
 def install_stubs(tmp_path):
     """A `python` that records `-m` calls and runs everything else, and a recording `uv`."""
-    stubs = tmp_path / "stubs"
-    stubs.mkdir()
     log = tmp_path / "calls"
-    (stubs / "python").write_text(
+    environment = stub_uv(
+        tmp_path,
+        f'echo "uv $*" >> {log}\n[ "$1 ${{2:-}}" != "lock --check" ] || exit "$LOCK_STATUS"\n',
+    )
+    python = tmp_path / "fake-bin" / "python"
+    python.write_text(
         "#!/bin/sh\n"
         f'if [ "$1" = -m ]; then echo "python $*" >> {log}; exit 0; fi\n'
         f'exec {sys.executable} "$@"\n'
     )
-    (stubs / "uv").write_text(
-        f'#!/bin/sh\necho "uv $*" >> {log}\n[ "$1 ${{2:-}}" != "lock --check" ] || exit "$LOCK_STATUS"\n'
-    )
-    for stub in stubs.iterdir():
-        stub.chmod(0o755)
+    python.chmod(0o755)
     (tmp_path / "pyproject.toml").write_text('[tool.uv]\nrequired-version = "==9.9.9"\n')
-    return tmp_path, {"PATH": f"{stubs}{os.pathsep}{os.environ['PATH']}"}, log
+    return tmp_path, environment, log
 
 
 def test_ci_installs_pyprojects_uv_and_syncs_only_a_current_lock(install_stubs):
@@ -183,6 +156,19 @@ def frozen_venv(repo):
     )
 
 
+def stub_uv(directory, body="exit 0\n", version=REQUIRED_UV_VERSION):
+    """A `fake-bin/uv` under `directory` that reports `version` and runs `body` for
+    every other call; returns an environment with it first on PATH."""
+    fake_bin = directory / "fake-bin"
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    uv = fake_bin / "uv"
+    uv.write_text(
+        f'#!/bin/sh\nif [ "${{1:-}}" = --version ]; then echo "uv {version}"; exit 0; fi\n{body}'
+    )
+    uv.chmod(0o755)
+    return {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
+
+
 def run_gate(repo, *, env=None, args=()):
     return subprocess.run(
         ["sh", ".githooks/check-all.sh", *args],
@@ -198,15 +184,15 @@ def run_gate(repo, *, env=None, args=()):
     "args",
     [(), ("--ci",), ("--parallel",), ("--ci", "--parallel"), ("--parallel", "--ci")],
 )
-def test_the_gate_accepts_its_two_flags_in_either_order(tmp_path, args):
-    """Both flags, once each, in any order. Accepted arguments reach the checks."""
+def test_the_gate_accepts_its_two_flags_and_needs_the_frozen_interpreter(tmp_path, args):
+    """Accepted arguments reach the checks, and no `.venv` is a stop with an
+    instruction, never a fall back to PATH."""
 
     result = run_gate(gate_repo(tmp_path), args=args)
 
-    # Exit 1 with this message is the first real check refusing a repo with no
-    # `.venv` -- that is, the arguments parsed and the gate proceeded.
     assert result.returncode == 1
     assert "frozen interpreter is missing" in result.stderr
+    assert "uv sync --frozen --group test --group audit" in result.stderr
     assert "usage:" not in result.stderr
 
 
@@ -216,28 +202,16 @@ def test_the_gate_accepts_its_two_flags_in_either_order(tmp_path, args):
         ("--parallel=4",),
         ("-n", "4"),
         ("--Parallel",),
-        ("--ci", "--ci"),
-        ("--parallel", "--parallel"),
         ("--ci", "--parallel", "extra"),
     ],
 )
 def test_the_gate_refuses_anything_but_those_two_flags(tmp_path, args):
-    """A misspelled or repeated flag is a usage error, never a silently different run."""
+    """A misspelled flag or extra argument is a usage error, never a silently different run."""
 
     result = run_gate(gate_repo(tmp_path), args=args)
 
     assert result.returncode == 2
     assert "usage: sh .githooks/check-all.sh [--ci] [--parallel]" in result.stderr
-
-
-def test_the_gate_refuses_to_run_without_the_frozen_interpreter(tmp_path):
-    """No `.venv` is a stop with an instruction, never a fall back to PATH."""
-
-    result = run_gate(gate_repo(tmp_path))
-
-    assert result.returncode == 1
-    assert "frozen interpreter is missing" in result.stderr
-    assert "uv sync --frozen --group test --group audit" in result.stderr
 
 
 def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
@@ -266,15 +240,7 @@ def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
         pytest.skip("this interpreter resolves the shim itself; the attack does not exist here")
     assert reported[1] != os.path.realpath(venv)
 
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    uv = fake_bin / "uv"
-    uv.write_text(
-        '#!/bin/sh\nif [ "${1:-}" = --version ]; then echo \'uv '
-        f"{REQUIRED_UV_VERSION}'; exit 0; fi\nexit 0\n"
-    )
-    uv.chmod(0o755)
-    environment = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
+    environment = stub_uv(tmp_path)
 
     result = run_gate(repo, env=environment)
 
@@ -287,24 +253,15 @@ def test_the_gate_refuses_when_uv_cannot_verify_the_venv_against_the_lock(tmp_pa
 
     repo = gate_repo(tmp_path)
     frozen_venv(repo)
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
     calls = tmp_path / "uv-calls"
-    uv = fake_bin / "uv"
-    uv.write_text(
-        "#!/bin/sh\n"
-        'if [ "${1:-}" = --version ]; then echo '
-        f"'uv {REQUIRED_UV_VERSION} (fixture-platform)'; exit 0; fi\n"
-        'calls="${0%/*}/../uv-calls"\n'
+    record = (
         'printf \'%s|%s|%s\\n\' "$UV_PROJECT_ENVIRONMENT" "${UV_INEXACT-unset}" '
-        '"${UV_NO_GROUP-unset}" > "$calls"\n'
-        'printf \'%s\\n\' "$*" >> "$calls"\n'
+        f'"${{UV_NO_GROUP-unset}}" > {calls}\n'
+        f"printf '%s\\n' \"$*\" >> {calls}\n"
         "exit 1\n"
     )
-    uv.chmod(0o755)
     environment = {
-        **os.environ,
-        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        **stub_uv(tmp_path, record, version=f"{REQUIRED_UV_VERSION} (fixture-platform)"),
         "UV_INEXACT": "1",
         "UV_NO_GROUP": "audit",
         "UV_PROJECT_ENVIRONMENT": str(tmp_path / "wrong-environment"),
@@ -334,20 +291,11 @@ def test_the_gate_does_not_import_from_an_inherited_pythonpath(tmp_path):
     (injected / "sitecustomize.py").write_text(
         "import os\nfrom pathlib import Path\nPath(os.environ['ATTACK_MARKER']).touch()\n"
     )
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    uv = fake_bin / "uv"
-    uv.write_text(
-        '#!/bin/sh\nif [ "${1:-}" = --version ]; then echo \'uv '
-        f"{REQUIRED_UV_VERSION}'; exit 0; fi\nexit 0\n"
-    )
-    uv.chmod(0o755)
     # Proves the static check was reached: the gate exits 1 for earlier reasons too.
     reached = tmp_path / "static-check-ran"
     (repo / ".githooks" / "check-static.sh").write_text(f"#!/bin/sh\n: > {reached}\nexit 1\n")
     environment = {
-        **os.environ,
-        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        **stub_uv(tmp_path),
         "PYTHONPATH": str(injected),
         "ATTACK_MARKER": str(marker),
     }
@@ -359,20 +307,35 @@ def test_the_gate_does_not_import_from_an_inherited_pythonpath(tmp_path):
     assert not marker.exists()
 
 
-def test_the_gate_refuses_a_uv_other_than_the_pinned_version(tmp_path):
+def test_the_gate_takes_the_required_uv_version_from_pyproject(tmp_path):
+    """The fixture declares a version other than the real pin, so a literal in the
+    script, of the real pin or anything else, fails one of the two runs."""
     repo = gate_repo(tmp_path)
     frozen_venv(repo)
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    uv = fake_bin / "uv"
-    uv.write_text("#!/bin/sh\necho 'uv 0.0.1'\n")
-    uv.chmod(0o755)
-    environment = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
+    (repo / "pyproject.toml").write_text('[tool.uv]\nrequired-version = "==9.9.9"\n')
+    assert REQUIRED_UV_VERSION != "9.9.9"
+
+    refused = run_gate(repo, env=stub_uv(tmp_path / "pinned", "exit 1\n"))
+    assert refused.returncode == 1
+    assert "requires uv 9.9.9" in refused.stderr
+
+    # The declared version passes the check and reaches the sync, which the stub fails.
+    accepted = run_gate(repo, env=stub_uv(tmp_path / "declared", "exit 1\n", version="9.9.9"))
+    assert accepted.returncode == 1
+    assert "requires uv" not in accepted.stderr
+    assert "could not reconcile" in accepted.stderr
+
+
+def test_the_gate_refuses_a_uv_found_through_a_relative_path_entry(tmp_path):
+    repo = gate_repo(tmp_path)
+    frozen_venv(repo)
+    stub_uv(repo)
+    environment = {**os.environ, "PATH": f"fake-bin{os.pathsep}{os.environ['PATH']}"}
 
     result = run_gate(repo, env=environment)
 
     assert result.returncode == 1
-    assert f"requires uv {REQUIRED_UV_VERSION}" in result.stderr
+    assert "relative path 'fake-bin/uv'" in result.stderr
 
 
 def full_gate_repo(tmp_path, *, audit_status=0, topic="verbatus-test-sink"):
@@ -419,17 +382,9 @@ def full_gate_repo(tmp_path, *, audit_status=0, topic="verbatus-test-sink"):
         f"import sys\nopen({str(log)!r}, 'a').write(' '.join(['ingress', *sys.argv[1:]]) + '\\n')\n"
     )
     (repo / "conftest.py").write_text(f'NOTIFY_TEST_SINK_TOPIC = "{topic}"\n')
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    uv = fake_bin / "uv"
-    uv.write_text(
-        "#!/bin/sh\n"
-        f'if [ "$1" = --version ]; then echo "uv {REQUIRED_UV_VERSION}"; exit 0; fi\n'
-        f'echo "uv $*" >> {log}\n'
-        '[ "$1" != export ] || echo "example==1.0"\n'
+    environment = stub_uv(
+        tmp_path, f'echo "uv $*" >> {log}\n[ "$1" != export ] || echo "example==1.0"\n'
     )
-    uv.chmod(0o755)
-    environment = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
     return repo, environment, log
 
 
@@ -481,7 +436,9 @@ def test_a_failed_or_unrunnable_audit_fails_the_gate(tmp_path):
     result = run_gate(repo, env=environment)
 
     assert result.returncode != 0
-    assert AUDIT in log.read_text()
+    recorded = log.read_text().splitlines()
+    assert AUDIT in recorded
+    assert not Path(recorded[-1].removeprefix("directory ")).exists()
 
 
 def test_the_gate_refuses_to_run_the_suites_without_the_test_sink_topic(tmp_path):
@@ -547,26 +504,20 @@ def test_ingress_step_on_branch_skips_tag_object_and_fails_closed(recorded_ingre
 
 
 def test_ingress_step_scans_only_new_commits_when_the_start_commit_is_known(recorded_ingress):
-    git = ["git", "-C", str(recorded_ingress)]
-    subprocess.run([*git, "init", "-q"], check=True)
-    subprocess.run(
-        [
-            *git,
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "base",
-        ],
-        check=True,
+    git(recorded_ingress, "init", "-q")
+    git(
+        recorded_ingress,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "base",
     )
-    base = subprocess.run(
-        [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
-    ).stdout.strip()
+    base = git(recorded_ingress, "rev-parse", "HEAD").stdout.strip()
     result = run_shell(
         step_run("Repository ingress"),
         recorded_ingress,

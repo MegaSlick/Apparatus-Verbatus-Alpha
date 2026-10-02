@@ -358,22 +358,16 @@ def test_fixture_images_are_binary_at_any_depth(tmp_path):
     assert reported.stdout.strip().endswith("text: unset"), reported.stdout
 
 
-def failing_command_env(path, name):
-    """A PATH whose first entry is one command that only ever fails."""
-    stubs = path / f"stub-{name}"
-    stubs.mkdir()
-    stub = stubs / name
-    stub.write_text("#!/bin/sh\nexit 1\n")
-    stub.chmod(0o755)
-    return {"PATH": f"{stubs}:{os.environ['PATH']}"}
-
-
 def test_install_does_not_configure_hooks_when_chmod_fails(tmp_path):
     # A hooksPath at files git cannot execute would report installed and run no hook.
     repo = init_repo(tmp_path / "repo")
     shutil.copytree(HOOKS, repo / ".githooks")
     git(repo, "config", "core.hooksPath", "previous-hooks")
-    result = run_hook(repo, "install.sh", env=failing_command_env(tmp_path, "chmod"))
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    (stubs / "chmod").write_text("#!/bin/sh\nexit 1\n")
+    (stubs / "chmod").chmod(0o755)
+    result = run_hook(repo, "install.sh", env={"PATH": f"{stubs}:{os.environ['PATH']}"})
     assert result.returncode != 0
     assert "Hooks installed" not in result.stdout
     assert "not usable" in result.stderr

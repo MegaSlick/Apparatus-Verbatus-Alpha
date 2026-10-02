@@ -9,3 +9,7 @@
   before committing to it.
 - Check plan usage at milestones. At 97% of the weekly limit, wind down: run
   `/session-end` so the next session starts from a written handoff.
+- The lead also runs the optional ponytail plugin, installed per user, which nudges
+  code toward the simplest change. `PONYTAIL_SUBAGENT_MATCHER` in the settings keeps it
+  on the writing agents and off the review roles. Where its shortest diff would keep a
+  workaround, AGENTS.md "Building" wins. Without the plugin the setting does nothing.

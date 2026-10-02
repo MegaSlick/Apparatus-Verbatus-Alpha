@@ -30,8 +30,6 @@ dependencies = [
 [project.scripts]
 verbatus = "operations.operator.entry:main"
 
-# Every dependency is pinned exactly.
-
 [build-system]
 requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"

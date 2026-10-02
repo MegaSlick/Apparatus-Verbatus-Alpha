@@ -56,9 +56,10 @@ readable by anyone.
 - **Private vulnerability reporting: on**, so a stranger can report a problem without
   opening a public issue.
 - **The 17 open Dependabot alerts** (13 high, 4 moderate, as of 2026-10-02) need a look.
-  CI's `pip-audit` passes, and it audits only the `test` and `audit` dependency groups,
-  so the alerts most likely sit in the `pod` group (vLLM, torch, transformers), which
-  only runs on a rented GPU machine. Dismiss each with a reason, or plan an update with
+  CI's `pip-audit` passes, and it audits the runtime dependencies plus the `test` and
+  `audit` groups but not the `pod` group, so the alerts most likely sit in the pod group
+  (vLLM, torch, transformers), which only runs on a rented GPU machine. Check each
+  alert's package before deciding. Dismiss each with a reason, or plan an update with
   a paid pod qualification run.
 
 ## 5. Actions (Settings → Actions → General)

@@ -14,10 +14,9 @@ Run this when the lead asks to close, or when plan usage reaches the wind-down p
 2. **Write the handoff**, holding only what the next session cannot cheaply work out:
    branch and distance from `main`, uncommitted work, checks that are not green, state
    outside git (pods, running jobs), decisions and their reasons, real blockers with
-   paths to the evidence, and anything waiting on the lead. Locally it goes in
-   `workbench/active/HANDOFF.md`, after moving the previous one into
-   `workbench/archive/<date>_<topic>/`. A cloud session pushes it on its handoff branch,
-   because the container is discarded.
+   paths to the evidence, and anything waiting on the lead. Put it where AGENTS.md
+   "Notes and handoffs" says, archiving the previous local one in
+   `workbench/archive/<date>_<topic>/`.
 3. **Park.** If the work continues, stay on its branch. If its pull request has merged,
    the tree is clean and the fetch succeeded, move to a fresh branch from `origin/main`.
    Delete the old local branch only if the pull request's head commit equals its tip.
