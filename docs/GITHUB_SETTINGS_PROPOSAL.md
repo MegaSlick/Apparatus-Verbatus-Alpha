@@ -75,11 +75,22 @@ readable by anyone.
   commit).
 - **Workflow permissions**: *Read repository contents* (the workflow already asks for
   no more), and leave *Allow GitHub Actions to create and approve pull requests* off.
-- **Fork pull request workflows**: *Require approval for first-time contributors*.
+- **Fork pull request workflows**: *Require approval for all external contributors*, not
+  only first-timers, so no outsider's code runs in CI until the lead approves it.
 
 ## 6. Apps (Settings → GitHub Apps)
 
-- **CodeRabbit**: keep. It reviews every pull request (configured in `.coderabbit.yaml`).
+- **CodeRabbit**: keep. Once #253 merges, it reviews only pull requests carrying the
+  label `review-ok` (configured in `.coderabbit.yaml`).
+  - Create the label under **Issues → Labels**. Only people with triage or write access
+    can add labels, so outsiders cannot add it themselves.
+  - The lead adds it to an outsider's pull request to allow a review. The lead's own
+    sessions add it to theirs.
+  - Test the lock once: from an account that is not a collaborator, comment
+    `@coderabbitai review` on a test pull request. If a review starts, the comment lock
+    does not cover this personal repository. Then turn off CodeRabbit's chat for this
+    repository in CodeRabbit's own settings (app.coderabbit.ai), or accept the risk:
+    a stranger's comment can then use review allowance.
 - **Claude**: keep while AI sessions push branches and open pull requests.
 - Remove any other installed app that nothing in this repository uses.
 
