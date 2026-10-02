@@ -17,7 +17,7 @@ SCRIPT = Path(__file__).with_name("session_end_pod_check.sh")
 
 HEADER = "ID              NAME    GPU             IMAGE NAME      STATUS"
 RUNNING = "abc123          proof   RTX A5000       runpod/x        RUNNING"
-TOOLS = ("sh", "awk", "sort", "tr", "cat", "find", "mkdir", "dirname")
+TOOLS = ("sh", "awk", "sort", "tr", "cat", "find", "mkdir", "dirname", "sleep", "mktemp", "rm")
 
 
 @pytest.fixture
@@ -41,6 +41,7 @@ def check(tmp_path):
     runpodctl.write_text(
         '#!/bin/sh\n[ "$*" = "get pod" ] || exit 2\n'
         '[ "${FAKE_LIST_FAIL:-}" = yes ] && exit 1\n'
+        '[ "${FAKE_LIST_HANG:-}" = yes ] && exec sleep 60\n'
         f'cat "{listing}"\n'
     )
     runpodctl.chmod(0o755)
@@ -48,8 +49,15 @@ def check(tmp_path):
     home.mkdir()
     marker = home / ".cache" / "verbatus" / "pods-reported"
 
-    def run(output: str, *, installed: bool = True, **extra: str) -> list[str]:
+    def run(
+        output: str, *, installed: bool = True, with_timeout: bool = True, **extra: str
+    ) -> list[str]:
         listing.write_text(output)
+        timeout = tools / "timeout"
+        if with_timeout and not timeout.exists():
+            timeout.symlink_to(shutil.which("timeout"))
+        if not with_timeout and timeout.exists():
+            timeout.unlink()
         path = f"{bin_dir}:{tools}" if installed else str(tools)
         before = sent.read_text().splitlines() if sent.exists() else []
         marked = marker.read_text() if marker.exists() else None
@@ -57,7 +65,7 @@ def check(tmp_path):
         subprocess.run([str(tools / "sh"), str(script)], env=env, check=True, timeout=10)
         # The check runs in the background: wait until its ping is sent and, unless the
         # ping fails, recorded.
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             now = sent.read_text().splitlines() if sent.exists() else []
             recorded = marker.exists() and marker.read_text() != marked
@@ -88,9 +96,29 @@ def test_every_listed_pod_is_reported_with_its_state(check):
     ]
 
 
-@pytest.mark.parametrize("output", ["", HEADER + "\n"])
-def test_no_pod_sends_nothing(check, output):
-    assert check(output) == []
+def test_a_header_with_no_rows_sends_nothing(check):
+    assert check(HEADER + "\n") == []
+
+
+def test_an_empty_listing_is_reported_not_read_as_no_pods(check):
+    sent = check("")
+    assert len(sent) == 1
+    assert "came back empty" in sent[0]
+    assert check.marker.read_text() == "unlisted"
+
+
+@pytest.mark.parametrize("with_timeout", [True, False], ids=["timeout", "background-kill"])
+def test_a_hung_listing_is_stopped_and_reported(check, with_timeout):
+    started = time.monotonic()
+    sent = check(
+        table(RUNNING),
+        with_timeout=with_timeout,
+        FAKE_LIST_HANG="yes",
+        SESSION_END_LIST_SECONDS="1",
+    )
+    assert len(sent) == 1
+    assert "Could not list RunPod pods" in sent[0]
+    assert time.monotonic() - started < 5
 
 
 def test_a_failed_listing_is_reported_not_read_as_no_pods(check):
