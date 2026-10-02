@@ -1,6 +1,6 @@
 """The one byte-led admission route for the Exemplar door.
 
-The door does not keep a list of image formats to reject.  Its configuration says
+The door does not keep a list of image formats to reject.  The route says only
 whether a decoder reads a source as one raster or fans a container into pages.  A
 real file that the installed decoders cannot read is a named pipeline alarm, never
 a policy decision about the submitter's format.
@@ -85,44 +85,25 @@ def reason_code(text: object) -> RefusalReason:
         ) from None
 
 
+# The route of every named format, sealed into a real run's `config_digest`.
 FORMAT_ROUTES: Final = {
     format_name: RENDER_PAGES if format_name in ALWAYS_A_CONTAINER else ADMIT_OR_FAN_OUT
     for format_name in sorted(SNIFFABLE_FORMATS)
 }
 
 
-def load_format_policy() -> dict[str, str]:
-    """Return the complete code-owned routing map.
-
-    No operator choice here: every raster is decoded and fanned out when needed,
-    while PDF is always painted page by page. Deriving the map from the sniffer
-    means a new named format cannot be omitted, and keeping it in code avoids
-    presenting the one legal routing as a configurable decision.
-    """
-    return dict(FORMAT_ROUTES)
-
-
-def classify_detected_format(detected: str | None, policy: dict[str, str]) -> str:
-    """Choose a decoder route, with a generic raster attempt for unknown magic.
+def route_for(detected: str | None) -> str:
+    """The decoder route for a sniffed format; an unknown signature gets a raster attempt.
 
     Pillow supports more formats than the small signature sniffer can responsibly
-    name.  Giving those bytes a generic raster attempt lets a valid installed
-    decoder establish what they are; failing that attempt becomes an explicit
+    name. Giving those bytes a raster attempt lets a valid installed decoder
+    establish what they are; failing that attempt becomes an explicit
     `unrecognized-format` alarm rather than a silent omission.
     """
-    if detected is None:
-        return ADMIT_OR_FAN_OUT
-    try:
-        return policy[detected]
-    except KeyError:
-        # `load_format_policy` prevents this for a shipped policy.  A hand-built
-        # caller policy still never gains a policy refusal path.
-        return ADMIT_OR_FAN_OUT
+    return RENDER_PAGES if detected in ALWAYS_A_CONTAINER else ADMIT_OR_FAN_OUT
 
 
-def inspect_source(
-    data: bytes, *, declared_sha256: str | None, policy: dict[str, str]
-) -> AdmissionOutcome:
+def inspect_source(data: bytes, *, declared_sha256: str | None) -> AdmissionOutcome:
     """Decode one single-raster submitted source and compare its declared digest.
 
     The order below is the contract, and the container check is not first.  Empty
@@ -138,13 +119,12 @@ def inspect_source(
     return _inspect(
         data,
         declared_sha256=declared_sha256,
-        policy=policy,
         byte_limit=MAX_SOURCE_BYTES,
         too_large=too_large_detail(len(data)),
     )
 
 
-def inspect_rendered_page(data: bytes, *, policy: dict[str, str]) -> AdmissionOutcome:
+def inspect_rendered_page(data: bytes) -> AdmissionOutcome:
     """Decode one page the Door rendered, under the rendered-page byte bound.
 
     The same checks as `inspect_source`, except that a rendered page is bounded
@@ -154,7 +134,6 @@ def inspect_rendered_page(data: bytes, *, policy: dict[str, str]) -> AdmissionOu
     return _inspect(
         data,
         declared_sha256=None,
-        policy=policy,
         byte_limit=MAX_RENDERED_PAGE_BYTES,
         too_large=(
             f"the rendered page is {len(data)} bytes, above the "
@@ -167,7 +146,6 @@ def _inspect(
     data: bytes,
     *,
     declared_sha256: str | None,
-    policy: dict[str, str],
     byte_limit: int,
     too_large: str,
 ) -> AdmissionOutcome:
@@ -196,7 +174,7 @@ def _inspect(
             "refused", reason(RefusalReason.TOO_LARGE, too_large), sniff(data), digest, None
         )
     detected = sniff(data)
-    if classify_detected_format(detected, policy) == RENDER_PAGES:
+    if route_for(detected) == RENDER_PAGES:
         raise ValueError(
             f"{detected} is a page container; the door fans it out rather than "
             "admitting it as one image"

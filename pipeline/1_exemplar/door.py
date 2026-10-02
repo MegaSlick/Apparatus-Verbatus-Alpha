@@ -454,7 +454,6 @@ def _refuse_triage_amplification(document: Any, clusters: Any) -> None:
 def decide(
     data: bytes | None,
     source: SourceEntry,
-    policy: dict[str, str],
     pdf_settings: render_config.PdfRenderSettings,
     *,
     source_digest: str | None = None,
@@ -477,7 +476,7 @@ def decide(
     else:
         detected = detected_format or sniff(data)
         whole_digest = source_digest or digest_bytes(data)
-    verdict = admission.classify_detected_format(detected, policy)
+    verdict = admission.route_for(detected)
     if source.declared_sha256 is not None and whole_digest != source.declared_sha256:
         return _refused_for(
             RefusalReason.DIGEST_MISMATCH,
@@ -542,7 +541,7 @@ def decide(
                 },
             },
         }
-        return _rendered_page_decision(page_bytes, policy, rendered_from)
+        return _rendered_page_decision(page_bytes, rendered_from)
 
     if source.container_page_index is None:
         if verdict == admission.RENDER_PAGES:
@@ -553,9 +552,7 @@ def decide(
             )
         if data is None:
             raise ValueError("only a PDF container may be decided without its bytes")
-        result = admission.inspect_source(
-            data, declared_sha256=source.declared_sha256, policy=policy
-        )
+        result = admission.inspect_source(data, declared_sha256=source.declared_sha256)
         return _Decision(
             result.outcome,
             result.reason,
@@ -603,14 +600,12 @@ def decide(
     except FormatRefusal as error:
         return _format_refused(error)
 
-    return _rendered_page_decision(page_bytes, policy, rendered_from)
+    return _rendered_page_decision(page_bytes, rendered_from)
 
 
-def _rendered_page_decision(
-    page_bytes: bytes, policy: dict[str, str], rendered_from: dict[str, Any]
-) -> _Decision:
+def _rendered_page_decision(page_bytes: bytes, rendered_from: dict[str, Any]) -> _Decision:
     """Admit a page the Door rendered, or refuse it in one wording for every renderer."""
-    checked = admission.inspect_rendered_page(page_bytes, policy=policy)
+    checked = admission.inspect_rendered_page(page_bytes)
     if checked.outcome != "admitted":
         # The check's own code stands: a rendered page over its byte bound is
         # too large, not damaged.
@@ -623,7 +618,6 @@ def _rendered_page_decision(
 def expand_sources(
     files: list[dict[str, Any]],
     read_bytes: Callable[[str], bytes],
-    policy: dict[str, str],
     *,
     open_source: Callable[[str], Any] | None = None,
     triage_rows: Mapping[str, dict[str, Any]] | None = None,
@@ -760,7 +754,7 @@ def expand_sources(
                 None, expansion_refusal=admission.reason(RefusalReason.UNREADABLE, str(error))
             )
             continue
-        route = admission.classify_detected_format(detected, policy)
+        route = admission.route_for(detected)
         if data is not None and len(data) > MAX_SOURCE_BYTES:
             append_declared_pages(detected)
             continue
@@ -957,7 +951,6 @@ def process_sources(
     sources: list[SourceEntry],
     read_bytes: Callable[[str], bytes],
     *,
-    policy: dict[str, str],
     pdf_settings: render_config.PdfRenderSettings,
     open_source: Callable[[str], Any] | None = None,
 ) -> int:
@@ -1071,14 +1064,13 @@ def process_sources(
                     decision = decide(
                         None,
                         source,
-                        policy,
                         pdf_settings,
                         source_digest=actual_digest,
                         detected_format="pdf",
                         opened_pdf=opened_pdf,
                     )
             else:
-                decision = decide(data, source, policy, pdf_settings, source_digest=actual_digest)
+                decision = decide(data, source, pdf_settings, source_digest=actual_digest)
 
             if decision.outcome == "refused":
                 _publish(context, source, outcome="refused", reason=decision.reason)
@@ -1683,7 +1675,6 @@ def fixture_submission(args, registry) -> int:
     fixture = load_fixture(str(fixture_root))
     pages = fixture_pages_for_scenario(fixture, args.scenario)
     declared = declared_digests(fixture, args.scenario)
-    policy = admission.load_format_policy()
     pdf_render_binding = _load_pdf_render_binding(args)
     pdf_settings = pdf_render_binding.settings
     bindings = run_config_bindings(
@@ -1741,7 +1732,6 @@ def fixture_submission(args, registry) -> int:
         tree,
         sources,
         lambda declared_path: (fixture_root / declared_path).read_bytes(),
-        policy=policy,
         pdf_settings=pdf_settings,
     )
     return _finish_door_run(context, admitted)
@@ -1836,7 +1826,6 @@ def real_submission(args, registry) -> int:
         else (None, None, {})
     )
 
-    format_policy = admission.load_format_policy()
     pdf_render_binding = _load_pdf_render_binding(args)
     pdf_settings = pdf_render_binding.settings
     # Inventory keeps no source bodies; later reads reopen by directory
@@ -1880,7 +1869,6 @@ def real_submission(args, registry) -> int:
         registry.config,
         args,
         ledger,
-        format_policy,
         pdf_settings,
         pdf_render_config_sha256=pdf_render_binding.config_sha256,
         data_handling_config_sha256=data_policy_binding.config_sha256,
@@ -1901,7 +1889,6 @@ def real_submission(args, registry) -> int:
             for source in ledger["files"]
         ],
         read_bytes,
-        format_policy,
         open_source=open_source,
         triage_rows=triage_rows,
         triage_clusters=triage_clusters,
@@ -1919,7 +1906,6 @@ def real_submission(args, registry) -> int:
                 for source in canary_ledger["files"]
             ],
             read_bytes,
-            format_policy,
             open_source=open_source,
         )
         canary_sources = [
@@ -1959,7 +1945,6 @@ def real_submission(args, registry) -> int:
             tree,
             ledger_sources,
             read_bytes,
-            policy=format_policy,
             pdf_settings=pdf_settings,
             open_source=open_source,
         )
@@ -2024,7 +2009,6 @@ def _real_bindings(
     models,
     args,
     ledger: dict[str, Any],
-    format_policy,
     pdf_settings: render_config.PdfRenderSettings,
     *,
     pdf_render_config_sha256: str,
@@ -2067,7 +2051,7 @@ def _real_bindings(
             ],
             "submission_ledger_sha256": ledger["self_hash"],
             **({"canary_ledger_sha256": canary_ledger["self_hash"]} if canary_ledger else {}),
-            "format_policy": format_policy,
+            "format_policy": dict(admission.FORMAT_ROUTES),
             "pdf_render_config_sha256": pdf_render_config_sha256,
             "data_handling_policy_sha256": data_handling_config_sha256,
             "door_execution_recipe": _door_execution_recipe(pdf_settings),

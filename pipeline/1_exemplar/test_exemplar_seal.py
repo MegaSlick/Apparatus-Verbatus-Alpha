@@ -123,7 +123,6 @@ def build_door_run(
     register_bytes: bytes | None = None,
 ):
     """A run tree with the real door's admissions already published into it."""
-    from admission import load_format_policy
 
     files = dict(PAGES | REFUSED) if files is None else files
     bindings = sealed_bindings()
@@ -169,7 +168,6 @@ def build_door_run(
         tree,
         sources,
         lambda path: files[path],
-        policy=load_format_policy(),
         pdf_settings=PDF_SETTINGS,
     )
     context.seal_boundary()
@@ -193,7 +191,6 @@ def build_refused_real_door_run(
     `stage-seal` is written -- exactly what a Door refused by
     `require_no_duplicate_sources` or `require_some_admitted` leaves behind.
     """
-    from admission import load_format_policy
 
     files = dict(PAGES) if files is None else files
     bindings = sealed_bindings() | real_sealed_bindings()
@@ -237,7 +234,6 @@ def build_refused_real_door_run(
         tree,
         sources,
         lambda path: files[path],
-        policy=load_format_policy(),
         pdf_settings=PDF_SETTINGS,
     )
     return tree, files
@@ -281,7 +277,6 @@ def _sealed_spread_run(tmp_path):
     sources = door.expand_sources(
         [{"relative_path": "spread.jpg", "sha256": digest}],
         lambda _path: master,
-        door.admission.load_format_policy(),
         triage_rows={digest: row},
     )
     assert [(source.ordinal, source.container_page_index) for source in sources] == [(1, 0), (2, 1)]
@@ -379,7 +374,6 @@ def test_a_noop_derivative_and_its_master_share_one_content_address(tmp_path):
     sources = door.expand_sources(
         [{"relative_path": "page.png", "sha256": digest}],
         lambda _path: master,
-        door.admission.load_format_policy(),
         triage_rows={digest: row},
     )
 
@@ -437,7 +431,6 @@ def test_a_derivative_naming_a_master_other_than_its_submitted_row_refuses(tmp_p
     sources = door.expand_sources(
         [{"relative_path": "page.png", "sha256": digest}],
         lambda _path: master,
-        door.admission.load_format_policy(),
         triage_rows={digest: row},
     )
     tree, _ = build_door_run(tmp_path / "runs", files={"page.png": master}, sources=sources)
@@ -503,7 +496,6 @@ def test_exemplar_rederives_a_derivative_recipe_before_sealing_it(tmp_path, rebi
     sources = door.expand_sources(
         [{"relative_path": "page.png", "sha256": digest}],
         lambda _path: master,
-        door.admission.load_format_policy(),
         triage_rows={digest: row},
     )
     tree, _ = build_door_run(tmp_path / "runs", files={"page.png": master}, sources=sources)
@@ -801,7 +793,6 @@ def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path)
     `finish` normally -- this is `build_door_run` with `real_ingress_record`
     substituted for the synthetic-fixture ingress it takes by default.
     """
-    from admission import load_format_policy
 
     files = dict(PAGES)
     bindings = sealed_bindings() | real_sealed_bindings()
@@ -854,7 +845,6 @@ def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path)
         tree,
         sources,
         lambda path: files[path],
-        policy=load_format_policy(),
         pdf_settings=PDF_SETTINGS,
     )
     context.seal_boundary()
@@ -869,7 +859,6 @@ def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path)
 def test_the_exemplar_seals_nothing_when_only_canary_pages_were_admitted(tmp_path):
     """Canary pages are controls: a run whose real submission was wholly refused
     has no page to seal, however many canaries admitted beside it."""
-    from admission import load_format_policy
 
     real = {"real.png": b"not an image"}
     canary = {"bird.png": png(3, 2)}
@@ -932,7 +921,6 @@ def test_the_exemplar_seals_nothing_when_only_canary_pages_were_admitted(tmp_pat
             tree,
             sources,
             lambda path: files[path],
-            policy=load_format_policy(),
             pdf_settings=PDF_SETTINGS,
         )
         == 1
