@@ -73,10 +73,11 @@ after Surya has finished, so one model is resident at a time; a resumed pass
 reuses the `secondary-provenance` it already sealed. Every sealed page is asked
 once.
 
-**What the detector is shown.** The sealed page as 8-bit RGB: an 8-bit page
-converted as `Image.convert("RGB")` converts it, a 16-bit page first scaled to
-8 bits by the display conversion its record crops take, and an `I` or `F` page
-refused by name (`detector.convert_page_to_rgb`).
+**What the detector is shown.** The sealed page as 8-bit RGB: a page in a mode
+a sealed crop can arrive in converted as `Image.convert("RGB")` converts it;
+every other mode first takes the display conversion its record crops take (a
+16-bit scan scaled to 8 bits), then RGB; an `I` or `F` page, which has no
+display conversion, refused by name (`detector.convert_page_to_rgb`).
 
 **The raw output.** One retained blob per page, schema
 `record-detector-output.v1`: the page, the run facts (engine, repository,

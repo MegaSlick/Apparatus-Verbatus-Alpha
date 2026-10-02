@@ -22,7 +22,9 @@
 #   a context: that would trade a visible refusal for an unmeasured misreading.
 #
 # `max_model_len`: what a dense page needs. Chandra 18,000 (the vendor's own
-#   launch). Churro 32,768 at every tier: 5,120 image + 27 prompt + the vendor's
+#   launch); 20,480 at generic-80gb-plus, where a measured page used 6,731
+#   prompt tokens and Chandra's declared 12,384-token answer bound must still
+#   fit (19,115). Churro 32,768 at every tier: 5,120 image + 27 prompt + the vendor's
 #   25,000-token answer bound (`DEFAULT_OCR_MAX_TOKENS`, churro v0.3.0) =
 #   30,147; one such sequence is about 1.1 GiB of KV on this model. DAI 8,192
 #   (a 1,500 x 2,500 record is about 4,800 image tokens; a taller one is refused

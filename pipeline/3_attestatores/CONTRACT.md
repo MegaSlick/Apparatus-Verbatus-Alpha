@@ -66,7 +66,8 @@ passed over, and prints nothing on a real run.
 
 **Order.** One chair is resident at a time: for each chair with pages left, its
 client is entered once and its pages are read in order, then it is stopped.
-Chandra and Churro are asked once per page; DAI once per record its own detector
+Churro is asked once per page, Chandra once per page plus its vendor retry loop
+(below), and DAI once per record its own detector
 found on the page. Preflight consults no chair and writes nothing.
 
 **Resume.** A page record already sealed at this ordinal is kept and its page is
@@ -111,9 +112,12 @@ only non-sampling fields (DAI's second EOS id as `stop_token_ids`, Chandra's
 each vendor's carried generation config as evidence. A vendor float is recorded
 as the exact decimal text the request body carried (`wire-decimal.v1`).
 
-**A wire refusal stops the stage.** An HTTP refusal from the engine is the
-chair's answer to a request that did leave; its bytes are retained and the pass
-stops with a `ContractError` naming it.
+**A wire refusal stops the stage, except on Chandra's route.** For Churro and
+DAI an HTTP refusal from the engine is the chair's answer to a request that did
+leave; its bytes are retained and the pass stops with a `ContractError` naming
+it. On Chandra's route an HTTP error is an inference error under the pinned
+recipe: it advances the retry loop (below), and exhausted inference errors are
+a `failed` attempt.
 
 **Churro framing.** `churro.FRAMINGS` declares two system prompts, both a vendor
 artifact's own bytes; `[witness_framings]` in the models configuration names
@@ -154,7 +158,8 @@ refuses after it arrived gets a terminal first, so a resume repeats the named
 refusal. The final returned attempt alone supplies the page text and geometry;
 every request stays reachable through the page record's `native_inference`,
 whose `physical_request_count` does not change the one-record-per-chair count.
-Exhausted repetition is retained as failed with its text and capture.
+Exhausted repetition is retained as failed with its text and capture; exhausted
+inference errors are failed.
 
 **Fixture placeholder.** The committed fixture's Chandra rows declare
 `fixture-chandra-response.v1`, a JSON placeholder read only by
@@ -296,8 +301,9 @@ not such testimony (no cap stated, or records none of which enclosed a crop) is
 sealed `not-run` with a reason naming which.
 
 **The page record** adds `presentations` (every image shown, in unit order;
-`presented` is the first), `unit_captures` (one model view per presentation,
-`null` for a unit that never reached the chair) and `unit_call_refs` (each
+`presented` is the first), `unit_captures` (one model view per presentation;
+`null` for a unit that never reached the chair, or whose answer arrived but did
+not parse or was kept unread under an unmeasured stop word) and `unit_call_refs` (each
 unit's call record, `null` for a unit not sent). `observed` has one `presented`
 box per unit, with a span into the page text where that unit was read. Unit
 readings join with `"\n"` in the detector's order; an empty reading adds no

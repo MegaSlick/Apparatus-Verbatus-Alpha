@@ -789,7 +789,7 @@ def test_one_retained_response_named_by_both_halves_of_a_page_record_is_one_inpu
     overshoot finding is *required* by the shared contract to be traceable
     through `raw_response_refs` while the capture still names it
     (`common/native_witness.py`). The producer names it once
-    (`pipeline/3_attestatores/run.py::_named_once`), and the envelope refuses a
+    (`pipeline/3_attestatores/retained.py::named_once`), and the envelope refuses a
     repeated path outright, so no publishable record could ever have carried
     two entries. Concatenating the two fields here without de-duplication
     therefore built an expectation nothing could satisfy: a correct record,
