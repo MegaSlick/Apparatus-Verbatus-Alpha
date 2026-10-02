@@ -83,6 +83,9 @@ keeps a wall between their code and ours:
   general image-processing knowledge.
 - The credit stays in `NOTICE`.
 
+The full protocol, the checks that enforce it and the record are in
+[cleanroom/CLEANROOM.md](cleanroom/CLEANROOM.md).
+
 ## Status
 
 pagekit lives in this repository as a top-level folder that imports nothing from
