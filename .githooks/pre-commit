@@ -44,8 +44,10 @@ if ! python3 "$ingress" --staged; then
 fi
 
 # pagekit's clean-room gate: its HOLD and its leak scan over staged pagekit files.
-# Where pagekit's clean room exists, its gate must too.
-if [ -d pagekit/cleanroom ] && [ ! -f pagekit/cleanroom/gate.py ]; then
+# Where pagekit's clean room exists, its gate must too, in the working copy that runs
+# and in the index that is committed.
+if [ -d pagekit/cleanroom ] && { [ ! -f pagekit/cleanroom/gate.py ] ||
+  ! git ls-files --cached --error-unmatch -- pagekit/cleanroom/gate.py >/dev/null 2>&1; }; then
   echo "" >&2
   echo "  BLOCKED: pagekit/cleanroom/gate.py is missing." >&2
   echo "  pagekit's clean-room gate cannot run, so this commit is refused." >&2

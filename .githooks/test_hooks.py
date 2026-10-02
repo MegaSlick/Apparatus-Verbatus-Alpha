@@ -597,6 +597,15 @@ def test_pre_commit_refuses_when_the_clean_room_has_no_gate(tmp_path):
     assert "pagekit/cleanroom/gate.py is missing" in result.stderr
 
 
+def test_pre_commit_refuses_when_the_gate_is_unstaged_but_still_on_disk(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    git(repo, "rm", "-q", "--cached", "pagekit/cleanroom/gate.py")
+    assert (repo / "pagekit/cleanroom/gate.py").is_file()
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "pagekit/cleanroom/gate.py is missing" in result.stderr
+
+
 def test_pre_commit_runs_without_the_gate_where_there_is_no_clean_room(tmp_path):
     repo = make_precommit_repo(tmp_path / "repo")
     stage(repo, "pagekit/check.py", "VALUE = 1\n")
