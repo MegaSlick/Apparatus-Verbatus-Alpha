@@ -783,16 +783,25 @@ def test_chandra_error_terminal_resume_waits_full_backoff_before_next_request(
     assert [request["temperature"] for request in resumed.requests("attestator_1")] == [0.2, 0.0]
 
 
-def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(live_run, tmp_path):
+def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(
+    live_run, tmp_path, monkeypatch
+):
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
-    scripts["attestator_1"] = [
-        ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="unmeasured-stop")
-    ]
+    scripts["attestator_1"] = [ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="stop")]
+    real_capture = attestatores.live_witness.captured_page_attempt
+
+    def refusing_capture(context, page_ordinal, chair, *args, **kwargs):
+        if chair == "attestator_1":
+            raise ContractError("simulated post-response refusal")
+        return real_capture(context, page_ordinal, chair, *args, **kwargs)
+
+    monkeypatch.setattr(attestatores.live_witness, "captured_page_attempt", refusing_capture)
     first = LiveWorld(live_run, tmp_path / "first", scripts)
-    with pytest.raises(ContractError, match="unmeasured-stop"):
+    with pytest.raises(ContractError, match="simulated post-response refusal"):
         run_attestatores(live_run, run_root, factory=first.factory)
     assert len(first.requests("attestator_1")) == 1
+    monkeypatch.undo()
 
     tree = RunTree(run_root, RUN_ID)
     assert any(
@@ -800,7 +809,7 @@ def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(live
         for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
     )
     resumed = LiveWorld(live_run, tmp_path / "resumed", {"attestator_1": []})
-    with pytest.raises(ContractError, match="unmeasured-stop") as caught:
+    with pytest.raises(ContractError, match="simulated post-response refusal") as caught:
         run_attestatores(live_run, run_root, factory=resumed.factory)
     assert "delivery is unknown" not in str(caught.value)
     assert resumed.requests("attestator_1") == []
@@ -830,9 +839,9 @@ def test_chandra_retry_retains_post_response_refusal_in_earlier_terminal(live_ru
     assert len(refused) == 1
     first_attempt = refused[0]["payload"]["resolved_attempt"]
     assert first_attempt["outcome"] == "failed"
-    assert first_attempt["reason"].startswith("retained Chandra response refused: ")
-    assert "unmeasured-stop" in first_attempt["reason"]
-    assert first_attempt["native_capture"]["parse"]["state"] == "parsed"
+    assert "'unmeasured-stop'" in first_attempt["reason"]
+    assert "retained and not read" in first_attempt["reason"]
+    assert first_attempt["native_capture"] is None
 
 
 def test_chandra_fatal_capture_accounting_stops_before_terminal_or_retry(
@@ -1329,31 +1338,17 @@ def test_the_production_serving_factory_binds_the_run_that_will_record_the_readi
         client._retain(b"{}")
 
 
-def test_a_stop_word_that_cannot_be_recorded_honestly_refuses_before_publication():
-    """One refusal, on the transport word alone, whatever the adapter.
-
-    The shared capture contract checks the transport word only for
-    `churro.v1`, so an unreadable engine word from any other adapter would
-    otherwise travel into a record unexamined. The check reads the response's
-    own word directly rather than off a capture, so it also covers a wire body
-    `ChairClient` could not parse at all (`native_capture = None`), whose
-    engine word is still recorded verbatim in its `chair-call-record.v1` blob.
-    """
-    with pytest.raises(ContractError, match="never measured a meaning for"):
-        attestatores.refuse_unpublishable_stop_word("abort", "the response for page 1")
+@pytest.mark.parametrize("word", [None, "stop", "length", "eos", "max_new_tokens"])
+def test_a_measured_or_absent_stop_word_leaves_the_response_to_be_read(word):
+    response = SimpleNamespace(finish_reason=word)
+    assert attestatores.unmeasured_stop_reason(response, "the response for page 1") is None
 
 
-def test_an_unreported_stop_word_is_recorded_rather_than_refused():
-    """The vocabulary admits the absence marker; only unmeasured words refuse.
-
-    The one question this guard asks: has this pipeline ever measured a
-    meaning for this word?
-    """
-    attestatores.refuse_unpublishable_stop_word(
-        attestatores.STOP_REASON_UNREPORTED, "the response for page 1"
+def test_an_unmeasured_stop_word_is_named_as_the_reason_its_response_is_not_read():
+    reason = attestatores.unmeasured_stop_reason(
+        SimpleNamespace(finish_reason="abort"), "the response for page 1"
     )
-    for word in ("stop", "length", "eos", "max_new_tokens"):
-        attestatores.refuse_unpublishable_stop_word(word, "the response for page 1")
+    assert reason is not None and "'abort'" in reason and "not read" in reason
 
 
 def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name(
@@ -1793,17 +1788,40 @@ def test_a_resumed_live_pass_uses_chandra_terminal_evidence_without_reissuing(
     )
 
 
-def test_an_engine_stop_word_this_pipeline_cannot_read_is_refused_not_defaulted(live_run, tmp_path):
+@pytest.mark.parametrize("chair", ["attestator_1", "attestator_2", "attestator_3"])
+def test_an_engine_stop_word_this_pipeline_cannot_read_fails_that_page_alone(
+    live_run, tmp_path, chair
+):
+    """The answer is kept, not read and not defaulted to whole or cut off; the
+    page's record says why, and every other page and chair is still read."""
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
-    scripts["attestator_1"] = [ScriptedAnswer(content=CHANDRA_BODY, finish_reason="abort")]
+    first = scripts[chair][0]
+    scripts[chair][0] = ScriptedAnswer(content=first.content, finish_reason="abort")
     world = LiveWorld(live_run, tmp_path, scripts)
 
-    with pytest.raises(ContractError, match="'abort'"):
-        run_attestatores(live_run, run_root, factory=world.factory)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == attestatores.EXIT_COMPLETE
 
-    # Nothing about that response was published, and its bytes are retained.
-    assert (1, "attestator_1") not in page_records(RunTree(run_root, RUN_ID))
+    tree = RunTree(run_root, RUN_ID)
+    records = page_records(tree)
+    failed = records[(1, chair)]
+    assert failed["outcome"] == "failed"
+    payload = failed["payload"]
+    assert "'abort'" in json.dumps(payload)
+    # A whole page answer is not read at all; DAI's page joins its other records.
+    assert payload["payload"] is None or chair == "attestator_2"
+    assert records[(2, chair)]["outcome"] == "read"
+    assert all(
+        records[(page, other)]["outcome"] == "read"
+        for page in (1, 2)
+        for other in {"attestator_1", "attestator_2", "attestator_3"} - {chair}
+    )
+    # The answer is kept: the record binds the call record, which names its bytes.
+    call_ref = payload.get("serving_call_ref") or payload["unit_call_refs"][0]
+    assert call_ref in failed["inputs"]
+    call = json.loads(tree.read_bytes(call_ref["relative_path"]))
+    assert call["finish_reason"] == "abort"
+    assert tree.read_bytes(call["raw_response_ref"]["relative_path"])
 
 
 def test_a_churro_response_with_no_engine_stop_word_publishes_unknown_truncation(
@@ -2044,3 +2062,27 @@ def test_a_live_unit_that_retains_a_response_and_names_no_call_is_refused():
     )
     fixture, _call, _retained = _call_world({}, endpoint="fixture://offline-chair-runner")
     attestatores.verify_page_call_sampling(fixture, record, "attestator_2")
+
+
+def test_a_chandra_answer_under_an_unmeasured_stop_word_resumes_from_its_terminal(
+    live_run, tmp_path, monkeypatch
+):
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_1"][0] = ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="abort")
+    crashed = LiveWorld(live_run, tmp_path / "crashed", scripts)
+    _crash_once(monkeypatch, "attestator_1", 1)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        run_attestatores(live_run, run_root, factory=crashed.factory)
+    monkeypatch.undo()
+
+    resumed_scripts = default_scripts()
+    resumed_scripts["attestator_1"] = resumed_scripts["attestator_1"][1:]
+    resumed = LiveWorld(live_run, tmp_path / "resumed", resumed_scripts)
+    assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
+
+    # Page 1 is rebuilt from its sealed terminal; only page 2 is asked.
+    assert len(resumed.requests("attestator_1")) == 1
+    record = page_records(RunTree(run_root, RUN_ID))[(1, "attestator_1")]
+    assert record["outcome"] == "failed"
+    assert "'abort'" in record["payload"]["reason"]

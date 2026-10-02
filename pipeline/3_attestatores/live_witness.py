@@ -593,15 +593,25 @@ def _live_attempt_from_capture(
 def _malformed_response_attempt(response: ChairResponse, *, adapter: Any) -> Attempt:
     """A wire response `ChairClient` could not parse into a reading at all.
 
-    Retained (the raw bytes are already on disk via ``raw_response_ref``),
-    never repaired, never re-requested -- the same "malformed" branch
-    `fixture_page_attempt` takes for a fixture-declared malformed response.
-    ``format_capabilities`` still names the adapter's own grammar
-    (`witness_adapters.declared_format_capabilities`): what a chair's grammar can carry is a fact
-    about the chair, not about whether this one body happened to parse.
+    Retained, never repaired and never re-requested. ``format_capabilities``
+    still names the adapter's own grammar: what a chair's grammar can carry is
+    a fact about the chair, not about whether this one body happened to parse.
     """
 
-    reason = f"the provider response was refused without repair: {response.parse_problem}"
+    return unread_response_attempt(
+        response,
+        adapter=adapter,
+        reason=f"the provider response was refused without repair: {response.parse_problem}",
+    )
+
+
+def unread_response_attempt(response: ChairResponse, *, adapter: Any, reason: str) -> Attempt:
+    """A failed attempt over a response that is retained whole but not read.
+
+    No adapter sees it, so there is no capture; the record names the whole
+    transport body and the call record, and says why.
+    """
+
     return Attempt(
         outcome="failed",
         native_payload=None,

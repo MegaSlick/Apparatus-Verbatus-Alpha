@@ -1724,23 +1724,21 @@ def production_serving_factory(
 _LIVE_ENGINE_STOP_WORDS: Final = _CHURRO_STOP_REASONS | {STOP_REASON_UNREPORTED}
 
 
-def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> None:
-    """Refuse an unknown engine stop word, even when the body did not parse.
+def unmeasured_stop_reason(response: Any, what: str) -> str | None:
+    """Why a response is kept unread, when its engine stop word has no measured meaning.
 
-    Calling it complete or cut off would invent a measurement; bytes are retained.
+    Calling such an answer complete or cut off would invent a measurement, so
+    the attempt fails on that page alone, with the response retained, before
+    any adapter reads it. `None` for a recognized word or none at all.
     """
-    if transport_stop_reason not in _LIVE_ENGINE_STOP_WORDS:
-        raise ContractError(
-            f"{what} reports transport_stop_reason {transport_stop_reason!r}, which this "
-            "pipeline has never measured a meaning for; recording it as complete or as cut "
-            "off would assert a boundary nobody observed. The response bytes are retained "
-            "and nothing was published for it"
-        )
-
-
-def _refuse_unpublishable_response(response: Any, what: str) -> None:
-    stop_word = response.finish_reason
-    refuse_unpublishable_stop_word(STOP_REASON_UNREPORTED if stop_word is None else stop_word, what)
+    word = response.finish_reason
+    if word is None or word in _LIVE_ENGINE_STOP_WORDS:
+        return None
+    return (
+        f"{what} reports transport_stop_reason {word!r}, which this pipeline has never "
+        "measured a meaning for; whether the answer is whole is unknown, so it is retained "
+        "and not read"
+    )
 
 
 def capacity_refusal_attempt(
@@ -2219,21 +2217,25 @@ def _serve_detector_page(
             )
         else:
             response = client.read(built.request)
-            live = live_witness.live_attempt_from_response(
-                context,
-                adapter,
-                resolved.witness_adapter,
-                response,
-                presentation=source,
-                presented=built.presented,
-                prompt=built.prompt,
-                generation_declared=built.request.generation_declared,
-                parser="text",
-                generation_accounting=built.generation_accounting,
-            )
-            _refuse_unpublishable_response(response, what.replace("request", "response"))
+            unread = unmeasured_stop_reason(response, what.replace("request", "response"))
+            if unread is not None:
+                attempt = live_witness.unread_response_attempt(
+                    response, adapter=adapter, reason=unread
+                )
+            else:
+                attempt = live_witness.live_attempt_from_response(
+                    context,
+                    adapter,
+                    resolved.witness_adapter,
+                    response,
+                    presentation=source,
+                    presented=built.presented,
+                    prompt=built.prompt,
+                    generation_declared=built.request.generation_declared,
+                    parser="text",
+                    generation_accounting=built.generation_accounting,
+                )
             presented = built.presented
-            attempt = live
         witness_adapters.validate_adapter_presentation(resolved.witness_adapter, source, presented)
         served.append((region, presented, attempt))
     publish_detector_page_testimonium(
@@ -2460,6 +2462,12 @@ def _chandra_application_refusal_attempt(
     reason = _CHANDRA_APPLICATION_REFUSAL_PREFIX + str(error)
     if attempt is not None:
         return attempt._replace(outcome="failed", reason=reason)
+    return _chandra_retained_failure(context, response, adapter, reason)
+
+
+def _chandra_retained_failure(context, response: Any, adapter: Any, reason: str) -> Attempt:
+    """A failed attempt over a response that is kept but not read: its model output
+    retained as terminal evidence, with no capture and no text."""
     model_output_ref = retain_chair_bytes(context, response.content.encode("utf-8"))
     return Attempt(
         outcome="failed",
@@ -3160,34 +3168,37 @@ def _read_chandra_native_result(
         error_detail = getattr(error, "detail", str(error))
     else:
         assert response is not None
-        try:
-            live = live_witness.captured_page_attempt(
-                context,
-                page_ordinal,
-                chair,
-                resolved.witness_adapter,
-                adapter,
-                response,
-                framing=framing,
-            )
-            _refuse_unpublishable_response(
-                response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
-            )
-        except FatalAccounting:
-            raise
-        except ContractError as caught:
-            application_refusal = caught
-        attempt = (
-            _chandra_application_refusal_attempt(
-                context,
-                response,
-                adapter,
-                application_refusal,
-                live,
-            )
-            if application_refusal is not None
-            else live
+        unread = unmeasured_stop_reason(
+            response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
         )
+        if unread is not None:
+            attempt = _chandra_retained_failure(context, response, adapter, unread)
+        else:
+            try:
+                live = live_witness.captured_page_attempt(
+                    context,
+                    page_ordinal,
+                    chair,
+                    resolved.witness_adapter,
+                    adapter,
+                    response,
+                    framing=framing,
+                )
+            except FatalAccounting:
+                raise
+            except ContractError as caught:
+                application_refusal = caught
+            attempt = (
+                _chandra_application_refusal_attempt(
+                    context,
+                    response,
+                    adapter,
+                    application_refusal,
+                    live,
+                )
+                if application_refusal is not None
+                else live
+            )
         raw = response.content if isinstance(response.content, str) else ""
         inference_error = response.parse_problem is not None
         transport_response_ref = dict(response.raw_response_ref)
@@ -3336,19 +3347,23 @@ def _serve_page_unit(
             )
         else:
             response = client.read(request)
-            live = live_witness.captured_page_attempt(
-                context,
-                page_ordinal,
-                chair,
-                resolved.witness_adapter,
-                adapter,
-                response,
-                framing=framing,
-            )
-            _refuse_unpublishable_response(
+            unread = unmeasured_stop_reason(
                 response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
             )
-            attempt = live
+            if unread is not None:
+                attempt = live_witness.unread_response_attempt(
+                    response, adapter=adapter, reason=unread
+                )
+            else:
+                attempt = live_witness.captured_page_attempt(
+                    context,
+                    page_ordinal,
+                    chair,
+                    resolved.witness_adapter,
+                    adapter,
+                    response,
+                    framing=framing,
+                )
     publish_page_testimonium(
         context,
         chair=chair,

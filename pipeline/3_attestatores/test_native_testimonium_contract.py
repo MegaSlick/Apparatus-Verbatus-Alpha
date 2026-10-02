@@ -292,8 +292,8 @@ def _blob_ref(seed: str) -> dict[str, str]:
 def test_a_malformed_retained_model_view_is_refused_at_the_page_writer():
     """A view which is not a retained model view at all cannot ride into a page
     record unexamined. The stop word is not what this proves: the live boundary
-    refuses an unreadable engine word itself, before publication
-    (`run.py::refuse_unpublishable_stop_word`)."""
+    keeps an answer under an unmeasured engine word unread, before any adapter
+    sees it (`run.py::unmeasured_stop_reason`)."""
     payload = _base()
     reference = _blob_ref("live response bytes")
     payload["native_capture"] = {
