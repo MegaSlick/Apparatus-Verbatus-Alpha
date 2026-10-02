@@ -2477,11 +2477,11 @@ def test_bundle_bytes_are_deterministic_for_the_same_sealed_projection():
 
 
 def test_the_terminal_ledger_partitions_sources_pages_and_acts_totally(tmp_path):
-    """Spec 11 test 1: a total partition, not an act-only one.
+    """A total partition, not an act-only one.
 
     One submitted source, one sealed page and two acts is four units, every one of
     them carrying a closed category. The counts are checked to sum because a partition
-    that misses a unit is invariant #10's imbalance and its failure mode is silence.
+    that misses a unit loses it silently.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     ledger = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])["claims"]["terminal_ledger"]

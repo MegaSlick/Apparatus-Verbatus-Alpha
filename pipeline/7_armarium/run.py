@@ -149,9 +149,8 @@ def page_census(context) -> dict[int, dict]:
 
     The act-level accounting counts readings, so a page the door refused leaves
     no hole in it. The census closes that — every source the run declared must
-    have exactly one page outcome, and
-    a page with none, or with two, is invariant #10's imbalance at the last
-    boundary.
+    have exactly one page outcome: a page with none, or with two, would let a
+    page vanish from or double in the final accounting.
     """
     declared_rows = context.run["source_manifest"]
     sources: dict[int, dict] = {}

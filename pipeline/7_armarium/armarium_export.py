@@ -151,7 +151,7 @@ _REVIEW_ITEM_FIELDS: Final = frozenset(
 )
 _SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v5"
 _SQLITE_USER_VERSION: Final = 5
-# The reading a page-read act came from: its page's first reading, the one
+# The reading an act came from: its page's first reading, the one
 # re-ask of its page, or an operator re-read a person's page re-ask asked for,
 # which superseded the page's earlier readings. A row standing for a page with
 # no entry names none.
@@ -3847,7 +3847,7 @@ class _TextBundleRecord(NamedTuple):
     text_status: str
     annotations: list[Any]
     heading_key: str
-    # A page-read act's reading, on the line after its act-id; `None` without one.
+    # An act's reading, on the line after its act-id; `None` without one.
     reading: str | None = None
 
 
@@ -5721,7 +5721,7 @@ def _act_reading_sources(sources: dict[str, Any], act_keys: dict[str, str]) -> d
 def _verify_product_readings(
     records: dict[str, dict[str, Any]], readings: dict[str, Any], *, subject: str
 ) -> None:
-    """Every act row names the reading its source act came from, and none on the act path."""
+    """Every act row names the reading its source act came from."""
     if any(record["reading"] != readings.get(act_id) for act_id, record in records.items()):
         raise SchemaRefusal(f"the {subject} does not name the reading each act came from")
 
