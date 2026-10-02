@@ -514,7 +514,7 @@ def test_two_digests_for_one_input_path_are_refused():
         distinct_refs([first, second])
 
 
-def _engine_call_world(tree, *, seed: int, schema: str = "chair-call-record.v3"):
+def _engine_call_world(tree, *, seed: int, schema: str = perlector.CHAIR_CALL_RECORD_SCHEMA):
     """A retained Perlector call record at its sealed row, and a context that reads it.
 
     The serving receipt's seed is 7.
