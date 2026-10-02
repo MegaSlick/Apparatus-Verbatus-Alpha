@@ -134,8 +134,9 @@ _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_
 # monotonic reading names no instant a reader could compare across records.
 _clock = time.monotonic
 STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v4"
-# How one invocation ended, for the caller that named `--stop-record`; v2 adds
-# the systemic alarm line (`systemic`), and a reader takes no other version.
+# How one invocation ended, for the caller that named `--stop-record`: its run,
+# exit code, whether it reached a sealed export, and the systemic alarm line it
+# printed (`systemic`, or null). A reader takes no other version.
 STOP_RECORD_SCHEMA = "orchestrator-stop.v2"
 
 GPU_QUERY = (
