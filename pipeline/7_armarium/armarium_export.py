@@ -2602,7 +2602,7 @@ def _delivered_doubt_counts(acts: tuple[dict[str, Any], ...]) -> dict[str, int]:
     """The Perlector uncertainty basis's four counts, taken from the delivered acts.
 
     Counted by state, never by subtraction, so a broken doubt report is not
-    counted as "no doubt channel". Any other state (the Recensor's `malformed`,
+    counted as a person's correction (`not-assessed`). Any other state (the Recensor's `malformed`,
     for one) is refused: the Recensor holds those, so a delivered one means the
     projection did not come from a run.
     """
@@ -2625,8 +2625,8 @@ def _delivered_doubt_counts(acts: tuple[dict[str, Any], ...]) -> dict[str, int]:
         else:
             raise SchemaRefusal(
                 f"an Armarium projection delivers act {act.get('act_key')!r} whose sealed doubt "
-                f"assessment is {state!r}; only a reading that was assessed, or one whose reader "
-                "had no channel, is deliverable -- a doubt report that could not be anchored is "
+                f"assessment is {state!r}; only a reading that was assessed, or one a person "
+                "corrected, is deliverable -- a doubt report that could not be anchored is "
                 "held for review, never counted"
             )
     return counts

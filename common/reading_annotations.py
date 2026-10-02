@@ -192,9 +192,10 @@ def validate_gaps(gaps: Any, text: str) -> list[dict]:
 
 # The reader's own doubt report. `assessed`: the reader was asked and its spans and
 # gaps anchor to the text. `malformed`: a report that could not be anchored, kept as
-# a visible fault with empty layers. The contract's third state, `not-assessed`
-# (`common.contracts.uncertainty`), is a reader with no channel for doubt, whose
-# empty layers are an absence, not confidence; `read_doubt_marks` never reports it.
+# a visible fault with empty layers. The contract's third state, `not-assessed`,
+# marks a person's correction (`common.contracts.uncertainty.corrected_layer`),
+# whose empty layers are an absence, not confidence; `read_doubt_marks` never
+# reports it.
 ASSESSMENT_ASSESSED: Final = "assessed"
 ASSESSMENT_MALFORMED: Final = "malformed"
 _ASSESSMENT_FIELDS: Final = frozenset({"state", "uncertain_spans", "gaps", "problem"})
