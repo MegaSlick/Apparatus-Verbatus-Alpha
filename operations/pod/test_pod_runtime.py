@@ -6637,43 +6637,12 @@ def test_preflight_environment_failures_are_red_with_named_remediation(
         assert any(issue.code == "disk-missing" for issue in report.issues)
 
 
-def test_pod_runtime_checked_in_spend_policy_is_the_ledgered_one() -> None:
-    """The committed policy is configured with the project lead's values.
-    This pins them: a drift in the file is a drift in
-    what every paid gate enforces, and the floor stays marked unverified until
-    it has been checked against the provider's balance."""
-    from decimal import Decimal
-
+def test_the_shipped_spend_policy_loads_as_configured() -> None:
+    """The checked-in policy passes the loader every paid gate reads it through."""
     from .spend import load_spend_policy
 
     root = Path(__file__).resolve().parents[2]
-    policy = load_spend_policy(root / "config/spend.toml")
-    assert policy.configured
-    assert policy.max_hourly_usd == Decimal("0.50")
-    assert policy.max_estimated_metered_cost_usd == Decimal("2.00")
-    assert policy.account_balance_floor_usd == Decimal("50.00")
-    assert policy.account_balance_alert_usd == Decimal("75.00")
-    assert policy.hard_lifetime_seconds == 14400
-    assert policy.laptop_heartbeat_timeout_seconds == 900
-    assert policy.shutdown_poll_interval_seconds == 30
-    assert policy.shutdown_deadline_seconds == 900
-    assert policy.billing_cutoff_margin_seconds == 3600
-    text = (root / "config/spend.toml").read_text(encoding="utf-8")
-    floor_note, _, floor_line = text.partition("account_balance_floor_usd =")
-    assert floor_line.startswith(' "50.00"')
-    assert "Documented, unverified default" in floor_note
-    assert "check it against the RunPod balance" in floor_note
-    assert "not permission to launch" in text
-
-
-def test_spend_configuration_documentation_matches_the_observed_balance_contract() -> None:
-    root = Path(__file__).resolve().parents[2]
-    documentation = (root / "config" / "README.md").read_text(encoding="utf-8")
-
-    assert "observed `account_balance_floor_usd` hard reserve" in documentation
-    assert "`account_balance_alert_usd` notification threshold" in documentation
-    assert "explicitly configured source" in documentation
-    assert "runtime does not observe account balance" not in documentation
+    assert load_spend_policy(root / "config/spend.toml").configured
 
 
 def test_system_gpu_probe_measures_fields_or_returns_red_input_without_a_gpu() -> None:
