@@ -201,7 +201,7 @@ record".
   rewritten so it can be kept:
   - no build-side agent may read the bridge files;
   - the bridge must be removed from `main` before pagekit merges.
-- **Lead's decision:** [to be recorded here when the lead answers.]
+- **Lead's decision:** recorded in entry 0012.
 
 ## 0010 — The independent reader's findings fixed, and two briefs saved
 
@@ -242,3 +242,18 @@ record".
 - **What changed:** CLEANROOM.md gained the section "Outside reading-side sessions"
   (3b4736e7). Its quarantine folder name was then corrected to the one actually used,
   `workbench/cleanroom-quarantine/` (4b961c4a).
+
+## 0012 — The lead's decision on entry 0009
+
+- **When:** 2026-10-02, about 20:35 UTC, in the session that recorded entry 0009.
+- **Decision:** entries 0007 and 0008 stand. The 35 accepted findings remain valid.
+- **Reason the lead gave:** nothing was seen that could leak. The host never opened the
+  bridge files, and seeing their names and import lines is not exposure to their code.
+  The lead treats the slip as minor.
+- **Also decided:** the narrowed agent settings in this pull request (refusing only
+  commands that download or copy the other project's source) are approved. If the
+  reading side later needs wider access to read the other project or look up how it
+  behaves, it may ask for it. Published reference libraries and papers remain the
+  preferred source.
+- **What stays in force:** the rewritten rule of entry 0009. No build-side agent reads
+  the bridge files, and the bridge is removed from `main` before pagekit merges.
