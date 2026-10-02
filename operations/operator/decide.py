@@ -257,11 +257,11 @@ def report(prepared: PreparedDecision, reference: ApprovalRecordReference) -> li
         f"{', '.join(prepared.held_codes) or 'nothing'}.",
         f"Decision record: {reference.relative_path} ({reference.sha256})",
         f"When the Recensor runs again, {effect}.",
-        _next_step(decision == "re-ask" and review["scope"] == PAGE_SCOPE),
+        _next_step(review["run_id"], decision == "re-ask" and review["scope"] == PAGE_SCOPE),
     ]
 
 
-def _next_step(reread: bool) -> str:
+def _next_step(run_id: str, reread: bool) -> str:
     """How the run goes on after the decision: from the Perlector for a page re-ask, which
     must read the page again before the Recensor reviews it, else from the Recensor."""
     stage = "perlector" if reread else "recensor"
@@ -271,7 +271,7 @@ def _next_step(reread: bool) -> str:
         else "applies every decision recorded"
     )
     return (
-        f"Next: resume the run from the {stage}, which {what}: `verbatus run --run-id <run> "
+        f"Next: resume the run from the {stage}, which {what}: `verbatus run --run-id {run_id} "
         f"--from {stage} --to armarium` for a run this tool started, or `pod_run --from "
         f"{stage} --to armarium` on its pod. It goes on to export once nothing is held, or "
         "once `verbatus advance --stage recensor` passes its new seal."
