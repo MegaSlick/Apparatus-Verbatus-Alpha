@@ -1018,7 +1018,7 @@ def _three_witness_feed() -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
 
 def test_page_path_dissent_goes_through_the_dissent_validator():
-    """A page-path row is a dissent row (`dissent.validate_dissent`) under a witness letter, with
+    """A page-path row is a dissent row (`dissent.validate_row`) under a witness letter, with
     the witness head and cited units beside it, so it is refused on the same
     terms: a lost or relabelled witness, misstated units, a comparison claimed
     for a witness with nothing to compare, a compared row carrying a budget,

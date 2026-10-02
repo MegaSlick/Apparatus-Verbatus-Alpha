@@ -304,11 +304,7 @@ def test_a_comparison_under_the_pair_bound_stops_on_its_exact_step_count():
     assert row["compared"] == "unknown"
     assert row["max_comparison_steps"] == needed - 1
     assert f"the sealed {needed - 1}-step dissent budget" in row["reason"]
-    dissent.validate_dissent(
-        [{"chair": "attestator_1", **row}],
-        text=reading,
-        basis_testimonia=[{"chair": "attestator_1", "outcome": "read"}],
-    )
+    dissent.validate_row(row, text=reading, max_comparison_steps=needed - 1)
 
 
 def test_departures_past_the_budget_is_an_explicit_non_verdict_not_an_agreement():
@@ -327,35 +323,28 @@ def test_departures_past_the_budget_is_an_explicit_non_verdict_not_an_agreement(
     }
 
 
-def test_a_budget_is_recorded_only_on_an_unknown_row():
-    """A compared-row budget or a malformed one is refused, so the field means
-    one thing: this comparison ran out of that many steps."""
-    basis = [{"chair": "attestator_1", "outcome": "read"}]
-    stopped = {"chair": "attestator_1", "compared": "unknown", "reason": "stopped"}
-    dissent.validate_dissent(
-        [{**stopped, "max_comparison_steps": 5}], text="", basis_testimonia=basis
-    )
-    for budget in (0, True, "5"):
-        with pytest.raises(SchemaRefusal, match="uncomputed-row schema"):
-            dissent.validate_dissent(
-                [{**stopped, "max_comparison_steps": budget}], text="", basis_testimonia=basis
+def test_a_budget_is_recorded_only_on_an_unknown_row_and_only_the_sealed_one():
+    """A stopped row names the run's sealed budget and nothing else; a compared row
+    has no budget to have run out of; a witness with a reading is never "not
+    compared"."""
+    stopped = {"compared": "unknown", "reason": "stopped"}
+    dissent.validate_row(stopped, text="", max_comparison_steps=5)
+    dissent.validate_row({**stopped, "max_comparison_steps": 5}, text="", max_comparison_steps=5)
+    for budget in (4, 0, True, "5"):
+        with pytest.raises(SchemaRefusal, match="this run sealed 5"):
+            dissent.validate_row(
+                {**stopped, "max_comparison_steps": budget}, text="", max_comparison_steps=5
             )
-    # A row that compared, and a row for a witness that never reported, have no
-    # budget to have run out of.
     compared = _dissent_against("alpha", "alpha")
     assert compared["compared"] is True
-    compared = {"chair": "attestator_1", **compared}
-    dissent.validate_dissent([compared], text="alpha", basis_testimonia=basis)
+    dissent.validate_row(compared, text="alpha", max_comparison_steps=5)
     with pytest.raises(SchemaRefusal, match="closed compared-row schema"):
-        dissent.validate_dissent(
-            [{**compared, "max_comparison_steps": 5}], text="alpha", basis_testimonia=basis
+        dissent.validate_row(
+            {**compared, "max_comparison_steps": 5}, text="alpha", max_comparison_steps=5
         )
-    silent = [{"chair": "attestator_1", "outcome": "failed"}]
-    unreported = {"chair": "attestator_1", "compared": False, "reason": "failed"}
-    dissent.validate_dissent([unreported], text="", basis_testimonia=silent)
-    with pytest.raises(SchemaRefusal, match="uncomputed-row schema"):
-        dissent.validate_dissent(
-            [{**unreported, "max_comparison_steps": 5}], text="", basis_testimonia=silent
+    with pytest.raises(SchemaRefusal, match="must be compared or unknown"):
+        dissent.validate_row(
+            {"compared": False, "reason": "skipped"}, text="alpha", max_comparison_steps=5
         )
 
 

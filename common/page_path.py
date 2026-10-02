@@ -1104,8 +1104,8 @@ def validate_page_dissent(
 
     One row per shown witness, in the feed's order. A witness with no reading or
     no unit this entry cites was not compared, and says so; every other row is
-    a dissent row (`dissent.validate_dissent`) under the witness's letter, the
-    run's sealed budget included.
+    a dissent row (`dissent.validate_row`) under the witness's letter, the run's
+    sealed budget included.
     """
     if not isinstance(rows, list) or len(rows) != len(feed["witnesses"]):
         raise SchemaRefusal("a page-path dissent record does not have one row per shown witness")
@@ -1135,12 +1135,7 @@ def validate_page_dissent(
                 )
             continue
         try:
-            dissent.validate_dissent(
-                [{"chair": row["letter"], **rest}],
-                text=text,
-                basis_testimonia=[{"chair": row["letter"], "outcome": READ_OUTCOME}],
-                max_comparison_steps=max_comparison_steps,
-            )
+            dissent.validate_row(rest, text=text, max_comparison_steps=max_comparison_steps)
         except SchemaRefusal as error:
             raise SchemaRefusal(f"page dissent[{index}]: {error}") from error
 
