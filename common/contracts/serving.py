@@ -15,6 +15,11 @@ SERVING_CONFIG_INPUTS_FIELDS: Final = frozenset(
 
 # `sampling_effective` carries the values the pinned engine samples under for the
 # sampling fields `generation_sent` carries (`common.decoding`).
+# The serving manager's operational record of one launch, kept beside its receipt.
+SERVING_LAUNCH_AUDIT_SCHEMA: Final = "serving-launch-audit.v2"
+# Audits written before the adapter fields left the record; refused by name.
+RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS: Final = frozenset({"serving-launch-audit.v1"})
+
 CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v4"
 CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
     {

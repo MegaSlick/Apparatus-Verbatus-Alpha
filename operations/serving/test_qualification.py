@@ -175,7 +175,7 @@ def _write_report(
         }
         receipt_ref = _write_artifact(evidence_root, "receipts", service_receipt)
         audit = {
-            "schema": "serving-launch-audit.v1",
+            "schema": "serving-launch-audit.v2",
             "chair": role,
             "launch_purpose": "preflight-qualification",
             "configuration_inputs": config_inputs,

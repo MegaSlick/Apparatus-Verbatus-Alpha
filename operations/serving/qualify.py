@@ -12,7 +12,7 @@ from common.chairs.models import ChairIdentity, is_sha256
 from common.chairs.receipts import validate_receipt
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
-from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA
+from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA, SERVING_LAUNCH_AUDIT_SCHEMA
 from common.sealed_config import parse_sealed_toml
 from operations.pod.durable import exclusive_write
 
@@ -446,7 +446,7 @@ def _verify_smoke(
     served_engine = " ".join((validated_receipt["engine"], validated_receipt["engine_version"]))
     if smoke["served_engine"] != served_engine:
         raise QualificationRefusal(f"chair {identity.role!r} served-engine claim changed")
-    if audit_artifact.get("schema") != "serving-launch-audit.v1":
+    if audit_artifact.get("schema") != SERVING_LAUNCH_AUDIT_SCHEMA:
         raise QualificationRefusal(f"chair {identity.role!r} launch audit has the wrong schema")
     if audit_artifact.get("chair") != identity.role:
         raise QualificationRefusal(f"chair {identity.role!r} launch audit names another chair")

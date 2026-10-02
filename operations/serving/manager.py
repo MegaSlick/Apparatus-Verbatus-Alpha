@@ -30,6 +30,7 @@ from common.chairs.models import (
     VerifiedSnapshot,
     is_sha256,
 )
+from common.contracts.serving import SERVING_LAUNCH_AUDIT_SCHEMA
 from common.credentials import log_word_carries_credential, looks_like_credential_field
 
 from .config import (
@@ -813,7 +814,7 @@ class ServingManager:
         )
         return MappingProxyType(
             {
-                "schema": "serving-launch-audit.v1",
+                "schema": SERVING_LAUNCH_AUDIT_SCHEMA,
                 "chair": identity.role,
                 "producer": self.producer,
                 "launch_purpose": self.launch_purpose,

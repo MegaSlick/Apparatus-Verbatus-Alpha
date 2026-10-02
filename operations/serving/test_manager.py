@@ -3350,7 +3350,7 @@ def test_serving_smoke_reader_uses_the_owned_service_and_always_stops(tmp_path: 
         "relative_path": "receipts/sha256/" + "c" * 64 + ".json",
         "sha256": "c" * 64,
     }
-    assert result.receipt["serving_launch_audit"]["schema"] == "serving-launch-audit.v1"  # type: ignore[index]
+    assert result.receipt["serving_launch_audit"]["schema"] == "serving-launch-audit.v2"  # type: ignore[index]
     assert result.receipt["serving_launch_audit_reference"]["sha256"] == "d" * 64  # type: ignore[index]
     assert result.receipt["serving_evidence_reference"]["sha256"] == "e" * 64  # type: ignore[index]
     assert (

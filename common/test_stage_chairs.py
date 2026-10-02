@@ -137,10 +137,24 @@ def test_serving_receipts_are_refused_as_stage_artifacts_and_accepted_as_run_rec
     assert receipt["revision"] == identity.receipt_revision
 
 
-def test_serving_launch_audit_is_a_content_addressed_stage_blob(tmp_path):
+def test_a_launch_audit_under_a_retired_schema_is_refused_by_name(tmp_path):
     context, _ = _context(tmp_path)
     audit = {
         "schema": "serving-launch-audit.v1",
+        "chair": "attestator_1",
+        "started_at": "2026-08-09T12:00:00Z",
+        "configuration_inputs": dict(context.serving_config_inputs),
+    }
+    reference = context.write_serving_launch_audit(audit)
+
+    with pytest.raises(SchemaRefusal, match="written as serving-launch-audit.v1.*re-run"):
+        context._read_serving_launch_audit(reference)
+
+
+def test_serving_launch_audit_is_a_content_addressed_stage_blob(tmp_path):
+    context, _ = _context(tmp_path)
+    audit = {
+        "schema": "serving-launch-audit.v2",
         "chair": "attestator_1",
         "started_at": "2026-08-09T12:00:00Z",
         "configuration_inputs": dict(context.serving_config_inputs),
@@ -206,7 +220,7 @@ def test_a_stage_context_with_no_run_sealed_serving_inputs_refuses_a_launch_audi
     with pytest.raises(SchemaRefusal, match="no run-sealed serving configuration inputs"):
         bare.write_serving_launch_audit(
             {
-                "schema": "serving-launch-audit.v1",
+                "schema": "serving-launch-audit.v2",
                 "chair": "attestator_1",
                 "started_at": "2026-08-09T12:00:00Z",
                 "configuration_inputs": {
@@ -222,7 +236,7 @@ def test_a_non_canonical_serving_blob_is_a_named_schema_refusal(tmp_path):
     """A float anywhere in the payload must not escape as a bare TypeError."""
     context, _ = _context(tmp_path)
     audit = {
-        "schema": "serving-launch-audit.v1",
+        "schema": "serving-launch-audit.v2",
         "chair": "attestator_1",
         "started_at": "2026-08-09T12:00:00Z",
         "configuration_inputs": dict(context.serving_config_inputs),
@@ -238,7 +252,7 @@ def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_pa
     receipt_reference = context.write_serving_receipt(identity, details)
     audit_reference = context.write_serving_launch_audit(
         {
-            "schema": "serving-launch-audit.v1",
+            "schema": "serving-launch-audit.v2",
             "chair": identity.role,
             "started_at": details.started_at,
             "configuration_inputs": dict(context.serving_config_inputs),
@@ -301,7 +315,7 @@ def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_pa
 
     tampered_audit_reference = context.write_serving_launch_audit(
         {
-            "schema": "serving-launch-audit.v1",
+            "schema": "serving-launch-audit.v2",
             "chair": identity.role,
             "started_at": "2026-08-09T12:01:00Z",
             "configuration_inputs": dict(context.serving_config_inputs),
@@ -313,7 +327,7 @@ def test_serving_evidence_manifest_durably_binds_receipt_and_launch_audit(tmp_pa
 
     other_chair_audit_reference = context.write_serving_launch_audit(
         {
-            "schema": "serving-launch-audit.v1",
+            "schema": "serving-launch-audit.v2",
             "chair": "attestator_2",
             "started_at": "2026-08-09T12:02:00Z",
             "configuration_inputs": dict(context.serving_config_inputs),
@@ -330,7 +344,7 @@ def test_serving_evidence_manifest_accepts_a_mapping_proxy_reference(tmp_path):
     receipt_reference = context.write_serving_receipt(identity, details)
     audit_reference = context.write_serving_launch_audit(
         {
-            "schema": "serving-launch-audit.v1",
+            "schema": "serving-launch-audit.v2",
             "chair": identity.role,
             "started_at": details.started_at,
             "configuration_inputs": dict(context.serving_config_inputs),
@@ -350,7 +364,7 @@ def test_serving_evidence_manifest_refuses_different_serving_start_moments(tmp_p
     receipt_reference = context.write_serving_receipt(identity, details)
     audit_reference = context.write_serving_launch_audit(
         {
-            "schema": "serving-launch-audit.v1",
+            "schema": "serving-launch-audit.v2",
             "chair": identity.role,
             "started_at": "2026-08-09T12:00:00Z",
             "configuration_inputs": dict(context.serving_config_inputs),

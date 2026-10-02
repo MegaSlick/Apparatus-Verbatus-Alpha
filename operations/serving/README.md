@@ -63,7 +63,7 @@ engine was still loading, refusing connections or answering but not ready, with
 a bounded, credential-scrubbed log tail.
 
 On success the manager publishes three content-addressed blobs: the closed
-`chair-serving-receipt.v1`, the `serving-launch-audit.v1` (profile, argv digest,
+`chair-serving-receipt.v1`, the `serving-launch-audit.v2` (profile, argv digest,
 pins, observed packages, identity, readiness, launch purpose and the sealed
 configuration digests) and `serving-evidence.v1` linking them. `stop()` releases
 the lease only once the process group is gone and the endpoint refuses
