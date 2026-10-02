@@ -401,9 +401,9 @@ class ChairClient:
 
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        traceback: object,
+        exc_type: type[BaseException] | None = None,
+        exc: BaseException | None = None,
+        traceback: object = None,
     ) -> None:
         if self._handle is None:
             return
