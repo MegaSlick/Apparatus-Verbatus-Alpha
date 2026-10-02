@@ -314,7 +314,7 @@ def test_a_join_on_consecutive_pages_is_its_own_section_and_verifies(joined, tmp
 
 def _verify_two_folders(monkeypatch, tmp_path, shown_by_folder: dict[str, list[dict]]) -> None:
     """Run the text-bundle reconstruction check over two folders that section `act_a`."""
-    monkeypatch.setattr(armarium_export, "_text_bundle_records", lambda _root: {})
+    monkeypatch.setattr(armarium_export, "_text_bundle_records", lambda _root, _pages: {})
     monkeypatch.setattr(armarium_export, "_package_lines", lambda path, _label: [str(path)])
     monkeypatch.setattr(
         armarium_export,

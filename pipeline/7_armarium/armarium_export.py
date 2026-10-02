@@ -1543,7 +1543,7 @@ def _verify_coniector_layer(
     elif "jsonl" in formats.formats:
         shown.append([])
     if "text-bundle" in formats.formats:
-        records = _text_bundle_records(root)
+        records = _text_bundle_records(root, sources["pages"])
         literals = {act_id: (record.literal,) for act_id, record in records.items()}
         keys = {act_id: record.heading_key for act_id, record in records.items()}
         corrected = {
@@ -4808,11 +4808,9 @@ def _verify_exact_product_members(
     expected = {EXPORT_MANIFEST_NAME, "sources.json", *selected}
     if "jsonl" in formats.formats:
         expected.add(OTHER_READINGS_MEMBER)
-    # Written only when a delivered act carries a reconstruction; its rows are
+    # Written exactly when `sources.json` records a reconstruction; its rows are
     # verified whole (`_verify_coniector_layer`).
-    if "jsonl" in formats.formats and (
-        CONIECTOR_MEMBER in actual_names or sources.get("reconstructions")
-    ):
+    if "jsonl" in formats.formats and sources.get("reconstructions"):
         expected.add(CONIECTOR_MEMBER)
     # Written exactly when a delivered reading carries an operator row
     # (`_verify_operator_layer`).

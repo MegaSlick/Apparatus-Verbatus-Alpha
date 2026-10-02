@@ -1733,6 +1733,28 @@ def test_unselected_format_members_cannot_hide_inside_a_self_consistent_bundle(t
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
+def test_a_reconstruction_member_with_no_recorded_reconstruction_is_refused(tmp_path):
+    """The writer adds `coniector.jsonl` only when `sources.json` records a
+    reconstruction, so an empty one planted beside none is a member nothing
+    promised."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    assert "reconstructions" not in json.loads(members["sources.json"])
+    members["coniector.jsonl"] = b""
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["members"] = sorted(
+        [
+            *manifest["members"],
+            {"bytes": 0, "path": "coniector.jsonl", "sha256": digest_bytes(b"")},
+        ],
+        key=lambda row: row["path"],
+    )
+    _refresh_manifest(members, manifest)
+
+    with pytest.raises(SchemaRefusal, match=r"selected formats.*unexpected=\['coniector.jsonl'\]"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
 @pytest.mark.parametrize("embed_pixels", [False, True])
 def test_sealed_source_page_cannot_lose_its_pixel_reference(embed_pixels, tmp_path):
     bundle = build_armarium_bundle(
