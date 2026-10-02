@@ -228,3 +228,17 @@ record".
     is the real check, that the gate cannot prove who wrote a decision, the full list of
     old bridge files, and the rewritten rule from entry 0009.
 - **Commits:** 5352b0f0, 1cd3a90a, 379f2373, 00228b9e, 2161b90c.
+
+## 0011 — Outside reading-side sessions written into the protocol
+
+- **Who:** the build-side agent of entry 0002 wrote the section; the host saved the
+  briefs.
+- **Why:** the lead asked that a reading-side session run in a separate chat, as in
+  entries 0006 to 0008, become a standard, written path.
+- **Briefs:**
+  - `briefs/0011a-outside-sessions-section.md` (sha256 5f580f51a90ff47717ea4e4151d89d587baa1c27d383d96f36501a93684d5b80), issued 2026-10-02T18:21:33Z;
+  - `briefs/0011b-quarantine-path.md` (sha256 91508d750c8078114d9996faab068689132e87a234eec13eca556db71fa41543), issued 2026-10-02T18:22:28Z.
+  Both were copied word for word from the session transcript after the agent finished.
+- **What changed:** CLEANROOM.md gained the section "Outside reading-side sessions"
+  (3b4736e7). Its quarantine folder name was then corrected to the one actually used,
+  `workbench/cleanroom-quarantine/` (4b961c4a).
