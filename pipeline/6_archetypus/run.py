@@ -6,13 +6,10 @@ one name at a time (one established text, projected identically);
 `_REGION_FIELDS` closes the same way because a region is embedded whole and
 travels into the export whole.
 
-**Three silences, never collapsed into each other: `no_readable_text`** — a
-positive finding carrying its own evidence; **ink present and unread by a
-human**; and **ink the machine could not see**. The last two are
-indistinguishable from inside the pipeline and both are gaps inside `partial`
--- fine on their own, but never reported as the first. A blank page is
-ordinary material either way, so the refusals here are about the confusion,
-never about blankness.
+**An empty reading is never established.** Ink present and unread, and ink the
+machine could not see, are gaps inside `partial`; a reading with no text and no
+gap is held before it reaches this stage, and a proved blank page is
+`confirmed-blank` at page level, never an established record.
 
 **A witness variant is evidence beside a gap, never a substitute inside `text`.**
 
@@ -39,11 +36,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from common import page_path  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.annotations import (  # noqa: E402, F401  (re-export)
-    ANNOTATION_KINDS,
-    CERTAINTIES,
-    validate_annotations,
-)
 from common.contracts.canonical import (  # noqa: E402
     SCHEMA_LABEL,
     digest_of,
@@ -57,7 +49,6 @@ from common.contracts.outcomes import (  # noqa: E402
     derive_record_text_status,
     terminal_category,
 )
-from common.contracts.outcomes import derive_text_status as derive_text_status  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ARCHETYPUS,
     PERLECTOR,
@@ -98,25 +89,12 @@ from operations.serving.assembly import SERVING_READER  # noqa: E402
 
 DESCRIPTION = "Archetypus: exactly one established reading per act, written once."
 
-# The three silences and their derivation live in `common/contracts/outcomes.py`,
-# not here, because the Armarium recomputes the same status from the layers
-# beside the text at export and stages talk only through `common/`
-# (`pipeline/test_stage_import_boundaries.py`); a private copy here would be a
-# second spelling that drifts. `derive_text_status` is re-exported because this
-# stage's tests exercise it directly.
-
-# The uncertainty layer maps onto the mature TEI P5/EpiDoc convention rather
-# than inventing markup: `<unclear cert="">` for characters that ARE in `text`, `<gap>` for a
-# zero-width anchor where none were read. Rendering either is the Armarium's
-# business at export time, deliberately not stored. The layer's closed
-# vocabularies and validator live in `common/contracts/annotations.py` and are
-# re-exported here for the same reason: one spelling, so producer and consumer
-# cannot drift about what the layer may hold.
+# The text status is derived in `common/contracts/outcomes.py`, because the
+# Armarium recomputes the same status from the uncertainty layer at export.
 
 # The record's whole field set, closed, so "is there a second text-bearing field?"
 # is answered mechanically rather than by reading the constructor. Every field is
-# required; `evidence_ref` is present and null except under `no_readable_text`,
-# so the set never varies by act.
+# required, so the set never varies by act.
 _RECORD_FIELDS = frozenset(
     {
         "act_id",
@@ -129,9 +107,7 @@ _RECORD_FIELDS = frozenset(
         "text_status",
         "regions",
         "provenance",
-        "annotations",
         "uncertainty",
-        "evidence_ref",
         "dissent_ref",
         "perlectio_ref",
         "recensor_ref",
@@ -184,13 +160,12 @@ def _is_ref_shaped(value) -> bool:
     return True
 
 
-def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
-    """Refuse a status the text does not support.
+def validate_text_status(text: str, text_status: str) -> None:
+    """Refuse a status the text does not support, and every empty reading.
 
-    An empty `text` with `established` status is refused at the schema.
-    `no_readable_text` is a positive finding and requires its own evidence
-    reference — an unlabeled empty string is never proof that a page was blank,
-    and taking it as one would be a silent loss.
+    An empty `text` with `established` status is refused at the schema, and so
+    is `no_readable_text`: an empty reading is held before this stage, so an
+    established record of one would deliver nothing as though it were a reading.
     """
     if text_status not in TEXT_STATUSES:
         raise SchemaRefusal(f"text_status {text_status!r} is not one of {sorted(TEXT_STATUSES)}")
@@ -200,21 +175,10 @@ def validate_text_status(text: str, text_status: str, evidence_ref) -> None:
             "established reading has text, or it is not established"
         )
     if text_status == "no_readable_text":
-        if text.strip() != "":
-            raise SchemaRefusal(
-                "no_readable_text must carry empty (or all-whitespace) text; text with "
-                "actual content is not a positive finding of no ink"
-            )
-        if not _is_ref_shaped(evidence_ref):
-            raise SchemaRefusal(
-                "no_readable_text is a positive finding about the page and requires its "
-                "evidence reference; an unlabeled empty string is never proof that a page "
-                "was blank"
-            )
-    elif evidence_ref is not None:
         raise SchemaRefusal(
-            f"text_status {text_status!r} carries a no_readable_text evidence reference, "
-            "which only that status may carry"
+            "an Archetypus record never establishes a reading with no text and no gap; "
+            "an empty reading is held for review, and a blank page is confirmed blank at "
+            "page level"
         )
 
 
@@ -242,10 +206,9 @@ def validate_record(record: dict) -> dict:
     itself, on every later stage-local read, so that a derived index cannot turn
     a resealed but internally contradictory payload into a trusted summary.
 
-    The annotation layer goes back through `validate_annotations` — without a
-    witness roster, which a record read off disk cannot have — and the result
-    must equal what is stored, so no second copy of those rules lives here to
-    drift from the first.
+    The uncertainty layer goes back through its shared validator and the text
+    status is derived from it again, so no second copy of those rules lives here
+    to drift from the first.
     """
     if not isinstance(record, dict):
         raise SchemaRefusal("the Archetypus record is not an object")
@@ -266,20 +229,14 @@ def validate_record(record: dict) -> dict:
         raise SchemaRefusal("the Archetypus text_hash disagrees with its one text")
     if record["status"] != "established":
         raise SchemaRefusal("the Archetypus record status is not the fixed 'established' literal")
-    annotations = record["annotations"]
-    if validate_annotations(annotations, text, None, "Archetypus annotation") != annotations:
-        raise SchemaRefusal(
-            "the Archetypus annotations are not in the exact form validation produces; a "
-            "resealed record may not carry a shape the constructor would never have written"
-        )
     validate_uncertainty(record["uncertainty"], text)
-    derived_status = derive_record_text_status(text, annotations, record["uncertainty"])
+    derived_status = derive_record_text_status(text, [], record["uncertainty"])
     if record["text_status"] != derived_status:
         raise SchemaRefusal(
             f"the Archetypus text_status {record['text_status']!r} disagrees with its text "
             f"and gaps (expected {derived_status!r})"
         )
-    validate_text_status(text, record["text_status"], record["evidence_ref"])
+    validate_text_status(text, record["text_status"])
     regions = record["regions"]
     if not isinstance(regions, list) or not regions:
         raise SchemaRefusal("the Archetypus record retains no source region")
@@ -469,8 +426,8 @@ def establish_from_accepted_page_reading(
             "the row's own reading; a held reading is written only when operator decisions "
             "override every hold it carries"
         )
-    # The closed Perlectio schema has no tier, salvage or annotation field, so
-    # anything carrying one is refused here rather than read past.
+    # The Perlectio schema is closed, so a reading carrying any other field is
+    # refused here rather than read past.
     if not page_path.is_perlectio_field_set(payload):
         raise SchemaRefusal(
             f"the page reading of {row['act_key']} carries fields other than the closed "
@@ -499,8 +456,6 @@ def establish_from_accepted_page_reading(
     model_text = payload.get("text")
     if not isinstance(model_text, str):
         raise SchemaRefusal("the accepted page reading has no string text")
-    # A page reading records its doubt as spans and gaps; it has no annotation layer.
-    annotations: list[dict] = []
     model_uncertainty = from_page_perlectio(payload)
     edits: list = []
     if corrections is None:
@@ -512,13 +467,11 @@ def establish_from_accepted_page_reading(
             edits,
             perlectio_ref=reading_ref,
             model_text=model_text,
-            model_text_status=derive_record_text_status(model_text, annotations, model_uncertainty),
+            model_text_status=derive_record_text_status(model_text, [], model_uncertainty),
             model_provenance=payload.get("provenance"),
         )
-    text_status = derive_record_text_status(text, annotations, uncertainty)
-    # No page review carries a blank proof, so a record's evidence_ref is null.
-    evidence_ref = None
-    validate_text_status(text, text_status, evidence_ref)
+    text_status = derive_record_text_status(text, [], uncertainty)
+    validate_text_status(text, text_status)
     validate_serving_provenance(
         context,
         payload.get("provenance"),
@@ -536,9 +489,7 @@ def establish_from_accepted_page_reading(
         "text_status": text_status,
         "regions": regions,
         "provenance": provenance,
-        "annotations": annotations,
         "uncertainty": uncertainty,
-        "evidence_ref": evidence_ref,
         "dissent_ref": reading_ref,
         "perlectio_ref": reading_ref,
         "recensor_ref": review_ref,

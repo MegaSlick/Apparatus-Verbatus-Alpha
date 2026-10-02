@@ -239,7 +239,6 @@ def _sealed_page_record(armarium, row, reading_payload, region, **changes):
         "text": reading_payload["text"],
         "regions": [region],
         "provenance": reading_payload["provenance"],
-        "annotations": [],
         "uncertainty": armarium.from_page_perlectio(reading_payload),
         "text_status": "established",
         "recensor_ref": {"relative_path": "5_recensor/artifacts/review/v.json", "sha256": "b" * 64},

@@ -56,7 +56,6 @@ from common.background import (  # noqa: E402
     validate_measured_ink_map_payload,
 )
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.annotations import validate_annotations  # noqa: E402
 from common.contracts.canonical import verify_self_hash  # noqa: E402
 from common.contracts.envelope import read_verified  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
@@ -824,12 +823,6 @@ def verify_established_page_record(
             f"the act-region of {row['act_key']} does not trace to the Exemplar: {error}"
         ) from error
     try:
-        annotations = validate_annotations(
-            reading_payload.get("annotations", []),
-            reading_payload.get("text"),
-            None,
-            f"the reading of {row['act_key']} annotations",
-        )
         model_uncertainty = from_page_perlectio(reading_payload)
         corrections = operator_correction(row, review, applied)
         edits: list = []
@@ -844,11 +837,11 @@ def verify_established_page_record(
                 perlectio_ref=reading_ref,
                 model_text=reading_payload.get("text"),
                 model_text_status=derive_record_text_status(
-                    reading_payload.get("text"), annotations, model_uncertainty
+                    reading_payload.get("text"), [], model_uncertainty
                 ),
                 model_provenance=reading_payload.get("provenance"),
             )
-        text_status = derive_record_text_status(payload.get("text"), annotations, uncertainty)
+        text_status = derive_record_text_status(payload.get("text"), [], uncertainty)
     except SchemaRefusal as error:
         raise FatalAccounting(
             f"the damage layers of {row['act_key']} cannot be reconciled with its reading"
@@ -857,7 +850,6 @@ def verify_established_page_record(
         payload.get("text") != text
         or payload.get("regions") != [region]
         or payload.get("provenance") != provenance
-        or payload.get("annotations") != annotations
         or payload.get("uncertainty") != uncertainty
         or payload.get("text_status") != text_status
     ):
