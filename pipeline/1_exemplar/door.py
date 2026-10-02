@@ -1685,8 +1685,11 @@ def real_submission(args, registry) -> int:
     manifest_path = gate.require_approved_storage_location(
         Path(args.submission_manifest), roots, "submission filename ledger"
     )
+    # The tree is written at run_root/run_id, so that is what must stay apart
+    # from the submitted folder, and checked before anything under it is read.
+    tree_root = RunTree(run_root, args.run_id).root
+    _refuse_overlapping_run_tree(tree_root, submission_folder, "submitted folder")
     _refuse_halted_run_root(run_root, args)
-    _refuse_inside_submission(run_root, submission_folder, "run root")
     _refuse_inside_submission(manifest_path, submission_folder, "submission filename ledger")
     ledger = submission_ledger.load_manifest(manifest_path)
     canary_ledger = None
@@ -1710,7 +1713,7 @@ def real_submission(args, registry) -> int:
         _refuse_inside_submission(canary_manifest_path, canary_folder, "canary filename ledger")
         _refuse_inside_submission(canary_manifest_path, submission_folder, "canary filename ledger")
         _refuse_inside_submission(manifest_path, canary_folder, "submission filename ledger")
-        _refuse_inside_submission(run_root, canary_folder, "run root")
+        _refuse_overlapping_run_tree(tree_root, canary_folder, "canary folder")
         canary_ledger = submission_ledger.load_manifest(canary_manifest_path)
         real_paths = {row["relative_path"] for row in ledger["files"]}
         real_digests = {row["sha256"] for row in ledger["files"]}
@@ -1875,6 +1878,20 @@ def real_submission(args, registry) -> int:
         for ledger_sources in (real_sources, canary_sources)
     ]
     return _finish_door_run(context, admitted, canary_admitted=canary_admitted)
+
+
+def _refuse_overlapping_run_tree(tree_root: Path, folder: Path, label: str) -> None:
+    """Refuse a run tree that is, holds, or lies inside a folder of submitted pages.
+
+    Inside the folder, the next inventory would read pipeline records as sources;
+    holding it, the run would write into material it was handed. Compared by
+    filesystem identity, as `_refuse_inside_submission` explains.
+    """
+    if gate.same_or_inside(folder, tree_root) or gate.same_or_inside(tree_root, folder):
+        raise ContractError(
+            f"the run tree (run root plus run id) and the {label} overlap; a run may "
+            "neither write into submitted material nor be inventoried as part of it"
+        )
 
 
 def _refuse_inside_submission(location: Path, submission_folder: Path, label: str) -> None:

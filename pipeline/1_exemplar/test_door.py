@@ -1774,7 +1774,7 @@ def test_real_door_refuses_invalid_canary_ingress(tmp_path, monkeypatch, case, m
     [
         ("canary-manifest", "canary filename ledger cannot live inside"),
         ("real-manifest", "submission filename ledger cannot live inside"),
-        ("run-root", "run root cannot live inside"),
+        ("run-root", "run tree .* and the canary folder overlap"),
     ],
 )
 def test_real_door_refuses_canary_and_real_folder_cross_containment(
@@ -2624,7 +2624,7 @@ def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventor
     _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png()}
     )
-    with pytest.raises(ContractError, match="run root cannot live inside the submitted folder"):
+    with pytest.raises(ContractError, match="run tree .* and the submitted folder overlap"):
         _run_real_door(
             monkeypatch,
             run_root=source / "runs",
@@ -2634,6 +2634,27 @@ def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventor
             run_id="contained-run-root",
         )
     assert not (source / "runs").exists()
+
+
+def test_a_run_tree_that_is_the_submitted_folder_is_refused_before_anything_is_written(
+    tmp_path, monkeypatch
+):
+    """`--run-root` outside the folder is not enough: the tree is run root plus run
+    id, which here is the submitted folder itself."""
+    _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png()}
+    )
+    before = sorted(path.name for path in source.iterdir())
+    with pytest.raises(ContractError, match="run tree .* and the submitted folder overlap"):
+        _run_real_door(
+            monkeypatch,
+            run_root=source.parent,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id=source.name,
+        )
+    assert sorted(path.name for path in source.iterdir()) == before
 
 
 def test_containment_is_decided_by_filesystem_identity_not_path_spelling(tmp_path):
