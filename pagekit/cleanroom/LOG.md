@@ -88,3 +88,30 @@ record".
   matches. Tests check that both brief lines refused by mistake now pass and that
   notices in several formats are still caught. The brief was then committed unchanged
   in e066edae.
+
+## 0006 — The lead's reading-side working document received
+
+- **Who:** the lead, working with a Claude chat session outside this repository. The
+  lead keeps that chat session, so its transcript can be checked later.
+- **What:** a working document about ScanTailor Advanced, written in that session
+  before this protocol existed. Received by the host session on 2026-10-02 at
+  17:16:42 UTC: 2,585 lines, sha256
+  f4d912e4caed42d5a1963db47c74547cc461487fd78445e5ce348b61cd331290.
+- **What was done:** the host did not open it. The host ran the report check on it
+  first. It failed on 920 counts: code marks (362), file names (193), line-number
+  references (135), lines ending in a semicolon (129), sections outside the template
+  (55), paths (30), braces (7), code tokens (6), and the template's structure. These
+  are expected for working notes from a reading session, and they mean the document
+  cannot go to the build side as it is. It is kept only in the local, git-ignored
+  quarantine folder and is never committed. Neither the host nor any build-side agent
+  has read it.
+- **Next:** a reading-side agent distils it into finding reports (entry 0007).
+
+## 0007 — Reading side: distil the lead's document into finding reports
+
+- **Who:** a reading-side agent (Claude Opus 5.5), started after this entry was
+  committed.
+- **Brief:** `briefs/0007-read-lead-document.md` (sha256
+  5312f3531b6e1a561c1b5d4d572977aaf3a50b2aa5bcefb8917946d977930c1d).
+- **Outcome:** recorded in a later entry once the host has run the report check on
+  each report.
