@@ -10,7 +10,7 @@
 # /workspace/private/.pod_guard, on the network volume at the pod's mount path). To extend
 # the deadline, write the new epoch second to a temporary file and move it over
 # deadline-<pod id>. Touching keepalive-<pod id> counts as work at that moment: the idle
-# limit then runs from the touch; pod_run touches it while the orchestrator runs. The guard touches heartbeat-<pod id> on every tick, so
+# limit then runs from the touch; pod_run touches it while the orchestrator shows progress. The guard touches heartbeat-<pod id> on every tick, so
 # a reader can tell a live guard from a deadline file nobody watches; a released-<pod id>
 # file (pod_run --no-hold writes the run and its outcome there) is quoted in the delete
 # notice, so a finished run's notice differs from one whose time ran out mid-run.

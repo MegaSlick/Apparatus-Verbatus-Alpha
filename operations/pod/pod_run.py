@@ -158,6 +158,7 @@ from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
 from operations.pod.notify_hooks import (
     RunnerFactory,
     environment_runner,
+    notify_stall_from_guard,
     notify_systemic_from_guard,
 )
 from operations.serving.config import ServingConfigInputs
@@ -1247,6 +1248,91 @@ def _guard_heartbeat_age(volume: Path, pod_id: str, instant: float) -> int | Non
     return max(0, int(instant - beat))
 
 
+# How long a live orchestrator may show no progress (no CPU time in its process tree, no
+# new transcript output) before pod_run stops holding the pod and leaves the guard's idle
+# check to decide. UNMEASURED: no stage's longest quiet stretch has been measured yet.
+RUN_STALL_SECONDS = 15 * 60
+
+
+def process_tree_cpu_ticks(pid: int, proc: Path = Path("/proc")) -> int | None:
+    """CPU time used by `pid` and every live descendant, plus the children each reaped, in
+    clock ticks; None where /proc cannot say (not Linux, or the process is gone)."""
+
+    parents: dict[int, int] = {}
+    used: dict[int, int] = {}
+    try:
+        entries = list(proc.iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            text = (entry / "stat").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        # The command name sits in parentheses and may hold spaces or parentheses itself.
+        fields = text[text.rfind(")") + 2 :].split()
+        try:
+            parents[int(entry.name)] = int(fields[1])
+            used[int(entry.name)] = sum(int(value) for value in fields[11:15])
+        except (IndexError, ValueError):
+            continue
+    if pid not in used:
+        return None
+    tree = {pid}
+    grew = True
+    while grew:
+        grew = False
+        for child, parent in parents.items():
+            if parent in tree and child not in tree:
+                tree.add(child)
+                grew = True
+    return sum(used[member] for member in tree)
+
+
+class RunProgress:
+    """Whether a live orchestrator is still doing something, judged once per liveness tick.
+
+    Progress is CPU time gained anywhere in its process tree or output added to its
+    transcript. A run that shows neither for `stall_seconds` is stalled until either
+    moves again; `stalled_since` names the last moment it showed progress.
+    """
+
+    def __init__(
+        self,
+        *,
+        sample: Callable[[int], tuple[int | None, int | None]],
+        now: Callable[[], datetime],
+        stall_seconds: float = RUN_STALL_SECONDS,
+    ) -> None:
+        self._sample = sample
+        self._now = now
+        self._stall_seconds = stall_seconds
+        self._last: tuple[int | None, int | None] | None = None
+        self.last_progress: datetime | None = None
+
+    def advancing(self, pid: int) -> bool:
+        current = self._sample(pid)
+        instant = self._now()
+        previous, self._last = self._last, current
+        moved = previous is None or any(
+            new is not None and (old is None or new > old)
+            for new, old in zip(current, previous, strict=True)
+        )
+        if moved or self.last_progress is None:
+            self.last_progress = instant
+            return True
+        return (instant - self.last_progress).total_seconds() < self._stall_seconds
+
+
+def _file_size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
 def _guard_keepalive(volume: Path, pod_id: str | None) -> Callable[[], None]:
     """Touch this pod's guard keep-alive file, so a running orchestrator counts as work.
 
@@ -1777,11 +1863,38 @@ def main(
     _write_run_report(plan, {**running, "state": "running", "exit_code": None})
     journal = _liveness_journal(plan, base, now=now)
     keepalive = _guard_keepalive(plan.bootstrap.volume_mount_path, pod_id)
+    progress = RunProgress(
+        sample=lambda pid: (process_tree_cpu_ticks(pid), _file_size(plan.transcript_path)),
+        now=now,
+    )
+    stall_noticed = False
 
     def liveness(pid: int, alive: bool) -> None:
+        # Only a run that is visibly working holds the pod: a hung child stops touching
+        # the keep-alive after the stall window, and the guard's idle check decides.
+        nonlocal stall_noticed
         journal(pid, alive)
-        if alive:
+        if not alive:
+            return
+        if progress.advancing(pid):
+            stall_noticed = False
             keepalive()
+            return
+        if not stall_noticed and _is_pod_id(pod_id) and progress.last_progress is not None:
+            stall_noticed = True
+            # Minutes, spaced: the credential check reads a compact ISO stamp as a token.
+            since = progress.last_progress.strftime("%Y-%m-%d %H:%M UTC")
+            outcome = notify_stall_from_guard(
+                pod_id=pod_id,
+                since=since,
+                volume_mount=plan.bootstrap.volume_mount_path,
+                runner_factory=notify_runner,
+            )
+            print(
+                f"pod_run {plan.run_id}: no progress since {since}; the guard's idle check "
+                f"now decides. {outcome.line()}",
+                file=sys.stderr,
+            )
 
     try:
         completed = runner(

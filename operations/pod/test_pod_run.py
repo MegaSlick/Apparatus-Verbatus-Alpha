@@ -3826,3 +3826,100 @@ def test_a_descendant_holding_the_pipe_cannot_stop_the_runner_from_returning(
     assert completed.returncode == 0
     assert "still attached" in completed.transcript_failure
     assert "parent" in transcript.read_text(encoding="utf-8")
+
+
+# --- a run holds its pod only while it shows progress -------------------------------
+
+
+def _stalling_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cpu: list[int]
+) -> tuple[list[float], list[list[str]]]:
+    """Drive one run whose orchestrator ticks once per five minutes with these CPU readings.
+
+    Returns the minute of each keep-alive touch and every notice argv.
+    """
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    _first_process(tmp_path, monkeypatch, "pod123")
+    topic = ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic"
+    topic.parent.mkdir(parents=True, exist_ok=True)
+    topic.write_text("guard-topic-for-the-test\n", encoding="utf-8")
+    start = clock.now()
+    touches: list[float] = []
+    monkeypatch.setattr(
+        pod_run,
+        "_guard_keepalive",
+        lambda volume, pod_id: lambda: touches.append((clock.now() - start).total_seconds() / 60),
+    )
+    readings = iter(cpu)
+    monkeypatch.setattr(pod_run, "process_tree_cpu_ticks", lambda pid: next(readings))
+    notify = NotifyRecorder()
+
+    class Ticking(RecordedRunner):
+        def __call__(self, argv, *, cwd, env, transcript, liveness, interval_seconds):  # type: ignore[no-untyped-def]
+            for _ in cpu:
+                clock.sleep(300)
+                liveness(self.pid, True)
+            return super().__call__(
+                argv,
+                cwd=cwd,
+                env=env,
+                transcript=transcript,
+                liveness=liveness,
+                interval_seconds=interval_seconds,
+            )
+
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=Ticking(),
+        notify_runner=notify.factory,
+    )
+    assert code == EXIT_COMPLETE
+    stalls = [call for call in notify.calls if "shows no progress" in call[-1]]
+    return touches, stalls
+
+
+def test_a_progressing_run_holds_its_pod_on_every_tick(tmp_path, monkeypatch) -> None:
+    touches, stalls = _stalling_run(tmp_path, monkeypatch, [1, 2, 3, 4, 5, 6])
+    assert touches == [5, 10, 15, 20, 25, 30]
+    assert stalls == []
+
+
+def test_a_hung_run_stops_holding_its_pod_after_the_stall_window_and_says_so_once(
+    tmp_path, monkeypatch
+) -> None:
+    assert pod_run.RUN_STALL_SECONDS == 15 * 60
+    touches, stalls = _stalling_run(tmp_path, monkeypatch, [5] * 7)
+    # Last progress at minute 5: held through minute 15, released from minute 20 on.
+    assert touches == [5, 10, 15]
+    [notice] = stalls
+    assert notice[-2] == "decision"
+    assert notice[-1].startswith("run on pod123 shows no progress since ")
+    assert notice[-1].endswith("since 2026-01-01 00:05 UTC; the idle guard now decides")
+
+
+def test_progress_after_a_stall_holds_the_pod_again(tmp_path, monkeypatch) -> None:
+    touches, stalls = _stalling_run(tmp_path, monkeypatch, [5, 5, 5, 5, 5, 6, 6])
+    assert touches == [5, 10, 15, 30, 35]
+    assert len(stalls) == 1
+
+
+def test_process_tree_cpu_counts_every_descendant_and_nothing_else(tmp_path: Path) -> None:
+    def process(pid: int, parent: int, used: tuple[int, int, int, int], name: str) -> None:
+        entry = tmp_path / str(pid)
+        entry.mkdir()
+        fields = ["S", str(parent), *["0"] * 9, *map(str, used), "20", "0"]
+        (entry / "stat").write_text(f"{pid} ({name}) {' '.join(fields)}\n", encoding="ascii")
+
+    process(10, 1, (1, 2, 3, 4), "orchestrator")
+    process(11, 10, (5, 5, 0, 0), "a stage (with) parens")
+    process(12, 11, (7, 0, 0, 0), "grandchild")
+    process(20, 1, (100, 100, 0, 0), "unrelated")
+    (tmp_path / "self").mkdir()
+
+    assert pod_run.process_tree_cpu_ticks(10, tmp_path) == 10 + 10 + 7
+    assert pod_run.process_tree_cpu_ticks(99, tmp_path) is None

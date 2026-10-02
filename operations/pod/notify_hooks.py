@@ -219,3 +219,15 @@ def notify_systemic_from_guard(
     return notify_systemic(
         run_id=run_id, alarm_line=alarm_line, runner=runner_factory(notify_environment(topic))
     )
+
+
+def notify_stall_from_guard(
+    *, pod_id: str, since: str, volume_mount: Path, runner_factory: RunnerFactory
+) -> NotifyOutcome:
+    """One `decision` line, with the pod guard's topic, that a run stopped showing progress
+    and stopped holding its pod: from here the guard's idle check decides."""
+    topic = guard_topic(volume_mount)
+    if topic is None:
+        return NotifyOutcome(False, False, NO_GUARD_TOPIC)
+    message = f"run on {pod_id} shows no progress since {since}; the idle guard now decides"
+    return _send(message, runner=runner_factory(notify_environment(topic)), event="decision")
