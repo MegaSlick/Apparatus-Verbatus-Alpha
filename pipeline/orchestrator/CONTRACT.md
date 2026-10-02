@@ -109,7 +109,7 @@ is an explicit choice, and the run is not trapped. The alarm never goes silent:
 - `verbatus run` notifies the line as a `decision` through `operations/notify` when
   notifications are on, at the stop and on a held export, and `verbatus export` names it
   in a partial export's notification;
-- the invocation's stop record (`--stop-record`, `orchestrator-stop.v1`) names the line
+- the invocation's stop record (`--stop-record`, `orchestrator-stop.v2`, which added it to v1) names the line
   as `systemic` (null when none was printed), and `pod_run --notify` sends it from the
   pod as the same `decision` (`operations/pod/notify_hooks.py::notify_systemic`).
 

@@ -1178,6 +1178,7 @@ def test_only_this_invocations_stop_record_names_its_systemic_alarm(tmp_path: Pa
     assert stop(systemic="  ") is None
     assert stop(systemic=3) is None
     assert stop(systemic=line, run_id="another") is None
+    assert stop(systemic=line, schema="orchestrator-stop.v1") is None
     path.write_text("{", encoding="utf-8")
     assert pod_run.systemic_this_invocation(path, "r") is None
 
