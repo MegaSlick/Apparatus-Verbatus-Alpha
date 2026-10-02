@@ -1451,3 +1451,16 @@ def test_an_act_that_was_never_read_is_not_told_its_reading_predates_a_contract(
             review_text.render(_reading_act({"outcome": "read", "text": text, "reason": "damaged"}))
         assert refused.value.field == "acts[].row.reading.text"
         assert refused.value.index is None
+
+
+def test_a_view_review_cannot_read_out_is_its_own_refusal(
+    witnessed_run: Path, monkeypatch: pytest.MonkeyPatch
+):
+    def malformed(_projection):
+        raise review_text.ProjectionShapeError("holds", 0, 1)
+
+    monkeypatch.setattr(review_text, "render", malformed)
+    with pytest.raises(OperatorError) as refused:
+        cli._review(witnessed_run, RUN_ID)
+    assert refused.value.code is ErrorCode.CONSOLE_PROJECTION_UNREADABLE
+    assert "'holds' entry 0" in (refused.value.detail or "")

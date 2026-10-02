@@ -830,3 +830,22 @@ def test_a_refused_backup_is_recorded_with_its_reason(tmp_path: Path) -> None:
     assert payload["run_id"] == "../escape"
     assert "run id is invalid" in payload["detail"]
     assert "Saved backup state: refused." in "\n".join(surface.status())
+
+
+@pytest.mark.parametrize("error", [ValueError("bad"), TypeError("bad"), RecursionError("deep")])
+def test_an_unexpected_copy_failure_is_a_recorded_backup_refusal(
+    tmp_path: Path, monkeypatch, error: BaseException
+) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    surface = _surface(tmp_path)
+
+    def fails(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(backup_module, "sync_run_tree", fails)
+    with pytest.raises(OperatorError) as failure:
+        cli._backup(volume, run_id, tmp_path / "mac", surface)
+
+    assert failure.value.code is ErrorCode.BACKUP_FAILED
+    payload = surface.receipts.read(surface._descriptor_receipt("backup"))["payload"]
+    assert payload["state"] == "refused"

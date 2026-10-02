@@ -1080,7 +1080,11 @@ def _review(run_root: Path, run_id: str, *, raw: bool = False, review_page: int 
     if raw:
         _print(json.dumps(projection, sort_keys=True))
         return
-    for line in review_text.render(projection):
+    try:
+        lines = review_text.render(projection)
+    except review_text.ProjectionShapeError as error:
+        raise OperatorError(ErrorCode.CONSOLE_PROJECTION_UNREADABLE, detail=str(error)) from error
+    for line in lines:
         _print(line)
 
 
@@ -1101,12 +1105,12 @@ def _backup(run_root: Path, run_id: str, mac_directory: Path, surface: OperatorS
     }
     try:
         report = sync_run_tree(Path(run_root).resolve(), run_id, mac_directory)
-    except (BackupRefusal, OSError) as refusal:
+    except (BackupRefusal, OSError, ValueError, TypeError, RecursionError) as refusal:
         surface.record_backup(state="refused", facts=facts, detail=str(refusal))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
     try:
         verify_backup_snapshot(Path(mac_directory).absolute().resolve(), run_id, report)
-    except (BackupRefusal, OSError) as error:
+    except (BackupRefusal, OSError, ValueError, TypeError, RecursionError) as error:
         surface.record_backup(state="unverified", facts=facts, detail=str(error))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
     receipt = surface.record_backup(state="complete", facts=facts, report=report.to_record())
