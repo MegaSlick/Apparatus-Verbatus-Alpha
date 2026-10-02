@@ -280,3 +280,16 @@ record".
   their digests in entry 0008. This entry is the correction. A builder citing finding
   0021 must also cite this entry.
 
+
+## 0015 — Brief 0013 done
+
+- **Commits:** 54102dbe, 7aae664b, edfae7b4, f29545ef, d51341dd.
+- **What changed:**
+  - The commit hook refuses a commit when the clean room exists but its gate file does
+    not.
+  - Only the `Source:` line itself is exempt from the code-shape rules.
+  - Lifting a HOLD needs a decision in every incident note.
+  - A failed read of a note on the base branch stops the check instead of passing.
+- **The agent's own account:** it opened only pagekit's clean-room code and tests, the
+  report-check part of CLEANROOM.md and the hook files. It saw no ScanTailor or other
+  GPL source. All 35 accepted findings still pass the report check unchanged.
