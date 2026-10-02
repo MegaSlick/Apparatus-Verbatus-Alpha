@@ -30,7 +30,10 @@ body:
     id: ran
     attributes:
       label: What you ran
-      description: The exact commands, in order.
+      description: >-
+        The exact commands, in order. Replace any path or file name that could identify a
+        record or a person with a neutral placeholder (for example input/page-001.tif),
+        and keep every option and argument so the problem can be reproduced.
       render: shell
     validations:
       required: true

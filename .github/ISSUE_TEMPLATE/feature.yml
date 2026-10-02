@@ -29,7 +29,9 @@ body:
     id: ran
     attributes:
       label: What you ran
-      description: The commands that show the current behaviour.
+      description: >-
+        The commands that show the current behaviour. If the feature is new and nothing
+        shows it today, write "Not applicable".
       render: shell
     validations:
       required: true
