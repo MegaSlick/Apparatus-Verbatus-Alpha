@@ -469,8 +469,19 @@ def build_armarium_bundle(
     ``read_bytes`` is used only for image blobs already verified by Armarium's
     upstream boundary.  It is never used to discover or recover text.
     """
-    _validate_projection(projection)
+    ink_map_rows = _validate_projection(projection)
     _validate_projection_region_bindings(projection)
+    # Derived once and handed to every writer that states them.
+    edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
+    other_outcomes = _other_outcomes(projection.other_readings)
+    ledger = _terminal_ledger(
+        _act_outcomes(projection.acts),
+        list(projection.pages),
+        projection.aggregate_basis["act_pages"],
+        projection.aggregate,
+        edge_hold_pages,
+        other_outcomes,
+    )
 
     members: dict[str, bytes] = {}
     source_rows, embedded = _source_rows(projection.pages, formats.embed_pixels, read_bytes)
@@ -497,7 +508,7 @@ def build_armarium_bundle(
         "witness_floor": projection.witness_floor,
         # Lets a clean-machine verifier derive the page-level hold itself.
         "ink_map_pages": list(projection.ink_map_pages),
-        "other_outcomes": _other_outcomes(projection.other_readings),
+        "other_outcomes": other_outcomes,
         "other_citations": _act_citations(projection.other_readings),
         "page_accounting": list(projection.page_accounting),
         "act_readings": _act_readings(projection.acts),
@@ -532,7 +543,6 @@ def build_armarium_bundle(
         }
     members["sources.json"] = canonical_bytes(sources_record)
 
-    ledger = _projection_ledger(projection)
     if "text-bundle" in formats.formats:
         members.update(
             _text_bundle_members(
@@ -573,7 +583,9 @@ def build_armarium_bundle(
     members.update(embedded_crops)
     members.update(embedded_other_crops)
 
-    manifest = _export_manifest(projection, formats, members, ledger)
+    manifest = _export_manifest(
+        projection, formats, members, ledger, ink_map_rows, edge_hold_pages, other_outcomes
+    )
     archive_members = {EXPORT_MANIFEST_NAME: canonical_bytes(manifest), **members}
     data = _zip_bytes(archive_members)
     # A package that does not survive a clean extraction must fail before it
@@ -678,7 +690,9 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_canonical_text_claim(manifest)
     _verify_uncertainty_claim(manifest)
     _verify_exact_product_members(formats, sources, actual_names)
-    search_fold_verification = _verify_product_accounting(root, manifest, formats, sources)
+    search_fold_verification, operator_labels = _verify_product_accounting(
+        root, manifest, formats, sources
+    )
     if "text-bundle" in formats.formats:
         _verify_text_bundle_status(root, manifest, sources)
     _verify_page_layers(root, manifest, formats, sources)
@@ -688,7 +702,9 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     recorded = _operator_rows(sources, manifest)
     models = _model_readings_shown(root, formats, sources, actual_names, recorded)
     _verify_coniector_layer(root, formats, sources, actual_names, models)
-    _verify_operator_layer(root, manifest, formats, sources, actual_names, recorded)
+    _verify_operator_layer(
+        root, manifest, formats, sources, actual_names, recorded, operator_labels
+    )
     verification = {}
     if search_fold_verification is not None:
         verification["search_fold"] = search_fold_verification
@@ -1593,26 +1609,21 @@ def _verify_operator_layer(
     sources: dict[str, Any],
     actual_names: set[str],
     recorded: list[dict[str, Any]],
+    operator_labels: dict[str, str | None] | None,
 ) -> None:
     """Every format that carries the operator layer shows exactly the rows `sources.json` records.
 
     `operator.jsonl` carries them when the JSONL format is selected, the text
     bundle shows each once beneath its reading's section in every folder that
     sections the reading, and the acts database names each act's label in its
-    `operator_label` column, so a label dropped from a format is refused.
+    `operator_label` column (`operator_labels`, by act id; None without the
+    database), so a label dropped from a format is refused.
     """
     _verify_reading_holds(sources, manifest, recorded)
     _verify_corrections(root, formats, sources, recorded)
-    if "acts-database" in formats.formats:
-        labels = dict(
-            _read_acts_database(
-                root / "acts.sqlite",
-                "SELECT act_id, operator_label FROM acts",
-                "the acts database cannot be read for its operator labels",
-            )
-        )
+    if operator_labels is not None:
         expected = {row["act_id"]: row["label"] for row in recorded if row["kind"] == "act"}
-        if labels != {act_id: expected.get(act_id) for act_id in labels}:
+        if operator_labels != {act_id: expected.get(act_id) for act_id in operator_labels}:
             raise SchemaRefusal(
                 "the acts database does not label exactly the acts an operator released or "
                 "corrected, as their operator rows do"
@@ -2150,7 +2161,8 @@ def _not_measured_claim(projection: ArmariumProjection) -> dict[str, Any]:
     }
 
 
-def _validate_projection(projection: ArmariumProjection) -> None:
+def _validate_projection(projection: ArmariumProjection) -> list[dict[str, Any]]:
+    """Refuse a projection no run could produce; return its validated ink-map rows."""
     has_fixture = _is_nonempty_str(projection.fixture_id)
     has_submission = _is_nonempty_str(projection.submission_id)
     if not has_fixture and not has_submission:
@@ -2270,6 +2282,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("an Armarium projection aggregate does not match its measured basis")
+    return ink_map_rows
 
 
 def _validate_page_projection(
@@ -2346,11 +2359,8 @@ def _other_outcomes(others: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     """Each other reading's text-free terminal record, beside the act outcomes."""
     return [
         {
-            "act_id": other["act_id"],
-            "act_key": other["act_key"],
+            **_row_head(other),
             "page_ordinal": other["page_ordinal"],
-            "category": other["category"],
-            "reason": _export_reason(other),
             "text_status": other.get("text_status"),
         }
         for other in sorted(others, key=lambda item: item["act_id"])
@@ -3050,8 +3060,7 @@ def _text_bundle_members(
     not_delivered = _not_delivered_by_folder(
         [
             _not_delivered_row(reading, kind)
-            for reading, kind in [(act, "act") for act in acts]
-            + [(other, "other") for other in others]
+            for reading, kind in _readings_by_kind(acts, others)
             if reading["category"] != ArmariumCategory.DELIVERED.value
         ],
         source_rows,
@@ -3129,14 +3138,7 @@ def _folder_status_lines(status: str, delivered: int, not_delivered: int) -> lis
 def _not_delivered_row(reading: dict[str, Any], kind: str) -> dict[str, Any]:
     """What a text bundle says of a reading it does not deliver: who, where, and why."""
     page = _key_page(reading["act_key"]) if kind == "act" else reading["page_ordinal"]
-    return {
-        "act_id": reading["act_id"],
-        "act_key": reading["act_key"],
-        "kind": kind,
-        "page_ordinal": page,
-        "category": reading["category"],
-        "reason": _export_reason(reading),
-    }
+    return {**_row_head(reading), "kind": kind, "page_ordinal": page}
 
 
 def _not_delivered_by_folder(
@@ -3630,6 +3632,37 @@ def _row_head(reading: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _text_fields(reading: dict[str, Any]) -> dict[str, Any]:
+    """A reading's text and the fields that describe it, all null (regions empty) without text."""
+    literal = reading[CANONICAL_TEXT_FIELD]
+    delivered = literal is not None
+    return {
+        CANONICAL_TEXT_FIELD: literal,
+        "canonical_text_sha256": canonical_text_sha256(literal) if delivered else None,
+        "provenance": reading.get("provenance") if delivered else None,
+        "source_regions": reading.get("source_regions", []) if delivered else [],
+        "uncertainty": reading.get("uncertainty") if delivered else None,
+        "text_status": reading.get("text_status") if delivered else None,
+    }
+
+
+def _uncertainty_status(reading: dict[str, Any]) -> str:
+    """Whether a row's uncertainty layer anchors to a text it carries."""
+    return (
+        _UNCERTAINTY_AVAILABLE
+        if reading[CANONICAL_TEXT_FIELD] is not None
+        else _UNCERTAINTY_NOT_APPLICABLE
+    )
+
+
+def _readings_by_kind(
+    acts: tuple[dict[str, Any], ...], others: tuple[dict[str, Any], ...]
+) -> list[tuple[dict[str, Any], str]]:
+    """Every reading with its kind, acts and other readings together, in reading order."""
+    paired = [(act, "act") for act in acts] + [(other, "other") for other in others]
+    return sorted(paired, key=lambda item: act_key_sort_key(item[0]["act_key"]))
+
+
 def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, Any]:
     """One `acts` table row, by column; text-derived columns are null without text.
 
@@ -3637,17 +3670,18 @@ def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, 
     "corrected by a person"), so a database-only reader sees that a person
     acted on the reading; null for an act no operator acted on.
     """
-    literal = act[CANONICAL_TEXT_FIELD]
-    delivered = literal is not None
+    fields = _text_fields(act)
+    delivered = fields[CANONICAL_TEXT_FIELD] is not None
     return {
         **_row_head(act),
-        CANONICAL_TEXT_FIELD: literal,
-        "canonical_text_sha256": canonical_text_sha256(literal) if delivered else None,
-        "provenance_json": canonical_text(act["provenance"]) if delivered else None,
-        "source_regions_json": canonical_text(act["source_regions"]) if delivered else None,
-        "uncertainty_json": canonical_text(act["uncertainty"]) if delivered else None,
-        "uncertainty_status": _UNCERTAINTY_AVAILABLE if delivered else _UNCERTAINTY_NOT_APPLICABLE,
-        "text_status": act["text_status"] if delivered else None,
+        CANONICAL_TEXT_FIELD: fields[CANONICAL_TEXT_FIELD],
+        "canonical_text_sha256": fields["canonical_text_sha256"],
+        **{
+            f"{name}_json": canonical_text(fields[name]) if delivered else None
+            for name in ("provenance", "source_regions", "uncertainty")
+        },
+        "uncertainty_status": _uncertainty_status(act),
+        "text_status": fields["text_status"],
         "evidence_json": canonical_text(_act_evidence(act)),
         "approval_ref": act.get("approval_ref"),
         "reading": act["reading"],
@@ -3658,22 +3692,12 @@ def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, 
 def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
-        literal = act[CANONICAL_TEXT_FIELD]
         records.append(
             {
                 "schema": ACT_RECORD_SCHEMA,
                 **_row_head(act),
-                CANONICAL_TEXT_FIELD: literal,
-                "canonical_text_sha256": canonical_text_sha256(literal)
-                if literal is not None
-                else None,
-                "provenance": act.get("provenance") if literal is not None else None,
-                "source_regions": act.get("source_regions", []) if literal is not None else [],
-                "uncertainty": act.get("uncertainty") if literal is not None else None,
-                "uncertainty_status": _UNCERTAINTY_AVAILABLE
-                if literal is not None
-                else _UNCERTAINTY_NOT_APPLICABLE,
-                "text_status": act.get("text_status") if literal is not None else None,
+                **_text_fields(act),
+                "uncertainty_status": _uncertainty_status(act),
                 **_act_evidence(act),
                 "approval_ref": act.get("approval_ref"),
                 "reading": act["reading"],
@@ -3686,20 +3710,13 @@ def _other_json_records(others: tuple[dict[str, Any], ...]) -> list[dict[str, An
     """`other.jsonl`: one row per other reading, text only when it was delivered."""
     records: list[dict[str, Any]] = []
     for other in sorted(others, key=lambda item: act_key_sort_key(item["act_key"])):
-        literal = other[CANONICAL_TEXT_FIELD]
-        delivered = literal is not None
         records.append(
             {
                 "schema": OTHER_READING_SCHEMA,
                 **_row_head(other),
                 "kind": "other",
                 "page_ordinal": other["page_ordinal"],
-                CANONICAL_TEXT_FIELD: literal,
-                "canonical_text_sha256": canonical_text_sha256(literal) if delivered else None,
-                "text_status": other.get("text_status") if delivered else None,
-                "uncertainty": other.get("uncertainty") if delivered else None,
-                "provenance": other.get("provenance") if delivered else None,
-                "source_regions": other.get("source_regions", []) if delivered else [],
+                **_text_fields(other),
                 **_act_evidence(other),
             }
         )
@@ -3731,7 +3748,6 @@ def _review_records(
     acts: tuple[dict[str, Any], ...], others: tuple[dict[str, Any], ...]
 ) -> list[dict[str, Any]]:
     """Every held or refused reading, in reading order, its `kind` act or other."""
-    readings = [(act, "act") for act in acts] + [(other, "other") for other in others]
     return [
         {
             "schema": REVIEW_ITEM_SCHEMA,
@@ -3739,7 +3755,7 @@ def _review_records(
             "kind": kind,
             "evidence_refs": reading.get("evidence_refs", []),
         }
-        for reading, kind in sorted(readings, key=lambda item: act_key_sort_key(item[0]["act_key"]))
+        for reading, kind in _readings_by_kind(acts, others)
         if reading["category"] in _REVIEW_CATEGORIES
     ]
 
@@ -4433,27 +4449,14 @@ def _unresolved_reasons(
     return reasons
 
 
-def _projection_ledger(projection: ArmariumProjection) -> dict[str, Any]:
-    """The terminal ledger of a validated projection."""
-    return _terminal_ledger(
-        _act_outcomes(projection.acts),
-        list(projection.pages),
-        projection.aggregate_basis.get("act_pages")
-        if isinstance(projection.aggregate_basis, dict)
-        else None,
-        projection.aggregate,
-        _edge_hold_pages_from_validated_rows(
-            _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
-        ),
-        _other_outcomes(projection.other_readings),
-    )
-
-
 def _export_manifest(
     projection: ArmariumProjection,
     formats: ArmariumFormats,
     members: dict[str, bytes],
     ledger: dict[str, Any],
+    ink_map_rows: list[dict[str, Any]],
+    edge_hold_pages: tuple[int, ...],
+    other_outcomes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     counts = Counter(act["category"] for act in projection.acts)
     categories = [
@@ -4471,10 +4474,6 @@ def _export_manifest(
         for row in projection.source_manifest
         if isinstance(row, dict) and isinstance(row.get("relative_path"), str)
     }
-    ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
-    edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
-    unmeasurable_ink_map_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
-    other_outcomes = _other_outcomes(projection.other_readings)
     manifest: dict[str, Any] = {
         "schema": EXPORT_MANIFEST_SCHEMA,
         "canonical_text": _canonical_text_claim(formats.formats),
@@ -4487,7 +4486,9 @@ def _export_manifest(
             "ink_map": {
                 "denominator": INK_MAP_DENOMINATOR,
                 "held_pages": list(edge_hold_pages),
-                "unmeasurable_pages": list(unmeasurable_ink_map_pages),
+                "unmeasurable_pages": list(
+                    _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
+                ),
             },
             "act_partition": _act_partition_claim(projection, categories),
             "submission_inventory": {
@@ -5402,7 +5403,7 @@ def _database_act_records(
         path,
         "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
         "provenance_json, source_regions_json, evidence_json, reason, "
-        "uncertainty_json, uncertainty_status, text_status, reading FROM acts",
+        "uncertainty_json, uncertainty_status, text_status, reading, operator_label FROM acts",
         "the acts database cannot be read for product accounting",
     )
     records: dict[str, dict[str, Any]] = {}
@@ -5421,6 +5422,7 @@ def _database_act_records(
         uncertainty_status,
         text_status,
         reading,
+        operator_label,
     ) in rows:
         if (
             not _is_nonempty_str(act_id)
@@ -5472,6 +5474,7 @@ def _database_act_records(
             "reason": reason,
             "text_status": text_status,
             "reading": reading,
+            "operator_label": operator_label,
         }
     return records, literals
 
@@ -5494,7 +5497,7 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
         if (
             not _is_nonempty_str(act_id)
             or not _is_nonempty_str(act_key)
-            or record["kind"] not in ("act", "other")
+            or record["kind"] not in {"act", "other"}
             or category not in _REVIEW_CATEGORIES
             or not isinstance(reason, str)
             or not reason
@@ -5712,8 +5715,12 @@ def _verify_product_accounting(
     manifest: dict[str, Any],
     formats: ArmariumFormats,
     sources: dict[str, list[dict[str, Any]]],
-) -> dict[str, str] | None:
-    """Require every selected act projection to match the manifest denominator."""
+) -> tuple[dict[str, str] | None, dict[str, str | None] | None]:
+    """Require every selected act projection to match the manifest denominator.
+
+    Returns the search-fold verification and each act's operator label from the
+    acts database, both None without it.
+    """
     expected = _manifest_act_categories(manifest)
     _verify_honest_status_claims(manifest, expected, sources)
     act_keys = _manifest_act_keys(manifest, expected)
@@ -5754,7 +5761,7 @@ def _verify_product_accounting(
                 raise SchemaRefusal(
                     "the text bundle does not retain every delivered source citation"
                 )
-    search_fold_verification = None
+    search_fold_verification = operator_labels = None
     if "acts-database" in formats.formats:
         metadata = dict(
             _read_acts_database(
@@ -5789,6 +5796,9 @@ def _verify_product_accounting(
         _verify_exact_delivered_citations(
             database_records, citations, act_keys, subject="acts database"
         )
+        operator_labels = {
+            act_id: record["operator_label"] for act_id, record in database_records.items()
+        }
         search_fold_verification = _verify_search_fold_claim(
             root / "acts.sqlite", database_literals
         )
@@ -5823,7 +5833,7 @@ def _verify_product_accounting(
             {act_id: outcome for act_id, (_kind, outcome) in expected_review.items()},
             subject="review-items JSONL",
         )
-    return search_fold_verification
+    return search_fold_verification, operator_labels
 
 
 def _verify_pixel_claims(
@@ -5962,13 +5972,7 @@ def _act_outcomes(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     every format is checked against it.
     """
     return [
-        {
-            "act_id": act["act_id"],
-            "act_key": act["act_key"],
-            "category": act["category"],
-            "reason": _export_reason(act),
-            "text_status": act.get("text_status"),
-        }
+        {**_row_head(act), "text_status": act.get("text_status")}
         for act in sorted(acts, key=lambda item: item["act_id"])
     ]
 

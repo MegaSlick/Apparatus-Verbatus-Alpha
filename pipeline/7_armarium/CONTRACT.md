@@ -129,7 +129,7 @@ The formats are the run's sealed selection, `config/formats.toml`
 
 Every id moves with its closed field set, and the verifier recognises only these, so a
 consumer keying on an id never reads an older shape out of a newer record. Rows are in
-reading order (page, then reading number). Every row of one reading opens with the same
+reading order (page, then reading number). Every row of one reading carries the same
 `act_id`, `act_key`, `category` and `reason`; a held or refused reading always carries a
 reason (`"upstream recorded no reason"` when none was recorded).
 

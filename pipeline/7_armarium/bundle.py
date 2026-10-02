@@ -293,7 +293,7 @@ def main() -> int:
     summary = publish(tree, Path(args.out))
     print(
         f"export bundle published to {args.out}: {summary['status']}, "
-        f"{summary['unit_count']} accounted units, {summary['unresolved']} unresolved"
+        f"{summary['unit_count']} accounted units, {summary['unresolved']} unresolved reasons"
     )
     for key in (
         "archive",
