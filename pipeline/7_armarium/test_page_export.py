@@ -18,6 +18,8 @@ import dataclasses
 import json
 import shutil
 import sqlite3
+import subprocess
+import sys
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,11 +42,14 @@ from common.page_review import held_by_recensor
 from common.runtree.store import RunTree
 from common.stage import PAGE_BLANK_HOLD
 from conftest import (
+    ROOT,
     advance_held_recensor,
     build_page_tree,
     forge_continuation_links,
     forge_page_review,
     load_stage,
+    programs_through,
+    reask_recovery_config,
     run_stage,
 )
 
@@ -877,6 +882,111 @@ def test_a_re_asked_page_exports_its_recovered_act_with_the_rest(tmp_path):
         "p1:2": "held-for-review",
         "p2:1": "delivered",
     }
+
+
+# Runs one stage program with `common.stage.load_fixture` extending the committed
+# fixture by the rows in the JSON file named first; every stage of the run reads
+# the same extended fixture, so the run seals it like any other.
+_EXTENDED_FIXTURE_RUNNER = """
+import json, runpy, sys
+from pathlib import Path
+
+sys.path.insert(0, {root!r})
+import common.stage as stage
+
+committed = stage.load_fixture
+extra = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+
+
+def load_fixture(fixture_root):
+    fixture = committed(fixture_root)
+    for table, rows in extra.items():
+        fixture[table] = [*fixture.get(table, []), *rows]
+    return fixture
+
+
+stage.load_fixture = load_fixture
+sys.argv = sys.argv[2:]
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+
+def _reask_recovers_clean_rows() -> dict[str, list[dict]]:
+    """`reask-recovers` with Churro's page 1 response empty and page 1's first reading
+    citing no Churro unit, so no unboxed line is left that a re-ask may not name:
+    the act the re-ask recovers is the page's only open question.
+
+    Built here rather than in `proof/build_fixture.py` because the run seals the whole
+    fixture declaration, so a committed scenario would move every pinned run tree.
+    """
+    import tomllib
+
+    fixture = tomllib.loads((ROOT / "proof" / "skeleton_fixture.toml").read_text(encoding="utf-8"))
+    name = "reask-recovers-clean"
+
+    def renamed(row: dict) -> dict:
+        return {**row, "scenario": name}
+
+    answers = []
+    for row in fixture["page_answer"]:
+        if row["scenario"] != "reask-recovers":
+            continue
+        if row["page_ordinal"] == 1:
+            answer = json.loads(row["answer"])
+            for entry in answer["acts"]:
+                entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith("C")]
+            row = {**row, "answer": json.dumps(answer, separators=(",", ":"))}
+        answers.append(renamed(row))
+    return {
+        "scenario": [{"name": name}],
+        "page_answer": answers,
+        "page_reask_answer": [
+            renamed(row)
+            for row in fixture["page_reask_answer"]
+            if row["scenario"] == "reask-recovers"
+        ],
+        "witness_empty": [{"scenario": name, "page_ordinal": 1, "chair": "attestator_3"}],
+    }
+
+
+def test_an_act_the_re_ask_recovers_is_accepted_and_delivered_read_on_re_ask(tmp_path):
+    """The re-ask recovers page 1's a2 and nothing else holds the page, so the real
+    Recensor accepts the recovered act, the Archetypus establishes it and the
+    Armarium delivers it labelled "read on re-ask" in every format, in a package
+    the clean verifier accepts."""
+    scenario = "reask-recovers-clean"
+    extra = tmp_path / "extra-fixture.json"
+    extra.write_text(json.dumps(_reask_recovers_clean_rows()), encoding="utf-8")
+    runner = tmp_path / "run_extended.py"
+    runner.write_text(_EXTENDED_FIXTURE_RUNNER.format(root=str(ROOT)), encoding="utf-8")
+    options = {"recovery_config": reask_recovery_config(tmp_path / "config", 1)}
+    root = tmp_path / "runs"
+    for program in programs_through("armarium"):
+        command = [sys.executable, str(runner), str(extra), program]
+        command += ["--run-root", str(root), "--run-id", RUN_ID, "--scenario", scenario]
+        for name, value in options.items():
+            command += [f"--{name.replace('_', '-')}", str(value)]
+        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+        assert result.returncode == 0, f"{program}: {result.stderr}"
+    assert not held_by_recensor(RunTree(root, RUN_ID))
+    bundle = _bundle(root, tmp_path / "clean")
+    verify_export_bundle(bundle["data"], tmp_path / "export-clean")
+
+    exported = _jsonl(bundle["members"], "acts.jsonl")
+    assert {key: (row["category"], row["reading"]) for key, row in exported.items()} == {
+        "p1:1": ("delivered", "first reading"),
+        "p1:2": ("delivered", "read on re-ask"),
+        "p2:1": ("delivered", "first reading"),
+    }
+    recovered = exported["p1:2"]
+    assert recovered["canonical_clean_text"] == bundle["established"]["p1:2"]["text"]
+    with sqlite3.connect(bundle["clean"] / "acts.sqlite") as connection:
+        stored = dict(connection.execute("SELECT act_key, reading FROM acts"))
+    assert stored["p1:2"] == "read on re-ask"
+    lines = _text_bundle(bundle["members"]).split("\n")
+    assert lines[lines.index(f"act-id: {recovered['act_id']}") + 1] == "reading: read on re-ask"
+    reask = bundle["manifest"]["claims"]["reask"]
+    assert reask["read_on_reask_act_ids"] == [recovered["act_id"]]
 
 
 def _released_review(record_sha256: str, decision_hash: str) -> tuple[dict, dict]:
