@@ -155,8 +155,10 @@ act `no-autopsia`.
 - `dissent` has one row per shown witness, in feed order: the cited units of that
   witness compared with the fixed text (a doubt-marking witness's own markers removed
   first), as departure spans with no score; `compared: false` with a reason when the
-  witness has no reading or no cited unit; `compared: "unknown"` with the sealed step
-  budget when the comparison would exceed it. Dissent records; it never holds.
+  witness has no reading or no cited unit; `compared: "unknown"` with a reason when
+  the comparison did not run: past the character-pair bound with the reason alone,
+  or past the sealed step budget with that budget as well. Dissent records; it never
+  holds.
 
 ## The re-ask
 
@@ -164,8 +166,9 @@ A page is asked at most once more, and only when the sealed recovery policy allo
 its first reading is a parsed, read answer that finished on `stop`, and its accounting
 found witness units, Surya lines or detector records that no entry accounts for and
 that the feed placed by a box. A unit lying mostly inside an entry's region was read
-and not cited; the page holds it rather than asking again. A failed, cut-off,
-malformed or truncated reading is held, never re-asked.
+and not cited; the page holds it rather than asking again. A failed, cut-off or
+malformed reading is held, never re-asked. A truncated entry is held and never
+re-read; its page may still be re-asked about other ids.
 
 The re-ask sends the same images and feed, the first reading's entries by number,
 kind, label and cites (never their text), and the named ids with their boxes, under
@@ -201,9 +204,14 @@ operator_reread: {decisions: [{decision_hash, approval_ref}], supersedes: [readi
 and inputs both. It has its own accounting and act records, minted from its own
 attempt, and becomes the page's current reading: the page-read denominator counts its
 entries alone. The earlier readings and their records stay as read, marked
-superseded. An act the superseded reading named and the re-read does not is not lost
-silently: its ink, units, lines and records are measured against the re-read like any
-reading's, and the page holds.
+superseded. Nothing compares the re-read's entries with the superseded reading's;
+the re-read is accounted against the page's evidence like any reading. An act the
+superseded reading named and the re-read leaves out or sets aside leaves its ink,
+witness units, lines and detector records unaccounted for, and the page holds. An act
+the re-read merges into another entry, or relabels `other`, holds only through the
+record detector (`merged-detection`, `record-read-as-other`) or, where the merged
+entry's text lacks the act's witness text, rule (e); on a run with no record detector
+and a merged entry carrying both texts, it does not hold.
 
 ## Resume
 
