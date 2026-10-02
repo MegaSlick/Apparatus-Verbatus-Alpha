@@ -35,7 +35,7 @@ def test_a_page_with_no_reading_has_no_edge():
     assert act_entries_by_page([entry(1, None)]) == {}
 
 
-def test_only_the_first_reading_attempt_counts():
+def test_a_re_asks_entries_are_never_whole_page_entries():
     entries = [entry(1, 1), entry(1, 1, attempt=2)]
     assert whole_page_entries(entries) == [entries[0]]
 

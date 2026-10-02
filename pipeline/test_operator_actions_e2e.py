@@ -844,3 +844,20 @@ def test_a_run_whose_only_decision_is_an_edit_of_a_unit_held_reading_is_complete
         _repacked(dict(_members(tree.root))), tmp_path / "clean"
     )
     assert manifest["aggregate"]["status"] == "complete", manifest["aggregate"]["reasons"]
+
+
+def test_a_persons_text_with_doubt_mark_brackets_is_delivered_as_written(reading_held, tmp_path):
+    """Brackets in a person's text are the person's characters: never parsed as doubt marks,
+    never refused as malformed, and delivered exactly."""
+    tree = _copy(reading_held, tmp_path)
+    written = "SYNTHETIC ACT ONE alpha [[beta|beda]] gamma [[?]] and ]] [["
+    _decide(tree.root, "p1:1", "edit", text=written)
+    _decide(tree.root, "p1:2", "release")
+    _decide(tree.root, "p1", "no-missed-act")
+    assert _recense(tree) == EXIT_COMPLETE
+    _after_recensor(tree)
+    payload = _archetypus(tree.root, "p1:1")["payload"]
+    assert (payload["text"], payload["uncertainty"]) == (written, corrected_layer())
+    bundle = _bundle(tree.root, tmp_path / "clean")
+    assert bundle["acts"]["p1:1"]["canonical_clean_text"] == written
+    assert bundle["acts"]["p1:1"]["uncertainty"] == corrected_layer()

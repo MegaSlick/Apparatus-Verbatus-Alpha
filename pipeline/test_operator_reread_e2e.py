@@ -38,7 +38,7 @@ from common.contracts.stages import PERLECTOR
 from common.page_path import OPERATOR_REREAD_FIELD, page_reading_attempt
 from common.page_review import held_by_recensor, published_units, superseded_readings
 from common.runtree.store import RunTree
-from common.stage import EXIT_COMPLETE
+from common.stage import EXIT_COMPLETE, EXIT_HELD
 
 
 def _page_readings(root) -> dict[int, dict]:
@@ -80,7 +80,7 @@ def reread(reading_held, tmp_path_factory) -> SimpleNamespace:  # noqa: F811
     tree = _copy(reading_held, work)
     before = _perlector_files(tree.root)
     decision = _decide(tree.root, "p1", "re-ask")
-    assert _recense(tree) != EXIT_COMPLETE  # the request alone holds the page
+    assert _recense(tree) == EXIT_HELD  # the request alone holds the page
     assert _read_again(tree, work / "reader") == EXIT_COMPLETE
     after_perlector = _perlector_files(tree.root)
     recensed = _recense(tree)
@@ -199,7 +199,7 @@ def test_a_second_re_read_supersedes_the_first_and_is_counted_alone(reading_held
     held_answer["acts"][1]["cites"] = ["A1", "B1", "C1", "A2", "B2", "C2"]
     _ask_again(tree)
     assert _read_again(tree, tmp_path / "reader-3", json.dumps(held_answer)) == EXIT_COMPLETE
-    assert _recense(tree) != EXIT_COMPLETE
+    assert _recense(tree) == EXIT_HELD
     _ask_again(tree)
     assert _read_again(tree, tmp_path / "reader-4") == EXIT_COMPLETE
     assert _recense(tree) == EXIT_COMPLETE
