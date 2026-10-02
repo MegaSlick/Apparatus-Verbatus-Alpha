@@ -30,7 +30,7 @@ from typing import Any, Callable, Mapping, Sequence
 from PIL import Image
 
 from common.chairs.models import ChairIdentity, ServingDetails
-from common.imaging import PNG_CROP_MODES, convert_png_to_rgb, crop_png, dimensions
+from common.imaging import PNG_CROP_MODES, crop_png
 
 from .config import InProcessProfile, package_release
 from .errors import ServingConfigurationError
@@ -181,24 +181,25 @@ def check_record_detector_runnable(
     _verified_weights(snapshot_root())
 
 
-def convert_page_to_rgb(page_bytes: bytes) -> bytes:
-    """The sealed page as the record detector is shown it: 8-bit RGB PNG bytes.
+def convert_page_to_rgb(page_bytes: bytes) -> Image.Image:
+    """The sealed page as the record detector is shown it: an 8-bit RGB image.
 
-    A page in an 8-bit mode is converted exactly as `Image.convert("RGB")`
-    converts it. A 16-bit page first takes the display conversion its record
-    crops take (`crop_png` of the whole page scales its samples to 8 bits),
-    because a bare RGB conversion clips them and shows the detector a white
-    page with no ink. `I` and `F` pages have no display conversion and are
-    refused by name.
+    A page in a mode a sealed crop can arrive in is converted exactly as
+    `Image.convert("RGB")` converts it. Any other mode first takes the display
+    conversion its record crops take (`crop_png` of the whole page, which scales
+    a 16-bit scan to 8 bits), because a bare RGB conversion clips such samples
+    and shows the detector a white page with no ink. `I` and `F` pages have no
+    display conversion and are refused by name.
     """
 
     try:
-        width, height = dimensions(page_bytes)
         with Image.open(io.BytesIO(page_bytes)) as image:
-            mode = image.mode
-        if mode not in PNG_CROP_MODES:
-            page_bytes = crop_png(page_bytes, {"x": 0, "y": 0, "w": width, "h": height})
-        return convert_png_to_rgb(page_bytes)
+            if image.mode in PNG_CROP_MODES:
+                return image.convert("RGB")
+            width, height = image.size
+        shown = crop_png(page_bytes, {"x": 0, "y": 0, "w": width, "h": height})
+        with Image.open(io.BytesIO(shown)) as image:
+            return image.convert("RGB")
     except (OSError, ValueError) as error:
         raise ServingConfigurationError(
             f"the record detector cannot be shown this page as RGB: {error}"
@@ -216,25 +217,16 @@ def _ultralytics_config_dir() -> Path:
 def offline_ultralytics() -> Any:
     """Import Ultralytics with its network paths off, and return its `YOLO` class.
 
-    The switches are environment variables it reads at import, so they are set
-    around the import and the previous values restored. A module imported
-    earlier without them, one whose settings live elsewhere, or another release
-    is refused before anything is loaded.
+    The switches are environment variables it reads at import and again at
+    call time, so they are set before the import and left set for the life of
+    the process. A module imported earlier without them, one whose settings
+    live elsewhere, or another release is refused before anything is loaded.
     """
 
     config_dir = _ultralytics_config_dir()
-    switches = {**ULTRALYTICS_OFFLINE_ENV, "YOLO_CONFIG_DIR": str(config_dir)}
-    before = {name: os.environ.get(name) for name in switches}
-    os.environ.update(switches)
-    try:
-        ultralytics = importlib.import_module("ultralytics")
-        utils = importlib.import_module("ultralytics.utils")
-    finally:
-        for name, value in before.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
+    os.environ.update({**ULTRALYTICS_OFFLINE_ENV, "YOLO_CONFIG_DIR": str(config_dir)})
+    ultralytics = importlib.import_module("ultralytics")
+    utils = importlib.import_module("ultralytics.utils")
     if ultralytics.__version__ != ULTRALYTICS_OFFLINE_RELEASE:
         raise ServingConfigurationError(
             f"Ultralytics {ultralytics.__version__} is imported, not "
@@ -275,8 +267,7 @@ def load_ultralytics_record_detector(
         )
 
     def detect(page_png: bytes, _page_ordinal: int) -> list[dict[str, Any]]:
-        with Image.open(io.BytesIO(convert_page_to_rgb(page_png))) as image:
-            rgb = image.copy()
+        rgb = convert_page_to_rgb(page_png)
         results = model.predict(
             rgb,
             imgsz=profile.imgsz,

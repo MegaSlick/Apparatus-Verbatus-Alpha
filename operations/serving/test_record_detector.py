@@ -145,11 +145,18 @@ def test_the_loader_refuses_a_checkpoint_naming_other_classes(
     _installed(monkeypatch, PINS)
     root = _weights(tmp_path, monkeypatch, pinned=b"pinned", present=b"pinned")
 
+    shown = []
+
     class FakeYolo:
         def __init__(self, path, task):
             assert path == str(root / detector_module.RECORD_DETECTOR_WEIGHTS_FILE)
             assert task == "obb"
             self.names = names
+
+        def predict(self, image, **_options):
+            shown.append(image)
+            empty = SimpleNamespace(tolist=list)
+            return [SimpleNamespace(obb=SimpleNamespace(xyxyxyxy=empty, conf=empty, cls=empty))]
 
     torch = SimpleNamespace(use_deterministic_algorithms=lambda flag: None, set_num_threads=int)
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -166,6 +173,9 @@ def test_the_loader_refuses_a_checkpoint_naming_other_classes(
     else:
         loaded = detector_module.load_ultralytics_record_detector(identity, _profile(), root)
         assert loaded.run_facts["versions"] == PINS
+        # The loaded detector is shown a 16-bit page with its ink.
+        assert loaded.detect(_page("I;16", 3000), page_ordinal=1) == []
+        assert shown[0].mode == "RGB" and shown[0].getpixel((0, 0)) == (11, 11, 11)
 
 
 # --- offline import ---------------------------------------------------------
@@ -196,6 +206,9 @@ class _FakeUltralytics(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
 
 def _fake_ultralytics(monkeypatch, *, version="8.4.14", yolo=object):
+    # Recorded so the switches the loader leaves set are undone after the test.
+    for name in ("YOLO_OFFLINE", "YOLO_AUTOINSTALL", "YOLO_CONFIG_DIR"):
+        monkeypatch.delenv(name, raising=False)
     fake = _FakeUltralytics(version, yolo)
     for name in ("ultralytics", "ultralytics.utils"):
         monkeypatch.delitem(sys.modules, name, raising=False)
@@ -203,20 +216,18 @@ def _fake_ultralytics(monkeypatch, *, version="8.4.14", yolo=object):
     return fake
 
 
-def test_ultralytics_is_imported_offline_and_its_switches_do_not_outlive_the_import(
-    monkeypatch,
-):
-    monkeypatch.delenv("YOLO_OFFLINE", raising=False)
+def test_ultralytics_is_imported_offline_and_stays_offline_for_the_process(monkeypatch):
     fake = _fake_ultralytics(monkeypatch, yolo="the YOLO class")
 
     assert detector_module.offline_ultralytics() == "the YOLO class"
 
     assert fake.settings == {"sync": False, "hub": False}
-    assert "YOLO_OFFLINE" not in os.environ
+    # Ultralytics reads these again when it predicts, so they are left set.
+    assert os.environ["YOLO_OFFLINE"] == "true"
+    assert os.environ["YOLO_AUTOINSTALL"] == "false"
 
 
 def test_an_ultralytics_imported_without_its_switches_is_refused(monkeypatch):
-    monkeypatch.delenv("YOLO_OFFLINE", raising=False)
     _fake_ultralytics(monkeypatch)
     importlib.import_module("ultralytics.utils")
     with pytest.raises(ServingConfigurationError, match="not offline"):
@@ -234,13 +245,15 @@ def test_an_ultralytics_release_whose_switches_were_not_read_is_refused(monkeypa
 
 def _page(mode, value):
     buffer = io.BytesIO()
-    Image.new(mode, (4, 2), value).save(buffer, format="TIFF" if mode == "I;16" else "PNG")
+    Image.new(mode, (4, 2), value).save(
+        buffer, format="TIFF" if mode in ("I;16", "CMYK") else "PNG"
+    )
     return buffer.getvalue()
 
 
 def _shown(page_bytes):
-    with Image.open(io.BytesIO(detector_module.convert_page_to_rgb(page_bytes))) as image:
-        return image.mode, image.getpixel((0, 0))
+    image = detector_module.convert_page_to_rgb(page_bytes)
+    return image.mode, image.getpixel((0, 0))
 
 
 def test_a_16_bit_page_reaches_the_detector_with_its_ink():
@@ -250,7 +263,10 @@ def test_a_16_bit_page_reaches_the_detector_with_its_ink():
     assert _shown(_page("I;16", 3000)) == ("RGB", (11, 11, 11))
 
 
-@pytest.mark.parametrize(("mode", "value"), [("L", 40), ("RGB", (10, 20, 30)), ("LA", (40, 0))])
+@pytest.mark.parametrize(
+    ("mode", "value"),
+    [("L", 40), ("RGB", (10, 20, 30)), ("LA", (40, 0)), ("CMYK", (10, 20, 30, 40))],
+)
 def test_an_8_bit_page_is_shown_as_its_own_rgb_conversion(mode, value):
     with Image.open(io.BytesIO(_page(mode, value))) as image:
         expected = image.convert("RGB").getpixel((0, 0))
