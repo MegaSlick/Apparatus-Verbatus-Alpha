@@ -696,10 +696,14 @@ def test_a_record_under_another_schema_version_is_refused(tmp_path):
         )
     )
     legacy["self_hash"] = self_hash(legacy)
-    with pytest.raises(SchemaRefusal, match="sample schema is not recognized"):
+    remedy = "v1 record.*no page size.*Preserve the v1 bytes.*do not edit the record in place"
+    with pytest.raises(SchemaRefusal, match=f"sample schema is not recognized.*{remedy}"):
         validate_sample(legacy)
-    with pytest.raises(SchemaRefusal, match="'gold-page-sample.v1' is not a gold record schema"):
+    with pytest.raises(SchemaRefusal, match=f"'gold-page-sample.v1' is not a gold.*{remedy}"):
         validate_record(legacy)
+    legacy["schema"] = "gold-page-sample.v0"
+    with pytest.raises(SchemaRefusal, match="sample schema is not recognized$"):
+        validate_sample(legacy)
 
 
 def _act(index=0):

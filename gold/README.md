@@ -150,7 +150,12 @@ instrument membership names its sample only by digest, so `validate --run` refus
 it; `validate-corpus --run` resolves it through its corpus instead.
 
 Sample, draw, manual-pick, layout, and padding records carry the page size, and
-every record is read only under the exact schema version it names.
+every record is read only under the exact schema version it names. Their v1
+versions carried no page size, so this reader cannot prove that a v1 rectangle
+lies on its page and refuses the record, naming the remedy: keep the v1 bytes
+unchanged as immutable evidence, and read them with their historical reader or
+carry them over by an explicit, provenance-preserving migration. Never edit a v1
+record in place.
 
 `--run` proves the page facts the run actually carries, which are its ordinal and
 sha256.  A page's `stratum`, `width`, and `height` are not among them: the run's
