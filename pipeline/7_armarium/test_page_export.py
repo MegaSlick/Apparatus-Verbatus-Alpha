@@ -634,6 +634,28 @@ def test_a_held_other_reading_keeps_the_run_partial(tmp_path):
     assert _unit(bundle["manifest"], f"other:{claims['other_readings']['act_ids'][0]}")[
         "category"
     ] == ("held-for-review")
+    # The held reading reaches the review queue under its own kind, and the
+    # partial reasons name it by key, so a person sees it wherever they look.
+    [other] = _jsonl(bundle["members"], "other.jsonl").values()
+    review = _jsonl(bundle["members"], "review-items.jsonl")
+    assert (review[other["act_key"]]["kind"], review[other["act_key"]]["category"]) == (
+        "other",
+        "held-for-review",
+    )
+    assert [
+        reason
+        for reason in claims["partial_reasons"]
+        if reason.startswith(f"other {other['act_key']} is held-for-review: ")
+    ]
+
+    def drop_other(members: dict) -> None:
+        rows = members["review-items.jsonl"].decode("utf-8").splitlines(keepends=True)
+        members["review-items.jsonl"] = "".join(
+            row for row in rows if json.loads(row)["kind"] != "other"
+        ).encode("utf-8")
+
+    with pytest.raises(SchemaRefusal, match="held and refused readings"):
+        verify_export_bundle(_tampered(bundle, drop_other), tmp_path / "dropped")
 
 
 def test_a_confirmed_no_act_page_is_delivered_while_its_one_sided_break_holds_the_run(

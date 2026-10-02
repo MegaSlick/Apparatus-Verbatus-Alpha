@@ -140,8 +140,11 @@ _ACT_RECORD_FIELDS: Final = frozenset(
         "reading",
     }
 )
+# Every held or refused reading, act or other, named by `kind`; the act partition
+# is `acts.jsonl`'s row count, never this file's.
+REVIEW_ITEM_SCHEMA: Final = "armarium-review-item.v2"
 _REVIEW_ITEM_FIELDS: Final = frozenset(
-    {"schema", "act_id", "act_key", "category", "reason", "evidence_refs"}
+    {"schema", "act_id", "act_key", "kind", "category", "reason", "evidence_refs"}
 )
 _SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v6"
 _SQLITE_USER_VERSION: Final = 6
@@ -554,7 +557,9 @@ def build_armarium_bundle(
             _other_json_records(projection.other_readings)
         )
     if "review-items" in formats.formats:
-        members["review-items.jsonl"] = _jsonl_bytes(_review_records(projection.acts))
+        members["review-items.jsonl"] = _jsonl_bytes(
+            _review_records(projection.acts, projection.other_readings)
+        )
     members.update(embedded)
     members.update(embedded_crops)
     members.update(embedded_other_crops)
@@ -3542,15 +3547,20 @@ def _export_reason(act: dict[str, Any]) -> str | None:
     return act.get("reason")
 
 
-def _review_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+def _review_records(
+    acts: tuple[dict[str, Any], ...], others: tuple[dict[str, Any], ...]
+) -> list[dict[str, Any]]:
+    """Every held or refused reading, in reading order, its `kind` act or other."""
+    readings = [(act, "act") for act in acts] + [(other, "other") for other in others]
     return [
         {
-            "schema": "armarium-review-item.v1",
-            **_row_head(act),
-            "evidence_refs": act.get("evidence_refs", []),
+            "schema": REVIEW_ITEM_SCHEMA,
+            **_row_head(reading),
+            "kind": kind,
+            "evidence_refs": reading.get("evidence_refs", []),
         }
-        for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"]))
-        if act["category"] in _REVIEW_CATEGORIES
+        for reading, kind in sorted(readings, key=lambda item: act_key_sort_key(item[0]["act_key"]))
+        if reading["category"] in _REVIEW_CATEGORIES
     ]
 
 
@@ -5283,11 +5293,12 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
             record.get("category"),
             record.get("reason"),
         )
-        if record.get("schema") != "armarium-review-item.v1" or set(record) != _REVIEW_ITEM_FIELDS:
+        if record.get("schema") != REVIEW_ITEM_SCHEMA or set(record) != _REVIEW_ITEM_FIELDS:
             raise SchemaRefusal("a review-items JSONL row has an unrecognized field set")
         if (
             not _is_nonempty_str(act_id)
             or not _is_nonempty_str(act_key)
+            or record["kind"] not in ("act", "other")
             or category not in _REVIEW_CATEGORIES
             or not isinstance(reason, str)
             or not reason
@@ -5298,6 +5309,7 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
         _verify_evidence_refs(evidence_refs, subject="a review-items JSONL row")
         records[act_id] = {
             "act_key": act_key,
+            "kind": record["kind"],
             "category": category,
             "reason": reason,
             "evidence_refs": evidence_refs,
@@ -5578,15 +5590,27 @@ def _verify_product_accounting(
         _verify_product_readings(jsonl_records, readings, subject="acts JSONL")
         _verify_exact_delivered_citations(jsonl_records, citations, act_keys, subject="acts JSONL")
     if "review-items" in formats.formats:
+        # Every held or refused reading: the acts, then the other readings.
         expected_review = {
-            act_id for act_id, category in expected.items() if category in _REVIEW_CATEGORIES
+            act_id: ("act", outcomes[act_id])
+            for act_id, category in expected.items()
+            if category in _REVIEW_CATEGORIES
         }
+        for act_id, outcome in _other_outcome_sources(sources).items():
+            if outcome["category"] in _REVIEW_CATEGORIES:
+                expected_review[act_id] = ("other", outcome)
         review_records = _review_item_records(root / "review-items.jsonl")
-        if set(review_records) != expected_review:
-            raise SchemaRefusal("review-items JSONL does not reconcile to the manifest review acts")
+        if set(review_records) != set(expected_review) or any(
+            record["kind"] != expected_review[act_id][0]
+            for act_id, record in review_records.items()
+        ):
+            raise SchemaRefusal(
+                "review-items JSONL does not list exactly the package's held and refused "
+                "readings, each under its kind"
+            )
         _verify_exact_product_outcomes(
             review_records,
-            {act_id: outcomes[act_id] for act_id in expected_review},
+            {act_id: outcome for act_id, (_kind, outcome) in expected_review.items()},
             subject="review-items JSONL",
         )
     return search_fold_verification
