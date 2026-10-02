@@ -16,6 +16,7 @@ from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_of
 from operations.operator import cli, ingest
+from operations.operator.errors import ErrorCode, OperatorError
 from operations.submit import gate, inventory
 from operations.triage import instrument
 from operations.triage.producer import CONFIRMATION_SCHEMA
@@ -950,13 +951,13 @@ def test_the_ingest_child_receives_no_provider_credential(
         monkeypatch.setenv(name, f"secret-for-{name}")
     monkeypatch.setenv("VERBATUS_INGEST_TEST_SENTINEL", "preserved")
     observed: dict[str, object] = {}
-    real_run = ingest.subprocess.run
+    real_popen = ingest.subprocess.Popen
 
-    def recording_run(command, **kwargs):  # type: ignore[no-untyped-def]
+    def recording_popen(command, **kwargs):  # type: ignore[no-untyped-def]
         observed.update(kwargs)
-        return real_run(command, **kwargs)
+        return real_popen(command, **kwargs)
 
-    monkeypatch.setattr(ingest.subprocess, "run", recording_run)
+    monkeypatch.setattr(ingest.subprocess, "Popen", recording_popen)
     printed: list[str] = []
     ingest.ingest(
         source=source,
@@ -975,3 +976,82 @@ def test_the_ingest_child_receives_no_provider_credential(
     assert environment["VERBATUS_INGEST_TEST_SENTINEL"] == "preserved"
     assert (output / "ingest-ready.json").is_file()
     assert any(line.startswith("Ready-to-submit folder:") for line in printed)
+
+
+def _ingest_into(source: Path, output: Path, policy: Path, printed: list[str]) -> None:
+    ingest.ingest(
+        source=source,
+        output_dir=output,
+        policy_path=policy,
+        corpus_id="synthetic-console",
+        mode="auto",
+        confirmation_file=None,
+        workspace=ROOT,
+        printer=printed.append,
+    )
+
+
+def test_the_masters_are_decoded_only_in_the_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """With every decoder broken in the parent, ingest still writes its ready folder."""
+    source, output, policy, _approved = _inputs(tmp_path)
+
+    def no_decoding_here(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("the parent decoded a submitted master")
+
+    monkeypatch.setattr(instrument, "build_proxies_from_bytes", no_decoding_here)
+    monkeypatch.setattr(Image, "open", no_decoding_here)
+    printed: list[str] = []
+    _ingest_into(source, output, policy, printed)
+
+    assert (output / "ingest-ready.json").is_file()
+    assert ingest.WRITING_MARKER not in printed
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="prctl is Linux-only")
+def test_the_parent_is_not_dumpable_when_the_child_starts():
+    """A non-dumpable parent's /proc entries are closed to the same-user child."""
+    probe = (
+        "import ctypes\n"
+        "from operations.operator import ingest\n"
+        "ingest._deny_same_user_inspection()\n"
+        "print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))\n"  # PR_GET_DUMPABLE
+    )
+    result = ingest.subprocess.run(
+        [sys.executable, "-c", probe], cwd=ROOT, capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "0"
+
+
+@pytest.mark.parametrize(
+    ("stdout", "code"),
+    [
+        ("Plan line\n", "INGEST_REFUSED"),
+        (f"Plan line\n{ingest.WRITING_MARKER}\n", "INGEST_UNRESOLVED"),
+    ],
+)
+def test_a_child_killed_before_it_writes_is_a_refusal_and_after_is_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str, code: str
+):
+    source, output, policy, _approved = _inputs(tmp_path)
+    monkeypatch.setattr(ingest, "_run_child", lambda *_args: (-9, stdout, ""))
+    printed: list[str] = []
+
+    with pytest.raises(OperatorError) as failure:
+        _ingest_into(source, output, policy, printed)
+
+    assert failure.value.code is getattr(ErrorCode, code)
+    assert printed == ["Plan line"]
+
+
+def test_the_child_output_kept_by_the_parent_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, output, policy, _approved = _inputs(tmp_path)
+    monkeypatch.setattr(ingest, "MAX_CHILD_STDOUT_BYTES", 200)
+    printed: list[str] = []
+    _ingest_into(source, output, policy, printed)
+
+    kept = "\n".join(printed)
+    assert kept.endswith("[output past 200 bytes was dropped]")
+    assert len(kept.encode("utf-8")) < 300
+    assert (output / "ingest-ready.json").is_file()

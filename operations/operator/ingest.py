@@ -1,4 +1,4 @@
-"""`verbatus ingest`: a pre-Door folder made ready to submit, shown before it is written.
+"""`verbatus ingest`: a pre-Door folder's plan printed, then written in the same run.
 
 The ingest reads the submitted folder through the data gate, builds the
 submission ledger and the triage instrument's evidence, and plans every file
@@ -10,15 +10,21 @@ prepared and still empty.
 The submitted masters are untrusted images, so the work runs in a child Python
 process (`main`) whose environment holds no credential
 (`surface.credential_free_environment`). The parent only validates the
-request, starts the child and relays what it prints.
+request, starts the child and relays a bounded amount of what it prints. The
+child is credential-free, not sandboxed: it can write wherever the user can. On
+Linux the parent first makes itself non-dumpable, so the child cannot read the
+parent's environment through `/proc`; elsewhere a same-user process can still
+read it.
 """
 
 from __future__ import annotations
 
+import ctypes
 import json
 import stat
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +55,14 @@ _REFUSALS: Final = (ContractError, OSError, TypeError, ValueError, UnicodeError)
 # that did not finish, which may have left records behind.
 REFUSED_EXIT: Final = 2
 UNRESOLVED_EXIT: Final = 3
+# The child prints this line, and nothing else, just before it starts writing;
+# a child that dies before it has written nothing. The parent never relays it.
+WRITING_MARKER: Final = "verbatus-ingest: writing"
+# What the parent keeps of the child's output. The plan names every file, about
+# a dozen per master, so 1,500 masters stay well inside the stdout bound.
+MAX_CHILD_STDOUT_BYTES: Final = 8 * 1024 * 1024
+MAX_CHILD_STDERR_BYTES: Final = 64 * 1024
+_PR_SET_DUMPABLE: Final = 4
 _CHECKOUT: Final = Path(__file__).resolve().parents[2]
 
 
@@ -63,7 +77,7 @@ def ingest(
     workspace: Path,
     printer: Callable[[str], None],
 ) -> None:
-    """Prepare, show and write the ready folder in a credential-free child process."""
+    """Prepare, print and write the ready folder in a credential-free child process."""
 
     from .surface import credential_free_environment
 
@@ -88,22 +102,80 @@ def ingest(
         _request(request)
     except ValueError as error:
         raise OperatorError(ErrorCode.INGEST_REFUSED, detail=str(error)) from error
-    completed = subprocess.run(
+    _deny_same_user_inspection()
+    returncode, stdout, stderr = _run_child(json.dumps(request), credential_free_environment())
+    lines = stdout.splitlines()
+    writing = WRITING_MARKER in lines
+    for line in lines:
+        if line != WRITING_MARKER:
+            printer(line)
+    detail = stderr.strip() or f"the ingest child exited {returncode}"
+    if returncode == REFUSED_EXIT or (returncode != 0 and not writing):
+        raise OperatorError(ErrorCode.INGEST_REFUSED, detail=detail)
+    if returncode != 0:
+        raise OperatorError(ErrorCode.INGEST_UNRESOLVED, detail=detail)
+
+
+def _deny_same_user_inspection() -> None:
+    """On Linux, stop a same-user process reading this one's environment or memory.
+
+    A non-dumpable process's `/proc/<pid>` entries belong to root and it cannot
+    be traced, so a compromised decoder in the child cannot read the parent's
+    credentials while the parent waits. Other platforms have no such switch.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
+        raise OperatorError(
+            ErrorCode.INGEST_REFUSED,
+            detail="this process could not be made non-dumpable before the ingest child ran "
+            f"(errno {ctypes.get_errno()}); nothing was written",
+        )
+
+
+def _run_child(request: str, environment: dict[str, str]) -> tuple[int, str, str]:
+    """Run the child, keeping at most a bounded prefix of each output stream.
+
+    Both streams are drained to the end so the child never blocks on a full
+    pipe; bytes past the bound are dropped and the kept text says so.
+    """
+    process = subprocess.Popen(
         [sys.executable, "-m", "operations.operator.ingest"],
         cwd=_CHECKOUT,
-        env=credential_free_environment(),
-        input=json.dumps(request),
-        capture_output=True,
-        text=True,
-        check=False,
+        env=environment,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    for line in completed.stdout.splitlines():
-        printer(line)
-    detail = completed.stderr.strip() or f"the ingest child exited {completed.returncode}"
-    if completed.returncode == REFUSED_EXIT:
-        raise OperatorError(ErrorCode.INGEST_REFUSED, detail=detail)
-    if completed.returncode != 0:
-        raise OperatorError(ErrorCode.INGEST_UNRESOLVED, detail=detail)
+    kept: dict[str, str] = {}
+
+    def drain(name: str, stream: Any, limit: int) -> None:
+        data = bytearray()
+        dropped = False
+        while chunk := stream.read(65536):
+            room = limit - len(data)
+            data += chunk[:room]
+            dropped = dropped or len(chunk) > room
+        text = data.decode("utf-8", errors="replace")
+        kept[name] = text + (f"\n[output past {limit} bytes was dropped]" if dropped else "")
+
+    readers = [
+        threading.Thread(target=drain, args=("stdout", process.stdout, MAX_CHILD_STDOUT_BYTES)),
+        threading.Thread(target=drain, args=("stderr", process.stderr, MAX_CHILD_STDERR_BYTES)),
+    ]
+    for reader in readers:
+        reader.start()
+    assert process.stdin is not None
+    try:
+        process.stdin.write(request.encode("utf-8"))
+        process.stdin.close()
+    except BrokenPipeError:
+        pass
+    returncode = process.wait()
+    for reader in readers:
+        reader.join()
+    return returncode, kept["stdout"], kept["stderr"]
 
 
 def main() -> int:
@@ -115,7 +187,7 @@ def main() -> int:
         print(str(error), file=sys.stderr)
         return REFUSED_EXIT
     _print_preview(_summary(prepared), print)
-    sys.stdout.flush()
+    print(WRITING_MARKER, flush=True)
     try:
         _commit(prepared)
     except _REFUSALS as error:

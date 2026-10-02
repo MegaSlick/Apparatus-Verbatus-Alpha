@@ -60,10 +60,10 @@ need. The other words never read those and run from anywhere.
 ## `ingest`: prepare a folder before the Door
 
 It asks for the submitted folder, an **existing empty output folder**, the corpus ID, the
-triage mode and, only when you have made one, the cluster-confirmation file. It first
-shows the sealed submission ledger, the data-gate result, the instrument candidates and
-every file it will write; only then does it write the ledger, producer recipe, proxies,
-candidate evidence, triage documents and a final `ingest-ready.json`.
+triage mode and, only when you have made one, the cluster-confirmation file. It prints
+the sealed submission ledger, the data-gate result, the instrument candidates and every
+file it will write, then writes them in the same run: the ledger, producer recipe,
+proxies, candidate evidence, triage documents and a final `ingest-ready.json`.
 
 - **The confirmation file is your act.** Verbatus never makes one and never promotes an
   instrument verdict on its own; it repeats the confirmation check's refusal word for
@@ -71,10 +71,16 @@ candidate evidence, triage documents and a final `ingest-ready.json`.
 - **A confirmed re-shoot cluster cannot go to the Door.** The Door refuses, whole, any
   submission whose triage names a re-shoot cluster, since no later stage links two
   captures of one leaf (`pipeline/1_exemplar/CONTRACT.md`). Submit one capture per leaf.
-- **What is written is what was shown.** The plan and the write come from one
+- **What is written is what was printed.** The plan and the write come from one
   preparation; the write first checks that the output folder is the one prepared and
-  still empty. The work runs in a separate process that holds no credential, since it
-  decodes the submitted images.
+  still empty.
+- **The images are decoded in a separate process that holds no credential, but it is
+  not sandboxed.** OS confinement was removed by the project lead's decision, so that
+  process can read and write whatever your user account can. On Linux, Verbatus makes
+  itself non-dumpable first, so the child cannot read Verbatus's own environment; on
+  macOS and elsewhere a process of the same user can still read it. If the process dies
+  before it starts writing, nothing was written and the ingest is refused; if it dies
+  after, the folder may hold records and must not be reused.
 - **The output folder goes beside the submitted folder, never inside it.** Anything
   written inside would count as a submitted file, and the Door would refuse the
   submission.
