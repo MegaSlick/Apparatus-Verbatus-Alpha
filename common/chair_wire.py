@@ -28,6 +28,27 @@ CHANDRA_CHAT_TEMPLATE_KWARGS: Final[Mapping[str, bool]] = MappingProxyType(
 )
 
 
+# Checkpoints whose chat template may open a turn in thinking mode, keyed by
+# repository rather than by chair: the same checkpoint can fill several chairs
+# (Qwen3.8 serves both the Perlector and the reconstructor), and each of them is
+# asked for a direct answer. Anything that reads a page from one of these
+# checkpoints outside its stage, such as the golden-page smoke, sends the same
+# switch so it reads the way the run will.
+_DIRECT_RESPONSE_TEMPLATE_KWARGS: Final[Mapping[str, Mapping[str, bool]]] = MappingProxyType(
+    {
+        "datalab-to/chandra-ocr-2": CHANDRA_CHAT_TEMPLATE_KWARGS,
+        "Qwen/Qwen3.8-27B": MappingProxyType({"enable_thinking": False}),
+    }
+)
+
+
+def direct_response_template_kwargs(repo: str) -> dict[str, bool] | None:
+    """The `chat_template_kwargs` a checkpoint's calls carry, or None when it needs none."""
+
+    kwargs = _DIRECT_RESPONSE_TEMPLATE_KWARGS.get(repo)
+    return None if kwargs is None else dict(kwargs)
+
+
 def chandra_wire_fields() -> dict[str, Any]:
     """The extra request fields every Chandra call carries, as a fresh mapping.
 

@@ -128,7 +128,7 @@ from .smoke import VisionSmokeCall
 # One sampling row, sent by the smoke for these tests' chairs and by requests
 # that exercise the handle below the smoke.
 SAMPLING = {"temperature": 0.0, "top_p": 0.1}
-CHAIR_SAMPLING = {"reader": SAMPLING, "perlector": SAMPLING}
+CHAIR_SAMPLING = {"reader": SAMPLING, "perlector": SAMPLING, "reconstructor": SAMPLING}
 
 START = datetime(2026, 8, 9, 12, 0, tzinfo=UTC)
 TIER = "generic-48gb"
@@ -4024,22 +4024,27 @@ def test_vision_smoke_call_refuses_three_code_errors_or_missing_marker(
     assert launcher.processes[0].terminate_calls == 1
 
 
-def test_perlector_direct_response_mode_does_not_relax_the_exact_output_rule(
-    tmp_path: Path,
+@pytest.mark.parametrize("role", ["perlector", "reconstructor"])
+def test_a_thinking_checkpoint_is_smoked_in_direct_response_mode_without_relaxing_the_output_rule(
+    tmp_path: Path, role: str
 ) -> None:
-    chair = identity("perlector", "perlector-v1")
+    # Both chairs serve the same Qwen checkpoint; the switch follows the checkpoint.
+    chair = replace(identity(role, f"{role}-v1"), repo="Qwen/Qwen3.8-27B")
     expected = f"PAGE-WITNESS: {PAGE_WITNESS}"
     answer_with_reasoning = f"I read the page.\n{expected}"
     manager, _, http, _, _, _ = manager_for(
         tmp_path,
         identities={chair.role: chair},
         profiles=(
-            profile_row(
-                recipe=chair.serving_recipe,
-                chair=chair.role,
-                served_model_id="perlector-api",
-                port=8000,
-            ),
+            {
+                **profile_row(
+                    recipe=chair.serving_recipe,
+                    chair=chair.role,
+                    served_model_id="perlector-api",
+                    port=8000,
+                ),
+                "enable_prefix_caching": False,
+            },
         ),
         model_ids=("perlector-api",),
         outputs={"perlector-api": answer_with_reasoning},

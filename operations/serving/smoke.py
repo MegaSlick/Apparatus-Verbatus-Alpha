@@ -39,6 +39,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
 
+from common.chair_wire import direct_response_template_kwargs
 from common.chairs.models import ChairIdentity
 from common.durability import atomic_create
 from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSample
@@ -353,12 +354,12 @@ class VisionSmokeCall:
             prompt=self.prompt,
             mime_type=_FIXTURE_MIME_TYPE,
         ).request_payload()
-        # Qwen3.8 thinks by default, but this proof asks the Perlector for one
-        # literal transcription line.  Select the model's documented direct
-        # response mode for this smoke alone; the witness check below
-        # still gates preflight and every other chair keeps its template.
-        if identity.role == "perlector":
-            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        # A checkpoint whose template can open in thinking mode is asked for a
+        # direct answer on every run call, so the smoke asks the same way; the
+        # witness check below still gates preflight.
+        template_kwargs = direct_response_template_kwargs(identity.repo)
+        if template_kwargs is not None:
+            payload["chat_template_kwargs"] = template_kwargs
         # Inspect the sealed payload, not the path: reopening the fixture could
         # validate replacement bytes rather than the snapshot about to be sent.
         image_bytes = _active_chat_image_bytes(payload, label="golden-page request")
