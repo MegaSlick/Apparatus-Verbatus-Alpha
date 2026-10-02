@@ -64,7 +64,7 @@ Attestatores, or a Recensor that holds anything, stops a full run before the
 Armarium; the next step is a person's review, not more GPU work, so the pod is
 not kept waiting for it. Only a held run whose orchestrator says, in the stop
 record this invocation alone gave it (``--stop-record``), that it reached a
-sealed Armarium export (``exported_this_invocation``) holds to the deadline; an
+sealed Armarium export (``read_stop_record``) holds to the deadline; an
 export an earlier pass left in the tree never counts.
 
 **Nothing the run printed dies with the pod.**  The orchestrator's stdout and
@@ -154,6 +154,11 @@ from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
 from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
 from common.stage import EXIT_HELD as ORCHESTRATOR_HELD
 from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
+from operations.pod.notify_hooks import (
+    RunnerFactory,
+    environment_runner,
+    notify_systemic_from_guard,
+)
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
@@ -176,7 +181,7 @@ from .bootstrap_main import (
     refuse_credential_looking_argv,
 )
 from .durable import atomic_write, canonical_json
-from .models import run_report_paths, utc_now
+from .models import POD_GUARD_DIRECTORY, run_report_paths, utc_now
 from .provider_runpod import POD_ID_ENVIRONMENT
 from .run_exits import (
     EXIT_BOOTSTRAP_RED,
@@ -193,9 +198,6 @@ RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
 RUN_LIVENESS_SCHEMA = "pod-run-liveness.v1"
 DEFAULT_RUNS_DIRECTORY = "runs"
-# The pod guard's state directory on the volume (`pod_start_command.sh`); its
-# deadline file is keyed by the pod id the provider sets in the environment.
-POD_GUARD_DIRECTORY = ".pod_guard"
 # The container's first process, where the provider sets the pod id. A login
 # shell need not inherit it, and a value exported there by hand can be another
 # pod's: every pod's guard keeps its deadline on the same shared volume.
@@ -257,25 +259,41 @@ _ORCHESTRATOR_EXITS = {
 _HOLD_AFTER_EXITS = frozenset({EXIT_COMPLETE, EXIT_HELD})
 
 
-def exported_this_invocation(stop_record: Path, run_id: str) -> bool:
-    """Whether this invocation's orchestrator says it reached a sealed Armarium export.
+def read_stop_record(
+    stop_record: Path, run_id: str, observed_exit: int
+) -> tuple[dict | None, str | None]:
+    """This invocation's stop record for this run, or None and why it cannot be used.
 
-    A run held before its export (at a held Attestatores or Recensor) waits for
-    a person, and the pod must not bill while it waits. The orchestrator writes
-    its stop record to a path made fresh for this invocation, so an export an
-    earlier pass sealed never reads as this run's. No record, an unreadable one,
-    or another run's is read as not reached, whatever goes wrong reading it: the
-    worst that costs is a pod closed early.
+    A usable record is this run's `STOP_RECORD_SCHEMA` record, with the integer
+    `exit_code` the orchestrator was seen to exit with (`observed_exit`),
+    `exported` true or false and `systemic` an alarm line or null. Anything else
+    -- no record, one that cannot be read, another run's, another exit's, or one
+    of another shape -- leaves both the export and the alarm unknown, and the
+    reason says which.
     """
     try:
         record = json.loads(stop_record.read_text(encoding="utf-8"))
-        return (
-            record.get("schema") == STOP_RECORD_SCHEMA
-            and record.get("run_id") == run_id
-            and record.get("exported") is True
+    except FileNotFoundError:
+        return None, "the orchestrator left no stop record"
+    except (OSError, UnicodeDecodeError, ValueError) as error:
+        return None, f"the orchestrator's stop record could not be read ({error})"
+    if not isinstance(record, dict) or record.get("schema") != STOP_RECORD_SCHEMA:
+        return None, f"the orchestrator's stop record is not an {STOP_RECORD_SCHEMA} record"
+    if record.get("run_id") != run_id:
+        return None, f"the orchestrator's stop record is not run {run_id}'s"
+    exit_code = record.get("exit_code")
+    if type(exit_code) is not int:
+        return None, "the orchestrator's stop record has no integer exit_code"
+    if exit_code != observed_exit:
+        return None, (
+            f"the orchestrator's stop record says exit {exit_code}, but it exited {observed_exit}"
         )
-    except Exception:
-        return False
+    systemic = record.get("systemic", "")
+    if not isinstance(record.get("exported"), bool) or not (
+        systemic is None or (isinstance(systemic, str) and systemic.strip())
+    ):
+        return None, "the orchestrator's stop record has no usable exported or systemic field"
+    return record, None
 
 
 @dataclass(frozen=True, slots=True)
@@ -745,6 +763,13 @@ def build_parser() -> bootstrap_main.RefusingParser:
         type=Path,
         help="the Perlector protocol the orchestrator seals, inside the repository; "
         "omitted, the orchestrator's default",
+    )
+    parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="send the systemic alarm, when the run sounds it, to the phone through "
+        "operations/notify as a decision; off by default so a pod never pages a phone on "
+        "its own",
     )
     parser.add_argument(
         "--no-hold",
@@ -1539,6 +1564,7 @@ def main(
     sleeper: Callable[[float], None] = time.sleep,
     actions_factory: Callable[[Plan], BootstrapActions] = build_actions,
     runner: Runner = _run,
+    notify_runner: RunnerFactory = environment_runner,
 ) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     environment = os.environ if environ is None else environ
@@ -1727,7 +1753,16 @@ def main(
         failure_detail = f"the orchestrator could not start: {error}"
         transcript_failure = None
         transcript_dropped_bytes = 0
-    exported = exported_this_invocation(stop_record, plan.run_id)
+    # Once its selection starts, the orchestrator writes its stop record on
+    # every return. A refusal before that, or an orchestrator that never
+    # started, leaves none.
+    stop, stop_problem = (
+        (None, None)
+        if orchestrator_exit is None
+        else read_stop_record(stop_record, plan.run_id, orchestrator_exit)
+    )
+    exported = stop is not None and stop["exported"]
+    systemic = None if stop is None else stop["systemic"]
     stop_directory.cleanup()
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
     if exit_code == EXIT_COMPLETE and plan.ends_before_armarium:
@@ -1778,6 +1813,18 @@ def main(
             failure_detail = f"the orchestrator completed, but {absence}"
         else:
             failure_detail = absence if failure_detail is None else f"{failure_detail}. {absence}"
+    if stop_problem is not None:
+        # Without its stop record the run cannot say whether it sounded the
+        # systemic alarm or reached its export, so it is never complete.
+        unknown = (
+            f"{stop_problem}, so whether this invocation sounded the systemic alarm or "
+            f"reached its export is unknown; read {plan.transcript_path}"
+        )
+        if exit_code in (EXIT_COMPLETE, EXIT_SELECTION_COMPLETE):
+            exit_code = EXIT_HELD
+            failure_detail = f"the orchestrator completed, but {unknown}"
+        else:
+            failure_detail = unknown if failure_detail is None else f"{failure_detail}. {unknown}"
     state = _STATE_FOR_EXIT[exit_code]
     held_before_export = exit_code == EXIT_HELD and not plan.ends_before_armarium and not exported
     holding = (
@@ -1802,6 +1849,13 @@ def main(
         hold_detail = (
             "the selected stages completed; returning at once so the pod timer closes the "
             "pod. The run tree is on the volume, which outlives the pod, for the next selection"
+        )
+    elif held_before_export and stop_problem is not None:
+        hold_detail = (
+            "the run held, and with no usable stop record whether it reached its Armarium "
+            "export is unknown; returning at once so the pod timer closes the pod rather than "
+            "billing idle time on a guess. The run tree and every record are on the volume, "
+            "which outlives the pod, and `verbatus fetch-run` brings them home"
         )
     elif held_before_export:
         hold_detail = (
@@ -1834,6 +1888,24 @@ def main(
         "hold_detail": hold_detail,
         "finished_at": _stamp(now()),
     }
+    if stop_problem is not None:
+        final = {**final, "stop_record_problem": stop_problem}
+    if systemic is not None:
+        # The run stopped on, or exported past, more held pages than its sealed
+        # review policy allows: a person must decide. With --notify the phone
+        # hears of it whatever happens to the pod next; a failed ping changes nothing.
+        notice = (
+            notify_systemic_from_guard(
+                run_id=plan.run_id,
+                alarm_line=systemic,
+                volume_mount=plan.bootstrap.volume_mount_path,
+                runner_factory=notify_runner,
+            ).line()
+            if args.notify
+            else "Phone notification: not sent (no --notify)."
+        )
+        final = {**final, "systemic": systemic, "systemic_notification": notice}
+        print(f"pod_run {plan.run_id}: {systemic}; {notice}")
     _write_run_report(plan, final)
     if plan.no_hold:
         # After the final report, so a prompt delete cannot cost the run's record.

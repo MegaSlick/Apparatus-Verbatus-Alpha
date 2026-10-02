@@ -2003,3 +2003,21 @@ def test_with_the_perlector_chair_absent_every_page_is_fed_and_accounted_not_rea
         assert reading["payload"]["parse_state"] == "not-run"
         assert [p["code"] for p in reading["payload"]["problems"]] == ["chair-absent"]
     assert _records(root, "act-region") == []
+
+
+def test_the_deadline_count_takes_every_operator_re_read_the_window_may_send():
+    """The live deadline count takes every operator re-read request of a page."""
+    sends = []
+    hooks = SimpleNamespace(sent_records=lambda *args: sends.append(args) or [])
+    state = SimpleNamespace(context=SimpleNamespace(), hooks=hooks, live=True)
+    page = SimpleNamespace(
+        page_id="pg_0000000000000001",
+        ordinal=1,
+        not_run=[],
+        rereads=[
+            page_run._Request(3, page_run.PAGE_REREAD_PASS),
+            page_run._Request(4, page_run.PAGE_REREAD_PASS),
+        ],
+    )
+    assert page_run._left_to_send(state, [page], page_run._reread_requests) == 2
+    assert [args[3] for args in sends] == [3, 4]

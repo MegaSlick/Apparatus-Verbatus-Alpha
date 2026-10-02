@@ -2121,10 +2121,12 @@ def page_readings(context) -> dict[int, dict[str, Any]]:
     names ids; a sealed page with no reading is refused, never counted as
     zero acts. Row (`PAGE_READING_ROW_FIELDS`): `page_id`, `page_ordinal`,
     `parse_state`, `disposition` (`read` for a parsed, valid answer, else
-    `held`) and `finish_reason`, all the first reading's; `reading_ref` (the
-    first reading), `feed_ref`, `accounting_ref` (the page's last
-    accounting), `reask_ref` and `trigger_accounting_ref` (the re-ask and the
-    first accounting that planned it, `None` on a page not re-asked), and
+    `held`) and `finish_reason`, all the current whole-page reading's (the
+    first reading, or the page's last operator re-read); `reading_ref` (that
+    reading), `feed_ref`, `accounting_ref` (the page's last accounting),
+    `reask_ref` and `trigger_accounting_ref` (the re-ask and the first
+    accounting that planned it, `None` on a page not re-asked or whose current
+    reading is an operator re-read), and
     `entry_count` (the entries the last accounting counts, `act` and `other`
     alike; `None` for a page whose first answer was not read). It verifies
     the whole run, as `reading_acts` does; a caller needing both takes
@@ -2202,6 +2204,7 @@ class _PageReadRecords:
     def __init__(self, context) -> None:
         tree = context.tree
         self.tree = tree
+        self._decisions: dict[str, tuple[Any, dict[str, Any]]] | None = None
         manifest = tree.build_manifest(PERLECTOR, verify_inputs=False)
         _verify_stage_seal(
             tree, PERLECTOR, "the page-read denominator", "reading", manifest=manifest
@@ -2258,6 +2261,16 @@ class _PageReadRecords:
             raise FatalAccounting(
                 f"a page Testimonium the page-read run was shown does not verify: {error}"
             ) from error
+
+    @property
+    def decisions(self) -> dict[str, tuple[Any, dict[str, Any]]]:
+        """The run's stored review decisions by digest, read once, for operator re-reads."""
+        if self._decisions is None:
+            # Imported here: `page_reread` reads the Recensor's reviews through this module.
+            from common.page_reread import stored_decisions
+
+            self._decisions = stored_decisions(self.tree)
+        return self._decisions
 
     def by_subject(self, kind: str, subject: str) -> list[dict[str, Any]]:
         return [record for record in self.by_kind[kind] if record.get("subject_id") == subject]
@@ -2401,7 +2414,11 @@ def _verify_page_reading(
     The first reading (attempt 1) and its accounting are required. The re-ask
     (attempt 2) and the accounting of both readings exist exactly when
     `page_reask.reask_plan`, run again over the verified first reading and
-    accounting, names ids; a stray, missing or third attempt is refused.
+    accounting, names ids. Each operator re-read (attempt 3 on, without a gap)
+    is verified like a first reading, with its own accounting, and must answer
+    stored page re-asks of this page and supersede every earlier reading
+    (`_verify_rereads`); the last is the page's current reading, whose entries
+    are counted. A stray or missing attempt is refused.
     """
     what = f"page {ordinal} ({page_id})"
     readings = index.by_subject(page_path.PAGE_READING_KIND, page_id)
@@ -2412,18 +2429,43 @@ def _verify_page_reading(
         )
     accountings = index.by_subject(page_path.PAGE_ACCOUNTING_KIND, page_id)
     _require(bool(accountings), f"{what}'s page accounting is missing; its reading is not proven")
+    # An operator re-read is a reading at attempt 3 on that names the decisions it
+    # answers; every other reading is the first or the re-ask, counted 1..N.
+    reread_records = [
+        record
+        for record in readings
+        if page_path.is_operator_reread(_payload_of(record).get("attempt_ordinal"))
+        and page_path.OPERATOR_REREAD_FIELD in _payload_of(record)
+    ]
     reading_by = attempt_ordinals(
-        readings, f"{what}'s page reading", operation=page_path.PAGE_READ_OPERATION
+        [record for record in readings if record not in reread_records],
+        f"{what}'s page reading",
+        operation=page_path.PAGE_READ_OPERATION,
     )
+    rereads_by = _reread_ordinals(reread_records, f"{what}'s operator re-read", page_id)
+    rereads = sorted(rereads_by)
+    reread_accountings = {
+        page_path.page_reading_attempt(page_id, reading): reading for reading in rereads
+    }
     accounting_attempts = {
         page_path.page_reading_attempt(page_id, reading): reading
         for reading in page_path.READING_ORDINALS
     }
     accounting_by = attempt_ordinals(
-        accountings,
+        [record for record in accountings if record.get("attempt_id") not in reread_accountings],
         f"{what}'s page accounting",
         operation=page_path.PAGE_READ_OPERATION,
         ordinal_of=lambda record: accounting_attempts.get(record.get("attempt_id")),
+    )
+    reread_accounting_list = [
+        record for record in accountings if record.get("attempt_id") in reread_accountings
+    ]
+    reread_accounting_by = {
+        reread_accountings[record["attempt_id"]]: record for record in reread_accounting_list
+    }
+    _require(
+        sorted(reread_accounting_by) == rereads and len(reread_accounting_list) == len(rereads),
+        f"{what}'s operator re-reads {rereads} are not each accounted exactly once",
     )
     reading = reading_by[page_path.FIRST_READING]
     payload = _payload_of(reading)
@@ -2511,6 +2553,23 @@ def _verify_page_reading(
         act_plans = page_path.reask_act_plans(combined, plans, reask_plans, what)
         accounting_ref, page_holds = index.ref(last), combined["holds"]
         by_reading[page_path.REASK_READING] = (second, reask_ref)
+    superseded: list[dict[str, str]] = []
+    if rereads:
+        superseded = [reading_ref, *([reask_ref] if named else [])]
+        current = _verify_rereads(
+            context,
+            index,
+            what,
+            {o: (rereads_by[o], reread_accounting_by[o]) for o in rereads},
+            feed=feed,
+            feed_ref=feed_ref,
+            supersedes=superseded,
+            measure=measure,
+        )
+        payload, reading_ref, act_plans, last, page_holds, superseded = current
+        codes = _problem_codes(payload.get("problems"), f"{what}'s current page reading")
+        accounting_ref, reask_ref, named = index.ref(last), None, None
+        by_reading = {payload["attempt_ordinal"]: (payload, reading_ref)}
     row = {
         "page_id": page_id,
         "page_ordinal": ordinal,
@@ -2525,17 +2584,148 @@ def _verify_page_reading(
         "entry_count": len(act_plans) if payload["disposition"] == page_path.READ else None,
     }
     refs = {"reading_ref": reading_ref, "accounting_ref": accounting_ref, "feed_ref": feed_ref}
+    # An earlier reading's act records stay as read, superseded and not counted.
+    old = {reference["relative_path"] for reference in superseded}
     if not act_plans:
         _require(
-            not index.on_page(page_path.ACT_REGION_KIND, page_id)
-            and not index.on_page(page_path.PERLECTIO_KIND, page_id),
+            not _current_on_page(index, page_path.ACT_REGION_KIND, page_id, old)
+            and not _current_on_page(index, page_path.PERLECTIO_KIND, page_id, old),
             f"{what} has no act entry to count, yet the Perlector published act records for it",
         )
         return row, [_page_row(context, ordinal, page_id, payload, codes, page_holds, refs)]
     acts = _verify_entries(
-        context, index, ordinal, page_id, by_reading, act_plans, refs, page_holds, feed, witnesses
+        context,
+        index,
+        ordinal,
+        page_id,
+        by_reading,
+        act_plans,
+        refs,
+        page_holds,
+        feed,
+        witnesses,
+        superseded=old,
     )
     return row, acts
+
+
+def _current_on_page(
+    index: _PageReadRecords, kind: str, page_id: str, superseded: set[str]
+) -> list[dict[str, Any]]:
+    """A page's act records of `kind` but those of a reading an operator re-read superseded."""
+    return [
+        record
+        for record in index.on_page(kind, page_id)
+        if (_payload_of(record).get("page_reading_ref") or {}).get("relative_path")
+        not in superseded
+    ]
+
+
+def _reread_ordinals(
+    records: list[dict[str, Any]], what: str, page_id: str
+) -> dict[int, dict[str, Any]]:
+    """A page's operator re-reads by ordinal, which must run from 3 without a gap.
+
+    Each record's attempt id must derive from its page and ordinal, and no
+    ordinal may repeat: a lost re-read is never passed over.
+    """
+    found: dict[int, dict[str, Any]] = {}
+    for record in records:
+        ordinal = _payload_of(record)["attempt_ordinal"]
+        if ordinal in found:
+            raise FatalAccounting(f"{what} carries attempt {ordinal} twice")
+        if record.get("attempt_id") != page_path.page_reading_attempt(page_id, ordinal):
+            raise FatalAccounting(
+                f"{what} {record.get('artifact_id')!r} claims attempt {ordinal}, which its "
+                "sealed attempt identity does not bind"
+            )
+        found[ordinal] = record
+    first = page_path.OPERATOR_REREAD_FIRST
+    _require(
+        sorted(found) == list(range(first, first + len(found))),
+        f"{what}s {sorted(found)} do not run from {first} without a gap; a lost re-read is "
+        "never passed over",
+    )
+    return found
+
+
+def _verify_rereads(
+    context,
+    index: _PageReadRecords,
+    what: str,
+    rereads: Mapping[int, tuple[Mapping[str, Any], Mapping[str, Any]]],
+    *,
+    feed: Mapping[str, Any],
+    feed_ref: dict[str, str],
+    supersedes: list[dict[str, str]],
+    measure,
+) -> tuple[
+    Mapping[str, Any],
+    dict[str, str],
+    list[dict[str, Any]],
+    Mapping[str, Any],
+    list[str],
+    list[dict[str, str]],
+]:
+    """A page's operator re-reads, each proven like a first reading, in attempt order.
+
+    Each must answer stored page re-asks of this page that no other re-read
+    answers, supersede exactly the page's earlier readings, input them and its
+    decisions, and be the first reading's request over the same feed; its own
+    accounting is measured again. Returns the last one's payload, reference,
+    entry plans, accounting record and page holds: the page's current reading,
+    and every reading it supersedes, earlier re-reads included.
+    """
+    ordinal, page_id = feed["page_ordinal"], feed["page_id"]
+    answered: set[str] = set()
+    current = None
+    supersedes = list(supersedes)
+    for attempt, (reading, accounting) in sorted(rereads.items()):
+        reading_what = f"{what}'s operator re-read {attempt}"
+        payload = _payload_of(reading)
+        _require_page_reading(reading_what, reading, page_id, ordinal, attempt)
+        hashes = page_path.require_operator_reread(
+            payload.get(page_path.OPERATOR_REREAD_FIELD),
+            run_id=context.tree.run_id,
+            page_id=page_id,
+            stored=index.decisions,
+            supersedes=supersedes,
+            what=reading_what,
+        )
+        _require(
+            not answered & set(hashes),
+            f"{reading_what} answers a decision an earlier re-read of the page answered",
+        )
+        answered |= set(hashes)
+        inputs = reading.get("inputs", [])
+        approvals = [
+            item["approval_ref"] for item in payload[page_path.OPERATOR_REREAD_FIELD]["decisions"]
+        ]
+        _require(
+            payload.get("reask") is None
+            and payload.get("audit") == index.audit
+            and payload.get("feed_ref") == feed_ref
+            and all(reference in inputs for reference in (feed_ref, *supersedes, *approvals)),
+            f"{reading_what} is not a whole-page reading of the page's feed that inputs the "
+            "readings it supersedes and the decisions it answers",
+        )
+        _verify_reply(context, index, reading_what, ordinal, page_id, payload, feed)
+        _verify_request(context, reading_what, reading, payload, feed)
+        _verify_disposition(reading_what, payload)
+        plans = _entry_plans(index, reading_what, payload, feed, page_id, attempt=attempt)
+        reference = index.ref(reading)
+        measured = measure(
+            reading_what,
+            accounting,
+            reading=payload,
+            reading_ref=reference,
+            plans=plans,
+            attempt=attempt,
+        )
+        current = (payload, reference, plans, accounting, measured["holds"], list(supersedes))
+        supersedes.append(reference)
+    _require(current is not None, f"{what} has no operator re-read to stand on")
+    return current
 
 
 def _require_page_reading(
@@ -2625,8 +2815,13 @@ def _entry_plans(
     *,
     named: list[str] | None = None,
     first_count: int = 0,
+    attempt: int | None = None,
 ) -> list[dict[str, Any]]:
-    """The entry plans of a read answer, a re-ask's with its named ids; one not read has none."""
+    """The entry plans of a read answer, a re-ask's with its named ids; one not read has none.
+
+    `attempt` names an operator re-read's ordinal; otherwise it is the first
+    reading's, or the re-ask's when `named` is given.
+    """
     if payload["disposition"] != page_path.READ:
         return []
     try:
@@ -2637,7 +2832,11 @@ def _entry_plans(
             stop_reason=payload.get("stop_reason"),
             truncation_policy=index.truncation_policy,
             accounting_policy=index.accounting_policy,
-            attempt=page_path.FIRST_READING if named is None else page_path.REASK_READING,
+            attempt=attempt
+            if attempt is not None
+            else page_path.FIRST_READING
+            if named is None
+            else page_path.REASK_READING,
             named=named,
             first_count=first_count,
         )
@@ -2677,6 +2876,9 @@ def _verify_reply(
     named: list[str] | None = None,
 ) -> None:
     """The reading's parse state, answer, problems and finish, derived again, never trusted.
+
+    A fixture run's operator re-read is answered with the page's declared
+    answer, as its first reading is.
 
     A reply is read again with stage 4's own reader (`page_path.read_reply`),
     a re-ask's against its `named` ids: a live reading's from the response
@@ -2990,6 +3192,7 @@ def _verify_accounting(
     reading_ref: dict[str, str],
     plans: list[dict[str, Any]],
     reask: Mapping[str, Any] | None = None,
+    attempt: int = page_path.FIRST_READING,
 ) -> dict[str, Any]:
     """The page accounting measured again must be exactly the sealed one; return it.
 
@@ -2997,7 +3200,7 @@ def _verify_accounting(
     measuring both readings together, as `page_path.accounting_inputs` takes it.
     """
     recomputed, inputs = _measure_page_accounting(
-        context, index, what, feed, feed_ref, witnesses, reading, reading_ref, plans, reask
+        context, index, what, feed, feed_ref, witnesses, reading, reading_ref, plans, reask, attempt
     )
     _require(
         _refs_by_path(accounting.get("inputs"), f"{what}'s page accounting")
@@ -3022,6 +3225,7 @@ def _measure_page_accounting(
     reading_ref: dict[str, str],
     plans: list[dict[str, Any]],
     reask: Mapping[str, Any] | None = None,
+    attempt: int = page_path.FIRST_READING,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """The page accounting of one reading, or of it and its re-ask, and its inputs.
 
@@ -3048,6 +3252,7 @@ def _measure_page_accounting(
             record_detector_configured=index.record_detector_configured,
             fixture_placeholders=index.fixture_placeholders,
             reask=reask,
+            attempt=attempt,
         )
         recomputed = page_accounting.page_accounting(**measured, policy=index.accounting_policy)
     except ContractError as error:
@@ -3168,11 +3373,15 @@ def _verify_entries(
     page_holds: list[str],
     feed: Mapping[str, Any],
     witnesses: list[dict[str, Any]],
+    *,
+    superseded: set[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Each entry the page's last accounting counts, proven against its act-region and Perlectio.
 
     `readings` maps each reading's ordinal to its payload and reference: an
-    entry names and repeats the reading it came from, the first or the re-ask.
+    entry names and repeats the reading it came from, the first, the re-ask or
+    the current operator re-read. The act records of a reading in `superseded`
+    (run-tree paths) stay as read and are not counted.
     """
     what = f"page {ordinal} ({page_id})"
     _require(
@@ -3331,7 +3540,10 @@ def _verify_entries(
         )
     expected_ids = sorted(plan["act_id"] for plan in plans)
     for kind in (page_path.ACT_REGION_KIND, page_path.PERLECTIO_KIND):
-        found = sorted(record.get("subject_id") for record in index.on_page(kind, page_id))
+        found = sorted(
+            record.get("subject_id")
+            for record in _current_on_page(index, kind, page_id, superseded)
+        )
         _require(
             found == expected_ids,
             f"{what}'s {kind} records do not match the {len(plans)} entries its last "

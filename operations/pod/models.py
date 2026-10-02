@@ -22,6 +22,10 @@ from common.credentials import looks_like_credential_field
 
 UTC = timezone.utc
 
+# The pod guard's state directory on the volume (`pod_start_command.sh`): its
+# deadline and heartbeat files, and the notification topic it pings.
+POD_GUARD_DIRECTORY = ".pod_guard"
+
 # The only mount path a pod request may name; the pod side refuses to start unless a
 # real mount sits there, so run state and the model store cannot land on container disk.
 POD_VOLUME_MOUNT_PATH = "/workspace/private"

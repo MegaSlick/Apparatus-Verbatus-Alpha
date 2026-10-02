@@ -216,6 +216,32 @@ shape, so a consumer keying on it never reads an older shape out of a newer reco
   reading with codes to have a row whose `reading_hold_codes` are exactly them, so a
   label dropped from every format is refused even when no page hold shows the release;
   a package with operator rows and no review decisions is refused.
+- A person's correction: a delivered reading established from a current `edit`
+  (`pipeline/6_archetypus/CONTRACT.md`, "A person's correction") is delivered as the
+  person's text, with the fixed no-doubt layer, in every literal format, and counted
+  like any accepted act; its provenance (`provenance_json` in the acts database) is
+  labelled "corrected by a person" with who, when, why and the optional note. Its
+  operator row is labelled "corrected by a person" and adds `note` and `model_reading`
+  (`{label: "model reading (original)", perlectio_ref, text_sha256, text_status,
+  provenance}`). The model's reading itself is shown beside the person's, labelled
+  "model reading (original)", as one `armarium-model-reading.v1` row `{act_id, act_key,
+  kind, label, text, uncertainty, text_status, perlectio_ref}`: in `sources.json`
+  (`model_readings`) in every package whatever its formats, in `model_readings.jsonl`
+  with `jsonl`, and in the text bundle beneath the reading's section (`operator_note:`,
+  `model_reading_label:`, `model_reading_text:`, `model_reading_uncertainty:`,
+  `model_reading_text_status:`, then `operator_row:`). The aggregate basis's
+  `review_decisions.corrections` names each corrected reading by key; a correction is no
+  reason, so a run is never partial for corrections alone. The Archetypus record is
+  reconciled against the stored edit and the model's reading, and its provenance built
+  again (`common/correction.py`). The clean verifier rebuilds each edit the provenance
+  names from the delivered text and note and requires its self-hash and stored digest,
+  so a text or note no edit records is refused; it refuses a reading whose provenance
+  and operator row disagree about a correction (a dropped label), a correction missing
+  from the aggregate basis, a format that does not show the original beside exactly the
+  corrected readings or shows one other than `sources.json` records, and a correction
+  layer on any other reading. A reconstruction beneath a corrected act stays tied to
+  the model's reading: its pieces are held to the original shown above it and the row
+  says `made_from: "model reading (original)"`.
 - `salvage/items.jsonl` — a structurally separate salvage namespace. It has no
   act identifiers or canonical-text fields; promotion requires recorded approval
   and pipeline re-entry, never an export-time act.
@@ -467,11 +493,13 @@ keeps the run `partial` with its reason. Each delivered act's raised flags trave
 flag is never dropped.
 
 **Acts read on a re-ask.** An act a page's one re-ask recovered is counted in
-the act partition like any other, and labelled with the reading it came from:
-each counted row's `reading` is `first reading` or `read on re-ask`, from the
-`reading_attempt` of its row in the verified denominator (1 or 2), and `null` for
-a `page-unread` or `page-blank` row, which stands for no entry. The other layer
-carries no such label: it is never counted as acts.
+the act partition like any other, and labelled with the reading it came from,
+by the `reading_attempt` of its row in the verified denominator: attempt 1 is
+the first reading (`first reading`), attempt 2 is read on re-ask (`read on
+re-ask`), and attempt 3 or later is an operator re-read, the current reading
+of a page a person had read again (`read on operator re-read`). A
+`page-unread` or `page-blank` row, which stands for no entry, names `null`. The
+other layer carries no such label: it is never counted as acts.
 
 **Manifest `armarium-export-manifest.v11`.** Its denominator is the reading acts,
 and it carries three claims beside the act partition:
@@ -490,7 +518,9 @@ and it carries three claims beside the act partition:
   counted apart from those of first readings, in total and per real sealed page
   (`pages`: `{ordinal, first_reading_acts, read_on_reask_acts}`, one per
   `page_accounting` row), derived from `sources.json`'s `act_readings`. A row
-  standing for no entry counts in neither.
+  standing for no entry counts in neither. A run with an operator re-read adds
+  `read_on_operator_reread_acts`, in total and per page; one with none carries no
+  such key.
 
 **What was not measured.** `claims.not_measured` names these instruments, in
 order (every threshold must be an integer, and one that is not is fatal rather

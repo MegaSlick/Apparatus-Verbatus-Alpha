@@ -10,12 +10,19 @@ nothing it looked at changes. The decision changes nothing by itself: the
 Recensor applies it on its next pass (`pipeline/5_recensor/CONTRACT.md`,
 "Operator review decisions").
 
+An `edit` records a person's corrected text for one held unit, with an
+optional note; when the Recensor accepts the unit, the Archetypus establishes
+that text as its reading, labelled "corrected by a person"
+(`common/correction.py`), and the export shows the model's reading beside it.
+A page `re-ask` is read again by the Perlector when the run resumes from it
+(`common/page_reread.py`), as the page's next operator re-read.
+
 Refused, before anything is written: a unit or page the Recensor's latest
 pass did not review; a decision its subject does not allow (a release with no
-hold of its own to clear, a release of a reading no decision can send to
-export, no missed act on an unread page); and a run whose Archetypus has
-established a reading or whose Armarium has published its export, where a
-decision recorded now could reach nothing.
+hold of its own to clear, a release or edit of a reading no decision can send
+to export, an edit of a unit nothing holds, no missed act on an unread page);
+and a run whose Archetypus has established a reading or whose Armarium has
+published its export, where a decision recorded now could reach nothing.
 """
 
 from __future__ import annotations
@@ -26,19 +33,19 @@ from typing import Any, Final
 
 from common.contracts.approval import (
     APPROVER,
+    EDIT_DECISION,
     PAGE_SCOPE,
     REVIEW_DECISIONS,
     UNIT_SCOPE,
     ApprovalRecordReference,
     build_review_decision_record,
 )
+from common.contracts.canonical import text_sha256
 from common.contracts.errors import ApprovalRefusal
-from common.contracts.stages import ARCHETYPUS, ARMARIUM, PERLECTOR, RECENSOR
-from common.page_path import PAGE_READING_KIND, PERLECTIO_KIND
-from common.page_review import REVIEW_KIND, REVIEW_OPERATION, override_refusal
+from common.contracts.stages import ARCHETYPUS, ARMARIUM
+from common.page_review import override_refusal, published_units
 from common.review_decisions import CURRENT, published_basis, review_decision
 from common.runtree.store import RunTree
-from common.stage import latest_attempt
 
 # What each decision asks of the run after it, in words.
 NEXT_STEP: Final = {
@@ -48,14 +55,23 @@ NEXT_STEP: Final = {
     "no-missed-act": "the Recensor clears the page's holds",
     "missed-act": "the Recensor holds the page as missing an act",
     "re-shoot": "the Recensor holds the page and records the re-shoot request",
+    EDIT_DECISION: (
+        "the Recensor clears the unit's own holds, and once nothing else holds it the "
+        "Archetypus establishes your text as its reading, labelled corrected by a person, "
+        "with the model's reading kept beside it"
+    ),
 }
-RERUN_MISSING: Final = (
-    "the Recensor records the request in its review-decisions `requests`, and holds the "
-    "subject until it is read again. This tool does not start that re-read: the Perlector "
-    "reads a page as attempt 1 and its one re-ask as attempt 2 and refuses any other "
-    "(`common.page_path.page_reading_attempt`), and the reading denominator has no rule for "
-    "which of two first readings of a page is current, so a re-read is a new run of the "
-    "submission"
+# What a re-ask asks of the run after it, by scope.
+REREAD_PAGE: Final = (
+    "when the run resumes from the Perlector (--from perlector --to armarium), the Perlector "
+    "reads the page again as its next operator re-read, bound to this decision; that reading "
+    "becomes the page's current one, its earlier readings stay in the run tree marked "
+    "superseded, and the Recensor reviews the new reading. On a pod the re-read is paid GPU "
+    "work and needs the project lead's permission like any pod start"
+)
+REREAD_UNIT: Final = (
+    "the Recensor records the request in its review-decisions `requests` and holds the unit; "
+    "the Perlector reads whole pages, so to read it again record a re-ask of its page"
 )
 
 
@@ -67,52 +83,12 @@ class PreparedDecision:
     subject: str
     basis_digest: str
     held_codes: tuple[str, ...]
+    # The digest of an edit's text, which its confirmation names; None otherwise.
+    text_sha256: str | None = None
 
 
 def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def published_units(tree: RunTree) -> list[dict[str, Any]]:
-    """The Recensor's latest review of every unit, as `published_basis` reads them.
-
-    Each unit's page is the one its page reading names, and its own and page
-    holds its Perlectio's, as sealed; a page row has no reading and holds
-    for its page.
-    """
-    reviews: dict[str, list[dict[str, Any]]] = {}
-    for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
-        if entry["kind"] == REVIEW_KIND:
-            reviews.setdefault(entry["subject_id"], []).append(
-                tree.read_artifact(RECENSOR, REVIEW_KIND, entry["artifact_id"])
-            )
-    units = []
-    for act_id, records in sorted(reviews.items()):
-        review = latest_attempt(records, f"review of {act_id}", operation=REVIEW_OPERATION)
-        payload = {
-            key: value for key, value in review["payload"].items() if key != "attempt_ordinal"
-        }
-        page = tree.read_artifact_reference(
-            payload["page_reading_ref"], stage=PERLECTOR, kind=PAGE_READING_KIND
-        )
-        holds: list[str] = []
-        page_holds: list[str] = []
-        if payload["perlectio_ref"] is not None:
-            reading = tree.read_artifact_reference(
-                payload["perlectio_ref"], stage=PERLECTOR, kind=PERLECTIO_KIND, subject_id=act_id
-            )
-            holds, page_holds = reading["payload"]["holds"], reading["payload"]["page_holds"]
-        units.append(
-            {
-                "act_id": act_id,
-                "page_id": page["subject_id"],
-                "outcome": review["outcome"],
-                "payload": payload,
-                "unit_holds": holds,
-                "page_holds": page_holds,
-            }
-        )
-    return units
 
 
 def _require_open(tree: RunTree) -> None:
@@ -142,14 +118,16 @@ def prepare_decision(
     page: int | None = None,
     finding: str | None = None,
     timestamp: str | None = None,
+    text: str | None = None,
+    note: str | None = None,
 ) -> PreparedDecision:
     """Build one decision about the unit keyed `unit` (`p1:2`) or page ordinal `page`.
 
     It binds to that subject's basis in the Recensor's latest reviews, so
     nothing unknown is ever written; `record_decision` checks it current again
-    just before it writes. The reason is bounded by the approval contract
-    (`common.contracts.approval.MAX_APPROVAL_REASON_BYTES`), which the record's
-    builder enforces.
+    just before it writes. The reason, an edit's `text` and its `note` are
+    bounded by the approval contract (`common.contracts.approval`), which the
+    record's builder enforces.
     """
     if (unit is None) == (page is None):
         raise ApprovalRefusal("a decision names exactly one unit (by its key) or one page")
@@ -184,6 +162,12 @@ def prepare_decision(
                     f"releasing {unit} cannot send it to export: {refusal}. Exclude it, or "
                     "hold it with a finding"
                 )
+        if decision == EDIT_DECISION:
+            if (refusal := override_refusal(_row(units, subject, entry), edit=True)) is not None:
+                raise ApprovalRefusal(
+                    f"correcting {unit} cannot send it to export: {refusal}. Exclude it, or "
+                    "hold it with a finding"
+                )
         what = f"unit {unit} ({subject})"
     else:
         matches = [pid for pid, entry in basis["pages"].items() if entry["page_ordinal"] == page]
@@ -205,9 +189,15 @@ def prepare_decision(
         basis_digest=digest,
         reason=reason,
         timestamp=timestamp or _now(),
+        text=text,
+        note=note,
     )
     return PreparedDecision(
-        record=record, subject=what, basis_digest=digest, held_codes=tuple(sorted(held))
+        record=record,
+        subject=what,
+        basis_digest=digest,
+        held_codes=tuple(sorted(held)),
+        text_sha256=text_sha256(text) if decision == EDIT_DECISION else None,
     )
 
 
@@ -250,15 +240,39 @@ def report(prepared: PreparedDecision, reference: ApprovalRecordReference) -> li
     review = prepared.record["review"]
     decision = review["decision"]
     finding = f" with finding {review['finding']}" if review["finding"] else ""
-    effect = RERUN_MISSING if decision == "re-ask" else NEXT_STEP[decision]
+    if decision == "re-ask":
+        effect = REREAD_PAGE if review["scope"] == PAGE_SCOPE else REREAD_UNIT
+    else:
+        effect = NEXT_STEP[decision]
+    text = (
+        [f"The corrected text has digest {prepared.text_sha256}; note: {review['note'] or 'none'}."]
+        if decision == EDIT_DECISION
+        else []
+    )
     return [
         f"Recorded: {decision}{finding} of {prepared.subject}, by {APPROVER} at "
         f"{prepared.record['timestamp']}.",
+        *text,
         f"It binds to the review basis {prepared.basis_digest}; held now by: "
         f"{', '.join(prepared.held_codes) or 'nothing'}.",
         f"Decision record: {reference.relative_path} ({reference.sha256})",
         f"When the Recensor runs again, {effect}.",
+        _next_step(decision == "re-ask" and review["scope"] == PAGE_SCOPE),
+    ]
+
+
+def _next_step(reread: bool) -> str:
+    """How the run goes on after the decision: from the Perlector for a page re-ask, which
+    must read the page again before the Recensor reviews it, else from the Recensor."""
+    if reread:
+        return (
+            "Next: resume the run from the perlector (`--from perlector --to armarium`), which "
+            "reads the page again and then has the Recensor apply every decision recorded; it "
+            "goes on to export once nothing is held, or once `verbatus advance --stage "
+            "recensor` passes its new seal."
+        )
+    return (
         "Next: resume the run from the recensor (`--from recensor --to armarium`), which "
         "applies every decision recorded; it goes on to export once nothing is held, or once "
-        "`verbatus advance --stage recensor` passes its new seal.",
-    ]
+        "`verbatus advance --stage recensor` passes its new seal."
+    )

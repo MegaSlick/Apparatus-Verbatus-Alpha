@@ -1,4 +1,4 @@
-"""A vendor-neutral phone-notification seam for the three pod-lease moments.
+"""A vendor-neutral phone-notification seam for the pod-lease moments and a systemic run.
 
 Spend machinery is tracking plus notifications only -- no new enforcement,
 RunPod's own limits enforce. This module is the notification half of that: it
@@ -11,7 +11,11 @@ one short line, three times in a lease's life --
 - each balance observation: the balance and the spend rate the observer
   reported
 
--- through `operations/notify/client.py`.
+-- through `operations/notify/client.py`. A fourth, `notify_systemic`, is the
+one question among them: a run on the pod that stopped with more of its pages
+held than its sealed review policy allows, or exported past that stop on a
+person's advance, sends the systemic alarm as a `decision`, the line
+`verbatus run --notify` sends for the same run on this computer.
 
 **Never a secret, never a URL.** Every message is checked before the shell
 call: a word naming a secret, any piece `common.credentials` reads as
@@ -29,12 +33,19 @@ receipt, since nothing is lost silently, and moves on.
 
 from __future__ import annotations
 
+import os
 import re
+import stat
+from collections.abc import Callable, Mapping
+from functools import partial
+from pathlib import Path
 from typing import Final
 
 from common.credentials import notification_carries_credential
+from common.review_policy import systemic_notice
 from operations.notify import client
 from operations.notify.client import NotifyOutcome, Runner
+from operations.pod.models import POD_GUARD_DIRECTORY
 
 NOTIFY_EVENT: Final = "milestone"
 """Every hook here reports a fact, not a question -- `operations/notify/README.md`'s
@@ -62,11 +73,11 @@ def _unsafe_reason(message: str) -> str | None:
     return None
 
 
-def _send(message: str, *, runner: Runner) -> NotifyOutcome:
+def _send(message: str, *, runner: Runner, event: str = NOTIFY_EVENT) -> NotifyOutcome:
     unsafe = _unsafe_reason(message)
     if unsafe is not None:
         return NotifyOutcome(False, False, unsafe)
-    return client.send(NOTIFY_EVENT, message, runner=runner)
+    return client.send(event, message, runner=runner)
 
 
 def notify_launch(
@@ -125,3 +136,95 @@ def notify_balance(
         f"pod balance: {subject}, ${balance_usd} available, ${spend_rate_usd_per_hr}/h spend rate"
     )
     return _send(message, runner=runner)
+
+
+def notify_systemic(*, run_id: str, alarm_line: str, runner: Runner = client.run) -> NotifyOutcome:
+    """One `decision` line for a run whose systemic alarm sounded (`common.review_policy`)."""
+
+    return _send(systemic_notice(run_id, alarm_line), runner=runner, event="decision")
+
+
+# The file under the pod guard's directory on the volume holding the topic it
+# pings (`operations/pod/README.md`, "Arming the ping").
+GUARD_TOPIC_NAME: Final = "ntfy_topic"
+_TOPIC: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# Removed from anywhere in the file before the format check, as the pod guard
+# removes them before it pings.
+_TOPIC_IGNORED_BYTES: Final = b" \r\n"
+# A topic is at most 64 characters; this leaves room for a line ending and stray
+# spaces. A file larger than this is not a topic, and nothing more is read.
+_TOPIC_READ_BYTES: Final = 256
+# What the notification command needs from the pod's environment to reach the
+# service; nothing else of it is passed on.
+_PASSED_ENVIRONMENT: Final = (
+    "PATH",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "SSL_CERT_FILE",
+    "CURL_CA_BUNDLE",
+)
+NO_GUARD_TOPIC: Final = "no usable guard topic"
+
+
+def guard_topic_path(volume_mount: Path) -> Path:
+    """Where the pod guard keeps its topic: its directory on the volume mount."""
+    return Path(volume_mount) / POD_GUARD_DIRECTORY / GUARD_TOPIC_NAME
+
+
+def guard_topic(volume_mount: Path) -> str | None:
+    """The topic the pod guard pings, read from its file on the volume; None when absent or bad.
+
+    Spaces, carriage returns and newlines are removed wherever they stand, as
+    the pod guard removes them, and what is left must be a topic. Only a
+    regular file, never followed through a link, and at most
+    `_TOPIC_READ_BYTES` of it, so a FIFO, a device or a huge file cannot hold
+    the run.
+    """
+    path = guard_topic_path(volume_mount)
+    try:
+        if not stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+                return None
+            data = os.read(descriptor, _TOPIC_READ_BYTES + 1)
+        finally:
+            os.close(descriptor)
+        topic = (
+            data.translate(None, _TOPIC_IGNORED_BYTES).decode("utf-8")
+            if len(data) <= _TOPIC_READ_BYTES
+            else ""
+        )
+    except (OSError, UnicodeDecodeError):
+        return None
+    return topic if _TOPIC.fullmatch(topic) else None
+
+
+def notify_environment(topic: str) -> dict[str, str]:
+    """The one environment the notification command runs in: the topic and what it needs."""
+    environment = {name: os.environ[name] for name in _PASSED_ENVIRONMENT if name in os.environ}
+    environment["NTFY_TOPIC"] = topic
+    return environment
+
+
+def environment_runner(environment: Mapping[str, str]) -> Runner:
+    """`client.run` bound to `environment`: the notification command's, and only its."""
+    return partial(client.run, env=dict(environment))
+
+
+RunnerFactory = Callable[[Mapping[str, str]], Runner]
+
+
+def notify_systemic_from_guard(
+    *, run_id: str, alarm_line: str, volume_mount: Path, runner_factory: RunnerFactory
+) -> NotifyOutcome:
+    """The systemic alarm sent with the pod guard's topic, in the notification command's own
+    environment; with no usable guard topic nothing runs, so the command never falls back to a
+    topic of the checkout's."""
+    topic = guard_topic(volume_mount)
+    if topic is None:
+        return NotifyOutcome(False, False, NO_GUARD_TOPIC)
+    return notify_systemic(
+        run_id=run_id, alarm_line=alarm_line, runner=runner_factory(notify_environment(topic))
+    )

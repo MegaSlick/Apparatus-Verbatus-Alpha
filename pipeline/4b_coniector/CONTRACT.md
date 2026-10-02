@@ -39,9 +39,23 @@ page break) and context (the neighbouring pages' edge acts) exist only when the
 run is sealed `pages_are_consecutive`. With `mode = "off"` `calls` is empty and
 no model is loaded. An act a page's re-ask recovered (`reading_attempt` 2) is a
 diplomatic reading like any other and may be a subject, but a page's edges are
-its first reading's, as the Recensor's page breaks are: a recovered act is never
+its current whole-page reading's (its first reading's, or an operator re-read's
+that superseded it), as the Recensor's page breaks are: a recovered act is never
 a chain piece or another page's context, and one carrying a continuation flag,
 which a re-ask may not set, is refused.
+
+After an operator re-read (`pipeline/4_perlector/CONTRACT.md`, "An operator
+re-read") the readings differ from those the sealed plan was made over. The pass
+then publishes the new plan as the plan's next generation, with `supersedes`
+naming the last one (attempt `replan:<n>`; the first plan has no attempt and no
+`supersedes`), and each call or reconstruction that differs from every one
+sealed for its page or subject as that subject's next generation (attempts
+`recall:<n>`, `remake:<n>`). The current plan is the last of the chain; a page's
+current call and a subject's current reconstruction are the ones the current
+plan and readings give. Every earlier record stays as made, superseded. The
+reconstruction stays tied to the model's reading it was made from: a reading a
+person later corrects is shown above it as "model reading (original)"
+(`pipeline/7_armarium/CONTRACT.md`).
 
 `reconstruction-call` (subject the page's `page_id`), schema `coniector-call.v1`,
 one per planned call: the plan call; `prompt_version` and `prompt_sha256` of the
@@ -83,7 +97,8 @@ adopted when it was asked from this plan call, this prompt, this serving mode
 and this chair, and refused by name otherwise, and its reconstructions are
 derived again from its reply. That includes a call that failed or was refused:
 its record is sealed evidence, and asking again would publish different bytes
-under the same identity, so reconstructing that page again takes a new run. A
+under the same identity, so reconstructing that page again takes a new run,
+unless an operator re-read changed the readings and the plan with them. A
 live call interrupted before its record was published is asked again; its
 retained reply stays in the run tree.
 
@@ -106,4 +121,5 @@ retained engine bytes, and a live
 call's retained record against this prompt's request, rendered again with the
 chair's sealed sampling row and the receipt's seed; each parse; and every
 reconstruction from its reply. A record the recomputation does not give, or one
-it gives that is missing, is `FatalAccounting`.
+it gives that is missing, is `FatalAccounting`; once a plan supersedes another,
+a call or reconstruction made from a superseded call is kept and not shown.

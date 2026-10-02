@@ -13,9 +13,11 @@ import pytest
 from common.contracts.approval import (
     ACTIONS,
     FINDINGS,
+    MAX_APPROVAL_NOTE_BYTES,
     MAX_APPROVAL_REASON_BYTES,
     MAX_APPROVAL_SUBJECT_BYTES,
     MAX_APPROVAL_SUBJECTS,
+    MAX_APPROVAL_TEXT_BYTES,
     MAX_APPROVAL_TIMESTAMP_BYTES,
     PAGE_DECISIONS,
     REAL_INGRESS,
@@ -144,6 +146,25 @@ def test_the_largest_valid_approval_fully_escaped_stays_within_the_record_read_b
         reason="r" + escaped * (MAX_APPROVAL_REASON_BYTES - 1),
         target_version_hash="a" * 64,
         timestamp="t" + escaped * (MAX_APPROVAL_TIMESTAMP_BYTES - 1),
+    )
+    assert len(canonical_bytes(record)) < MAX_RECORD_READ_BYTES
+
+
+def test_the_largest_valid_edit_fully_escaped_stays_within_the_record_read_bound():
+    """An edit at every bound -- reason, text and note -- is still read back, not refused."""
+    escaped = "\x01"
+    record = build_review_decision_record(
+        run_id="r" + escaped * (MAX_APPROVAL_SUBJECT_BYTES - 1),
+        scope="unit",
+        subject_id="s" + escaped * (MAX_APPROVAL_SUBJECT_BYTES - 1),
+        page_id="p" + escaped * (MAX_APPROVAL_SUBJECT_BYTES - 1),
+        decision="edit",
+        finding=None,
+        basis_digest="a" * 64,
+        reason="r" + escaped * (MAX_APPROVAL_REASON_BYTES - 1),
+        timestamp="t" + escaped * (MAX_APPROVAL_TIMESTAMP_BYTES - 1),
+        text="x" + escaped * (MAX_APPROVAL_TEXT_BYTES - 1),
+        note="n" + escaped * (MAX_APPROVAL_NOTE_BYTES - 1),
     )
     assert len(canonical_bytes(record)) < MAX_RECORD_READ_BYTES
 
@@ -287,7 +308,61 @@ def test_an_edited_review_decision_fails_its_self_hash():
 @pytest.mark.parametrize("name", UNIT_DECISIONS)
 def test_every_unit_decision_builds_in_unit_scope(name):
     finding = "text-misread" if name == "hold" else None
-    assert validate_approval_record(decision(decision=name, finding=finding))
+    text = "SYNTHETIC ACT ONE corrected" if name == "edit" else None
+    assert validate_approval_record(decision(decision=name, finding=finding, text=text))
+
+
+def test_an_edit_carries_the_corrected_text_and_an_optional_note():
+    record = decision(decision="edit", text="Jean de la Roche", note="read from the margin")
+    assert record["review"]["text"] == "Jean de la Roche"
+    assert record["review"]["note"] == "read from the margin"
+    assert validate_approval_record(record) == record
+    assert (
+        validate_approval_record(decision(decision="edit", text="Jean"))["review"]["note"] is None
+    )
+
+
+@pytest.mark.parametrize("text", [None, "", "   ", 3, "\ud800"])
+def test_an_edit_names_non_blank_text(text):
+    with pytest.raises(ApprovalRefusal, match="an edit's text must be non-blank"):
+        decision(decision="edit", text=text)
+
+
+@pytest.mark.parametrize("note", ["", "  ", 3])
+def test_an_edit_note_is_null_or_non_blank_text(note):
+    with pytest.raises(ApprovalRefusal, match="an edit's note is absent"):
+        decision(decision="edit", text="Jean", note=note)
+
+
+def test_an_edits_text_and_note_are_bounded_like_the_reason():
+    assert MAX_APPROVAL_TEXT_BYTES == MAX_APPROVAL_NOTE_BYTES == MAX_APPROVAL_REASON_BYTES
+    with pytest.raises(ApprovalRefusal, match=f"no larger than {MAX_APPROVAL_TEXT_BYTES}"):
+        decision(decision="edit", text="x" * (MAX_APPROVAL_TEXT_BYTES + 1))
+    with pytest.raises(ApprovalRefusal, match=f"no larger than {MAX_APPROVAL_NOTE_BYTES}"):
+        decision(decision="edit", text="Jean", note="x" * (MAX_APPROVAL_NOTE_BYTES + 1))
+
+
+def test_only_an_edit_names_a_text_or_a_note():
+    with pytest.raises(ApprovalRefusal, match="only an edit names a text or a note"):
+        decision(text="Jean")
+    record = decision()
+    record["review"]["text"] = "Jean"
+    with pytest.raises(ApprovalRefusal, match="review block must hold exactly"):
+        validate_approval_record(resealed(record))
+
+
+def test_an_edit_without_its_note_field_is_refused():
+    record = decision(decision="edit", text="Jean")
+    del record["review"]["note"]
+    with pytest.raises(ApprovalRefusal, match="review block must hold exactly"):
+        validate_approval_record(resealed(record))
+
+
+def test_an_edits_text_is_covered_by_the_self_hash():
+    record = decision(decision="edit", text="Jean")
+    record["review"]["text"] = "Jacques"
+    with pytest.raises(ApprovalRefusal, match="self-hash"):
+        validate_approval_record(record)
 
 
 @pytest.mark.parametrize("name", PAGE_DECISIONS)
@@ -299,15 +374,22 @@ def test_every_page_decision_builds_in_page_scope(name):
 
 @pytest.mark.parametrize(
     ("scope", "name"),
-    [("unit", "no-missed-act"), ("unit", "re-shoot"), ("page", "release"), ("page", "exclude")],
+    [
+        ("unit", "no-missed-act"),
+        ("unit", "re-shoot"),
+        ("page", "release"),
+        ("page", "exclude"),
+        ("page", "edit"),
+    ],
 )
 def test_a_decision_outside_its_scope_is_refused(scope, name):
+    text = "Jean" if name == "edit" else None
     with pytest.raises(ApprovalRefusal, match=f"is not a {scope} decision"):
-        decision(scope=scope, subject_id="page-1", decision=name)
+        decision(scope=scope, subject_id="page-1", decision=name, text=text)
 
 
 @pytest.mark.parametrize("name", ["correct-text", "split", "merge", "clear-continuation-link"])
-def test_correcting_splitting_merging_and_unlinking_are_not_decisions(name):
+def test_splitting_merging_and_unlinking_are_not_decisions(name):
     with pytest.raises(ApprovalRefusal, match="is not a unit decision"):
         decision(decision=name)
 

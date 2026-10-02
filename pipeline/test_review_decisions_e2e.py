@@ -178,12 +178,19 @@ def _page_id(root: Path, review: dict) -> str:
 
 
 def _decide(
-    root: Path, subject: str, decision: str, *, basis: str | None = None, finding=None
+    root: Path,
+    subject: str,
+    decision: str,
+    *,
+    basis: str | None = None,
+    finding=None,
+    text: str | None = None,
+    note: str | None = None,
 ) -> str:
     """Record one decision about a unit (`p1:2`) or a page (`p1`); its stored path.
 
     It binds to the subject's basis in the Recensor's current machine reviews,
-    or to `basis`.
+    or to `basis`; an edit names its `text` and `note`.
     """
     reviews = _reviews(root)
     if ":" in subject:
@@ -207,6 +214,8 @@ def _decide(
         basis_digest=current if basis is None else basis,
         reason=f"{decision} on {subject}, recorded by the test",
         timestamp=TIMESTAMP,
+        text=text,
+        note=note,
     )
     reference, _ = RunTree(root, RUN_ID).write_approval_record(record)
     return reference.relative_path
@@ -490,3 +499,22 @@ def test_a_decision_that_would_release_an_unplaced_reading_keeps_it_held(tmp_pat
     assert [(row["scope"], row["subject"], row["cleared"]) for row in rows] == [
         ("page", 2, ["residual-ink"])
     ]
+
+
+def test_an_edit_of_an_unplaced_reading_keeps_it_held(tmp_path):
+    """A person's text has no region to cite either: the edit corrects nothing, and says why."""
+    root, options = build_page_tree(tmp_path, "page-review")
+    recensor = "pipeline/5_recensor/run.py"
+    assert run_stage(root, RUN_ID, "page-review", recensor, **options).returncode == EXIT_HELD
+    _decide(root, "p2:1", "edit", text="SYNTHETIC ACT TWO as a person reads it")
+    _decide(root, "p2", "no-missed-act")
+
+    result = run_stage(root, RUN_ID, "page-review", recensor, **options)
+    assert result.returncode == EXIT_HELD, result.stderr
+    review = _reviews(root)["p2:1"]
+    assert review["outcome"] == "held-for-review"
+    assert {READING_HELD, "reading-unplaced"} <= set(review["payload"]["hold_codes"])
+    assert "reading-unplaced row, which has no region on its page" in review["payload"]["reason"]
+    decisions = _decisions(root)
+    assert [s["decision"] for s in decisions["applied"] if s["scope"] == "unit"] == ["edit"]
+    assert decisions["corrections"] == []

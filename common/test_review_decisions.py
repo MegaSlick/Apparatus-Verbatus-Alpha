@@ -32,6 +32,7 @@ from common.review_decisions import (
     classify_holds,
     current_basis,
     held_pages,
+    page_reask_decisions,
     published_basis,
     review_decision,
 )
@@ -407,8 +408,99 @@ def test_an_exclusion_is_approval_bound_and_leaves_the_page_hold_on_the_page():
     ]
 
 
+def test_an_edit_and_no_missed_act_accept_the_unit_as_a_correction_not_a_clearance():
+    """A person's text is the truth: the edit clears the unit's own holds and is no reason."""
+    derived = derived_review()
+    edit = decide(derived, "unit", "a1", "edit", text="SYNTHETIC ACT ONE", note="from the ink")
+    result = apply_decisions(derived, [edit, decide(derived, "page", "page-1", "no-missed-act")])
+    a1 = result["units"]["a1"]
+    assert (a1["outcome"], a1["payload"]["hold_codes"]) == ("accepted", [])
+    assert a1["payload"][REVIEW_FIELD]["cleared"] == {
+        "unit": ["doubt-marks-malformed"],
+        "page": ["unread-line"],
+    }
+    assert "corrected its text (a person's edit)" in a1["payload"]["reason"]
+    assert [(row["scope"], row["subject_id"]) for row in result["clearances"]] == [
+        ("page", "page-1")
+    ]
+    assert [(row["subject_id"], row["cleared"]) for row in result["corrections"]] == [
+        ("a1", ["doubt-marks-malformed"])
+    ]
+    [summary] = [s for s in result["applied"] if s["decision"] == "edit"]
+    assert summary["correction_digest"] == digest_of(
+        {"text": "SYNTHETIC ACT ONE", "note": "from the ink"}
+    )
+
+
+def test_an_edit_alone_leaves_the_unit_held_by_its_page():
+    derived = derived_review()
+    result = apply_decisions(derived, [decide(derived, "unit", "a1", "edit", text="ONE")])
+    assert result["units"]["a1"]["outcome"] == "held-for-review"
+    assert result["units"]["a1"]["payload"]["hold_codes"] == ["unread-line"]
+    # Corrected by nothing yet: no reading of it reaches the export.
+    assert result["corrections"] == []
+
+
+def test_an_edit_of_a_reading_the_machine_accepted_is_refused():
+    derived = derived_review()
+    with pytest.raises(ApprovalRefusal, match="only a held reading is corrected by a person"):
+        apply_decisions(derived, [decide(derived, "unit", "b1", "edit", text="ONE")])
+
+
+def test_edits_naming_different_texts_conflict_and_hold_the_unit():
+    derived = derived_review()
+    result = apply_decisions(
+        derived,
+        [
+            decide(derived, "unit", "a2", "edit", text="ONE"),
+            decide(derived, "unit", "a2", "edit", text="TWO"),
+        ],
+    )
+    assert result["units"]["a2"]["outcome"] == "held-for-review"
+    assert "review-conflict" in result["units"]["a2"]["payload"]["hold_codes"]
+    assert len(result["conflicting"]) == 2
+    assert result["corrections"] == []
+
+
+def test_edits_naming_the_same_text_and_note_agree():
+    derived = derived_review()
+    result = apply_decisions(
+        derived,
+        [
+            decide(derived, "unit", "a2", "edit", text="ONE", reason="first look"),
+            decide(derived, "unit", "a2", "edit", text="ONE", reason="second look"),
+            decide(derived, "page", "page-1", "no-missed-act"),
+        ],
+    )
+    assert result["units"]["a2"]["outcome"] == "accepted"
+    [row] = result["corrections"]
+    assert len(row["decision_hashes"]) == 2
+
+
+def test_an_edit_and_a_release_of_one_unit_conflict():
+    derived = derived_review()
+    result = apply_decisions(
+        derived,
+        [
+            decide(derived, "unit", "a1", "edit", text="ONE"),
+            decide(derived, "unit", "a1", "release"),
+        ],
+    )
+    assert "review-conflict" in result["units"]["a1"]["payload"]["hold_codes"]
+
+
+def test_a_stale_edit_corrects_nothing():
+    derived = derived_review()
+    edit = decide(derived, "unit", "a1", "edit", text="ONE")
+    derived["units"][0]["payload"]["reason"] = "the machine read the page again"
+    result = apply_decisions(derived, [edit])
+    assert result["units"]["a1"]["outcome"] == "held-for-review"
+    assert result["corrections"] == []
+    assert [s["decision"] for s in result["stale"]] == ["edit"]
+
+
 @pytest.mark.parametrize("finding", ["text-misread", "split-needed", "merge-needed"])
-def test_a_correction_split_or_merge_is_a_finding_and_the_unit_stays_held(finding):
+def test_a_misread_split_or_merge_held_with_a_finding_keeps_the_unit_held(finding):
     derived = derived_review()
     result = apply_decisions(derived, [decide(derived, "unit", "b1", "hold", finding=finding)])
     b1 = result["units"]["b1"]
@@ -953,3 +1045,30 @@ def test_a_basis_read_back_without_the_operator_block_would_bind_to_the_wrong_re
     assert published_basis(RUN, published, decisions)["units"]["b1"]["basis_digest"] != (
         digest_of({key: value for key, value in decided.items() if key != REVIEW_FIELD})
     )
+
+
+# --- a page re-ask asks for an operator re-read ----------------------------------------
+
+
+def test_a_current_page_re_ask_asks_for_its_page_to_be_read_again():
+    derived = derived_review()
+    basis = current_basis(derived)
+    reask = decide(derived, "page", "page-1", "re-ask")
+    asked = page_reask_decisions(basis, [reask])
+    assert list(asked) == ["page-1"]
+    [summary] = asked["page-1"]
+    assert summary["decision_hash"] == reask["self_hash"]
+
+
+def test_a_stale_or_conflicting_page_re_ask_asks_for_nothing():
+    derived = derived_review()
+    basis = current_basis(derived)
+    stale = decide(derived, "page", "page-1", "re-ask", basis_digest="0" * 64)
+    assert page_reask_decisions(basis, [stale]) == {}
+    conflicting = [
+        decide(derived, "page", "page-1", "re-ask"),
+        decide(derived, "page", "page-1", "no-missed-act"),
+    ]
+    assert page_reask_decisions(basis, conflicting) == {}
+    unit = decide(derived, "unit", "a1", "re-ask")
+    assert page_reask_decisions(basis, [unit]) == {}

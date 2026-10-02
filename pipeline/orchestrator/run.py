@@ -77,6 +77,7 @@ from common.stage import (  # noqa: E402
     DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
+    EXIT_FATAL,
     EXIT_HELD,
     EXIT_RUN_HALTED,
     RUN_MODES,
@@ -134,8 +135,10 @@ _TRANSFER_CREDENTIAL_ENV = frozenset({"RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_
 # monotonic reading names no instant a reader could compare across records.
 _clock = time.monotonic
 STAGE_TIMING_JOURNAL_SCHEMA = "stage-timing-journal.v4"
-# How one invocation ended, for the caller that named `--stop-record`.
-STOP_RECORD_SCHEMA = "orchestrator-stop.v1"
+# How one invocation ended, for the caller that named `--stop-record`: its run,
+# exit code, whether it reached a sealed export, and the systemic alarm line it
+# printed (`systemic`, or null). A reader takes no other version.
+STOP_RECORD_SCHEMA = "orchestrator-stop.v2"
 
 GPU_QUERY = (
     "nvidia-smi",
@@ -831,7 +834,9 @@ def main() -> int:
         _require_sealed_hard_failure_policy(tree.read_run(), hard_failure_policy)
         halted = checkpoint(args, "resume-preflight", hard_failure_policy)
         if halted is not None:
-            return _halt(args, halted)
+            exit_code = _halt(args, halted)
+            _record_stop(args, exit_code, exported=False)
+            return exit_code
     return run_sequence(args, names, mode, hard_failure_policy)
 
 
@@ -867,6 +872,12 @@ def _require_fresh_stop_record(args: argparse.Namespace) -> None:
             f"--stop-record {record_path} already exists; it must be new, so no earlier "
             "invocation's stop can be read as this one's"
         )
+    parent = record_path.parent
+    if not parent.is_dir() or not os.access(parent, os.W_OK | os.X_OK):
+        raise ContractError(
+            f"--stop-record {record_path} cannot be written: {parent} is not an existing, "
+            "writable directory"
+        )
 
 
 def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) -> None:
@@ -874,8 +885,11 @@ def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) ->
 
     `exported` is true only when this invocation ran the Armarium and proved its
     sealed export; a stop before it is false whatever export the tree already
-    holds. A record that cannot be written is said on stderr and leaves the run
-    as it is: its caller reads no record as no export.
+    holds. `systemic` is the systemic alarm line this invocation printed, at a
+    held Recensor or at an advance past it, or null. A record that cannot be
+    written is refused: its caller cannot tell a stop with no alarm from one
+    whose alarm was lost, so the invocation ends fatally and the refusal names
+    the exit, export and alarm the record would have held.
     """
     record = getattr(args, "stop_record", None)
     if record is None:
@@ -885,11 +899,18 @@ def _record_stop(args: argparse.Namespace, exit_code: int, *, exported: bool) ->
         "run_id": args.run_id,
         "exit_code": exit_code,
         "exported": exported,
+        # The systemic alarm line this invocation printed (`report_systemic_share`),
+        # so a caller that reads no transcript can still say it.
+        "systemic": getattr(args, "systemic_line", None),
     }
     try:
         atomic_create(Path(record), json.dumps(payload, sort_keys=True).encode("utf-8"))
     except OSError as error:
-        print(f"run {args.run_id}: the stop record could not be written: {error}", file=sys.stderr)
+        raise ContractError(
+            f"run {args.run_id}: the stop record {record} could not be written ({error}); "
+            f"this invocation ended with exit {exit_code}, exported {exported}, systemic "
+            f"{payload['systemic']!r}"
+        ) from error
 
 
 def _require_declared_fixture(args: argparse.Namespace) -> None:
@@ -939,8 +960,20 @@ def run_sequence(
     mode: str,
     hard_failure_policy: dict,
 ) -> int:
-    """Run one contiguous selection (`_drive`), and record how it ended (`_record_stop`)."""
-    exit_code, exported = _drive(args, names, mode, hard_failure_policy)
+    """Run one contiguous selection (`_drive`), and record how it ended (`_record_stop`).
+
+    A refusal raised inside the selection is recorded too, as a fatal stop with
+    no export and whatever systemic alarm was already printed, and then raised
+    as it was.
+    """
+    try:
+        exit_code, exported = _drive(args, names, mode, hard_failure_policy)
+    except ContractError:
+        try:
+            _record_stop(args, EXIT_FATAL, exported=False)
+        except ContractError as lost:
+            print(f"{type(lost).__name__}: {lost}", file=sys.stderr)
+        raise
     _record_stop(args, exit_code, exported=exported)
     return exit_code
 
@@ -1047,8 +1080,8 @@ def report_systemic_share(args) -> None:
     """Print the systemic alarm line when the run's held share is above its sealed limit.
 
     The line (`common.review_policy.alarm_line`) is what the operator's
-    notification carries. A run that sealed no review policy says the share
-    was not checked.
+    notification carries, and the stop record names it (`_record_stop`). A run
+    that sealed no review policy says the share was not checked.
     """
     tree = _run_tree(args)
     share = held_share(tree, run_sealed_config_digests(tree.read_run()), args.review_config)
@@ -1058,7 +1091,8 @@ def report_systemic_share(args) -> None:
             "is systemic was not checked"
         )
     elif share["systemic"]:
-        print(alarm_line(args.run_id, share["held_pages"], share["pages"], share))
+        args.systemic_line = alarm_line(args.run_id, share["held_pages"], share["pages"], share)
+        print(args.systemic_line)
 
 
 def report_held_recensor(args, held: list[dict], ran_after_hold: list[str]) -> None:
@@ -1082,9 +1116,10 @@ def report_held_recensor(args, held: list[dict], ran_after_hold: list[str]) -> N
         )
     print(
         "  next: record operator review decisions in this run, then resume it from the "
-        "recensor (--from recensor --to armarium), which applies them; it continues past the "
-        "recensor once nothing is held, or once `verbatus advance --stage recensor` passes "
-        "its current seal"
+        "recensor (--from recensor --to armarium), which applies them, or from the perlector "
+        "(--from perlector --to armarium) when a page re-ask asks for a page to be read "
+        "again; it continues past the recensor once nothing is held, or once "
+        "`verbatus advance --stage recensor` passes its current seal"
     )
 
 

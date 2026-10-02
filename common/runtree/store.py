@@ -41,7 +41,7 @@ import json
 import os
 import stat
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final
@@ -507,7 +507,12 @@ class RunTree:
         A replace, not a compare-and-swap: of two racing Recensor passes the last
         write wins.  The race is bounded, not fixed.  `expected_unit_count` is
         sealed by the Perlector's page readings before the Recensor runs, so a
-        write changing it is refused.  A stale write can under-state completeness
+        write changing it is refused when its `pages` name the same
+        `reading_ref` for every page, in the same order, as the receipt on disk.
+        A write that names another reading for some page (an operator re-read,
+        `common.page_path`, makes a new current reading) may change the count;
+        which reading is current is the page-read denominator's to prove, not
+        this store's.  A stale write can under-state completeness
         but never claim it, because the reviews it cites are append-only and a
         unit's class only moves toward resolution.  Concurrent Recensor passes are still unsafe.
         """
@@ -525,12 +530,14 @@ class RunTree:
                 existing["run_id"] == checked["run_id"]
                 and existing["config_digest"] == checked["config_digest"]
                 and expected_count(existing) != expected_count(checked)
+                and _page_readings_bound(existing) == _page_readings_bound(checked)
             ):
                 raise SchemaRefusal(
                     "Recensor partition receipt would change its expected_unit_count from "
                     f"{expected_count(existing)} to {expected_count(checked)} under "
-                    "the same run authority; the unit denominator is sealed once and "
-                    "cannot legitimately differ between two passes over the same run"
+                    "the same run authority over the same page readings; the unit "
+                    "denominator is sealed by the readings and cannot differ between two "
+                    "passes over them"
                 )
         target.parent.mkdir(parents=True, exist_ok=True)
         self._atomic_write(relative, data)
@@ -1448,6 +1455,12 @@ def _run_creation_lock(parent: Path) -> Iterator[None]:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
         os.close(descriptor)
+
+
+def _page_readings_bound(receipt: Mapping[str, Any]) -> list[Any]:
+    """The page readings a partition receipt binds, in page order: what its count is of."""
+    rows = receipt.get("pages") or receipt.get("page_reading_refs") or []
+    return [row.get("reading_ref") for row in rows if isinstance(row, Mapping)]
 
 
 def _existing_partition_receipt(target: Path) -> dict[str, Any] | None:

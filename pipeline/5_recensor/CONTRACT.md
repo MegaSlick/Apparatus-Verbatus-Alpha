@@ -105,8 +105,8 @@ every page Testimonium counted for the floor.
 
 ## Continuation
 
-From the answer's flags alone, and only between the first reading's `act` entries
-(`reading_attempt` 1). For each page break, the last such entry of page p and the
+From the answer's flags alone, and only between each page's current whole-page
+reading's `act` entries (`reading_attempt` 1, or an operator re-read's, 3 on). For each page break, the last such entry of page p and the
 first of page p+1 are its sides; `other` entries around them, a catchword for one, do
 not move them. Nor does an entry the Perlector's re-ask recovered: it was asked about
 ids alone, may set no continuation flag, and its place in page order is not
@@ -115,7 +115,10 @@ naming one is refused) and never holds `continuation-off-page-edge`, and a
 first-reading entry at the edge stays at the edge whatever the re-ask added after it.
 When either side's
 flag says the text runs across, one `kind="continuation-link"` (subject
-`page-break:<p>:<p+1>`, attempt `attempt_id(subject, "link", 1)`) records it:
+`page-break:<p>:<p+1>`, attempt `attempt_id(subject, "link", n)`) records it. A pass
+over readings an operator re-read changed files a link that differs from the break's
+last as its next attempt; the last is current, and one naming a superseded reading
+is kept and current no more (`common/page_review.py::current_link_records`):
 
 ```
 {schema: "recensor-continuation-link.v1", from_page_ordinal, to_page_ordinal,
@@ -152,7 +155,8 @@ digest of the machine's review of its unit, or of every unit on its page, so it 
 bound across passes while nothing it looked at changes.
 
 - **Current** (its basis is the subject's now): a `release` clears the unit's own
-  holds, a `no-missed-act` its page's, an `exclude` makes the review `excluded`
+  holds, an `edit` clears them and corrects the reading (below), a `no-missed-act`
+  its page's, an `exclude` makes the review `excluded`
   (`approval_ref` on the envelope citing the stored decision; the page keeps its
   holds), and a `hold`, `missed-act`, `re-ask` or `re-shoot` adds its `review-*` hold
   code. Disagreeing current decisions about one subject are applied by none and hold
@@ -177,17 +181,36 @@ unchanged repeat:
  applied, stale, conflicting, carried, unkept,    # decision summaries
  clearances: [{scope, subject_id, act_key, page_id, page_ordinal, decision,
                cleared, decision_hashes}],
+ corrections: [{subject_id, act_key, page_id, page_ordinal, cleared, decision_hashes}],
  page_holds: [{page_ordinal, hold_codes}],        # every page still held
  requests: [{scope, subject_id, page_id, page_ordinal, decision, decision_hashes}],
  attempt_ordinal}
 ```
 
 The Armarium hands `clearances` and `page_holds` to the run aggregate, where each is a
-named reason, so a run a person cleared stays `partial`. `requests` records the re-asks
-and re-shoots asked for. An operator's page `re-ask` is the request to send the page
-through the Perlector again; the operator's tool records it and does not start the re-read
-(`operations/operator/README.md`, "Recording a review decision"), so the subject stays
-held under its `review-*` code.
+named reason, so a run a person cleared stays `partial`. `corrections` are the units a
+person's `edit` corrected and accepted; they are no reason, since the person's text is
+taken as the truth, and a correction kept held by anything else is not among them.
+`requests` records the re-asks and re-shoots asked for. An operator's page `re-ask` is
+the request to send the page through the Perlector again: the subject stays held under
+its `review-*` code until the run resumes from the Perlector, which reads the page again
+as an operator re-read (`pipeline/4_perlector/CONTRACT.md`, "An operator re-read"). This
+stage then reviews the re-read's units; the re-ask, whose page has changed, is stale.
+The reviews of a superseded reading's units stay as published and are current no more:
+a review whose `page_reading_ref` an operator re-read supersedes is not a stray, and is
+not among the held items (`common/page_review.py::superseded_readings`). A unit
+`re-ask` holds its unit; the Perlector reads whole pages.
+
+**A person's correction is the reading.** An `edit` names the corrected `text` and an
+optional `note`, bounded by the approval contract, and binds to the basis of the
+reading it corrects, so it goes stale when that reading changes. Only a held unit is
+edited. Current edits of one unit agree only when they name the same text and note
+(`correction_digest` on each summary); otherwise they conflict and hold it. An edit
+lifts the holds an override cannot (`common/page_review.py::EDIT_CARRIES`):
+`doubt-marks-malformed` and `entry-no-readable-text`, since the person's text is what
+is delivered and carries no machine doubt layer; `reading-unplaced` still holds, since
+no one's text gives the reading a region to cite. The Archetypus establishes the text
+(`common/correction.py`) and the Armarium exports it beside the model's reading.
 
 **An override sends a held reading to export.** A `release` clears the unit's own holds
 and a `no-missed-act` its page's, the reading's own included: the codes its Perlectio

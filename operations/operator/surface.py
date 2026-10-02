@@ -39,6 +39,7 @@ from common.contracts.identities import artifact_id, validate_run_id
 from common.contracts.outcomes import SYSTEMIC_REASON_PREFIX
 from common.contracts.stages import ARMARIUM, WRITING_DIRECTORIES
 from common.durability import is_temporary_name
+from common.review_policy import systemic_notice
 from common.runtree.store import (
     DOOR_MANIFEST_FILE,
     MANIFEST_FILE,
@@ -1558,11 +1559,7 @@ class OperatorSurface:
                     self.present(line)
             self._present_review_command(run_root, run_id)
             if systemic is not None:
-                self._notify(
-                    "decision",
-                    f"Verbatus run {run_id} has a systemic problem and needs a decision: "
-                    f"{systemic.removeprefix(f'run {run_id}: systemic: ')}",
-                )
+                self._notify("decision", systemic_notice(run_id, systemic))
             else:
                 self._notify(
                     "decision", f"Verbatus run {run_id} is held and needs a decision: {reason}"

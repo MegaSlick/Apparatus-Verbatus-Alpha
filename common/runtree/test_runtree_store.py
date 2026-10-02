@@ -154,7 +154,9 @@ def _receipt_item(act_id: str = "act-1", act_key: str = "p1:1") -> dict:
 
 
 def make_recensor_partition_receipt(
-    items: list[dict] | None = None, config_digest: str = CONFIG_DIGEST
+    items: list[dict] | None = None,
+    config_digest: str = CONFIG_DIGEST,
+    reading: str = "4_perlector/artifacts/page-reading.json",
 ):
     return build_recensor_reading_receipt(
         run_id="r1",
@@ -162,10 +164,7 @@ def make_recensor_partition_receipt(
         pages=[
             {
                 "page_ordinal": 1,
-                "reading_ref": {
-                    "relative_path": "4_perlector/artifacts/page-reading.json",
-                    "sha256": "a" * 64,
-                },
+                "reading_ref": {"relative_path": reading, "sha256": "a" * 64},
                 "reask_ref": None,
                 "accounting_ref": {
                     "relative_path": "4_perlector/artifacts/page-accounting.json",
@@ -209,6 +208,26 @@ def test_a_write_that_grows_the_expected_unit_count_is_also_refused(tmp_path):
     grown = make_recensor_partition_receipt([_receipt_item(), _receipt_item("act-2", "p1:2")])
     with pytest.raises(SchemaRefusal, match="expected_unit_count"):
         tree.write_recensor_partition_receipt(grown)
+
+
+def test_the_count_may_change_when_a_page_is_bound_to_another_current_reading(tmp_path):
+    """An operator re-read gives its page a new current reading, which may count other
+    units: a receipt binding that reading may change the count. One binding the same
+    readings still may not."""
+    tree = make_run(tmp_path)
+    tree.write_recensor_partition_receipt(make_recensor_partition_receipt())
+    reread = make_recensor_partition_receipt(
+        [_receipt_item(), _receipt_item("act-2", "p1:2")],
+        reading="4_perlector/artifacts/page-reading-attempt-3.json",
+    )
+    tree.write_recensor_partition_receipt(reread)
+    assert tree.read_recensor_partition_receipt()["expected_unit_count"] == 2
+    with pytest.raises(SchemaRefusal, match="over the same page readings"):
+        tree.write_recensor_partition_receipt(
+            make_recensor_partition_receipt(
+                reading="4_perlector/artifacts/page-reading-attempt-3.json"
+            )
+        )
 
 
 def test_repeating_an_identical_receipt_is_replaced_not_refused(tmp_path):

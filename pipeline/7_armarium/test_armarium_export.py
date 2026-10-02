@@ -4483,6 +4483,7 @@ def _released_on_its_own_holds() -> ArmariumProjection:
                 }
             ],
             "page_holds": [],
+            "corrections": [],
         },
     }
     act = projection.acts[0]

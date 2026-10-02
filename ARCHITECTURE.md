@@ -142,10 +142,13 @@ material across pages, or hold for review.
 flagged for review. It may never be re-rolled until it looks better. A witness model's
 own pinned retry recipe belongs to that witness and gives the Recensor no extra recovery.
 
-**Recovery is bounded.** The only recovery is the page re-ask, sealed per run in
-`config/recovery.toml` (one per page), before anything goes to review, so the system
-cannot reconsider itself indefinitely. Every attempt is recorded, and nothing may
-disappear inside one.
+**Recovery is bounded.** The only recovery the system makes on its own is the page
+re-ask, sealed per run in `config/recovery.toml` (one per page), before anything goes to
+review, so the system cannot reconsider itself indefinitely. A person may send a held
+page through the Perlector again: that operator re-read is the person's act, bound to
+their decision, outside the budget and never re-asked by the machine, and it becomes the
+page's current reading. Every attempt is recorded, earlier readings stay marked
+superseded, and nothing may disappear inside one.
 
 **Operator review.** A run whose Recensor holds anything stops there, before anything
 is established or exported, in every mode and on the pod. A person then decides each
@@ -155,12 +158,19 @@ against and goes stale when that review changes. The decisions are:
 - an **override**, which sends the model's reading to export exactly as read, its own
   holds included, labelled "released by operator" with who, when, why and the holds it
   cleared;
+- a **correction**, which sends a person's corrected text to export as the reading,
+  taken as the truth with no machine doubt, labelled "corrected by a person" with who,
+  when, why and an optional note, with the model's reading beside it as "model reading
+  (original)";
 - an **exclusion**, which keeps a unit out of the delivered text but in the record,
   citing the decision;
-- a **request to read a page again**, which is recorded and keeps the page held.
+- a **request to read a page again**, which the Perlector reads as an operator re-read
+  when the run resumes from it.
 
 A reading with no place on the page, unreadable doubt marks or no text cannot be
-overridden, because the export could not carry it. When more than 1 in 50 of a run's
+overridden, because the export could not carry it. A correction may replace unreadable
+doubt marks or missing text, since the person's text is what is delivered, but a
+reading with no place on the page stays held. When more than 1 in 50 of a run's
 pages are held, the run has a systemic problem, not a few hard pages. It stops as any
 hold does and says so, and a person who advances it anyway carries that warning into
 the export and the notification.

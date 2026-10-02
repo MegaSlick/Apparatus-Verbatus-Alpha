@@ -51,7 +51,7 @@ from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 from common.imaging import Bounds
 from common.page_answer import grammar_problems
-from common.page_edges import FIRST_READING, REASK_READING
+from common.page_edges import FIRST_READING, OPERATOR_REREAD_FIRST, REASK_READING
 from common.page_witness_units import DETECTION_LETTERS
 from common.perlector_audit import TRUNCATION_COMPLETE
 from common.residual_ink import CoverageAuditPolicy, residual_ink_from_runs
@@ -191,6 +191,13 @@ PARSE_STATES: Final = FAILED_PARSE_STATES | {PARSED, "malformed"}
 # What an accounting's entries are: one reading's, or a first reading's and its re-ask's.
 ANSWER_BASIS_FIRST: Final = "attempt-1"
 ANSWER_BASIS_COMBINED: Final = "combined"
+
+
+def answer_basis(attempt: int) -> str:
+    """The `answer_basis` of one whole-page reading's accounting: "attempt-<ordinal>"."""
+    return ANSWER_BASIS_FIRST if attempt == FIRST_READING else f"attempt-{attempt}"
+
+
 RECORD_DETECTOR_CONFIGURED: Final = "configured"
 RECORD_DETECTOR_ABSENT: Final = "absent"
 
@@ -1428,8 +1435,14 @@ def page_accounting(
     feed_ref: Any,
     page_reading_ref: Any,
     reask: Mapping[str, Any] | None = None,
+    attempt: int = FIRST_READING,
 ) -> dict[str, Any]:
     """The `page-accounting.v2` payload for one page reading, or for a reading and its re-ask.
+
+    `attempt` is the ordinal of the whole-page reading accounted: 1 for a first
+    reading (`answer_basis` "attempt-1"), or an operator re-read's, 3 or more
+    (`answer_basis` "attempt-<n>", each entry's `reading_attempt` that ordinal),
+    which is never accounted with a re-ask.
 
     - `feed`: the `page-feed` payload (`page_id`, `page_ordinal`,
       `switches.witness_units`, `witnesses[]` with `letter`, `outcome` and
@@ -1484,6 +1497,13 @@ def page_accounting(
     holds. The verdict does not depend on the
     order of any input list.
     """
+    if attempt != FIRST_READING and (
+        reask is not None or not isinstance(attempt, int) or attempt < OPERATOR_REREAD_FIRST
+    ):
+        raise ContractError(
+            "a page accounting is of a first reading (1) or an operator re-read (3 or more), "
+            f"never with a re-ask; not attempt {attempt!r}"
+        )
     candidates = feed_candidates(feed, policy)
     census_lines, records, detector, capped = _read_detections(detections, feed)
     parse_state = reading["parse_state"]
@@ -1602,6 +1622,7 @@ def page_accounting(
             page_reading_ref,
             entries,
             reask,
+            attempt,
         )
 
     # (b) every cited id exists, and every entry cites a boxed id.
@@ -1684,6 +1705,7 @@ def page_accounting(
         page_reading_ref,
         entries,
         reask,
+        attempt,
     )
 
 
@@ -2147,6 +2169,7 @@ def _record(
     page_reading_ref: Any,
     entries: list[dict[str, Any]],
     reask: Mapping[str, Any] | None,
+    attempt: int = FIRST_READING,
 ) -> dict[str, Any]:
     holds = sorted(
         {
@@ -2162,13 +2185,13 @@ def _record(
         "page_ordinal": feed["page_ordinal"],
         "page_reading_ref": page_reading_ref,
         "feed_ref": feed_ref,
-        "answer_basis": ANSWER_BASIS_FIRST if reask is None else ANSWER_BASIS_COMBINED,
+        "answer_basis": answer_basis(attempt) if reask is None else ANSWER_BASIS_COMBINED,
         # Each measured entry by the number the rules name it by, and the
         # reading and number it has there.
         "entries": [
             {
                 "n": entry["n"],
-                "reading_attempt": entry.get("reading_attempt", FIRST_READING),
+                "reading_attempt": entry.get("reading_attempt", attempt),
                 "reading_n": entry.get("reading_n", entry["n"]),
                 "kind": entry["kind"],
                 "cited_ids": sorted(entry["cited_ids"], key=id_key),

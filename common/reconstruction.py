@@ -38,11 +38,11 @@ from typing import Any, Final
 from common.contracts.errors import ContractError
 from common.page_accounting import normalized_text
 from common.page_edges import (
-    FIRST_READING,
+    REASK_READING,
     act_entries_by_page,
     break_chains,
-    first_attempt_entries,
     page_edges,
+    whole_page_entries,
 )
 from common.reading_annotations import ASSESSMENT_MALFORMED, doubt_mark_offsets, read_doubt_marks
 from common.sealed_config import read_sealed_toml
@@ -149,7 +149,8 @@ def reconstruction_plan(
 
     An entry a page's re-ask recovered (`reading_attempt` 2) is a diplomatic
     reading like any other and may be a subject, but a page's edges are its first
-    reading's (`first_attempt_entries`): the re-ask was asked about ids alone and
+    reading's, or an operator re-read's that superseded it (`whole_page_entries`):
+    the re-ask was asked about ids alone and
     may set no continuation flag, so a recovered entry is never a chain piece or
     another page's context, and one carrying a continuation flag is refused.
     """
@@ -161,14 +162,14 @@ def reconstruction_plan(
         return []
     entries = list(entries)
     for entry in entries:
-        if entry["reading_attempt"] != FIRST_READING and (
+        if entry["reading_attempt"] == REASK_READING and (
             entry["continues_from_previous_page"] is True or entry["continues_to_next_page"] is True
         ):
             raise ContractError(
                 f"{entry['act_key']} was recovered by its page's re-ask yet carries a "
                 "continuation flag; a re-ask may set none, so it is never a side of a page break"
             )
-    read = first_attempt_entries(entries)
+    read = whole_page_entries(entries)
     chains = break_chains(read) if pages_are_consecutive else []
     edges = page_edges(read) if pages_are_consecutive else {}
     pieces = {piece["act_key"] for chain in chains for piece in chain}

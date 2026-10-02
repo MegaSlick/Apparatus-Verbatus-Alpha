@@ -5,9 +5,9 @@ The knobs. One question per planned file, each answerable without reading code.
 | File | Status and question |
 |---|---|
 | `models.toml` | which model and revision fills each numbered role |
-| `recovery.toml` | how many times one page may be asked again before review; sealed into every run and spent by the Perlector's page re-ask |
+| `recovery.toml` | how many times one page may be asked again before review; sealed into every run and spent by the Perlector's page re-ask. An operator re-read a person's page `re-ask` decision asks for is outside it: it is a person's act, numbered from attempt 3, never spends this budget and is never re-asked by the machine |
 | `hard_failure.toml` | how many accounted hard failures one run may carry before it stops; the project lead sets the threshold and the closed list of counted outcomes, and the file's own header says why each is counted or not |
-| `review.toml` | what share of a run's pages may stay held after the Recensor before the run itself is called systemic (`max_held_page_share`: more than 1 in 50 of a run's pages held means the run has a systemic problem); sealed into every run as `review`; the orchestrator's held-Recensor stop and the operator's notification say so when the share is above it, and an export a person's advance let through carries it as a reason |
+| `review.toml` | what share of a run's pages may stay held after the Recensor before the run itself is called systemic (`max_held_page_share`: more than 1 in 50 of a run's pages held means the run has a systemic problem); sealed into every run as `review`; the orchestrator's held-Recensor stop, its stop record, the operator's notification and the pod route's notification say so when the share is above it, and an export a person's advance let through carries it as a reason |
 | `pdf_render.toml` | what whole-page PDF resolution the next run targets |
 | `data_handling_policy.json` | how real material is stored, logged, retained and disposed of |
 | `spend.toml` | the project lead's pod-plus-attached-volume money caps; both paid paths refuse it unless configured, and configuring it is not permission to launch |

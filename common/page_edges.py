@@ -16,16 +16,30 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from typing import Any, Final
 
-# The attempts a page reading is: the first reading, and at most one re-ask.
+# The attempts a page reading is: the first reading, at most one re-ask (asked
+# about ids alone, so its entries are never a page's edges), and from 3 on each
+# operator re-read a person asked for (`common.page_path`).
 FIRST_READING: Final = 1
 REASK_READING: Final = 2
+OPERATOR_REREAD_FIRST: Final = 3
 
 Entry = Mapping[str, Any]
 
 
-def first_attempt_entries(entries: Iterable[Entry]) -> list[Entry]:
-    """The entries of each page's first reading attempt: the reading a page's edges are of."""
-    return [entry for entry in entries if entry["reading_attempt"] == FIRST_READING]
+def whole_page_entries(entries: Iterable[Entry]) -> list[Entry]:
+    """Every entry not read on a re-ask: the whole-page entries a page's edges are of.
+
+    It drops the re-ask's entries (asked about ids alone) and rows that stand
+    for no entry, and nothing else, so callers pass current rows only: the
+    page-read denominator's, which count each page's current whole-page
+    reading (its first, or the operator re-read that superseded it) and never a
+    superseded one.
+    """
+    return [
+        entry
+        for entry in entries
+        if entry["reading_attempt"] is not None and entry["reading_attempt"] != REASK_READING
+    ]
 
 
 def act_entries_by_page(entries: Iterable[Entry]) -> dict[int, list[Entry]]:

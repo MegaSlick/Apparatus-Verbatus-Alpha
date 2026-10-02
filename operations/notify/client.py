@@ -9,7 +9,7 @@ from __future__ import annotations
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Final, Sequence
+from typing import Callable, Final, Mapping, Sequence
 
 NOTIFY_SCRIPT: Final = Path(__file__).with_name("notify.sh")
 NOTIFY_TIMEOUT_SECONDS: Final = 10.0
@@ -41,9 +41,15 @@ class NotifyOutcome:
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
 
 
-def run(argv: Sequence[str]) -> subprocess.CompletedProcess:
+def run(argv: Sequence[str], env: Mapping[str, str] | None = None) -> subprocess.CompletedProcess:
+    """Run the notification command; with `env`, in that environment and no other."""
     return subprocess.run(
-        list(argv), capture_output=True, text=True, check=False, timeout=NOTIFY_TIMEOUT_SECONDS
+        list(argv),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=NOTIFY_TIMEOUT_SECONDS,
+        env=None if env is None else dict(env),
     )
 
 

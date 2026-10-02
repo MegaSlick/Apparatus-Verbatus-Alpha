@@ -376,8 +376,12 @@ def test_a_held_stop_is_recorded_as_no_export_though_an_earlier_export_is_sealed
         "--stop-record", str(exported),
     )  # fmt: skip
     assert result.returncode == EXIT_HELD, result.stdout + result.stderr
-    assert _stop_record(exported) == {
-        "schema": "orchestrator-stop.v1",
+    record = _stop_record(exported)
+    # The page-review scenario holds one of its two pages, above the committed
+    # limit, so the advance passes a systemic stop and the record names its alarm.
+    assert record.pop("systemic").startswith("run r: systemic: 1 of 2 page(s)")
+    assert record == {
+        "schema": "orchestrator-stop.v2",
         "run_id": "r",
         "exit_code": EXIT_HELD,
         "exported": True,

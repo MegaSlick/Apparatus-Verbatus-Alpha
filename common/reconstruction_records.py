@@ -6,6 +6,15 @@ The Coniector (`pipeline/4b_coniector`) publishes, in order:
     reconstruction-call  (subject page_id)      one per call: the reply as given, parsed
     reconstruction       (subject act_id)       one per subject act and one per join
 
+A pass over readings an operator re-read changed (`common.page_path`, "an
+operator re-read") cannot file new records under the identities of the old:
+it publishes the new plan as the next generation, superseding the last
+(`supersedes`, its reference), and each call or reconstruction that differs
+from every one sealed for its page or subject as that subject's next
+generation (`generation_attempt`). The current plan is the last of the chain;
+the current call of a page and reconstruction of a subject are the ones the
+current plan and readings give. The rest stay as made, superseded.
+
 A reconstruction is labelled, unconfirmed and never established: it is not an
 act, is counted in no denominator, and no stage but the Armarium reads it. One
 that could not be made leaves the diplomatic reading delivered as it is, and
@@ -23,12 +32,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from itertools import pairwise
 from typing import Any, Final
 
 from common import page_path
 from common.chairs.models import ChairIdentity
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, text_sha256
 from common.contracts.errors import ContractError, FatalAccounting
+from common.contracts.identities import artifact_id, attempt_id
 from common.contracts.stages import CONIECTOR, PERLECTOR
 from common.decoding import chair_decoding
 from common.reading_annotations import (
@@ -63,6 +74,15 @@ PLAN_SUBJECT: Final = "coniector"
 CALL_KIND: Final = "reconstruction-call"
 RECONSTRUCTION_KIND: Final = "reconstruction"
 CONIECTOR_KINDS: Final = frozenset({PLAN_KIND, CALL_KIND, RECONSTRUCTION_KIND})
+
+# How a later generation of each record is named, and the field a later plan
+# names the plan it supersedes in.
+GENERATION_OPERATIONS: Final = {
+    PLAN_KIND: "replan",
+    CALL_KIND: "recall",
+    RECONSTRUCTION_KIND: "remake",
+}
+SUPERSEDES_FIELD: Final = "supersedes"
 
 PLAN_SCHEMA: Final = "coniector-plan.v2"
 CALL_SCHEMA: Final = "coniector-call.v1"
@@ -129,10 +149,6 @@ CALL_FIELDS: Final = frozenset(
 MAKER_FIELDS: Final = frozenset(
     {"kind", "chair", "chair_state", "resolved_identity", "resolved_revision", "receipt_ref"}
 )
-
-
-def text_sha256(text: str) -> str:
-    return digest_bytes(text.encode("utf-8"))
 
 
 # --- the diplomatic entries ------------------------------------------------------------
@@ -425,6 +441,46 @@ def call_outcome(parse_state: str) -> str:
     return "answered" if parse_state == PARSED else "not-answered"
 
 
+# --- generations ---------------------------------------------------------------------------
+
+
+def generation_attempt(kind: str, subject: str, generation: int) -> str | None:
+    """The attempt a record's `generation` is filed under: none for the first, then numbered."""
+    return None if generation == 1 else attempt_id(subject, GENERATION_OPERATIONS[kind], generation)
+
+
+def sealed_generations(tree, kind: str, subject: str) -> list[dict[str, Any]]:
+    """Every generation of one subject's record of `kind`, in order, as sealed."""
+    found = []
+    while True:
+        identifier = artifact_id(
+            CONIECTOR, kind, subject, generation_attempt(kind, subject, len(found) + 1)
+        )
+        if not tree.has_artifact(CONIECTOR, kind, identifier):
+            return found
+        found.append(tree.read_artifact(CONIECTOR, kind, identifier))
+
+
+def plan_chain(context) -> list[dict[str, Any]]:
+    """The sealed plans in order, each later one superseding the one before it."""
+    chain = sealed_generations(context.tree, PLAN_KIND, PLAN_SUBJECT)
+    for earlier, later in pairwise(chain):
+        if later["payload"].get(SUPERSEDES_FIELD) != context.artifact_ref(
+            CONIECTOR, PLAN_KIND, earlier["artifact_id"]
+        ):
+            raise FatalAccounting(
+                "a later reconstruction plan does not supersede the one before it"
+            )
+    if chain and SUPERSEDES_FIELD in chain[0]["payload"]:
+        raise FatalAccounting("the first reconstruction plan names a plan it supersedes")
+    return chain
+
+
+def plan_of(record: Mapping[str, Any]) -> dict[str, Any]:
+    """A sealed plan's payload without the plan it supersedes: what the switches and readings give."""
+    return {key: value for key, value in record["payload"].items() if key != SUPERSEDES_FIELD}
+
+
 # --- the fixture's declared replies ------------------------------------------------------
 
 
@@ -661,10 +717,20 @@ def verified_reconstructions(context, rows: Sequence[Mapping[str, Any]]) -> dict
         records[entry["kind"]].append(
             tree.read_artifact(CONIECTOR, entry["kind"], entry["artifact_id"])
         )
-    if len(records[PLAN_KIND]) != 1:
-        raise FatalAccounting("the Coniector did not publish exactly one reconstruction plan")
-    (plan_record,) = records[PLAN_KIND]
-    plan = _closed(plan_record["payload"], PLAN_FIELDS, PLAN_SCHEMA, "the reconstruction plan")
+    chain = plan_chain(context)
+    if not chain or len(chain) != len(records[PLAN_KIND]):
+        raise FatalAccounting(
+            "the Coniector's reconstruction plans are not one chain, each later one superseding "
+            "the one before it"
+        )
+    plan_record = chain[-1]
+    _closed(
+        plan_record["payload"],
+        PLAN_FIELDS | ({SUPERSEDES_FIELD} if len(chain) > 1 else set()),
+        PLAN_SCHEMA,
+        "the reconstruction plan",
+    )
+    plan = plan_of(plan_record)
     plan_entries, shown = diplomatic_entries(context, rows)
     expected_plan = plan_payload(policy, plan_entries)
     if dict(plan) != expected_plan:
@@ -672,17 +738,36 @@ def verified_reconstructions(context, rows: Sequence[Mapping[str, Any]]) -> dict
             "the reconstruction plan is not the one the sealed switches and the Perlector's "
             "readings give"
         )
-    calls_by_page = {record["subject_id"]: record for record in records[CALL_KIND]}
-    if len(calls_by_page) != len(records[CALL_KIND]):
-        raise FatalAccounting("two reconstruction calls name one page")
+    # A plan superseded another only after an operator re-read changed the readings;
+    # until then every call and reconstruction is current.
+    superseded_allowed = len(chain) > 1
+    calls_by_page: dict[str, list[dict[str, Any]]] = {}
+    for record in records[CALL_KIND]:
+        calls_by_page.setdefault(record["subject_id"], []).append(record)
     expected_pages = [call_page_id(call, shown) for call in plan["calls"]]
-    if sorted(calls_by_page) != sorted(expected_pages):
+    if len(set(expected_pages)) != len(expected_pages):
+        raise FatalAccounting("two planned reconstruction calls name one page")
+    if not set(expected_pages) <= set(calls_by_page) or (
+        not superseded_allowed
+        and (
+            sorted(calls_by_page) != sorted(expected_pages)
+            or any(len(found) != 1 for found in calls_by_page.values())
+        )
+    ):
         raise FatalAccounting("the reconstruction calls are not the planned calls")
     expected: dict[str, dict[str, Any]] = {}
     calls: dict[int, dict[str, Any]] = {}
+    current_calls: set[str] = set()
     for call, page_id in zip(plan["calls"], expected_pages, strict=True):
-        record = calls_by_page[page_id]
         what = f"the reconstruction call of page {call['page_ordinal']}"
+        matching = [
+            record
+            for record in calls_by_page[page_id]
+            if isinstance(record["payload"], Mapping) and record["payload"].get("call") == call
+        ]
+        if len(matching) != 1:
+            raise FatalAccounting(f"{what} is not the call its plan and readings give")
+        (record,) = matching
         payload = _closed(record["payload"], CALL_FIELDS, CALL_SCHEMA, what)
         text = call_prompt(call, shown, policy)
         if (
@@ -709,6 +794,7 @@ def verified_reconstructions(context, rows: Sequence[Mapping[str, Any]]) -> dict
         if record["outcome"] != call_outcome(payload["parse_state"]):
             raise FatalAccounting(f"{what} carries outcome {record['outcome']!r}")
         call_ref = context.artifact_ref(CONIECTOR, CALL_KIND, record["artifact_id"])
+        current_calls.add(call_ref["relative_path"])
         for derived in derive_reconstructions(
             call,
             shown,
@@ -728,7 +814,17 @@ def verified_reconstructions(context, rows: Sequence[Mapping[str, Any]]) -> dict
     for record in records[RECONSTRUCTION_KIND]:
         subject = record["subject_id"]
         derived = expected.get(subject)
-        if derived is None or dict(record["payload"]) != derived:
+        made_by = (
+            record["payload"].get("call_ref") if isinstance(record["payload"], Mapping) else None
+        )
+        if (
+            superseded_allowed
+            and isinstance(made_by, Mapping)
+            and made_by.get("relative_path") not in current_calls
+        ):
+            # Made from a call the current plan superseded: kept as made, not shown.
+            continue
+        if derived is None or dict(record["payload"]) != derived or subject in seen:
             raise FatalAccounting(
                 f"the reconstruction filed under {subject} is not the one its call's reply gives"
             )

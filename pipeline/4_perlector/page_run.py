@@ -25,6 +25,14 @@ the accounting of both readings together, and then the act records of both.
 The first reading and its accounting are never changed; the re-ask only adds
 entries, each of which says it was read on re-ask.
 
+A third phase reads again each page a person's current page `re-ask` decision
+asks for (`common/page_reread.py`): an operator re-read, attempt 3 and on,
+asked the first reading's request over the same feed, bound to its decisions
+and naming every earlier reading of the page, which it supersedes. It is
+published with its own accounting and act records, and becomes the page's
+current reading; the earlier readings and their records stay as read. It is
+outside the sealed `page_level_reread` budget and is never re-asked.
+
 The accounting is measured before any act record is published, so every act
 record names it (`page_accounting_ref`) and carries the page's hold codes
 (`page_holds`): an act on a held page is held. An answer that is not the
@@ -61,6 +69,7 @@ from common import (
     page_accounting,
     page_path,
     page_reask,
+    page_reread,
 )
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
@@ -78,6 +87,8 @@ from common.page_path import (
     FIRST_READING,
     HELD,
     NOT_RUN,
+    OPERATOR_REREAD_FIELD,
+    OPERATOR_REREAD_FIRST,
     PAGE_ACCOUNTING_KIND,
     PAGE_FEED_KIND,
     PAGE_NOT_SEALED,
@@ -106,9 +117,11 @@ from operations.serving.chat_request import EngineSignalRefusal, send_page_reque
 from operations.serving.errors import ChairResponseRefusal
 from operations.serving.http import EndpointUnavailable
 
-# The `reader-sent` pass a page's call is recorded under, and its re-ask's.
+# The `reader-sent` pass a page's call is recorded under, its re-ask's, and an
+# operator re-read's.
 PAGE_READING_PASS: Final = "page-reading"
 PAGE_REASK_PASS: Final = "page-reask"
+PAGE_REREAD_PASS: Final = "page-reread"
 
 _PAGE_LOCAL_CALL_FAILURES: Final = (
     EngineSignalRefusal,
@@ -165,7 +178,10 @@ class _Request:
     # The ids a re-ask may cite, and its `reask` record; `None` on a first reading.
     named: list[str] | None = None
     reask: dict[str, Any] | None = None
-    # What the reading names beyond the feed and the page: a re-ask's trigger records.
+    # An operator re-read's `operator_reread` record; `None` on any other reading.
+    reread: dict[str, Any] | None = None
+    # What the reading names beyond the feed and the page: a re-ask's trigger
+    # records, or an operator re-read's decisions and the readings it supersedes.
     inputs: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -187,6 +203,8 @@ class _Page:
     # The first reading, its entry plans and accounting, once published or adopted.
     reading: dict[str, Any] | None = None
     plans: list[dict[str, Any]] = field(default_factory=list)
+    # The page's operator re-reads in attempt order: those already read, then a new one.
+    rereads: list[_Request] = field(default_factory=list)
 
 
 @dataclass
@@ -194,6 +212,8 @@ class _Sealed:
     """The page records this stage already holds for one page, by reading."""
 
     readings: set[str] = field(default_factory=set)
+    # The attempts among them that are operator re-reads: they name their decisions.
+    rereads: set[str] = field(default_factory=set)
     accountings: set[str] = field(default_factory=set)
     # The reading ordinal (1, or 2 for an entry the re-ask read) of each act record.
     act_readings: set[int] = field(default_factory=set)
@@ -258,7 +278,10 @@ def _sealed_pages(context) -> dict[str, _Sealed]:
             continue
         record = json.loads(context.tree.read_bytes(entry["relative_path"]))
         if kind == PAGE_READING_KIND:
-            found.setdefault(entry["subject_id"], _Sealed()).readings.add(record["attempt_id"])
+            sealed = found.setdefault(entry["subject_id"], _Sealed())
+            sealed.readings.add(record["attempt_id"])
+            if isinstance(record["payload"], dict) and OPERATOR_REREAD_FIELD in record["payload"]:
+                sealed.rereads.add(record["attempt_id"])
         elif kind == PAGE_ACCOUNTING_KIND:
             found.setdefault(entry["subject_id"], _Sealed()).accountings.add(record["attempt_id"])
         else:
@@ -373,7 +396,7 @@ def _job(state: _PagePass, page: _Page, request: _Request, finish: Callable[[Any
     run, hooks = state.run, state.hooks
     if not _sends(state, page, request):
         return None, finish
-    what = "reading" if request.ordinal == FIRST_READING else "re-asking"
+    what = {FIRST_READING: "reading", REASK_READING: "re-asking"}.get(request.ordinal, "re-reading")
     _refuse_past_page_deadline(
         state, planned_seconds_per_page(run.page_max_tokens), f"{what} page {page.ordinal}"
     )
@@ -461,12 +484,17 @@ def _refuse_stray_attempts(state: _PagePass, page: _Page, *, planned: bool) -> N
     sealed = state.sealed.get(page.page_id, _Sealed())
     first = page_path.page_reading_attempt(page.page_id, FIRST_READING)
     second = page_path.page_reading_attempt(page.page_id, REASK_READING)
+    rereads = {
+        page_path.page_reading_attempt(page.page_id, ordinal)
+        for ordinal in _reread_ordinals(state, page)
+    }
     for what, attempts in (("reading", sealed.readings), ("accounting", sealed.accountings)):
-        if attempts - {first, second}:
+        if attempts - {first, second} - rereads:
             raise FatalAccounting(
                 f"page {page.page_id} carries a page {what} attempt past its one re-ask "
-                f"({sorted(attempts - {first, second})}); a page is read once and re-asked at "
-                "most once, so it is not counted. Read this page in a new run"
+                f"({sorted(attempts - {first, second} - rereads)}) that is no operator re-read "
+                "of it; a page is read once, re-asked at most once and read again only as a "
+                "person asks, so it is not counted. Read this page in a new run"
             )
     if not planned:
         stray = [
@@ -490,6 +518,131 @@ def _refuse_stray_attempts(state: _PagePass, page: _Page, *, planned: bool) -> N
             "records were published without its re-ask reading; its act records would name an "
             "accounting that is not the page's last. Read this page in a new run"
         )
+
+
+def _reread_ordinals(state: _PagePass, page: _Page) -> list[int]:
+    """The ordinals of the page's sealed operator re-reads: 3 on, without a gap."""
+    readings = state.sealed.get(page.page_id, _Sealed()).rereads
+    ordinals = []
+    ordinal = OPERATOR_REREAD_FIRST
+    while page_path.page_reading_attempt(page.page_id, ordinal) in readings:
+        ordinals.append(ordinal)
+        ordinal += 1
+    return ordinals
+
+
+def _plan_rereads(state: _PagePass, prepared: list[_Page]) -> None:
+    """Resolve every page's operator re-reads: each one sealed, then one a decision asks for.
+
+    A sealed re-read is adopted only when it answers stored page re-asks of
+    its page and supersedes exactly the page's earlier readings
+    (`page_path.require_operator_reread`). A new one is asked for each page a
+    current re-ask decision no re-read answers yet (`page_reread.requested_rereads`).
+    """
+    context = state.context
+    stored = page_reread.stored_decisions(context.tree)
+    requested = page_reread.requested_rereads(context.tree, stored)
+    for page in prepared:
+        if page.feed is None:
+            if page.page_id in requested:
+                raise ContractError(
+                    f"a person asked to read page {page.page_id} again, but the Exemplar "
+                    "refused it; there are no sealed pixels to read"
+                )
+            continue
+        supersedes = [
+            context.artifact_ref(PERLECTOR, PAGE_READING_KIND, record["artifact_id"])
+            for record in (
+                _existing_reading(context, page.page_id, FIRST_READING),
+                _existing_reading(context, page.page_id, REASK_READING),
+            )
+            if record is not None
+        ]
+        for ordinal in _reread_ordinals(state, page):
+            record = _existing_reading(context, page.page_id, ordinal)
+            block = record["payload"].get(OPERATOR_REREAD_FIELD)
+            page_path.require_operator_reread(
+                block,
+                run_id=context.tree.run_id,
+                page_id=page.page_id,
+                stored=stored,
+                supersedes=supersedes,
+                what=f"page {page.page_id}'s operator re-read {ordinal}",
+            )
+            decisions = [stored[item["approval_ref"]["sha256"]] for item in block["decisions"]]
+            page.rereads.append(_prepare_reread(state, page, ordinal, decisions, supersedes))
+            supersedes = [
+                *supersedes,
+                context.artifact_ref(PERLECTOR, PAGE_READING_KIND, record["artifact_id"]),
+            ]
+        if page.page_id in requested:
+            ordinal = OPERATOR_REREAD_FIRST + len(page.rereads)
+            page.rereads.append(
+                _prepare_reread(state, page, ordinal, requested[page.page_id], supersedes)
+            )
+
+
+def _prepare_reread(
+    state: _PagePass,
+    page: _Page,
+    ordinal: int,
+    decisions: list[page_reread.Decision],
+    supersedes: list[dict[str, str]],
+) -> _Request:
+    """Resolve one operator re-read: the first reading's request, bound to its decisions."""
+    run, context = state.run, state.context
+    approvals = [reference.to_record() for reference, _record in decisions]
+    request = _Request(
+        ordinal,
+        PAGE_REREAD_PASS,
+        reread=page_path.operator_reread_record(
+            [
+                (reference, record)
+                for reference, (_ref, record) in zip(approvals, decisions, strict=True)
+            ],
+            supersedes,
+        ),
+        inputs=[*supersedes, *approvals],
+    )
+    request.adopted = _existing_reading(context, page.page_id, ordinal)
+    if page.not_run or request.adopted is not None:
+        return request
+    request.text = page_path.request_text(run.chair.serving_recipe, page.feed)
+    request.image_sha256s = page_path.request_image_sha256s(page.feed)
+    if not state.live:
+        request.fixture_row = page_path.fixture_page_answer(context, page.ordinal)
+        return request
+    _admit(
+        state,
+        request,
+        lambda row: page_path.request_capacity(
+            row, run.chair.serving_recipe, page.feed, request.text, run.page_max_tokens
+        ),
+    )
+    return request
+
+
+def _finish_reread(
+    state: _PagePass, page: _Page, request: _Request, result: dict[str, Any] | Exception | None
+) -> None:
+    """Publish an operator re-read, its own accounting, then its act records."""
+    reading = _reading(state, page, request, result)
+    payload = reading["payload"]
+    plans = (
+        page_path.entry_plans(
+            payload["answer"],
+            page.feed,
+            page_id=page.page_id,
+            stop_reason=payload["stop_reason"],
+            truncation_policy=state.run.protocol_config["truncation"],
+            accounting_policy=state.accounting_policy,
+            attempt=request.ordinal,
+        )
+        if payload["disposition"] == READ
+        else []
+    )
+    accounting = publish_page_accounting(state, page, reading, plans, attempt=request.ordinal)
+    publish_act_records(state, page, reading, plans, accounting)
 
 
 def _prepare_reask(
@@ -591,7 +744,7 @@ def _reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[s
 
 def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[str, Any]:
     run, hooks, context = state.run, state.hooks, state.context
-    not_run = page.not_run if request.ordinal == FIRST_READING else []
+    not_run = page.not_run if page_path.is_whole_page_reading(request.ordinal) else []
     attempted = not not_run and request.refusal is None
     engine_call = capacity = failure = answer = None
     finish_reason = stop_reason = None
@@ -667,6 +820,7 @@ def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -
         "failure": failure,
         "disposition": disposition,
         "reask": request.reask,
+        **({} if request.reread is None else {OPERATOR_REREAD_FIELD: request.reread}),
         "audit": state.audit,
         "provenance": hooks.provenance_for(
             context, run.chair, attempted=attempted, receipt_ref=receipt_ref
@@ -712,6 +866,12 @@ def _check_adopted(
             f"page {page.page_id}'s retained page reading was made from another feed or "
             "configuration than this page has now; it is not adopted and the page is not "
             "asked again. Read this page in a new run"
+        )
+    if payload.get(OPERATOR_REREAD_FIELD) != request.reread:
+        raise FatalAccounting(
+            f"page {page.page_id}'s retained page reading answers other operator decisions, or "
+            "supersedes other readings, than this page's re-read names now; it is not adopted. "
+            "Read this page in a new run"
         )
     if payload.get("reask") != request.reask:
         raise FatalAccounting(
@@ -902,10 +1062,12 @@ def publish_page_accounting(
     reading: dict[str, Any],
     plans: list[dict[str, Any]],
     reask: dict[str, Any] | None = None,
+    attempt: int = FIRST_READING,
 ) -> dict[str, Any]:
     """The page's `page-accounting`: rules a-j over its reading, witnesses and detections.
 
-    `reading` and `plans` are the page's first reading; with `reask`
+    `reading` and `plans` are the page's first reading, or with `attempt` an
+    operator re-read's, accounted alone and bound to its attempt; with `reask`
     (`{reading, reading_ref, plans, named}`, its re-ask's) the accounting is
     the re-ask's, measuring both readings together, bound to the re-ask's
     attempt. Published before any act record, which names it. A resumed pass
@@ -933,9 +1095,10 @@ def publish_page_accounting(
         ),
         fixture_placeholders=not state.hooks.real_ingress(context),
         reask=reask,
+        attempt=attempt,
     )
     # Bound to the reading's attempt: each reading of a page is accounted apart.
-    ordinal = FIRST_READING if reask is None else REASK_READING
+    ordinal = attempt if reask is None else REASK_READING
     attempt = page_path.page_reading_attempt(page.page_id, ordinal)
     sealed = _sealed(context, PAGE_ACCOUNTING_KIND, page.page_id, attempt)
     if sealed is not None:
@@ -979,19 +1142,36 @@ def publish_page_accounting(
 # --- the pass ---------------------------------------------------------------------
 
 
-def _left_to_send(state: _PagePass, prepared: list[_Page], select) -> int:
+def _first_requests(page: _Page) -> list[_Request]:
+    """The page's first reading request, if it has one."""
+    return [] if page.first is None else [page.first]
+
+
+def _reask_requests(page: _Page) -> list[_Request]:
+    """The page's re-ask request, if it has one."""
+    return [] if page.reask is None else [page.reask]
+
+
+def _reread_requests(page: _Page) -> list[_Request]:
+    """Every operator re-read request of the page, each of which the window sends."""
+    return list(page.rereads)
+
+
+def _left_to_send(
+    state: _PagePass, prepared: list[_Page], select: Callable[[_Page], list[_Request]]
+) -> int:
     """Count the requests this live pass will send, refusing any it cannot resume.
 
-    `select` gives a page's request of this phase, or `None`. Only a request
-    it sends is counted: not one already read, not one it does not ask, and
-    not one over the row's capacity. A request with sends and no reading is
-    sent again only when no retained reply could be its answer.
+    `select` gives a page's requests of this phase. Only a request it sends is
+    counted: not one already read, not one it does not ask, and not one over
+    the row's capacity. A request with sends and no reading is sent again only
+    when no retained reply could be its answer.
     """
     context, hooks = state.context, state.hooks
     left, unrecorded, replies = 0, [], None
-    for page in prepared:
-        request = select(page)
-        if request is None or not _sends(state, page, request):
+    chosen = [(page, request) for page in prepared for request in select(page)]
+    for page, request in chosen:
+        if not _sends(state, page, request):
             continue
         markers = hooks.sent_records(
             context, page.page_id, page_key(page.ordinal), request.ordinal, request.pass_name
@@ -1023,7 +1203,8 @@ def _refuse_past_phase_deadline(state: _PagePass, left: int, what: str) -> None:
 
 
 def read_the_pages(run, hooks: StageHooks) -> None:
-    """Read every sealed Exemplar page once, then re-ask the planned ones.
+    """Read every sealed Exemplar page once, re-ask the planned ones, then read again
+    each page a person asked for.
 
     Each phase publishes its pages in page order, so a re-asked page's
     attempt-2 records follow every page's first reading. Nothing reads the
@@ -1051,7 +1232,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
     )
     prepared = [_prepare(state, ordinal, page_id) for ordinal, page_id in pages.items()]
     if state.live and state.chair_present:
-        left = _left_to_send(state, prepared, lambda page: page.first)
+        left = _left_to_send(state, prepared, _first_requests)
         if left:
             _refuse_past_phase_deadline(state, left, "reading")
     print(f"perlector: reading {len(pages)} pages whole", file=sys.stderr)
@@ -1060,14 +1241,33 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         (_job(state, page, page.first, partial(_finish, state, page)) for page in prepared),
     )
     planned = [page for page in prepared if page.reask is not None]
-    if not planned:
+    if planned:
+        if state.live:
+            left = _left_to_send(state, planned, _reask_requests)
+            if left:
+                _refuse_past_phase_deadline(state, left, "re-asking")
+        print(f"perlector: re-asking {len(planned)} pages", file=sys.stderr)
+        hooks.in_order_window(
+            run.concurrency,
+            (
+                _job(state, page, page.reask, partial(_finish_reask, state, page))
+                for page in planned
+            ),
+        )
+    _plan_rereads(state, prepared)
+    reread = [page for page in prepared if page.rereads]
+    if not reread:
         return
     if state.live:
-        left = _left_to_send(state, planned, lambda page: page.reask)
+        left = _left_to_send(state, reread, _reread_requests)
         if left:
-            _refuse_past_phase_deadline(state, left, "re-asking")
-    print(f"perlector: re-asking {len(planned)} pages", file=sys.stderr)
+            _refuse_past_phase_deadline(state, left, "re-reading")
+    print(f"perlector: reading {len(reread)} pages again as a person asked", file=sys.stderr)
     hooks.in_order_window(
         run.concurrency,
-        (_job(state, page, page.reask, partial(_finish_reask, state, page)) for page in planned),
+        (
+            _job(state, page, request, partial(_finish_reread, state, page, request))
+            for page in reread
+            for request in _reread_requests(page)
+        ),
     )

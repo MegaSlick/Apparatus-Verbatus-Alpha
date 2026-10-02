@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import pytest
 
 from common.test_credentials import FILES_AND_HOSTS, OPAQUE, PASSING_VALUES, SHAPED_VALUES
 from operations.notify.client import NOTIFY_SCRIPT, NotifyOutcome
 
-from .notify_hooks import notify_balance, notify_close, notify_launch
+from .notify_hooks import notify_balance, notify_close, notify_launch, notify_systemic
 
 
 @dataclass
@@ -93,6 +94,25 @@ def test_notify_balance_reads_as_account_scoped_with_no_lease() -> None:
     notify_balance(balance_usd="76.50", spend_rate_usd_per_hr="1.99", runner=runner)
 
     assert "account" in runner.calls[0][3]
+
+
+def test_notify_systemic_sends_the_alarm_as_a_decision() -> None:
+    """The same line `verbatus run --notify` sends for a systemic run on this computer."""
+    from common.review_policy import systemic_notice
+
+    runner = FakeRunner()
+    line = "run r1: systemic: 2 of 3 page(s) are held after the recensor"
+
+    outcome = notify_systemic(run_id="r1", alarm_line=line, runner=runner)
+
+    assert outcome == NotifyOutcome(True, True, "delivered")
+    [argv] = runner.calls
+    assert argv[:3] == ["sh", str(NOTIFY_SCRIPT), "decision"]
+    assert argv[3] == systemic_notice("r1", line)
+    assert argv[3] == (
+        "Verbatus run r1 has a systemic problem and needs a decision: "
+        "2 of 3 page(s) are held after the recensor"
+    )
 
 
 # --- the no-secret rule -------------------------------------------------------
@@ -247,3 +267,83 @@ def test_a_lowercase_hex_identifier_is_not_mistaken_for_a_credential() -> None:
     )
 
     assert outcome.delivered
+
+
+def test_the_topic_is_read_where_the_pod_guard_keeps_it() -> None:
+    """The guard keeps its records in `<volume mount>/.pod_guard` (`pod_start_command.sh`,
+    pinned by test_pod_guard); its topic is `ntfy_topic` there."""
+    from operations.pod.models import POD_VOLUME_MOUNT_PATH
+
+    from .notify_hooks import guard_topic_path
+
+    guard = (Path(__file__).parent / "pod_guard.sh").read_text(encoding="utf-8")
+    assert "topic=$(tr -d ' \\r\\n' <\"$dir/ntfy_topic\"" in guard
+    assert guard_topic_path(Path(POD_VOLUME_MOUNT_PATH)) == Path(
+        f"{POD_VOLUME_MOUNT_PATH}/.pod_guard/ntfy_topic"
+    )
+
+
+def test_the_guard_topic_is_read_from_its_file_and_refused_when_malformed(tmp_path) -> None:
+    from .models import POD_GUARD_DIRECTORY
+    from .notify_hooks import guard_topic, notify_environment
+
+    assert guard_topic(tmp_path) is None
+    path = tmp_path / POD_GUARD_DIRECTORY / "ntfy_topic"
+    path.parent.mkdir(parents=True)
+    path.write_text("a-topic_1\n", encoding="utf-8")
+    assert guard_topic(tmp_path) == "a-topic_1"
+    assert notify_environment("a-topic_1")["NTFY_TOPIC"] == "a-topic_1"
+    for bad in ("x" * 65, "a/slash", "tab\there", "x" * 4096):
+        path.write_text(bad, encoding="utf-8")
+        assert guard_topic(tmp_path) is None
+
+
+def test_the_guard_topic_is_normalised_as_the_pod_guard_normalises_it(tmp_path) -> None:
+    """Spaces, CRs and newlines go wherever they stand, as `tr -d ' \\r\\n'` removes them."""
+    from .models import POD_GUARD_DIRECTORY
+    from .notify_hooks import guard_topic
+
+    path = tmp_path / POD_GUARD_DIRECTORY / "ntfy_topic"
+    path.parent.mkdir(parents=True)
+    longest = "x" * 64
+    for written, read in (
+        (longest + "\r\n", longest),
+        (" a-topic_1 \r\n", "a-topic_1"),
+        ("two words\n", "twowords"),
+        ("split\r\nline\n", "splitline"),
+    ):
+        path.write_bytes(written.encode("utf-8"))
+        assert guard_topic(tmp_path) == read
+
+
+def test_the_guard_topic_is_read_only_from_a_regular_file_never_a_link_or_fifo(tmp_path) -> None:
+    """A link is not followed, and a FIFO is never opened for a read that could block."""
+    import os
+
+    from .models import POD_GUARD_DIRECTORY
+    from .notify_hooks import guard_topic
+
+    guard = tmp_path / POD_GUARD_DIRECTORY
+    guard.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.write_text("a-topic_1", encoding="utf-8")
+    (guard / "ntfy_topic").symlink_to(elsewhere)
+    assert guard_topic(tmp_path) is None
+    (guard / "ntfy_topic").unlink()
+    os.mkfifo(guard / "ntfy_topic")
+    assert guard_topic(tmp_path) is None
+
+
+def test_with_no_guard_topic_nothing_is_run(tmp_path) -> None:
+    """notify.sh never runs, so it never falls back to a topic of the checkout's."""
+    from .notify_hooks import NO_GUARD_TOPIC, notify_systemic_from_guard
+
+    factories = []
+    outcome = notify_systemic_from_guard(
+        run_id="r1",
+        alarm_line="run r1: systemic: 2 of 3 page(s) are held after the recensor",
+        volume_mount=tmp_path,
+        runner_factory=lambda environment: factories.append(environment) or FakeRunner(),
+    )
+    assert outcome == NotifyOutcome(False, False, NO_GUARD_TOPIC)
+    assert factories == []

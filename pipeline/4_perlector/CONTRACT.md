@@ -440,7 +440,8 @@ id's hold clears only through a placed re-ask entry that passes rules (b) to
 (j).
 
 Refused by name (`FatalAccounting`), from what the stage already holds before
-it publishes: any page reading or accounting attempt past the re-ask; on a
+it publishes: any page reading or accounting attempt past the re-ask that is no
+operator re-read (below); on a
 page the plan does not re-ask, a re-ask reading, a re-ask accounting or an act
 record the re-ask read; and on a planned page with no re-ask reading yet, its
 re-ask accounting or any act record. Once phase 2 runs, every planned page has
@@ -449,6 +450,47 @@ or adopts the reading or raises, so no separate check follows the window.
 The page-read denominator (`common.stage.reading_acts`, `common/README.md`)
 recomputes the plan and counts both readings' entries exactly as the
 accounting does.
+
+### An operator re-read
+
+A person may send a held page through the stage again: a page `re-ask`
+decision (`approval-record.v1`, `pipeline/5_recensor/CONTRACT.md`, "Operator
+review decisions"). A third phase, after the re-ask's, reads again each page a
+stored page re-ask asks for: one current against the Recensor's latest reviews
+(`common.review_decisions.published_basis`, as `verbatus decide` bound it),
+on a page whose current decisions agree (`page_reask_decisions`), that no
+operator re-read answers yet (`common/page_reread.py`). The run resumes from the
+Perlector for it (`--from perlector --to armarium`); on a pod that is the
+existing route, `pod_run --from perlector --to armarium`.
+
+Each re-read is a whole-page reading like the first: the first reading's request
+over the same feed (live: `reader-sent` pass `page-reread` at its ordinal; a
+fixture pass answers it with the page's `[[page_answer]]`, as a fixed reader
+asked the same request would), numbered after the first reading and the re-ask
+whether or not the page was re-asked: attempt 3, then 4, without a gap. Its
+`page-reading` records, beside `reask: null`,
+
+```
+operator_reread: {decisions: [{decision_hash, approval_ref}], supersedes: [reading refs]}
+```
+
+the stored decisions it answers, in hash order, and every earlier reading of the
+page in attempt order, which it supersedes; it inputs both. Its own accounting is
+bound to its attempt (`answer_basis: "attempt-<n>"`, each entry's
+`reading_attempt` that ordinal) and its act records mint act ids from its
+attempt, so none takes an earlier reading's identity; their keys (`p<page>:<n>`)
+are the page's again. It becomes the page's current reading: the page-read
+denominator counts its entries alone, and the page's edges are its entries'
+(`page_path.is_whole_page_reading`). The earlier readings, accountings and act
+records stay in the run tree as read; a reading an operator re-read names is
+superseded, and a stage after this one reads its units as current no more. A
+re-read is outside the sealed `page_level_reread` budget, which bounds the
+machine's re-ask, and is never re-asked: a person asks again with another
+decision. A resumed pass adopts each sealed re-read only when it answers stored
+page re-asks of its page and supersedes exactly the page's earlier readings
+(`page_path.require_operator_reread`); a decision a re-read answers asks for
+nothing again, and the Recensor's next pass finds it stale, as a re-ask is
+meant to.
 
 ### Resume
 

@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 import operations.serving.errors as serving_errors  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts.canonical import text_sha256  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.stages import CONIECTOR  # noqa: E402
 from common.decoding import load_decoding_policy, reconstructor_max_tokens  # noqa: E402
@@ -45,6 +46,7 @@ from common.reconstruction_records import (  # noqa: E402
     REQUEST_OVER_CAPACITY,
     SERVING_FIXTURE,
     SERVING_LIVE,
+    SUPERSEDES_FIELD,
     call_outcome,
     call_page_id,
     call_prompt,
@@ -52,11 +54,14 @@ from common.reconstruction_records import (  # noqa: E402
     diplomatic_entries,
     expected_maker,
     fixture_reply,
+    generation_attempt,
+    plan_chain,
+    plan_of,
     plan_payload,
     reconstruction_outcome,
     reconstruction_subject,
     reply_state,
-    text_sha256,
+    sealed_generations,
 )
 from common.request_capacity import (  # noqa: E402
     RequestCapacityRefusal,
@@ -155,13 +160,48 @@ class _Chair:
         return expected_maker(self.identity, receipt)
 
 
-def _sealed_call(context, page_id: str):
-    from common.contracts.identities import artifact_id
+def _publish_plan(context, plan: dict) -> bool:
+    """Publish the plan, or adopt the last one sealed; whether it superseded an earlier plan.
 
-    identifier = artifact_id(CONIECTOR, CALL_KIND, page_id, None)
-    if not context.tree.has_artifact(CONIECTOR, CALL_KIND, identifier):
-        return None
-    return context.tree.read_artifact(CONIECTOR, CALL_KIND, identifier)
+    A plan that differs from the last sealed one, because an operator re-read
+    changed the readings, is published as the next generation naming the plan
+    it supersedes; the earlier plans stay as sealed.
+    """
+    chain = plan_chain(context)
+    if chain and plan_of(chain[-1]) == plan:
+        return len(chain) > 1
+    payload = plan
+    if chain:
+        payload = {
+            **plan,
+            SUPERSEDES_FIELD: context.artifact_ref(CONIECTOR, PLAN_KIND, chain[-1]["artifact_id"]),
+        }
+    context.publish(
+        kind=PLAN_KIND,
+        subject_id=PLAN_SUBJECT,
+        outcome="planned",
+        attempt=generation_attempt(PLAN_KIND, PLAN_SUBJECT, len(chain) + 1),
+        payload=payload,
+    )
+    return bool(chain)
+
+
+def _publish_reconstruction(context, derived: dict, call_ref: dict, replanned: bool) -> None:
+    """Publish one reconstruction, or adopt it; after a replan, as its subject's next generation."""
+    subject = reconstruction_subject(derived)
+    sealed = sealed_generations(context.tree, RECONSTRUCTION_KIND, subject)
+    if any(record["payload"] == derived for record in sealed):
+        return
+    context.publish(
+        kind=RECONSTRUCTION_KIND,
+        subject_id=subject,
+        outcome=reconstruction_outcome(derived),
+        attempt=generation_attempt(
+            RECONSTRUCTION_KIND, subject, len(sealed) + 1 if replanned else 1
+        ),
+        inputs=[call_ref],
+        payload=derived,
+    )
 
 
 def _not_asked(code: str, detail: str) -> dict:
@@ -267,12 +307,22 @@ def _inputs(context, shown: dict, keys: list, asked: dict) -> list:
     return unique
 
 
-def _publish_call(context, chair: _Chair, call: dict, shown: dict, policy, max_tokens: int):
-    """Publish one call's record, or adopt the one already sealed for its page."""
+def _publish_call(
+    context, chair: _Chair, call: dict, shown: dict, policy, max_tokens: int, replanned: bool
+):
+    """Publish one call's record, or adopt the one already sealed for its page and call.
+
+    After a replan (`_publish_plan`), a page whose call the new readings change
+    is asked again, as its next generation; the earlier call stays as sealed.
+    """
     page_id = call_page_id(call, shown)
     text = call_prompt(call, shown, policy)
     keys = shown_keys(call, shown)
-    sealed = _sealed_call(context, page_id)
+    generations = sealed_generations(context.tree, CALL_KIND, page_id)
+    sealed = next(
+        (record for record in generations if record["payload"].get("call") == call),
+        None if replanned or not generations else generations[0],
+    )
     if sealed is not None:
         payload = sealed["payload"]
         maker = payload.get("maker")
@@ -313,14 +363,16 @@ def _publish_call(context, chair: _Chair, call: dict, shown: dict, policy, max_t
         "problems": problems,
         "maker": chair.maker(asked=asked["reply_text"] is not None),
     }
+    attempt = generation_attempt(CALL_KIND, page_id, len(generations) + 1)
     context.publish(
         kind=CALL_KIND,
         subject_id=page_id,
         outcome=call_outcome(state),
+        attempt=attempt,
         inputs=_inputs(context, shown, keys, asked),
         payload=payload,
     )
-    return _sealed_call(context, page_id)
+    return sealed_generations(context.tree, CALL_KIND, page_id)[-1]
 
 
 def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
@@ -339,7 +391,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     context.require_sealed_config("decoding", decoding_sha256)
     plan_entries, shown = diplomatic_entries(context, reading_acts(context))
     plan = plan_payload(policy, plan_entries)
-    context.publish(kind=PLAN_KIND, subject_id=PLAN_SUBJECT, outcome="planned", payload=plan)
+    replanned = _publish_plan(context, plan)
     chair = None
     try:
         if plan["calls"] and policy.mode == MODE_ON:
@@ -348,7 +400,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             )
         max_tokens = reconstructor_max_tokens(decoding)
         for call in plan["calls"]:
-            record = _publish_call(context, chair, call, shown, policy, max_tokens)
+            record = _publish_call(context, chair, call, shown, policy, max_tokens, replanned)
             payload = record["payload"]
             _state, answer, _problems = reply_state(
                 payload["reply_text"], payload["stop_reason"], call
@@ -364,13 +416,7 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
                 call_ref=call_ref,
                 maker=payload["maker"],
             ):
-                context.publish(
-                    kind=RECONSTRUCTION_KIND,
-                    subject_id=reconstruction_subject(derived),
-                    outcome=reconstruction_outcome(derived),
-                    inputs=[call_ref],
-                    payload=derived,
-                )
+                _publish_reconstruction(context, derived, call_ref, replanned)
     except ChairResponseRefusal as refusal:
         raise ContractError(f"{type(refusal).__name__}: {refusal}") from refusal
     finally:

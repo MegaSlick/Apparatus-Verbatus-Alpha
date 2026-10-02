@@ -46,7 +46,7 @@ from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.serving import reading_stop_reason
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
 from common.decoding import chair_decoding, engine_effective_sampling, recorded_wire_decimals
-from common.page_edges import FIRST_READING, REASK_READING
+from common.page_edges import FIRST_READING, OPERATOR_REREAD_FIRST, REASK_READING
 from common.page_witness_units import DAI, READ_OUTCOME, WITNESS_LETTERS, witness_reading
 from common.request_capacity import page_request_capacity
 from common.residual_ink import (
@@ -106,8 +106,11 @@ PAGE_PATH_KINDS: Final = frozenset(
 )
 
 PAGE_READ_OPERATION: Final = "page-read"
-# The attempts a page reading is: the first reading, and at most one re-ask.
+# The machine's own readings of a page: the first and its one re-ask. An operator
+# re-read is numbered after both (`is_operator_reread`, "an operator re-read" below).
 READING_ORDINALS: Final = (FIRST_READING, REASK_READING)
+# The `page-reading` field only an operator re-read carries (`operator_reread_record`).
+OPERATOR_REREAD_FIELD: Final = "operator_reread"
 ACT_REGION_OPERATION: Final = "reading-region"
 PERLECTIO_OPERATION: Final = "perlegere"
 
@@ -171,10 +174,27 @@ SURYA_READING_ORDERS: Final = (SURYA_ORDER_HEAD, SURYA_RASTER_FALLBACK)
 PAGE_TESTIMONIUM_KIND: Final = "page-testimonium"
 
 
+def is_operator_reread(ordinal: Any) -> bool:
+    """Whether a page reading's ordinal is an operator re-read's (3 or more)."""
+    return is_plain_int(ordinal) and ordinal >= OPERATOR_REREAD_FIRST
+
+
+def is_whole_page_reading(ordinal: Any) -> bool:
+    """Whether a reading read the whole page: the first reading or an operator re-read.
+
+    A re-ask (2) was asked about named ids alone, so its entries never set a
+    page's edges.
+    """
+    return ordinal == FIRST_READING or is_operator_reread(ordinal)
+
+
 def page_reading_attempt(page_id: str, ordinal: int) -> str:
-    """The attempt of a page's first reading (1) or its re-ask (2)."""
-    if ordinal not in READING_ORDINALS:
-        raise ContractError(f"a page reading is attempt 1 or its re-ask, 2, never {ordinal!r}")
+    """The attempt of a page's first reading (1), its re-ask (2) or an operator re-read (3+)."""
+    if ordinal not in READING_ORDINALS and not is_operator_reread(ordinal):
+        raise ContractError(
+            "a page reading is attempt 1, its re-ask 2, or an operator re-read from "
+            f"{OPERATOR_REREAD_FIRST} on, never {ordinal!r}"
+        )
     return attempt_id(page_id, PAGE_READ_OPERATION, ordinal)
 
 
@@ -304,6 +324,95 @@ def fixture_reask_answer(context, ordinal: int, *, planned: bool) -> dict[str, A
             )
         return None
     return _one_fixture_answer(rows, "page re-ask answer", context, ordinal)
+
+
+# --- an operator re-read ----------------------------------------------------------
+#
+# A person's page `re-ask` decision, current when the Perlector runs, makes the
+# page's next operator re-read: a whole-page reading like the first, asked the
+# same request (a synthetic fixture answers it with the page's declared
+# `[[page_answer]]`, as a fixed reader asked the same request would), that
+# becomes the page's current reading. It names the decisions
+# it answers and every earlier reading of the page, which it supersedes; those
+# stay in the run tree as read. It is outside the sealed `page_level_reread`
+# budget, which bounds the machine's own re-ask, and it is never re-asked by
+# the machine: a person asks again with another decision.
+
+
+def operator_reread_record(
+    decisions: list[tuple[dict[str, str], Mapping[str, Any]]],
+    supersedes: list[dict[str, str]],
+) -> dict[str, Any]:
+    """The `operator_reread` an operator re-read records: its decisions and what it supersedes.
+
+    `decisions` is each answered decision's stored approval reference and
+    record; `supersedes` every earlier reading of the page, in attempt order.
+    """
+    return {
+        "decisions": sorted(
+            (
+                {"decision_hash": record["self_hash"], "approval_ref": dict(reference)}
+                for reference, record in decisions
+            ),
+            key=lambda decision: decision["decision_hash"],
+        ),
+        "supersedes": [dict(reference) for reference in supersedes],
+    }
+
+
+def require_operator_reread(
+    block: Any,
+    *,
+    run_id: str,
+    page_id: str,
+    stored: Mapping[str, tuple[Any, Mapping[str, Any]]],
+    supersedes: list[dict[str, str]],
+    what: str,
+) -> list[str]:
+    """Refuse an `operator_reread` that is not a stored page re-ask's of this page; its hashes.
+
+    `stored` is the run's stored decisions by digest
+    (`RunTree.review_decision_records`). Each decision must be stored under the
+    reference it names and be a page `re-ask` of this page in this run, and
+    `supersedes` must be exactly the page's earlier readings.
+    """
+    from common.contracts.approval import PAGE_SCOPE, REVIEW_ACTION
+
+    if (
+        not isinstance(block, Mapping)
+        or set(block) != {"decisions", "supersedes"}
+        or not isinstance(block["decisions"], list)
+        or not block["decisions"]
+    ):
+        raise FatalAccounting(f"{what} names no operator decision it answers")
+    hashes = []
+    for decision in block["decisions"]:
+        reference = decision.get("approval_ref") if isinstance(decision, Mapping) else None
+        found = stored.get(reference.get("sha256")) if isinstance(reference, Mapping) else None
+        record = found[1] if found is not None else None
+        review = record.get("review") if isinstance(record, Mapping) else None
+        if (
+            found is None
+            or set(decision) != {"decision_hash", "approval_ref"}
+            or found[0].to_record() != reference
+            or record.get("action") != REVIEW_ACTION
+            or record.get("self_hash") != decision["decision_hash"]
+            or not isinstance(review, Mapping)
+            or (review.get("run_id"), review.get("scope"), review.get("decision"))
+            != (run_id, PAGE_SCOPE, "re-ask")
+            or record.get("subject_ids") != [page_id]
+        ):
+            raise FatalAccounting(
+                f"{what} names a decision that is not a stored page re-ask of this page"
+            )
+        hashes.append(decision["decision_hash"])
+    if hashes != sorted(set(hashes)):
+        raise FatalAccounting(f"{what} names its decisions out of order or twice")
+    if block["supersedes"] != supersedes:
+        raise FatalAccounting(
+            f"{what} does not supersede exactly the page's earlier readings, in attempt order"
+        )
+    return hashes
 
 
 # --- the request -----------------------------------------------------------------
@@ -612,7 +721,9 @@ def entry_plans(
 
     `attempt` is the reading's ordinal: a re-ask's entries (`attempt = 2`,
     `named` its named ids) are read against the ids it names and bound to
-    its own attempt, so they never take a first-reading entry's identity.
+    its own attempt, so they never take a first-reading entry's identity; an
+    operator re-read's (3 or more) are a whole page's, like a first
+    reading's, bound to their own attempt.
     Each plan's `n` is the number the page accounting names the entry by and
     `reading_n` its number in its own answer: equal on a first reading, and
     for a re-ask `n = first_count + reading_n`, `first_count` being the first
@@ -1630,8 +1741,12 @@ def accounting_inputs(
     record_detector_configured: bool,
     fixture_placeholders: bool,
     reask: Mapping[str, Any] | None = None,
+    attempt: int = FIRST_READING,
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """What the page accounting measures one page reading against, and the records it came from.
+
+    `attempt` is the whole-page reading's ordinal: the first reading's, or an
+    operator re-read's, which the accounting is bound to (`page_accounting`).
 
     With `reask` -- `{reading, reading_ref, plans, named}`, the page's re-ask
     `page-reading` payload and reference, its `entry_plans` (empty unless it
@@ -1685,6 +1800,7 @@ def accounting_inputs(
         "ink": ink,
         "feed_ref": feed_ref,
         "page_reading_ref": reading_ref if reask is None else reask["reading_ref"],
+        "attempt": attempt,
         "reask": None
         if reask is None
         else {

@@ -733,6 +733,7 @@ def build_parser() -> PlainParser:
         choices=sorted({word for words in REVIEW_DECISIONS.values() for word in words}),
         help=(
             "release (send a held unit to export, overriding its reading's own holds), "
+            "edit (correct a held unit's text, from --text-file), "
             "exclude (not an act), hold (with --finding), re-ask (send it through the "
             "Perlector again); for a page: no-missed-act (release its page holds), missed-act, "
             "re-ask, re-shoot, hold"
@@ -742,6 +743,15 @@ def build_parser() -> PlainParser:
     subject.add_argument("--unit", help="the unit's key, as review shows it (for example p1:2)")
     subject.add_argument("--page", type=int, help="the page's ordinal, for a page decision")
     decide.add_argument("--finding", choices=FINDINGS, help="what a hold names")
+    decide.add_argument(
+        "--text-file",
+        type=Path,
+        help=(
+            "for an edit: a UTF-8 file holding the corrected text exactly; one final line "
+            "ending is not part of it"
+        ),
+    )
+    decide.add_argument("--note", help="for an edit: an optional note that travels with it")
     decide.add_argument("--reason", required=True, help="why the project lead decided this")
     backup = verbs.add_parser(
         "backup",
@@ -957,6 +967,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 page=args.page,
                 finding=args.finding,
                 reason=args.reason,
+                text_file=args.text_file,
+                note=args.note,
             )
         elif args.verb == "backup":
             _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace, surface)
@@ -1485,18 +1497,56 @@ def _decide_with_confirmation(
     page: int | None,
     finding: str | None,
     reason: str,
+    text_file: Path | None = None,
+    note: str | None = None,
 ) -> None:
-    """Bind one review decision to the run's latest review, confirm it, then record it."""
+    """Bind one review decision to the run's latest review, confirm it, then record it.
+
+    An edit's text comes from `text_file`, and its confirmation names the
+    text's digest, so the person confirms the exact text recorded.
+    """
 
     from common.contracts.errors import ApprovalRefusal, ContractError
     from common.runtree.store import RunTree
 
     from . import decide as decide_module
 
+    if decision == "edit" and text_file is None:
+        raise OperatorError(
+            ErrorCode.DECISION_REFUSED,
+            detail="an edit names its corrected text with --text-file",
+        )
+    if decision != "edit" and text_file is not None:
+        raise OperatorError(
+            ErrorCode.DECISION_REFUSED,
+            detail=f"only an edit takes --text-file; a {decision} names no text",
+        )
+    if decision != "edit" and note is not None:
+        raise OperatorError(
+            ErrorCode.DECISION_REFUSED,
+            detail=f"only an edit takes --note; a {decision} carries no note",
+        )
+    text = None
+    if text_file is not None:
+        try:
+            text = text_file.read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError) as error:
+            raise OperatorError(
+                ErrorCode.DECISION_REFUSED,
+                detail=f"the corrected text in {text_file} is not readable UTF-8: {error}",
+            ) from error
+        text = text.removesuffix("\n").removesuffix("\r") if text.endswith("\n") else text
     tree = _bound_run_tree(RunTree, run_root, run_id)
     try:
         prepared = decide_module.prepare_decision(
-            tree, decision=decision, unit=unit, page=page, finding=finding, reason=reason
+            tree,
+            decision=decision,
+            unit=unit,
+            page=page,
+            finding=finding,
+            reason=reason,
+            text=text,
+            note=note,
         )
     except (ContractError, OSError) as error:
         raise OperatorError(ErrorCode.DECISION_REFUSED, detail=str(error)) from error
@@ -1504,16 +1554,29 @@ def _decide_with_confirmation(
         f"Current review of {prepared.subject}: held by {', '.join(prepared.held_codes) or 'nothing'}."
     )
     _print(f"Review basis digest: {prepared.basis_digest}")
+    edited = ""
+    if prepared.text_sha256 is not None:
+        _print(f"Corrected text: {json.dumps(text, ensure_ascii=False)}")
+        _print(f"Corrected text digest: {prepared.text_sha256}")
+        if note is None:
+            _print("Note: none")
+            edited = f" with text {prepared.text_sha256} and no note"
+        else:
+            from common.contracts.canonical import text_sha256
+
+            _print(f"Note: {json.dumps(note, ensure_ascii=False)}")
+            _print(f"Note digest: {text_sha256(note)}")
+            edited = f" with text {prepared.text_sha256} and note {text_sha256(note)}"
     phrase = (
-        f"decide {decision} of {prepared.subject} in {run_id} at {prepared.basis_digest} "
-        f"for reason {json.dumps(reason, ensure_ascii=True)}"
+        f"decide {decision} of {prepared.subject} in {run_id} at {prepared.basis_digest}"
+        f"{edited} for reason {json.dumps(reason, ensure_ascii=True)}"
     )
     if _typed_decide_confirmation(phrase) != phrase:
         raise OperatorError(
             ErrorCode.DECISION_REFUSED,
             detail=(
                 "the typed confirmation did not exactly name this decision, subject, run, "
-                "review basis and recorded reason"
+                "review basis, corrected text and note, and recorded reason"
             ),
         )
     try:
@@ -1894,6 +1957,15 @@ def _interactive_arguments() -> list[str]:
             )
             if finding:
                 arguments.extend(("--finding", finding))
+            if decision == "edit":
+                text_file = _ask("For an edit, the UTF-8 file holding the corrected text")
+                if not text_file:
+                    _print("An edit needs the file holding its corrected text. Nothing changed.")
+                    return []
+                arguments.extend(("--text-file", text_file))
+                note = _ask("For an edit, an optional note to travel with it (blank for none)")
+                if note:
+                    arguments.extend(("--note", note))
         if verb == "backup":
             mac_directory = _ask("Local synced Mac backup directory")
             if not mac_directory:

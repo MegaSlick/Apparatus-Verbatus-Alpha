@@ -4,8 +4,8 @@ from common.page_edges import (
     act_entries_by_page,
     agreed_breaks,
     break_chains,
-    first_attempt_entries,
     page_edges,
+    whole_page_entries,
 )
 
 
@@ -35,9 +35,15 @@ def test_a_page_with_no_reading_has_no_edge():
     assert act_entries_by_page([entry(1, None)]) == {}
 
 
-def test_only_the_first_reading_attempt_counts():
+def test_a_re_asks_entries_are_never_whole_page_entries():
     entries = [entry(1, 1), entry(1, 1, attempt=2)]
-    assert first_attempt_entries(entries) == [entries[0]]
+    assert whole_page_entries(entries) == [entries[0]]
+
+
+def test_an_operator_re_read_is_a_whole_page_reading_whose_entries_are_edges():
+    """A page a person had read again stands on that reading; its re-ask's entries never do."""
+    entries = [entry(1, 1, attempt=3, end=True), entry(2, 1, attempt=2)]
+    assert whole_page_entries(entries) == [entries[0]]
 
 
 def test_a_break_is_agreed_only_when_both_sides_flag_it():
