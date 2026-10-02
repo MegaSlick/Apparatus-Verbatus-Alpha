@@ -1407,7 +1407,6 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                         {
                             "text": payload["text"],
                             "text_status": payload["text_status"],
-                            "transcription_annotations": payload["annotations"],
                             "provenance": payload["provenance"],
                             "source_regions": export_source_regions(
                                 context.tree, payload["regions"], census
@@ -1445,7 +1444,6 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             "category": category.value,
             "canonical_clean_text": entry.get("text") if is_delivered else None,
             "text_status": entry.get("text_status"),
-            "transcription_annotations": entry.get("transcription_annotations"),
             "provenance": entry.get("provenance"),
             "source_regions": entry.get("source_regions", []),
             "reason": entry.get("reason"),

@@ -801,15 +801,15 @@ def test_a_blinded_run_exports_each_witness_by_chair_and_by_the_label_its_reader
 def test_page_rows_carry_the_page_read_lectio_kind_under_their_own_ids(complete):
     members = complete["members"]
     for row in _jsonl(members, "acts.jsonl").values():
-        assert row["schema"] == "armarium-act.v5"
+        assert row["schema"] == "armarium-act.v6"
         assert row["uncertainty"]["lectio_kind"] == "page-read"
         assert row["uncertainty"]["self_revisions"] is None
         assert row["reading"] == "first reading"
     with sqlite3.connect(complete["clean"] / "acts.sqlite") as connection:
         assert connection.execute(
             "SELECT value FROM export_metadata WHERE key = 'schema'"
-        ).fetchone() == ("armarium-acts-sqlite.v5",)
-        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+        ).fetchone() == ("armarium-acts-sqlite.v6",)
+        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
         assert set(connection.execute("SELECT reading FROM acts")) == {("first reading",)}
 
 

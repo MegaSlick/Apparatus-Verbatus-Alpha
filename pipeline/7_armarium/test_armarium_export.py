@@ -277,7 +277,6 @@ def _projection() -> ArmariumProjection:
                     "assessment": _NOT_ASSESSED,
                 },
                 "text_status": "established",
-                "transcription_annotations": [],
                 "provenance": {"chair": "perlector"},
                 "source_regions": [region],
                 "reason": None,
@@ -1719,7 +1718,6 @@ def test_unselected_format_members_cannot_hide_inside_a_self_consistent_bundle(t
     # mismatch a single selected literal format now produces.
     manifest["canonical_text"]["identity_verified_across"] = []
     manifest["claims"]["uncertainty"]["carried_by"] = ["jsonl"]
-    manifest["claims"]["transcription_annotations"]["carried_by"] = ["jsonl"]
     manifest["self_hash"] = self_hash(manifest)
     members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
 
@@ -1995,7 +1993,6 @@ def test_text_bundle_keeps_every_cited_source_folder_when_no_act_is_delivered(tm
             canonical_clean_text=None,
             uncertainty=None,
             text_status=None,
-            transcription_annotations=None,
             provenance=None,
             source_regions=[],
         )
@@ -2056,7 +2053,6 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
             "canonical_clean_text": None,
             "uncertainty": None,
             "text_status": None,
-            "transcription_annotations": None,
             "provenance": None,
             "source_regions": [],
         }
@@ -2462,7 +2458,6 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
             "canonical_clean_text": None,
             "uncertainty": None,
             "text_status": None,
-            "transcription_annotations": None,
             "provenance": None,
             "source_regions": [],
             "reason": None,
@@ -2587,8 +2582,8 @@ def test_a_section_that_drops_its_last_field_is_refused(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     lines = members[TEXT_REGISTER].decode("utf-8").splitlines()
-    last = lines.index("transcription_annotations:")
-    del lines[last : last + 2]
+    last = next(index for index, line in enumerate(lines) if line.startswith("text_status: "))
+    del lines[last]
     members[TEXT_REGISTER] = ("\n".join(lines) + "\n").encode("utf-8")
     _refresh_manifest_member(members, TEXT_REGISTER)
 
@@ -2957,13 +2952,10 @@ def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, 
     assert json.loads(stored) == layer
 
 
-# --- The damage record: text_status and the transcription annotation layer ------
+# --- The damage record: text_status and the uncertainty layer ---------------------
 #
-# F1 / Sol-S4 (T0 export honesty). The Archetypus knew an act was damaged; nothing here read
-# the field, so a partial act was exported and aggregated exactly like a whole one
-# and the run said `complete` with an empty reason list. These are the projection-
-# layer half of that repair; the end-to-end demonstration through the real CLIs is
-# `pipeline/6_archetypus/test_annotations.py`.
+# A delivered act whose reading records unread ink is `partial` in every format, and
+# the run's aggregate names it.
 
 
 def _internal_gap_layer(text: str) -> dict:
@@ -2998,7 +2990,6 @@ def test_a_delivered_act_with_a_gap_reaches_every_selected_literal_format(tmp_pa
     assert "text_status: partial" in members[TEXT_REGISTER].decode("utf-8")
     row = json.loads(members["acts.jsonl"].splitlines()[0])
     assert row["text_status"] == "partial"
-    assert row["transcription_annotations"] == []
     database = tmp_path / "acts.sqlite"
     database.write_bytes(members["acts.sqlite"])
     with sqlite3.connect(database) as connection:
@@ -3025,26 +3016,6 @@ def test_a_projection_claiming_established_over_its_own_gap_is_refused():
             _formats(embed_pixels=False),
             _source_bytes,
         )
-
-
-def test_a_row_claiming_produced_semantic_annotations_is_refused(tmp_path):
-    """The fixed claim is checked from the product side, not only asserted.
-
-    Nothing in this repository produces a semantic annotation, so a packaged row
-    saying one was produced must be refused by the verifier that knows that —
-    not accepted because nothing disproves it.
-    """
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
-    for row in rows:
-        if row["category"] == "delivered":
-            row["semantic_annotations"] = [{"kind": "person", "value": "Jean"}]
-    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
-    _refresh_manifest_member(members, "acts.jsonl")
-
-    with pytest.raises(SchemaRefusal, match="semantic annotation claim"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
 def test_a_non_delivered_row_carrying_a_text_status_is_refused(tmp_path):
@@ -3113,74 +3084,28 @@ def test_a_package_whose_basis_alone_calls_a_damaged_act_whole_is_refused(tmp_pa
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
-def test_a_sealed_transcription_annotation_is_never_replaced_by_the_semantic_claim(tmp_path):
-    """The unbuilt *semantic* layer's own not-produced claim must never stand in
-    for the *transcription* layer's real marks: both travel under their own
-    names and both are asserted here.
-    """
-    literal = _projection().acts[0][CANONICAL_TEXT_FIELD]
-    mark = {"kind": "illegible", "start": 3, "end": 3, "witness_evidence": []}
-    projection = _damaged_delivered(
-        _projection(), text_status="partial", transcription_annotations=[mark]
-    )
-    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-
-    row = json.loads(members["acts.jsonl"].splitlines()[0])
-    assert row["transcription_annotations"] == [mark]
-    assert row["semantic_annotations"] == []
-    assert row["semantic_annotation_status"] == "not-produced-pending-architecture-approval"
-    assert json.dumps([mark], ensure_ascii=False, sort_keys=True) in members[TEXT_REGISTER].decode(
-        "utf-8"
-    )
-    database = tmp_path / "acts.sqlite"
-    database.write_bytes(members["acts.sqlite"])
-    with sqlite3.connect(database) as connection:
-        stored, semantic, status = connection.execute(
-            "SELECT transcription_annotations_json, semantic_annotations_json, "
-            "semantic_annotation_status FROM acts WHERE act_id = 'act-1'"
-        ).fetchone()
-    assert json.loads(stored) == [mark]
-    assert json.loads(semantic) == []
-    assert status == "not-produced-pending-architecture-approval"
-
-    manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
-    # The package says both things about annotations, and says which is which.
-    assert manifest["claims"]["semantic_annotations"] == {
-        "status": "semantic-annotations-not-produced",
-        "text_writable": False,
-    }
-    assert manifest["claims"]["transcription_annotations"]["carried_by"] == [
-        "acts-database",
-        "jsonl",
-        "text-bundle",
-    ]
-    # The literal that the mark anchors to is untouched by carrying it.
-    assert verify_projection_identity(bundle.data, tmp_path / "identity") == {"act-1": literal}
-
-
 def test_projection_identity_refuses_a_package_whose_formats_disagree_about_damage(tmp_path):
-    """Two deliverables cannot disagree about whether the same act is damaged.
+    """Two deliverables cannot disagree about the doubt carried with one reading.
 
     The literal is byte-identical in every format, so the text comparison passes
-    by construction; the damage record is part of the same one reading and rides
-    in the same equality check (one reading per act covers more than the characters).
+    by construction; the uncertainty layer is part of the same one reading and
+    rides in the same equality check.
     """
     bundle = build_armarium_bundle(
         _partial_projection(), _formats(embed_pixels=False), _source_bytes
     )
     members = _members(bundle.data)
-    mark = {"kind": "illegible", "start": 1, "end": 1, "witness_evidence": []}
+    span = {"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}
     rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
     for row in rows:
         if row["text_status"] is not None:
-            row["transcription_annotations"] = [mark]
+            row["uncertainty"]["uncertain_spans"] = [span]
     members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
     _refresh_manifest_member(members, "acts.jsonl")
 
     tampered = _zip_bytes(members)
     # Package verification alone is green: the edited layer is well-formed, and
-    # `partial` is still the honest status for a row that carries a gap either way.
+    # `partial` is still the honest status for a row that carries its gap.
     verify_export_bundle(tampered, tmp_path / "clean")
     with pytest.raises(SchemaRefusal, match="projection differs"):
         verify_projection_identity(tampered, tmp_path / "identity")
@@ -3196,7 +3121,7 @@ def test_the_text_bundle_refuses_a_literal_section_with_no_damage_record(tmp_pat
     members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
     _refresh_manifest_member(members, TEXT_REGISTER)
 
-    with pytest.raises(SchemaRefusal, match="no established-text status"):
+    with pytest.raises(SchemaRefusal, match="no completed literal record"):
         verify_projection_identity(_zip_bytes(members), tmp_path)
 
 
@@ -3209,7 +3134,7 @@ def test_the_text_bundle_refuses_two_established_text_statuses_for_one_literal(t
     members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
     _refresh_manifest_member(members, TEXT_REGISTER)
 
-    with pytest.raises(SchemaRefusal, match="more than one established-text status"):
+    with pytest.raises(SchemaRefusal, match="established-text status has no literal to describe"):
         verify_projection_identity(_zip_bytes(members), tmp_path)
 
 
