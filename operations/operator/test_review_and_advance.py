@@ -1221,6 +1221,7 @@ def test_hostile_projection_content_reaches_the_terminal_only_as_inert_escaped_t
         pages=(),
         acts=({"act_id": "a1", "act_key": "x\x1b[2Jwiped", "category": "baptism", "crops": []},),
         review_items=({"reason": "adversarial\x1b]0;pwned\x07 escape sequence"},),
+        review_items_total=1,
         advance_records=(),
     )
     monkeypatch.setattr(
