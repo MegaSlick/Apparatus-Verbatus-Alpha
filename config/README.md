@@ -153,10 +153,11 @@ directly.
 hourly price (`max_hourly_usd`) and for the estimated cost through the hard lifetime
 (`max_estimated_metered_cost_usd`), the `hard_lifetime_seconds`, a bounded
 `billing_cutoff_margin_seconds`, the laptop heartbeat and the shutdown polling and
-deadline, an `account_balance_floor_usd` hard reserve and a higher
+deadline, an observed `account_balance_floor_usd` hard reserve and a higher
 `account_balance_alert_usd` notification threshold. A paid action reads the available
-balance from the provider and refuses when that source is unavailable or the action would
-breach the reserve. The loader refuses an unknown or missing key. The policy does not
+balance through the provider's explicitly configured source and refuses when that source
+is unavailable or the action would breach the reserve. The `$50.00` floor is a policy
+value, not a balance observation, until checked against RunPod before a live run. The loader refuses an unknown or missing key. The policy does not
 decide whether a volume is kept or deleted after close; every close report states the
 volume's ongoing price.
 
