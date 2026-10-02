@@ -385,7 +385,11 @@ def test_the_completed_empty_witness_is_declared_for_a_known_scenario_and_chair(
     rows = skeleton["witness_empty"]
     names = {scenario["name"] for scenario in skeleton["scenario"]}
     witness_chairs = set(configured_witness_chairs(models_config))
-    assert rows
+    assert {
+        "scenario": "genuinely-empty-witness",
+        "page_ordinal": 1,
+        "chair": "attestator_3",
+    } in rows
     assert all(row["scenario"] in names and row["chair"] in witness_chairs for row in rows)
     # The ink-free page's empty responses cover every
     # whole-page chair of the roster; DAI's detector census speaks for it there.
