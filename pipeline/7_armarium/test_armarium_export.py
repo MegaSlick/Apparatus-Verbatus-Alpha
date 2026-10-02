@@ -4308,6 +4308,28 @@ def test_a_reading_released_on_its_own_holds_carries_them_and_verifies(tmp_path)
     assert [row["reading_hold_codes"] for row in sources["operator_actions"]] == [[_UNIT_HOLD]]
     assert all(not row["hold_codes"] for row in sources["page_accounting"])
     verify_export_bundle(bundle.data, tmp_path / "clean")
+    # A database-only reader sees the release too.
+    with sqlite3.connect(tmp_path / "clean" / "acts.sqlite") as connection:
+        assert dict(connection.execute("SELECT act_id, operator_label FROM acts")) == {
+            "act-1": "released by operator",
+            "act-2": None,
+        }
+
+
+@pytest.mark.parametrize("label", [None, "corrected by a person"])
+def test_an_acts_database_that_misstates_an_operator_label_is_refused(tmp_path, label):
+    bundle = build_armarium_bundle(
+        _released_on_its_own_holds(), _formats(embed_pixels=False), _source_bytes
+    )
+    members = _members(bundle.data)
+    database = tmp_path / "tampered.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE acts SET operator_label = ? WHERE act_id = 'act-1'", (label,))
+    members["acts.sqlite"] = database.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+    with pytest.raises(SchemaRefusal, match="does not label exactly the acts an operator"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
 @pytest.mark.parametrize(

@@ -542,7 +542,9 @@ def build_armarium_bundle(
             )
         )
     if "acts-database" in formats.formats:
-        members["acts.sqlite"] = _acts_database_bytes(projection.acts)
+        members["acts.sqlite"] = _acts_database_bytes(
+            projection.acts, {row["act_id"]: row["label"] for row in operator_rows}
+        )
     if "jsonl" in formats.formats:
         members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts))
         if coniector_rows:
@@ -1585,12 +1587,27 @@ def _verify_operator_layer(
 ) -> None:
     """Every format that carries the operator layer shows exactly the rows `sources.json` records.
 
-    `operator.jsonl` carries them when the JSONL format is selected, and the
-    text bundle shows each once beneath its reading's section in every folder
-    that sections the reading, so a label dropped from a format is refused.
+    `operator.jsonl` carries them when the JSONL format is selected, the text
+    bundle shows each once beneath its reading's section in every folder that
+    sections the reading, and the acts database names each act's label in its
+    `operator_label` column, so a label dropped from a format is refused.
     """
     _verify_reading_holds(sources, manifest, recorded)
     _verify_corrections(root, formats, sources, recorded)
+    if "acts-database" in formats.formats:
+        labels = dict(
+            _read_acts_database(
+                root / "acts.sqlite",
+                "SELECT act_id, operator_label FROM acts",
+                "the acts database cannot be read for its operator labels",
+            )
+        )
+        expected = {row["act_id"]: row["label"] for row in recorded if row["kind"] == "act"}
+        if labels != {act_id: expected.get(act_id) for act_id in labels}:
+            raise SchemaRefusal(
+                "the acts database does not label exactly the acts an operator released or "
+                "corrected, as their operator rows do"
+            )
     shown: list[tuple[str, list[dict[str, Any]]]] = []
     if "jsonl" in formats.formats:
         rows = (
@@ -3377,7 +3394,10 @@ def _text_member_path(folder: str) -> str:
     return f"text/_source_folder/{folder}/readings.txt"
 
 
-def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
+def _acts_database_bytes(
+    acts: tuple[dict[str, Any], ...], operator_labels: dict[str, str]
+) -> bytes:
+    """The acts table and its search layer; `operator_labels` by act id, from the operator rows."""
     with tempfile.TemporaryDirectory(prefix="armarium-sqlite-") as directory:
         path = f"{directory}/acts.sqlite"
         connection = sqlite3.connect(path)
@@ -3400,7 +3420,7 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                 sorted(metadata.items()),
             )
             for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
-                row = _database_row(act)
+                row = _database_row(act, operator_labels.get(act["act_id"]))
                 connection.execute(
                     f"INSERT INTO acts({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
                     tuple(row.values()),
@@ -3456,8 +3476,13 @@ def _row_head(reading: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _database_row(act: dict[str, Any]) -> dict[str, Any]:
-    """One `acts` table row, by column; text-derived columns are null without text."""
+def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, Any]:
+    """One `acts` table row, by column; text-derived columns are null without text.
+
+    `operator_label` is the act's operator row's label ("released by operator",
+    "corrected by a person"), so a database-only reader sees that a person
+    acted on the reading; null for an act no operator acted on.
+    """
     literal = act[CANONICAL_TEXT_FIELD]
     delivered = literal is not None
     return {
@@ -3472,6 +3497,7 @@ def _database_row(act: dict[str, Any]) -> dict[str, Any]:
         "evidence_json": canonical_text(_act_evidence(act)),
         "approval_ref": act.get("approval_ref"),
         "reading": act["reading"],
+        "operator_label": operator_label,
     }
 
 
@@ -3808,7 +3834,8 @@ _ACTS_DATABASE_DDL: Final = """
                     evidence_json TEXT NOT NULL,
                     approval_ref TEXT,
                     reason TEXT,
-                    reading TEXT
+                    reading TEXT,
+                    operator_label TEXT
                 );
                 CREATE TABLE act_search (
                     rowid INTEGER PRIMARY KEY,
