@@ -190,7 +190,7 @@ def test_a_happy_page_tree_accepts_every_unit_with_its_evidence(happy, tmp_path)
     assert not (tree.root / RUN_ID / "5_recensor" / "artifacts" / "recovery-request").exists()
 
     receipt = tree.receipt()
-    assert receipt["schema"] == "recensor-partition-receipt.v5"
+    assert receipt["schema"] == "recensor-partition-receipt.v6"
     assert receipt["recensor_status"] == "complete" and receipt["reasons"] == []
     assert [
         (page["page_ordinal"], page["reask_ref"], page["reask"]) for page in receipt["pages"]
@@ -1220,7 +1220,7 @@ def test_a_re_asked_page_keeps_its_first_readings_edges_and_counts_its_recovered
     assert link["outcome"] == "accepted"
 
     receipt = tree.receipt()
-    assert receipt["schema"] == "recensor-partition-receipt.v5"
+    assert receipt["schema"] == "recensor-partition-receipt.v6"
     first, second = receipt["pages"]
     assert first["reask_ref"] == page_readings(context)[1]["reask_ref"] is not None
     assert first["accounting_ref"] == rows["p1:2"]["accounting_ref"]

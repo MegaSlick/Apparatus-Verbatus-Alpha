@@ -404,7 +404,7 @@ def page_reasks(page: dict) -> int:
 
 
 def page_receipt_row(context, page: dict) -> dict[str, Any]:
-    """A page as the v5 receipt binds it: its readings, last accounting and what its re-ask did."""
+    """A page as the receipt binds it: its readings, last accounting and what its re-ask did."""
     reask = None
     if page["reask_ref"] is not None:
         reading = context.tree.read_artifact_reference(
@@ -831,7 +831,7 @@ def plan_reviews(
 
     Every fact is measured from disk: the page witnesses, the residual ink,
     each unit's page accounting and uncertainty assessment, and whether a page
-    said to hold no act is confirmed so. The Recensor publishes these; its v5
+    said to hold no act is confirmed so. The Recensor publishes these; its
     receipt measures them again and requires the reviews on disk to be them.
     """
     pages = denominator["pages"]
@@ -1089,7 +1089,7 @@ def current_links(context, expected: list[tuple[str, dict]], by_id, pages) -> li
 def write_reading_receipt(
     context, *, page_coverage_findings: Callable[..., dict[int, dict]]
 ) -> None:
-    """Rebuild the v5 partition receipt from disk: pages, units, reviews, coverage, page breaks.
+    """Rebuild the partition receipt from disk: pages, units, reviews, coverage, page breaks.
 
     The units are re-derived through `reading_denominator` and every review is
     measured again (`plan_reviews`): its coverage, residual ink, confirmation,
@@ -1208,5 +1208,6 @@ def write_reading_receipt(
         pages=[page_receipt_row(context, pages[ordinal]) for ordinal in sorted(pages)],
         items=items,
         continuation_links=links,
+        page_holds=[] if decisions is None else decisions["page_holds"],
     )
     context.tree.write_recensor_partition_receipt(receipt)

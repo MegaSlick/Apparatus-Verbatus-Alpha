@@ -1,26 +1,23 @@
 """A self-hashed, scoped partition receipt for the Recensor boundary.
 
 This is deliberately not the pipeline's final export verdict.  It proves only
-the act denominator and the configured-witness denominator at the point the
-Recensor has reviewed them.  Page-level blank proof, residual ink, and final
-Archetypus/Armarium categories require evidence this receipt does not pretend
-to own.
+the unit denominator and the configured-witness denominator at the point the
+Recensor has reviewed them.  Final Archetypus/Armarium categories require
+evidence this receipt does not pretend to own.
 
-v4 and v5 count a page-read run's units (`common.stage.reading_acts`, the
-classes in `COUNTED_READING_CLASSES`; `expected_unit_count`): every sealed page
-has at least one unit and every unit's page is a sealed page's, and each item
-carries the unit's page disposition instead of a Designator outcome. A unit its
-page reading held is completed at the Recensor only with the reason its review
-released it (`release_reason`); so released, it is resolved. A held unit with
-no completed review keeps the receipt `partial`. `continuation_links` names
-every page break an answer flags, so a break only one side says the text runs
-across keeps the run partial.
+It counts a page-read run's units (`common.stage.reading_acts`, the classes in
+`COUNTED_READING_CLASSES`; `expected_unit_count`): every sealed page has at
+least one unit and every unit's page is a sealed page's, and each item carries
+the unit's page disposition. A unit its page reading held is completed at the
+Recensor only with the reason its review released it (`release_reason`); so
+released, it is resolved. A held unit with no completed review keeps the
+receipt `partial`, and so does every page the run's operator review decisions
+leave held (`page_holds`), a page whose every unit was excluded included.
+`continuation_links` names every page break an answer flags, so a break only
+one side says the text runs across keeps the run partial.
 
-The two differ in how they name the pages. v4 has `page_reading_refs`,
-`[{page_ordinal, reading_ref}]` in page order, naming each sealed page's
-`page-reading`. v5, the one the Recensor writes, has `pages`,
-`[{page_ordinal, reading_ref, reask_ref, accounting_ref, reask}]` in page
-order, binding each page's first reading, its re-ask (`None` on a page not
+`pages`, `[{page_ordinal, reading_ref, reask_ref, accounting_ref, reask}]` in
+page order, binds each page's first reading, its re-ask (`None` on a page not
 re-asked) and its last accounting, with `reask` what the re-ask did
 (`common.page_reask.reask_outcome`: the named ids, split into `cleared`,
 `set_aside`, `held` and `unread`, and the combined numbers of its entries held
@@ -43,31 +40,22 @@ from common.contracts.outcomes import (
 )
 from common.contracts.stages import ATTESTATORES, RECENSOR
 
-RECENSOR_PARTITION_RECEIPT_SCHEMA_V4: Final = "recensor-partition-receipt.v4"
-# v5 also binds each page's re-ask and last accounting; it is the one written.
-RECENSOR_PARTITION_RECEIPT_SCHEMA_V5: Final = "recensor-partition-receipt.v5"
-PAGE_READ_RECEIPT_SCHEMAS: Final = frozenset(
-    {RECENSOR_PARTITION_RECEIPT_SCHEMA_V4, RECENSOR_PARTITION_RECEIPT_SCHEMA_V5}
-)
-# Receipts over the Designator's proposal acts, which no run counts any more.
-RETIRED_RECENSOR_PARTITION_RECEIPT_SCHEMAS: Final = frozenset(
-    {
-        "recensor-partition-receipt.v1",
-        "recensor-partition-receipt.v2",
-        "recensor-partition-receipt.v3",
-    }
-)
+RECENSOR_PARTITION_RECEIPT_SCHEMA: Final = "recensor-partition-receipt.v6"
 RECENSOR_READING_RECEIPT_SCOPE: Final = "reading-acts-and-configured-witnesses"
 PAGE_DISPOSITIONS: Final = frozenset({"read", "held"})
 # `p<page ordinal>:<entry n>`, or the page row of a page with no entry.
 _READING_ACT_KEY: Final = re.compile(r"p[1-9][0-9]*:(?:[1-9][0-9]*|unread|blank)")
 _READING_ACT_PAGE: Final = re.compile(r"p([1-9][0-9]*):")
-_COMMON_FIELDS: Final = frozenset(
+_FIELDS: Final = frozenset(
     {
         "schema",
         "run_id",
         "config_digest",
         "scope",
+        "pages",
+        "expected_unit_count",
+        "continuation_links",
+        "page_holds",
         "items",
         "by_partition_class",
         "recensor_status",
@@ -75,14 +63,19 @@ _COMMON_FIELDS: Final = frozenset(
         "self_hash",
     }
 )
-_READING_FIELDS: Final = {
-    RECENSOR_PARTITION_RECEIPT_SCHEMA_V4: frozenset(
-        {"page_reading_refs", "expected_unit_count", "continuation_links"}
-    ),
-    RECENSOR_PARTITION_RECEIPT_SCHEMA_V5: frozenset(
-        {"pages", "expected_unit_count", "continuation_links"}
-    ),
-}
+_PAGE_HOLD_FIELDS: Final = frozenset({"page_ordinal", "hold_codes"})
+_COVERAGE_FIELDS: Final = frozenset(
+    {
+        "configured",
+        "floor",
+        "by_outcome",
+        "by_class",
+        "under_witnessed",
+        "unresolved_chairs",
+        "health_unrecorded",
+        "shortfalls",
+    }
+)
 _PAGE_FIELDS: Final = frozenset(
     {"page_ordinal", "reading_ref", "reask_ref", "accounting_ref", "reask"}
 )
@@ -100,8 +93,9 @@ def build_recensor_reading_receipt(
     pages: list[dict[str, Any]],
     items: list[dict[str, Any]],
     continuation_links: list[dict[str, Any]] = (),
+    page_holds: list[dict[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Build a v5 receipt over a page-read run's units, its summary derived from its items.
+    """Build a receipt over a page-read run's units, its summary derived from its items.
 
     `pages` names every sealed page by its page ordinal, in page order:
     `{page_ordinal, reading_ref, reask_ref, accounting_ref, reask}`, the
@@ -113,7 +107,9 @@ def build_recensor_reading_receipt(
     `release_reason` being the reason the Recensor's review record gives for
     completing a unit its page reading held, and `None` otherwise. Each
     continuation link is `{subject_id, link_ref, outcome}` for one flagged
-    page break.
+    page break. `page_holds` is the `review-decisions` record's `page_holds`,
+    `{page_ordinal, hold_codes}` for every page the run's operator review
+    decisions leave held, and empty for a run that stores no decision.
     """
 
     checked_items = [dict(item) for item in items]
@@ -123,9 +119,13 @@ def build_recensor_reading_receipt(
     links = sorted((dict(link) for link in continuation_links), key=_link_order)
     for link in links:
         _validate_link(link)
-    reasons = _reasons(checked_items, links=links)
+    held_pages = [
+        {"page_ordinal": row["page_ordinal"], "hold_codes": list(row["hold_codes"])}
+        for row in page_holds
+    ]
+    reasons = _reasons(checked_items, links=links, page_holds=held_pages)
     record: dict[str, Any] = {
-        "schema": RECENSOR_PARTITION_RECEIPT_SCHEMA_V5,
+        "schema": RECENSOR_PARTITION_RECEIPT_SCHEMA,
         "run_id": run_id,
         "config_digest": config_digest,
         "scope": RECENSOR_READING_RECEIPT_SCOPE,
@@ -141,6 +141,7 @@ def build_recensor_reading_receipt(
         ],
         "expected_unit_count": len(checked_items),
         "continuation_links": links,
+        "page_holds": held_pages,
         "items": checked_items,
         "by_partition_class": _partition_counts(checked_items),
         "recensor_status": _status(reasons),
@@ -153,17 +154,10 @@ def build_recensor_reading_receipt(
 def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
     """Validate the closed receipt schema and its derived summary."""
 
-    schema = record.get("schema") if isinstance(record, dict) else None
-    if isinstance(schema, str) and schema in RETIRED_RECENSOR_PARTITION_RECEIPT_SCHEMAS:
-        raise SchemaRefusal(
-            f"Recensor partition receipt was written as {schema}, which counts the Designator's "
-            "proposal acts this build no longer has; re-run the Recensor"
-        )
     if (
         not isinstance(record, dict)
-        or not isinstance(schema, str)
-        or schema not in PAGE_READ_RECEIPT_SCHEMAS
-        or set(record) != _COMMON_FIELDS | _READING_FIELDS[schema]
+        or record.get("schema") != RECENSOR_PARTITION_RECEIPT_SCHEMA
+        or set(record) != _FIELDS
     ):
         raise SchemaRefusal("Recensor partition receipt has the wrong closed schema")
     if not verify_self_hash(record):
@@ -200,9 +194,10 @@ def validate_recensor_partition_receipt(record: Any) -> dict[str, Any]:
             )
         previous_act_id = act_id
     _validate_page_readings(record)
+    _validate_page_holds(record)
     if record["by_partition_class"] != _partition_counts(record["items"]):
         raise SchemaRefusal("Recensor partition receipt partition counts do not reconcile")
-    reasons = _reasons(record["items"], links=links)
+    reasons = _reasons(record["items"], links=links, page_holds=record["page_holds"])
     if record["reasons"] != reasons or record["recensor_status"] != _status(reasons):
         raise SchemaRefusal("Recensor partition receipt status does not derive from its items")
     return record
@@ -244,12 +239,11 @@ def _validate_link(link: Any) -> None:
 def _validate_page_readings(record: dict[str, Any]) -> None:
     """Every sealed page's reading once, by ordinal, each page with a unit and no unit elsewhere.
 
-    A v5 receipt's pages also bind each page's re-ask and last accounting, and
-    what the re-ask did (`_validate_reask`).
+    Each page also binds its re-ask and last accounting, and what the re-ask
+    did (`_validate_reask`).
     """
-    v5 = record["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA_V5
-    rows = record["pages"] if v5 else record["page_reading_refs"]
-    fields = _PAGE_FIELDS if v5 else frozenset({"page_ordinal", "reading_ref"})
+    rows = record["pages"]
+    fields = _PAGE_FIELDS
     if not isinstance(rows, list) or not rows:
         raise SchemaRefusal(
             "Recensor page-read receipt names no page reading; every sealed page's "
@@ -268,9 +262,8 @@ def _validate_page_readings(record: dict[str, Any]) -> None:
                 "with a positive page ordinal"
             )
         _validate_reference(row["reading_ref"], "page-reading reference")
-        if v5:
-            _validate_reference(row["accounting_ref"], "page-accounting reference")
-            _validate_reask(row)
+        _validate_reference(row["accounting_ref"], "page-accounting reference")
+        _validate_reask(row)
         ordinals.append(row["page_ordinal"])
     if ordinals != sorted(set(ordinals)):
         raise SchemaRefusal(
@@ -300,6 +293,30 @@ def _validate_page_readings(record: dict[str, Any]) -> None:
             f"Recensor page-read receipt counts units on page(s) {stray}, which name no "
             "sealed page reading"
         )
+
+
+def _validate_page_holds(record: dict[str, Any]) -> None:
+    """Each held page once, in page order, a sealed page, with the codes that hold it."""
+    rows = record["page_holds"]
+    sealed = {row["page_ordinal"] for row in record["pages"]}
+    if not isinstance(rows, list) or not all(
+        isinstance(row, dict)
+        and set(row) == _PAGE_HOLD_FIELDS
+        and is_plain_int(row["page_ordinal"])
+        and row["page_ordinal"] in sealed
+        and isinstance(row["hold_codes"], list)
+        and row["hold_codes"]
+        and all(isinstance(code, str) and code for code in row["hold_codes"])
+        and row["hold_codes"] == sorted(set(row["hold_codes"]))
+        for row in rows
+    ):
+        raise SchemaRefusal(
+            "Recensor partition receipt page_holds are not {page_ordinal, hold_codes} rows "
+            "naming a sealed page and its sorted hold codes"
+        )
+    ordinals = [row["page_ordinal"] for row in rows]
+    if ordinals != sorted(set(ordinals)):
+        raise SchemaRefusal("Recensor partition receipt names a held page twice or out of order")
 
 
 def _validate_reask(row: dict[str, Any]) -> None:
@@ -435,30 +452,7 @@ def _validate_release(item: dict[str, Any]) -> None:
 
 
 def _validate_coverage(coverage: Any) -> None:
-    required = {
-        "configured",
-        "floor",
-        "by_outcome",
-        "by_class",
-        "under_witnessed",
-        "unresolved_chairs",
-    }
-    granularity_fields = {
-        "page_granularity_only",
-        "health_unrecorded",
-        "shortfalls",
-        "granularity_basis",
-    }
-    if not isinstance(coverage, dict):
-        raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
-    # Every witness of a page-read run reads the whole page, so no count is
-    # judged at act granularity: health and shortfalls, never attachment.
-    if set(coverage) & granularity_fields != {"health_unrecorded", "shortfalls"}:
-        raise SchemaRefusal(
-            "Recensor page-read receipt coverage carries exactly health_unrecorded and "
-            "shortfalls beside its counts; a page-read run attaches no witness to an act"
-        )
-    if set(coverage) - (required | granularity_fields) or not required <= set(coverage):
+    if not isinstance(coverage, dict) or set(coverage) != _COVERAGE_FIELDS:
         raise SchemaRefusal("Recensor partition receipt has malformed witness coverage")
     for field in ("configured", "floor", "unresolved_chairs"):
         value = coverage[field]
@@ -548,7 +542,8 @@ def _validate_coverage(coverage: Any) -> None:
     configured = coverage["configured"]
     if health_unrecorded > configured or any(value > configured for value in shortfalls.values()):
         raise SchemaRefusal(
-            "Recensor partition receipt counts more granularity facts than configured chairs"
+            "Recensor partition receipt counts more health or shortfall facts than configured "
+            "chairs"
         )
     if shortfalls["unaligned"] != 0:
         raise SchemaRefusal(
@@ -566,7 +561,12 @@ def _validate_reference(reference: Any, what: str) -> None:
     digest_ref(reference, f"Recensor partition receipt {what}")
 
 
-def _reasons(items: list[dict[str, Any]], *, links: list[dict[str, Any]] = ()) -> list[str]:
+def _reasons(
+    items: list[dict[str, Any]],
+    *,
+    links: list[dict[str, Any]] = (),
+    page_holds: list[dict[str, Any]] = (),
+) -> list[str]:
     # A page-read run counts units: act entries, `other` entries and page rows.
     counted = "unit"
     reasons: list[str] = []
@@ -596,4 +596,9 @@ def _reasons(items: list[dict[str, Any]], *, links: list[dict[str, Any]] = ()) -
                 f"{link['subject_id']} is {link['outcome']}: only one side says the text runs "
                 "across the page break"
             )
+    for row in page_holds:
+        reasons.append(
+            f"page {row['page_ordinal']} is held after operator review "
+            f"({', '.join(row['hold_codes'])})"
+        )
     return reasons

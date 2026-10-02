@@ -266,10 +266,9 @@ Refused, before anything is published:
 
 ## The partition receipt
 
-`page_review.write_reading_receipt` rebuilds `recensor-partition-receipt.v5` from
-disk (a v4 receipt, whose `page_reading_refs` is `[{page_ordinal, reading_ref}]`, is
-still read): the units re-derived through `reading_denominator` (`expected_unit_count`
-of them), `pages` keyed by page ordinal in page order,
+`page_review.write_reading_receipt` rebuilds `recensor-partition-receipt.v6` from
+disk: the units re-derived through `reading_denominator` (`expected_unit_count` of
+them), `pages` keyed by page ordinal in page order,
 
 ```
 pages: [{page_ordinal, reading_ref, reask_ref | null, accounting_ref,
@@ -300,10 +299,11 @@ page accounting measured, so no release rests on a stale confirmation and no res
 lost. Every `continuation-link` is matched one to one against the breaks the answers
 flag; a missing, stray or different link is refused. `continuation_links` names each
 (`subject_id`, `link_ref`, `outcome`), and a held one is a receipt reason, so the
-receipt is `partial` while any page break is unresolved. A review whose subject is
-outside `reading_acts`, or any recovery request, is refused. A receipt written as
-`recensor-partition-receipt.v1`, `.v2` or `.v3` counts the Designator's proposal acts,
-which a run does not have, and is refused by name.
+receipt is `partial` while any page break is unresolved. `page_holds` is the
+`review-decisions` record's `page_holds` (empty for a run that stores no decision), and
+each held page is a receipt reason too, so a page whose every unit was excluded still
+keeps the receipt `partial`. A review whose subject is outside `reading_acts`, or any
+recovery request, is refused. A receipt of any other schema is refused.
 
 ## Stage-completion seal
 
