@@ -859,10 +859,16 @@ def _corrections(
     units: Mapping[str, Mapping[str, Any]],
     applied: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Each unit a person's current edit corrected, with the unit codes it cleared."""
+    """Each unit a person's current edit corrected and accepted, with the unit codes it cleared.
+
+    An edited unit something else still holds (its page's holds, say) is
+    corrected by nothing yet: no reading of it reaches the export.
+    """
     rows: dict[str, dict[str, Any]] = {}
     for summary in applied:
         if summary["decision"] != EDIT_DECISION:
+            continue
+        if units[summary["subject_id"]]["outcome"] != ACCEPTED:
             continue
         subject = summary["subject_id"]
         entry = basis["units"][subject]

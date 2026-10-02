@@ -437,6 +437,8 @@ def test_an_edit_alone_leaves_the_unit_held_by_its_page():
     result = apply_decisions(derived, [decide(derived, "unit", "a1", "edit", text="ONE")])
     assert result["units"]["a1"]["outcome"] == "held-for-review"
     assert result["units"]["a1"]["payload"]["hold_codes"] == ["unread-line"]
+    # Corrected by nothing yet: no reading of it reaches the export.
+    assert result["corrections"] == []
 
 
 def test_an_edit_of_a_reading_the_machine_accepted_is_refused():

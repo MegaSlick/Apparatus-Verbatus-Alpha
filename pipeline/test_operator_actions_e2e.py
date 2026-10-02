@@ -653,3 +653,22 @@ def test_a_reading_with_no_text_cannot_be_released_but_can_be_corrected(unreadab
         for line in _members(tree.root)["model_readings.jsonl"].decode().splitlines()
     ]
     assert (original["act_key"], original["text"]) == ("p1:2", "")
+
+
+def test_an_edit_its_page_still_holds_is_no_correction_and_an_advance_exports(
+    reading_held, tmp_path
+):
+    """The page hold stays, so the edit corrects nothing yet; an advance exports with it held."""
+    tree = _copy(reading_held, tmp_path)
+    _decide(tree.root, "p1:1", "edit", text=EDITED, note=NOTE)
+    assert _recense(tree) == EXIT_HELD
+    assert _decisions(tree.root)["corrections"] == []
+    _after_recensor(tree)
+    members = _members(tree.root)
+    sources = json.loads(members["sources.json"])
+    assert sources["aggregate_basis"]["review_decisions"]["corrections"] == []
+    acts = {
+        row["act_key"]: row for row in map(json.loads, members["acts.jsonl"].decode().splitlines())
+    }
+    assert acts["p1:1"]["category"] != "delivered"
+    armarium_export.verify_export_bundle(_repacked(dict(members)), tmp_path / "clean")
