@@ -157,8 +157,8 @@ def is_length_suspicious(
     fixture scale and at 300 DPI gets the same verdict.
 
     The arithmetic itself is `common/perlector_audit.py::length_signal`, the one
-    spelling `validate_truncation_record` re-derives the recorded signal with;
-    what this function adds is the bounds a producer owes. An empty reading is
+    spelling of the signal, which a reader of the recorded measure can apply
+    again; what this function adds is the bounds a producer owes. An empty reading is
     not this check's business -- `no-readable-text` is the honest outcome for
     that, decided elsewhere, never smuggled in here as a truncation.
     """
