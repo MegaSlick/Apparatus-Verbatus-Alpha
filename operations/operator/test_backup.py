@@ -1,4 +1,4 @@
-"""The local Mac backup is content-addressed, resumable, and custody-bound."""
+"""The local Mac backup is content-addressed, resumable, and read back before it is called complete."""
 
 from __future__ import annotations
 
@@ -17,10 +17,8 @@ from common.runtree import store
 from common.runtree.store import RunTree
 
 from . import backup as backup_module
-from . import backup_worker, cli
+from . import cli
 from .backup import SCHEMA, BackupRefusal, sync_run_tree
-from .conftest import requires_landlock
-from .custody import credential_free_environment
 from .errors import ErrorCode, OperatorError
 from .surface import OperatorSurface
 
@@ -308,260 +306,53 @@ def test_an_existing_root_is_refused_when_its_parent_cannot_be_synced(
         sync_run_tree(volume, run_id, mac)
 
 
-def test_backup_cli_uses_a_confined_credential_free_child(tmp_path: Path, monkeypatch) -> None:
-    volume, run_id = _run_tree(tmp_path)
-    mac = tmp_path / "mac"
-    observed = {}
-
-    class Backend:
-        def launcher_failure(self, completed):
-            return None
-
-    def confined(command, *, writable, cwd, input_text):
-        observed.update(
-            {
-                "command": command,
-                "writable": writable,
-                "cwd": cwd,
-                "request": json.loads(input_text),
-            }
-        )
-        report = sync_run_tree(volume, run_id, mac)
-
-        class Completed:
-            returncode = 0
-            stdout = json.dumps(report.to_record())
-            stderr = ""
-
-        return Backend(), Completed()
-
-    monkeypatch.setattr(cli, "run_confined", confined)
-    cli._backup_in_custody(volume, run_id, mac, tmp_path, _surface(tmp_path))
-
-    assert observed["writable"] == mac.resolve()
-    assert observed["cwd"] == ROOT
-    assert observed["request"]["run_id"] == run_id
-    assert observed["request"]["source_identity"] == list(
-        backup_module.required_identity(volume / run_id, what="source run tree")
-    )
-    assert observed["request"]["destination_identities"] == [
-        list(identity) for identity in backup_module.destination_identities(mac)
-    ]
-    assert "backup_worker" in " ".join(observed["command"])
-    assert str(ROOT) in observed["command"]
-    assert str(tmp_path) not in observed["command"]
-    assert credential_free_environment({"RUNPOD_S3_SECRET_KEY": "secret", "SAFE": "yes"}) == {
-        "SAFE": "yes"
-    }
-
-
-@requires_landlock("a Linux runner proves the Landlock worker")
-def test_backup_cli_executes_the_worker_inside_the_real_custody_boundary(tmp_path: Path) -> None:
+def test_the_backup_verb_copies_the_run_and_reads_its_snapshot_back(tmp_path: Path) -> None:
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
 
-    cli._backup_in_custody(
-        volume, run_id, mac, Path(__file__).resolve().parents[2], _surface(tmp_path)
-    )
+    cli._backup(volume, run_id, mac, _surface(tmp_path))
 
     assert list((mac / "objects" / "sha256").iterdir())
-    assert list((mac / "snapshots" / "sha256").iterdir())
+    [snapshot] = (mac / "snapshots" / "sha256").iterdir()
+    report = backup_module.BackupReport(snapshot.stem, copied=2, reused=0)
+    assert backup_module.verify_backup_snapshot(mac.resolve(), run_id, report)["run_id"] == run_id
 
 
-def test_backup_worker_refuses_a_deeply_nested_request_in_one_line() -> None:
-    """A nesting bomb must refuse like everything else, not print a traceback.
+def test_a_report_naming_a_snapshot_never_written_is_refused_on_read_back(tmp_path: Path) -> None:
+    volume, run_id = _run_tree(tmp_path)
+    mac = tmp_path / "mac"
+    sync_run_tree(volume, run_id, mac)
 
-    `json.loads` raises `RecursionError`, not `ValueError`, and the byte bound
-    above still admits tens of thousands of nesting levels. Uncaught, the
-    worker dies with a stack trace and that becomes the detail the operator is
-    told to keep. `advance_worker` already lists `RecursionError` for this.
-    """
-    depth = 20_000
-    request = "[" * depth + "]" * depth
-    assert len(request) <= backup_worker.MAX_REQUEST_BYTES
-
-    completed = subprocess.run(
-        [sys.executable, "-m", "operations.operator.backup_worker"],
-        cwd=ROOT,
-        input=request,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 2
-    assert "Traceback" not in completed.stderr
-    assert len(completed.stderr.strip().splitlines()) == 1
+    with pytest.raises(BackupRefusal, match="snapshot it published does not exist"):
+        backup_module.verify_backup_snapshot(
+            mac.resolve(), run_id, backup_module.BackupReport("a" * 64, copied=2, reused=0)
+        )
 
 
-def test_backup_worker_bounds_its_request_before_json_deserialization() -> None:
-    completed = subprocess.run(
-        [sys.executable, "-m", "operations.operator.backup_worker"],
-        cwd=ROOT,
-        input=" " * (backup_worker.MAX_REQUEST_BYTES + 1),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert completed.returncode == 2
-    assert f"larger than {backup_worker.MAX_REQUEST_BYTES} bytes" in completed.stderr
-    assert completed.stdout == ""
-
-
-def test_backup_worker_failure_uses_the_named_three_part_operator_refusal(
+def test_a_backup_refusal_uses_the_named_three_part_operator_refusal(
     tmp_path: Path, monkeypatch
 ) -> None:
     volume, run_id = _run_tree(tmp_path)
 
-    class Backend:
-        def launcher_failure(self, completed):
-            return None
+    def changed(*_args, **_kwargs):
+        raise BackupRefusal("source changed")
 
-    class Completed:
-        returncode = 2
-        stdout = ""
-        stderr = "source changed"
-
-    monkeypatch.setattr(cli, "run_confined", lambda *args, **kwargs: (Backend(), Completed()))
+    monkeypatch.setattr(backup_module, "sync_run_tree", changed)
     with pytest.raises(OperatorError) as failure:
-        cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path, _surface(tmp_path))
+        cli._backup(volume, run_id, tmp_path / "mac", _surface(tmp_path))
     assert failure.value.code is ErrorCode.BACKUP_FAILED
     assert failure.value.render().count("\n") >= 2
     assert "source changed" in failure.value.render()
-
-
-def test_backup_worker_failure_without_output_names_its_exit_status(
-    tmp_path: Path, monkeypatch
-) -> None:
-    volume, run_id = _run_tree(tmp_path)
-
-    class Backend:
-        def launcher_failure(self, completed):
-            return None
-
-    class Completed:
-        returncode = 2
-        stdout = ""
-        stderr = ""
-
-    monkeypatch.setattr(cli, "run_confined", lambda *args, **kwargs: (Backend(), Completed()))
-    with pytest.raises(OperatorError) as failure:
-        cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path, _surface(tmp_path))
-
-    assert "exited 2 without a diagnostic" in failure.value.render()
 
 
 def test_backup_invalid_run_id_uses_the_named_backup_refusal(tmp_path: Path) -> None:
     volume, _run_id = _run_tree(tmp_path)
 
     with pytest.raises(OperatorError) as failure:
-        cli._backup_in_custody(volume, "../escape", tmp_path / "mac", tmp_path, _surface(tmp_path))
+        cli._backup(volume, "../escape", tmp_path / "mac", _surface(tmp_path))
 
     assert failure.value.code is ErrorCode.BACKUP_FAILED
     assert "run id is invalid" in failure.value.render()
-
-
-# Each case names the refusal it must produce, since a shared phrase like
-# "backup worker report" would let one surviving check answer for all five.
-@pytest.mark.parametrize(
-    ("report", "expected_detail"),
-    (
-        pytest.param(
-            {"schema": "mac-run-backup.v1", "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
-            "declares schema",
-            id="schema-is-not-this-backup-format",
-        ),
-        pytest.param(
-            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": "2", "reused": 0},
-            "'copied' is not an integer",
-            id="count-is-a-string",
-        ),
-        pytest.param(
-            {
-                "schema": SCHEMA,
-                "snapshot_sha256": "a" * 64,
-                "copied": backup_module.MAX_BACKUP_FILES + 1,
-                "reused": 0,
-            },
-            "'copied' is outside",
-            id="count-is-past-the-file-ceiling",
-        ),
-        pytest.param(
-            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 0, "reused": 0},
-            "successful snapshot of no files",
-            id="claims-success-over-nothing",
-        ),
-        pytest.param(
-            # Well-formed on its face, and still refused: no snapshot with that
-            # digest was published, so the read-back has nothing to verify.
-            {"schema": SCHEMA, "snapshot_sha256": "a" * 64, "copied": 2, "reused": 0},
-            "snapshot that does not exist",
-            id="names-a-snapshot-that-was-never-written",
-        ),
-    ),
-)
-def test_backup_cli_refuses_a_worker_report_that_cannot_prove_success(
-    tmp_path: Path, monkeypatch, report: dict[str, object], expected_detail: str
-) -> None:
-    volume, run_id = _run_tree(tmp_path)
-
-    class Backend:
-        def launcher_failure(self, completed):
-            return None
-
-    class Completed:
-        returncode = 0
-        stdout = json.dumps(report)
-        stderr = ""
-
-    monkeypatch.setattr(cli, "run_confined", lambda *args, **kwargs: (Backend(), Completed()))
-
-    with pytest.raises(OperatorError) as failure:
-        cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path, _surface(tmp_path))
-
-    assert failure.value.code is ErrorCode.BACKUP_FAILED
-    assert expected_detail in failure.value.render()
-
-
-def test_backup_cli_classifies_a_worker_report_json_conversion_failure(
-    tmp_path: Path, monkeypatch
-) -> None:
-    volume, run_id = _run_tree(tmp_path)
-
-    class Backend:
-        def launcher_failure(self, completed):
-            return None
-
-    class Completed:
-        returncode = 0
-        stdout = '{"copied":' + "9" * 5000 + "}"
-        stderr = ""
-
-    monkeypatch.setattr(cli, "run_confined", lambda *args, **kwargs: (Backend(), Completed()))
-    with pytest.raises(OperatorError) as failure:
-        cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path, _surface(tmp_path))
-
-    assert failure.value.code is ErrorCode.BACKUP_FAILED
-    assert "integer string conversion" in failure.value.render()
-
-
-def test_backup_custody_refusal_names_a_worker_and_partial_backup_state(
-    tmp_path: Path, monkeypatch
-) -> None:
-    volume, run_id = _run_tree(tmp_path)
-
-    def refuse(*args, **kwargs):
-        raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail="Landlock unavailable")
-
-    monkeypatch.setattr(cli, "run_confined", refuse)
-    with pytest.raises(OperatorError) as failure:
-        cli._backup_in_custody(volume, run_id, tmp_path / "mac", tmp_path, _surface(tmp_path))
-
-    rendered = failure.value.render()
-    assert failure.value.code is ErrorCode.CONSOLE_CUSTODY_REFUSED
-    assert "custody worker" in rendered
-    assert "backup may have added verified objects" in rendered
 
 
 def test_backup_refuses_a_destination_inside_the_run_tree_without_writing_into_it(
@@ -673,23 +464,6 @@ def test_backup_refuses_paths_that_collapse_on_default_apfs(tmp_path: Path) -> N
     assert not list((tmp_path / "mac" / "snapshots" / "sha256").glob("*.json"))
 
 
-def test_backup_child_refuses_a_source_with_a_different_parent_observed_identity(
-    tmp_path: Path,
-) -> None:
-    volume, run_id = _run_tree(tmp_path)
-    mac = tmp_path / "mac"
-
-    with pytest.raises(BackupRefusal, match="changed filesystem identity"):
-        sync_run_tree(
-            volume,
-            run_id,
-            mac,
-            expected_source_identity=(0, 0),
-        )
-
-    assert not list((mac / "snapshots" / "sha256").glob("*.json"))
-
-
 def test_backup_preserves_a_run_tree_contract_refusal_as_a_named_backup_refusal(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -704,28 +478,6 @@ def test_backup_preserves_a_run_tree_contract_refusal_as_a_named_backup_refusal(
 
     with pytest.raises(BackupRefusal, match="could not be bound.*identity drifted"):
         sync_run_tree(volume, run_id, mac)
-
-    assert not list((mac / "snapshots" / "sha256").glob("*.json"))
-
-
-@pytest.mark.hostile_local
-def test_backup_child_refuses_a_replaced_layout_directory_identity(tmp_path: Path) -> None:
-    volume, run_id = _run_tree(tmp_path)
-    mac = tmp_path / "mac"
-    source, destination = backup_module.resolve_backup_paths(volume, run_id, mac)
-    backup_module.prepare_backup_layout(source, destination)
-    expected = backup_module.destination_identities(destination)
-    object_store = mac / "objects" / "sha256"
-    object_store.rename(mac / "objects" / "sha256-before-swap")
-    object_store.mkdir()
-
-    with pytest.raises(BackupRefusal, match="layout changed filesystem identity"):
-        sync_run_tree(
-            volume,
-            run_id,
-            mac,
-            expected_destination_identities=expected,
-        )
 
     assert not list((mac / "snapshots" / "sha256").glob("*.json"))
 
@@ -1036,36 +788,16 @@ def test_the_exclusion_recognises_the_name_the_store_itself_publishes_through(
 
 
 def test_a_backup_leaves_a_receipt_naming_the_run_root_destination_and_snapshot(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path,
 ) -> None:
-    """`status` could not say a backup had ever happened, or of what, to where.
-
-    The verb left only its snapshot on the destination; the operator's own
-    records carried nothing. The receipt names the run, the run root it was
-    copied from, the destination, and the verified snapshot's digest and counts.
-    """
+    """The receipt names the run, the run root it was copied from, the destination,
+    and the verified snapshot's digest and counts, so `status` can say them."""
 
     volume, run_id = _run_tree(tmp_path)
     mac = tmp_path / "mac"
     surface = _surface(tmp_path)
 
-    class Backend:
-        def launcher_failure(self, completed):
-            return None
-
-    def confined(command, *, writable, cwd, input_text):
-        del command, writable, cwd, input_text
-        report = sync_run_tree(volume, run_id, mac)
-
-        class Completed:
-            returncode = 0
-            stdout = json.dumps(report.to_record())
-            stderr = ""
-
-        return Backend(), Completed()
-
-    monkeypatch.setattr(cli, "run_confined", confined)
-    cli._backup_in_custody(volume, run_id, mac, tmp_path, surface)
+    cli._backup(volume, run_id, mac, surface)
 
     receipt = surface._descriptor_receipt("backup")
     assert receipt is not None
@@ -1088,7 +820,7 @@ def test_a_refused_backup_is_recorded_with_its_reason(tmp_path: Path) -> None:
     surface = _surface(tmp_path)
 
     with pytest.raises(OperatorError) as failure:
-        cli._backup_in_custody(volume, "../escape", tmp_path / "mac", tmp_path, surface)
+        cli._backup(volume, "../escape", tmp_path / "mac", surface)
 
     assert failure.value.code is ErrorCode.BACKUP_FAILED
     receipt = surface._descriptor_receipt("backup")

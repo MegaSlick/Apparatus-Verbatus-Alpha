@@ -38,6 +38,7 @@ from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, validate_run_id
 from common.contracts.outcomes import SYSTEMIC_REASON_PREFIX
 from common.contracts.stages import ARMARIUM, WRITING_DIRECTORIES
+from common.credentials import looks_like_credential_env
 from common.durability import is_temporary_name
 from common.review_policy import systemic_notice
 from common.runtree.store import (
@@ -114,7 +115,6 @@ from operations.submit import submit as submission_door
 
 from . import notify_bridge
 from ._run_tree_paths import is_publication_temporary
-from .custody import credential_free_environment
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
 from .notify_bridge import Notifier
@@ -3477,6 +3477,13 @@ def _pod_from_record(value: dict[str, Any]) -> PodRecord:
         raise OperatorError(
             ErrorCode.CLOSE_NOTHING, detail="the saved pod record is invalid"
         ) from error
+
+
+def credential_free_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+    """Copy a process environment with every credential-shaped name removed."""
+
+    values = dict(os.environ if source is None else source)
+    return {key: value for key, value in values.items() if not looks_like_credential_env(key)}
 
 
 def _stage_environment() -> dict[str, str]:

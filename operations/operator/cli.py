@@ -32,16 +32,15 @@ from operations.pod.models import (
 )
 from operations.pod.transfer import normalize_transfer_prefix
 
-from . import console, notify_bridge, review_text
+from . import notify_bridge, review_text
 from .advance import (
     UnsealedBoundaryRefusal,
     boundary_summary,
     held_boundaries_for_mode,
     trigger_advance,
 )
-from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
-from .ingest import ingest_in_custody
+from .ingest import ingest
 from .records import DescriptorStore, ReceiptStore
 from .review import ReadOnlyRun
 from .spend import SpendSurface
@@ -873,7 +872,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     volume=volume,
                 )
         elif args.verb == "ingest":
-            ingest_in_custody(
+            ingest(
                 source=args.source,
                 output_dir=args.output_dir,
                 policy_path=args.policy,
@@ -931,16 +930,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             for line in SpendSurface(surface.receipts, surface.now()).show(policy):
                 _print(line)
         elif args.verb == "review":
-            _review_in_custody(
-                args.run_root, args.run_id, workspace, raw=args.json, review_page=args.review_page
-            )
+            _review(args.run_root, args.run_id, raw=args.json, review_page=args.review_page)
         elif args.verb == "advance":
             _advance_with_confirmation(
                 args.run_root,
                 args.run_id,
                 args.stage,
                 reason=args.reason,
-                workspace=workspace,
                 surface=surface,
                 mode=args.mode,
                 from_stage=args.from_stage,
@@ -959,7 +955,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 note=args.note,
             )
         elif args.verb == "backup":
-            _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace, surface)
+            _backup(args.run_root, args.run_id, args.mac_directory, surface)
         elif args.verb == "triage":
             _triage_queue(args, workspace)
         elif args.verb == "clear-leftovers":
@@ -1103,19 +1099,8 @@ def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
         raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
 
 
-def _review_in_custody(
-    run_root: Path, run_id: str, workspace: Path, *, raw: bool = False, review_page: int = 1
-) -> None:
-    """Exec the renderer with no credential and a kernel-enforced no-write policy.
-
-    The run tree is opened once, read-only, by the parent, and the child
-    receives only the resulting immutable JSON value stream, never a
-    run-tree path or object; a compromised child can deceive its viewer
-    about those bytes but cannot reopen the evidence or reach any
-    pipeline/provider module. The parent reads the child's JSON out in plain
-    language (`review_text.render`), or prints it as-is when `raw` is asked
-    for.
-    """
+def _review(run_root: Path, run_id: str, *, raw: bool = False, review_page: int = 1) -> None:
+    """Read the run tree once, read-only, and show it in plain language or as raw JSON."""
 
     from common.runtree.store import RunTree
 
@@ -1123,131 +1108,36 @@ def _review_in_custody(
     projection = dataclasses.asdict(
         ReadOnlyRun(run_root, run_id).projection(review_page=review_page)
     )
-    command = python_module_command("operations.operator.console")
-    backend, completed = run_confined(
-        command,
-        writable=None,
-        cwd=workspace,
-        input_text=json.dumps(projection),
-    )
-    if completed.returncode != 0:
-        launcher = backend.launcher_failure(completed)
-        if launcher is not None:
-            # A platform-enforcement refusal: the launcher never exec'd the
-            # console, so this is not a claim the run tree is unreadable.
-            raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
-        if completed.returncode == console.PROJECTION_UNREADABLE_EXIT:
-            # The console never opened the run tree here either.
-            raise OperatorError(
-                ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
-                detail=completed.stderr or completed.stdout,
-            )
-        raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail=completed.stdout or completed.stderr
-        )
     if raw:
-        _print(completed.stdout.rstrip())
+        _print(json.dumps(projection, sort_keys=True))
         return
-    try:
-        returned = json.loads(completed.stdout)
-    except ValueError as error:
-        # A fault of this tool's pipe, not a claim about the run tree.
-        raise OperatorError(
-            ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
-            detail=(
-                f"the console returned text that is not the projection JSON "
-                f"({type(error).__name__}); the run tree itself is not in question"
-            ),
-        ) from error
-    if not isinstance(returned, dict):
-        raise OperatorError(
-            ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
-            detail="the console returned JSON that is not a projection object",
-        )
-    try:
-        lines = review_text.render(returned)
-    except review_text.ProjectionShapeError as error:
-        raise OperatorError(
-            ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
-            detail=f"the console returned a projection this tool cannot read out: {error}",
-        ) from error
-    for line in lines:
+    for line in review_text.render(projection):
         _print(line)
 
 
-def _backup_in_custody(
-    run_root: Path,
-    run_id: str,
-    mac_directory: Path,
-    _workspace: Path,
-    surface: OperatorSurface,
-) -> None:
-    """Copy evidence only in the no-network, credential-free custody child.
+def _backup(run_root: Path, run_id: str, mac_directory: Path, surface: OperatorSurface) -> None:
+    """Copy one run tree into the Mac directory, read the snapshot back, and record the attempt.
 
     ``surface`` records the operator's own receipt of the attempt: which run
     root was copied where, with what snapshot, or why it was refused; without
     it, `status` could not say a backup had ever happened.
     """
 
-    from .backup import (
-        BackupRefusal,
-        BackupReport,
-        destination_identities,
-        prepare_backup_layout,
-        required_identity,
-        resolve_backup_paths,
-        verify_backup_snapshot,
-    )
+    from .backup import BackupRefusal, sync_run_tree, verify_backup_snapshot
 
     facts = {
         "run_id": run_id,
         "run_root": str(Path(run_root).absolute()),
         "mac_directory": str(Path(mac_directory).absolute()),
     }
-    # The parent rejects overlap before creating the layout, since custody
-    # grants the child publication rights but withholds directory creation:
-    # unchecked, setup could write `objects/`/`snapshots/` inside the source.
     try:
-        source, destination = resolve_backup_paths(run_root, run_id, mac_directory)
-        prepare_backup_layout(source, destination)
-        source_identity = required_identity(source, what="source run tree")
-        destination_identity = destination_identities(destination)
-    except BackupRefusal as refusal:
+        report = sync_run_tree(Path(run_root).resolve(), run_id, mac_directory)
+    except (BackupRefusal, OSError) as refusal:
         surface.record_backup(state="refused", facts=facts, detail=str(refusal))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
-    # `--workspace` selects project data for other verbs; it is not authority
-    # to replace this custody worker's code, so its root is pinned here
-    # rather than taken from a caller-nominated path.
-    worker_root = Path(__file__).resolve().parents[2]
-    command = python_module_command("operations.operator.backup_worker")
-    request = json.dumps(
-        {
-            "run_root": str(run_root.resolve()),
-            "run_id": run_id,
-            "mac_directory": str(destination),
-            "source_identity": list(source_identity),
-            "destination_identities": [list(identity) for identity in destination_identity],
-        }
-    )
-    backend, completed = run_confined(
-        command, writable=destination, cwd=worker_root, input_text=request
-    )
-    if completed.returncode != 0:
-        launcher = backend.launcher_failure(completed)
-        detail = launcher or completed.stderr.strip() or completed.stdout.strip()
-        if not detail:
-            detail = f"backup worker exited {completed.returncode} without a diagnostic"
-        surface.record_backup(state="worker-failed", facts=facts, detail=detail)
-        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=detail)
     try:
-        report = BackupReport.from_record(json.loads(completed.stdout))
-        verify_backup_snapshot(
-            destination,
-            run_id,
-            report,
-            expected_destination_identities=destination_identity,
-        )
-    except (BackupRefusal, ValueError, RecursionError) as error:
+        verify_backup_snapshot(Path(mac_directory).absolute().resolve(), run_id, report)
+    except (BackupRefusal, OSError) as error:
         surface.record_backup(state="unverified", facts=facts, detail=str(error))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
     receipt = surface.record_backup(state="complete", facts=facts, report=report.to_record())
@@ -1346,13 +1236,12 @@ def _advance_with_confirmation(
     stage: str,
     *,
     reason: str,
-    workspace: Path,
     surface: OperatorSurface | None = None,
     mode: str = "manual",
     from_stage: str | None = None,
     to_stage: str | None = None,
 ) -> None:
-    """Bind a human confirmation to one observed digest, then launch the worker."""
+    """Bind a human confirmation to one observed digest, then record the advance."""
 
     from common.contracts.errors import ApprovalRefusal
     from common.runtree.store import RunTree
@@ -1442,7 +1331,6 @@ def _advance_with_confirmation(
         run_id,
         stage,
         reason=reason,
-        workspace=workspace,
         expected_digest=digest,
     )
     _print(f"Advance record: {reference.relative_path} ({reference.sha256})")

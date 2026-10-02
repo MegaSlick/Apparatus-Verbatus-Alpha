@@ -70,7 +70,7 @@ from conftest import (
 )
 from conftest import file_digest_snapshot as snapshot
 from operations.operator import surface, volume_s3
-from operations.operator.custody import credential_free_environment
+from operations.operator.surface import credential_free_environment
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]

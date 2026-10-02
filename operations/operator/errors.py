@@ -58,9 +58,7 @@ class ErrorCode(StrEnum):
     CLOSE_REFUSED = "close-refused"
     STATUS_EMPTY = "status-empty"
     STATUS_UNREADABLE = "status-unreadable"
-    CONSOLE_CUSTODY_REFUSED = "console-custody-refused"
     CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
-    CONSOLE_PROJECTION_UNREADABLE = "console-projection-unreadable"
     ADVANCE_REFUSED = "advance-refused"
     DECISION_REFUSED = "decision-refused"
     BACKUP_FAILED = "backup-failed"
@@ -70,7 +68,6 @@ class ErrorCode(StrEnum):
     CANARY_VERDICT_SAVE_FAILED = "canary-verdict-save-failed"
     CANARY_VERDICT_CONFLICT = "canary-verdict-conflict"
     INGEST_REFUSED = "ingest-refused"
-    INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
     INGEST_UNRESOLVED = "ingest-unresolved"
     TRIAGE_REFUSED = "triage-refused"
     NOT_A_CHECKOUT = "not-a-checkout"
@@ -317,25 +314,15 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Status did not guess what the record meant or contact a provider.",
         "Preserve that record for review and repair or replace it before continuing; this is safe.",
     ),
-    ErrorCode.CONSOLE_CUSTODY_REFUSED: ErrorCopy(
-        "The operator console or a custody worker could not complete inside its OS boundary.",
-        "No provider action was reached. An advance may have appended a record, and a backup may have added verified objects, even though no checked result returned.",
-        "Follow the saved detail below. Inspect advance_records before retrying an advance; for a backup, keep its objects and retry after fixing the named boundary; otherwise fix Landlock or Seatbelt before reopening the console.",
-    ),
     ErrorCode.CONSOLE_TREE_UNREADABLE: ErrorCopy(
         "The operator console could not read the selected run tree safely.",
         "It did not guess at missing evidence or change the run tree.",
         "Preserve the run tree unchanged and investigate the named evidence problem. Resume only from retained valid evidence, or create a new run; never edit the damaged evidence in place.",
     ),
-    ErrorCode.CONSOLE_PROJECTION_UNREADABLE: ErrorCopy(
-        "The operator console could not read the view this command handed it.",
-        "The run tree was never opened by that process, so nothing about the evidence is in question and nothing was changed.",
-        "Run the same `verbatus review` again. If it repeats, keep the saved detail below and report it; do not alter the run tree, which is not what failed.",
-    ),
     ErrorCode.ADVANCE_REFUSED: ErrorCopy(
         "The requested stage boundary could not be advanced.",
-        "No later stage was started. A worker failure after append may have left an immutable advance record even though no checked result returned.",
-        "Open review and inspect advance_records before retrying, then address the named seal or worker problem; never assume a retry is record-free.",
+        "No later stage was started. A failure after the record was written leaves that immutable advance record in the run tree.",
+        "Open review and inspect advance_records before retrying, then address the named seal problem; never assume a retry is record-free.",
     ),
     ErrorCode.DECISION_REFUSED: ErrorCopy(
         "The review decision was not recorded.",
@@ -345,7 +332,7 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ErrorCode.BACKUP_FAILED: ErrorCopy(
         "The Mac backup did not finish with a verified snapshot.",
         "Existing content-addressed backup objects remain intact, but this run is not called backed up.",
-        "Keep the saved detail, repair the named source, backup-directory, or worker-report problem, then run `verbatus backup` again; it safely reuses verified files.",
+        "Keep the saved detail, repair the named source or backup-directory problem, then run `verbatus backup` again; it safely reuses verified files.",
     ),
     ErrorCode.CLEAR_LEFTOVERS_STOPPED: ErrorCopy(
         "Clearing leftovers stopped part-way: part of the named folder could not be read or changed.",
@@ -376,11 +363,6 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The submission could not be prepared for the Door.",
         "No folder was called ready to submit, and no pod was started or billed.",
         "Read the refusal reason below, correct the named source, output folder, policy, instrument setting, or confirmation, then run `verbatus ingest` again; this is safe.",
-    ),
-    ErrorCode.INGEST_PREVIEW_UNRESOLVED: ErrorCopy(
-        "Ingest could not show you the plan it was going to write.",
-        "Nothing was written: the preview runs with no write rights at all, so the output folder you chose is untouched.",
-        "Keep the saved detail and run `verbatus ingest` again with the same empty output folder; this is safe.",
     ),
     ErrorCode.INGEST_UNRESOLVED: ErrorCopy(
         "Ingest did not return a checked ready-folder record.",

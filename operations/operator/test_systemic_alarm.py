@@ -59,9 +59,7 @@ def test_a_systemic_hold_is_notified_as_one_through_the_notify_script(tmp_path, 
     assert "Phone notification: suppressed (test sink)." in messages
 
 
-def test_an_advance_past_a_systemic_hold_still_notifies_it_at_run_and_export(
-    tmp_path, monkeypatch
-):
+def test_an_advance_past_a_systemic_hold_still_notifies_it_at_run_and_export(tmp_path, monkeypatch):
     """A person's advance passes the stop; the alarm still leads the run's and export's notices."""
     from conftest import advance_held_recensor
 

@@ -16,7 +16,6 @@ import json
 import shutil
 import subprocess
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -704,24 +703,9 @@ def test_a_shortened_line_says_it_was_shortened_and_how_long_the_text_is():
 
 
 def test_the_review_verb_prints_plain_language_by_default_and_json_on_request(
-    witnessed_run: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    witnessed_run: Path, capsys: pytest.CaptureFixture[str]
 ):
-    """The child still returns JSON only; the parent is what a person reads."""
-    projected = dataclasses.asdict(_projection(witnessed_run))
-    child_stdout = json.dumps(projected, sort_keys=True)
-
-    class Backend:
-        def launcher_failure(self, completed):
-            return None
-
-    def confined(command, *, writable, cwd, input_text):
-        assert writable is None
-        assert json.loads(input_text)["export"]["present"] is False
-        return Backend(), types.SimpleNamespace(returncode=0, stdout=child_stdout, stderr="")
-
-    monkeypatch.setattr(cli, "run_confined", confined)
-
-    cli._review_in_custody(witnessed_run, RUN_ID, ROOT)
+    cli._review(witnessed_run, RUN_ID)
     plain = capsys.readouterr().out
     assert "What you can do next" in plain
     assert f"`verbatus run --run-id {RUN_ID}`" in plain
@@ -729,17 +713,12 @@ def test_the_review_verb_prints_plain_language_by_default_and_json_on_request(
     assert "the Perlector has not read the pages" in plain
     assert not plain.lstrip().startswith("{")
 
-    cli._review_in_custody(witnessed_run, RUN_ID, ROOT, raw=True)
+    cli._review(witnessed_run, RUN_ID, raw=True)
     raw = capsys.readouterr().out
+    assert json.loads(raw) == json.loads(
+        json.dumps(dataclasses.asdict(_projection(witnessed_run)), sort_keys=True)
+    )
     assert json.loads(raw)["export"]["present"] is False
-
-    def broken(command, *, writable, cwd, input_text):
-        return Backend(), types.SimpleNamespace(returncode=0, stdout="not json", stderr="")
-
-    monkeypatch.setattr(cli, "run_confined", broken)
-    with pytest.raises(OperatorError) as refused:
-        cli._review_in_custody(witnessed_run, RUN_ID, ROOT)
-    assert refused.value.code is ErrorCode.CONSOLE_PROJECTION_UNREADABLE
 
 
 def test_the_seven_pinned_projection_fields_still_construct_by_position_and_keyword():
@@ -759,9 +738,7 @@ def test_the_seven_pinned_projection_fields_still_construct_by_position_and_keyw
     assert by_position.holds == () and by_position.next_action == {}
 
 
-def test_a_projection_list_entry_that_is_not_an_object_is_refused_by_field_and_index(
-    witnessed_run: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_a_projection_list_entry_that_is_not_an_object_is_refused_by_field_and_index():
     """Refused, never skipped: a row the renderer passed over is a row nobody sees."""
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render({"run_id": "r", "progress": [{"stage": "door"}, "not a row"]})
@@ -769,21 +746,6 @@ def test_a_projection_list_entry_that_is_not_an_object_is_refused_by_field_and_i
     with pytest.raises(review_text.ProjectionShapeError) as nested:
         review_text.render({"run_id": "r", "acts": [{"act_id": "a", "act_key": "a", "crops": [7]}]})
     assert nested.value.field == "acts[].crops"
-
-    class Backend:
-        def launcher_failure(self, completed):
-            return None
-
-    def confined(command, *, writable, cwd, input_text):
-        return Backend(), types.SimpleNamespace(
-            returncode=0, stdout=json.dumps({"run_id": "r", "holds": [1]}), stderr=""
-        )
-
-    monkeypatch.setattr(cli, "run_confined", confined)
-    with pytest.raises(OperatorError) as error:
-        cli._review_in_custody(witnessed_run, RUN_ID, ROOT)
-    assert error.value.code is ErrorCode.CONSOLE_PROJECTION_UNREADABLE
-    assert "'holds' entry 0" in (error.value.detail or "")
 
 
 @pytest.mark.parametrize(

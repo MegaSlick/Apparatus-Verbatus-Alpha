@@ -2601,9 +2601,8 @@ def test_pipeline_children_do_not_receive_any_provider_credential(
 ) -> None:
     """Not only the transfer's own two S3 keys -- every provider
     credential a decoder RCE in a stage reached by a submitted page could spend
-    (pod creation money included) must stay off this environment, the same as
-    the confined console/backup/advance/ScanTailor children already get from
-    `credential_free_environment`.
+    (pod creation money included) must stay off this environment
+    (`credential_free_environment`).
     """
 
     observed_environment: dict[str, str] = {}

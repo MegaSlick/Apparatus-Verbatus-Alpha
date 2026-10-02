@@ -1,19 +1,13 @@
-"""The one decision the operator console may append: advance a sealed boundary.
+"""Advance a sealed boundary: the one approval besides a review decision the operator writes.
 
-This module is intentionally separate from the console renderer.  The renderer
-never imports the approval builder or ``RunTree.write_approval_record``; only
-this custody-side module does.  Keeping that import boundary executable makes a
-compromised renderer able to misrepresent evidence, but unable to mint an
-approval for an unrelated action.
+`trigger_advance` verifies the stage's stored seal against the run tree, checks
+it is the one the operator confirmed, and appends an `approval-record.v1`
+binding that seal's digest (`record_advance`), then reads the record back and
+verifies it still names this boundary (`verify_advance`).
 """
 
 from __future__ import annotations
 
-import json
-import os
-import stat
-import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,25 +28,10 @@ from common.stage import (
     verify_stage_seal,
 )
 
-# The one copy of the fstat identity this package checks custody against lives
-# in backup.py, which is where the custody boundary it guards is built.
-from .backup import _descriptor_identity
-from .custody import (
-    python_module_command,
-    run_confined,
-)
-from .errors import ErrorCode, OperatorError, strip_control_bytes
+from .errors import ErrorCode, OperatorError
 
 MAX_ADVANCE_REASON_CHARACTERS = 4_000
-MAX_ADVANCE_REQUEST_CHARACTERS = 65_536
 UTC = timezone.utc
-
-# The worker exits with this when the advance record is on disk but its report
-# could not be written back to the parent. It is neither success nor a refused
-# advance, and the two must not be told to the operator as the same thing.
-WORKER_REPORT_FAILED_EXIT = 3
-
-_DIRECTORY_OPEN_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
 
 
 class UnsealedBoundaryRefusal(ApprovalRefusal):
@@ -65,95 +44,6 @@ def advance_subject(stage: str) -> str:
     if stage not in STAGES:
         raise ApprovalRefusal(f"advance names unknown stage {stage!r}; no boundary was advanced")
     return f"{ADVANCE_SUBJECT_PREFIX}{stage}"
-
-
-def directory_identity(path: Path, label: str) -> tuple[int, int]:
-    """Name one real directory by device and inode without following its leaf."""
-
-    try:
-        observed = path.stat(follow_symlinks=False)
-    except OSError as error:
-        raise ApprovalRefusal(f"{label} could not be inspected ({error})") from error
-    if not stat.S_ISDIR(observed.st_mode):
-        raise ApprovalRefusal(f"{label} is not a real directory; symlinks are refused")
-    return observed.st_dev, observed.st_ino
-
-
-def require_directory_identity(path: Path, expected: tuple[int, int], label: str) -> None:
-    """Refuse when a checked directory was replaced before or during use."""
-
-    if directory_identity(path, label) != expected:
-        raise ApprovalRefusal(
-            f"{label} changed device or inode after it was reviewed; "
-            "an advance record may exist, so inspect review before retrying"
-        )
-
-
-def receipt_directory_identity(
-    run_root: Path, run_identity: tuple[int, int], *, create: bool
-) -> tuple[int, int]:
-    """Open the receipt path beneath a pinned root, never through a symlink.
-
-    Directory descriptors make creation relative to the run object the parent
-    already inspected, rather than relative to a pathname an attacker can swap.
-    The case-fold check applies the default-APFS rule on every filesystem so a
-    tree prepared on Linux cannot acquire both ``receipts`` and ``Receipts``
-    and become ambiguous only after it moves to a Mac.
-    """
-
-    if not getattr(os, "O_DIRECTORY", 0) or not getattr(os, "O_NOFOLLOW", 0):
-        raise ApprovalRefusal(
-            "this platform cannot open the advance receipt directory with no-follow semantics"
-        )
-    descriptors: list[int] = []
-    try:
-        root_descriptor = os.open(run_root, _DIRECTORY_OPEN_FLAGS)
-        descriptors.append(root_descriptor)
-        if _descriptor_identity(root_descriptor) != run_identity:
-            raise ApprovalRefusal(
-                "the reviewed run tree changed device or inode before its receipt path was opened"
-            )
-        parent_descriptor = _open_child_directory(
-            root_descriptor, "receipts", create=create, label="run-tree receipts directory"
-        )
-        descriptors.append(parent_descriptor)
-        receipt_descriptor = _open_child_directory(
-            parent_descriptor,
-            "sha256",
-            create=create,
-            label="advance receipt directory",
-        )
-        descriptors.append(receipt_descriptor)
-        return _descriptor_identity(receipt_descriptor)
-    except OSError as error:
-        raise ApprovalRefusal(
-            f"the advance receipt directory could not be opened ({error})"
-        ) from error
-    finally:
-        for descriptor in reversed(descriptors):
-            os.close(descriptor)
-
-
-def _open_child_directory(parent: int, name: str, *, create: bool, label: str) -> int:
-    _refuse_case_variant(parent, name, label)
-    if create:
-        try:
-            os.mkdir(name, dir_fd=parent)
-        except FileExistsError:
-            pass
-        _refuse_case_variant(parent, name, label)
-    try:
-        return os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent)
-    except FileNotFoundError:
-        raise ApprovalRefusal(f"the {label} does not exist") from None
-
-
-def _refuse_case_variant(parent: int, name: str, label: str) -> None:
-    variants = sorted(entry for entry in os.listdir(parent) if entry.casefold() == name.casefold())
-    if any(entry != name for entry in variants):
-        raise ApprovalRefusal(
-            f"the {label} collides by case with {variants}; the path is ambiguous on default APFS"
-        )
 
 
 def validate_advance_reason(reason: Any) -> str:
@@ -297,25 +187,13 @@ def record_advance(
     timestamp: str | None = None,
     expected_digest: str | None = None,
 ) -> ApprovalRecordReference:
-    """Append the one allowed decision record after proving its boundary exists.
+    """Append the advance record binding the stored seal the operator reviewed.
 
-    Boundary verification belongs to the launching parent and is not
-    repeated here: `trigger_advance` calls `sealed_boundary` unconfined,
-    read-only and before the receipt directory exists, so an unverifiable
-    seal refuses before any advance record exists. This function reads the
-    same stored seal and binds the digest the parent already verified,
-    since it cannot re-verify inside the confined worker: the decoders that
-    verification needs pull in `ctypes`, which the macOS Seatbelt profile
-    aborts a confined child for importing, and the boundary does not widen
-    to admit a checker.
-
-    The read-then-write window is closed by detection, not locking: a seal
-    rewritten between the read above and the write below leaves a record
-    binding a digest that is already stale, and no re-read closes that
-    without a cross-process lock this tree does not have. What the binding
-    buys instead is that the staleness stays permanent and visible —
-    `verify_advance` refuses such a record, and `review._still_binds` names
-    it stale every time it is read.
+    Verifying the seal against the run tree is `trigger_advance`'s, before
+    this is called; here the stored seal's digest must still be the one the
+    operator confirmed. A seal rewritten between that read and the write
+    leaves a record binding a digest that is already stale: `verify_advance`
+    refuses such a record, and `review` names it stale every time it is read.
     """
 
     reason = validate_advance_reason(reason)
@@ -370,46 +248,19 @@ def trigger_advance(
     stage: str,
     *,
     reason: str,
-    workspace: str | Path,
     expected_digest: str,
 ) -> ApprovalRecordReference:
-    """Run the narrow decision worker outside the renderer process.
-
-    It has no provider credential and its confinement admits mutations only
-    below this run's receipt directory.  The worker cannot publish an artifact,
-    revise an existing record, or reach a paid adapter; it executes precisely
-    the durable advance-record operation.
+    """Verify the boundary, record the advance, and verify the record names it.
 
     The CLI reaches this only after a typed confirmation naming the exact seal
-    digest observed before launch. The worker rechecks that digest, so a seal
-    changed between display and execution is refused rather than silently
-    advancing a boundary the operator did not review.
-
-    ``expected_digest`` is required, with no default, because the alternative
-    is a caller that binds an advance to whatever boundary happens to be
-    current — the exact substitution the typed confirmation exists to prevent.
-    A default would make that the quiet path and the reviewed digest the
-    opt-in. `record_advance` refuses a missing digest too: the same fact
-    enforced on both sides of the worker boundary.
-
-    The two sides are asymmetric about verification, deliberately: seal
-    verification re-derives the local decode environment, which the
-    Seatbelt profile denies inside the worker, so it happens here instead,
-    before the worker is launched and before its writable directory exists.
+    digest observed before it. ``expected_digest`` is required, with no
+    default: a caller that bound an advance to whatever boundary happens to be
+    current is the exact substitution the typed confirmation exists to
+    prevent, so a seal changed between display and execution is refused.
     """
 
-    # Resolved to absolute before it is split between the two processes: the
-    # parent builds the confinement allowance from its own resolution of the
-    # run root, and a relative path here would let the child resolve it
-    # against `workspace` into a different tree than the one guarded.
-    root = Path(run_root).resolve()
-    tree = RunTree(root, run_id)
-    # The boundary's verification, done here because the confined worker
-    # cannot perform it: `sealed_boundary` runs unconfined, read-only, and
-    # above the `receipt_dir.mkdir` below, so an unverifiable seal refuses
-    # before any advance record exists or the worker's writable path exists.
+    tree = RunTree(Path(run_root).resolve(), run_id)
     try:
-        run_identity = directory_identity(tree.root, "the reviewed run tree")
         _seal, current_digest = sealed_boundary(tree, stage)
     except (ApprovalRefusal, OSError) as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
@@ -432,133 +283,18 @@ def trigger_advance(
             ),
         )
     try:
-        reason = validate_advance_reason(reason)
-        require_directory_identity(tree.root, run_identity, "the reviewed run tree")
-        receipt_dir = tree.root / "receipts" / "sha256"
-        receipt_identity = receipt_directory_identity(tree.root, run_identity, create=True)
-        require_directory_identity(tree.root, run_identity, "the reviewed run tree")
-    except (ApprovalRefusal, OSError) as error:
+        reference = record_advance(tree, stage, reason=reason, expected_digest=expected_digest)
+    except (ContractError, OSError) as error:
         raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=str(error)) from error
-    # The run identity travels in argv, written by this trusted parent and
-    # naming which tree may be written; the decision travels on stdin, the
-    # channel a requester may fill, naming only which sealed boundary inside
-    # that tree. A request that could also name the tree could redirect the
-    # one permitted write at a run nobody granted. `validate_run_id` has
-    # already refused anything but `[a-z0-9._-]`, and `root` is absolute, so
-    # neither value can be read by the child's parser as an option.
-    request = json.dumps({"stage": stage, "reason": reason, "expected_digest": expected_digest})
-    if len(request) > MAX_ADVANCE_REQUEST_CHARACTERS:
-        raise OperatorError(
-            ErrorCode.ADVANCE_REFUSED,
-            detail="the bounded advance request could not be represented safely",
-        )
-    command = python_module_command(
-        "operations.operator.advance_worker",
-        "--run-root",
-        str(root),
-        "--run-id",
-        run_id,
-        "--run-device",
-        str(run_identity[0]),
-        "--run-inode",
-        str(run_identity[1]),
-        "--receipt-device",
-        str(receipt_identity[0]),
-        "--receipt-inode",
-        str(receipt_identity[1]),
-    )
-    backend, completed = run_confined(
-        command,
-        writable=receipt_dir,
-        cwd=Path(workspace),
-        input_text=request,
-    )
-    if completed.returncode != 0:
-        launcher = backend.launcher_failure(completed)
-        if launcher is not None:
-            # The worker never executed: no boundary was established for it to
-            # write inside. This is a platform-enforcement refusal, not a
-            # verdict on the advance request the worker never saw.
-            raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
-        if completed.returncode == WORKER_REPORT_FAILED_EXIT:
-            raise OperatorError(
-                ErrorCode.ADVANCE_REFUSED,
-                detail=(
-                    "the advance record was written and the worker could not report it, so no "
-                    "reference could be checked; read the advance records in review rather "
-                    "than retrying: " + (completed.stderr.strip() or "no diagnostic")
-                ),
-            )
-        raise OperatorError(ErrorCode.ADVANCE_REFUSED, detail=completed.stdout or completed.stderr)
     try:
-        require_directory_identity(tree.root, run_identity, "the reviewed run tree")
-        if receipt_directory_identity(tree.root, run_identity, create=False) != receipt_identity:
-            raise ApprovalRefusal(
-                "the advance receipt directory changed device or inode after worker use"
-            )
-        decoded = json.loads(completed.stdout)
-        reference = ApprovalRecordReference(decoded["relative_path"], decoded["sha256"])
-        record = tree.read_approval_record(reference)
-        if (
-            record["action"] != ADVANCE_ACTION
-            or record["subject_ids"] != [advance_subject(stage)]
-            or record["target_version_hash"] != expected_digest
-            or record["reason"] != reason
-        ):
-            raise ApprovalRefusal("the advance worker returned a different decision record")
-        try:
-            verify_advance(tree, stage, reference)
-        except ApprovalRefusal as error:
-            raise OperatorError(
-                ErrorCode.ADVANCE_REFUSED,
-                detail=(
-                    f"the advance worker wrote checked decision record {reference.relative_path}, "
-                    "but the stage seal changed before the result was verified; the immutable "
-                    "record remains visible as stale, so inspect advance_records before retrying"
-                ),
-            ) from error
-    except (ApprovalRefusal, ContractError, KeyError, OSError, TypeError, ValueError) as error:
+        verify_advance(tree, stage, reference)
+    except (ContractError, OSError) as error:
         raise OperatorError(
             ErrorCode.ADVANCE_REFUSED,
             detail=(
-                "the advance worker returned no checked decision reference; it may have "
-                "written an advance record, so inspect the review surface before retrying: "
-                f"{error}" + _worker_stderr_clause(completed)
+                f"advance record {reference.relative_path} was written, but the stage seal "
+                f"changed before it was verified ({error}); the record stays visible as "
+                "stale, so read the run's review before retrying"
             ),
         ) from error
-    # Read after the reference is checked, deliberately: deciding on stderr
-    # first would make any byte on that pipe a refusal, and an ordinary
-    # `DeprecationWarning` prints there by default under `runpy.run_module`,
-    # so a completed, verifiable advance could be reported as refused with
-    # no fault anywhere.
-    if completed.stderr.strip():
-        # `strip_control_bytes`, not `sanitize_detail`, which truncates and
-        # replaces a traceback with a placeholder; a worker traceback is
-        # exactly what this note exists to carry.
-        try:
-            print(
-                "Note: the advance record was written and verified, and the advance worker also "
-                f"wrote to its diagnostic channel: {strip_control_bytes(completed.stderr).strip()}",
-                file=sys.stderr,
-            )
-        except (OSError, ValueError):
-            # The record is already written and verified. Letting a
-            # `BrokenPipeError` or closed-stream `ValueError` escape here
-            # would report the advance as failed and invite a retry of a
-            # boundary that cannot be retracted; the reference this returns
-            # is what the caller prints instead.
-            pass
     return reference
-
-
-def _worker_stderr_clause(completed: subprocess.CompletedProcess) -> str:
-    """Carry the worker's own diagnostic into a refusal that was decided elsewhere.
-
-    Raw, like every other raise site in this module: a detail is persisted
-    whole and shortened only by `render` on its way to a person, so
-    sanitizing it here would discard the one copy of the diagnostic that
-    exists anywhere.
-    """
-
-    text = completed.stderr.strip()
-    return f" (the worker also wrote: {text})" if text else ""

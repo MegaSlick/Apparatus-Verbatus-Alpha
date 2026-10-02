@@ -36,7 +36,7 @@ any time to check on things and one that tidies up.
 | `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. A real chair selection is the trio `--models-config config/models-real.toml`, `--serving-recipes-config config/serving_recipes_real.toml`, and `--witness-context-config config/witness_context-real.toml`; all three are sealed into the run and a partial trio is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
 | `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. You have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
-| `review` | Opens one run tree read-only, before or after export, and says which stages ran, what each act's latest reading and review say, which acts are held and why, the page and crop images behind them, and the one supported next action. `--json` prints the whole projection instead. | No. It holds no writer and no provider credential, and the operating system refuses it every write. |
+| `review` | Opens one run tree read-only, before or after export, and says which stages ran, what each act's latest reading and review say, which acts are held and why, the page and crop images behind them, and the one supported next action. `--json` prints the whole projection instead. | No. It only reads the run tree. |
 | `decide` | Appends the project lead's confirmed review decision about one held unit or page of a run: release it to export, correct its text, exclude it, hold it with a finding, or ask for it to be read again. | No. It shows the review it binds to and makes you type a line back naming the decision, the subject, the run and that review's digest. The Recensor applies it when the run resumes. |
 | `advance` | Appends the project lead's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record is permanent and never retracted. |
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded publication temporaries in the snapshot. |
@@ -71,8 +71,7 @@ candidate evidence, triage documents and a final `ingest-ready.json`.
 - **The confirmation file is your act.** Verbatus never makes one and never promotes an
   instrument verdict on its own; it repeats the confirmation check's refusal word for
   word. A blank confirmation path is valid: no cluster is written.
-- **The write is pinned to the preview.** Preview and write are two separate confined
-  launches. If any source file, the confirmation, the instrument settings, the policy or
+- **The write is pinned to the preview.** The write reads everything again. If any source file, the confirmation, the instrument settings, the policy or
   the output folder changes in between, the write refuses rather than commit something
   other than what you approved.
 - **The output folder goes beside the submitted folder, never inside it.** Anything
@@ -214,9 +213,6 @@ Two limits:
 - **Long text is cut in the plain view** to 300 characters, and the line says
   `(first 300 characters as shown, of an N-character value)`. Use `--json` for the whole
   value.
-- **It handles small runs only.** Every page and crop is read and digested in one pass
-  under a 256 MiB allowance, so a parish-sized run is refused by name. A console for real
-  volumes has to verify one image at a time as it renders.
 
 ## Before anything bills, it asks
 
