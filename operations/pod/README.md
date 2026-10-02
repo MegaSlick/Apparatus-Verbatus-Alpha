@@ -508,9 +508,13 @@ sample; a GPU that cannot report counts as busy), no container CPU use (under ha
 from the container's own cgroup, not the shared host's load), no download (under
 256 KB/s received), and no touch of the pod's keep-alive file. `pod_run` touches that
 file on every liveness tick while the orchestrator runs, so a run in progress never
-depends on the counters. A CPU counter that read well and drops out for a tick neither
-resets nor adds idle time; one unreadable since arming counts as idle (logged as
-`cpu unreadable` on the armed line). A deadline more than a week
+depends on the counters. An unreadable CPU counter never deletes a pod. If it cannot be
+read from the start, or stays unreadable, the guard counts the pod as busy, keeps
+trying the read every minute, and sends one notice ("CPU idle detection unavailable
+on <pod>; held until its deadline <time>"), and one more if the read comes back, after
+which idle counting resumes. A single missed read between good ones is skipped:
+it neither adds idle time nor resets it. The deadline deletes the pod either way.
+A deadline more than a week
 out is taken as a typo and ignored. It needs nothing from the laptop or a Claude session, so a crashed
 session, a closed app or a sleeping Mac cannot leave a pod billing. It uses RunPod's
 documented self-stop route: every pod has `runpodctl` and a pod-scoped `RUNPOD_API_KEY`.

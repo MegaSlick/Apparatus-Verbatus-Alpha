@@ -82,6 +82,11 @@ def pod(tmp_path):
         stub = bin_dir / name
         stub.write_text("#!/bin/sh\n" + body)
         stub.chmod(0o755)
+    # A readable counter that never moves: the container does no CPU work unless a test
+    # rewrites it.
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    (cgroup / "cpu.stat").write_text("usage_usec 1000\n")
     state = tmp_path / "guard"
     env = {
         **os.environ,
@@ -183,7 +188,6 @@ def run_guard(env, hours):
 def test_container_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     env, calls, state = pod
     cgroup = tmp_path / "cgroup"
-    cgroup.mkdir()
     # Two CPU seconds per tick.
     on_each_tick(
         env,
@@ -256,6 +260,7 @@ def test_loopback_traffic_is_not_work(pod, tmp_path):
 
 def test_cgroup_v1_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     env, calls, state = pod
+    (tmp_path / "cgroup" / "cpu.stat").unlink()
     usage = tmp_path / "cgroup" / "cpuacct" / "cpuacct.usage"
     usage.parent.mkdir(parents=True)
     # 3e12 ns is 3e9 usec, past 2^31, where an awk that clamps %d would read every
@@ -446,40 +451,75 @@ def test_a_keepalive_touched_while_idle_holds_off_the_idle_delete(pod, tmp_path)
     assert "no GPU, CPU or network work" not in log_of(state)
 
 
-def test_a_run_s_keepalive_holds_a_cpu_only_stage_whose_counters_read_idle(pod, tmp_path):
+def test_a_run_s_keepalive_holds_a_stage_whose_counters_read_idle(pod, tmp_path):
     """pod_run touches the keep-alive on every live tick while the orchestrator runs, so a
-    CPU-only stage on a pod whose cgroup cannot be read is not mistaken for an idle pod.
-    Only the approved time ends it."""
+    stage the counters cannot see working is not mistaken for an idle pod. Only the
+    approved time ends it."""
     env, calls, state = pod
     state.mkdir()
-    assert not (tmp_path / "cgroup").exists(), "the container's CPU counter is unreadable"
     keepalive = state / "keepalive-testpod"
     clock = tmp_path / "clock"
     on_each_tick(env, tmp_path, f'touch -d "@$(cat "{clock}")" "{keepalive}"\n')
     run_guard(env, "0.002")
-    assert "cpu unreadable usec" in log_of(state)
     assert "approved time is up" in log_of(state)
     assert "no GPU, CPU or network work" not in log_of(state)
 
 
-def test_a_cpu_counter_unreadable_since_arming_counts_as_idle(pod):
-    """Pinned as it stands: whether an unreadable-from-arming counter should hold the pod
-    instead is the project lead's call, not this test's."""
+def _notices(tmp_path, text):
+    return [line for line in lines(tmp_path / "curl-calls.txt") if text in line]
+
+
+UNAVAILABLE = "CPU idle detection unavailable on testpod; held until its deadline"
+RESTORED = "CPU idle detection restored on testpod"
+
+
+def test_a_cpu_counter_unreadable_since_arming_holds_the_pod_to_its_deadline(pod, tmp_path):
+    """The deadline deletes it, never the idle check, and the phone hears once why."""
     env, calls, state = pod
-    started = clock_of(env)
+    (tmp_path / "cgroup" / "cpu.stat").unlink()
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    run_guard(env, "0.002")
+    assert "approved time is up" in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+    assert "pod delete testpod" in lines(calls)
+    [notice] = _notices(tmp_path, UNAVAILABLE)
+    assert "Z." in notice, "the deadline is named as a UTC time"
+    assert _notices(tmp_path, RESTORED) == []
+
+
+def test_a_cpu_counter_that_stays_unreadable_after_good_readings_holds_the_pod(pod, tmp_path):
+    env, calls, state = pod
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    # Readable at arming, gone from the first tick on.
+    on_each_tick(env, tmp_path, f'rm -f "{stat}"\n')
+    run_guard(env, "0.002")
+    assert "approved time is up" in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+    assert len(_notices(tmp_path, UNAVAILABLE)) == 1
+
+
+def test_a_cpu_counter_that_recovers_resumes_idle_counting(pod, tmp_path):
+    env, calls, state = pod
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    stat.unlink()
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    # Unreadable through tick 2, then readable and idle.
+    on_each_tick(
+        env, tmp_path, f'[ "$1" -ge 3 ] && printf "usage_usec 1000\\n" > "{stat}"\nexit 0\n'
+    )
     run_guard(env, "5")
-    assert "cpu unreadable usec" in log_of(state)
     assert "no GPU, CPU or network work" in log_of(state)
-    # As soon as a readable idle counter would: one tick.
-    assert clock_of(env) - started == 1
+    assert len(_notices(tmp_path, UNAVAILABLE)) == 1
+    assert len(_notices(tmp_path, RESTORED)) == 1
 
 
 def _idle_cgroup(env, tmp_path, drop_at: int | None) -> None:
-    """A readable counter that never moves, missing for the one tick `drop_at`."""
-    cgroup = tmp_path / "cgroup"
-    cgroup.mkdir()
-    stat = cgroup / "cpu.stat"
-    stat.write_text("usage_usec 1000\n")
+    """The fixture's idle counter, missing for the one tick `drop_at`."""
+    stat = tmp_path / "cgroup" / "cpu.stat"
     drop = "" if drop_at is None else f'[ "$1" = {drop_at} ] && rm -f "{stat}" && exit 0\n'
     on_each_tick(env, tmp_path, drop + f'printf "usage_usec 1000\\n" > "{stat}"\n')
 

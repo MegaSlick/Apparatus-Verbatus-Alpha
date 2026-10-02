@@ -161,17 +161,37 @@ net_busy() {
   [ $((now - before)) -ge $((interval * busy_net_kbps * 1024)) ]
 }
 
-# Exit 2 is "no evidence this tick": a counter that read well before and drops out for a
-# tick neither resets nor adds idle time. A counter unreadable since arming counts as idle.
+# An unreadable CPU counter never causes a deletion. One unreadable tick after a good
+# reading is no evidence either way (exit 2: idle time neither reset nor added). A counter
+# unreadable since arming, or for a second tick running, counts as busy, is read again
+# every tick, and is announced once; its recovery is announced once too. The deadline
+# still ends the pod.
+cpu_unread=0
+cpu_held=""
 cpu_busy() {
   now=$(cpu_usec)
   if ! is_epoch "$now"; then
-    is_epoch "$cpu_before" && return 2
-    return 1
+    cpu_unread=$((cpu_unread + 1))
+    if [ "$cpu_unread" -eq 1 ] && is_epoch "$cpu_before"; then return 2; fi
+    cpu_before=""
+    if [ -z "$cpu_held" ]; then
+      cpu_held=yes
+      until=$(date -u -d "@$deadline" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || until="epoch $deadline"
+      held="CPU idle detection unavailable on $pod; held until its deadline $until."
+      say "$held"
+      notify "$held"
+    fi
+    return 0
+  fi
+  cpu_unread=0
+  if [ -n "$cpu_held" ]; then
+    cpu_held=""
+    say "CPU idle detection restored on $pod; idle counting resumes"
+    notify "CPU idle detection restored on $pod; idle counting resumes."
   fi
   before=$cpu_before
   cpu_before=$now
-  is_epoch "$before" || return 1
+  is_epoch "$before" || return 2
   [ $((now - before)) -ge $((interval * 10000 * busy_cpu_percent)) ]
 }
 
@@ -205,7 +225,7 @@ while :; do
   if [ "$cpu" -eq 0 ] || [ "$net" -eq 0 ] || gpu_busy; then
     idle_for=0
   elif [ "$cpu" -eq 2 ]; then
-    say "cpu unreadable this tick; idle time unchanged at ${idle_for}s"
+    say "no CPU reading to compare this tick; idle time unchanged at ${idle_for}s"
   else
     idle_for=$((idle_for + interval))
     # Idle time counts from the later of the last busy sample and the last keep-alive touch.
