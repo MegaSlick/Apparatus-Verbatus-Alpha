@@ -1,0 +1,84 @@
+# GitHub settings proposal
+
+Settings that only the repository owner can change on GitHub, recommended by the
+2026-10-02 project review. None of these is applied by any commit; the lead applies them
+by hand under **Settings** on GitHub. Each item says where it is, what to set and why.
+Delete this file once it has been applied or declined.
+
+The repository is **public**, which decides several of the items below: GitHub's
+secret scanning and push protection are free for it, and anything committed is
+readable by anyone.
+
+## 1. Landing page (Settings → General, and the ⚙ beside "About")
+
+- **Description**, shorter so it reads whole on a phone:
+  "Reads handwritten historical registers, mainly Quebec parish records, with vision
+  models as witnesses and a reader model that establishes the text from the ink.
+  Every reading traces to its image region; uncertainty is flagged, never guessed."
+- **Topics**: keep the eight already set; add `historical-documents`, `transcription`
+  and `vllm`.
+- **Website**: leave empty until there is one.
+- **Include in the home page**: untick *Packages* and *Deployments* (none exist), keep
+  *Releases* off until the first release.
+- **Features**: turn off *Projects* (unused). Wiki is already off; keep *Issues* on.
+
+## 2. Pull requests (Settings → General → Pull Requests)
+
+- **Automatically delete head branches: on.** Merged branches then delete themselves,
+  so the stale-branch pile in issue #242 cannot build up again.
+- **Allow merge commits: on; squash and rebase: off.** The history is built from merge
+  commits and the review rules assume them.
+- **Always suggest updating pull request branches: on.**
+
+## 3. Protect `main` (Settings → Rules → Rulesets, or Branches → `main`)
+
+`main` is protected today; check that the rule includes all of these:
+
+- **Require a pull request before merging**, with **0 required approvals** (the lead is
+  the only maintainer and cannot approve their own pull requests; CodeRabbit comments
+  but does not approve).
+- **Require status checks to pass**: the single check **`check`**. It is the summary job
+  in `.github/workflows/ci.yml` and passes only when every Python version's test job
+  passed. Do not list `test (3.12)` or `test (3.14)` themselves: their names change
+  whenever the version matrix does.
+- **Require branches to be up to date before merging: on.** CI tests the branch head,
+  so this is what guarantees the tested code is the merged code.
+- **Require conversation resolution before merging: on.**
+- **Block force pushes** and **restrict deletions** of `main`.
+- **No bypass list**, so the rule also binds sessions that push with the lead's token.
+
+## 4. Security (Settings → Code security)
+
+- **Secret scanning: on**, with **push protection: on.** This refuses a push that
+  contains a known credential format before it lands, as a second line behind the
+  local commit hook.
+- **Dependabot alerts: on** (already) and **Dependabot security updates: on.**
+- **Private vulnerability reporting: on**, so a stranger can report a problem without
+  opening a public issue.
+- **The 17 open Dependabot alerts** (13 high, 4 moderate, as of 2026-10-02) need a look.
+  CI's `pip-audit` passes, and it audits only the `test` and `audit` dependency groups,
+  so the alerts most likely sit in the `pod` group (vLLM, torch, transformers), which
+  only runs on a rented GPU machine. Dismiss each with a reason, or plan an update with
+  a paid pod qualification run.
+
+## 5. Actions (Settings → Actions → General)
+
+- **Actions permissions**: *Allow MegaSlick, and select non-MegaSlick, actions*, listing
+  `actions/checkout` and `actions/setup-python` (the only two used, both pinned by
+  commit).
+- **Workflow permissions**: *Read repository contents* (the workflow already asks for
+  no more), and leave *Allow GitHub Actions to create and approve pull requests* off.
+- **Fork pull request workflows**: *Require approval for first-time contributors*.
+
+## 6. Apps (Settings → GitHub Apps)
+
+- **CodeRabbit**: keep. It reviews every pull request (configured in `.coderabbit.yaml`).
+- **Claude**: keep while AI sessions push branches and open pull requests.
+- Remove any other installed app that nothing in this repository uses.
+
+## 7. Stale branches
+
+Issue #242 lists 43 stale branches, each checked as merged or superseded, with the
+command to delete them. Keep `main`, `work/dai-own-detector` and
+`work/witness-floor-census` until the review's pull requests settle them, and
+`review/progress` until the review's train has merged.
