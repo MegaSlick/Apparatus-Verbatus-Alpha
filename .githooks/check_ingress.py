@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Reject recognized credential forms and repository-sized payloads from Git.
 
-The pre-commit hook scans the exact index state. CI scans every commit reachable
-from HEAD, so add-then-delete does not make a leaked key or corpus file disappear.
+The pre-commit hook scans the exact index state. CI scans every commit a push or pull
+request adds, and the full history for tags, new branches and unknown bases, so
+add-then-delete does not make a leaked key or corpus file disappear.
 Only the Python standard library and Git are required.
 """
 

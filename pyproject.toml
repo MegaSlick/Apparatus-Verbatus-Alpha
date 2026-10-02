@@ -15,15 +15,12 @@ dependencies = [
     "pillow-heif==1.5.0",
     # PDFium binding used to rasterise complete PDF pages once at the submit door.
     "pypdfium2==5.12.1",
-    # Spec 05's unit-cost edit-distance primitive, MIT licence. Called bare, with
-    # processor=None, rather than through a higher-level scorer such as jiwer:
-    # jiwer's wer()/cer() bundle their own tokenization and transform pipeline, and
-    # what they normalize by default was not something either lane could confirm
-    # from the documentation in one reading. The framework owns every normalization
-    # decision instead, explicitly and tested. See operations/spike_perlector.
+    # Unit-cost edit distance for scoring readings against reference transcriptions
+    # (MIT licence). Called bare, with processor=None, so this project makes every
+    # normalization decision itself rather than inheriting a scorer's defaults.
     "rapidfuzz==3.14.5",
-    # UAX #29 extended grapheme clusters for Spec 05 CER after explicit NFC text
-    # normalization; see operations/spike_perlector/README.md (MIT licence).
+    # UAX #29 extended grapheme clusters, the units of the character error rate when
+    # scoring readings against reference transcriptions (MIT licence).
     "uniseg==0.10.1",
     # Maintained Apache-2.0 AWS SDK used only for RunPod's documented
     # S3-compatible network-volume upload path.
@@ -33,30 +30,23 @@ dependencies = [
 [project.scripts]
 verbatus = "operations.operator.entry:main"
 
-# Dependencies are pinned from the first line rather than retrofitted.
-# Nothing is added here without a reason recorded in the pull request that adds it.
+# Every dependency is pinned exactly.
 
 [build-system]
 requires = ["setuptools==84.0.0"]
 build-backend = "setuptools.build_meta"
 
-# The one uv pin: .githooks/check-all.sh and .github/workflows/ci.yml read it from here.
-# uv itself refuses to run against this project when the resolved binary does not
-# match, rather than letting a drifted uv silently resolve or sync something the
-# gate's own version check would have caught anyway.
+# The one uv pin: .githooks/check-all.sh and .github/workflows/ci.yml read it from here,
+# and uv itself refuses to run against this project at any other version.
 [tool.uv]
 required-version = "==0.12.1"
 
 [dependency-groups]
-# The full gate executes its tests and static tooling from uv's frozen
-# environment. Keep these direct values identical to requirements-dev.txt,
-# which builds the everyday non-frozen environment.
+# The tests and static tools the gate runs from uv's frozen environment.
 test = [
     "pytest==9.1.1",
-    # Distributes the suite across worker processes. The gate and CI both export
-    # PYTEST_DISABLE_PLUGIN_AUTOLOAD=1, so this plugin does nothing until an
-    # invocation names it with `-p xdist`; installing it changes no run that does
-    # not ask for it.
+    # Runs the suite across worker processes. The gate disables plugin autoloading,
+    # so it takes effect only when a run names it with `-p xdist`.
     "pytest-xdist==3.8.0",
     "ruff==0.15.4",
     "PyYAML==6.0.3",
@@ -65,29 +55,23 @@ test = [
 # The dependency-audit gate invokes this exact pinned tool.  An unavailable
 # advisory service is a failed gate, never an implied clean audit.
 audit = ["pip-audit==2.10.1"]
-# The real serving stack. It is installed only on the pod — `bootstrap.py` syncs
-# this group, nothing on a laptop does — hence the Linux/x86_64 markers, which
-# keep a macOS `uv sync` from ever resolving torch or a CUDA wheel. These three
-# versions are the same bytes as every `required_packages` row in
-# config/serving_recipes_real.toml, because `ServingManager` verifies each pin
-# through `importlib.metadata` before it launches: a group that drifts from the
-# catalogue is a pod that downloads ten gigabytes and is then refused.
-# `operations/pod/test_pod_run.py` binds the two together.
-# No `flash-attn`: vLLM supplies its own FlashAttention through its attention
-# backend registry, the PyPI package publishes no wheel, and building its sdist
-# against torch 2.13 would be an hours-long nvcc compile on a billing card.
+# The model-serving stack, installed only on a GPU pod (the pod bootstrap syncs this
+# group); the Linux/x86_64 markers keep any other machine from resolving torch or a
+# CUDA wheel. The versions match the `required_packages` rows in
+# config/serving_recipes_real.toml, which `ServingManager` checks before it launches;
+# `operations/pod/test_pod_run.py` keeps the two in step.
+# No `flash-attn`: vLLM brings its own FlashAttention, and the PyPI package ships no
+# wheel, so it would be compiled from source on the pod.
 #
-# Licence record (CONTRIBUTING.md; full citations in
-# operations/pod/README.md under "The serving stack, re-planned and locked"):
+# Licences (full citations in operations/pod/README.md):
 #   vllm==0.30.0           Apache-2.0  github.com/vllm-project/vllm
 #   transformers==5.14.1   Apache-2.0  github.com/huggingface/transformers
 #   qwen-vl-utils==0.0.14  Apache-2.0  github.com/QwenLM/Qwen2.5-VL (PyPI: qwen-vl-utils)
 #   ultralytics==8.4.14    AGPL-3.0    github.com/ultralytics/ultralytics
 #   torch==2.13.0          BSD-3-Clause github.com/pytorch/pytorch
-# `ultralytics` runs DAI's own record detector in-process on the CPU; 8.4.14 is
-# the version its pinned checkpoint records having been written by. `torch` is
-# named because that in-process row pins it too; it is the version vLLM already
-# resolves, so it adds no second torch.
+# `ultralytics` runs DAI's record detector on the CPU; 8.4.14 is the version its pinned
+# checkpoint was written with. `torch` is pinned for the same detector, at the version
+# vLLM already resolves.
 pod = [
     "vllm==0.30.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "transformers==5.14.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -96,15 +80,9 @@ pod = [
     "torch==2.13.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
-# Deliberately narrow, and deliberately not repaired by widening. A wheel built
-# from this carries no `pipeline/`, `config/`, `proof/` or `gold/`, and runtime code
-# resolves those as siblings of the checkout rather than as package data -- so a
-# non-editable install cannot run this system, and packaging the private material to
-# make it appear to would be the wrong repair. Verbatus runs from a source checkout:
-# the pod bootstrap fetches and checks out a pinned commit in the checkout the pod
-# image carries -- it never clones one -- and then runs `uv sync --locked`, and
-# `common/checkout.py` refuses before any verb starts anywhere else.
-# `operations/README.md` carries the contract in full.
+# Deliberately narrow. Verbatus runs only from a source checkout: runtime code finds
+# `pipeline/`, `config/`, `proof/` and `gold/` beside the checkout, not as package data,
+# and `common/checkout.py` refuses to start anywhere else (operations/README.md).
 [tool.setuptools.packages.find]
 include = ["common", "common.*", "operations", "operations.*"]
 namespaces = false
@@ -114,10 +92,10 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-# Deliberately narrow. These catch real breakage — undefined names, unused imports,
+# Deliberately narrow: real breakage such as undefined names, unused imports and
 # obvious mistakes. Style beyond this is the formatter's job.
-# Type checking is NOT used here: on AI-generated code it produces thousands of
-# complaints about working code, and gates that cry wolf get ignored.
+# No type checker: on generated code it flags thousands of lines of working code, and
+# a gate that cries wolf gets ignored.
 select = ["E4", "E7", "E9", "F", "I", "B"]
 
 [tool.pytest.ini_options]
@@ -128,17 +106,9 @@ markers = [
     "full: slower integration and exhaustive boundary cases reserved for the full gate",
     "hostile_local: hostile local filesystem and terminal input cases run only in CI",
     "scanner: core credential-detection cases the everyday gate runs even though they are also full",
-    # The one marked test reaches the network, by design: it fetches the pinned
-    # vendor sources into a temporary directory, diffs this repository's carried
-    # bytes and resize ports against them, and deletes the directory. Nothing is
-    # stored, and `-m vendor_network` runs it on demand, which is what keeps the
-    # offline parity pins re-measurable without making a green gate depend on
-    # GitHub and Hugging Face being reachable. The marker does not gate it on its
-    # own -- check-all.sh runs pytest with no `-m` expression at all, and
-    # check-fast.sh runs `-m "not full or scanner"`, which a test carrying only
-    # this marker satisfies through the `not full` half; both therefore collect
-    # it -- so the test also reads back what the run selected and skips itself
-    # unless this marker was named. See `common/test_vendor_parity.py`.
+    # The marked test fetches the pinned vendor sources to re-measure the carried
+    # bytes, so it needs the network. Both gates collect it, so the test skips itself
+    # unless the run names `-m vendor_network` (common/test_vendor_parity.py).
     "vendor_network: fetches the pinned vendor sources to re-measure the carried-bytes pins",
 ]
 # Setting this key replaces pytest's built-in list, which skips dotted directories;

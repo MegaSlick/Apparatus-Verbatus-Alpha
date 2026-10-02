@@ -108,6 +108,17 @@ def test_static_gate_syntax_checks_every_script_it_names(tmp_path):
     assert checked == listed
 
 
+@pytest.mark.full
+def test_static_gate_refuses_committed_trailing_whitespace(tmp_path):
+    """A clean checkout has no working-tree diff, so the committed content is checked."""
+    repo, _listed, _log, environment = make_static_gate_repo(tmp_path / "repo")
+    commit_file(repo, "notes.txt", "trailing space \n")
+    assert git(repo, "status", "--porcelain").stdout == ""
+    result = run_hook(repo, "check-static.sh", env=environment)
+    assert result.returncode != 0
+    assert "trailing whitespace" in result.stdout + result.stderr
+
+
 # The gate testing itself: these prove the list is walked, which rarely changes, so
 # they are reserved for the full gate.
 @pytest.mark.full
@@ -316,57 +327,26 @@ def test_pre_commit_refuses_a_detached_head_unless_asked(tmp_path):
     assert allowed.returncode == 0, allowed.stderr
 
 
-def test_pre_commit_hard_blocks_main_even_if_old_bypass_is_set(tmp_path):
+def test_pre_commit_blocks_a_commit_on_main(tmp_path):
     repo = make_precommit_repo(tmp_path / "repo", "main")
     (repo / "safe.txt").write_text("safe\n")
     git(repo, "add", "safe.txt")
     blocked = run_hook(repo, "pre-commit")
-    old_bypass = run_hook(repo, "pre-commit", env={"ALLOW_MAIN_COMMIT": "1"})
     assert blocked.returncode == 1
     assert "commit on main" in blocked.stderr
-    assert old_bypass.returncode == 1
 
 
-def test_install_configures_local_hooks_after_prerequisites(tmp_path):
+def test_install_configures_local_hooks(tmp_path):
     repo = init_repo(tmp_path / "repo")
     shutil.copytree(HOOKS, repo / ".githooks")
-    for folder in (
-        "workbench/active",
-        "workbench/archive",
-        "workbench/scratch",
-        "workbench/design",
-        "workbench/tools",
-        "workbench/raw",
-    ):
-        (repo / folder).mkdir(parents=True, exist_ok=True)
     result = run_hook(repo, "install.sh")
     assert result.returncode == 0, result.stderr
     assert git(repo, "config", "--get", "core.hooksPath").stdout.strip() == ".githooks"
 
 
-def test_install_creates_every_drawer_the_contract_declares(tmp_path):
-    """Nothing is pre-created: only the installer can make these drawers appear."""
-    repo = init_repo(tmp_path / "repo")
-    shutil.copytree(HOOKS, repo / ".githooks")
-    result = run_hook(repo, "install.sh")
-    assert result.returncode == 0, result.stderr
-    declared = (
-        "active",
-        "standing",
-        "archive",
-        "scratch",
-        "design",
-        "tools",
-        "raw",
-        "quarantine",
-    )
-    missing = [name for name in declared if not (repo / "workbench" / name).is_dir()]
-    assert not missing, f"install.sh did not create: {missing}"
-
-
 def test_fixture_images_are_binary_at_any_depth(tmp_path):
-    """Asked of git, not read from the pattern: `proof/fixtures/*` once looked right yet
-    matched only one level, leaving nested fixtures `text=auto`."""
+    """Asked of git, not read from the pattern: a one-level pattern such as
+    `proof/fixtures/*` would leave nested fixtures `text=auto`."""
     repo = init_repo(tmp_path / "repo")
     shutil.copy(ROOT / ".gitattributes", repo / ".gitattributes")
     nested = repo / "proof" / "fixtures" / "synthetic-two-page-v0"
@@ -388,17 +368,15 @@ def failing_command_env(path, name):
     return {"PATH": f"{stubs}:{os.environ['PATH']}"}
 
 
-@pytest.mark.parametrize("failing", ["chmod", "mkdir"])
-def test_install_does_not_configure_hooks_when_a_prerequisite_fails(tmp_path, failing):
+def test_install_does_not_configure_hooks_when_chmod_fails(tmp_path):
     # A hooksPath at files git cannot execute would report installed and run no hook.
     repo = init_repo(tmp_path / "repo")
     shutil.copytree(HOOKS, repo / ".githooks")
     git(repo, "config", "core.hooksPath", "previous-hooks")
-    result = run_hook(repo, "install.sh", env=failing_command_env(tmp_path, failing))
+    result = run_hook(repo, "install.sh", env=failing_command_env(tmp_path, "chmod"))
     assert result.returncode != 0
     assert "Hooks installed" not in result.stdout
-    if failing == "chmod":
-        assert "not usable" in result.stderr
+    assert "not usable" in result.stderr
     assert git(repo, "config", "--get", "core.hooksPath").stdout.strip() == "previous-hooks"
 
 

@@ -18,9 +18,7 @@ dist/
 .env.*
 !.env.example
 
-# Agents work in their own worktree under here. They are checkouts, not
-# content: a `git add -A` in the main checkout would otherwise commit every
-# other agent's working copy into the tree.
+# Git worktrees created inside the checkout are separate checkouts, not content.
 .claude/worktrees/
 
 # Machine-local Claude Code permissions and paths.
