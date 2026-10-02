@@ -259,13 +259,17 @@ _ORCHESTRATOR_EXITS = {
 _HOLD_AFTER_EXITS = frozenset({EXIT_COMPLETE, EXIT_HELD})
 
 
-def read_stop_record(stop_record: Path, run_id: str) -> tuple[dict | None, str | None]:
+def read_stop_record(
+    stop_record: Path, run_id: str, observed_exit: int
+) -> tuple[dict | None, str | None]:
     """This invocation's stop record for this run, or None and why it cannot be used.
 
-    A usable record is this run's `STOP_RECORD_SCHEMA` record, with `exported` true
-    or false and `systemic` an alarm line or null. Anything else -- no record, one
-    that cannot be read, another run's, or one of another shape -- leaves both
-    the export and the alarm unknown, and the reason says which.
+    A usable record is this run's `STOP_RECORD_SCHEMA` record, with the integer
+    `exit_code` the orchestrator was seen to exit with (`observed_exit`),
+    `exported` true or false and `systemic` an alarm line or null. Anything else
+    -- no record, one that cannot be read, another run's, another exit's, or one
+    of another shape -- leaves both the export and the alarm unknown, and the
+    reason says which.
     """
     try:
         record = json.loads(stop_record.read_text(encoding="utf-8"))
@@ -277,6 +281,13 @@ def read_stop_record(stop_record: Path, run_id: str) -> tuple[dict | None, str |
         return None, f"the orchestrator's stop record is not an {STOP_RECORD_SCHEMA} record"
     if record.get("run_id") != run_id:
         return None, f"the orchestrator's stop record is not run {run_id}'s"
+    exit_code = record.get("exit_code")
+    if type(exit_code) is not int:
+        return None, "the orchestrator's stop record has no integer exit_code"
+    if exit_code != observed_exit:
+        return None, (
+            f"the orchestrator's stop record says exit {exit_code}, but it exited {observed_exit}"
+        )
     systemic = record.get("systemic", "")
     if not isinstance(record.get("exported"), bool) or not (
         systemic is None or (isinstance(systemic, str) and systemic.strip())
@@ -1742,13 +1753,15 @@ def main(
         failure_detail = f"the orchestrator could not start: {error}"
         transcript_failure = None
         transcript_dropped_bytes = 0
-    stop, stop_problem = read_stop_record(stop_record, plan.run_id)
+    # The orchestrator writes its stop record on every return; one that never
+    # started has none to write.
+    stop, stop_problem = (
+        (None, None)
+        if orchestrator_exit is None
+        else read_stop_record(stop_record, plan.run_id, orchestrator_exit)
+    )
     exported = stop is not None and stop["exported"]
     systemic = None if stop is None else stop["systemic"]
-    if orchestrator_exit is None:
-        # The orchestrator writes its stop record on every return; one that
-        # never started has none to write.
-        stop_problem = None
     stop_directory.cleanup()
     exit_code = _ORCHESTRATOR_EXITS.get(orchestrator_exit, EXIT_FAILED)
     if exit_code == EXIT_COMPLETE and plan.ends_before_armarium:

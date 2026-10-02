@@ -1153,7 +1153,7 @@ def _stop_reading(path: Path, **fields: object) -> dict | None:
         **fields,
     }
     path.write_text(json.dumps(record), encoding="utf-8")
-    return pod_run.read_stop_record(path, "r")[0]
+    return pod_run.read_stop_record(path, "r", 3)[0]
 
 
 def test_only_this_invocations_stop_record_saying_exported_reads_as_reached(
@@ -1161,7 +1161,7 @@ def test_only_this_invocations_stop_record_saying_exported_reads_as_reached(
 ) -> None:
     """The stop record decides, never an export the run tree already holds."""
     path = tmp_path / "stop.json"
-    assert pod_run.read_stop_record(path, "r")[0] is None  # no record
+    assert pod_run.read_stop_record(path, "r", 3)[0] is None  # no record
     assert _stop_reading(path, exported=True)["exported"] is True  # its sealed export
     # Held at the Recensor, whatever the tree holds.
     assert _stop_reading(path, exported=False)["exported"] is False
@@ -1169,7 +1169,7 @@ def test_only_this_invocations_stop_record_saying_exported_reads_as_reached(
     assert _stop_reading(path, exported=True, schema="another.v1") is None
     for unreadable in ("[]", "{", "\udcff", "null"):
         path.write_text(unreadable, encoding="utf-8", errors="surrogateescape")
-        assert pod_run.read_stop_record(path, "r")[0] is None, unreadable
+        assert pod_run.read_stop_record(path, "r", 3)[0] is None, unreadable
 
 
 def test_only_this_invocations_stop_record_names_its_systemic_alarm(tmp_path: Path) -> None:
@@ -1405,16 +1405,44 @@ def test_a_run_whose_stop_record_was_not_written_is_never_complete_and_says_why(
         assert report["hold_detail"].startswith("the run held, and with no usable stop record")
 
 
+def test_a_stop_record_of_another_exit_never_holds_the_pod(tmp_path: Path) -> None:
+    """`exported` decides the paid hold only when the record's exit is the one observed."""
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    record = {
+        "schema": STOP_RECORD_SCHEMA,
+        "run_id": "first-real-run",
+        "exit_code": orchestrator.EXIT_COMPLETE,
+        "exported": True,
+        "systemic": None,
+    }
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(returncode=orchestrator.EXIT_HELD, stop=json.dumps(record)),
+    )
+    assert code == EXIT_HELD
+    report = _report(ws)
+    assert report["stop_record_problem"] == (
+        "the orchestrator's stop record says exit 0, but it exited 3"
+    )
+    assert report["held_to_hard_deadline"] is False
+    assert clock.seconds == 0
+
+
 def test_a_stop_record_is_usable_only_as_this_runs_v2_record(tmp_path: Path) -> None:
     path = tmp_path / "stop.json"
     good = {"schema": STOP_RECORD_SCHEMA, "run_id": "r", "exit_code": 3, "exported": False}
 
     def read(text: str) -> tuple[dict | None, str | None]:
         path.write_text(text, encoding="utf-8", errors="surrogateescape")
-        return pod_run.read_stop_record(path, "r")
+        return pod_run.read_stop_record(path, "r", 3)
 
     assert read(json.dumps({**good, "systemic": None})) == ({**good, "systemic": None}, None)
-    assert pod_run.read_stop_record(tmp_path / "none.json", "r") == (
+    assert pod_run.read_stop_record(tmp_path / "none.json", "r", 3) == (
         None,
         "the orchestrator left no stop record",
     )
@@ -1426,6 +1454,14 @@ def test_a_stop_record_is_usable_only_as_this_runs_v2_record(tmp_path: Path) -> 
         (json.dumps(good), "no usable exported or systemic field"),
         (json.dumps({**good, "systemic": "  "}), "no usable exported or systemic field"),
         (json.dumps({**good, "systemic": None, "exported": 1}), "no usable"),
+        (json.dumps({**good, "systemic": None, "exit_code": None}), "no integer exit_code"),
+        (json.dumps({**good, "systemic": None, "exit_code": "3"}), "no integer exit_code"),
+        (json.dumps({**good, "systemic": None, "exit_code": True}), "no integer exit_code"),
+        (
+            json.dumps({k: v for k, v in {**good, "systemic": None}.items() if k != "exit_code"}),
+            "no integer exit_code",
+        ),
+        (json.dumps({**good, "systemic": None, "exit_code": 0}), "says exit 0, but it exited 3"),
     ):
         record, problem = read(text)
         assert record is None and reason in problem, text
