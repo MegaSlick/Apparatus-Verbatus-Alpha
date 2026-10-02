@@ -72,6 +72,7 @@ def test_the_full_skeleton_runs_over_both_chair_implementations(
         assert _invoke(module, monkeypatch, arguments, registry_factory) == 0, (
             f"{name} did not complete over the {implementation} implementation"
         )
+    stage_calls = list(fake.calls)
 
     tested = fake if implementation == "deterministic" else ChairRegistry.from_toml(MODELS_CONFIG)
     identity = tested.resolve("attestator_1")
@@ -89,8 +90,10 @@ def test_the_full_skeleton_runs_over_both_chair_implementations(
         # Both implementations agree, so a stage that fell back to the
         # production registry would still pass; the fake's own call log shows
         # it answered every chair the stages call, through all three methods.
-        assert CHAIRS_THE_SKELETON_CALLS <= {role for _, role in fake.calls}
-        assert {method for method, _ in fake.calls} == {"resolve", "ensure", "receipt"}
+        # The log is read as the stages left it, before the contract check
+        # below adds calls of its own.
+        assert CHAIRS_THE_SKELETON_CALLS <= {role for _, role in stage_calls}
+        assert {method for method, _ in stage_calls} == {"resolve", "ensure", "receipt"}
 
 
 def _details(identity: ChairIdentity) -> ServingDetails:
