@@ -1,21 +1,12 @@
-"""A vendor-neutral phone-notification seam for the pod-lease moments and a systemic run.
+"""Phone notifications for the pod: launch, close, balance and the systemic alarm.
 
-Spend machinery is tracking plus notifications only -- no new enforcement,
-RunPod's own limits enforce. This module is the notification half of that: it
-never refuses a launch, never blocks a close, and never changes what any of
-this package's spend gates decide. It only tells `operations/notify/notify.sh`
-one short line, three times in a lease's life --
-
-- launch: the lease id, the card, and the hourly ceiling that governs it
-- close: the lease id, the verified close state, and the billed window
-- each balance observation: the balance and the spend rate the observer
-  reported
-
--- through `operations/notify/client.py`. A fourth, `notify_systemic`, is the
-one question among them: a run on the pod that stopped with more of its pages
-held than its sealed review policy allows, or exported past that stop on a
-person's advance, sends the systemic alarm as a `decision`, the line
-`verbatus run --notify` sends for the same run on this computer.
+Each function sends one short line through `operations/notify/client.py` and
+never refuses, blocks or changes what a spend gate decided. `notify_launch`,
+`notify_close` and `notify_balance` report a lease's launch (lease id, card,
+hourly ceiling), its verified close (state and billed window) and each balance
+observation. `notify_systemic` sends a run's systemic alarm as a `decision`, the
+same line `verbatus run --notify` sends on this computer; on a pod,
+`notify_systemic_from_guard` sends it to the topic the pod guard was armed with.
 
 **Never a secret, never a URL.** Every message is checked before the shell
 call: a word naming a secret, any piece `common.credentials` reads as
