@@ -33,7 +33,11 @@ receipt, since nothing is lost silently, and moves on.
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 from typing import Final
 
 from common.credentials import notification_carries_credential
@@ -136,3 +140,54 @@ def notify_systemic(*, run_id: str, alarm_line: str, runner: Runner = client.run
     """One `decision` line for a run whose systemic alarm sounded (`common.review_policy`)."""
 
     return _send(systemic_notice(run_id, alarm_line), runner=runner, event="decision")
+
+
+# Where the pod guard keeps the notification topic on the volume
+# (`operations/pod/README.md`, "Arming the ping"); relative to the volume mount.
+GUARD_TOPIC_FILE: Final = Path("private/.pod_guard/ntfy_topic")
+_TOPIC: Final = re.compile(r"[A-Za-z0-9_-]{1,64}")
+# What the notification command needs from the pod's environment to reach the
+# service; nothing else of it is passed on.
+_PASSED_ENVIRONMENT: Final = (
+    "PATH",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "SSL_CERT_FILE",
+    "CURL_CA_BUNDLE",
+)
+
+
+def guard_topic(volume_mount: Path) -> str | None:
+    """The topic the pod guard pings, read from its file on the volume; None when absent or bad."""
+    try:
+        topic = (Path(volume_mount) / GUARD_TOPIC_FILE).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return topic if _TOPIC.fullmatch(topic) else None
+
+
+def notify_environment(topic: str | None) -> dict[str, str]:
+    """The one environment the notification command runs in: the topic and what it needs."""
+    environment = {name: os.environ[name] for name in _PASSED_ENVIRONMENT if name in os.environ}
+    if topic is not None:
+        environment["NTFY_TOPIC"] = topic
+    return environment
+
+
+def environment_runner(environment: Mapping[str, str]) -> Runner:
+    """A notification runner whose subprocess, and only it, gets `environment`."""
+
+    def run(argv: Sequence[str]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            list(argv),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=client.NOTIFY_TIMEOUT_SECONDS,
+            env=dict(environment),
+        )
+
+    return run
+
+
+RunnerFactory = Callable[[Mapping[str, str]], Runner]

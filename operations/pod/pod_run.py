@@ -154,8 +154,13 @@ from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
 from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
 from common.stage import EXIT_HELD as ORCHESTRATOR_HELD
 from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
-from operations.notify import client as notify_client
-from operations.pod.notify_hooks import notify_systemic
+from operations.pod.notify_hooks import (
+    RunnerFactory,
+    environment_runner,
+    guard_topic,
+    notify_environment,
+    notify_systemic,
+)
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
@@ -1565,7 +1570,7 @@ def main(
     sleeper: Callable[[float], None] = time.sleep,
     actions_factory: Callable[[Plan], BootstrapActions] = build_actions,
     runner: Runner = _run,
-    notify_runner: notify_client.Runner = notify_client.run,
+    notify_runner: RunnerFactory = environment_runner,
 ) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     environment = os.environ if environ is None else environ
@@ -1867,7 +1872,15 @@ def main(
         # review policy allows: a person must decide. With --notify the phone
         # hears of it whatever happens to the pod next; a failed ping changes nothing.
         notice = (
-            notify_systemic(run_id=plan.run_id, alarm_line=systemic, runner=notify_runner).line()
+            notify_systemic(
+                run_id=plan.run_id,
+                alarm_line=systemic,
+                # The guard's topic goes to the notification command's own
+                # environment only: never an argument, a log line or a stage's.
+                runner=notify_runner(
+                    notify_environment(guard_topic(plan.bootstrap.volume_mount_path))
+                ),
+            ).line()
             if args.notify
             else "Phone notification: not sent (no --notify)."
         )

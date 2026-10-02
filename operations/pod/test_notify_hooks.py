@@ -266,3 +266,18 @@ def test_a_lowercase_hex_identifier_is_not_mistaken_for_a_credential() -> None:
     )
 
     assert outcome.delivered
+
+
+def test_the_guard_topic_is_read_from_its_file_and_refused_when_malformed(tmp_path) -> None:
+    from .notify_hooks import GUARD_TOPIC_FILE, guard_topic, notify_environment
+
+    assert guard_topic(tmp_path) is None
+    path = tmp_path / GUARD_TOPIC_FILE
+    path.parent.mkdir(parents=True)
+    path.write_text("a-topic_1\n", encoding="utf-8")
+    assert guard_topic(tmp_path) == "a-topic_1"
+    assert notify_environment("a-topic_1")["NTFY_TOPIC"] == "a-topic_1"
+    assert "NTFY_TOPIC" not in notify_environment(None)
+    for bad in ("two words", "x" * 65, "a/slash"):
+        path.write_text(bad, encoding="utf-8")
+        assert guard_topic(tmp_path) is None

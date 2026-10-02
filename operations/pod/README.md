@@ -416,7 +416,13 @@ that stop on a person's advance, sends the systemic alarm as a `decision`
 (`notify_systemic`), the line `verbatus run --notify` sends for a run on this computer.
 `pod_run` reads the alarm from its invocation's stop record (`systemic`) and records the
 line and the notification outcome in its run report; without `--notify` the line is
-recorded and nothing is sent.
+recorded and nothing is sent. `notify.sh` reads its topic only from `NTFY_TOPIC` or the
+repository's `private/ntfy.conf`, which a pod does not have, so `pod_run` reads the
+guard's topic file (`/workspace/private/.pod_guard/ntfy_topic`, below) and passes it as
+`NTFY_TOPIC` in that one notification command's environment, beside only `PATH` and the
+proxy and CA variables it needs (`notify_hooks.guard_topic`, `notify_environment`). The
+topic is never an argument, a log or report line, or part of the orchestrator's or a
+stage's environment. With no readable topic file the line is recorded as not delivered.
 
 ### `spend.py`: prices, ceilings and the typed phrase
 

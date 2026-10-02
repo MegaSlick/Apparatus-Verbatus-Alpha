@@ -1183,10 +1183,19 @@ def test_only_this_invocations_stop_record_names_its_systemic_alarm(tmp_path: Pa
 
 
 class NotifyRecorder:
-    """A notify runner that records each argv and answers green; no shell, no phone."""
+    """A notify runner that records each argv and answers green; no shell, no phone.
+
+    `factory` stands in for `notify_hooks.environment_runner`, recording the
+    environment the notification command would run in.
+    """
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []
+        self.environments: list[dict[str, str]] = []
+
+    def factory(self, environment):  # type: ignore[no-untyped-def]
+        self.environments.append(dict(environment))
+        return self
 
     def __call__(self, argv):  # type: ignore[no-untyped-def]
         import subprocess
@@ -1215,7 +1224,7 @@ def test_a_systemic_run_on_the_pod_sends_the_alarm_as_a_decision(
         sleeper=clock.sleep,
         actions_factory=lambda plan: PreflightedActions(),
         runner=RecordedRunner(returncode=orchestrator.EXIT_HELD, stop=exported, systemic=line),
-        notify_runner=notify,
+        notify_runner=notify.factory,
     )
     assert code == EXIT_HELD
     [argv] = notify.calls
@@ -1223,6 +1232,38 @@ def test_a_systemic_run_on_the_pod_sends_the_alarm_as_a_decision(
     report = _report(ws)
     assert report["systemic"] == line
     assert report["systemic_notification"] == "Phone notification: sent."
+
+
+def test_the_guard_topic_reaches_only_the_notification_command(tmp_path: Path) -> None:
+    """The topic is read from the guard's file into the notify call's own environment:
+    never an argument, the orchestrator's environment, or the run report."""
+    ws = _prepared(tmp_path)
+    topic = "guard-topic-for-the-test"
+    path = ws.volume / "private" / ".pod_guard" / "ntfy_topic"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(topic + "\n", encoding="utf-8")
+    clock = Clock()
+    notify = NotifyRecorder()
+    runner = RecordedRunner(
+        returncode=orchestrator.EXIT_HELD, stop=False, systemic="run first-real-run: systemic: x"
+    )
+    code = main(
+        _run_argv(ws, extra=("--notify",)),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+        notify_runner=notify.factory,
+    )
+    assert code == EXIT_HELD
+    [environment] = notify.environments
+    assert environment["NTFY_TOPIC"] == topic
+    assert all(topic not in part for call in notify.calls for part in call)
+    for argv, _cwd, env in runner.calls:
+        assert all(topic not in part for part in argv)
+        assert topic not in "".join(f"{k}={v}" for k, v in env.items())
+    assert topic not in (ws.volume / "pod-run-report.json").read_text(encoding="utf-8")
 
 
 def test_without_notify_the_pod_records_the_alarm_and_pages_no_phone(tmp_path: Path) -> None:
@@ -1237,7 +1278,7 @@ def test_without_notify_the_pod_records_the_alarm_and_pages_no_phone(tmp_path: P
         sleeper=clock.sleep,
         actions_factory=lambda plan: PreflightedActions(),
         runner=RecordedRunner(returncode=orchestrator.EXIT_HELD, stop=False, systemic=line),
-        notify_runner=notify,
+        notify_runner=notify.factory,
     )
     assert code == EXIT_HELD
     assert notify.calls == []
@@ -1257,7 +1298,7 @@ def test_a_run_with_no_systemic_alarm_sends_no_decision(tmp_path: Path) -> None:
         sleeper=clock.sleep,
         actions_factory=lambda plan: PreflightedActions(),
         runner=RecordedRunner(returncode=orchestrator.EXIT_HELD, stop=False),
-        notify_runner=notify,
+        notify_runner=notify.factory,
     )
     assert code == EXIT_HELD
     assert notify.calls == []
