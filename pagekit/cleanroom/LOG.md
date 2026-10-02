@@ -257,3 +257,26 @@ record".
   preferred source.
 - **What stays in force:** the rewritten rule of entry 0009. No build-side agent reads
   the bridge files, and the bridge is removed from `main` before pagekit merges.
+
+## 0013 — Build side: fix the review findings on the clean-room checks
+
+- **Who:** a fresh build-side agent (Claude Opus 5.5), started by the host.
+- **Why:** CodeRabbit's review of pull request #249 found four places where a clean-room
+  check fails open or exempts too much: the commit hook skips the gate when the gate
+  file is missing; lines under a `Source:` line skip the code-shape rules; a HOLD can be
+  lifted by a decision in an unrelated incident note; and a failed read of a note on the
+  base branch passes.
+- **Brief:** `briefs/0013-build-review-fixes.md` (sha256 bc68e855d0a78cb1147d4b57e49e592ad819109460ff198f3183f168983abae0), issued
+  2026-10-02T20:45:39Z, saved before the agent started.
+- **Sources:** none beyond pagekit's own code and tests; no finding report informs it.
+
+## 0014 — Correction to finding 0021
+
+- **Who:** the host, from CodeRabbit's review of pull request #249.
+- **What:** finding 0021 (a blank page) says pagekit raises no crop flags on a blank
+  page. That described pagekit before entry 0010. Since entry 0010, a page with no ink
+  detected goes to review for that reason alone, as the slice 1 spec says.
+- **Why here and not in the finding:** finding files are kept exactly as accepted, with
+  their digests in entry 0008. This entry is the correction. A builder citing finding
+  0021 must also cite this entry.
+
