@@ -1,6 +1,5 @@
 """Retention and native page-Testimonium tests over the real stage program."""
 
-import ast
 import copy
 import inspect
 import json
@@ -561,29 +560,6 @@ def test_an_actual_page_testimonium_identity_refuses_replacement_at_the_store_bo
     with pytest.raises(IncompatibleReuse, match="immutable"):
         tree.publish_artifact(changed)
     assert _record_path(tree, original).read_bytes() == before
-
-
-def test_every_page_testimonium_is_written_by_one_of_two_identity_bearing_writers():
-    module = ast.parse(inspect.getsource(attestatores))
-    publishers = []
-    for node in ast.walk(module):
-        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-            continue
-        if node.func.attr != "publish":
-            continue
-        kind = next((item.value for item in node.keywords if item.arg == "kind"), None)
-        if isinstance(kind, ast.Constant) and kind.value == PAGE_KIND:
-            publishers.append(node.lineno)
-    spans = []
-    for writer in (
-        attestatores.publish_page_testimonium,
-        attestatores.publish_detector_page_testimonium,
-    ):
-        lines, start = inspect.getsourcelines(writer)
-        spans.append(range(start, start + len(lines)))
-    assert len(publishers) == 2
-    assert all(any(line in span for span in spans) for line in publishers)
-    assert all(any(line in span for line in publishers) for span in spans)
 
 
 def test_parseable_native_payload_and_self_report_remain_separate():

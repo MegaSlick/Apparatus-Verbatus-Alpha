@@ -93,12 +93,9 @@ from common.imaging import crop_png, dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     REPORTED_BOUNDS_SOURCES,
     native_parse_refusal,
-    record_presentations,
     split_page_edge_overshoots,
     validate_capture_text_view,
     validate_native_capture,
-    validate_native_witness_geometry,
-    validate_presented_page_binding,
 )
 from common.native_witness import (
     validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
@@ -112,7 +109,6 @@ from common.page_testimonia import (  # noqa: E402
     BLANK_TESTIMONY_HEALTH,
     NO_DETECTOR_RECORD_REASON,
     declared_page_witness_chairs,
-    is_detector_blank_testimony,
     validate_page_testimonium_record,
     verify_page_native_capture,
 )
@@ -375,40 +371,6 @@ def _sealed_source_page(
     page_id = presented["source_page_id"]
     page, page_bytes = read_sealed_page(context.tree, page_id)
     return page, page_bytes, dimensions(page_bytes)
-
-
-def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
-    """Re-derive the presentation's sealed page and its blob binding.
-
-    An unpresented record binds no input, except a record reader's blank
-    testimony, whose one input is its detector's census
-    (`common.page_testimonia.validate_page_testimonium_record` checks it).
-    """
-    payload = record["payload"]
-    presented = payload["presented"]
-    validate_native_witness_geometry(payload)
-    if presented == {}:
-        if record.get("inputs") != [] and not is_detector_blank_testimony(context, record):
-            raise SchemaRefusal("an unpresented Testimonium carries image inputs")
-        return
-    page, page_bytes, page_size = _sealed_source_page(context, presented)
-    validate_native_witness_geometry(payload, page_size=page_size)
-    for shown in record_presentations(payload):
-        validate_presented_page_binding(
-            shown,
-            page_ordinal=page["payload"]["ordinal"],
-            page_image_path=page["payload"]["image_path"],
-            page_sha256=page["payload"]["source_sha256"],
-            page_size=page_size,
-            page_bytes=page_bytes,
-        )
-        if not any(
-            item == {"relative_path": shown["image_path"], "sha256": shown["image_sha256"]}
-            for item in record.get("inputs", [])
-        ):
-            raise SchemaRefusal(
-                "a Testimonium presented image is not digest-bound in record.inputs"
-            )
 
 
 def _is_positive_int(value: Any) -> bool:
@@ -727,27 +689,9 @@ def validate_page_testimonium_payload(
             validate_raw_response_ref(reference)
         validate_adapter_metadata(payload)
         validate_retained_response_pairing(payload)
-        if "native_inference" in payload:
-            _require_chandra_native_testimonium_scope(payload)
         if problem := _confidence_problem(payload.get("witness_reported")):
             raise SchemaRefusal(problem)
     return validate_shared_page_testimonium_payload(payload, testimonium_id=testimonium_id)
-
-
-def _require_chandra_native_testimonium_scope(payload: dict[str, Any]) -> None:
-    """Keep the native retry capability on Chandra's one admitted chair/scope."""
-    provenance = payload.get("provenance")
-    identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
-    if (
-        payload.get("chair") != "attestator_1"
-        or not isinstance(identity, dict)
-        or identity.get("role") != "attestator_1"
-        or identity.get("witness_adapter") != "chandra.v1"
-        or identity.get("witness_scope") != "page"
-    ):
-        raise SchemaRefusal(
-            "native_inference belongs only to page-scoped attestator_1 with adapter chandra.v1"
-        )
 
 
 def require_accounted_unrecordable_channel(record: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -1373,6 +1317,12 @@ def validate_page_record_facts(payload: dict[str, Any], outcome: str) -> None:
             )
 
 
+def _seal_page_testimonium(context, **fields: Any) -> None:
+    """Publish a page record only once it passes the check every reader applies to it."""
+    validate_page_testimonium_record(context, context.envelope(kind="page-testimonium", **fields))
+    context.publish(kind="page-testimonium", **fields)
+
+
 def publish_page_testimonium(
     context,
     *,
@@ -1431,10 +1381,9 @@ def publish_page_testimonium(
         adapter_metadata=declared_adapter_metadata(resolved, has_raw_response=bool(response_refs)),
     )
     inputs = [context.input_ref(presented["image_path"])] if presented else []
-    validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
     verify_page_call_sampling(context, payload, chair)
-    context.publish(
-        kind="page-testimonium",
+    _seal_page_testimonium(
+        context,
         subject_id=page_subject_id,
         outcome=attempt.outcome,
         attempt=page_attempt,
@@ -2227,11 +2176,8 @@ def publish_detector_page_testimonium(
             + [reference for reference in unit_call_refs if reference is not None]
         )
         verify_page_call_sampling(context, payload, chair)
-    validate_testimonium_presentation(
-        context, {"outcome": attempt.outcome, "payload": payload, "inputs": inputs}
-    )
-    context.publish(
-        kind="page-testimonium",
+    _seal_page_testimonium(
+        context,
         subject_id=page_subject_id,
         outcome=attempt.outcome,
         attempt=page_attempt_id,

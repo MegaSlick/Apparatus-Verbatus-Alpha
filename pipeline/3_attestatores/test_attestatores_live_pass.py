@@ -1040,6 +1040,32 @@ def test_a_captured_pages_own_format_capabilities_reaches_its_testimonium(
     assert page["format_capabilities"] != attestatores.DEFAULT_FORMAT_CAPABILITIES
 
 
+@pytest.mark.parametrize("chair", ["attestator_3", "attestator_2"])
+def test_a_page_record_its_readers_would_refuse_is_never_published(
+    live_run, tmp_path, monkeypatch, chair
+):
+    """Both page-record writers check the record exactly as every reader will,
+    before it becomes immutable: one whose presentation names another page is
+    refused, and nothing is sealed for it."""
+
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+    real_payload = attestatores.page_testimonium_payload
+
+    def misattributed(**fields):
+        payload = real_payload(**fields)
+        if payload["chair"] == chair and payload["page_ordinal"] == 1:
+            payload = {**payload, "page_ordinal": 2}
+        return payload
+
+    monkeypatch.setattr(attestatores, "page_testimonium_payload", misattributed)
+    with pytest.raises(SchemaRefusal):
+        run_attestatores(live_run, run_root, factory=world.factory)
+
+    assert (1, chair) not in page_records(RunTree(run_root, RUN_ID))
+    assert (2, chair) not in page_records(RunTree(run_root, RUN_ID))
+
+
 def test_a_prompt_too_long_400_at_the_page_unit_still_stops_the_stage(live_run, tmp_path):
     """The other half of the boundary: a wire refusal is not a per-attempt hold.
 
