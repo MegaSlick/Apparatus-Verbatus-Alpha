@@ -16,7 +16,7 @@ import platform
 import stat
 import sys
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from functools import partial
 from pathlib import Path
 from types import MappingProxyType
@@ -3875,6 +3875,16 @@ def canary_ordinals(run: Mapping[str, Any]) -> set[int]:
     if not ordinals or any(not is_plain_int(ordinal) or ordinal < 1 for ordinal in ordinals):
         raise ContractError("run.json sealed a canary ledger with no valid page ordinals")
     return ordinals
+
+
+def real_page_entries(run: Mapping[str, Any], entries: Iterable[Mapping[str, Any]]) -> list:
+    """The entries on the run's real pages: every one not on a canary page.
+
+    Canary pages are controls, so an entry on one is never read beside a real
+    page's: never a side of a page break, a reconstruction or its context.
+    """
+    canaries = canary_ordinals(run)
+    return [entry for entry in entries if entry["page_ordinal"] not in canaries]
 
 
 def exemplar_page_ids(context) -> dict[int, str]:

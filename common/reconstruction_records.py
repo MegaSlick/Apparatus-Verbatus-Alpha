@@ -63,7 +63,7 @@ from common.reconstruction_prompt import (
 )
 from common.stage import (
     RECONSTRUCTOR_CHAIR,
-    canary_ordinals,
+    real_page_entries,
     sealed_decoding_policy,
     serving_reader,
     verify_retained_call_sampling,
@@ -168,13 +168,10 @@ def diplomatic_entries(
     page's readings are never entries: no reconstruction is made over one, and
     none is shown as another page's context or chain piece.
     """
-    canaries = canary_ordinals(context.run)
     plan_entries: list[dict[str, Any]] = []
     shown: dict[str, dict[str, Any]] = {}
-    for row in rows:
+    for row in real_page_entries(context.run, rows):
         if row["class"] not in (page_path.READING_CLASS, page_path.UNPLACED_CLASS):
-            continue
-        if row["page_ordinal"] in canaries:
             continue
         if row["act_key"] in shown:
             raise FatalAccounting(f"two readings of this run are keyed {row['act_key']}")

@@ -46,6 +46,7 @@ from common.stage import (
     canary_ordinals,
     exemplar_page_ids,
     latest_attempt,
+    real_page_entries,
     stage_manifest,
 )
 
@@ -788,7 +789,7 @@ def run_page_breaks(context, acts: Sequence[Mapping[str, Any]]) -> list[tuple[st
         for ordinal, page_id in exemplar_page_ids(context).items()
         if ordinal not in canaries
     }
-    return page_breaks(pages, [act for act in acts if act["page_ordinal"] not in canaries])
+    return page_breaks(pages, real_page_entries(context.run, acts))
 
 
 LINK_OPERATION: Final = "link"
