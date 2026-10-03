@@ -9,8 +9,7 @@ import pytest
 
 from . import notify_bridge
 from .errors import ErrorCode, OperatorError
-from .fakes import OperatorFakeProvider
-from .test_surface import START, _launch, _manifest, _spend_policy, _surface
+from .test_surface import _manifest, _surface
 
 
 class RecordingRunner:
@@ -111,7 +110,7 @@ def test_a_held_run_sends_a_decision_when_it_stops_not_afterwards(tmp_path: Path
 
 def test_a_raising_notifier_cannot_fail_the_verb_that_triggered_it(tmp_path: Path) -> None:
     messages: list[str] = []
-    surface = _surface(tmp_path, provider=OperatorFakeProvider(now=lambda: START), output=messages)
+    surface = _surface(tmp_path, output=messages)
 
     def explodes(event: str, message: str) -> notify_bridge.NotifyOutcome:
         del event, message
@@ -141,22 +140,9 @@ def test_notification_does_not_replace_the_terminal_result(tmp_path: Path) -> No
         return notify_bridge.NotifyOutcome(True, True, "delivered")
 
     surface.notifier = notifier
-    spend = _spend_policy(tmp_path)
     source, manifest = _manifest(tmp_path)
-    _launch(surface, spend)
     surface.upload(source, sealed_manifest=manifest)
     surface.run(run_id="terminal-result-run", scenario="page-unbroken")
 
     assert any("Run complete." in line for line in messages)
     assert [event for event, _ in sent] == ["milestone"]
-
-
-def test_a_suppressed_spend_warning_stays_suppressed(tmp_path: Path) -> None:
-    surface = _surface(tmp_path)
-    surface.notifier = lambda event, message: notify_bridge.NotifyOutcome(
-        True, False, "NOTIFY_SUPPRESSED verbatus-test-sink", suppressed=True
-    )
-
-    outcome = surface._notify_spend("balance is low")
-
-    assert outcome.line() == "Phone notification: suppressed (test sink)."

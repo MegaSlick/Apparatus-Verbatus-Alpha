@@ -70,7 +70,7 @@ from conftest import (
 )
 from conftest import file_digest_snapshot as snapshot
 from operations.operator import surface, volume_s3
-from operations.operator.custody import credential_free_environment
+from operations.operator.surface import credential_free_environment
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -104,8 +104,8 @@ FIXTURE = "synthetic-two-page-v0"
 # the reconstructor's receipt.
 HAPPY_SNAPSHOT_FILES = 141
 REVIEW_SNAPSHOT_FILES = 132
-HAPPY_RUN_TREE_DIGEST = "16446054c0f8b357d1371456987849202596a3689d0909cb6d1b132b4f8c42cb"
-REVIEW_RUN_TREE_DIGEST = "84953ed5aeea8e476d1a1c1921cd1671a852c4cdb751b0f22e873f7b86c51b5b"
+HAPPY_RUN_TREE_DIGEST = "26906c305ba287bc848106f0cc7292265a0c9e03eaa62f1c15f4c59522ad0c79"
+REVIEW_RUN_TREE_DIGEST = "0ff932be8dd6f2c93967eb3f32ab47a5718a349b203aa1d53cd7b010606102ef"
 
 
 def orchestrate_to_export(
@@ -588,7 +588,7 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
 
     for label, built in (
         ("orchestrator", orchestrator.stage_environment()),
-        ("operator surface", surface._stage_environment()),
+        ("operator surface", surface.credential_free_environment()),
     ):
         leaked = volume_s3.TRANSFER_CREDENTIAL_ENV.intersection(built)
         assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
@@ -625,7 +625,7 @@ def test_orchestrator_and_surface_strip_every_provider_credential(
     reference = credential_free_environment()
     for label, built in (
         ("orchestrator", orchestrator.stage_environment()),
-        ("operator surface", surface._stage_environment()),
+        ("operator surface", surface.credential_free_environment()),
     ):
         leaked = set(representative_names) & set(built)
         assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
@@ -896,7 +896,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v11"
+                or manifest.get("schema") != "armarium-export-manifest.v12"
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -1481,7 +1481,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v11",
+        "schema": "armarium-export-manifest.v12",
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())

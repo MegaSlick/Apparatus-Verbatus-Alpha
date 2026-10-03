@@ -11,6 +11,7 @@ job, and this file does not pretend otherwise.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -897,6 +898,11 @@ def test_provider_endpoint_vocabulary_is_isolated_to_the_runpod_adapter() -> Non
 
     for marker in ("rest.runpod.io", "api.runpod.io", "RUNPOD_"):
         occurrences = [source for source in sources if marker in source.read_text(encoding="utf-8")]
+        if marker == "RUNPOD_":
+            # The pod's own id variable, which the hand route reads on the pod.
+            models = (pod_root / "models.py").read_text(encoding="utf-8")
+            assert re.findall(r"RUNPOD_\w*", models) == ["RUNPOD_POD_ID"]
+            occurrences.remove(pod_root / "models.py")
         assert occurrences == [pod_root / "provider_runpod.py"], marker
 
 

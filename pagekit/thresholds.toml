@@ -1,0 +1,53 @@
+# Every value here is a starting guess. None has been calibrated on real pages, so each
+# carries status = "UNMEASURED" and the report says thresholds_measured = false until
+# every one is measured and its status changed to "MEASURED".
+
+[remove_isolated_ink]
+value = 1
+status = "UNMEASURED"
+meaning = "1 clears ink pixels with no ink among their eight neighbours (lone specks) before anything is counted; 0 keeps them."
+
+[min_ink_contrast]
+value = 48
+status = "UNMEASURED"
+meaning = "Grey levels between the dark and light classes below which the page is treated as carrying no ink."
+
+[page_edge_ink_share]
+value = 0.9
+status = "UNMEASURED"
+meaning = "Share of a border row or column that must be ink for it to count as scanner backdrop, not page."
+
+[discarded_min_pixels]
+value = 200
+status = "UNMEASURED"
+meaning = "Ink pixels outside every crop, inside the page, at or above which the crop is sent to review."
+
+[discarded_min_share]
+value = 0.005
+status = "UNMEASURED"
+meaning = "Share of the page's ink outside every crop at or above which the crop is sent to review."
+
+[edge_band_px]
+value = 6
+status = "UNMEASURED"
+meaning = "Width in pixels of the bands just inside and just outside each crop edge."
+
+[edge_cross_min_positions]
+value = 5
+status = "UNMEASURED"
+meaning = "Positions along one crop edge with ink on both sides at or above which the edge counts as cutting writing."
+
+[gutter_search_share]
+value = 0.15
+status = "UNMEASURED"
+meaning = "Half-width of the window around the page's middle searched for the gutter, as a share of page width."
+
+[split_gutter_tolerance_share]
+value = 0.01
+status = "UNMEASURED"
+meaning = "How far, as a share of page width, a split may sit outside the gutter's low-ink run before review."
+
+[min_short_side_px]
+value = 1200
+status = "UNMEASURED"
+meaning = "Shortest acceptable side of the master in pixels."

@@ -30,6 +30,12 @@ POD_GUARD_DIRECTORY = ".pod_guard"
 # real mount sits there, so run state and the model store cannot land on container disk.
 POD_VOLUME_MOUNT_PATH = "/workspace/private"
 
+# The variable RunPod sets in every pod to that pod's own id.
+POD_ID_ENVIRONMENT = "RUNPOD_POD_ID"
+
+# The one GPU count a pod is rented with; preflight checks the measured count against it.
+REQUESTED_GPU_COUNT = 1
+
 
 def run_report_paths(report: PurePosixPath) -> tuple[PurePosixPath, ...]:
     """The run report and the side files derived from its name."""

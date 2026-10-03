@@ -64,6 +64,7 @@ def seal_record(**overrides) -> dict:
     the check under test.
     """
     record = {
+        "schema": "archetypus-record.v2",
         **ACT,
         "text": "Maria",
         "text_hash": digest_of("Maria"),
@@ -71,9 +72,7 @@ def seal_record(**overrides) -> dict:
         "text_status": "established",
         "regions": [dict(REGION)],
         "provenance": {"chair": "perlector"},
-        "annotations": [],
         "uncertainty": _uncertainty(),
-        "evidence_ref": None,
         "dissent_ref": READING_REF,
         "perlectio_ref": READING_REF,
         "recensor_ref": REVIEW_REF,
@@ -112,8 +111,8 @@ def test_exactly_one_field_holds_the_established_characters():
     """Every other string-valued field is a hash, a status, or an identifier.
 
     Pinned by field name against the closed schema, not by comparing values: a
-    revived fallback field holding *different* characters (the old pipeline's
-    exact shape) would never equal `text`, so a value filter cannot fail. The
+    fallback field holding *different* characters would never equal `text`, so a
+    value filter cannot fail. The
     test below proves the closed set refuses such a field outright.
     """
     # The closed set, spelled out: any revived fallback field — reader_text,
@@ -121,6 +120,7 @@ def test_exactly_one_field_holds_the_established_characters():
     # name rather than by a suffix scan that catches only two of the five.
     assert archetypus._RECORD_FIELDS == frozenset(
         {
+            "schema",
             "act_id",
             "act_key",
             "page_id",
@@ -131,9 +131,7 @@ def test_exactly_one_field_holds_the_established_characters():
             "text_status",
             "regions",
             "provenance",
-            "annotations",
             "uncertainty",
-            "evidence_ref",
             "dissent_ref",
             "perlectio_ref",
             "recensor_ref",
@@ -162,22 +160,9 @@ def test_status_is_the_record_level_literal_and_never_mirrors_text_status():
     the Armarium checks literally. `text_status` answers what the text contains.
     Mirroring them would make every damaged act fail that consumer's check, and
     would put a second status decision where there is meant to be one."""
-    for text, text_status, evidence in (
-        ("Maria", "established", None),
-        ("Maria", "partial", None),
-        ("", "no_readable_text", REVIEW_REF),
-    ):
-        record = make_record(
-            text=text,
-            text_hash=digest_of(text),
-            text_status=text_status,
-            evidence_ref=evidence,
-            annotations=(
-                [{"kind": "illegible", "start": 0, "end": 0, "witness_evidence": []}]
-                if text_status == "partial"
-                else []
-            ),
-        )
+    gap = {"position": "leading", "start": 0, "end": 0, "witness_evidence": []}
+    for text_status, gaps in (("established", []), ("partial", [gap])):
+        record = make_record(text_status=text_status, uncertainty=_uncertainty(gaps=gaps))
         assert record["status"] == "established"
         assert record["text_status"] == text_status
 
@@ -227,10 +212,9 @@ def test_record_validation_refuses_a_bad_nested_self_hash():
 
 # --- The rest of the resealed-record refusals, each exercised ------------------
 #
-# `validate_record` runs on every later stage-local read, and CONTRACT.md offers
-# it to any consumer wanting to prove a record before relying on it. So each of
-# its refusals gets a case that fails without it: a refusal no test can kill is
-# a claim nobody has measured.
+# `validate_record` runs on every later stage-local read, so each of its
+# refusals gets a case that fails without it: a refusal no test can kill is a
+# claim nobody has measured.
 
 
 def test_record_validation_refuses_a_dissent_pointer_that_left_its_perlectio():
@@ -272,10 +256,10 @@ def test_record_validation_refuses_a_gap_whose_position_label_lies_about_its_own
 
     A resealed record must not claim `leading` three characters in, or
     `internal` at the very edge of the text: a labelled gap's bounds are
-    checked against what that label means, the same way the producer-side
-    `common/reading_annotations.py::validate_gaps` checks them, so the
-    canonical projection layer does not trust a restatement its own
-    producer would have refused to write.
+    checked against what that label means, by the canonical schema
+    `common.contracts.uncertainty.validate` that every stored doubt layer
+    meets, so the projection does not trust a restatement the producer
+    would have refused to write.
     """
     with pytest.raises(SchemaRefusal, match=expected):
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
@@ -312,16 +296,14 @@ def test_record_validation_refuses_a_whole_act_gap_beside_any_other_gap():
         )
 
 
-def test_record_validation_refuses_a_proved_blank_that_also_declares_a_gap():
+def test_record_validation_refuses_a_partly_read_gap_over_an_empty_text():
     """The same exclusivity, reached from the side the position rules leave open.
 
     Every bounds rule is satisfied vacuously over an empty text -- `leading`
     starts at 0 and `trailing` ends at `len("")` -- and the whole-act rule only
-    runs when the label already says `whole-act`. Without its own check this
-    record would seal clean: `no_readable_text` with the blank proof that
-    finding owes, and beside it a gap declaring a partly-read position. Two
-    claims about the same act, one saying the page held no readable ink and the
-    other that ink was seen and not read.
+    runs when the label already says `whole-act`. Without its own check an empty
+    text could carry a gap declaring a partly-read position: read characters
+    around a gap, where no character was read at all.
     """
     gap = {"position": "leading", "start": 0, "end": 0, "witness_evidence": []}
     with pytest.raises(SchemaRefusal, match="over an empty text"):
@@ -329,8 +311,7 @@ def test_record_validation_refuses_a_proved_blank_that_also_declares_a_gap():
             seal_record(
                 text="",
                 text_hash=digest_of(""),
-                text_status="no_readable_text",
-                evidence_ref=READING_REF,
+                text_status="partial",
                 uncertainty=_uncertainty(gaps=[gap]),
             )
         )
@@ -359,35 +340,6 @@ def test_record_validation_refuses_gap_evidence_with_a_non_digest_reference():
     gap = {"position": "internal", "start": 2, "end": 2, "witness_evidence": [evidence]}
     with pytest.raises(SchemaRefusal, match="sha256 is not a lowercase sha256"):
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))
-
-
-def test_record_validation_refuses_an_annotation_short_of_its_validated_form():
-    """A gap with no `witness_evidence` key validates, but not as what is stored.
-
-    `validate_annotations` fills the absent field in, so the record on disk is
-    not what validation produces from it — and a record carrying a shape the
-    constructor would never have written is refused rather than normalized
-    underneath the reader.
-    """
-    with pytest.raises(SchemaRefusal, match="not in the exact form validation produces"):
-        archetypus.validate_record(
-            seal_record(annotations=[{"kind": "illegible", "start": 0, "end": 0}])
-        )
-
-
-def test_record_validation_refuses_a_no_readable_text_record_carrying_an_annotation():
-    """The two silences, kept apart at read-back as well as at construction."""
-    note = {"kind": "uncertain", "start": 0, "end": 3, "certainty": "low", "alternatives": ["Ave"]}
-    with pytest.raises(SchemaRefusal, match="covering no readable character"):
-        archetypus.validate_record(
-            seal_record(
-                text="   ",
-                text_hash=digest_of("   "),
-                text_status="no_readable_text",
-                evidence_ref=REVIEW_REF,
-                annotations=[note],
-            )
-        )
 
 
 def test_two_groups_naming_one_crop_path_collapse_to_a_single_input():

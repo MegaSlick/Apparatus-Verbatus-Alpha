@@ -123,8 +123,6 @@ def _vllm_row(
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
-        "enable_tower_connector_lora": False,
-        "max_lora_rank": 16,
         "generation_config": "vllm",
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,
@@ -999,6 +997,65 @@ def test_a_callers_capacity_record_reaches_the_call_record_verbatim(tmp_path: Pa
     assert json.loads(record_bytes)["capacity"] == capacity
 
 
+@pytest.mark.parametrize(
+    ("usage", "findings"),
+    [
+        (
+            {
+                "prompt_tokens": 1040,
+                "prompt_tokens_details": {"multimodal_tokens": {"image": 1000}},
+            },
+            [],
+        ),
+        # The engine resized the page differently: the row's pixel bounds never reached it.
+        (
+            {
+                "prompt_tokens": 4040,
+                "prompt_tokens_details": {"multimodal_tokens": {"image": 4000}},
+            },
+            ["image-tokens-differ", "prompt-tokens-above-admitted"],
+        ),
+        ({"prompt_tokens": 1040}, ["image-tokens-unreported"]),
+    ],
+)
+def test_the_engine_s_token_counts_are_reconciled_on_the_record_without_touching_the_reading(
+    tmp_path: Path, usage: dict[str, object], findings: list[str]
+) -> None:
+    usage = {"completion_tokens": 3, "total_tokens": 3 + int(usage["prompt_tokens"]), **usage}
+    capacity = {
+        "schema": "verbatus-request-capacity.v1",
+        "image_prompt_tokens": 1000,
+        "prompt_tokens": 50,
+        "fits": True,
+    }
+    client, endpoint, blob_store, _chair = _built(tmp_path)
+    with client:
+        endpoint.script(ScriptedAnswer(content="la page", finish_reason="stop", usage=usage))
+        response = client.read(_request(capacity=capacity))
+    record_bytes = next(data for data in blob_store.written if data != response.raw_response)
+    reconciliation = json.loads(record_bytes)["usage_reconciliation"]
+
+    assert reconciliation["expected_image_tokens"] == 1000
+    assert reconciliation["admitted_prompt_tokens"] == 1050
+    assert reconciliation["findings"] == findings
+    assert (response.content, response.parse_problem) == ("la page", None)
+
+
+def test_a_call_without_a_capacity_record_has_nothing_to_reconcile(tmp_path: Path) -> None:
+    client, endpoint, blob_store, _chair = _built(tmp_path)
+    with client:
+        endpoint.script(
+            ScriptedAnswer(
+                content="ok",
+                finish_reason="stop",
+                usage={"prompt_tokens": 9, "completion_tokens": 1, "total_tokens": 10},
+            )
+        )
+        response = client.read(_request())
+    record_bytes = next(data for data in blob_store.written if data != response.raw_response)
+    assert json.loads(record_bytes)["usage_reconciliation"] is None
+
+
 def test_a_capacity_record_mutated_after_construction_does_not_reach_the_call_record(
     tmp_path: Path,
 ) -> None:
@@ -1403,6 +1460,18 @@ def test_a_failed_stop_on_exit_can_be_retried_through_the_client(tmp_path: Path)
         _ = client.handle
     # The retried stop was verified, so the card's lease is free again.
     FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(chair).release()
+
+
+def test_a_failed_stop_never_hides_the_error_that_ended_the_block(tmp_path: Path) -> None:
+    client, endpoint, _, _chair = _built(tmp_path)
+    client._manager.shutdown_timeout_seconds = 0.01
+
+    with pytest.raises(RuntimeError, match="page 3 could not be read") as caught:
+        with client:
+            endpoint.sticky_after_stop = True
+            raise RuntimeError("page 3 could not be read")
+
+    assert isinstance(caught.value.__cause__, ServiceStopError)
 
 
 # --- never a retry ------------------------------------------------------------

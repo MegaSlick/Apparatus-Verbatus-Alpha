@@ -53,7 +53,6 @@ maximum_edge = 2560
 #   witness_coordinates  whether each unit's box is shown as box_1000.
 #   surya_lines          whether Surya's detected lines are shown (ids L1..Ln).
 #   surya_blocks         whether Surya's detected blocks are shown (ids S1..Sn).
-#   crops                "off", the only setting this build applies.
 #   page_overlay         "off", or "boxes": a second image after the page
 #                        render, a copy of it with every shown boxed id
 #                        outlined and labelled (`common/page_overlay.py`).
@@ -64,5 +63,4 @@ witness_units = "own"
 witness_coordinates = true
 surya_lines = true
 surya_blocks = true
-crops = "off"
 page_overlay = "off"

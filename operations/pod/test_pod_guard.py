@@ -82,6 +82,11 @@ def pod(tmp_path):
         stub = bin_dir / name
         stub.write_text("#!/bin/sh\n" + body)
         stub.chmod(0o755)
+    # A readable counter that never moves: the container does no CPU work unless a test
+    # rewrites it.
+    cgroup = tmp_path / "cgroup"
+    cgroup.mkdir()
+    (cgroup / "cpu.stat").write_text("usage_usec 1000\n")
     state = tmp_path / "guard"
     env = {
         **os.environ,
@@ -183,7 +188,6 @@ def run_guard(env, hours):
 def test_container_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     env, calls, state = pod
     cgroup = tmp_path / "cgroup"
-    cgroup.mkdir()
     # Two CPU seconds per tick.
     on_each_tick(
         env,
@@ -256,6 +260,7 @@ def test_loopback_traffic_is_not_work(pod, tmp_path):
 
 def test_cgroup_v1_cpu_work_keeps_the_pod_until_its_time_is_up(pod, tmp_path):
     env, calls, state = pod
+    (tmp_path / "cgroup" / "cpu.stat").unlink()
     usage = tmp_path / "cgroup" / "cpuacct" / "cpuacct.usage"
     usage.parent.mkdir(parents=True)
     # 3e12 ns is 3e9 usec, past 2^31, where an awk that clamps %d would read every
@@ -444,6 +449,153 @@ def test_a_keepalive_touched_while_idle_holds_off_the_idle_delete(pod, tmp_path)
     run_guard(env, "0.002")
     assert "approved time is up" in log_of(state)
     assert "no GPU, CPU or network work" not in log_of(state)
+
+
+def test_a_run_s_keepalive_holds_a_stage_whose_counters_read_idle(pod, tmp_path):
+    """pod_run touches the keep-alive on every live tick while the orchestrator runs, so a
+    stage the counters cannot see working is not mistaken for an idle pod. Only the
+    approved time ends it."""
+    env, calls, state = pod
+    state.mkdir()
+    keepalive = state / "keepalive-testpod"
+    clock = tmp_path / "clock"
+    on_each_tick(env, tmp_path, f'touch -d "@$(cat "{clock}")" "{keepalive}"\n')
+    run_guard(env, "0.002")
+    assert "approved time is up" in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+
+
+def _notices(tmp_path, text):
+    return [line for line in lines(tmp_path / "curl-calls.txt") if text in line]
+
+
+UNAVAILABLE = "CPU idle detection unavailable on testpod; held until its deadline"
+RESTORED = "CPU idle detection restored on testpod"
+
+
+def test_a_cpu_counter_unreadable_since_arming_holds_the_pod_to_its_deadline(pod, tmp_path):
+    """The deadline deletes it, never the idle check, and the phone hears once why."""
+    env, calls, state = pod
+    (tmp_path / "cgroup" / "cpu.stat").unlink()
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    run_guard(env, "0.002")
+    assert "approved time is up" in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+    assert "pod delete testpod" in lines(calls)
+    [notice] = _notices(tmp_path, UNAVAILABLE)
+    assert "Z." in notice, "the deadline is named as a UTC time"
+    assert _notices(tmp_path, RESTORED) == []
+
+
+def test_a_cpu_counter_that_stays_unreadable_after_good_readings_holds_the_pod(pod, tmp_path):
+    env, calls, state = pod
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    # Readable at arming, gone from the first tick on.
+    on_each_tick(env, tmp_path, f'rm -f "{stat}"\n')
+    run_guard(env, "0.002")
+    assert "approved time is up" in log_of(state)
+    assert "no GPU, CPU or network work" not in log_of(state)
+    assert len(_notices(tmp_path, UNAVAILABLE)) == 1
+
+
+def test_a_cpu_counter_that_recovers_resumes_idle_counting(pod, tmp_path):
+    env, calls, state = pod
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    stat.unlink()
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    # Unreadable through tick 2, then readable and idle.
+    on_each_tick(
+        env, tmp_path, f'[ "$1" -ge 3 ] && printf "usage_usec 1000\\n" > "{stat}"\nexit 0\n'
+    )
+    run_guard(env, "5")
+    assert "no GPU, CPU or network work" in log_of(state)
+    assert len(_notices(tmp_path, UNAVAILABLE)) == 1
+    assert len(_notices(tmp_path, RESTORED)) == 1
+
+
+def test_a_reading_after_a_dropped_tick_is_judged_over_both_ticks(pod, tmp_path):
+    """0.3 s of CPU per one-second tick is under the busy line (0.5 s). With every other
+    reading dropped, the next good one sees 0.6 s gained over two ticks: still idle, and
+    the pod is deleted rather than held by a one-tick threshold."""
+    env, calls, state = pod
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    on_each_tick(
+        env,
+        tmp_path,
+        f'if [ $(($1 % 2)) = 1 ]; then rm -f "{stat}"; exit 0; fi\n'
+        f'printf "usage_usec %s\\n" $(($1 * 300000)) > "{stat}"\n',
+    )
+    run_guard(env, "5")
+    assert "no GPU, CPU or network work" in log_of(state)
+    assert "idle time unchanged" in log_of(state)
+
+
+def test_a_flapping_cpu_counter_reaches_the_phone_once_an_hour(pod, tmp_path):
+    """Missing for two ticks, back for one, over and over within an hour: every episode is
+    logged, the phone hears one unavailable notice and one recovery."""
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    on_each_tick(
+        env,
+        tmp_path,
+        f'if [ $(($1 % 3)) = 2 ]; then printf "usage_usec 1000\\n" > "{stat}"; '
+        f'else rm -f "{stat}"; fi\n',
+    )
+    run_guard(env, "0.005")
+    assert "approved time is up" in log_of(state)
+    assert log_of(state).count("CPU idle detection unavailable") >= 3
+    assert len(_notices(tmp_path, UNAVAILABLE)) == 1
+    assert len(_notices(tmp_path, RESTORED)) == 1
+
+
+def test_a_flapping_cpu_counter_is_announced_again_an_hour_later(pod, tmp_path):
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    # Each tick is twenty minutes: one episode every hour.
+    env["FAKE_SLEEP_ADVANCE"] = "1200"
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    on_each_tick(
+        env,
+        tmp_path,
+        f'if [ $(($1 % 3)) = 2 ]; then printf "usage_usec 1000\\n" > "{stat}"; '
+        f'else rm -f "{stat}"; fi\n',
+    )
+    run_guard(env, "4")
+    episodes = log_of(state).count("CPU idle detection unavailable")
+    assert episodes >= 2
+    assert len(_notices(tmp_path, UNAVAILABLE)) == episodes
+    assert len(_notices(tmp_path, RESTORED)) >= episodes - 1
+
+
+def _idle_cgroup(env, tmp_path, drop_at: int | None) -> None:
+    """The fixture's idle counter, missing for the one tick `drop_at`."""
+    stat = tmp_path / "cgroup" / "cpu.stat"
+    drop = "" if drop_at is None else f'[ "$1" = {drop_at} ] && rm -f "{stat}" && exit 0\n'
+    on_each_tick(env, tmp_path, drop + f'printf "usage_usec 1000\\n" > "{stat}"\n')
+
+
+# The dropped tick delays the delete by exactly one tick: it neither added idle time
+# nor reset it (a reset would cost the whole idle limit again).
+@pytest.mark.parametrize(("drop_at", "idle_seconds"), [(None, 1), (1, 2)])
+def test_a_cpu_reading_dropped_for_one_tick_neither_resets_nor_adds_idle(
+    pod, tmp_path, drop_at, idle_seconds
+):
+    env, calls, state = pod
+    _idle_cgroup(env, tmp_path, drop_at)
+    started = clock_of(env)
+    run_guard(env, "5")
+    assert "no GPU, CPU or network work" in log_of(state)
+    assert clock_of(env) - started == idle_seconds
+    assert ("idle time unchanged" in log_of(state)) is (drop_at is not None)
 
 
 def test_the_idle_limit_runs_from_the_last_keepalive_touch(pod):

@@ -354,19 +354,9 @@ def test_operator_descriptor_publication_reports_a_directory_sync_failure(
     assert target.read_bytes() == b"payload"
 
 
-@pytest.mark.parametrize(
-    "read",
-    [
-        pytest.param(lambda store: store.list(), id="list"),
-        pytest.param(
-            lambda store: store.readable_records_of_kind("balance-observation"),
-            id="readable_records_of_kind",
-        ),
-    ],
-)
 @pytest.mark.hostile_local
 def test_a_dangling_receipt_directory_link_refuses_rather_than_reading_as_empty(
-    tmp_path: Path, read: Callable[[records.ReceiptStore], object]
+    tmp_path: Path,
 ) -> None:
     """`exists()` follows the link, so a dangling one is not "no receipts yet"."""
 
@@ -378,7 +368,7 @@ def test_a_dangling_receipt_directory_link_refuses_rather_than_reading_as_empty(
     assert not (state / "receipts").exists()
     assert (state / "receipts").is_symlink()
     with pytest.raises(records.RecordError, match="not a safe directory"):
-        read(store)
+        store.list()
 
 
 def test_an_absent_receipt_directory_is_still_an_empty_history(tmp_path: Path) -> None:
@@ -387,24 +377,12 @@ def test_an_absent_receipt_directory_is_still_an_empty_history(tmp_path: Path) -
     store = records.ReceiptStore(tmp_path / "operator-state")
 
     assert store.list() == []
-    assert store.readable_records_of_kind("balance-observation") == ([], [])
 
 
 @pytest.mark.hostile_local
-@pytest.mark.parametrize(
-    "read",
-    [
-        pytest.param(lambda store: store.list(), id="list"),
-        pytest.param(
-            lambda store: store.readable_records_of_kind("balance-observation")[0],
-            id="readable_records_of_kind",
-        ),
-    ],
-)
 def test_a_receipt_directory_swapped_after_its_check_is_not_the_one_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    read: Callable[[records.ReceiptStore], list[tuple[Path, dict[str, object]]]],
 ) -> None:
     """The checked directory and the read directory must be one object, not one name.
 
@@ -433,7 +411,7 @@ def test_a_receipt_directory_swapped_after_its_check_is_not_the_one_read(
 
     monkeypatch.setattr(records, "_entries", swap_then_return)
 
-    loaded = read(store)
+    loaded = store.list()
 
     assert [path.name for path, _ in loaded] == [real.name]
     assert [record["payload"] for _, record in loaded] == [{"balance_usd": "60.00"}]
@@ -448,9 +426,8 @@ def test_a_receipt_entry_swapped_for_a_link_after_the_listing_is_refused_not_fol
 ) -> None:
     """An entry is opened no-follow through the bound descriptor, never resolved.
 
-    `readable_records_of_kind` names a link instead of reading it, and `list`
-    refuses one, so neither reader can be handed bytes this store did not write
-    under a filename it did.
+    `list` refuses a link, so it cannot be handed bytes this store did not
+    write under a filename it did.
     """
 
     state = tmp_path / "operator-state"
@@ -459,9 +436,5 @@ def test_a_receipt_entry_swapped_for_a_link_after_the_listing_is_refused_not_fol
     impostor = real.with_name(real.name.replace("balance-observation-", "balance-observation-a"))
     os.symlink(real, impostor)
 
-    loaded, unreadable = store.readable_records_of_kind("balance-observation")
-
-    assert [path.name for path, _ in loaded] == [real.name]
-    assert unreadable == [f"{impostor.name}: it is a link rather than a receipt this store wrote"]
     with pytest.raises(records.RecordError, match="cannot be read"):
         store.list()

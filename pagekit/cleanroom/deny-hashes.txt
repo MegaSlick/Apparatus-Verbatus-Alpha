@@ -1,0 +1,4 @@
+# One lowercase hex sha256 per line: the digest of an identifier exactly as written in
+# ScanTailor or ScanTailor Advanced source, UTF-8, case kept. Hashes only, never the
+# identifiers themselves. Filled by a reading-side agent that outputs hashes only; see
+# CLEANROOM.md, "Deny hashes". Lines starting with # and blank lines are ignored.

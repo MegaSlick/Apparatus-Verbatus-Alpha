@@ -69,8 +69,10 @@ from common.contracts.outcomes import (
 )
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_SCHEMA,
+    RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS,
     SERVING_CONFIG_INPUTS_FIELDS,
     SERVING_CONFIG_INPUTS_SCHEMA,
+    SERVING_LAUNCH_AUDIT_SCHEMA,
 )
 from common.contracts.stages import (
     ARMARIUM,
@@ -726,7 +728,12 @@ class StageContext:
             ) from error
         if canonical != payload or not isinstance(audit, dict):
             raise SchemaRefusal("serving launch audit is not a canonical JSON object")
-        if audit.get("schema") != "serving-launch-audit.v1":
+        if audit.get("schema") in RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS:
+            raise SchemaRefusal(
+                f"serving launch audit was written as {audit['schema']}, which this build no "
+                "longer reads; re-run"
+            )
+        if audit.get("schema") != SERVING_LAUNCH_AUDIT_SCHEMA:
             raise SchemaRefusal("serving launch audit has the wrong or missing schema")
         if not isinstance(audit.get("chair"), str) or not audit["chair"].strip():
             raise SchemaRefusal("serving launch audit has no non-blank chair")
@@ -2564,6 +2571,7 @@ def _verify_page_reading(
             feed=feed,
             feed_ref=feed_ref,
             supersedes=superseded,
+            counted=act_plans,
             measure=measure,
         )
         payload, reading_ref, act_plans, last, page_holds, superseded = current
@@ -2658,6 +2666,7 @@ def _verify_rereads(
     feed: Mapping[str, Any],
     feed_ref: dict[str, str],
     supersedes: list[dict[str, str]],
+    counted: list[dict[str, Any]],
     measure,
 ) -> tuple[
     Mapping[str, Any],
@@ -2674,7 +2683,10 @@ def _verify_rereads(
     decisions, and be the first reading's request over the same feed; its own
     accounting is measured again. Returns the last one's payload, reference,
     entry plans, accounting record and page holds: the page's current reading,
-    and every reading it supersedes, earlier re-reads included.
+    and every reading it supersedes, earlier re-reads included. `counted` is the
+    entry plans the page counted before its first re-read; each re-read is
+    planned against those, or the last re-read's that kept every act it replaced
+    (`page_path.keeps_counted`), as stage 4 plans it.
     """
     ordinal, page_id = feed["page_ordinal"], feed["page_id"]
     answered: set[str] = set()
@@ -2712,7 +2724,11 @@ def _verify_rereads(
         _verify_reply(context, index, reading_what, ordinal, page_id, payload, feed)
         _verify_request(context, reading_what, reading, payload, feed)
         _verify_disposition(reading_what, payload)
-        plans = _entry_plans(index, reading_what, payload, feed, page_id, attempt=attempt)
+        plans = _entry_plans(
+            index, reading_what, payload, feed, page_id, attempt=attempt, superseded=counted
+        )
+        if page_path.keeps_counted(plans):
+            counted = plans
         reference = index.ref(reading)
         measured = measure(
             reading_what,
@@ -2816,11 +2832,13 @@ def _entry_plans(
     named: list[str] | None = None,
     first_count: int = 0,
     attempt: int | None = None,
+    superseded: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """The entry plans of a read answer, a re-ask's with its named ids; one not read has none.
 
-    `attempt` names an operator re-read's ordinal; otherwise it is the first
-    reading's, or the re-ask's when `named` is given.
+    `attempt` names an operator re-read's ordinal, planned against `superseded`, the
+    plans the page counted before it; otherwise it is the first reading's, or the
+    re-ask's when `named` is given.
     """
     if payload["disposition"] != page_path.READ:
         return []
@@ -2839,6 +2857,7 @@ def _entry_plans(
             else page_edges.REASK_READING,
             named=named,
             first_count=first_count,
+            superseded=superseded,
         )
     except (ContractError, KeyError, TypeError, ValueError) as error:
         raise FatalAccounting(
@@ -3558,6 +3577,31 @@ def is_real_ingress(run: Mapping[str, Any]) -> bool:
     An absent ingress record means synthetic (older test trees lack it).
     """
     return "ingress" in run and parse_ingress_record(run["ingress"]) == REAL_INGRESS
+
+
+def refuse_unlive_real_reading(
+    context: StageContext,
+    chair: ChairIdentity | AbsentChair,
+    serving_mode: str,
+    *,
+    stage: str = "Perlector",
+) -> None:
+    """Refuse a non-live serving row on a real submission, before anything is published.
+
+    The Perlector and the Coniector read the synthetic fixture's declared answers when
+    their chair's sealed row is not live. A real submission has no declarations, and
+    a declared answer cannot stand in for a model's reply to real ink. A fixture run,
+    a live row and an absent chair, which reads nothing, all pass.
+    """
+    if serving_mode == "live" or not is_real_ingress(context.run) or isinstance(chair, AbsentChair):
+        return
+    raise ContractError(
+        f"the {stage} cannot read a real submission from declared fixture answers: the "
+        f"sealed serving-recipe row for chair {chair.role!r} is not a live row, and a "
+        "declared answer cannot stand in for a model's reply to real ink. Start a new run "
+        f"sealed under a catalogue whose {stage} row is live; a sealed run's catalogue "
+        "cannot be changed"
+    )
 
 
 def sealed_decoding_policy(context: StageContext) -> tuple[dict[str, Any], str]:

@@ -39,7 +39,7 @@ from test_live_reading_seam_e2e import (  # noqa: F401  (`designated` is a fixtu
 from common.contracts.approval import build_review_decision_record
 from common.contracts.canonical import digest_bytes
 from common.contracts.stages import ARCHETYPUS, ARMARIUM
-from common.page_review import held_by_recensor
+from common.page_review import held_by_recensor, held_pages_after_review
 from common.review_decisions import (
     READING_HELD,
     aggregate_clearances,
@@ -349,6 +349,41 @@ def test_a_page_held_after_every_unit_on_it_was_excluded_holds_the_recensor(held
     assert held_by_recensor(RunTree(tree.root, RUN_ID)) == [
         {"subject_id": "operator-review", "what": "page 1", "hold_codes": page["hold_codes"]}
     ]
+    # The run-health receipt says so too: every unit is completed, the page is not.
+    receipt = RunTree(tree.root, RUN_ID).read_recensor_partition_receipt()
+    assert receipt["recensor_status"] == "partial"
+    assert (
+        f"page 1 is held after operator review ({', '.join(page['hold_codes'])})"
+        in receipt["reasons"]
+    )
+
+
+def test_a_held_canary_keeps_the_receipt_partial_but_not_the_systemic_count(
+    held, tmp_path, monkeypatch
+):
+    """A canary is a known-answer page, so a held canary is a real signal about the
+    run: its page hold stays in the receipt and keeps it partial. It is a control,
+    not a page of the register, so the systemic alarm's share leaves it out."""
+    tree = _copy(held, tmp_path)
+    _decide(tree.root, "p1:1", "exclude")
+    _decide(tree.root, "p1:2", "exclude")
+    monkeypatch.setattr("common.stage.canary_ordinals", lambda _run: {1})
+    monkeypatch.setattr("common.page_review.canary_ordinals", lambda _run: {1})
+    recensor = load_stage("5_recensor")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [recensor.__file__, *stage_argv(tree.root, tree.catalogue, placement_tier=TIER)],
+    )
+
+    assert recensor.main() == EXIT_HELD
+    [page] = _decisions(tree.root)["page_holds"]
+    assert page["page_ordinal"] == 1
+    run_tree = RunTree(tree.root, RUN_ID)
+    receipt = run_tree.read_recensor_partition_receipt()
+    assert receipt["page_holds"] == [page]
+    assert receipt["recensor_status"] == "partial"
+    assert held_pages_after_review(run_tree) == ([], 1)
 
 
 def test_decisions_are_re_applied_identically_on_a_re_run(held, tmp_path):

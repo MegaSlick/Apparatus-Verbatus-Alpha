@@ -23,7 +23,7 @@ from common.chairs.registry import (
 from operations.pod.arming import ControllerArmer, FailClosedControllerArmer
 from operations.pod.bootstrap import BootstrapActions, SubprocessBootstrapActions
 from operations.pod.fake_provider import FakeProvider
-from operations.pod.preflight import ChairCacheVerifier, SmokeReader, SystemGpuProbe
+from operations.pod.preflight import SmokeReader, SystemGpuProbe
 from operations.pod.provider import PodProvider
 from operations.pod.provider_runpod import (
     HttpTransport as RunPodHttpTransport,
@@ -57,29 +57,19 @@ from operations.serving.residency import (
     _FileResidencyHandle,
 )
 
-from .fakes import LocalFixtureObjectStore
-from .surface import (
-    FixtureBootstrapActions,
-    FixtureCache,
-    FixtureControllerArmer,
-    FixtureSmokeReader,
-)
+from .local_volume import LocalFixtureObjectStore
 from .volume_s3 import S3VolumeTarget
 
 SEAMS = (
     (SnapshotFetcher, HuggingFaceFetcher),
     (MaterializationFetcher, HuggingFaceMaterializationFetcher),
     (BootstrapActions, SubprocessBootstrapActions),
-    (BootstrapActions, FixtureBootstrapActions),
     (ControllerArmer, FailClosedControllerArmer),
-    (ControllerArmer, FixtureControllerArmer),
     (PodProvider, FakeProvider),
     (PodProvider, RunPodProvider),
     (PodProvider, RunPodV2Provider),
     (TransferTarget, LocalFixtureObjectStore),
     (TransferTarget, S3VolumeTarget),
-    (ChairCacheVerifier, FixtureCache),
-    (SmokeReader, FixtureSmokeReader),
     (SmokeReader, ServingSmokeReader),
     (ProfileProbe, SystemGpuProbe),
     (RunPodHttpTransport, UrllibRunPodTransport),

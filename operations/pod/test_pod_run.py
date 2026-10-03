@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import tomllib
 from argparse import Namespace
 from dataclasses import dataclass, field
@@ -96,6 +97,7 @@ class PreflightedActions(FakeActions):
                         "attestator_2",
                         "attestator_3",
                         "perlector",
+                        "reconstructor",
                     )
                 ],
                 # The record detector runs in-process: a verified cache, no smoke read.
@@ -246,6 +248,10 @@ def _run_argv(
     if not ws.models_config.exists():
         ws.models_config.parent.mkdir(parents=True, exist_ok=True)
         ws.models_config.write_bytes((ROOT / "config" / "models.toml").read_bytes())
+    reconstruction = ws.repository / "config" / "reconstruction.toml"
+    if not reconstruction.exists():
+        reconstruction.parent.mkdir(parents=True, exist_ok=True)
+        reconstruction.write_bytes((ROOT / "config" / "reconstruction.toml").read_bytes())
     return [
         "--report-path",
         str(report_path or ws.volume / "pod-run-report.json"),
@@ -493,6 +499,63 @@ def _guard_deadline(ws: Workspace, value: int, *, heartbeat: float | None = None
         beat.touch()
         os.utime(beat, (heartbeat, heartbeat))
     return path
+
+
+@pytest.mark.parametrize(
+    ("first_process", "armed", "touched"),
+    [("pod123", True, True), ("pod123", False, False), (None, True, False)],
+)
+def test_a_running_orchestrator_touches_its_own_pod_s_guard_keepalive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first_process: str | None,
+    armed: bool,
+    touched: bool,
+) -> None:
+    """The guard's resource counters are a backstop: a run in progress is work.
+
+    Only the first process's pod id is trusted (a shell's could keep another pod on the
+    shared volume alive), and nothing is created where no guard armed its directory.
+    """
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    if first_process is None:
+        monkeypatch.setattr(pod_run, "PID1_ENVIRON", tmp_path / "no-such-proc" / "environ")
+    else:
+        _first_process(tmp_path, monkeypatch, first_process)
+    guard = ws.volume / pod_run.POD_GUARD_DIRECTORY
+    if armed:
+        guard.mkdir()
+    seen: list[bool] = []
+    keepalive = guard / "keepalive-pod123"
+
+    class Watching(RecordedRunner):
+        def __call__(self, argv, *, cwd, env, transcript, liveness, interval_seconds):  # type: ignore[no-untyped-def]
+            def watched(pid: int, alive: bool) -> None:
+                liveness(pid, alive)
+                seen.append(keepalive.exists())
+
+            return super().__call__(
+                argv,
+                cwd=cwd,
+                env=env,
+                transcript=transcript,
+                liveness=watched,
+                interval_seconds=interval_seconds,
+            )
+
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=Watching(ticks=2),
+    )
+
+    assert code == EXIT_COMPLETE
+    assert seen and seen[0] is touched, "touched on the first live tick, while the child runs"
+    assert guard.is_dir() is armed
 
 
 @pytest.mark.parametrize(
@@ -1111,7 +1174,34 @@ def test_big_models_maps_to_perlector_through_armarium(tmp_path: Path, monkeypat
         "--to",
         "armarium",
     ]
-    assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == ["perlector"]
+    # The selection runs the Coniector, which asks its chair: preflight checks it too.
+    assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == ["perlector", "reconstructor"]
+
+
+@pytest.mark.parametrize("mode", ["on", "off"])
+def test_a_selection_through_the_coniector_preflights_its_chair_only_when_it_asks(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str], mode: str
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    argv = _run_argv(ws, extra=("--stage", "coniector", "--dry-run"))
+    reconstruction = ws.repository / "config" / "reconstruction.toml"
+    text = reconstruction.read_text(encoding="utf-8")
+    assert 'mode = "on"' in text
+    reconstruction.write_text(text.replace('mode = "on"', f'mode = "{mode}"'), encoding="utf-8")
+    clock = Clock()
+
+    code = main(
+        argv,
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=_never_called,
+    )
+
+    assert code == EXIT_DRY_RUN
+    roles = json.loads(capsys.readouterr().out)["bootstrap"]["preflight_roles"]
+    assert roles == (["reconstructor"] if mode == "on" else [])
 
 
 def test_a_full_run_held_before_its_export_closes_without_paid_idle_time(tmp_path: Path) -> None:
@@ -1584,7 +1674,17 @@ def test_every_selection_after_the_door_requires_its_predecessor_seal_before_boo
 def test_auto_and_empty_selection_preflight_roles(tmp_path: Path, capsys) -> None:
     ws = _prepared(tmp_path)
     clock = Clock()
-    for extra, expected in (((), None), (("--stage", "door"), [])):
+    # A full run preflights exactly the chairs its stages use, not every configured row.
+    full = [
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+        "designator_surya",
+        "perlector",
+        "reconstructor",
+        "secondary_proposer",
+    ]
+    for extra, expected in (((), full), (("--stage", "door"), [])):
         assert (
             main(
                 _run_argv(ws, extra=(*extra, "--dry-run")),
@@ -1652,6 +1752,43 @@ def test_selection_refuses_missing_chair_smoke_after_preflight(tmp_path: Path) -
     assert code == EXIT_REFUSED
     assert runner.calls == []
     assert "attestator_2" in _report(ws)["reason"]
+
+
+def test_a_coniector_selection_is_refused_without_reconstructor_preflight_evidence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    argv = _run_argv(ws, extra=("--stage", "coniector"))
+    reconstruction = ws.repository / "config" / "reconstruction.toml"
+    assert 'mode = "on"' in reconstruction.read_text(encoding="utf-8")
+    clock = Clock()
+    runner = RecordedRunner()
+
+    class NoReconstructorSmoke(PreflightedActions):
+        def run_preflight(self) -> dict[str, object]:
+            return self._step(
+                BootstrapStep.PREFLIGHT,
+                {
+                    "color": "green",
+                    "placement_tier": TIER,
+                    "serving_config_inputs": SERVING_INPUTS,
+                    "smoke_receipts": [{"chair": "perlector", "valid": True}],
+                },
+            )
+
+    code = main(
+        argv,
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: NoReconstructorSmoke(),
+        runner=runner,
+    )
+
+    assert code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "reconstructor" in _report(ws)["reason"]
 
 
 @pytest.mark.parametrize(
@@ -3690,3 +3827,139 @@ def test_a_descendant_holding_the_pipe_cannot_stop_the_runner_from_returning(
     assert completed.returncode == 0
     assert "still attached" in completed.transcript_failure
     assert "parent" in transcript.read_text(encoding="utf-8")
+
+
+# --- a run holds its pod only while it shows progress -------------------------------
+
+
+def _burn_cpu() -> None:
+    """Use CPU time in this process until its counter visibly moves."""
+
+    start = os.times()
+    while os.times().user + os.times().system - start.user - start.system < 0.02:
+        sum(range(1000))
+
+
+def _stalling_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ticks: list[str]
+) -> tuple[list[float], list[list[str]]]:
+    """Drive one run whose orchestrator ticks once per five minutes doing what `ticks` says.
+
+    On every tick an idle model server in the orchestrator's own process tree burns CPU
+    and appends to its engine log in the run tree; "transcript" also adds stage output,
+    and "artifact" also publishes a file in the run tree. Returns the minute of each
+    keep-alive touch and every notice argv.
+    """
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    _first_process(tmp_path, monkeypatch, "pod123")
+    topic = ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic"
+    topic.parent.mkdir(parents=True, exist_ok=True)
+    topic.write_text("guard-topic-for-the-test\n", encoding="utf-8")
+    start = clock.now()
+    touches: list[float] = []
+    monkeypatch.setattr(
+        pod_run,
+        "_guard_keepalive",
+        lambda volume, pod_id: lambda: touches.append((clock.now() - start).total_seconds() / 60),
+    )
+    tree = ws.volume / pod_run.DEFAULT_RUNS_DIRECTORY / "first-real-run"
+    engine_log = tree / "4_perlector" / pod_run.SERVING_LOGS_DIR / "vllm-perlector.log"
+    notify = NotifyRecorder()
+
+    class Ticking(RecordedRunner):
+        def __call__(self, argv, *, cwd, env, transcript, liveness, interval_seconds):  # type: ignore[no-untyped-def]
+            for number, tick in enumerate(ticks):
+                clock.sleep(300)
+                _burn_cpu()
+                engine_log.parent.mkdir(parents=True, exist_ok=True)
+                with engine_log.open("a", encoding="utf-8") as log:
+                    log.write("Avg prompt throughput: 0.0 tokens/s\n")
+                if tick == "transcript":
+                    with Path(transcript).open("a", encoding="utf-8") as out:
+                        out.write(f"page {number} read\n")
+                elif tick == "artifact":
+                    artifact = tree / "4_perlector" / f"page-{number}.json"
+                    artifact.write_text("{}", encoding="utf-8")
+                    # Ahead of every earlier write, whatever the filesystem's clock grain.
+                    later = time.time_ns() + (number + 1) * 10**9
+                    os.utime(artifact, ns=(later, later))
+                else:
+                    assert tick == "idle"
+                liveness(os.getpid(), True)
+            return super().__call__(
+                argv,
+                cwd=cwd,
+                env=env,
+                transcript=transcript,
+                liveness=liveness,
+                interval_seconds=interval_seconds,
+            )
+
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=Ticking(),
+        notify_runner=notify.factory,
+    )
+    assert code == EXIT_COMPLETE
+    stalls = [call for call in notify.calls if "shows no progress" in call[-1]]
+    return touches, stalls
+
+
+def test_a_progressing_run_holds_its_pod_on_every_tick(tmp_path, monkeypatch) -> None:
+    touches, stalls = _stalling_run(
+        tmp_path, monkeypatch, ["transcript", "artifact", "transcript", "artifact", "transcript"]
+    )
+    assert touches == [5, 10, 15, 20, 25]
+    assert stalls == []
+
+
+def test_an_idle_server_burning_cpu_does_not_hold_the_pod_past_the_stall_window(
+    tmp_path, monkeypatch
+) -> None:
+    assert pod_run.RUN_STALL_SECONDS == 15 * 60
+    touches, stalls = _stalling_run(tmp_path, monkeypatch, ["idle"] * 7)
+    # Only the first tick, which finds the run tree new, is progress: held through
+    # minute 15, released from minute 20 on, though the server burned CPU every tick.
+    assert touches == [5, 10, 15]
+    [notice] = stalls
+    assert notice[-2] == "decision"
+    assert notice[-1].startswith("run on pod123 shows no progress since ")
+    assert notice[-1].endswith("since 2026-01-01 00:05 UTC; the idle guard now decides")
+
+
+def test_progress_after_a_stall_holds_the_pod_again(tmp_path, monkeypatch) -> None:
+    touches, stalls = _stalling_run(
+        tmp_path, monkeypatch, ["idle"] * 5 + ["artifact", "transcript"]
+    )
+    assert touches == [5, 10, 15, 30, 35]
+    assert len(stalls) == 1
+
+
+def test_the_run_tree_mark_moves_on_stage_writes_and_not_on_engine_logs(tmp_path: Path) -> None:
+    assert pod_run.run_tree_mark(tmp_path / "absent") is None
+    stage = tmp_path / "4_perlector"
+    engine_log = stage / pod_run.SERVING_LOGS_DIR / "vllm-perlector.log"
+    engine_log.parent.mkdir(parents=True)
+    engine_log.write_text("starting\n", encoding="utf-8")
+    before = pod_run.run_tree_mark(tmp_path)
+    assert before is not None
+
+    future = before + 10**9
+    os.utime(engine_log, ns=(future, future))
+    assert pod_run.run_tree_mark(tmp_path) == before
+
+    artifact = stage / "page-1.json"
+    artifact.write_text("{}", encoding="utf-8")
+    os.utime(artifact, ns=(future, future))
+    assert pod_run.run_tree_mark(tmp_path) == future
+
+    # A name published from an older file still moves the mark through its directory.
+    later = future + 10**9
+    os.link(artifact, stage / "page-2.json")
+    os.utime(stage, ns=(later, later))
+    assert pod_run.run_tree_mark(tmp_path) == later

@@ -13,7 +13,10 @@ What is proven, unit by unit:
 - `_refuse_incompatible_real_reuse` names the sealed policy that moved, fires
   before the predecessor-seal refusal, and writes nothing;
 - `exemplar_page_ids` agrees with the fixture declaration on the happy fixture
-  run and with the sealed bytes on the real run.
+  run and with the sealed bytes on the real run;
+- `refuse_unlive_real_reading` refuses a real submission on a row that is not
+  live, by the stage's name, and passes a fixture run, a live row and an
+  absent chair.
 """
 
 from __future__ import annotations
@@ -23,9 +26,11 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from common.chairs.models import AbsentChair
 from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import (
@@ -48,6 +53,7 @@ from common.stage import (
     open_context,
     open_stage_context,
     real_run_policy_digest,
+    refuse_unlive_real_reading,
     stage_parser,
     submission_identity,
 )
@@ -450,3 +456,29 @@ def test_open_context_takes_the_tree_and_its_authority_together(fixture_template
     tree = RunTree(fixture_template, FIXTURE_RUN_ID)
     with pytest.raises(ContractError, match="together or neither"):
         open_context(_args(fixture_template, FIXTURE_RUN_ID), INK_MAP, tree=tree)
+
+
+def _bare_context(run: dict) -> StageContext:
+    return StageContext(
+        tree=None,
+        run=run,
+        fixture=None,
+        scenario=REAL_SCENARIO,
+        stage="test",
+        adapter_revision=None,
+        args=None,
+        registry=None,
+    )
+
+
+def test_a_real_submission_on_a_row_that_is_not_live_is_refused_by_the_stage_name():
+    real = _bare_context({"ingress": real_ingress_record()})
+    chair = SimpleNamespace(role="reconstructor")
+    with pytest.raises(
+        ContractError, match="the Coniector cannot read a real submission"
+    ) as caught:
+        refuse_unlive_real_reading(real, chair, "fixture", stage="Coniector")
+    assert "'reconstructor'" in str(caught.value)
+    refuse_unlive_real_reading(real, chair, "live")
+    refuse_unlive_real_reading(real, AbsentChair(role="perlector", reason="absent"), "fixture")
+    refuse_unlive_real_reading(_bare_context({}), chair, "fixture")

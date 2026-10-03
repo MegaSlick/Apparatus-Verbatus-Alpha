@@ -45,7 +45,7 @@ from operations.corpus.evaluate import (
 from operations.corpus.local_admission import SCHEMA as LEDGER_SCHEMA
 from operations.corpus.local_admission import validate_local_admission_ledger
 from operations.corpus.reference import build_reference_page
-from operations.spike_perlector.models import OutputStatus
+from operations.corpus.scoring import OutputStatus
 from proof.build_fixture import ACTS, act_descriptor
 
 ROOT = Path(__file__).resolve().parents[2]
