@@ -1130,10 +1130,14 @@ def _semantic_stage_seal(data: bytes, replacements: dict[str, str]) -> bytes | N
 
 
 def _semantic_stage_seal_inventory_replacements(
-    files: list[tuple[Path, bytes]], replacements: dict[str, str]
+    root: Path, files: list[tuple[Path, bytes]], replacements: dict[str, str]
 ) -> None:
-    """Map each valid seal's raw aggregate values to its semantic inventories."""
-    records_by_stage: dict[str, list[tuple[Path, bytes, dict]]] = {stage: [] for stage in STAGES}
+    """Map each valid seal's raw aggregate values to its semantic inventories.
+
+    `root` holds one directory per run, and a seal witnesses only its own run's
+    stage, so records and blobs are grouped by (run directory, stage).
+    """
+    records_by_stage: dict[tuple[str, str], list[tuple[Path, bytes, dict]]] = {}
     seals: list[tuple[Path, bytes, dict]] = []
     for path, data in files:
         try:
@@ -1144,10 +1148,10 @@ def _semantic_stage_seal_inventory_replacements(
         if canonical_bytes(record) != data or record.get("self_hash") != self_hash(record):
             continue
         stage = record.get("stage")
-        if stage not in records_by_stage:
+        if stage not in STAGES:
             continue
         row = (path, data, record)
-        records_by_stage[stage].append(row)
+        records_by_stage.setdefault((path.relative_to(root).parts[0], stage), []).append(row)
         if record.get("kind") == "stage-seal":
             seals.append(row)
 
@@ -1167,24 +1171,24 @@ def _semantic_stage_seal_inventory_replacements(
     for seal_path, _, seal in seals:
         payload = seal.get("payload")
         stage = payload.get("stage") if isinstance(payload, dict) else None
-        if stage not in records_by_stage:
+        if stage not in STAGES:
             continue
+        run = seal_path.relative_to(root).parts[0]
         sealed = sorted(
             (
                 row
-                for row in records_by_stage[stage]
+                for row in records_by_stage.get((run, stage), [])
                 if row[2]["kind"] not in {"stage-seal", "decode-environment"}
             ),
             key=lambda row: row[2]["artifact_id"],
         )
         artifacts = [inventory_entry(*row) for row in sealed]
-        prefix = f"{WRITING_DIRECTORIES[stage]}/blobs/sha256/"
+        blob_directory = root / run / WRITING_DIRECTORIES[stage] / "blobs" / "sha256"
         blobs = sorted(
             (
                 {"name": path.name, "sha256_of_content": digest_bytes(data)}
                 for path, data in files
-                if str(path.relative_to(path.parents[3])).startswith(prefix)
-                and "/" not in str(path.relative_to(path.parents[3]))[len(prefix) :]
+                if path.parent == blob_directory
             ),
             key=lambda row: row["name"],
         )
@@ -1298,7 +1302,7 @@ def semantic_snapshot(root: Path) -> dict[str, str]:
         if not changed:
             break
 
-    _semantic_stage_seal_inventory_replacements(files, replacements)
+    _semantic_stage_seal_inventory_replacements(root, files, replacements)
     for path, data in files:
         semantic = _semantic_stage_seal(data, replacements)
         if semantic is not None:
@@ -1643,6 +1647,30 @@ def test_a_content_change_under_a_stage_seal_moves_the_semantic_digest(happy_run
     changed = _through_attestatores(happy_run, tmp_path / "changed", change)
 
     assert semantic_snapshot_digest(changed) != semantic_snapshot_digest(original)
+
+
+def test_each_run_under_one_root_reduces_its_own_seals(happy_run, tmp_path):
+    root = _through_attestatores(happy_run, tmp_path / "runs")
+    shutil.copytree(root / "r", root / "second")
+
+    inventory = semantic_snapshot(root)
+
+    first = {key[len("r/") :]: value for key, value in inventory.items() if key.startswith("r/")}
+    second = {
+        key[len("second/") :]: value
+        for key, value in inventory.items()
+        if key.startswith("second/")
+    }
+    assert (
+        first
+        == second
+        == {
+            key[len("r/") :]: value
+            for key, value in semantic_snapshot(
+                _through_attestatores(happy_run, tmp_path / "one")
+            ).items()
+        }
+    )
 
 
 def test_a_seal_whose_inventory_cannot_be_rebuilt_is_refused(happy_run, tmp_path):
