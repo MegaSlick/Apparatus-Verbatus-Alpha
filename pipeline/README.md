@@ -1,8 +1,8 @@
 # The pipeline
 
-One directory per stage. Each stage is a program (`run.py`, and `door.py` for the door)
-that reads the sealed records earlier stages wrote into the run tree and writes its own
-into its directory there. [ARCHITECTURE.md](../ARCHITECTURE.md) says what each stage is
+One directory per stage. Each stage is a program, `run.py`, that reads the sealed records earlier stages wrote into the run tree and writes its own
+into its directory there. The door has no directory of its own: `1_exemplar/door.py`
+writes its records into Exemplar's `1_exemplar/` directory. [ARCHITECTURE.md](../ARCHITECTURE.md) says what each stage is
 for; each stage's `CONTRACT.md` gives its records and what a consumer may rely on.
 
 `orchestrator/run.py` runs the stages in order, all of them or a contiguous selection
