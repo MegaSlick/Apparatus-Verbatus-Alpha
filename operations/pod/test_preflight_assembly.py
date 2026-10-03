@@ -144,7 +144,6 @@ class ServedHandle:
     evidence_reference = {"path": "serving-evidence.json"}
     last_fixture_response_sha256 = "a" * 64
     last_fixture_output_sha256 = "b" * 64
-    requests_completed = 1
     fixture_requests_completed = 1
 
 

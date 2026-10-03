@@ -25,8 +25,8 @@ the files a sealed manifest names, checksummed and resumable.
   the later alarm to immutable evidence already at the ordinary path. There is no
   routine deletion command: this tool has no sealed end-of-run authority. The
   Exemplar door writes the corresponding private report for decoder, digest, and
-  unreadable-after-transfer alarms. Byte-identical sources are admitted as
-  distinct filename links and recorded as a private duplicate fact, not a refusal.
+  unreadable-after-transfer alarms. Byte-identical files under two names refuse the
+  whole run at the door, after a private duplicate report names them.
 
 ## The storage-root check is mechanical; the approval-record requirement is cut
 
@@ -56,8 +56,8 @@ never appear there.
   A changed submission never overwrites evidence. A later distinct inventory
   alarm gets a content-addressed sibling report; the door records decoder,
   digest, and unreadable-after-transfer alarms in its own private run-tree
-  refusal-report artifact. It records admitted byte-identical sources in a
-  separate private duplicate report instead of treating them as alarms.
+  refusal-report artifact. Byte-identical files under two names are named in a
+  separate private duplicate report, and the door then refuses the whole run.
 - Records retain original filenames, digests, byte counts, and fanned page/frame
   indices. An export retains those links both in its page census and alongside
   every delivered source region. Terminals are presentation only: they report a

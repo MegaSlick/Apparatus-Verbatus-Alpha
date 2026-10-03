@@ -10,7 +10,7 @@ hand-typed stand-in response. Adapters, by contrast, are small stubs: what
 each real adapter's `retain`/`parse` does is already proven by
 `test_witness_adapters.py`, `test_churro_native_capture.py`, and
 `test_chandra_adapter.py`; this module is tested for its own logic --
-building a request, and turning one retained response into a `LiveAttempt`
+building a request, and turning one retained response into an `Attempt`
 -- with the real `churro.v1` and `chandra.v1` adapters brought in only where
 a test specifically wants to prove real wiring, not a stub's promise.
 """
@@ -952,8 +952,6 @@ def _vllm_row(*, recipe: str, chair: str, served_model_id: str) -> dict[str, obj
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
-        "enable_tower_connector_lora": False,
-        "max_lora_rank": 16,
         "generation_config": "vllm",
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,
@@ -1051,7 +1049,12 @@ def _stub_adapter(*, retain_result: dict[str, Any], prompt: dict[str, Any] | Non
         }
 
     retained: list[bool] = []
-    return SimpleNamespace(prompt=prompt_fn, retain=retain_fn, retained_served=retained)
+    return SimpleNamespace(
+        prompt=prompt_fn,
+        retain=retain_fn,
+        retained_served=retained,
+        format_capabilities={"can_express_uncertainty": False, "can_express_layout": False},
+    )
 
 
 def _dai_presentation(*, width: int = 3_000, height: int = 1_001) -> dict[str, Any]:
@@ -1184,31 +1187,6 @@ def test_live_attempt_from_response_read_on_a_complete_stop(tmp_path: Path):
     assert blob_store.has(response.response_sha256)  # raw blob retained
 
 
-def test_format_capabilities_falls_back_to_the_blanket_default_when_undeclared(tmp_path: Path):
-    """`adapter.format_capabilities` read with the blanket default as fallback.
-
-    `_stub_adapter` declares no `format_capabilities` attribute, so this seam
-    must still record the blanket default, not raise `AttributeError` and not
-    silently record `None`.
-    """
-
-    response, _, _ = _read_one(tmp_path, script=ScriptedAnswer(content="x", finish_reason="stop"))
-    adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "x"}})
-    assert not hasattr(adapter, "format_capabilities")
-
-    attempt = live_witness.live_attempt_from_response(
-        _Context(tree=_FakeTree()),
-        adapter,
-        "dai.v1",
-        response,
-        generation_declared={},
-        parser="text",
-        **_dai_view_kwargs(),
-    )
-
-    assert attempt.format_capabilities == witness_adapters.FALLBACK_FORMAT_CAPABILITIES
-
-
 def test_format_capabilities_is_read_from_the_adapter_when_it_declares_one(tmp_path: Path):
     """The other half: once an adapter names its own grammar's capability, the
     seam reports that rather than the blanket default -- a Testimonium stops
@@ -1231,7 +1209,6 @@ def test_format_capabilities_is_read_from_the_adapter_when_it_declares_one(tmp_p
     )
 
     assert attempt.format_capabilities == declared
-    assert attempt.format_capabilities != witness_adapters.FALLBACK_FORMAT_CAPABILITIES
 
 
 def test_format_capabilities_on_a_malformed_response_still_names_the_adapters_own_grammar(
@@ -1285,7 +1262,7 @@ def test_format_capabilities_for_refuses_a_malformed_adapter_declaration(bad_dec
 def test_format_capabilities_for_propagates_a_malformed_declaration_through_a_live_attempt(
     tmp_path: Path,
 ):
-    """The same refusal reaches a caller that only asked for a `LiveAttempt`,
+    """The same refusal reaches a caller that only asked for an `Attempt`,
     so a broken adapter cannot slip a bad declaration past this seam merely by
     being read from a different call site."""
 
@@ -1583,7 +1560,7 @@ def test_live_attempt_carries_the_receipt_and_call_record_references(tmp_path: P
     )
 
     assert attempt.receipt_ref == dict(response.receipt_ref)
-    assert attempt.call_record_ref == dict(response.call_record_ref)
+    assert attempt.serving_call_ref == dict(response.call_record_ref)
 
 
 def test_live_attempt_from_response_real_dai_adapter_round_trip(tmp_path: Path):

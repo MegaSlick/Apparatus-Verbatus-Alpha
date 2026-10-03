@@ -1,6 +1,6 @@
 """The submit door: sealed once, and silent about what it saw.
 
-Spec 03 asks three things of this tool that are testable here. Upload completion is
+Three properties of this tool are testable here. Upload completion is
 explicit and sealed — a partial transfer can never look admitted. The storage-root
 check is enforced before a byte is hashed, because this is the first place a real
 folder is ever touched. And the logging rule is mechanical rather than a promise: a

@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from common.chair_wire import chat_template_kwargs_for
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from operations.serving.chat_request import (
     EngineSignalRefusal,
@@ -28,7 +29,8 @@ PAGE_REQUEST_INPUTS = {
 
 
 class _Client:
-    def __init__(self, *, parse_problem=None, finish_reason="stop") -> None:
+    def __init__(self, *, parse_problem=None, finish_reason="stop", chair="perlector") -> None:
+        self.identity = SimpleNamespace(role=chair)
         self.requests = []
         self.parse_problem = parse_problem
         self.finish_reason = finish_reason
@@ -69,6 +71,16 @@ def test_the_perlector_page_request_is_pinned_byte_for_byte():
     send_page_request(client, **PAGE_REQUEST_INPUTS)
     (request,) = client.requests
     assert digest_bytes(_request_bytes(request)) == PAGE_REQUEST_SHA256
+
+
+@pytest.mark.parametrize("chair", ["perlector", "reconstructor", "attestator_3"])
+def test_a_turn_carries_the_template_switch_its_chair_s_smoke_sends(chair):
+    client = _Client(chair=chair)
+    send_chat_request(
+        client, content="read", image_sha256s=[], capacity={}, max_tokens=9, what="page 1"
+    )
+    (request,) = client.requests
+    assert request.generation_sent.get("chat_template_kwargs") == chat_template_kwargs_for(chair)
 
 
 def test_a_text_only_turn_sends_its_string_content_thinking_off_and_no_image():

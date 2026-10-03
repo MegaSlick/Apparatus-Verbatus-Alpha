@@ -600,7 +600,6 @@ def test_a_page_edge_overshoot_is_named_per_block_without_clamping_or_losing_nei
         attempt=_read_attempt(attestatores, "two"),
         presented=_presented(),
         observed=surviving,
-        testimonium_id="page-testimonium",
         page_edge_overshoots=overshoots,
         raw_response_refs=[raw_ref],
         adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
@@ -661,7 +660,7 @@ def test_one_response_derived_twice_does_not_double_count_its_overshoot():
         merged_observed.append({**item, "ordinal": len(merged_observed)})
 
     def _build(overshoots):
-        return attestatores.page_testimonium_payload(
+        payload = attestatores.page_testimonium_payload(
             chair="attestator_1",
             page_ordinal=1,
             ordinal=1,
@@ -669,10 +668,12 @@ def test_one_response_derived_twice_does_not_double_count_its_overshoot():
             attempt=_read_attempt(attestatores, "two"),
             presented=_presented(),
             observed=merged_observed,
-            testimonium_id="page-testimonium",
             page_edge_overshoots=overshoots,
             raw_response_refs=[raw_ref],
             adapter_metadata={"geometry_quantization": chandra.QUANTIZATION_RULE},
+        )
+        return attestatores.validate_page_testimonium_payload(
+            payload, testimonium_id="page-testimonium"
         )
 
     # Naively concatenating both re-derivations names one page-edge finding
@@ -778,7 +779,6 @@ def test_a_parse_failure_keeps_its_bytes_and_its_name_through_the_written_record
         ),
         presented={},
         observed=[],
-        testimonium_id="page-testimonium",
         raw_response_refs=[retained["raw_response_ref"]],
         adapter_metadata={
             "geometry_quantization": load_stage("3_attestatores", "chandra").QUANTIZATION_RULE

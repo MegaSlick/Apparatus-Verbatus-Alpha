@@ -21,6 +21,7 @@ from common.page_review import PAGE_REVIEW_FIELDS
 from common.review_decisions import (
     BASIS_CHANGED,
     CURRENT,
+    PAGE_WIDE_ENTRY_CODES,
     RECENSOR_PAGE_CODES,
     RECENSOR_UNIT_CODES,
     REVIEW_FIELD,
@@ -674,7 +675,9 @@ def test_a_decision_whose_page_is_gone_is_returned_unkept():
 # --- scope as stage 4 and the page accounting set it ---------------------------------------
 
 
-def test_every_hold_stage_4_and_the_page_accounting_set_lands_in_its_scope():
+@pytest.mark.parametrize("page_wide", sorted(PAGE_WIDE_ENTRY_CODES))
+def test_every_hold_stage_4_and_the_page_accounting_set_lands_in_its_scope(page_wide):
+    """A page-wide code rides on the entry's own holds, yet is page scope."""
     from common import page_path
     from common.page_accounting import HOLD_CODES
 
@@ -684,13 +687,13 @@ def test_every_hold_stage_4_and_the_page_accounting_set_lands_in_its_scope():
         page_path.ENTRY_NO_READABLE_TEXT,
     }
     scopes = classify_holds(
-        sorted(entry_codes | {page_path.NO_AUTOPSIA} | HOLD_CODES),
+        sorted(entry_codes | {page_wide} | HOLD_CODES),
         unit_class="reading",
-        unit_holds=sorted(entry_codes | {page_path.NO_AUTOPSIA}),
+        unit_holds=sorted(entry_codes | {page_wide}),
         page_holds=sorted(HOLD_CODES),
     )
     assert set(scopes["unit"]) == entry_codes
-    assert set(scopes["page"]) == HOLD_CODES | {page_path.NO_AUTOPSIA}
+    assert set(scopes["page"]) == HOLD_CODES | {page_wide}
 
 
 def test_a_page_read_without_its_image_is_not_released_entry_by_entry():

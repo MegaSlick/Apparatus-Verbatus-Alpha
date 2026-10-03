@@ -60,12 +60,6 @@ class ReadinessError(ServingError):
         super().__init__(f"{code}: {detail}")
 
 
-class AdapterActivityError(ServingError):
-    """The configured adapter did not produce its required positive evidence."""
-
-    code = "ADAPTER_ACTIVITY_UNPROVEN"
-
-
 class ReceiptPublicationError(ServingError):
     """Readiness succeeded but the service receipt could not be published."""
 

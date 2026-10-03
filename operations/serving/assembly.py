@@ -5,7 +5,7 @@ preflight's smoke reader, and the chair client each serving stage reads through.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Final, Mapping, Protocol
+from typing import Any, Final, Mapping, Protocol
 
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import ContractError
@@ -13,12 +13,9 @@ from common.contracts.stages import stage_directory
 from common.sealed_config import parse_sealed_toml
 from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH, DEFAULT_SERVING_RECIPES_CONFIG_PATH
 from operations.pod.preflight import (
-    ChairCacheVerifier,
     GpuProfile,
     PlacementRefusal,
     PlacementTable,
-    PreflightRunner,
-    SystemGpuProbe,
     load_placement_table,
 )
 
@@ -45,7 +42,7 @@ from .manager import (
     ServingManager,
     StageContextReceiptPublisher,
 )
-from .preflight import CalibrationFor, ServingSmokeReader, SmokeCall, prepare_log_root
+from .preflight import ServingSmokeReader, SmokeCall
 from .process import ProcessLauncher, SubprocessLauncher
 from .residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease, ResidencyLease
 
@@ -66,7 +63,6 @@ def assemble_serving_smoke_reader(
     smoke_call: SmokeCall,
     gpu_profile: GpuProfile,
     log_root: str | Path,
-    calibration_for: CalibrationFor | None = None,
     recipes_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     placement_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     launcher: ProcessLauncher | None = None,
@@ -106,7 +102,6 @@ def assemble_serving_smoke_reader(
         recipes=recipes,
         placement=placement,
         config_inputs=config_inputs,
-        calibration_for=calibration_for,
         launcher=launcher,
         http=http,
         package_inspector=package_inspector,
@@ -114,80 +109,6 @@ def assemble_serving_smoke_reader(
         residency_lease=residency_lease,
         producer=producer,
     )
-
-
-def assemble_serving_preflight_callback(
-    *,
-    registry: Any,
-    stage_context: Any,
-    cache_verifier: ChairCacheVerifier,
-    receipt_publisher: ReceiptPublisher,
-    smoke_call: SmokeCall,
-    fixture: str | Path,
-    dtype: str,
-    log_root: str | Path,
-    residency_lease: ResidencyLease,
-    calibration_for: CalibrationFor | None = None,
-    recipes_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
-    placement_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
-    launcher: ProcessLauncher | None = None,
-    http: HttpTransport | None = None,
-    package_inspector: PackageInspector | None = None,
-    command_prefix: tuple[str, ...] | None = None,
-    gpu_probe: ProfileProbe | None = None,
-    producer: str = "operations.serving.assembly",
-) -> Callable[[], dict[str, object]]:
-    """Build the callback that ``SubprocessBootstrapActions`` already accepts.
-
-    Construction performs no provider, GPU, socket, or model effect.  When
-    bootstrap calls the returned function, it obtains a measured profile and
-    feeds the existing ``PreflightRunner`` with this lifecycle-backed smoke
-    reader.  Thus bootstrap has one real seam rather than a second parallel
-    preflight loop.
-    """
-
-    recipes, placement, config_inputs = _load_bound_configuration(
-        sealed_config_inputs=_sealed_config_inputs(stage_context, receipt_publisher, registry),
-        recipes_path=recipes_path,
-        placement_path=placement_path,
-    )
-    reader = _make_reader(
-        registry=registry,
-        receipt_publisher=receipt_publisher,
-        smoke_call=smoke_call,
-        gpu_profile=None,
-        log_root=log_root,
-        residency_lease=residency_lease,
-        calibration_for=calibration_for,
-        recipes=recipes,
-        placement=placement,
-        config_inputs=config_inputs,
-        launcher=launcher,
-        http=http,
-        package_inspector=package_inspector,
-        command_prefix=command_prefix,
-        producer=producer,
-    )
-    runner = PreflightRunner(
-        registry.config,
-        placement,
-        cache_verifier,
-        reader,
-        fixture,
-        serving_recipes=recipes,
-    )
-
-    def run_preflight() -> dict[str, object]:
-        prepared_log_root = prepare_log_root(log_root)
-        probe = gpu_probe or SystemGpuProbe(disk_path=prepared_log_root)
-        profile = probe.profile(dtype)
-        # `operations.pod.preflight.SmokeReader.read` carries no profile
-        # parameter, so the reader holds the measured profile itself; bind it
-        # the moment it exists, immediately before the one run that will read it.
-        reader.gpu_profile = profile
-        return runner.run(profile).to_record()
-
-    return run_preflight
 
 
 def bound_serving_recipes(context: Any, recipes_path: str | Path) -> ServingRecipes:
@@ -389,7 +310,6 @@ def _make_reader(
     placement: PlacementTable,
     config_inputs: ServingConfigInputs,
     residency_lease: ResidencyLease,
-    calibration_for: CalibrationFor | None,
     launcher: ProcessLauncher | None,
     http: HttpTransport | None,
     package_inspector: PackageInspector | None,
@@ -415,7 +335,6 @@ def _make_reader(
     return ServingSmokeReader(
         manager,
         smoke_call,
-        calibration_for=calibration_for,
         placement_table=placement,
         gpu_profile=gpu_profile,
     )

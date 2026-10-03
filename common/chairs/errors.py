@@ -52,12 +52,6 @@ class DiskSpaceRefusal(ChairRefusal):
     code = "disk-space"
 
 
-class AdapterFetchRefusal(ChairRefusal):
-    """An adapter could not be fetched; its base is never substituted."""
-
-    code = "adapter-fetch"
-
-
 class ServingRecipeRefusal(ChairRefusal):
     """The named serving recipe did not start; no second route is considered."""
 
@@ -88,7 +82,6 @@ ALL_REFUSAL_TYPES = (
     DigestMismatchRefusal,
     CacheRevisionRefusal,
     DiskSpaceRefusal,
-    AdapterFetchRefusal,
     ServingRecipeRefusal,
     LocalPathRefusal,
     ReceiptRefusal,
