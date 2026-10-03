@@ -1025,9 +1025,7 @@ def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_
         main([*args, "--selection", str(tmp_path / "selection.json"), "--out", str(tmp_path / "x")])
 
 
-def test_a_run_without_its_final_export_seal_is_refused_and_no_report_written(
-    tmp_path, proof_set
-):
+def test_a_run_without_its_final_export_seal_is_refused_and_no_report_written(tmp_path, proof_set):
     import shutil
 
     from .exactly_once import main
