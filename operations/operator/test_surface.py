@@ -22,6 +22,9 @@ import pytest
 
 from common.contracts.approval import ApprovalRecordReference
 from common.contracts.canonical import canonical_bytes
+from common.contracts.errors import SchemaRefusal
+from common.contracts.identities import artifact_id
+from common.contracts.stages import ARMARIUM
 from operations.pod.transfer import TransferReport
 from operations.submit import gate
 from operations.submit import submit as submission_door
@@ -2139,10 +2142,44 @@ def test_export_refuses_a_run_whose_armarium_completion_seal_is_gone(tmp_path: P
     with pytest.raises(OperatorError) as refusal:
         surface.export(run_id="unsealed-export-run")
 
-    assert refusal.value.code is ErrorCode.EXPORT_MISSING
+    assert refusal.value.code is ErrorCode.EXPORT_UNSEALED
     assert "stage-seal" in str(refusal.value.detail)
     exports = surface.state_root / "exports"
     assert not exports.exists() or list(exports.iterdir()) == []
+
+
+@pytest.mark.parametrize("change", ("seal-refused", "record-replaced"))
+def test_export_refuses_a_seal_that_changed_while_the_evidence_was_copied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """The copied evidence must still be what the seal witnessed once the copy is done."""
+
+    surface = _surface(tmp_path)
+    surface.run(run_id="copy-window-run", scenario="page-unbroken")
+    real_verify = surface_module.verify_final_seal
+    calls = 0
+
+    def changes_after_the_first_check(tree):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        record = real_verify(tree)
+        if calls == 1:
+            return record
+        if change == "seal-refused":
+            raise SchemaRefusal("simulated: armarium stage-seal no longer verifies")
+        return {**record, "payload": {**record["payload"], "scenario": "another"}}
+
+    monkeypatch.setattr(surface_module, "verify_final_seal", changes_after_the_first_check)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id="copy-window-run")
+
+    assert calls == 2
+    assert refusal.value.code is ErrorCode.EXPORT_UNSEALED
+    exports = surface.state_root / "exports"
+    assert list(exports.iterdir()) == []
+    failure = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert failure["state"] != "complete"
 
 
 def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
@@ -4644,6 +4681,38 @@ def test_a_run_held_before_the_armarium_is_a_held_run_that_keeps_its_reason(
     assert f"  Hold reason: {reason}" in surface.status()
 
 
+def test_a_held_exit_over_an_export_record_whose_seal_fails_names_the_seal_not_a_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An export record exists, so "held before the Armarium, no export yet" would be false."""
+
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=3, stdout="", stderr="armarium: held\n"
+    )
+    tree = surface_module.RunTree(surface.state_root / "runs", "unsealed-held")
+    export = tree.resolve(
+        tree.artifact_path(ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None))
+    )
+    export.parent.mkdir(parents=True)
+    export.write_text("{}", encoding="utf-8")
+
+    def refuse(_tree):  # type: ignore[no-untyped-def]
+        raise SchemaRefusal("simulated: armarium stage-seal no longer verifies")
+
+    monkeypatch.setattr(surface_module, "verify_final_seal", refuse)
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="unsealed-held")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    detail = str(failure.value.detail)
+    assert "could not be read" in detail
+    assert "stage-seal no longer verifies" in detail
+    _started, ended = _run_receipts(surface, "unsealed-held")
+    assert ended["state"] == "armarium-record-unreadable"
+
+
 def test_an_interrupt_or_a_sigterm_during_the_run_leaves_a_resumable_receipt(
     tmp_path: Path,
 ) -> None:
@@ -4812,7 +4881,8 @@ def test_export_with_a_run_id_uses_that_run_even_after_another_was_recorded(
 
     bundle = surface.export(run_id="older")
 
-    assert seen == [(surface.state_root / "older-runs", "older")]
+    # Read once to check it and once more after the copy, both from the named run.
+    assert seen == [(surface.state_root / "older-runs", "older")] * 2
     assert bundle.name.startswith("older-armarium-base-")
     with pytest.raises(OperatorError) as missing:
         surface.export(run_id="never-recorded")
@@ -4864,7 +4934,8 @@ def test_export_run_root_disambiguates_a_colliding_run_id(
 
     surface.export(run_id="dup", run_root=surface.state_root / "root-b")
 
-    assert seen == [(surface.state_root / "root-b", "dup")]
+    # Read once to check it and once more after the copy, both from the named run.
+    assert seen == [(surface.state_root / "root-b", "dup")] * 2
 
 
 def test_export_run_root_naming_no_matching_receipt_is_refused(tmp_path: Path) -> None:
