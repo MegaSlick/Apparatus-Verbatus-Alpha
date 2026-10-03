@@ -56,7 +56,6 @@ from common.background import (  # noqa: E402
     validate_measured_ink_map_payload,
 )
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.contracts.annotations import validate_annotations  # noqa: E402
 from common.contracts.canonical import verify_self_hash  # noqa: E402
 from common.contracts.envelope import read_verified  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
@@ -770,6 +769,7 @@ def verify_established_page_record(
     if not isinstance(payload, dict) or not verify_self_hash(payload):
         raise FatalAccounting("an Archetypus payload fails its own self-hash before export")
     expected = {
+        "schema": "archetypus-record.v2",
         "act_id": row["act_id"],
         "act_key": row["act_key"],
         "page_id": row["page_id"],
@@ -824,12 +824,6 @@ def verify_established_page_record(
             f"the act-region of {row['act_key']} does not trace to the Exemplar: {error}"
         ) from error
     try:
-        annotations = validate_annotations(
-            reading_payload.get("annotations", []),
-            reading_payload.get("text"),
-            None,
-            f"the reading of {row['act_key']} annotations",
-        )
         model_uncertainty = from_page_perlectio(reading_payload)
         corrections = operator_correction(row, review, applied)
         edits: list = []
@@ -844,11 +838,11 @@ def verify_established_page_record(
                 perlectio_ref=reading_ref,
                 model_text=reading_payload.get("text"),
                 model_text_status=derive_record_text_status(
-                    reading_payload.get("text"), annotations, model_uncertainty
+                    reading_payload.get("text"), model_uncertainty
                 ),
                 model_provenance=reading_payload.get("provenance"),
             )
-        text_status = derive_record_text_status(payload.get("text"), annotations, uncertainty)
+        text_status = derive_record_text_status(payload.get("text"), uncertainty)
     except SchemaRefusal as error:
         raise FatalAccounting(
             f"the damage layers of {row['act_key']} cannot be reconciled with its reading"
@@ -857,7 +851,6 @@ def verify_established_page_record(
         payload.get("text") != text
         or payload.get("regions") != [region]
         or payload.get("provenance") != provenance
-        or payload.get("annotations") != annotations
         or payload.get("uncertainty") != uncertainty
         or payload.get("text_status") != text_status
     ):
@@ -893,7 +886,7 @@ def model_reading_row(row: dict, reading: dict) -> dict:
         "label": ORIGINAL_LABEL,
         "text": payload["text"],
         "uncertainty": uncertainty,
-        "text_status": derive_record_text_status(payload["text"], [], uncertainty),
+        "text_status": derive_record_text_status(payload["text"], uncertainty),
         "perlectio_ref": row["perlectio_ref"],
     }
 
@@ -1407,7 +1400,6 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                         {
                             "text": payload["text"],
                             "text_status": payload["text_status"],
-                            "transcription_annotations": payload["annotations"],
                             "provenance": payload["provenance"],
                             "source_regions": export_source_regions(
                                 context.tree, payload["regions"], census
@@ -1445,7 +1437,6 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             "category": category.value,
             "canonical_clean_text": entry.get("text") if is_delivered else None,
             "text_status": entry.get("text_status"),
-            "transcription_annotations": entry.get("transcription_annotations"),
             "provenance": entry.get("provenance"),
             "source_regions": entry.get("source_regions", []),
             "reason": entry.get("reason"),

@@ -88,7 +88,7 @@ class _RecordingContext:
         self.witness_chairs: list[str] = []
         self.witness_floor = 0
         self.armarium_formats = ArmariumFormats(
-            ("text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"),
+            ("text-bundle", "acts-database", "jsonl", "review-items"),
             False,
         )
         self.blobs: dict[str, bytes] = {}
