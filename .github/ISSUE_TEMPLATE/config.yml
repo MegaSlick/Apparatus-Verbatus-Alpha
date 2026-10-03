@@ -1,0 +1,7 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem privately
+    url: https://github.com/MegaSlick/Apparatus-Verbatus-Alpha/security/advisories/new
+    about: >-
+      Use GitHub's private vulnerability reporting. Never report a security problem in a
+      public issue. SECURITY.md says what to include.
