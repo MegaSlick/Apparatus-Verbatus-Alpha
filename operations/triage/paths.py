@@ -1,4 +1,4 @@
-"""Shared path identity checks for triage files."""
+"""Path identity checks for the triage producer's input and output files."""
 
 from __future__ import annotations
 

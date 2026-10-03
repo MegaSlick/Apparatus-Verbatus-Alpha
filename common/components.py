@@ -4,8 +4,8 @@ Connectivity is Chebyshev: two ink pixels join when at most `gap_tolerance_px`
 blank pixels separate them in any direction, so diagonal neighbours join even
 at a tolerance of zero. Components come back in one total order: origin
 `(top, left)`, and among components sharing an origin, their smallest `(x, y)`
-ink pixel. `common/test_background_components.label_components_reference` is
-the per-pixel oracle both properties are tested against.
+ink pixel. Both properties are tested against a straightforward per-pixel
+labelling.
 
 `common/residual_ink.py`'s outside-coverage audit uses it to name a page's
 page-spanning component, so it does not report that pixel population as
@@ -49,13 +49,8 @@ def ink_runs_by_row(pixels) -> dict[int, list[tuple[int, int]]]:
     Splitting on the first missing x rather than on the first blank
     *pixel* is the same rule: this function's input is already the ink set, so
     "absent from the set" is "blank". Duplicates are tolerated by comparing with
-    `>` rather than `!=`, because the declared input is a set but a caller is
-    not owed a crash for handing the same pixel twice, and because the tests
-    drive orderings other than a set's through here. Both halves are pinned:
-    `test_two_components_sharing_a_top_left_origin_still_sort_deterministically` drives every
-    permutation of one page's pixels as an ordered `dict.keys()` view, and
-    `test_a_repeated_pixel_is_tolerated_rather_than_split_into_two_runs` hands
-    this function a list with duplicates in it.
+    `>` rather than `!=`, so a caller handing the same pixel twice, or the pixels
+    in any order, gets the same runs.
     """
     by_row: dict[int, list[int]] = {}
     for x, y in pixels:
@@ -86,18 +81,13 @@ def label_components(pixels: set, *, gap_tolerance_px: int) -> list[Component]:
     component's own runs, for the one caller that needs pixels back rather
     than a rectangle.
 
-    A row-run substitution over the retired per-pixel union-find
-    (kept in `common/test_background_components.py` as this one's oracle), made on
-    measurement: the per-pixel version cost `ink_pixels x radius^2` dictionary
-    operations, measured at 383 s and 2.17 GB for one photographed page at the
-    sealed `gap_tolerance_px = 3`. Real ink is horizontally contiguous, so a
-    page of millions of pixels is a few hundred thousand runs, turning the
-    per-pixel neighbourhood probe into an interval overlap test.
-
-    The contract is unchanged and proved, not asserted: same components, same
-    bounds, same `gap_tolerance_px` semantics, and the same total order (origin
-    `(top, left)`, ties broken by sorted `(x, y)` ink), with `test_background_components.py`
-    comparing the two implementations directly on every page shape.
+    Works on row runs rather than pixels: a per-pixel union-find costs
+    `ink_pixels x radius^2` dictionary operations (measured at 383 s and 2.17 GB
+    for one photographed page at `gap_tolerance_px = 3`), while real ink is
+    horizontally contiguous, so a page of millions of pixels is a few hundred
+    thousand runs and the neighbourhood probe becomes an interval overlap test.
+    It returns the same components, bounds and total order as a per-pixel
+    labelling; the tests compare the two on fixture, synthetic and randomised pages.
     """
     return [
         component
