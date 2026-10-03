@@ -133,6 +133,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Callable, Mapping, MutableMapping, Sequence, TypeGuard
 
@@ -155,9 +156,11 @@ from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
 from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
 from common.stage import EXIT_HELD as ORCHESTRATOR_HELD
 from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
+from operations.notify.client import NotifyOutcome
 from operations.pod.notify_hooks import (
     RunnerFactory,
     environment_runner,
+    notify_deadline_at_risk_from_guard,
     notify_stall_from_guard,
     notify_systemic_from_guard,
 )
@@ -170,7 +173,7 @@ from pipeline.orchestrator.run import (
     STOP_RECORD_SCHEMA,
 )
 
-from . import bootstrap_main
+from . import bootstrap_main, finish_estimate
 from .bootstrap import BootstrapActions, BootstrapReport
 from .bootstrap_main import (
     DEFAULT_PROOF_FIXTURE,
@@ -349,6 +352,7 @@ class RunPlan:
     triage_clusters: Path | None = None
     triage_producer_recipe: Path | None = None
     corpus_register: Path | None = None
+    hourly_usd: Decimal | None = None
 
     # Not asserts: `assert` disappears under `python -O`, and `resolve_run_plan`
     # already refused a bootstrap plan missing any of these. Stated as raises so
@@ -429,6 +433,13 @@ class RunPlan:
         """
 
         return Path(run_report_paths(self.report_path)[3])
+
+    @property
+    def estimate_path(self) -> Path:
+        """The current stage's finish estimate and any deadline-at-risk notice, beside the
+        run report, rewritten on each liveness tick."""
+
+        return Path(run_report_paths(self.report_path)[5])
 
     @property
     def repository_commit(self) -> str:
@@ -541,6 +552,7 @@ class RunPlan:
             if self.triage_producer_recipe
             else None,
             "corpus_register": str(self.corpus_register) if self.corpus_register else None,
+            "hourly_usd": None if self.hourly_usd is None else str(self.hourly_usd),
             "bootstrap": self.bootstrap.to_record(),
         }
 
@@ -782,9 +794,14 @@ def build_parser() -> bootstrap_main.RefusingParser:
     parser.add_argument(
         "--notify",
         action="store_true",
-        help="send the systemic alarm, when the run sounds it, to the phone through "
-        "operations/notify as a decision; off by default so a pod never pages a phone on "
-        "its own",
+        help="send the systemic alarm and the deadline-at-risk notice, when the run raises "
+        "them, to the phone through operations/notify as decisions; off by default so a pod "
+        "never pages a phone on its own",
+    )
+    parser.add_argument(
+        "--hourly-usd",
+        help="the pod and volume price per hour this pod was rented at, as a decimal; "
+        "names the cost of running past the deadline in the deadline-at-risk notice",
     )
     parser.add_argument(
         "--no-hold",
@@ -946,6 +963,17 @@ def resolve_run_plan(
         args.to_stage
     ):
         raise RunRefusal("--from comes after --to", report_path=report_path)
+    hourly_usd = None
+    if args.hourly_usd is not None:
+        try:
+            hourly_usd = Decimal(args.hourly_usd)
+        except InvalidOperation:
+            hourly_usd = None
+        if hourly_usd is None or not hourly_usd.is_finite() or hourly_usd <= 0:
+            raise RunRefusal(
+                f"--hourly-usd {args.hourly_usd!r} is not a positive decimal price",
+                report_path=report_path,
+            )
     stage = args.stage
     from_stage, to_stage = args.from_stage, args.to_stage
     if args.models == "small":
@@ -976,6 +1004,7 @@ def resolve_run_plan(
         triage_clusters=triage_paths["--triage-clusters"],
         triage_producer_recipe=triage_paths["--triage-producer-recipe"],
         corpus_register=triage_paths["--corpus-register"],
+        hourly_usd=hourly_usd,
     )
 
 
@@ -1465,6 +1494,55 @@ def release_pod_guard(
     return {**record, "released": True, "deadline": stamp}
 
 
+def _deadline_watch(
+    plan: RunPlan,
+    *,
+    pod_id: str | None,
+    hard_deadline: datetime,
+    launch_token: str | None,
+    notify: bool,
+    notify_runner: RunnerFactory,
+    now: Callable[[], datetime],
+) -> finish_estimate.DeadlineWatch:
+    """The finish estimate and deadline-at-risk notice for this run.
+
+    The deadline is this pod's guard deadline, which is what ends the pod and
+    moves when the lead extends it by hand; with none readable, the bootstrap's
+    hard deadline. Under the pod timer its hard deadline also ends the pod, so
+    the earlier of the two counts. The budget is the spend policy at the
+    checked-out commit.
+    """
+
+    volume = plan.bootstrap.volume_mount_path
+
+    def deadline() -> tuple[datetime, str]:
+        guard = finish_estimate.guard_deadline(volume, pod_id)
+        if guard is None:
+            return hard_deadline, "the bootstrap's hard deadline (no guard deadline for this pod)"
+        if launch_token and hard_deadline < guard:
+            return hard_deadline, "the pod timer's hard deadline"
+        return guard, "the pod guard's deadline"
+
+    def send(message: str) -> NotifyOutcome:
+        return notify_deadline_at_risk_from_guard(
+            message=message, volume_mount=volume, runner_factory=notify_runner
+        )
+
+    budget, budget_problem = finish_estimate.load_budget(plan.repository / "config" / "spend.toml")
+    return finish_estimate.DeadlineWatch(
+        run_id=plan.run_id,
+        pod_id=pod_id if _is_pod_id(pod_id) else None,
+        path=plan.estimate_path,
+        sample=finish_estimate.RunTreeProgress(plan.run_root / plan.run_id).sample,
+        budget=budget,
+        budget_problem=budget_problem,
+        hourly_usd=plan.hourly_usd,
+        deadline=deadline,
+        send=send if notify else None,
+        now=now,
+    )
+
+
 def _refuse(refusal: PlanRefusal, *, now: Callable[[], datetime]) -> int:
     print(f"pod_run refused: {refusal}", file=sys.stderr)
     failure = _write_refusal(refusal.report_path, str(refusal), now=now)
@@ -1854,6 +1932,7 @@ def main(
         "liveness_path": str(plan.liveness_path),
         "hold_path": str(plan.hold_path),
         "timing_journal_path": str(plan.timing_journal_path),
+        "estimate_path": str(plan.estimate_path),
     }
     _write_run_report(plan, {**running, "state": "running", "exit_code": None})
     journal = _liveness_journal(plan, base, now=now)
@@ -1866,6 +1945,16 @@ def main(
         now=now,
     )
     stall_noticed = False
+    deadline_watch = _deadline_watch(
+        plan,
+        pod_id=pod_id,
+        hard_deadline=hard_deadline,
+        launch_token=launch_token,
+        notify=args.notify,
+        notify_runner=notify_runner,
+        now=now,
+    )
+    estimate_failures: list[str] = []
 
     def liveness(pid: int, alive: bool) -> None:
         # Only a run that is visibly working holds the pod: a hung child stops touching
@@ -1874,6 +1963,14 @@ def main(
         journal(pid, alive)
         if not alive:
             return
+        try:
+            deadline_watch.tick()
+        except Exception as error:  # noqa: BLE001 -- an estimate never stops a running stage
+            estimate_failures.append(f"{type(error).__name__}: {error}")
+            print(
+                f"pod_run {plan.run_id}: the finish estimate failed this tick: {error}",
+                file=sys.stderr,
+            )
         if progress.advancing():
             stall_noticed = False
             keepalive()
@@ -2045,6 +2142,11 @@ def main(
         "records_missing": records_missing,
         "held_to_hard_deadline": holding,
         "hold_detail": hold_detail,
+        "deadline_watch": {
+            **deadline_watch.summary(),
+            "tick_failures": len(estimate_failures),
+            "last_tick_failure": estimate_failures[-1] if estimate_failures else None,
+        },
         "finished_at": _stamp(now()),
     }
     if stop_problem is not None:

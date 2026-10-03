@@ -231,3 +231,13 @@ def notify_stall_from_guard(
         return NotifyOutcome(False, False, NO_GUARD_TOPIC)
     message = f"run on {pod_id} shows no progress since {since}; the idle guard now decides"
     return _send(message, runner=runner_factory(notify_environment(topic)), event="decision")
+
+
+def notify_deadline_at_risk_from_guard(
+    *, message: str, volume_mount: Path, runner_factory: RunnerFactory
+) -> NotifyOutcome:
+    """One `decision` line, with the pod guard's topic, that the run will outlast its deadline."""
+    topic = guard_topic(volume_mount)
+    if topic is None:
+        return NotifyOutcome(False, False, NO_GUARD_TOPIC)
+    return _send(message, runner=runner_factory(notify_environment(topic)), event="decision")

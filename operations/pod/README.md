@@ -392,6 +392,21 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   commit that created the run; a resume at another commit shows here. (Binding the commit
   into the run authority would refuse every resume after a fix.)
 - `-hold.json` — the hold line after a finished run.
+- `-estimate.json` — the current stage's finish estimate, rewritten each liveness tick
+  (`finish_estimate.py`): pages done of pages total for the first page-counted stage
+  (Door to Perlector) with no seal, and its pace since `pod_run` first saw it. It is that
+  stage's finish only, never the run's; the stages after it are not counted. When that
+  finish plus 20 minutes to bring results home passes the deadline that ends the pod (the
+  guard's `deadline-<pod id>`, read each tick; with none, the bootstrap's hard deadline;
+  under the pod timer, the earlier of the two), it records a `deadline-at-risk` notice and,
+  with `--notify`, sends it as a `decision`. The notice names the spend policy's soft and
+  hard maximums, the finish, the extra time and its cost at `--hourly-usd` (the price the
+  pod was rented at; "unknown" without it), whether that fits under the hard maximum
+  (taking the first deadline read as the soft maximum), and the manual extension route.
+  It is sent once per deadline: a deadline the lead moves re-arms it. A send that did not
+  arrive is recorded and retried on later ticks, three attempts in all. Nothing here moves
+  the deadline. The run report's `deadline_watch` keeps every notice and any failure to
+  write the estimate or to compute it.
 
 These are best-effort, so a lost stopwatch never abandons or holds a completed run. The
 report audits them at close (`records_at_close`, `records_missing`); a missing transcript
@@ -418,8 +433,9 @@ line and the notification outcome in its run report. If the orchestrator ran but
 usable stop record (`read_stop_record`), whether it sounded the alarm is unknown. The
 report then names why in `stop_record_problem` and `detail`, and such a run is never
 `complete`: a complete exit is recorded as `held`, which returns at once like any run
-that held before its export. Without `--notify` the line is
-recorded and nothing is sent. `notify.sh` reads its topic only from `NTFY_TOPIC` or the
+that held before its export. The deadline-at-risk notice (`-estimate.json` above) is
+another `decision` sent the same way (`notify_deadline_at_risk_from_guard`). Without
+`--notify` each line is recorded and nothing is sent. `notify.sh` reads its topic only from `NTFY_TOPIC` or the
 repository's `private/ntfy.conf`, which a pod does not have, so `pod_run` reads the
 guard's topic file (`/workspace/private/.pod_guard/ntfy_topic`, below) and passes it as
 `NTFY_TOPIC` in that one notification command's environment, beside only `PATH` and the
@@ -692,6 +708,7 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   --submission-manifest $V/submission-manifest.json \
   --mechanics-qualification \
   --no-hold \
+  --hourly-usd <the card's price per hour plus the volume's> \
   -- \
   --volume-mount-path $V \
   --report-path $V/bootstrap-report-$RUN.json \
@@ -706,6 +723,9 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   > $V/pod-run-$RUN.out 2>&1 < /dev/null &
 ```
 
+- **`--hourly-usd`** names the price the pod was rented at, so the deadline-at-risk notice
+  can say what running past the deadline costs; add `--notify`, with the guard's ping
+  armed, to have that notice reach the phone (`-estimate.json` above).
 - **No selection: the full auto run.** It stops at a held Recensor, before Archetypus
   and Armarium, as `--models big` does; a first proof run should reach the Armarium.
 - **`--store-root`** names the model store on the volume. If the weights were
@@ -729,6 +749,7 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
 ```sh
 cat $V/pod-run-report-$RUN.json          # state: bootstrapping, running, then the outcome
 cat $V/pod-run-report-$RUN-liveness.json # last_seen should keep moving while it runs
+cat $V/pod-run-report-$RUN-estimate.json # this stage finishes about ...; at_risk
 tail -f $V/pod-run-report-$RUN-transcript.log
 tail -f $V/pod-run-$RUN.out              # the bootstrap's own output as well
 tail -f $V/.pod_guard/guard.log
@@ -772,6 +793,7 @@ verbatus fetch-run --run-id <run id> --into <local root> \
   --evidence-key pod-run-report-<run id>-transcript.log \
   --evidence-key pod-run-report-<run id>-liveness.json \
   --evidence-key pod-run-report-<run id>-timings.json \
+  --evidence-key pod-run-report-<run id>-estimate.json \
   --evidence-key bootstrap-report-<run id>.json \
   --evidence-key bootstrap-journal-<run id>.json \
   --evidence-key pod-run-<run id>.out \
