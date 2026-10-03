@@ -12,6 +12,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import textwrap
 import tomllib
 from pathlib import Path
@@ -31,14 +32,25 @@ NOTIFY_TEST_SINK_TOPIC = "verbatus-test-sink"
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Put the session on the sink topic before collection, so no test can page the lead."""
+    """Put the session on the sink topic and a temporary operator state folder before
+    collection, so no test can page the lead or write real operator records."""
     os.environ["NTFY_TOPIC"] = NOTIFY_TEST_SINK_TOPIC
+    # Session and module fixtures run before any per-test state folder exists.
+    os.environ.setdefault(ACCOUNT_STATE_HOME_VARIABLE, os.environ.get("XDG_STATE_HOME", ""))
+    state_home = tempfile.mkdtemp(prefix="verbatus-xdg-state-")
+    config.add_cleanup(lambda: shutil.rmtree(state_home, ignore_errors=True))
+    os.environ["XDG_STATE_HOME"] = state_home
+
+
+# The account's own XDG_STATE_HOME, kept for worker processes, which start after the
+# session has replaced it.
+ACCOUNT_STATE_HOME_VARIABLE = "VERBATUS_TEST_ACCOUNT_XDG_STATE_HOME"
 
 
 def _account_operator_state_dirs() -> tuple[Path, ...]:
     """Where the operator CLI keeps real state for this account when no folder is named."""
     candidates = []
-    state_home = os.environ.get("XDG_STATE_HOME", "")
+    state_home = os.environ.get(ACCOUNT_STATE_HOME_VARIABLE, os.environ.get("XDG_STATE_HOME", ""))
     if os.path.isabs(state_home):
         candidates.append(Path(state_home) / "verbatus")
     for home in (os.environ.get("HOME", ""), pwd.getpwuid(os.getuid()).pw_dir):

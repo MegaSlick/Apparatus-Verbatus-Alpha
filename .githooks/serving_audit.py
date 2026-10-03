@@ -22,7 +22,13 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 from packaging.version import Version
 
-PYTHON_LITERAL = re.compile(r"python(?:_full)?_version\s*[<>=!~]+\s*[\"']([0-9][0-9.]*)[\"']")
+PYTHON_NAME = re.compile(r"python(?:_full)?_version")
+# The only Python comparisons uv writes into a lock. Evaluating at the floor and at each
+# literal covers both sides of every one; any other form could be true only between the
+# tested versions, so it is refused rather than evaluated.
+PYTHON_COMPARISON = re.compile(
+    r"python(?:_full)?_version\s*(?:<|>=|==)\s*[\"']([0-9]+(?:\.[0-9]+)*)(?:\.\*)?[\"']"
+)
 
 # Advisories reviewed and accepted for one exact locked pin. Each applies only while
 # that pin is in the inventory, so a lock change ends it and the advisory, or any new
@@ -51,7 +57,14 @@ def target_environments(pins: list[Requirement], requires_python: str) -> list[d
     versions = {Version(floor.group(1))}
     for pin in pins:
         if pin.marker is not None:
-            versions.update(Version(literal) for literal in PYTHON_LITERAL.findall(str(pin.marker)))
+            marker = str(pin.marker)
+            literals = PYTHON_COMPARISON.findall(marker)
+            if len(literals) != len(PYTHON_NAME.findall(marker)):
+                raise InventoryError(
+                    f"{pin.name}'s marker {marker!r} compares the Python version in a form "
+                    "this audit does not evaluate"
+                )
+            versions.update(Version(literal) for literal in literals)
     environments = []
     for version in sorted(v for v in versions if v >= Version(floor.group(1))):
         full = ".".join(str(part) for part in (*version.release, 0, 0)[:3])
@@ -125,6 +138,8 @@ def audit(layers: list[list[tuple[str, str]]], directory: Path) -> int:
         requirements.write_text(
             "".join(f"{name}=={version}\n" for name, version in layer), encoding="utf-8"
         )
+        # pip-audit applies --ignore-vuln to the whole file; a layer names each package
+        # once, and every reviewed advisory belongs to one package.
         ignored = []
         for pin in layer:
             for advisory, reason in REVIEWED_ADVISORIES.get(pin, {}).items():

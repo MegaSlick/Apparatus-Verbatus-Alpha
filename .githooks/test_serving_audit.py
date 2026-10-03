@@ -57,3 +57,25 @@ def test_a_serving_package_the_pod_would_not_install_is_refused():
 
     with pytest.raises(serving_audit.InventoryError, match="served is missing"):
         serving_audit.serving_inventory(export, PYPROJECT)
+
+
+@pytest.mark.parametrize("operator", [">", "<=", "!=", "~=", "==="])
+def test_a_python_comparison_the_audit_does_not_evaluate_is_refused(operator):
+    export = (
+        "served==2.0 ; sys_platform == 'linux'\n"
+        f"numpy==1.0 ; python_full_version {operator} '3.13' and sys_platform == 'linux'\n"
+    )
+
+    with pytest.raises(serving_audit.InventoryError, match="numpy's marker"):
+        serving_audit.serving_inventory(export, PYPROJECT)
+
+
+def test_a_wildcard_python_version_is_evaluated_on_its_minor():
+    export = (
+        "served==2.0 ; sys_platform == 'linux'\n"
+        "numpy==1.0 ; python_full_version == '3.13.*' and sys_platform == 'linux'\n"
+    )
+
+    assert serving_audit.serving_inventory(export, PYPROJECT) == [
+        [("numpy", "1.0"), ("served", "2.0")]
+    ]

@@ -60,7 +60,7 @@ print(project["tool"]["uv"]["required-version"].removeprefix("=="))
 # or other relative entry could be a file the checkout itself supplies.
 uv_binary=
 uv_entry=
-uv_search=$PATH
+uv_search=${PATH-}
 while :; do
   uv_entry=${uv_search%%:*}
   uv_candidate=${uv_entry:-.}/uv
