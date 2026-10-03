@@ -2033,6 +2033,7 @@ def test_restart_recovery_closes_a_pod_whose_shape_was_refused_at_create(
     assert world.deleted() == ["/pods/pod-1"]
     assert world.posts() == 0
     assert store.load().pod_id == "pod-1"
+    assert store.load().started_at == NOW - timedelta(minutes=5)
 
 
 def test_a_create_whose_answer_was_lost_never_claims_that_no_pod_exists(
