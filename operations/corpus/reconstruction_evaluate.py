@@ -199,30 +199,32 @@ def reconstruction_report(
         references = [references_by_act.get(act_id) for act_id in act_ids]
         paired = sum(reference is not None for reference in references)
         sides = "all" if paired == len(act_ids) else "some" if paired else "none"
-        # A reconstruction or literal beyond the scoring bounds is named, and
-        # neither scored nor compared with its literals; where the reference has
-        # every act, both sides are charged as wholly deleted. A joined
-        # reference beyond the bounds is named and charged to neither side.
-        readable = not made or all(
-            within_text_bounds(item, GRAPHEMIC_V1) for item in (text, diplomatic)
-        )
+        # A reconstruction or literal beyond the scoring bounds is named and not
+        # compared with the other. Where the reference has every act, a side
+        # within the bounds is scored and a side beyond them carries no score
+        # and is charged in the totals as wholly deleted. A joined reference
+        # beyond the bounds is named and charged to neither side.
+        within = {
+            "reconstruction": not made or within_text_bounds(text, GRAPHEMIC_V1),
+            "diplomatic": not made or within_text_bounds(diplomatic, GRAPHEMIC_V1),
+        }
+        readable = all(within.values())
         unmeasured = None if readable else TEXT_OUT_OF_BOUNDS
-        reference_text = None
+        score = None
         if made and sides == "all":
             reference_text = "\n".join(reference["text"] for reference in references)
             if not within_text_bounds(reference_text, GRAPHEMIC_V1):
                 unmeasured = REFERENCE_TEXT_OUT_OF_BOUNDS
-            elif unmeasured is not None:
-                _add(reconstruction_score, _wholly_deleted(reference_text))
-                _add(diplomatic_score, _wholly_deleted(reference_text))
-        score = None
-        if reference_text is not None and unmeasured is None:
-            score = {
-                "reconstruction": _score(reference_text, text),
-                "diplomatic": _score(reference_text, diplomatic),
-            }
-            _add(reconstruction_score, score["reconstruction"])
-            _add(diplomatic_score, score["diplomatic"])
+            else:
+                score = {
+                    side: _score(reference_text, hypothesis) if within[side] else None
+                    for side, hypothesis in (("reconstruction", text), ("diplomatic", diplomatic))
+                }
+                for side, total in (
+                    ("reconstruction", reconstruction_score),
+                    ("diplomatic", diplomatic_score),
+                ):
+                    _add(total, score[side] or _wholly_deleted(reference_text))
         if made:
             sides_count[sides] += 1
         out_rows.append(

@@ -87,26 +87,36 @@ def test_a_reconstruction_is_scored_beside_its_diplomatic_where_the_reference_ha
     assert report["reference"]["diplomatic"] == row["score"]["diplomatic"]
 
 
-def test_a_reconstruction_beyond_the_scoring_bounds_is_named_unmeasured_and_the_rest_scored():
-    references = {
-        "act_h": {"record_id": "r-head", "text": HEAD_TEXT},
-        "act_t": {"record_id": "r-tail", "text": TAIL_TEXT},
-    }
+def test_only_the_side_beyond_the_scoring_bounds_is_charged_as_wholly_deleted():
+    runaway = "a" * (MAX_TEXT_LENGTH + 1)
+    reference = {"record_id": "r-head", "text": HEAD_TEXT}
+    in_bounds = _report([_row()], {"act_h": reference})["rows"][0]["score"]
 
-    report = _report([_row(text="a" * (MAX_TEXT_LENGTH + 1)), _row(("act_t",))], references)
+    def report_with(diplomatic: str, text: str) -> dict:
+        row = _row(text=text)
+        row["diplomatic_raw_pieces"] = [diplomatic]
+        return reconstruction_report(
+            joins=[],
+            shown=[row["act_ids"]],
+            rows=[row],
+            delivered_texts={"act_h": diplomatic},
+            references_by_act={"act_h": reference},
+        )
 
-    runaway, scored = report["rows"]
-    assert runaway["unmeasured"] == "text-out-of-bounds"
-    assert runaway["score"] is None and runaway["departed_characters"] is None
-    assert scored["unmeasured"] is None and scored["score"] is not None
-    assert report["reconstructions"]["unmeasured"] == 1
-    # Counted as wholly deleted on both sides: never better than an empty reconstruction.
-    empty = _report([_row(text=""), _row(("act_t",))], references)["reference"]
-    for side in ("reconstruction", "diplomatic"):
-        total = report["reference"][side]
-        assert total["cer_units"] == empty[side]["cer_units"]
-        assert total["cer_errors"] >= empty[side]["cer_errors"]
-        assert total["wer_errors"] >= empty[side]["wer_errors"]
+    for diplomatic, text, unmeasured, measured in [
+        (HEAD_TEXT, runaway, "reconstruction", "diplomatic"),
+        (runaway, "Le dix mai, baptise", "diplomatic", "reconstruction"),
+    ]:
+        report = report_with(diplomatic, text)
+        [row] = report["rows"]
+        assert row["unmeasured"] == "text-out-of-bounds" and row["departed_characters"] is None
+        assert row["score"][unmeasured] is None
+        assert row["score"][measured] == in_bounds[measured]
+        assert report["reference"][measured] == in_bounds[measured]
+        charged = report["reference"][unmeasured]
+        assert charged["cer_errors"] == charged["cer_units"] == in_bounds[unmeasured]["cer_units"]
+        assert charged["wer_errors"] == charged["wer_units"] == in_bounds[unmeasured]["wer_units"]
+        assert report["reconstructions"]["unmeasured"] == 1
 
 
 def test_a_join_whose_joined_reference_is_beyond_the_scoring_bounds_is_named_unmeasured():
