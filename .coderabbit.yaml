@@ -130,15 +130,12 @@ reviews:
     - path: ".githooks/**"
       instructions: >-
         The git hooks and the check scripts CI runs. Flag any check that fails open: a
-        check that cannot run is a failure, not a pass. The
-        project lead can remove the hooks with `git config --unset core.hooksPath`
-        (AI sessions are denied that command in `.claude/settings.json` on purpose).
+        check that cannot run is a failure, not a pass.
     - path: ".claude/**"
       instructions: >-
-        Claude Code settings, read-only agent roles and session skills. A change to what
-        AI sessions are allowed to do needs the project lead's approval (CONTRIBUTING.md).
-        Flag drift: a skill or role that contradicts
-        AGENTS.md, or names a file or section that no longer exists.
+        Claude Code settings and session skills. A change to what AI sessions are allowed
+        to do needs the project lead's approval (CONTRIBUTING.md). Flag drift: a skill
+        that contradicts AGENTS.md, or names a file or section that no longer exists.
     - path: "**/*.py"
       instructions: >-
         This repository selects only Ruff rules `E4, E7, E9, F, I, B` in `pyproject.toml`.
