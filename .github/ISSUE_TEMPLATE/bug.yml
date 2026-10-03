@@ -1,0 +1,57 @@
+name: Bug report
+description: Something in the pipeline or its tools does not work as documented.
+title: "Bug: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not attach images of register pages, transcriptions or any personal data, and
+        never paste credentials or keys. Describe the page in words or use the synthetic
+        fixtures in `proof/`. Anything of that kind is removed as soon as it is seen.
+
+        Issues wait for the maintainer, who reads every one. AI agents also follow
+        `docs/AI_CONTRIBUTORS.md`.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: The exact commit you ran, from `git rev-parse HEAD`.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: For example Ubuntu 24.04 or macOS 15, and the Python version.
+    validations:
+      required: true
+  - type: textarea
+    id: ran
+    attributes:
+      label: What you ran
+      description: The exact commands, in order.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+      description: The full output, or a minimal reproduction. Remove any personal data.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead, and where that is documented.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you send
+      options:
+        - label: This issue contains no register images, transcriptions, personal data or credentials.
+          required: true

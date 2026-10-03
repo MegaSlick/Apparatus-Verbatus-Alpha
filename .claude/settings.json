@@ -14,7 +14,19 @@
       "Bash(git*filter-repo*)",
       "Bash(git*-c core.hooksPath*)",
       "Bash(git config core.hooksPath *)",
-      "Bash(git config --unset core.hooksPath*)"
+      "Bash(git config --unset core.hooksPath*)",
+      "Bash(*curl*scantailor*)",
+      "Bash(*curl*ScanTailor*)",
+      "Bash(*curl*4lex4*)",
+      "Bash(*wget*scantailor*)",
+      "Bash(*wget*ScanTailor*)",
+      "Bash(*wget*4lex4*)",
+      "Bash(*git*clone*scantailor*)",
+      "Bash(*git*clone*ScanTailor*)",
+      "Bash(*git*clone*4lex4*)",
+      "Bash(*git*fetch*scantailor*)",
+      "Bash(*git*fetch*ScanTailor*)",
+      "Bash(*git*fetch*4lex4*)"
     ],
     "ask": [
       "Bash(runpodctl create*)",

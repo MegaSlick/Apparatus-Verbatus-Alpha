@@ -181,7 +181,24 @@ def make_document_repo(path):
         "CLAUDE.md",
     ):
         (repo / name).write_text(f"# {name}\n")
+    write_separation(repo)
     return repo
+
+
+def write_separation(repo, *rows):
+    """A separation inventory whose table holds `rows` of (path, class)."""
+    (repo / "docs").mkdir(exist_ok=True)
+    table = "".join(f"| `{path}` | {kind} | |\n" for path, kind in rows)
+    (repo / "docs" / "SEPARATION.md").write_text(
+        f"# Separation\n\n| Path | Class | Note |\n|---|---|---|\n{table}"
+    )
+
+
+def track(repo, *names):
+    for name in names:
+        (repo / name).parent.mkdir(parents=True, exist_ok=True)
+        (repo / name).write_text("tracked\n")
+    git(repo, "add", *names)
 
 
 @pytest.mark.full
@@ -216,6 +233,55 @@ def test_document_check_rejects_control_character_paths(tmp_path):
     result = run_hook(repo, "check-documents.sh")
     assert result.returncode == 1
     assert "control-path" in result.stderr
+
+
+def test_separation_check_refuses_an_unclassified_path(tmp_path):
+    repo = make_document_repo(tmp_path / "repo")
+    write_separation(
+        repo,
+        ("LICENSE", "PRODUCT"),
+        ("ops/pod/", "PRODUCT"),
+        ("ops/pod/HANDOFF.md", "HISTORY"),
+        ("ops/bench/", "HARNESS"),
+    )
+    track(repo, "LICENSE", "ops/pod/run.py", "ops/pod/HANDOFF.md", "ops/bench/scale.py")
+    assert run_hook(repo, "check-documents.sh").returncode == 0
+
+    # A new top-level path, and a new path in a folder classified below its top level.
+    track(repo, "NOTES.md", "ops/spike/a.py", "ops/spike/b.py")
+    result = run_hook(repo, "check-documents.sh")
+    assert result.returncode == 1
+    assert "unclassified path: NOTES.md\n" in result.stderr
+    assert result.stderr.count("unclassified path: ops/spike/\n") == 1
+    # A new file under a classified folder is covered by the folder's row.
+    assert "ops/pod" not in result.stderr
+
+
+def test_separation_check_refuses_a_row_with_no_tracked_path(tmp_path):
+    repo = make_document_repo(tmp_path / "repo")
+    write_separation(repo, ("LICENSE", "PRODUCT"), ("gone/", "HISTORY"))
+    track(repo, "LICENSE")
+    result = run_hook(repo, "check-documents.sh")
+    assert result.returncode == 1
+    assert "separation row matches no tracked path: gone/" in result.stderr
+
+
+def test_separation_check_refuses_a_row_without_a_known_class(tmp_path):
+    # The folder row covers the file, so only the bad class itself can fail the check.
+    repo = make_document_repo(tmp_path / "repo")
+    write_separation(repo, ("lib/", "PRODUCT"), ("lib/a.py", "MAYBE"))
+    track(repo, "lib/a.py")
+    result = run_hook(repo, "check-documents.sh")
+    assert result.returncode == 1
+    assert "separation row has no known class: | `lib/a.py` | MAYBE |" in result.stderr
+
+
+def test_separation_check_reports_a_missing_inventory(tmp_path):
+    repo = make_document_repo(tmp_path / "repo")
+    (repo / "docs" / "SEPARATION.md").unlink()
+    result = run_hook(repo, "check-documents.sh")
+    assert result.returncode == 1
+    assert "missing separation inventory: docs/SEPARATION.md" in result.stderr
 
 
 def run_commit_message(message, env=None):
@@ -478,3 +544,108 @@ def test_pre_commit_scans_the_index_not_the_working_copy(tmp_path):
     assert "[runpod-api-key]" in result.stdout + result.stderr
     git(repo, "add", "config.txt")
     assert run_hook(repo, "pre-commit").returncode == 0
+
+
+PAGEKIT_GATE = (
+    "pagekit/__init__.py",
+    "pagekit/cleanroom/__init__.py",
+    "pagekit/cleanroom/scan.py",
+    "pagekit/cleanroom/gate.py",
+    "pagekit/cleanroom/deny-hashes.txt",
+)
+
+
+def make_pagekit_repo(path):
+    """A repo with the pre-commit hook, pagekit's gate and one committed pagekit file."""
+    repo = make_precommit_repo(path)
+    for relative in PAGEKIT_GATE:
+        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, repo / relative)
+    (repo / "pagekit" / "check.py").write_text("VALUE = 1\n")
+    git(repo, "add", ".githooks", "pagekit")
+    git(repo, "commit", "-qm", "fixture")
+    return repo
+
+
+def stage(repo, relative, text):
+    (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+    (repo / relative).write_text(text)
+    git(repo, "add", relative)
+
+
+def test_pre_commit_holds_pagekit_until_the_lead_decides(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    hold = "pagekit/cleanroom/HOLD"
+    note = "pagekit/cleanroom/incidents/0001.md"
+    # An uncommitted HOLD in the working copy already holds pagekit.
+    (repo / hold).write_text("Suspected leak in the crop check.\n")
+    stage(repo, "pagekit/check.py", "VALUE = 2\n")
+    held = run_hook(repo, "pre-commit")
+    assert held.returncode == 1, held.stdout + held.stderr
+    assert "pagekit/check.py: pagekit is on HOLD" in held.stderr
+    git(repo, "reset", "-q", "pagekit/check.py")
+    git(repo, "checkout", "-q", "pagekit/check.py")
+
+    # The pause itself: HOLD and an undecided incident note may be committed.
+    git(repo, "add", hold)
+    stage(repo, note, "# Incident 0001\n\nDecision:\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+    git(repo, "commit", "-qm", "hold")
+
+    # While held, pagekit changes are refused; changes outside pagekit are not.
+    stage(repo, "pagekit/check.py", "VALUE = 3\n")
+    assert run_hook(repo, "pre-commit").returncode == 1
+    git(repo, "reset", "-q", "pagekit/check.py")
+    stage(repo, "notes.txt", "unrelated\n")
+    assert run_hook(repo, "pre-commit").returncode == 0, "a change outside pagekit was held"
+
+    # Removing HOLD needs the lead's decision in the same commit.
+    git(repo, "rm", "-q", hold)
+    undecided = run_hook(repo, "pre-commit")
+    assert undecided.returncode == 1
+    assert "Decision" in undecided.stderr
+    stage(repo, note, "# Incident 0001\n\nDecision: false flag, a common idiom.\n")
+    decided = run_hook(repo, "pre-commit")
+    assert decided.returncode == 0, decided.stdout + decided.stderr
+    git(repo, "commit", "-qm", "lift hold")
+
+    stage(repo, "pagekit/check.py", "VALUE = 4\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+
+
+def test_pre_commit_scans_staged_pagekit_files_without_echoing_the_hit(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    header = "under the GNU General " + "Public License, version 3"
+    stage(repo, "pagekit/deskew.py", f"# {header}\nVALUE = 1\n")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1
+    assert "pagekit/deskew.py:1: gpl_licence_header" in result.stderr
+    assert header not in result.stdout + result.stderr
+    stage(repo, "pagekit/deskew.py", "VALUE = 1\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+
+
+def test_pre_commit_refuses_when_the_clean_room_has_no_gate(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    stage(repo, "pagekit/check.py", "VALUE = 2\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+    git(repo, "rm", "-q", "pagekit/cleanroom/gate.py")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "pagekit/cleanroom/gate.py is missing" in result.stderr
+
+
+def test_pre_commit_refuses_when_the_gate_is_unstaged_but_still_on_disk(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    git(repo, "rm", "-q", "--cached", "pagekit/cleanroom/gate.py")
+    assert (repo / "pagekit/cleanroom/gate.py").is_file()
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "pagekit/cleanroom/gate.py is missing" in result.stderr
+
+
+def test_pre_commit_runs_without_the_gate_where_there_is_no_clean_room(tmp_path):
+    repo = make_precommit_repo(tmp_path / "repo")
+    stage(repo, "pagekit/check.py", "VALUE = 1\n")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 0, result.stdout + result.stderr

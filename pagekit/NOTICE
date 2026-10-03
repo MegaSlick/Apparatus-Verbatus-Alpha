@@ -1,0 +1,13 @@
+pagekit
+Licensed under the Apache License, Version 2.0.
+
+Workflow inspired by ScanTailor and ScanTailor Advanced (GPL-3.0) — thank you to their
+developers; no code from them is used.
+
+  ScanTailor:          https://github.com/scantailor/scantailor
+  ScanTailor Advanced: https://github.com/4lex4/scantailor-advanced
+
+The ink threshold follows N. Otsu, "A Threshold Selection Method from Gray-Level
+Histograms", IEEE Transactions on Systems, Man, and Cybernetics, SMC-9(1):62-66, 1979.
+
+Built on Pillow (MIT-CMU licence): https://python-pillow.org

@@ -26,7 +26,15 @@ reviews:
   poem: false
 
   auto_review:
-    enabled: true
+    # Outsider lock: no pull request is reviewed automatically. A pull request is reviewed
+    # once it carries the maintainer-only label `review-ok`, which only people with triage
+    # or write access can add; the lead adds it to an outsider's pull request to allow a
+    # review, and the lead's own sessions add it to theirs. A pull request's own copy of
+    # this file applies to it, so an outsider can lift the lock for their pull request; the
+    # cost is review allowance only, because GitHub holds every outside pull request's CI
+    # until the lead approves it.
+    enabled: false
+    labels: ["review-ok"]
     auto_incremental_review: true
     # Counts reviewed commits. After two, CodeRabbit pauses until asked to review again.
     auto_pause_after_reviewed_commits: 2
@@ -122,15 +130,12 @@ reviews:
     - path: ".githooks/**"
       instructions: >-
         The git hooks and the check scripts CI runs. Flag any check that fails open: a
-        check that cannot run is a failure, not a pass. The
-        project lead can remove the hooks with `git config --unset core.hooksPath`
-        (AI sessions are denied that command in `.claude/settings.json` on purpose).
+        check that cannot run is a failure, not a pass.
     - path: ".claude/**"
       instructions: >-
-        Claude Code settings, read-only agent roles and session skills. A change to what
-        AI sessions are allowed to do needs the project lead's approval (CONTRIBUTING.md).
-        Flag drift: a skill or role that contradicts
-        AGENTS.md, or names a file or section that no longer exists.
+        Claude Code settings and session skills. A change to what AI sessions are allowed
+        to do needs the project lead's approval (CONTRIBUTING.md). Flag drift: a skill
+        that contradicts AGENTS.md, or names a file or section that no longer exists.
     - path: "**/*.py"
       instructions: >-
         This repository selects only Ruff rules `E4, E7, E9, F, I, B` in `pyproject.toml`.
@@ -203,3 +208,9 @@ knowledge_base:
     scope: local
   issues:
     scope: local
+
+chat:
+  # Only the maintainer may talk to CodeRabbit in comment threads. CodeRabbit documents
+  # this for organization repositories; on a personal one it may have no effect, which
+  # costs only review allowance (see the outsider lock above).
+  allow_non_org_members: false
