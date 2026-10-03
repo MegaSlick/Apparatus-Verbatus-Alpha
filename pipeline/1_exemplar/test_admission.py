@@ -19,12 +19,11 @@ from admission import (
     AdmissionOutcome,
     RefusalReason,
     _refusal_code,
-    classify_detected_format,
     inspect_rendered_page,
     inspect_source,
-    load_format_policy,
     reason,
     reason_code,
+    route_for,
 )
 from image_formats import (
     MAX_DIMENSION,
@@ -45,9 +44,6 @@ from common import image_sniff
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.runtree import store as runtree_store
-
-POLICY = load_format_policy()
-
 
 # --- Decoder routes are code-owned and exhaustive --------------------------------
 
@@ -79,38 +75,17 @@ def _synthetic_decoder_image(format_name: str) -> bytes:
     return output.getvalue()
 
 
-def test_the_shipped_decoder_routes_name_readers_not_formats_to_refuse():
-    """The route table is exhaustive, but contains no rejection action.
-
-    PDF is the one format that is always a document of pages.  Every raster type,
-    TIFF included, is admitted as its own bytes or fanned out according to the frame
-    count its decoder reports; a gap there is a named pipeline alarm rather than a
-    decision to exclude a file format.
-    """
-    assert POLICY["pdf"] == RENDER_PAGES
-    assert all(action == ADMIT_OR_FAN_OUT for name, action in POLICY.items() if name != "pdf"), (
-        POLICY
-    )
-    assert set(POLICY.values()) <= {ADMIT_OR_FAN_OUT, RENDER_PAGES}
-
-
-def test_the_decoder_routes_cover_exactly_the_formats_the_door_can_detect():
-    """The map is derived from the sniffer, so no format can route by omission.
-
-    `set(POLICY) == SNIFFABLE_FORMATS` and `POLICY == FORMAT_ROUTES` alone would
-    compare `load_format_policy()`'s output against the exact object it is built
-    from (`dict(FORMAT_ROUTES)`), which can only ever agree with itself. Sniffing
-    real signature bytes and routing the result is what actually exercises
-    `sniff()` and `classify_detected_format()` together, so a regression in
-    either function -- not only in a shared definition -- would show here.
-    """
-    assert set(POLICY) == SNIFFABLE_FORMATS
-    assert POLICY == FORMAT_ROUTES
+def test_pdf_alone_renders_pages_and_every_other_detected_format_is_decoded():
+    """Sniffing real signature bytes and routing the result: PDF is the one format
+    that is always a document of pages; every other format, and an unknown
+    signature, gets a raster decode, so no format is refused by route."""
     for name, signatures in image_sniff._SIGNATURES:
         for signature in signatures:
             detected = image_formats.sniff(signature + b"\x00" * 16)
             assert detected == name
-            assert classify_detected_format(detected, POLICY) == POLICY[name]
+            assert route_for(detected) == (RENDER_PAGES if name == "pdf" else ADMIT_OR_FAN_OUT)
+    assert route_for(None) == ADMIT_OR_FAN_OUT
+    assert set(FORMAT_ROUTES) == SNIFFABLE_FORMATS
 
 
 @pytest.mark.parametrize(("encoder", "sniffed"), [("WEBP", "webp"), ("HEIF", "heic")])
@@ -120,14 +95,7 @@ def test_a_reader_route_does_not_require_a_bespoke_structural_walker(encoder, sn
     data = _synthetic_decoder_image(encoder)
     assert image_formats.sniff(data) == sniffed
     assert sniffed not in image_formats.VALIDATORS
-    assert inspect_source(data, declared_sha256=None, policy=POLICY).outcome == "admitted"
-
-
-def test_an_unknown_magic_or_handbuilt_missing_route_gets_a_generic_raster_attempt():
-    """Neither case may reintroduce a format-policy refusal path."""
-    partial_policy = {name: action for name, action in POLICY.items() if name != "webp"}
-    assert classify_detected_format("webp", partial_policy) == ADMIT_OR_FAN_OUT
-    assert classify_detected_format(None, POLICY) == ADMIT_OR_FAN_OUT
+    assert inspect_source(data, declared_sha256=None).outcome == "admitted"
 
 
 # --- Test 1: admission by bytes, never by extension ------------------------------
@@ -142,7 +110,7 @@ def test_an_unknown_magic_or_handbuilt_missing_route_gets_a_generic_raster_attem
     ],
 )
 def test_correct_bytes_are_admitted_and_their_true_geometry_is_read(data, detected, geometry):
-    outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
+    outcome = inspect_source(data, declared_sha256=None)
     assert outcome == AdmissionOutcome("admitted", None, detected, digest_bytes(data), geometry)
 
 
@@ -151,16 +119,14 @@ def test_the_declared_name_plays_no_part_at_all():
     same bytes under any other name, because no name is ever passed in. There is no
     parameter here to mislead — which is the point, and this is what would notice a
     suffix creeping back in as a "harmless" extra refusal."""
-    assert (
-        inspect_source(_decoder_jpeg(), declared_sha256=None, policy=POLICY).outcome == "admitted"
-    )
-    outcome = inspect_source(b"not an image", declared_sha256=None, policy=POLICY)
+    assert inspect_source(_decoder_jpeg(), declared_sha256=None).outcome == "admitted"
+    outcome = inspect_source(b"not an image", declared_sha256=None)
     assert outcome.outcome == "refused"
     assert reason_code(outcome.reason) is RefusalReason.UNRECOGNIZED_FORMAT
 
 
 def test_a_declared_digest_that_does_not_match_the_bytes_is_refused_and_named():
-    outcome = inspect_source(png(), declared_sha256="0" * 64, policy=POLICY)
+    outcome = inspect_source(png(), declared_sha256="0" * 64)
     assert reason_code(outcome.reason) is RefusalReason.DIGEST_MISMATCH
     assert outcome.digest == digest_bytes(png())
 
@@ -170,22 +136,22 @@ def test_a_transfer_changed_raster_is_a_digest_alarm_before_the_decoder_reads_it
     changed = bytearray(original)
     changed[changed.find(b"IDAT") + 5] ^= 0xFF
 
-    outcome = inspect_source(bytes(changed), declared_sha256=digest_bytes(original), policy=POLICY)
+    outcome = inspect_source(bytes(changed), declared_sha256=digest_bytes(original))
     assert reason_code(outcome.reason) is RefusalReason.DIGEST_MISMATCH
 
 
 def test_scanner_style_jpeg_suffix_bytes_are_admitted():
     """EOI closes the image; harmless bytes after it are not a corruption alarm."""
     data = _decoder_jpeg(trailing=b"scanner-metadata-after-eoi")
-    outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
+    outcome = inspect_source(data, declared_sha256=None)
     assert outcome == AdmissionOutcome("admitted", None, "jpeg", digest_bytes(data), (5, 4))
 
 
 def test_pdf_is_a_page_container_not_a_single_image_refusal():
     """The door owns PDF's page count and one-time rendering, not `inspect_source`."""
-    assert classify_detected_format("pdf", POLICY) == RENDER_PAGES
+    assert route_for("pdf") == RENDER_PAGES
     with pytest.raises(ValueError, match="page container"):
-        inspect_source(single_gray_page_pdf(), declared_sha256=None, policy=POLICY)
+        inspect_source(single_gray_page_pdf(), declared_sha256=None)
 
 
 def test_a_single_page_tiff_is_admitted_as_one_image_and_never_re_encoded():
@@ -198,8 +164,8 @@ def test_a_single_page_tiff_is_admitted_as_one_image_and_never_re_encoded():
     this one.
     """
     data = tiff(4, 5)
-    assert classify_detected_format("tiff", POLICY) == ADMIT_OR_FAN_OUT
-    outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
+    assert route_for("tiff") == ADMIT_OR_FAN_OUT
+    outcome = inspect_source(data, declared_sha256=None)
     assert outcome == AdmissionOutcome("admitted", None, "tiff", digest_bytes(data), (4, 5))
 
 
@@ -227,7 +193,7 @@ def test_installed_bmp_webp_avif_and_generic_fallback_decoders_admit_real_synthe
     data = _synthetic_decoder_image(encoder)
 
     assert image_formats.sniff(data) == sniffed
-    assert inspect_source(data, declared_sha256=None, policy=POLICY) == AdmissionOutcome(
+    assert inspect_source(data, declared_sha256=None) == AdmissionOutcome(
         "admitted", None, decoded, digest_bytes(data), (7, 5)
     )
 
@@ -252,22 +218,18 @@ def _exercised() -> dict[RefusalReason, str]:
     admitted source fact, deliberately not a refusal-vocabulary member.
     """
     return {
-        RefusalReason.EMPTY: inspect_source(b"", declared_sha256=None, policy=POLICY).reason,
+        RefusalReason.EMPTY: inspect_source(b"", declared_sha256=None).reason,
         RefusalReason.TOO_LARGE: inspect_source(
-            b"\x89PNG\r\n\x1a\n" + b"\x00" * MAX_SOURCE_BYTES, declared_sha256=None, policy=POLICY
+            b"\x89PNG\r\n\x1a\n" + b"\x00" * MAX_SOURCE_BYTES, declared_sha256=None
         ).reason,
         RefusalReason.UNRECOGNIZED_FORMAT: inspect_source(
-            b"plain text", declared_sha256=None, policy=POLICY
+            b"plain text", declared_sha256=None
         ).reason,
-        RefusalReason.CORRUPT: inspect_source(
-            png()[:-4], declared_sha256=None, policy=POLICY
-        ).reason,
+        RefusalReason.CORRUPT: inspect_source(png()[:-4], declared_sha256=None).reason,
         RefusalReason.UNSUPPORTED_VARIANT: inspect_source(
-            _oversized_png(), declared_sha256=None, policy=POLICY
+            _oversized_png(), declared_sha256=None
         ).reason,
-        RefusalReason.DIGEST_MISMATCH: inspect_source(
-            png(), declared_sha256="0" * 64, policy=POLICY
-        ).reason,
+        RefusalReason.DIGEST_MISMATCH: inspect_source(png(), declared_sha256="0" * 64).reason,
         RefusalReason.UNREADABLE: reason(RefusalReason.UNREADABLE, "no such file"),
     }
 
@@ -285,8 +247,8 @@ def test_the_two_refusal_voices_stay_apart():
     and different decisions for the operator. Collapsing them would tell them a
     photograph was corrupt when the truth is that we cannot read that flavour of
     it yet."""
-    corrupt = inspect_source(png()[:-4], declared_sha256=None, policy=POLICY)
-    unsupported = inspect_source(_oversized_png(), declared_sha256=None, policy=POLICY)
+    corrupt = inspect_source(png()[:-4], declared_sha256=None)
+    unsupported = inspect_source(_oversized_png(), declared_sha256=None)
     assert reason_code(corrupt.reason) is RefusalReason.CORRUPT
     assert reason_code(unsupported.reason) is RefusalReason.UNSUPPORTED_VARIANT
 
@@ -332,7 +294,7 @@ def test_an_iphone_native_heic_is_decoded_and_admitted():
     )
     data = output.getvalue()
 
-    outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
+    outcome = inspect_source(data, declared_sha256=None)
 
     assert outcome == AdmissionOutcome("admitted", None, "heif", digest_bytes(data), (3, 2))
     assert image_formats.sniff(data) == "heic"
@@ -341,7 +303,7 @@ def test_an_iphone_native_heic_is_decoded_and_admitted():
 
 def test_a_truncated_heic_file_type_box_is_typed_as_corruption():
     data = (28).to_bytes(4, "big") + heic()[4:]
-    outcome = inspect_source(data, declared_sha256=None, policy=POLICY)
+    outcome = inspect_source(data, declared_sha256=None)
 
     assert outcome.outcome == "refused"
     assert reason_code(outcome.reason) is RefusalReason.CORRUPT
@@ -361,7 +323,7 @@ def test_a_format_with_a_reader_that_still_fails_is_worded_about_the_bytes():
     # decoder-side failure.
     data = bytearray(_one_pixel_gif())
     data[33] ^= 1
-    outcome = inspect_source(bytes(data), declared_sha256=None, policy=POLICY)
+    outcome = inspect_source(bytes(data), declared_sha256=None)
 
     assert outcome.outcome == "refused"
     assert reason_code(outcome.reason) is RefusalReason.CORRUPT
@@ -383,7 +345,7 @@ def _two_frame_tiff() -> bytes:
 
 def test_a_multi_frame_raster_is_never_admitted_whole():
     """Sealing a multi-frame source as its own bytes would keep frame one only."""
-    outcome = inspect_source(_two_frame_tiff(), declared_sha256=None, policy=POLICY)
+    outcome = inspect_source(_two_frame_tiff(), declared_sha256=None)
 
     assert outcome.outcome == "refused"
     assert reason_code(outcome.reason) is RefusalReason.UNSUPPORTED_VARIANT
@@ -393,10 +355,10 @@ def test_a_multi_frame_raster_is_never_admitted_whole():
 def test_a_rendered_page_is_bounded_by_the_rendered_page_limit(monkeypatch):
     data = png(4, 3)
     monkeypatch.setattr(admission, "MAX_SOURCE_BYTES", 1)
-    assert inspect_rendered_page(data, policy=POLICY).outcome == "admitted"
+    assert inspect_rendered_page(data).outcome == "admitted"
 
     monkeypatch.setattr(admission, "MAX_RENDERED_PAGE_BYTES", 1)
-    refused = inspect_rendered_page(data, policy=POLICY)
+    refused = inspect_rendered_page(data)
     assert refused.outcome == "refused"
     assert reason_code(refused.reason) is RefusalReason.TOO_LARGE
     assert "rendered-page limit" in refused.reason

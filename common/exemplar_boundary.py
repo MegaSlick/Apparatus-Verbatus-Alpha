@@ -15,7 +15,6 @@ import json
 from typing import Any, Callable, Final
 
 from common.contracts.canonical import (
-    canonical_bytes,
     digest_bytes,
     digest_of,
     is_sha256,
@@ -24,18 +23,11 @@ from common.contracts.canonical import (
 from common.contracts.envelope import read_verified, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, page_id, region_id
-from common.contracts.stages import (
-    DOOR,
-    EXEMPLAR,
-    MAX_TRIAGE_SPLIT_PARTS,
-    PERLECTOR,
-    TRIAGE_ACTOR_FIELDS,
-    TRIAGE_ACTOR_KINDS,
-    TRIAGE_MODES,
-    TRIAGE_PART_FIELDS,
-    TRIAGE_ROW_FIELDS,
-)
+from common.contracts.stages import DOOR, EXEMPLAR, PERLECTOR
+from common.contracts.triage import SPLIT_OPERATION_ORDER, validate_row
 from common.imaging import (
+    DETERMINISTIC_ENCODER,
+    TRIAGE_APPLY_RECIPE,
     carries_only_image_chunks,
     crop_png,
     dimensions,
@@ -78,20 +70,12 @@ def verify_sealed_page_pixels(
     payload = page.get("payload")
     if not isinstance(payload, dict):
         raise ContractError("a sealed Exemplar page has no payload")
-    rows = sealed_submission_rows(payload)
-    if ordinal not in rows:
+    if payload.get("ordinal") != ordinal:
         raise ContractError(
-            "a sealed Exemplar page does not name this submitted row among its own submission "
-            "rows, so it is not the page this source was sealed into"
+            "a sealed Exemplar page names another submitted ordinal, so it is not the page "
+            "this source was sealed into"
         )
-    _verify_submission_row(rows[ordinal], source)
-    # The page's own top-level filename facts describe one of its rows and must
-    # agree with it. Two rows carrying identical bytes are one page, so the
-    # sealed record cites the whole set; nothing here may quietly disagree with
-    # the citation beside it.
-    if payload.get("ordinal") not in rows:
-        raise ContractError("a sealed Exemplar page's own ordinal is not one of its submitted rows")
-    _verify_page_source_facts(payload, rows[payload["ordinal"]], payload["ordinal"])
+    _verify_page_source_facts(payload, source, ordinal)
 
     source_digest = payload.get("source_sha256")
     if not is_sha256(source_digest):
@@ -117,20 +101,15 @@ def verify_sealed_page_pixels(
     blob_path = tree.blob_path(DOOR, source_digest)
     if payload.get("image_path") != blob_path:
         raise ContractError("a sealed Exemplar page does not name its Door pixel blob")
-    admission_paths = {
-        tree.artifact_path(DOOR, "admission", artifact_id(DOOR, "admission", f"source-{row}"))
-        for row in rows
-    }
     admission_path = tree.artifact_path(
         DOOR,
         "admission",
         artifact_id(DOOR, "admission", f"source-{ordinal}"),
     )
     refs = _references_by_path(page.get("inputs"))
-    if set(refs) != admission_paths | {blob_path}:
+    if set(refs) != {admission_path, blob_path}:
         raise ContractError(
-            "a sealed Exemplar page must input exactly the Door admission of every submission "
-            "row it names, and its pixel blob"
+            "a sealed Exemplar page must input exactly its Door admission and its pixel blob"
         )
     blob_ref = refs[blob_path]
     if blob_ref != {"relative_path": blob_path, "sha256": source_digest}:
@@ -147,6 +126,7 @@ def verify_sealed_page_pixels(
         admission = validate_envelope(json.loads(admission_data.decode("utf-8")))
     except (SchemaRefusal, UnicodeDecodeError, ValueError, TypeError) as error:
         raise ContractError("the sealed page's Door admission is not a valid artifact") from error
+    # `page_bytes` were read and hashed against `blob_ref`, so its digest stands for them.
     _verify_admission(admission, run, source, ordinal, blob_ref, tree, rendered)
     return page_bytes
 
@@ -322,7 +302,6 @@ def verify_exemplar_corpus_seal(
 ) -> None:
     """Verify the one Exemplar corpus seal against run authority and page outcomes."""
     expected_ordinals = set(sources)
-    _refuse_a_merged_page_no_consumer_reads_yet(records)
     if set(records) != expected_ordinals or set(entries_by_ordinal) != expected_ordinals:
         # By ordinal, never by submitted filename: the data-handling policy
         # excludes a declared path from the stderr channel `run_stage` prints
@@ -512,14 +491,11 @@ def _sealed_source_page(
     page = tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", source_page_id))
     if page.get("subject_id") != source_page_id:
         raise ContractError(f"a {what}'s page id does not name its Exemplar page")
-    verify_sealed_page_pixels(tree, run, sources[0], page)
+    page_pixels = verify_sealed_page_pixels(tree, run, sources[0], page)
     page_ref = {
         "relative_path": page["payload"]["image_path"],
         "sha256": page["payload"]["source_sha256"],
     }
-    page_pixels = read_verified(
-        tree.read_bytes, page_ref, "the sealed Exemplar page", ContractError
-    )
     page_width, page_height = dimensions(page_pixels)
     if (
         bounds["x"] < 0
@@ -648,73 +624,6 @@ def _verify_crop_is_the_same_image(stored: bytes, derived: bytes) -> None:
         )
 
 
-def _refuse_a_merged_page_no_consumer_reads_yet(records: dict[int, dict[str, Any]]) -> None:
-    """Name the one shape the Exemplar can seal and nothing behind it can read.
-
-    Byte-identical sources submitted twice seal as one page citing both rows,
-    the right answer for the Exemplar, but every stage behind it keys its work
-    by submitted ordinal and would mint each act twice against one `page_id`.
-    Refused here rather than surfacing downstream as a lie about a "lost"
-    ordinal that was actually sealed and cited.
-
-    The Door refuses identical source bytes
-    (`pipeline/1_exemplar/door.py::require_no_duplicate_sources`); this guards
-    the merged shape that two sources with identical derivatives can still
-    produce.
-    """
-    for ordinal, record in records.items():
-        if record.get("outcome") != "sealed":
-            continue
-        payload = record.get("payload")
-        rows = sealed_submission_rows(payload) if isinstance(payload, dict) else {}
-        if len(rows) > 1:
-            raise ContractError(
-                f"the Exemplar sealed submitted ordinal(s) {sorted(rows)} into the single page "
-                f"{record.get('subject_id')} because they carry identical bytes; that is one "
-                "page and one act set, but every stage behind the Exemplar still works one "
-                "page per submitted row and would mint each act on it twice. The run is "
-                f"refused here rather than read twice (reached via ordinal {ordinal})"
-            )
-
-
-def sealed_submission_rows(payload: dict[str, Any]) -> dict[int, dict[str, Any]]:
-    """Every submission row one sealed page names, by ordinal.
-
-    Ordinarily one. Byte-identical sources submitted under two filenames derive
-    one `page_id` — identity binds the bytes, not the manifest row — so the
-    Exemplar seals one page artifact citing both rows rather than publishing the
-    same identity twice. The rows are the page's account of which submissions it
-    discharges, and every consumer reads them through here.
-    """
-    rows = payload.get("submission_rows")
-    if not isinstance(rows, list) or not rows:
-        raise ContractError("a sealed Exemplar page cites no submitted row")
-    by_ordinal: dict[int, dict[str, Any]] = {}
-    for row in rows:
-        ordinal = row.get("ordinal") if isinstance(row, dict) else None
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise ContractError("a sealed Exemplar page cites a submitted row with no ordinal")
-        if ordinal in by_ordinal:
-            raise ContractError(
-                f"a sealed Exemplar page cites submitted ordinal {ordinal} twice; a row "
-                "counted twice is a page count that no longer reconciles"
-            )
-        by_ordinal[ordinal] = row
-    if list(by_ordinal) != sorted(by_ordinal):
-        raise ContractError("a sealed Exemplar page cites its submitted rows out of order")
-    return by_ordinal
-
-
-def _verify_submission_row(row: dict[str, Any], source: dict[str, Any]) -> None:
-    """One cited submission row against the run authority's manifest row."""
-    for field in ("relative_path", "sha256", "bytes", "ledger_sha256", "container_page_index"):
-        if source.get(field) != row.get(field):
-            raise ContractError(
-                "a sealed Exemplar page cites a submitted row that no longer matches its "
-                "submitted filename ledger entry"
-            )
-
-
 def _verify_page_source_facts(
     payload: dict[str, Any], source: dict[str, Any], ordinal: int
 ) -> None:
@@ -821,10 +730,13 @@ def _verify_admission(
     parent_bytes = read_verified(
         tree.read_bytes, parent_ref, "the derivative page's submitted master", ContractError
     )
-    sealed_bytes = read_verified(
-        tree.read_bytes, blob_ref, "the sealed derivative page", ContractError
+    verify_triage_derivative(
+        rendered["render_contract"],
+        parent_bytes,
+        parent_digest,
+        parent,
+        blob_ref["sha256"],
     )
-    verify_triage_derivative(rendered["render_contract"], parent_bytes, parent, sealed_bytes)
 
 
 def _verify_rendered_source_link(
@@ -864,117 +776,49 @@ def is_triage_derivative_contract(render_contract: Any) -> bool:
     )
 
 
-def _validate_embedded_triage_row(row: Any) -> None:
-    """Validate the provenance fields the common boundary must not take on trust.
+# Re-rendering a split page from its master takes seconds for a full-size scan, and
+# every stage re-checks a page once per act on it. The render is a pure function of
+# the master's bytes, the frame index and the part, so its result is kept per process,
+# keyed by the master's digest, and the sealed page is compared by digest. Every
+# check around it, and every read and hash of the master and page, still runs.
+_MAX_REMEMBERED_DERIVATIONS: Final = 4096
+_derivations: dict[tuple[str, int, str], tuple[str, dict[str, Any]]] = {}
 
-    Geometry is checked executable against every recorded operation and the master
-    itself. Mode, actor, override, confidence, cluster identity, and every
-    row/split/part field set are closed here too.
-    """
-    if not isinstance(row, dict) or set(row) != TRIAGE_ROW_FIELDS:
-        raise ContractError("a sealed derivative page carries no complete triage manifest row")
-    if not isinstance(row["corpus_id"], str) or not row["corpus_id"].strip():
-        raise ContractError("a sealed derivative page's triage row has no corpus identity")
-    if row["mode"] not in TRIAGE_MODES:
-        raise ContractError("a sealed derivative page's triage row has no declared mode")
-    if (
-        not isinstance(row["confidence"], int)
-        or isinstance(row["confidence"], bool)
-        or row["confidence"] not in range(5)
-        or not isinstance(row["human_override"], bool)
-    ):
-        raise ContractError(
-            "a sealed derivative page's triage row has invalid confidence or override provenance"
-        )
-    cluster_id = row["re_shoot_cluster_id"]
-    if cluster_id is not None and (not isinstance(cluster_id, str) or not cluster_id.strip()):
-        raise ContractError("a sealed derivative page's triage row has an invalid cluster identity")
-    actor = row["actor"]
-    if (
-        not isinstance(actor, dict)
-        or set(actor) != TRIAGE_ACTOR_FIELDS
-        or actor.get("kind") not in TRIAGE_ACTOR_KINDS
-        or not isinstance(actor.get("identity"), str)
-        or not actor["identity"].strip()
-        or (actor["kind"] == "human" and actor.get("revision") is not None)
-        or (
-            actor["kind"] != "human"
-            and (not isinstance(actor.get("revision"), str) or not actor["revision"].strip())
-        )
-    ):
-        raise ContractError("a sealed derivative page's triage row has no resolved actor")
-    split = row["split"]
-    if (
-        not isinstance(split, dict)
-        or set(split) != {"operation_order", "parts"}
-        or split.get("operation_order") != "region-crop-rotate"
-        or not isinstance(split.get("parts"), list)
-        or not split["parts"]
-        or any(
-            not isinstance(part, dict) or set(part) != TRIAGE_PART_FIELDS for part in split["parts"]
-        )
-    ):
-        raise ContractError("a sealed derivative page's triage row has no closed split record")
-    if len(split["parts"]) > MAX_TRIAGE_SPLIT_PARTS:
-        # Bounded here as well as in the pre-door contract, and before the pairwise
-        # overlap loop below rather than after it: this boundary exists precisely
-        # because the row reaching it is not taken on trust, and the loop it guards
-        # is quadratic in the number of parts.
-        raise ContractError(
-            f"a sealed derivative page's triage row exceeds the "
-            f"{MAX_TRIAGE_SPLIT_PARTS}-part split limit"
-        )
-    frame = row["frame"]
-    if (
-        not isinstance(frame, dict)
-        or set(frame) != {"width", "height"}
-        or any(
-            not isinstance(frame[field], int) or isinstance(frame[field], bool) or frame[field] <= 0
-            for field in ("width", "height")
-        )
-    ):
-        raise ContractError("a sealed derivative page's triage row has no closed frame geometry")
-    regions = []
-    for part in split["parts"]:
-        operations = (
-            {"operation": "split", "region": part["region"]},
-            {"operation": "crop", "bounds": part["crop_box"]},
-            {"operation": "deskew", "rotation": part["rotation"]},
-            {"operation": "convert", "colour_mode": part["colour_mode"]},
-        )
-        for operation in operations:
-            _validate_exemplar_transform(operation)
-        region = part["region"]
-        crop_box = part["crop_box"]
-        if (
-            region["x"] + region["w"] > frame["width"]
-            or region["y"] + region["h"] > frame["height"]
-            or crop_box["x"] + crop_box["w"] > region["w"]
-            or crop_box["y"] + crop_box["h"] > region["h"]
-        ):
-            raise ContractError("a sealed derivative page's triage row has out-of-frame geometry")
-        regions.append(region)
-    for index, region in enumerate(regions):
-        for other in regions[index + 1 :]:
-            disjoint = (
-                region["x"] + region["w"] <= other["x"]
-                or other["x"] + other["w"] <= region["x"]
-                or region["y"] + region["h"] <= other["y"]
-                or other["y"] + other["h"] <= region["y"]
+
+def _rederived(
+    parent_bytes: bytes, parent_digest: str, page_index: int, part: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
+    """The digest and geometry of ``part`` rendered from a master whose bytes have ``parent_digest``."""
+    key = (parent_digest, page_index, digest_of(part))
+    remembered = _derivations.get(key)
+    if remembered is None:
+        try:
+            expected_bytes, geometry = render_triage_derivative(
+                parent_bytes, page_index=page_index, part=part
             )
-            if not disjoint:
-                raise ContractError("a sealed derivative page's triage row has overlapping parts")
-    if sum(region["w"] * region["h"] for region in regions) != frame["width"] * frame["height"]:
-        raise ContractError("a sealed derivative page's triage row does not partition its frame")
+        except ValueError as error:
+            raise ContractError(
+                "the sealed derivative page cannot be re-derived from its master"
+            ) from error
+        remembered = (digest_bytes(expected_bytes), geometry)
+        if len(_derivations) >= _MAX_REMEMBERED_DERIVATIONS:
+            del _derivations[next(iter(_derivations))]
+        _derivations[key] = remembered
+    return remembered
 
 
 def verify_triage_derivative(
     contract: dict[str, Any],
     parent_bytes: bytes,
+    parent_digest: str,
     parent: dict[str, Any],
-    sealed_bytes: bytes,
+    sealed_digest: str,
 ) -> None:
-    """A split page is valid only when its closed decision re-derives its bytes."""
+    """A split page is valid only when its closed decision re-derives its bytes.
+
+    ``parent_digest`` and ``sealed_digest`` are the digests the caller verified the
+    master's bytes and the sealed page's bytes against when it read them.
+    """
     contract_fields = {
         "renderer",
         "renderer_version",
@@ -1005,14 +849,7 @@ def verify_triage_derivative(
     }
     if not isinstance(derivative, dict) or set(derivative) != required:
         raise ContractError("a sealed derivative page has no complete apply recipe")
-    if derivative["apply_recipe"] != {
-        "schema": "triage-raster-apply-v1",
-        "rotation_resample": "Pillow.Resampling.BICUBIC",
-        "rotation_fill": "Pillow-default-zero",
-        "rotation_expand": True,
-        "colour_conversion": "Pillow.Image.convert-direct-or-via-RGB",
-        "encoder": "common.imaging.encode_image_deterministic-v1",
-    }:
+    if derivative["apply_recipe"] != dict(TRIAGE_APPLY_RECIPE):
         raise ContractError("a sealed derivative page changes its recorded raster apply recipe")
     if contract.get("renderer") != "Pillow" or any(
         not isinstance(contract.get(field), str) or not contract[field]
@@ -1025,19 +862,13 @@ def verify_triage_derivative(
         raise ContractError(
             "a sealed derivative page does not carry its manifest row and back-link"
         )
-    _validate_embedded_triage_row(row)
-    row_digest = row.get("manifest_row_sha256")
-    if not is_sha256(row_digest):
-        raise ContractError("a sealed derivative page's manifest row has no sha256")
-    if (
-        digest_bytes(
-            canonical_bytes(
-                {key: value for key, value in row.items() if key != "manifest_row_sha256"}
-            )
-        )
-        != row_digest
-    ):
-        raise ContractError("a sealed derivative page's manifest row digest does not bind its row")
+    try:
+        validate_row(row)
+    except SchemaRefusal as error:
+        raise ContractError(
+            f"a sealed derivative page carries an invalid triage manifest row ({error})"
+        ) from error
+    row_digest = row["manifest_row_sha256"]
     expected_backlink = {
         "corpus_id": row["corpus_id"],
         "source_frame_sha256": row["source_frame_sha256"],
@@ -1056,7 +887,7 @@ def verify_triage_derivative(
         or not 0 <= part_index < len(split["parts"])
         or derivative["parent_frame_sha256"] != parent["sha256"]
         or derivative["parent_frame_page_index"] != parent["source_frame_index"]
-        or derivative["operation_order"] != "region-crop-rotate"
+        or derivative["operation_order"] != SPLIT_OPERATION_ORDER
     ):
         raise ContractError("a sealed derivative page does not match its triage split part")
     part = split["parts"][part_index]
@@ -1070,14 +901,11 @@ def verify_triage_derivative(
         raise ContractError(
             "a sealed derivative page's transform vocabulary does not match its manifest part"
         )
-    try:
-        expected_bytes, geometry = render_triage_derivative(
-            parent_bytes, page_index=parent["source_frame_index"], part=part
-        )
-    except ValueError as error:
-        raise ContractError(
-            "the sealed derivative page cannot be re-derived from its master"
-        ) from error
+    if parent_digest != parent["sha256"]:
+        raise ContractError("a sealed derivative page's master bytes are not its parent frame")
+    expected_digest, geometry = _rederived(
+        parent_bytes, parent_digest, parent["source_frame_index"], part
+    )
     expected_mode_transform = (
         "triage-region-crop-rotate-convert"
         if geometry["source_mode"] == geometry["color_mode"]
@@ -1091,7 +919,7 @@ def verify_triage_derivative(
         "container_page_index": parent["source_frame_index"],
         "width": geometry["width"],
         "height": geometry["height"],
-        "deterministic_encoder": "common.imaging.encode_image_deterministic-v1",
+        "deterministic_encoder": DETERMINISTIC_ENCODER,
     }
     if any(contract.get(field) != value for field, value in expected_render_record.items()):
         raise ContractError(
@@ -1108,7 +936,7 @@ def verify_triage_derivative(
             "a sealed derivative page's manifest row declares a frame that is not the size "
             "of the master it was cut from, so the row's parts do not account for that master"
         )
-    if expected_bytes != sealed_bytes:
+    if expected_digest != sealed_digest:
         raise ContractError(
             "a sealed derivative page's pixels are not reproducible from its master and apply "
             f"recipe{_renderer_drift(contract)}"
@@ -1116,14 +944,13 @@ def verify_triage_derivative(
 
 
 def _renderer_drift(contract: dict[str, Any]) -> str:
-    """Name a library upgrade when one is the likelier cause of a pixel mismatch.
+    """Name a library difference when one is the likelier cause of a pixel mismatch.
 
-    The apply recipe is verified as a *record*, not against the running host: a
-    run sealed under an older Pillow stays verifiable, which refusing on version
-    drift would destroy for every archived run on the next routine upgrade. The
-    byte comparison above is the real property. But its message on its own points
-    an operator at forgery, and an upgraded decoder is the ordinary explanation —
-    so when the versions differ, say which ones.
+    The recorded library versions are not compared against the running host; the
+    byte comparison is the property. A host whose imaging libraries render the
+    part differently (an upgrade, or another platform's arithmetic) therefore
+    refuses the page, and since that message alone points an operator at forgery,
+    it names the versions that differ.
     """
     fields = ("renderer_version", "pillow_heif_version", "libheif_version")
     try:

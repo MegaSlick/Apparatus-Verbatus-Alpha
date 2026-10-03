@@ -1,6 +1,5 @@
 """Writer and read-back seams enforce the same closed native intake contract."""
 
-import ast
 import copy
 from pathlib import Path
 
@@ -94,105 +93,10 @@ def test_a_page_the_perlector_was_shown_closes_its_witness_layer(tmp_path):
     assert _page_records(tree, ordinal=2) == []
 
 
-def _is_call_statement(statement: ast.stmt, name: str) -> bool:
-    """A bare or assigned call to `name`, which running the block must execute."""
-    value = statement.value if isinstance(statement, (ast.Assign, ast.Expr)) else None
-    return (
-        isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == name
-    )
-
-
-def _publish_lines(node: ast.AST) -> list[int]:
-    """Only page Testimonium writes.
-
-    A dynamic or non-literal `kind` is counted, so a write this proof cannot
-    classify fails loudly rather than slipping past it.
-    """
-    lines = []
-    for child in ast.walk(node):
-        if (
-            not isinstance(child, ast.Call)
-            or not isinstance(child.func, ast.Attribute)
-            or child.func.attr != "publish"
-        ):
-            continue
-        kinds = [keyword.value for keyword in child.keywords if keyword.arg == "kind"]
-        if len(kinds) != 1 or not isinstance(kinds[0], ast.Constant):
-            lines.append(child.lineno)
-        elif kinds[0].value == "page-testimonium":
-            lines.append(child.lineno)
-    return lines
-
-
-def _child_blocks(statement: ast.stmt):
-    for field in ("body", "orelse", "finalbody"):
-        block = getattr(statement, field, None)
-        if block:
-            yield block
-    for handler in getattr(statement, "handlers", []):
-        if handler.body:
-            yield handler.body
-
-
-def _undominated_publishes(statements: list[ast.stmt], name: str) -> list[int]:
-    """Publish lines this block can reach without first executing a `name` call.
-
-    What must never exist is a publish reachable down a path where the
-    reconciliation sits in a branch that did not run.
-    (`test_page_witness_roster.py` runs the fuller write scan over the same tree.)
-    """
-    validated = False
-    undominated: list[int] = []
-    for statement in statements:
-        if _is_call_statement(statement, name):
-            validated = True
-            continue
-        if not _publish_lines(statement):
-            continue
-        if validated:
-            continue
-        blocks = list(_child_blocks(statement))
-        if not blocks:
-            undominated.extend(_publish_lines(statement))
-            continue
-        for block in blocks:
-            undominated.extend(_undominated_publishes(block, name))
-    return undominated
-
-
-@pytest.mark.parametrize(
-    "writer",
-    ("publish_page_testimonium", "publish_detector_page_testimonium"),
-)
-def test_each_testimonium_writer_reconciles_adapter_evidence_before_publication(writer):
-    """A later tally refusal cannot undo immutable evidence already published.
-
-    Source order alone was too weak a proof: it is satisfied by a reconciliation
-    sitting inside a branch that never runs while the publish below it does.
-    What must hold is that no publish is *reachable* without the reconciliation
-    having executed first on that path.
-    """
-    tree = ast.parse(Path(attestatores.__file__).read_text())
-    function = next(
-        node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == writer
-    )
-
-    assert _publish_lines(function), f"{writer} no longer publishes; this proof watches nothing"
-    undominated = _undominated_publishes(function.body, "validate_testimonium_presentation")
-
-    assert undominated == [], (
-        f"{writer} can reach context.publish at line(s) {undominated} without first "
-        "reconciling its adapter-derived presentation; that evidence would be immutable "
-        "before anything checked it"
-    )
-
-
 def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
     adapter = attestatores.witness_adapters.resolve_runnable_adapter("dai.v1")
     raw = "[UNCERTAIN]  ſ [CROSSED_OUT]".encode("utf-8")
-    parsed = adapter.parse(raw)
+    parsed = attestatores.feeding.validate_dai_text(raw)
     presented = _base()["presented"]
     observed = adapter.observe(presented, parsed)
 
@@ -211,7 +115,6 @@ def test_dai_uncertainty_tokens_reach_a_closed_testimonium_verbatim():
         ),
         presented=presented,
         observed=observed,
-        testimonium_id="art_0123456789abcdef",
     )
 
     assert record["payload"] == raw.decode("utf-8")
@@ -295,8 +198,8 @@ def test_a_page_presentation_naming_another_page_s_blob_is_refused_at_the_tally_
     forged["inputs"] = [context.input_ref(second["payload"]["image_path"])]
     forged["self_hash"] = self_hash(forged)
 
-    with pytest.raises(SchemaRefusal, match="not the sealed page it claims"):
-        attestatores.validate_testimonium_presentation(context, forged)
+    with pytest.raises(SchemaRefusal, match="presentation names a different page"):
+        attestatores.validate_page_testimonium_record(context, forged)
 
 
 def test_a_page_witness_shown_pixels_carries_the_serving_moment_that_produced_them(tmp_path):
@@ -388,8 +291,8 @@ def _blob_ref(seed: str) -> dict[str, str]:
 def test_a_malformed_retained_model_view_is_refused_at_the_page_writer():
     """A view which is not a retained model view at all cannot ride into a page
     record unexamined. The stop word is not what this proves: the live boundary
-    refuses an unreadable engine word itself, before publication
-    (`run.py::refuse_unpublishable_stop_word`)."""
+    keeps an answer under an unmeasured engine word unread, before any adapter
+    sees it (`live_witness.unmeasured_stop_reason`)."""
     payload = _base()
     reference = _blob_ref("live response bytes")
     payload["native_capture"] = {

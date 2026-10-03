@@ -272,10 +272,10 @@ def test_record_validation_refuses_a_gap_whose_position_label_lies_about_its_own
 
     A resealed record must not claim `leading` three characters in, or
     `internal` at the very edge of the text: a labelled gap's bounds are
-    checked against what that label means, the same way the producer-side
-    `common/reading_annotations.py::validate_gaps` checks them, so the
-    canonical projection layer does not trust a restatement its own
-    producer would have refused to write.
+    checked against what that label means, by the canonical schema
+    `common.contracts.uncertainty.validate` that every stored doubt layer
+    meets, so the projection does not trust a restatement the producer
+    would have refused to write.
     """
     with pytest.raises(SchemaRefusal, match=expected):
         archetypus.validate_record(seal_record(uncertainty=_uncertainty(gaps=[gap])))

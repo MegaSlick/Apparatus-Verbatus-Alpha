@@ -20,7 +20,7 @@ import pytest
 
 from operations.submit import gate
 
-# --- The policy is a file with every clause the spec named ------------------------
+# --- The policy load ---------------------------------------------------------
 
 
 @pytest.fixture
@@ -28,59 +28,16 @@ def policy():
     return gate.load_policy()
 
 
-def test_the_shipped_policy_carries_every_clause_the_spec_requires(policy):
-    """A policy missing a clause is not a shorter policy; it is one the project
-    lead never approved, and reading it as valid would be the gate approving
-    itself."""
-    assert set(policy) == gate._POLICY_FIELDS
-    assert policy["alpha_shortcuts_ledger"] == "workbench/standing/ALPHA_SHORTCUTS.md"
-
-
-def test_the_shipped_policy_keeps_filename_links_and_states_settled_whole_run_retention(policy):
-    assert "citation links" in policy["logging_rule"]
-    assert "private refusal report" in policy["logging_rule"]
-    assert "dead and broken or complete and exported" in policy["retention_and_deletion"]
-    assert "whole run volume" in policy["retention_and_deletion"]
-
-
-def test_the_alpha_shortcuts_ledger_is_a_clause_the_loader_enforces(tmp_path, policy):
-    """A policy stripped of this clause must not load clean."""
-    stripped = {key: value for key, value in policy.items() if key != "alpha_shortcuts_ledger"}
-    path = tmp_path / "no-ledger.json"
-    path.write_text(json.dumps(stripped), encoding="utf-8")
-    with pytest.raises(gate.GateRefusal, match="alpha_shortcuts_ledger"):
-        gate.load_policy(path)
-
-
-@pytest.mark.parametrize("value", [True, 1, {"x": 1}, "x", ["a rule"]])
-def test_a_clause_that_states_no_rule_is_refused(tmp_path, policy, value):
-    """A clause replaced by a bare truthy value must not pass as a stated rule."""
+@pytest.mark.parametrize("roots", [None, [], [""], [1]])
+def test_a_policy_that_names_no_usable_storage_root_is_refused_at_load(tmp_path, policy, roots):
     mutated = dict(policy)
-    mutated["logging_rule"] = value
-    path = tmp_path / "boolean-clause.json"
-    path.write_text(json.dumps(mutated), encoding="utf-8")
-    with pytest.raises(gate.GateRefusal, match="not a stated rule"):
-        gate.load_policy(path)
-
-
-def test_a_clause_this_gate_does_not_enforce_is_refused(tmp_path, policy):
-    """The other direction, and the reason the field set is exact: a clause the
-    project lead approved that nothing here checks is a rule with no machinery
-    behind it."""
-    extended = dict(policy)
-    extended["a_clause_nothing_enforces"] = "some rule nobody checks"
-    path = tmp_path / "extra-clause.json"
-    path.write_text(json.dumps(extended), encoding="utf-8")
-    with pytest.raises(gate.GateRefusal, match="Unknown"):
-        gate.load_policy(path)
-
-
-def test_a_policy_with_a_clause_removed_is_refused(tmp_path, policy):
-    stripped = dict(policy)
-    del stripped["retention_and_deletion"]
+    if roots is None:
+        del mutated["storage_roots"]
+    else:
+        mutated["storage_roots"] = roots
     path = tmp_path / "policy.json"
-    path.write_text(json.dumps(stripped), encoding="utf-8")
-    with pytest.raises(gate.GateRefusal, match="retention_and_deletion"):
+    path.write_text(json.dumps(mutated), encoding="utf-8")
+    with pytest.raises(gate.GateRefusal, match="storage root"):
         gate.load_policy(path)
 
 

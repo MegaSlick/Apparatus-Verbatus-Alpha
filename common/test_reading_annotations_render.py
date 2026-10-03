@@ -1,4 +1,4 @@
-"""Doubt marks written back from a doubt report, and the offsets between the two forms."""
+"""Doubt marks read into a doubt report, written back from one, and the offsets between."""
 
 import random
 from itertools import pairwise
@@ -6,12 +6,70 @@ from itertools import pairwise
 import pytest
 
 from common.contracts.errors import SchemaRefusal
+from common.contracts.uncertainty import PAGE_READ_LECTIO, validate
 from common.reading_annotations import (
     doubt_mark_offsets,
     malformed_assessment,
     read_doubt_marks,
     render_doubt_marks,
 )
+
+
+def _stored_layer(assessment):
+    """The doubt layer a Perlectio stores for this report, as the canonical schema reads it."""
+    return {
+        "uncertain_spans": assessment["uncertain_spans"],
+        "gaps": assessment["gaps"],
+        "self_revisions": None,
+        "assessment": {"state": assessment["state"], "problem": assessment["problem"]},
+        "lectio_kind": PAGE_READ_LECTIO,
+    }
+
+
+@pytest.mark.parametrize(
+    "raw,text,state,spans,gaps",
+    [
+        ("plain ink", "plain ink", "assessed", 0, 0),
+        ("[[?]] a [[b]] [[?]]", " a b ", "assessed", 1, 2),
+        ("[[?]]", "", "assessed", 0, 0),
+        ("[[?]]\n[[?]]", "\n", "assessed", 0, 0),
+        ("a [[?|b]]", "a [[?|b]]", "malformed", 0, 0),
+        ("a [[b|]]", "a [[b|]]", "malformed", 0, 0),
+        ("a [[b", "a [[b", "malformed", 0, 0),
+        ("a ]] b", "a ]] b", "malformed", 0, 0),
+        ("a [[x [[y]] z]]", "a [[x [[y]] z]]", "malformed", 0, 0),
+        ("a [[|y]]", "a [[|y]]", "malformed", 0, 0),
+    ],
+)
+def test_doubt_marks_parse_or_leave_the_answer_as_returned(raw, text, state, spans, gaps):
+    published, report = read_doubt_marks(raw)
+    assert (published, report["state"]) == (text, state)
+    assert (len(report["uncertain_spans"]), len(report["gaps"])) == (spans, gaps)
+    validate(_stored_layer(report), published)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "le vingt deux du mois [[?]]",
+        "le vingt deux du mois [[?]]\n",
+        "le vingt deux du mois [[?]].",
+        "le vingt deux du mois [[?]] ;»\n",
+    ],
+)
+def test_ink_past_the_crop_marked_at_the_end_is_a_trailing_gap(raw):
+    """A zero-width gap at the end, carrying no text, even when the reader closes the
+    line or the sentence after the mark."""
+    text, assessment = read_doubt_marks(raw)
+    gaps = [{"position": "trailing", "start": 22, "end": 22, "witness_evidence": []}]
+    assert assessment["gaps"] == gaps
+    validate(_stored_layer(assessment), text)
+
+
+def test_a_mark_followed_by_more_words_stays_internal():
+    _text, assessment = read_doubt_marks("le vingt [[?]] du mois")
+    assert assessment["gaps"][0]["position"] == "internal"
+
 
 # Pieces that exercise every mark form, the delimiters alone and the characters a
 # mark reserves, so random joins reach overlapping, adjacent and stray marks.
@@ -46,6 +104,7 @@ def _recorded_gaps_lost(raw, text, assessment):
 @pytest.mark.parametrize("raw", _EXAMPLES + _raws(3000, seed=7))
 def test_rendering_a_split_reading_gives_back_the_marked_reading(raw):
     text, assessment = read_doubt_marks(raw)
+    validate(_stored_layer(assessment), text)
     if _recorded_gaps_lost(raw, text, assessment):
         # A gap in a reading with no text is not recorded, so nothing renders it.
         assert render_doubt_marks(text, assessment) == text
@@ -114,3 +173,16 @@ def test_a_span_that_cannot_be_written_as_a_mark_is_refused():
     }
     with pytest.raises(SchemaRefusal):
         render_doubt_marks(text, assessment)
+
+
+@pytest.mark.parametrize(
+    "report",
+    [
+        {"state": "assessed", "uncertain_spans": [], "gaps": []},
+        {"state": "assessed", "uncertain_spans": [{"start": 0}], "gaps": [], "problem": None},
+        {"state": "assessed", "uncertain_spans": [], "gaps": [], "problem": "why"},
+    ],
+)
+def test_a_malformed_doubt_report_is_refused_by_name(report):
+    with pytest.raises(SchemaRefusal):
+        render_doubt_marks("text", report)

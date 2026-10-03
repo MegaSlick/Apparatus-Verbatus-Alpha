@@ -12,6 +12,8 @@ repeating an identical command leaves every stage byte unchanged. The refusal si
 way an incomplete one is refused.
 """
 
+import dataclasses
+
 import pytest
 
 from common.chairs.errors import ReceiptRefusal, UnresolvedChairRefusal
@@ -95,12 +97,14 @@ def test_a_local_repository_receipt_records_its_revision_equivalent_and_says_whi
 
 
 def test_an_adapter_identity_travels_in_full_or_not_at_all(tmp_path):
-    chairs = {
-        "attestator_1": hf_chair("attestator_1", DIGEST, adapter_of="base"),
-        "base": hf_chair("base", DIGEST),
-    }
-    config = config_of(tmp_path, chairs)
-    adapter, base = config.chairs["attestator_1"], config.chairs["base"]
+    # A roster cannot declare an adapter, but the receipt schema keeps the
+    # field, so an identity built directly still has to carry it honestly.
+    config = config_of(
+        tmp_path,
+        {"attestator_1": hf_chair("attestator_1", DIGEST), "base": hf_chair("base", DIGEST)},
+    )
+    base = config.chairs["base"]
+    adapter = dataclasses.replace(config.chairs["attestator_1"], adapter_of="base")
 
     record = receipt_record(build_receipt(adapter, serving_details(adapter_identity=base)))
     assert record["adapter_identity"] == base.to_record()

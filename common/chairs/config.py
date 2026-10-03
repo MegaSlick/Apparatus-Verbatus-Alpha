@@ -29,7 +29,6 @@ _CONFIGURED_COMMON = {
     "source",
     "digest_manifest",
     "manifest",
-    "adapter_of",
     "serving_recipe",
     "license_note",
     "witness_adapter",
@@ -93,36 +92,6 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
             "models.toml", "model_root is required when a local-repository chair is configured"
         )
 
-    for role, value in chairs.items():
-        if not isinstance(value, ChairIdentity) or value.adapter_of is None:
-            continue
-        base = chairs.get(value.adapter_of)
-        if base is None:
-            raise ConfigurationRefusal(
-                role, f"adapter_of names no configured base chair {value.adapter_of!r}"
-            )
-        if isinstance(base, AbsentChair):
-            raise ConfigurationRefusal(
-                role, f"adapter_of base {value.adapter_of!r} is explicitly absent"
-            )
-        if value.adapter_of == role:
-            raise ConfigurationRefusal(role, "adapter_of cannot name the adapter chair itself")
-        # A self-reference is the one-step case of a cycle, and refusing only that let the
-        # two-step case through: two chairs each declaring the other as its base were both
-        # accepted, and neither pair member named a base artifact that exists. An adapter
-        # is an adapter *of* something, so a chain that never reaches a non-adapter chair
-        # is a roster with no base in it at all.
-        seen = [role]
-        walker = value.adapter_of
-        while walker is not None:
-            if walker in seen:
-                raise ConfigurationRefusal(
-                    role, f"adapter_of forms a cycle {' -> '.join([*seen, walker])}"
-                )
-            seen.append(walker)
-            step = chairs.get(walker)
-            walker = step.adapter_of if isinstance(step, ChairIdentity) else None
-
     for role in witness_framings:
         chair = chairs.get(role)
         if not isinstance(chair, ChairIdentity):
@@ -156,6 +125,12 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
         return AbsentChair(role=role, reason=_text(role, "reason", values.get("reason")))
     if state != "configured":
         raise ConfigurationRefusal(role, "state must be exactly 'configured' or 'absent'")
+    if "adapter_of" in values:
+        raise ConfigurationRefusal(
+            role,
+            "adapter_of is not supported: every chair is served as a full checkpoint, "
+            "and nothing serves or qualifies an adapter over a base",
+        )
 
     source = values.get("source")
     if source not in ("huggingface", "local-repository"):
@@ -164,7 +139,7 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
         )
     allowed = _CONFIGURED_COMMON | ({"repo", "revision"} if source == "huggingface" else {"path"})
     _only_keys(role, values, allowed)
-    required = _CONFIGURED_COMMON - {"adapter_of", "witness_adapter", "witness_scope"}
+    required = _CONFIGURED_COMMON - {"witness_adapter", "witness_scope"}
     required |= {"repo", "revision"} if source == "huggingface" else {"path"}
     missing = sorted(field for field in required if field not in values)
     if missing:
@@ -176,10 +151,6 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
             role, "digest_manifest must be exactly 64 lowercase hexadecimal characters"
         )
     manifest = _relative_posix(role, "manifest", values["manifest"])
-    adapter_of = values.get("adapter_of")
-    if adapter_of is not None:
-        adapter_of = _role(adapter_of)
-
     if source == "huggingface":
         repo = _text(role, "repo", values["repo"])
         revision = values["revision"]
@@ -229,7 +200,7 @@ def _parse_chair(role: str, values: Any) -> ChairIdentity | AbsentChair:
         revision=revision,
         digest_manifest=digest,
         manifest=manifest,
-        adapter_of=adapter_of,
+        adapter_of=None,
         serving_recipe=_text(role, "serving_recipe", values["serving_recipe"]),
         license_note=_text(role, "license_note", values["license_note"]),
         witness_adapter=witness_adapter,

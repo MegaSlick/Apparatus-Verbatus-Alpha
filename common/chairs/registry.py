@@ -20,14 +20,12 @@ from common.contracts.canonical import canonical_bytes
 
 from .config import load_models_toml
 from .errors import (
-    AdapterFetchRefusal,
     CacheRevisionRefusal,
     ChairRefusal,
     ConfigurationRefusal,
     DigestMismatchRefusal,
     DiskSpaceRefusal,
     LocalPathRefusal,
-    ReceiptRefusal,
     ServingRecipeRefusal,
     UnresolvedChairRefusal,
 )
@@ -373,30 +371,10 @@ class ChairRegistry:
     def receipt(self, identity: ChairIdentity, serving: ServingDetails) -> ServingReceipt:
         """Validate a run-receipt value; writing it belongs to the run receipt writer.
 
-        `build_receipt` binds the adapter base by *role*, which is all a value-level
-        validator can see. Only here is the configuration available, so only here can
-        the base's revision and digest be checked — and without that a receipt could
-        name the right base role at a stale revision, losing the identity of the base
-        artifact that actually answered. `_cache_descriptor` refuses the same drift
-        for the cache.
+        The identity must still be the configured one.
         """
 
         self._require_current_identity(identity)
-        supplied = serving.adapter_identity
-        if supplied is not None and identity.adapter_of is not None:
-            configured = self.resolve(identity.adapter_of)
-            if isinstance(configured, AbsentChair):
-                raise ReceiptRefusal(
-                    identity.role,
-                    f"adapter base {identity.adapter_of!r} is explicitly absent and cannot "
-                    "have answered",
-                )
-            if configured != supplied:
-                raise ReceiptRefusal(
-                    identity.role,
-                    f"receipt names adapter base {supplied.role!r} at a revision that is not "
-                    "the configured pin; a base is matched, never accepted as supplied",
-                )
         return build_receipt(identity, serving)
 
     def refuse_recipe_start(self, identity: ChairIdentity, difference: str) -> None:
@@ -477,7 +455,7 @@ class ChairRegistry:
         with _cache_write(identity.role, f"cache root {self.cache_root} cannot be created"):
             self.cache_root.mkdir(parents=True, exist_ok=True)
         target = self.cache_root / identity.role
-        descriptor = self._cache_descriptor(identity)
+        descriptor = identity.cache_descriptor()
         missing: tuple[str, ...]
         if target.exists():
             _verify_cache_descriptor(target, identity.role, descriptor)
@@ -508,10 +486,6 @@ class ChairRegistry:
             except ChairRefusal:
                 raise
             except Exception as error:
-                if identity.adapter_of:
-                    raise AdapterFetchRefusal(
-                        identity.role, f"pinned fetch failed: {error}"
-                    ) from error
                 raise UnresolvedChairRefusal(
                     identity.role, f"pinned fetch failed: {error}"
                 ) from error
@@ -533,12 +507,7 @@ class ChairRegistry:
         cache_root = self.cache_root
         if cache_root is None:
             raise UnresolvedChairRefusal(identity.role, "no cache_root was supplied")
-        keep = {identity.role, identity.adapter_of}
-        keep.update(
-            role
-            for role, configured in self.config.chairs.items()
-            if isinstance(configured, ChairIdentity) and configured.adapter_of == identity.role
-        )
+        keep = {identity.role}
         configured_roles = {
             role
             for role, configured in self.config.chairs.items()
@@ -567,26 +536,6 @@ class ChairRegistry:
                 f"under {cache_root}, need at least {required} bytes for its pinned "
                 "snapshot; increase container_disk_gb",
             )
-
-    def _cache_descriptor(self, identity: ChairIdentity) -> dict[str, object]:
-        """Bind an adapter cache to its configured base identity as well.
-
-        An adapter's own pin is insufficient when its ``adapter_of`` role is
-        repinned.  The role alone must not let an old adapter cache masquerade as
-        compatible with a new base.  Resolving the named base is configuration
-        lookup only; it never fetches, serves, ranks, or substitutes that base.
-        """
-        descriptor = identity.cache_descriptor()
-        if identity.adapter_of is None:
-            return descriptor
-        base = self.resolve(identity.adapter_of)
-        if isinstance(base, AbsentChair):
-            raise CacheRevisionRefusal(
-                identity.role,
-                f"adapter base {identity.adapter_of!r} is explicitly absent",
-            )
-        descriptor["adapter_base_identity"] = base.to_record()
-        return descriptor
 
 
 @contextmanager

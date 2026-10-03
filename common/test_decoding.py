@@ -7,7 +7,7 @@ import pytest
 
 from common.chandra_native_retry import recipe_record
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.serving import RETIRED_CALL_RECORD_SCHEMAS
+from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA, RETIRED_CALL_RECORD_SCHEMAS
 from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
     ENGINE_FILLED_SAMPLING_FIELDS,
@@ -356,7 +356,7 @@ def _call(chair: str, attempt: int = 1, seed: int | None = 7) -> dict:
     if seed is not None:
         sent["seed"] = seed
     return {
-        "schema": "chair-call-record.v3",
+        "schema": CHAIR_CALL_RECORD_SCHEMA,
         "generation_sent": sent,
         "sampling_effective": recorded_wire_decimals(engine_effective_sampling(sampling)),
     }
@@ -437,7 +437,7 @@ def test_a_retired_call_record_is_refused_by_its_schema_name(schema):
         verify_call_sampling(call, policy, "attestator_3", expected_seed=7)
     with pytest.raises(SchemaRefusal, match=schema):
         refuse_retired_call_record(schema, subject="a record", error_type=SchemaRefusal)
-    refuse_retired_call_record("chair-call-record.v3", subject="a record")
+    refuse_retired_call_record(CHAIR_CALL_RECORD_SCHEMA, subject="a record")
 
 
 def test_decoded_wire_decimals_restores_each_canonical_tagged_float() -> None:
