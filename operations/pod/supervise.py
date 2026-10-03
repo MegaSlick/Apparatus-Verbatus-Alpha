@@ -1096,17 +1096,22 @@ def run_supervisor(
             break
         if result.state == "owner-heartbeat-fresh":
             # A foreign driver that is still heartbeating at or after the hard
-            # deadline is alive and not closing its own expired lease: this
-            # driver cannot take it over, so it stops and says go and look.
+            # deadline, and is still fresh now, is alive and not closing its own
+            # expired lease: this driver cannot take it over, so it stops and
+            # says go and look.
+            checked_at = now()
+            heartbeat_at = result.lease.heartbeat_at
+            deadline = result.lease.hard_deadline
             if (
-                now() >= result.lease.hard_deadline
-                and result.lease.heartbeat_at >= result.lease.hard_deadline
+                checked_at >= deadline
+                and heartbeat_at >= deadline
+                and checked_at - heartbeat_at < heartbeat_timeout
             ):
                 break
             # Otherwise the owner may be dead (a restart that lost its identity
             # file reads its own last heartbeat as foreign): wake when that
             # heartbeat goes stale, so `run_once` claims the orphan and closes it.
-            until_stale = result.lease.heartbeat_at + heartbeat_timeout - now()
+            until_stale = heartbeat_at + heartbeat_timeout - checked_at
             sleep_for = min(heartbeat_timeout / 3, until_stale).total_seconds()
         else:
             sleep_for = min(

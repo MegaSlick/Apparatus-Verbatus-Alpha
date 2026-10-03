@@ -648,6 +648,40 @@ def test_a_foreign_heartbeat_stamped_in_the_future_is_waited_out_or_reported(
         assert "go and look" in messages[0]
 
 
+def test_a_foreign_heartbeat_that_goes_stale_after_the_tick_is_still_claimed_and_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fresh when the tick read it, stale by the time the loop decides: not a reason to stop."""
+
+    clock, provider, store, record, lease = _late_start(
+        tmp_path, start_at=3605 + 899, last_heartbeat=3605
+    )
+    supervise.identity_path(tmp_path, LEASE_ID).unlink()
+    real_record_tick = supervise.record_tick
+
+    def slow_record_tick(*args, **kwargs):
+        clock.sleep(2)
+        return real_record_tick(*args, **kwargs)
+
+    monkeypatch.setattr(supervise, "record_tick", slow_record_tick)
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(heartbeat_timeout=900),
+        now=clock.now,
+        sleeper=clock.sleep,
+        pid=1000,
+    )
+    assert result.state == "orphan-reconciled"
+    assert exit_code == 0
+    assert result.close_report is not None and result.close_report.verified
+    assert provider.terminate_calls == [record.pod_id]
+
+
 def test_a_competing_supervisor_is_refused_even_when_the_lease_is_overdue(
     tmp_path: Path,
 ) -> None:
