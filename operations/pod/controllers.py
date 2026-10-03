@@ -162,7 +162,10 @@ class LaptopSupervisor:
                 lease, ControllerState.ORPHAN_RECONCILED, "orphan lease heartbeat lost"
             )
         if observed >= lease.hard_deadline:
-            return self._close(lease, ControllerState.LIFETIME_EXPIRED, "hard lifetime expired")
+            overdue = observed - lease.hard_deadline
+            return self._close(
+                lease, ControllerState.LIFETIME_EXPIRED, f"hard lifetime expired {overdue} ago"
+            )
         if lease.controller_record is None:
             # A launch binds the pod, arms both controllers, then writes the
             # receipt — and the supervisor reading this is usually the one that
@@ -241,7 +244,11 @@ class LaptopSupervisor:
                 lease=attempted,
             )
         try:
-            record = self.shutdown.provider.create(attempted.pending_create.recovery_request())
+            # The pending lease was written before the POST, so its instant
+            # never falls after the pod's creation.
+            record = self.shutdown.provider.create(
+                attempted.pending_create.recovery_request(requested_at=attempted.created_at)
+            )
         except Exception as error:
             return ControllerResult(
                 ControllerState.PENDING_CREATE_REVIEW,
@@ -256,11 +263,10 @@ class LaptopSupervisor:
                 f"exact recovered pod {record.pod_id!r} could not bind to its lease: {error}",
                 lease=attempted,
             )
-        return self._close(
-            bound,
-            ControllerState.PENDING_CREATE_RECOVERED,
-            "recovered exact pending-create launch token after controller restart",
-        )
+        reason = "recovered exact pending-create launch token after controller restart"
+        if record.contract_refusal is not None:
+            reason = f"{reason}; {record.contract_refusal}"
+        return self._close(bound, ControllerState.PENDING_CREATE_RECOVERED, reason)
 
     def _close(self, lease: PodLease, state: ControllerState, reason: str) -> ControllerResult:
         try:
