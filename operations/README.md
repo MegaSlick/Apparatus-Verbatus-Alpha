@@ -1,21 +1,16 @@
 # operations
 
-This directory defines the offline operator rehearsal and its operational boundaries.
-No rehearsal verb starts, adopts, or bills a pod. `verbatus upload --network-volume` is
-an explicitly named transfer to a real RunPod volume, and `notify/notify.sh` can post a
-JSON notification to `https://ntfy.sh/` when invoked with its opt-in bearer topic
-(`operations/notify/notify.sh:172-191`).
-
 Anything with a human, a machine, or money on the other end.
 
-| Directory | Declared responsibility |
+| Directory | Responsibility |
 |---|---|
-| `operator/` | the plain-language, offline `verbatus` rehearsal that joins the operator's six words and read-only `status` |
+| `operator/` | `verbatus`, the plain-language operator tool: prepare, upload, run, fetch, export, review, decide, advance and back up a run, one word at a time |
 | `submit/` | manifest sealing and the data-handling gate for submitted images |
+| `triage/` | the pre-Door triage instrument and producer `verbatus ingest` uses |
 | `pod/` | pod rental, close verification, and provider-state/billing evidence |
+| `serving/` | the model servers a stage starts for its chairs |
 | `data/` | future movement of runs and exports between machines |
-| `notify/` | the implemented, fileless one-way notification client |
-| `review/` | immutable review-candidate manifests and local receipts |
+| `notify/` | the one-way phone notification client ([README](notify/README.md)) |
 
 The table is not exhaustive; a directory that needs explaining carries its own README.
 
@@ -28,111 +23,51 @@ organising principle.
 There is no wheel installation and no packaged distribution of this system. The pod
 bootstrap **fetches and checks out** a pinned commit in a checkout the pod image already
 carries, then runs `uv sync --locked` (`operations/pod/bootstrap.py`); nothing anywhere
-builds or installs a wheel, and the CI workflow test asserts the workflow does not
-`pip install .`.
+builds or installs a wheel.
 
-It has never cloned, and the difference is load-bearing rather than pedantic: a clone
-would only need a URL, while a fetch needs a checkout, an `origin` remote and credentials
-that are reachable from the bootstrap's own explicit environment. What the image has to
-carry is written down in `operations/pod/README.md` under "The pod image contract", and
+A fetch, unlike a clone, needs a checkout, an `origin` remote and credentials reachable
+from the bootstrap's own explicit environment. What the image has to carry is written
+down in `operations/pod/README.md` under "The pod image contract", and
 `bootstrap.verify_image_contract` refuses by name, before the fetch, when it does not.
 
-That is a contract, not an omission. `pyproject.toml` discovers `common` and `operations`
-only, so a built wheel carries no `pipeline/`, `config/`, `proof/` or `gold/` — while
-`common/stage.py` and `operations/submit/gate.py` resolve their defaults as siblings of
-those packages. An outside review built that wheel, installed it outside a checkout, and
-found the default data-handling policy missing. The repair is to say so, not to package
-private material: `common/checkout.py` refuses before any verb runs when the
-checkout-relative directories are not beside the code, and `verbatus` renders that as
-`not-a-checkout`.
+`pyproject.toml` discovers `common` and `operations` only, so a built wheel carries no
+`pipeline/`, `config/`, `proof/` or `gold/`, while `common/stage.py` and
+`operations/submit/gate.py` resolve their defaults as siblings of those packages. Private
+material is never packaged to cover that: `common/checkout.py` refuses before any verb
+runs when the checkout-relative directories are not beside the code, and `verbatus`
+renders that as `not-a-checkout`.
 
-## Start here: the operator rehearsal
+## Start here: the operator tool
 
-You do not need Terminal, SSH, Python, or an AI assistant for a normal rehearsal. On a
-Mac, double-click [Verbatus.command](operator/Verbatus.command). It opens the same
-plain-language flow as the `verbatus` command and asks for one word at a time.
+You do not need Terminal, SSH, Python, or an AI assistant for a normal run. On a Mac,
+double-click [Verbatus.command](operator/Verbatus.command); it opens the same
+plain-language flow as the `verbatus` command and asks for one word at a time. Its words,
+their order and what each costs are in [operator/README.md](operator/README.md).
 
-The words are:
+- **Verbatus never starts, adopts or closes a pod.** A pod is started outside it, only
+  with the project lead's permission in that session, and its close is verified against
+  the provider's own state and billing (`pod/README.md`).
+- **Two words leave this computer, and only when you name a volume.**
+  `upload --network-volume` sends the files a sealed submission record names to a RunPod
+  network volume, and `fetch-run` brings a pod-written run tree back from one. Their
+  credentials are read from the environment only. The one other thing that leaves is
+  the `--notify` line, sent to `https://ntfy.sh`: a run id, page ordinals and reasons,
+  never register material.
+- **A re-shoot is refused at the Door, whole.** A triage manifest that names a re-shoot
+  cluster (two captures of one leaf) makes the Door refuse the entire submission, since
+  no later stage links two captures of one leaf. Submit one capture per leaf
+  (`pipeline/1_exemplar/CONTRACT.md`).
+- **`export` is not the product bundle.** It copies `run.json` and the `7_armarium`
+  directory out of a run tree as a base evidence bundle and prints the reconciliation
+  table. The product bundle is built and sealed by the Armarium (`pipeline/7_armarium`).
 
-- `launch` — shows the fixture hourly price and every reviewed ceiling, then asks for an
-  exact paid-action confirmation. It records that confirmation before its fake provider
-  call.
-- `boot` — checks the saved fixture setup and ends with a plainly labelled green or red
-  report.
-- `upload` — transfers only the files named by a sealed submission record to the fixture
-  volume. It needs no pod and uses zero GPU-hours. Naming
-  `--network-volume DATACENTER:VOLUME_ID` sends to a real RunPod network volume instead;
-  see the caveat below.
-- `run` — resumes the named fixture run and says which pages and acts it is working on.
-- `export` — makes a local evidence bundle and prints the Armarium reconciliation table.
-- `close` — asks for its own exact confirmation, then shows the captured cost through its
-  cutoff and the retained volume's continuing hourly price.
-- `status` — reads saved receipts only, including the recorded digest that identifies each
-  sealed submission record. It never reopens local submission files, contacts a provider,
-  or creates a record.
+Every problem is shown in three short parts: what happened, what it means, and what to do
+next. Save the receipt path Verbatus prints; `status` shows every indexed receipt again
+without contacting anything.
 
-Each paid rehearsal needs a reviewed pod-request file and reviewed spending-policy file.
-Do not invent a GPU class or a ceiling: those are Tyrel's decision. If either is absent,
-Verbatus says it sent no new paid provider action and tells you the safe next step.
+## Notifications
 
-**No verb here can start, adopt, inspect or close a real pod.** The prices, pod,
-bootstrap checks and billing records are local fixtures, so the whole flow can be
-practised without a credential and without a cloud charge, and the surface refuses any
-pod provider that is not the in-memory fake.
-
-**One exception, and it is off unless you name it.** `upload --network-volume` sends only
-the files named by the sealed submission record to a real RunPod network volume. Storage
-transfer needs no pod and starts no GPU meter, but it does leave this computer. The
-operator must name the volume and is told exactly what will be contacted before a byte
-moves. Its credentials are read from the environment only. The first real endpoint test
-confirmed that image bytes round-trip but custom checksum metadata does not; the adapter's
-bounded target-byte fallback is locally tested and awaits a live rerun. A named `--prefix`
-allows another immutable submission on the retained volume without replacing the default
-`submission/` and `submission-manifest.json` pair.
-
-The Spec 11 **product bundle** is built in `pipeline/7_armarium`: `run.py` projects the
-manifest, acts, pages, and aggregate basis and seals the bundle into the run tree
-(`pipeline/7_armarium/run.py:1497-1523`), and `bundle.py` publishes that sealed blob to a
-chosen destination after re-verifying it from the outside (`pipeline/7_armarium/bundle.py:97-137`).
-The remaining Spec 11 semantic-annotation contract has no producer, so its refusal cannot
-yet be recorded (`pipeline/7_armarium/CONTRACT.md:279-283`).
-
-**The operator's `export` verb is not that bundle.** It copies `run.json` and the
-`7_armarium` directory out of the run tree as a base Armarium evidence bundle
-(`OperatorSurface.export` in `operations/operator/surface.py`), prints the
-reconciliation table, and says on screen that what it made is not the Spec 11 product bundle.
-
-Every problem is shown in three short parts: what happened, what it means, and what to
-do next. Save the receipt path Verbatus prints. Indexed receipts appear in `status`
-without a new provider check; if indexing itself fails, the error names the exact saved
-receipt rather than pretending nothing was written.
-
-Governance 8 governs any future live operation in `pod/`: it needs Tyrel's explicit
-permission in that session, and close must be verified against provider state and billing,
-never inferred from an acknowledgement. The current directory contains the contract and
-the offline rehearsal only.
-
-`notify/notify.sh` takes its bearer topic from `NTFY_TOPIC` when the environment sets one,
-and otherwise reads `private/ntfy.conf`, which is gitignored. Tyrel's ruling: an ignored file
-under `private/` is an acceptable home for it. The config is parsed as data and never sourced,
-and only a regular file is read — a named pipe there would block forever inside the
-`SessionStart` hook, which is a session that never starts rather than a ping that never
-arrives. Delivery is fixed to `https://ntfy.sh`; the client refuses an ambient
-`NTFY_SERVER` override so stale process state cannot redirect the bearer topic.
-
-**Every event exits non-zero when delivery failed**, and prints one line beginning
-`notify: NOT DELIVERED`; a real delivery prints one line, `notify: delivered (<event>)`, since
-2026-09-06, so silence is never evidence of either. The exit status is evidence for all four
-events, and a session that thinks it was heard cannot wait forever on a message that was
-never sent.
-
-`start` and `milestone` used to exit 0 even after printing that line, deliberately, so a
-session could not die because a ping did not land. Two independent reviewers found the same
-defect in it: a caller reading the status was told the phone had a message it never received,
-and `milestone` is often the only announcement a long unattended run ever makes. The reason
-the exit code was 0 is provided elsewhere — the `SessionStart` hook in `.claude/settings.json`
-declares `"async": true`, so it runs detached and cannot block or fail the session whatever it
-returns. Keeping a caller non-blocking is the caller's job; misreporting delivery to buy it
-spent the one thing this script exists to protect.
-
-The client requires Python 3 for in-memory JSON encoding and `curl` for HTTPS delivery.
+`notify/notify.sh` posts one line to the project lead's phone through `https://ntfy.sh`,
+and exits non-zero, printing `notify: NOT DELIVERED`, whenever delivery failed.
+`verbatus --notify` uses it for run, export and held-run notices. How events, the topic
+and failures work is in [notify/README.md](notify/README.md).

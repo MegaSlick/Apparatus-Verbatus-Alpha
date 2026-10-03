@@ -123,7 +123,6 @@ def build_door_run(
     register_bytes: bytes | None = None,
 ):
     """A run tree with the real door's admissions already published into it."""
-    from admission import load_format_policy
 
     files = dict(PAGES | REFUSED) if files is None else files
     bindings = sealed_bindings()
@@ -169,7 +168,6 @@ def build_door_run(
         tree,
         sources,
         lambda path: files[path],
-        policy=load_format_policy(),
         pdf_settings=PDF_SETTINGS,
     )
     context.seal_boundary()
@@ -193,7 +191,6 @@ def build_refused_real_door_run(
     `stage-seal` is written -- exactly what a Door refused by
     `require_no_duplicate_sources` or `require_some_admitted` leaves behind.
     """
-    from admission import load_format_policy
 
     files = dict(PAGES) if files is None else files
     bindings = sealed_bindings() | real_sealed_bindings()
@@ -237,15 +234,13 @@ def build_refused_real_door_run(
         tree,
         sources,
         lambda path: files[path],
-        policy=load_format_policy(),
         pdf_settings=PDF_SETTINGS,
     )
     return tree, files
 
 
-def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineage(tmp_path):
-    """Every split part must seal independently while retaining one shared master."""
-
+def _sealed_spread_run(tmp_path):
+    """A JPEG spread split into two sealed derivative pages: tree, run, master and pages."""
     output = BytesIO()
     image = Image.new("RGB", (10, 4), (255, 0, 0))
     for x in range(5, 10):
@@ -282,7 +277,6 @@ def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineag
     sources = door.expand_sources(
         [{"relative_path": "spread.jpg", "sha256": digest}],
         lambda _path: master,
-        door.admission.load_format_policy(),
         triage_rows={digest: row},
     )
     assert [(source.ordinal, source.container_page_index) for source in sources] == [(1, 0), (2, 1)]
@@ -297,12 +291,15 @@ def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineag
         for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
         if entry["kind"] == "page"
     ]
+    return tree, run, master, sorted(pages, key=lambda page: page["payload"]["ordinal"])
+
+
+def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineage(tmp_path):
+    """Every split part must seal independently while retaining one shared master."""
+    tree, run, master, pages = _sealed_spread_run(tmp_path)
+    digest = digest_bytes(master)
     assert len(pages) == 2
-    for source, page in zip(
-        run["source_manifest"],
-        sorted(pages, key=lambda page: page["payload"]["ordinal"]),
-        strict=True,
-    ):
+    for source, page in zip(run["source_manifest"], pages, strict=True):
         verify_sealed_page_pixels(tree, run, source, page)
         rendered = page["payload"]["rendered_from"]["render_contract"]
         derivative = rendered["derivative_page"]
@@ -318,6 +315,39 @@ def test_triage_spread_fans_out_to_sealed_derivative_pages_with_rederived_lineag
         tree.read_bytes(admission["payload"]["parent_frame"]["stored_at"]) == master
         for admission in admissions
     )
+
+
+def test_a_split_page_is_re_rendered_once_per_process_however_often_it_is_checked(
+    tmp_path, monkeypatch
+):
+    """Every stage re-checks a page once per act on it, and re-rendering a full-size
+    master takes seconds. The render is remembered by the master's digest, so repeated
+    checks render once, while every check still reads and hashes the sealed bytes.
+    """
+    import common.exemplar_boundary as boundary
+
+    tree, run, _master, pages = _sealed_spread_run(tmp_path)
+    renders = []
+    real_render = boundary.render_triage_derivative
+
+    def counted(*args, **kwargs):
+        renders.append(kwargs.get("part"))
+        return real_render(*args, **kwargs)
+
+    monkeypatch.setattr(boundary, "render_triage_derivative", counted)
+    monkeypatch.setattr(boundary, "_derivations", {})
+    for _ in range(5):
+        for source, page in zip(run["source_manifest"], pages, strict=True):
+            verify_sealed_page_pixels(tree, run, source, page)
+    assert len(renders) == 2  # one per split part
+
+    # A remembered render does not stand in for the sealed bytes: altered pixels
+    # on disk are still refused.
+    blob = tree.root / pages[0]["payload"]["image_path"]
+    blob.write_bytes(blob.read_bytes() + b"\0")
+    with pytest.raises(ContractError):
+        verify_sealed_page_pixels(tree, run, run["source_manifest"][0], pages[0])
+    assert len(renders) == 2
 
 
 def test_a_noop_derivative_and_its_master_share_one_content_address(tmp_path):
@@ -344,7 +374,6 @@ def test_a_noop_derivative_and_its_master_share_one_content_address(tmp_path):
     sources = door.expand_sources(
         [{"relative_path": "page.png", "sha256": digest}],
         lambda _path: master,
-        door.admission.load_format_policy(),
         triage_rows={digest: row},
     )
 
@@ -402,7 +431,6 @@ def test_a_derivative_naming_a_master_other_than_its_submitted_row_refuses(tmp_p
     sources = door.expand_sources(
         [{"relative_path": "page.png", "sha256": digest}],
         lambda _path: master,
-        door.admission.load_format_policy(),
         triage_rows={digest: row},
     )
     tree, _ = build_door_run(tmp_path / "runs", files={"page.png": master}, sources=sources)
@@ -468,7 +496,6 @@ def test_exemplar_rederives_a_derivative_recipe_before_sealing_it(tmp_path, rebi
     sources = door.expand_sources(
         [{"relative_path": "page.png", "sha256": digest}],
         lambda _path: master,
-        door.admission.load_format_policy(),
         triage_rows={digest: row},
     )
     tree, _ = build_door_run(tmp_path / "runs", files={"page.png": master}, sources=sources)
@@ -766,7 +793,6 @@ def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path)
     `finish` normally -- this is `build_door_run` with `real_ingress_record`
     substituted for the synthetic-fixture ingress it takes by default.
     """
-    from admission import load_format_policy
 
     files = dict(PAGES)
     bindings = sealed_bindings() | real_sealed_bindings()
@@ -819,7 +845,6 @@ def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path)
         tree,
         sources,
         lambda path: files[path],
-        policy=load_format_policy(),
         pdf_settings=PDF_SETTINGS,
     )
     context.seal_boundary()
@@ -834,7 +859,6 @@ def test_a_real_ingress_run_whose_door_sealed_still_opens_the_exemplar(tmp_path)
 def test_the_exemplar_seals_nothing_when_only_canary_pages_were_admitted(tmp_path):
     """Canary pages are controls: a run whose real submission was wholly refused
     has no page to seal, however many canaries admitted beside it."""
-    from admission import load_format_policy
 
     real = {"real.png": b"not an image"}
     canary = {"bird.png": png(3, 2)}
@@ -897,7 +921,6 @@ def test_the_exemplar_seals_nothing_when_only_canary_pages_were_admitted(tmp_pat
             tree,
             sources,
             lambda path: files[path],
-            policy=load_format_policy(),
             pdf_settings=PDF_SETTINGS,
         )
         == 1
@@ -1085,82 +1108,21 @@ def test_a_register_naming_the_run_creation_snapshot_is_accepted_unchanged(tmp_p
     assert result.returncode == 0, result.stderr
 
 
-# --- Byte-identical duplicate sources are one page, not a collision ---------------
-
-
-def test_two_byte_identical_submitted_sources_seal_as_one_page_naming_both_rows(tmp_path):
-    """Digest-primary identity makes identical submissions one cited page.
-
-    Two submission rows over identical bytes derive one page_id, so the
-    Exemplar must merge their citations before publishing the immutable page
-    artifact."""
+def test_two_rows_deriving_one_page_identity_publish_no_exemplar_page(tmp_path):
+    """One page per submitted row: a tree the Door never closed, holding two
+    byte-identical admissions, is refused before any page is published."""
     data = png(4, 3)
-    tree, _ = build_door_run(tmp_path / "runs", files={"dup-a.png": data, "dup-b.png": data})
+    tree, _ = build_door_run(
+        tmp_path / "runs", files={"a-first.png": png(3, 2), "dup-a.png": data, "dup-b.png": data}
+    )
 
     result = run_exemplar(tmp_path / "runs")
-    assert result.returncode == 0, result.stderr
 
-    pages = [
-        entry for entry in tree.build_manifest(EXEMPLAR)["artifacts"] if entry["kind"] == "page"
-    ]
-    assert len(pages) == 1, "one page identity must seal as one page artifact, not one per row"
-    record = tree.read_artifact(EXEMPLAR, "page", pages[0]["artifact_id"])
-    submission_rows = record["payload"]["submission_rows"]
-    assert sorted(row["ordinal"] for row in submission_rows) == [1, 2]
-    assert sorted(row["relative_path"] for row in submission_rows) == ["dup-a.png", "dup-b.png"]
-    assert {row["sha256"] for row in submission_rows} == {digest_bytes(data)}
-
-    payload = seal_of(tree)["payload"]
-    assert payload["page_count"] == 2, "the census still names one row per submitted ordinal"
-    assert [page["ordinal"] for page in payload["pages"]] == [1, 2]
-    assert [page["outcome"] for page in payload["pages"]] == ["sealed", "sealed"]
-    assert [page["page_id"] for page in payload["pages"]] == [record["subject_id"]] * 2
-
-
-def test_the_merged_page_verifies_at_the_pixel_boundary_for_each_row_it_cites(tmp_path):
-    """A merged page verifies for every cited source row and no invented row.
-
-    Every later pixel consumer relies on this boundary, so its admission check
-    must cover the page's complete submitted-row set rather than assume exactly
-    one Door admission.
-    """
-
-    data = png(4, 3)
-    tree, _ = build_door_run(tmp_path / "runs", files={"dup-a.png": data, "dup-b.png": data})
-    assert run_exemplar(tmp_path / "runs").returncode == 0
-
-    run = tree.read_run()
-    page = next(
-        tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
-        for entry in tree.build_manifest(EXEMPLAR)["artifacts"]
-        if entry["kind"] == "page"
-    )
-    for source in run["source_manifest"]:
-        verify_sealed_page_pixels(tree, run, source, page)
-
-    invented = dict(run["source_manifest"][0], ordinal=99)
-    with pytest.raises(ContractError, match="not the page this source was sealed into"):
-        verify_sealed_page_pixels(tree, run, invented, page)
-
-
-def test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_twice(tmp_path):
-    """Every stage behind the Exemplar keys its work by submitted ordinal and
-    would mint each act on this page twice. The seal boundary refuses until
-    consumers process merged pages by identity, rather than reporting the
-    second row as a lost page it plainly is not."""
-    from common.exemplar_boundary import verify_exemplar_corpus_seal
-
-    data = png(4, 3)
-    tree, _ = build_door_run(tmp_path / "runs", files={"dup-a.png": data, "dup-b.png": data})
-    assert run_exemplar(tmp_path / "runs").returncode == 0
-
-    run = tree.read_run()
-    manifest = tree.build_manifest(EXEMPLAR)
-    entry = next(item for item in manifest["artifacts"] if item["kind"] == "page")
-    page = tree.read_artifact(EXEMPLAR, "page", entry["artifact_id"])
-    sources = {row["ordinal"]: row for row in run["source_manifest"]}
-    with pytest.raises(ContractError, match="would mint each act on it twice"):
-        verify_exemplar_corpus_seal(tree, run, manifest, sources, {1: page}, {1: entry})
+    assert result.returncode == EXIT_FATAL
+    assert "derive one page identity" in result.stderr
+    assert "dup-a.png" not in result.stderr
+    kinds = {entry["kind"] for entry in tree.build_manifest(EXEMPLAR)["artifacts"]}
+    assert not kinds & {"page", "seal"}
 
 
 def _real_submission(tmp_path: Path, files: dict[str, bytes]) -> tuple[Path, list[str]]:

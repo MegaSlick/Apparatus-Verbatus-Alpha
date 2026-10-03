@@ -221,8 +221,9 @@ def test_a_canary_page_is_never_an_entry_so_never_a_subject_context_or_chain_pie
 
     def read(reference, **_named):
         assert "perlectio-2-" not in reference["relative_path"], "a canary reading was read"
-        assessment = {"state": "not-assessed"}
-        return {"payload": {"text": "a reading", "uncertainty_assessment": assessment}}
+        assessment = {"state": "assessed", "uncertain_spans": [], "gaps": [], "problem": None}
+        payload = {"text": "a reading", "uncertain_spans": [], "gaps": []}
+        return {"payload": {**payload, "uncertainty_assessment": assessment}}
 
     context = SimpleNamespace(
         run={

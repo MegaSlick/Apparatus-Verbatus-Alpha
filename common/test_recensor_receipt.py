@@ -1,8 +1,4 @@
-"""The v4 Recensor receipt: a page-read run's units and configured witnesses, beside v2.
-
-The Recensor writes v5 now (`common/test_recensor_receipt_v5.py`); a v4 receipt
-is still read, so each receipt here is a v5 one written back in v4's shape.
-"""
+"""The Recensor partition receipt: a page-read run's units, configured witnesses and pages."""
 
 from __future__ import annotations
 
@@ -15,21 +11,35 @@ from common.contracts.errors import SchemaRefusal
 from common.contracts.outcomes import OutcomeClass, classify
 from common.contracts.stages import ATTESTATORES, RECENSOR
 from common.recensor_receipt import (
-    RECENSOR_PARTITION_RECEIPT_SCHEMA_V4,
+    RECENSOR_PARTITION_RECEIPT_SCHEMA,
     RECENSOR_READING_RECEIPT_SCOPE,
     build_recensor_reading_receipt,
     validate_recensor_partition_receipt,
 )
 
 DIGEST = "a" * 64
+REASK = {
+    "named": ["A3", "B3", "L7", "L8"],
+    "cleared": ["A3", "L7"],
+    "set_aside": [],
+    "held": ["L8"],
+    "unread": ["B3"],
+    "duplicate": [3],
+}
 
 
 def _ref(name: str) -> dict[str, str]:
     return {"relative_path": f"r/4_perlector/artifacts/page-reading/{name}.json", "sha256": DIGEST}
 
 
-def _page(ordinal: int) -> dict:
-    return {"page_ordinal": ordinal, "reading_ref": _ref(f"p{ordinal}")}
+def _page(ordinal: int, reask: dict | None = None) -> dict:
+    return {
+        "page_ordinal": ordinal,
+        "reading_ref": _ref(f"p{ordinal}"),
+        "reask_ref": None if reask is None else _ref(f"p{ordinal}-reask"),
+        "accounting_ref": _ref(f"a{ordinal}"),
+        "reask": reask,
+    }
 
 
 def _item(
@@ -76,50 +86,34 @@ def _link(left: int, outcome: str = "accepted") -> dict:
     }
 
 
-def _receipt(items, links=()):
-    receipt = build_recensor_reading_receipt(
+def _receipt(items, links=(), *, pages=None, page_holds=()):
+    return build_recensor_reading_receipt(
         run_id="r",
         config_digest=DIGEST,
-        pages=[
-            {
-                **_page(ordinal),
-                "reask_ref": None,
-                "accounting_ref": _ref(f"a{ordinal}"),
-                "reask": None,
-            }
-            for ordinal in (1, 2)
-        ],
+        pages=pages if pages is not None else [_page(1, REASK), _page(2)],
         items=items,
         continuation_links=list(links),
+        page_holds=list(page_holds),
     )
-    v4 = {name: value for name, value in receipt.items() if name not in ("pages", "self_hash")}
-    v4["schema"] = RECENSOR_PARTITION_RECEIPT_SCHEMA_V4
-    v4["page_reading_refs"] = [
-        {"page_ordinal": page["page_ordinal"], "reading_ref": page["reading_ref"]}
-        for page in receipt["pages"]
-    ]
-    v4["self_hash"] = self_hash(v4)
-    return validate_recensor_partition_receipt(v4)
 
 
 TWO_READ = (("act_a", "p1:1"), ("act_b", "p2:1"))
 
 
-def test_a_v4_receipt_names_its_page_readings_and_each_units_page_disposition():
+def test_a_receipt_binds_each_pages_readings_and_each_units_page_disposition():
     receipt = _receipt([_item("act_b", "p1:1"), _item("act_a", "p2:1")])
-    assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA_V4
+    assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA
     assert receipt["scope"] == RECENSOR_READING_RECEIPT_SCOPE
-    assert [
-        (row["page_ordinal"], row["reading_ref"]["relative_path"][-7:])
-        for row in receipt["page_reading_refs"]
-    ] == [(1, "p1.json"), (2, "p2.json")]
+    first, second = receipt["pages"]
+    assert first["reask"] == REASK and first["reask_ref"]["relative_path"].endswith("reask.json")
+    assert (second["reask_ref"], second["reask"]) == (None, None)
     assert [item["act_id"] for item in receipt["items"]] == ["act_a", "act_b"]
-    assert receipt["expected_unit_count"] == 2 and "proposal_seal_ref" not in receipt
-    assert "expected_act_count" not in receipt and receipt["continuation_links"] == []
+    assert receipt["expected_unit_count"] == 2
+    assert receipt["continuation_links"] == [] and receipt["page_holds"] == []
     assert receipt["recensor_status"] == "complete"
 
 
-def test_a_v4_receipt_judges_the_witness_floor_on_page_reads():
+def test_the_witness_floor_is_judged_on_page_reads():
     receipt = _receipt([_item("act_a", "p1:1", reads=2), _item("act_b", "p2:1")])
     assert receipt["recensor_status"] == "partial"
     assert receipt["reasons"] == ["unit act_a is under-witnessed (2 page reads of a floor of 3)"]
@@ -167,6 +161,19 @@ def test_a_held_unit_with_no_completed_review_keeps_the_receipt_partial():
     assert receipt["reasons"][0] == "unit act_c was held by its page reading and is not released"
 
 
+def test_a_page_operator_review_leaves_held_keeps_the_receipt_partial():
+    """Every unit on page 2 excluded completes it, but the page itself is still held."""
+    excluded = _item("act_c", "p2:1", outcome="excluded")
+    held_page = {"page_ordinal": 2, "hold_codes": ["no-act-on-page-unconfirmed"]}
+    receipt = _receipt([_item("act_b", "p1:1"), excluded], page_holds=[held_page])
+    assert receipt["page_holds"] == [held_page]
+    assert receipt["recensor_status"] == "partial"
+    assert receipt["reasons"] == [
+        "page 2 is held after operator review (no-act-on-page-unconfirmed)"
+    ]
+    assert _receipt([_item("act_b", "p1:1"), excluded])["recensor_status"] == "complete"
+
+
 @pytest.mark.parametrize(
     "item",
     [
@@ -182,7 +189,7 @@ def test_a_release_reason_is_given_exactly_when_a_held_unit_is_completed(item):
         _receipt([_item("act_b", "p1:1"), item])
 
 
-def test_a_v4_receipt_with_a_page_without_a_unit_is_refused():
+def test_a_receipt_with_a_page_without_a_unit_is_refused():
     for items in (
         [_item("act_a", "p1:1")],
         [_item("act_a", "p1:1"), _item("act_b", "p1:2")],
@@ -192,10 +199,13 @@ def test_a_v4_receipt_with_a_page_without_a_unit_is_refused():
             _receipt(items)
 
 
-def test_a_v4_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
+def test_a_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
     items = [_item("act_a", "p1:1"), _item("act_b", "p2:1"), _item("act_c", "p3:1")]
     with pytest.raises(SchemaRefusal, match=r"units on page\(s\) \[3\], which name no sealed"):
         _receipt(items)
+
+
+HOLD = {"page_ordinal": 1, "hold_codes": ["review-hold"]}
 
 
 @pytest.mark.parametrize(
@@ -206,27 +216,22 @@ def test_a_v4_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
         (lambda r: r["items"][0].pop("release_reason"), "wrong closed schema"),
         (
             lambda r: r["items"][0]["coverage"].update(page_granularity_only=0),
-            "attaches no witness to an act",
+            "malformed witness coverage",
         ),
-        (lambda r: r.update(page_reading_refs=[]), "names no page reading"),
-        (lambda r: r.update(page_reading_refs=[_page(1), _page(1)]), "strictly increasing"),
+        (lambda r: r.update(pages=[]), "names no page reading"),
+        (lambda r: r.update(pages=[_page(1), _page(1)]), "strictly increasing"),
         (
-            lambda r: r.update(
-                page_reading_refs=[_page(1), {**_page(2), "reading_ref": _ref("p1")}]
-            ),
+            lambda r: r.update(pages=[_page(1), {**_page(2), "reading_ref": _ref("p1")}]),
             "names one page reading twice",
         ),
-        (lambda r: r.update(page_reading_refs=[_page(2), _page(1)]), "strictly increasing"),
+        (lambda r: r.update(pages=[_page(2), _page(1)]), "strictly increasing"),
+        (lambda r: r.update(pages=[_ref("p1"), _ref("p2")]), "page reading is not"),
         (
-            lambda r: r.update(page_reading_refs=[_ref("p1"), _ref("p2")]),
-            "is not {page_ordinal, reading_ref}",
-        ),
-        (
-            lambda r: r.update(page_reading_refs=[{**_page(1), "page_ordinal": 0}, _page(2)]),
+            lambda r: r.update(pages=[{**_page(1), "page_ordinal": 0}, _page(2)]),
             "with a positive page ordinal",
         ),
         (
-            lambda r: r.update(page_reading_refs=[_page(1), _page(2), _page(3)]),
+            lambda r: r.update(pages=[_page(1), _page(2), _page(3)]),
             r"no unit on sealed page\(s\) \[3\]",
         ),
         (lambda r: r["items"][1].update(act_key=r["items"][0]["act_key"]), "one act key twice"),
@@ -257,6 +262,36 @@ def test_a_v4_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
             lambda r: r.update(continuation_links=[_link(1, "held-for-review")]),
             "status does not derive from its items",
         ),
+        (lambda r: r.pop("page_holds"), "wrong closed schema"),
+        (lambda r: r.update(page_holds=[HOLD]), "status does not derive from its items"),
+        (lambda r: r.update(page_holds=[HOLD, HOLD]), "held page twice"),
+        (lambda r: r.update(page_holds=[{**HOLD, "page_ordinal": 3}]), "naming a sealed page"),
+        (lambda r: r.update(page_holds=[{**HOLD, "hold_codes": []}]), "naming a sealed page"),
+        (
+            lambda r: r.update(page_holds=[{**HOLD, "hold_codes": ["b", "a"]}]),
+            "naming a sealed page",
+        ),
+        (lambda r: r["pages"][0].update(reask=None), "names a re-ask without what it did"),
+        (lambda r: r["pages"][1].update(reask=REASK), "names a re-ask without what it did"),
+        (lambda r: r["pages"][0].pop("accounting_ref"), "page reading is not"),
+        (lambda r: r["pages"][0]["reask"].pop("duplicate"), "re-ask is not"),
+        (lambda r: r["pages"][0]["reask"].update(named=[]), "names no id, or one id twice"),
+        (lambda r: r["pages"][0]["reask"].update(named=["A3", "A3", "L7", "L8"]), "one id twice"),
+        (lambda r: r["pages"][0]["reask"].update(unread=[]), "does not split its named ids"),
+        (lambda r: r["pages"][0]["reask"].update(held=[]), "does not split its named ids"),
+        (
+            lambda r: r["pages"][0]["reask"].update(cleared=["A3", "L7", "L8"]),
+            "does not split its named ids",
+        ),
+        (lambda r: r["pages"][0]["reask"].update(cleared=["L7", "A3"]), "in the order named"),
+        (
+            lambda r: r["pages"][0]["reask"].update(set_aside=["A3"]),
+            "does not split its named ids",
+        ),
+        (lambda r: r["pages"][0]["reask"].update(duplicate=[3, 3]), "increasing entry numbers"),
+        (lambda r: r["pages"][0]["reask"].update(duplicate=[0]), "increasing entry numbers"),
+        (lambda r: r.update(schema="recensor-partition-receipt.v5"), "wrong closed schema"),
+        (lambda r: r.update(schema=[]), "wrong closed schema"),
     ],
     ids=[
         "disposition",
@@ -283,9 +318,30 @@ def test_a_v4_receipt_with_a_unit_on_a_page_it_does_not_name_is_refused():
         "link-not-a-break",
         "link-outcome",
         "link-reason-unstated",
+        "no-page-holds",
+        "page-hold-reason-unstated",
+        "page-held-twice",
+        "page-hold-unsealed",
+        "page-hold-no-code",
+        "page-hold-unsorted",
+        "re-ask-without-outcome",
+        "outcome-without-re-ask",
+        "no-accounting",
+        "reask-fields",
+        "named-empty",
+        "named-twice",
+        "not-a-split",
+        "held-dropped",
+        "held-also-cleared",
+        "reask-out-of-order",
+        "id-in-two-parts",
+        "duplicate-twice",
+        "duplicate-zero",
+        "other-schema",
+        "schema-not-text",
     ],
 )
-def test_a_malformed_v4_receipt_is_refused(change, refusal):
+def test_a_malformed_receipt_is_refused(change, refusal):
     forged = copy.deepcopy(_receipt([_item("act_a", "p1:1"), _item("act_b", "p2:1")]))
     change(forged)
     forged["self_hash"] = self_hash({k: v for k, v in forged.items() if k != "self_hash"})

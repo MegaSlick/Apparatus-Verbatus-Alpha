@@ -6,12 +6,8 @@ capture, so it can never affect generation or alter the captured bytes.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from contextlib import contextmanager
-from itertools import groupby
-from threading import RLock
 from types import MappingProxyType
-from typing import Any, Callable, Final, Iterator, Mapping
+from typing import Any, Final, Mapping
 
 from common import chandra_layout
 from common.contracts.canonical import digest_of, is_sha256
@@ -43,7 +39,6 @@ DAI_LIMIT_SOURCES = {
         "@ e371095d4ffe585f31f4974462931ddbac61ff64)"
     ),
 }
-SCHEDULING_POLICY = "chair-outer-page-inner.stage-major-parish.v1"
 # The (adapter, parser) pairs `retain_model_view` can actually carry to a state.
 _RUNNABLE_PARSERS = frozenset(
     {
@@ -594,147 +589,6 @@ def retain_model_view(
     # A parser reporting a view this build does not read under refuses here, at
     # the seam, rather than in the first reader of the sealed record.
     return validate_capture_text_view(record)
-
-
-def stage_major_schedule(
-    parish_id: str, units: Iterable[dict[str, Any]], chairs: Iterable[str]
-) -> list[dict[str, str]]:
-    """One resident chair at a time; deterministic chair-outer, page-inner order."""
-    if not isinstance(parish_id, str) or not parish_id:
-        raise SchemaRefusal("schedule parish identity is blank")
-    chair_rows = list(chairs)
-    if any(not isinstance(chair, str) or not chair for chair in chair_rows):
-        raise SchemaRefusal("schedule chair identity is blank")
-    ordered_chairs = sorted(set(chair_rows))
-    # A repeated chair would look like normal scheduling once deduplicated
-    # here, so the duplicate is caught before the set absorbs it.
-    if len(ordered_chairs) != len(chair_rows):
-        raise SchemaRefusal("schedule repeats a chair")
-    rows = list(units)
-    seen_units: set[str] = set()
-    for row in rows:
-        if (
-            not isinstance(row, dict)
-            or not isinstance(row.get("unit_id"), str)
-            or not row["unit_id"]
-        ):
-            raise SchemaRefusal("schedule unit has no identity")
-        # A duplicate unit row would become one duplicate Testimonium per chair.
-        if row["unit_id"] in seen_units:
-            raise SchemaRefusal("schedule repeats a unit")
-        seen_units.add(row["unit_id"])
-        # Checked rather than left to `sorted`, whose TypeError on a
-        # non-integer ordinal would be unnamed.
-        ordinal = row.get("page_ordinal")
-        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
-            raise SchemaRefusal("schedule unit page ordinal is not an integer")
-    ordered_units = sorted(rows, key=lambda row: (row["page_ordinal"], row["unit_id"]))
-    return [
-        {
-            "policy": SCHEDULING_POLICY,
-            "parish_id": parish_id,
-            "chair": chair,
-            "unit_id": unit["unit_id"],
-        }
-        for chair in ordered_chairs
-        for unit in ordered_units
-    ]
-
-
-class SingleChairResidency:
-    """Fail-closed ownership of the one model resource an orchestrator may load.
-
-    The resident name is reserved before ``load`` runs and is cleared only after
-    ``unload`` succeeds. A failed unload therefore blocks every later acquire;
-    it can never be mistaken for proof that the resource became vacant.
-
-    A failed ``load`` blocks them too, deliberately: it can fail with weights
-    already mapped, so clearing the reservation would be guessing that nothing
-    was allocated. Recovery is an operator act against observed provider
-    state, never an inference this object makes on its own.
-    """
-
-    def __init__(
-        self,
-        load: Callable[[str], Any],
-        unload: Callable[[str, Any], None],
-    ) -> None:
-        self._load = load
-        self._unload = unload
-        self._resident: str | None = None
-        self._lock = RLock()
-
-    @property
-    def resident(self) -> str | None:
-        with self._lock:
-            return self._resident
-
-    @contextmanager
-    def occupy(self, chair: str) -> Iterator[Any]:
-        if not isinstance(chair, str) or not chair:
-            raise SchemaRefusal("residency chair identity is blank")
-        with self._lock:
-            if self._resident is not None:
-                raise SchemaRefusal(
-                    f"cannot load chair {chair!r} while chair {self._resident!r} is resident"
-                )
-            self._resident = chair
-        resource = self._load(chair)
-        try:
-            yield resource
-        except BaseException as refusal:
-            try:
-                self._release(chair, resource)
-            except BaseException as cleanup_error:
-                # Keep the original refusal visible, and the chair resident.
-                raise refusal from cleanup_error
-            raise
-        else:
-            self._release(chair, resource)
-
-    def _release(self, chair: str, resource: Any) -> None:
-        """Clear residency only after the resource and guard both verify release."""
-        self._unload(chair, resource)
-        with self._lock:
-            if self._resident != chair:
-                raise SchemaRefusal("single-chair residency state diverged during unload")
-            self._resident = None
-
-
-def execute_stage_major_schedule(
-    schedule: Iterable[dict[str, str]],
-    *,
-    residency: SingleChairResidency,
-    serve: Callable[[Any, dict[str, str]], Any],
-) -> list[Any]:
-    """Execute only contiguous chair blocks through the shared residency guard."""
-    rows = list(schedule)
-    expected_fields = {"policy", "parish_id", "chair", "unit_id"}
-    if any(
-        not isinstance(row, dict)
-        or set(row) != expected_fields
-        or row["policy"] != SCHEDULING_POLICY
-        or any(not isinstance(row[field], str) or not row[field] for field in expected_fields)
-        for row in rows
-    ):
-        raise SchemaRefusal("stage-major execution received a malformed schedule row")
-    chair_blocks = []
-    for chair, chair_rows in groupby(rows, key=lambda row: row["chair"]):
-        chair_blocks.append(chair)
-        served = [row["unit_id"] for row in chair_rows]
-        # A repeat here is a second serving of one unit under one load; checked
-        # rather than trusted from a schedule this executor did not build.
-        if len(set(served)) != len(served):
-            raise SchemaRefusal("stage-major execution schedule serves one unit twice to a chair")
-    if len(chair_blocks) != len(set(chair_blocks)):
-        raise SchemaRefusal("stage-major execution schedule returns to an unloaded chair")
-    if len({row["parish_id"] for row in rows}) > 1:
-        raise SchemaRefusal("stage-major execution schedule mixes parish identities")
-    results = []
-    for chair, chair_rows in groupby(rows, key=lambda row: row["chair"]):
-        with residency.occupy(chair) as resource:
-            results.extend(serve(resource, row) for row in chair_rows)
-    return results
 
 
 def _reference(value: object, name: str) -> None:

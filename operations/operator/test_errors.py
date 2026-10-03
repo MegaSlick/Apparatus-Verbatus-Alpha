@@ -100,51 +100,9 @@ def test_the_word_traceback_in_a_receipt_path_does_not_erase_the_path() -> None:
     assert "keep that exact path" in rendered
 
 
-def test_old_close_vocabulary_is_replaced_even_without_the_word_traceback() -> None:
-    """The substitution table itself, not just the short-circuit around it."""
-
-    rendered = errors.sanitize_detail(
-        "provider termination confirmed, shutdown complete, pod stopped"
-    )
-
-    assert "termination" not in rendered.lower()
-    assert "shutdown" not in rendered.lower()
-    assert "stopped" not in rendered.lower()
-    assert "close" in rendered
-    assert "paused" in rendered
-
-
-def test_a_path_segment_survives_the_close_vocabulary_rewrite_unmangled() -> None:
-    """A receipt path is an identifier, not prose, and must come out byte-true.
-
-    The words this rewrite targets are ordinary English and can legitimately
-    appear inside a directory or file name the operator chose, not only inside
-    the pipeline's own composed sentences. Rewriting "stop" to "paused" inside
-    a path corrupts the exact instruction — "preserve this message and its
-    saved receipt path" — this function exists to keep true.
-    """
-
-    rendered = errors.sanitize_detail(
-        "a technical detail was saved locally at /home/x/stop/terminated-run.log"
-    )
-
-    assert "/home/x/stop/terminated-run.log" in rendered
-
-
-def test_a_bare_hyphenated_name_survives_the_close_vocabulary_rewrite() -> None:
-    rendered = errors.sanitize_detail("submitted folders stop-list and shutdown-scans")
-
-    assert "stop-list" in rendered
-    assert "shutdown-scans" in rendered
-
-
 def test_stripping_control_bytes_changes_nothing_else_about_a_line() -> None:
-    """The output channel needs the strip without the detail-only rewriting.
-
-    A reconciliation table, a price screen and a close notice must keep their
-    spacing, their vocabulary and their full length; only the bytes a terminal
-    would act on come out.
-    """
+    """A reconciliation table keeps its spacing, its words and its full length;
+    only the bytes a terminal would act on come out."""
 
     line = "| Delivered acts | 2 |   spaced\x1b[2Jand terminated\x00"
 
@@ -187,12 +145,3 @@ def test_control_bytes_are_stripped_from_the_operator_facing_detail() -> None:
 )
 def test_unicode_terminal_spoofing_controls_are_stripped(character: str) -> None:
     assert errors.strip_control_bytes(f"before{character}after") == "before after"
-
-
-def test_launch_safeguard_and_spending_refusals_name_different_causes() -> None:
-    safeguard = errors.ERRORS[errors.ErrorCode.SAFETY_CHECK_FAILED]
-    spending = errors.ERRORS[errors.ErrorCode.PAID_ACTION_REFUSED]
-
-    assert safeguard != spending
-    assert "runtime safeguards" in safeguard.what_happened
-    assert "spending limit" in spending.what_happened

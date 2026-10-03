@@ -5084,8 +5084,6 @@ def test_every_bootstrap_actions_implementation_covers_every_step() -> None:
 
     Structural Protocol annotations do not enforce that alignment at runtime.
     """
-    from operations.operator.surface import FixtureBootstrapActions
-
     required = {name for name, _ in inspect.getmembers(BootstrapActions, inspect.isfunction)} - {
         "__init__"
     }
@@ -5094,7 +5092,6 @@ def test_every_bootstrap_actions_implementation_covers_every_step() -> None:
         f"steps={[step.value for step in BootstrapStep]}, methods={sorted(required)}"
     )
     for implementation in (
-        FixtureBootstrapActions,
         SubprocessBootstrapActions,
         FakeBootstrapActions,
     ):

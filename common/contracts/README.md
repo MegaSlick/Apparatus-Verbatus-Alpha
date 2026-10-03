@@ -19,7 +19,6 @@ would misread needs a new label.
 | `stages.py` | the stage names, their run order and directories, the nine handoffs, the Coniector's side branch, and which stage's seal each stage requires |
 | `errors.py` | the refusals, kept separate so a stage can catch what it means to catch |
 | `uncertainty.py` | the canonical uncertainty layer: uncertain spans, gaps and self-revisions anchored to one text |
-| `annotations.py` | the Archetypus annotation layer, shared by the stages that seal and check it |
 | `serving.py` | the closed shapes and vocabularies of the live reading seam, shared by stages and `operations/` |
 
 ## Three things worth knowing before you change anything here

@@ -124,7 +124,7 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
     bundle_bytes = tree.read_bytes(export["bundle"]["reference"]["relative_path"])
     with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as archive:
         packaged_manifest = json.loads(archive.read("EXPORT_MANIFEST.json"))
-    expected_formats = {"text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"}
+    expected_formats = {"text-bundle", "acts-database", "jsonl", "review-items"}
     produced_formats = set(packaged_manifest["formats"]["formats"])
     assert produced_formats == expected_formats, (
         f"the exported bundle selects formats {sorted(produced_formats)}; a new format "

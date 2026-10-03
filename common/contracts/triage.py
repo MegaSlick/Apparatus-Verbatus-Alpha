@@ -1,6 +1,7 @@
-"""The pre-door triage decision-manifest contract. Records transform decisions
-only: it never transforms a source frame and never chooses a member of a
-re-shoot cluster (complementary views remain rows).
+"""The triage decision-manifest contract: per-frame split, crop, rotation and
+colour decisions made before the Door, and the re-shoot cluster records beside
+them. It records decisions only: it never transforms a source frame and never
+chooses a member of a re-shoot cluster.
 
 Geometry and colour conversion are per split part, not per frame, because a
 document taped over the page at its own angle has no single gutter for
@@ -10,9 +11,8 @@ spread's two pages each want their own crop besides.
 ``region`` is a half-open rectangle in source-frame pixel coordinates; after
 cutting it, ``crop_box`` is half-open in that part's local pixel coordinates.
 The cropped pixels are then rotated clockwise about the crop's centre onto an
-expanded canvas. Pixel sampling, fill and encoding belong to the Door's sealed
-apply recipe (`door.py`, `triage-raster-apply-v1`), not to geometry defaults
-hidden here.
+expanded canvas. Pixel sampling, fill and encoding belong to the apply recipe
+(`common.imaging.TRIAGE_APPLY_RECIPE`), not to geometry defaults hidden here.
 """
 
 from __future__ import annotations
@@ -39,12 +39,9 @@ SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
 MAX_MANIFEST_ROWS: Final = 1_000
 MAX_CLUSTER_RECORDS: Final = 1_000
 MAX_CLUSTER_MEMBERS: Final = 4_096
-# A single frame's parts must remain in one content-aware shard, and the shared
-# corpus-frame policy refuses any configured shard limit above 1,000 — so any
-# bound at or below that keeps every ingestible frame provable. The 64-part
-# value caps the quadratic pairwise-disjointness proof; a real frame with more
-# parts needs a triage-policy change, not a bigger loop. The Exemplar boundary
-# bounds the same split with the shared cap.
+# Caps the quadratic pairwise-disjointness check; a real frame with more parts
+# needs a triage-policy change, not a bigger loop. Well under the 1,000-page shard,
+# which one frame's parts must fit in.
 MAX_SPLIT_PARTS: Final = MAX_TRIAGE_SPLIT_PARTS
 
 _RECTANGLE_FIELDS: Final = {"space", "x", "y", "w", "h"}
