@@ -202,7 +202,7 @@ def test_cli_writes_the_report_outside_the_run_tree(happy_run: RunTree, tmp_path
 
 
 def test_a_named_ledger_refuses_a_reference_page_admission_did_not_seal(
-    happy_run: RunTree, tmp_path: Path
+    happy_run: RunTree, tmp_path: Path, capsys
 ):
     """A page with other text that hashes to itself is scored unless a ledger is named;
     named, the ledger refuses it and admits the page it sealed."""
@@ -229,9 +229,11 @@ def test_a_named_ledger_refuses_a_reference_page_admission_did_not_seal(
         return json.loads(out.read_bytes())
 
     assert run(substituted, "unbound")["reference_ledger_verified"] is False
+    assert "reference ledger not given" in capsys.readouterr().out
     with pytest.raises(CorpusRefusal, match="^reference-page-not-in-ledger:"):
         run(substituted, "substituted", "--reference-ledger", str(ledger))
     assert not (tmp_path / "substituted-report.json").exists()
     bound = run(admitted, "admitted", "--reference-ledger", str(ledger))
     assert bound["reference_ledger_verified"] is True
+    assert "reference ledger verified" in capsys.readouterr().out
     assert bound["reference_ledger_sha256"] == digest_bytes(ledger.read_bytes())

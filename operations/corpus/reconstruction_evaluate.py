@@ -348,6 +348,7 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"{made['departures']} departure(s), {made['departed_characters']} character(s)",
         f"against reference ({reference['made_by_sides']}): reconstruction "
         f"{reference['reconstruction']}; diplomatic {reference['diplomatic']}",
+        "reference ledger " + ("verified" if report["reference_ledger_verified"] else "not given"),
     ]
 
 
