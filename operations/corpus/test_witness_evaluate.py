@@ -544,7 +544,16 @@ def test_a_page_whose_joined_reference_is_beyond_the_scoring_bounds_is_named_unm
     )
 
     assert {row["unmeasured"] for row in report["rows"]} == {"reference-text-out-of-bounds"}
-    assert all(report["totals"][chair]["unmeasured"] == 1 for chair in CHAIRS)
+    # The units left out of the rate: each act's own, plus the space each line
+    # break joining two acts normalizes to.
+    for chair in CHAIRS:
+        total = report["totals"][chair]
+        assert total["unmeasured"] == 1
+        assert (total["unmeasured_cer_units"], total["unmeasured_wer_units"]) == (
+            2 * len(half) + 1,
+            2,
+        )
+        assert (total["cer_units"], total["wer_units"]) == (0, 0)
 
 
 def test_a_unit_straddling_two_records_belongs_to_the_one_holding_most_of_it():

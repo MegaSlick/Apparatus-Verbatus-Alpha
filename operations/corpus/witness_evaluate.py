@@ -125,15 +125,25 @@ def _score_row(
         "status": status.value,
         "reason": reason,
         "unmeasured": None,
+        "unmeasured_cer_units": 0,
+        "unmeasured_wer_units": 0,
     }
     # A text beyond the scoring bounds is named and carries no rate; the
-    # chair's other rows are still scored. A joined reference that is out of
-    # bounds has no units to charge; an out-of-bounds reading keeps its
-    # reference units, which the totals charge as wholly deleted.
+    # chair's other rows are still scored. A joined reference beyond the bounds
+    # is left out of the rate, and the units it holds are counted beside it:
+    # each act's own (every act is within the bounds), plus the one space each
+    # line break joining two acts normalizes to -- never by segmenting the
+    # over-limit join. An out-of-bounds reading keeps its reference units,
+    # which the totals charge as wholly deleted.
     if not within_text_bounds(reference["text"], GRAPHEMIC_V1):
+        acts = reference["act_texts"]
         return {
             **row,
             "unmeasured": REFERENCE_TEXT_OUT_OF_BOUNDS,
+            "unmeasured_cer_units": sum(len(character_units(t, GRAPHEMIC_V1)) for t in acts)
+            + len(acts)
+            - 1,
+            "unmeasured_wer_units": sum(len(word_units(t, GRAPHEMIC_V1)) for t in acts),
             "cer": None,
             "cer_units": None,
             "wer": None,
@@ -183,6 +193,8 @@ def _totals(
             "cer_units": sum(row["cer_units"] for row in counted),
             "wer_errors": sum(_charged(row, "wer") for row in counted),
             "wer_units": sum(row["wer_units"] for row in counted),
+            "unmeasured_cer_units": sum(row["unmeasured_cer_units"] for row in chair_rows),
+            "unmeasured_wer_units": sum(row["unmeasured_wer_units"] for row in chair_rows),
         }
         if missing_proposals is not None:
             totals[chair]["missing_proposals"] = missing_proposals
@@ -203,6 +215,7 @@ def evaluate_page(
     reference = {
         "record_ids": [act["record_id"] for act in reference_page["acts"]],
         "text": "\n".join(act["text"] for act in reference_page["acts"]),
+        "act_texts": [act["text"] for act in reference_page["acts"]],
     }
     rows: list[dict[str, Any]] = []
     for chair in chairs:
@@ -610,7 +623,10 @@ def _witness_name(witness: Mapping[str, Any]) -> str:
 
 def _record_row(act: Mapping[str, Any], **score: Any) -> dict[str, Any]:
     """One reference record scored for one witness: `_score_row` keyed by its record id."""
-    row = _score_row({"record_ids": [act["record_id"]], "text": act["text"]}, **score)
+    row = _score_row(
+        {"record_ids": [act["record_id"]], "text": act["text"], "act_texts": [act["text"]]},
+        **score,
+    )
     del row["record_ids"]
     return {"record_id": act["record_id"], **row}
 
