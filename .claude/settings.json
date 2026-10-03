@@ -35,8 +35,8 @@
       "Bash(runpodctl pod start*)",
       "Bash(runpodctl resume*)",
       "Bash(runpodctl pod resume*)",
-      "Bash(*operations.pod.cli*)",
-      "Bash(*operations/pod/cli.py*)"
+      "Bash(*python -m operations.pod.cli* create*)",
+      "Bash(*python -m operations.pod.cli* adopt*)"
     ]
   },
   "hooks": {
