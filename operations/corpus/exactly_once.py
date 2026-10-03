@@ -102,8 +102,10 @@ from . import CorpusRefusal
 from .cache import write_new_file
 from .compare import ReadOnlyRunTree, load_exemplar_page_shas
 from .local_admission import load_local_admission_ledger, validate_local_admission_ledger
+from .normalization import GRAPHEMIC_V1, within_text_bounds
+from .scoring import TEXT_OUT_OF_BOUNDS
 
-SCHEMA: Final = "exactly-once-report.v3"
+SCHEMA: Final = "exactly-once-report.v4"
 GATE_EXACTLY_ONCE_BP: Final = 9_500
 # A gold record's text is read when its character error rate against the best
 # holding act's reading is at most this (basis points): stricter than the
@@ -125,6 +127,9 @@ LOST: Final = "lost"
 MERGED: Final = "merged"
 DUPLICATED: Final = "duplicated"
 FAILURES: Final = frozenset({LOST, MERGED})
+# A record whose holding act's reading is beyond the scoring profile's text
+# bounds: not measured, never exactly-once, and the gate cannot pass with one.
+UNMEASURED: Final = "unmeasured"
 # A page is read once and may be re-asked once; each reading has its own accounting.
 FIRST_READING: Final = 1
 REASK_READING: Final = 2
@@ -626,9 +631,16 @@ def _score_records(
             for region in page["act_regions"]
             if region["kind"] == "act" and is_inside(box, region["region_boxes_px"], policy)
         ]
+        # Gold texts are bounded where the admission ledger validates its
+        # reference pages; a reading is bounded here, before it is compared.
         text = (
             "no-region"
             if not holding
+            else TEXT_OUT_OF_BOUNDS
+            if not all(
+                within_text_bounds(readings.get(region["n"], ""), GRAPHEMIC_V1)
+                for region in holding
+            )
             else "read"
             if any(_read_in(record, others, readings.get(region["n"], "")) for region in holding)
             else "not-read"
@@ -639,7 +651,9 @@ def _score_records(
             for other in others
         )
         outcome = (
-            LOST
+            UNMEASURED
+            if text == TEXT_OUT_OF_BOUNDS
+            else LOST
             if text != "read"
             else MERGED
             if merged
@@ -778,7 +792,7 @@ def exactly_once_report(
     sealed_page_sha256s: Collection[str],
     seconds_per_page: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
-    """The `exactly-once-report.v2` body for page records against gold records.
+    """The `exactly-once-report.v4` body for page records against gold records.
 
     `pages` as `load_page_records` returns them; `gold` as `gold_records`
     returns them; `sealed_policy_sha256` the page-accounting digest the run
@@ -902,6 +916,7 @@ def exactly_once_report(
 
     seconds = sorted((seconds_per_page or {}).values())
     exactly_bp = _share(exactly, len(rows))
+    unmeasured = outcomes[UNMEASURED]
     run_shas = {page["page_sha256"] for page in pages}
     return {
         "schema": SCHEMA,
@@ -912,10 +927,12 @@ def exactly_once_report(
             "required_bp": GATE_EXACTLY_ONCE_BP,
             "uncaught_failures": len(uncaught),
             "unchecked_pages": len(unchecked_pages),
+            "unmeasured_records": unmeasured,
             "passed": exactly_bp is not None
             and exactly_bp >= GATE_EXACTLY_ONCE_BP
             and not uncaught
-            and not unchecked_pages,
+            and not unchecked_pages
+            and not unmeasured,
         },
         "scope": {
             "sealed_pages": len(sealed),
@@ -1036,7 +1053,8 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"gate: {'PASS' if gate['passed'] else 'FAIL'}  exactly once "
         f"{records['exactly_once']}/{records['total']} ({gate['exactly_once_bp']} bp, "
         f"need {gate['required_bp']}); uncaught failures {gate['uncaught_failures']}; "
-        f"unchecked pages {gate['unchecked_pages']}",
+        f"unchecked pages {gate['unchecked_pages']}; unmeasured records "
+        f"{gate['unmeasured_records']}",
         f"outcomes: {records['by_outcome']}; act regions per record: "
         f"{records['by_act_regions']}; text: {records['by_text']}",
         f"failures caught (located) by rule: {records['failures_caught_by_rule']}; "

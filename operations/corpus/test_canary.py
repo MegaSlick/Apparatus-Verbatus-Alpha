@@ -14,6 +14,7 @@ from PIL import Image
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from operations.corpus import canary
 from operations.corpus.local_admission import admit_local_set
+from operations.corpus.normalization import MAX_TEXT_LENGTH
 from operations.corpus.reference import build_reference_page
 from operations.corpus.scoring import OutputStatus
 
@@ -379,6 +380,15 @@ def test_a_page_run_canary_still_names_a_reader_that_read_nothing(page_canary, t
 
     assert {row["rule"] for row in verdict["dead"]} == {"canary-reading-shared-too-little-ink"}
     assert not verdict["stages"][canary.PERLECTOR]
+
+
+def test_a_page_run_canary_names_a_reader_text_beyond_the_scoring_bounds(page_canary, tmp_path):
+    verdict = canary.check_run(_PageRunTree("a" * (MAX_TEXT_LENGTH + 1)), tmp_path)
+
+    assert verdict["dead"] == [
+        {"stage": canary.PERLECTOR, "rule": "canary-reading-text-out-of-bounds"}
+    ]
+    assert all(verdict["stages"][chair] for chair in canary.CHAIRS)
 
 
 def test_a_page_run_canary_names_a_failed_page_witness(page_canary, tmp_path):

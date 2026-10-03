@@ -37,6 +37,7 @@ from operations.corpus.local_admission import (
     transform_region,
     validate_local_admission_ledger,
 )
+from operations.corpus.normalization import MAX_TEXT_LENGTH
 from operations.corpus.reference import validate_reference_page
 from operations.corpus.rows import build_snapshot
 
@@ -421,6 +422,7 @@ def test_the_held_split_needs_a_deliberate_release_and_the_flag_releases_nothing
         # Non-empty ink that normalises to nothing. Admitted before, it took the
         # whole scoring run down later under a refusal naming no record at all.
         ({"text": "   "}, "empty-normalized-text"),
+        ({"text": "a" * (MAX_TEXT_LENGTH + 1)}, "text-out-of-bounds"),
         ({"split": "train"}, "unknown-split"),
         ({"record_url": "not-a-iiif-url"}, "unparseable-record-url"),
         (

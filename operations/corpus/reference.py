@@ -45,7 +45,7 @@ from common.contracts.identities import (
 )
 
 from . import CorpusRefusal
-from .normalization import GRAPHEMIC_V1, character_units
+from .normalization import GRAPHEMIC_V1, MeasurementRefusal, character_units
 
 SCHEMA = "reference-page-truth.v1"
 CORPUS_ID = "recordgold"
@@ -75,6 +75,7 @@ REFERENCE_REFUSAL_REASONS = frozenset(
         "region-outside-page",
         "empty-text",
         "empty-normalized-text",
+        "text-out-of-bounds",
         "text-sha256-mismatch",
         "wrong-identity-family",
         "unmintable-physical-act",
@@ -393,7 +394,11 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
         # admission, but the evaluate command line reads reference pages from a
         # file rather than from an admission ledger, so the family's own
         # validator is the boundary that must hold.
-        if not character_units(text, GRAPHEMIC_V1):
+        try:
+            units = character_units(text, GRAPHEMIC_V1)
+        except MeasurementRefusal as error:
+            raise Refusal(f"text-out-of-bounds: reference act {record_id!r}: {error}") from error
+        if not units:
             raise Refusal(
                 f"empty-normalized-text: reference act {record_id!r} carries text {text!r}, "
                 f"which normalises to nothing under {GRAPHEMIC_V1.profile_id} and could never "

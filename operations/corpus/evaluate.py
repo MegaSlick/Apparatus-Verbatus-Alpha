@@ -8,8 +8,9 @@ each delivered text re-digested against the Archetypus record that established
 it, so a score is never computed over text the pipeline did not publish.
 
 The denominator is kept whole: every reference record ends in exactly one row
-(matched and scored, missed on a sealed page, or not attempted because the run
-never sealed its page), and every read act is counted by its export
+(matched and scored, matched but unmeasured because its reading is beyond the
+scoring profile's text bounds, missed on a sealed page, or not attempted because
+the run never sealed its page), and every read act is counted by its export
 category, with a held or missing act scored as an empty hypothesis rather than
 omitted or given a perfect score. An unmatched pipeline act is reported, not
 scored, since RecordGold annotates records only. The full IoU matrix travels in
@@ -20,8 +21,8 @@ assignment made, so a record the pipeline never found affects it not at all. The
 second rate additionally counts every missed record's reference units as
 deletions, since a missed act is worse than a poorly read one — this
 is the number a capture failure actually moves. Neither rate counts a
-not-attempted record; `reference_records_not_attempted` is where a reader sees
-that coverage gap.
+not-attempted or an unmeasured record; `reference_records_not_attempted` and
+`reference_records_unmeasured` are where a reader sees those gaps.
 
 The run's own facts (export digest, run and config digests, fixture-vs-real)
 come from the sealed tree, read from the export payload's own identity field
@@ -81,7 +82,7 @@ DESCRIPTION = (
     "Score what a sealed run actually exported against reference truth, denominator whole."
 )
 
-SCHEMA = "recordgold-evaluation.v2"
+SCHEMA = "recordgold-evaluation.v3"
 FIXTURE_LABEL = (
     "fixture result: scored over synthetic fixture pages and fixture model answers; "
     "this is a proof of the evaluation driver, not a RecordGold reading-quality claim"
@@ -134,11 +135,11 @@ PROFILE = GRAPHEMIC_V1
 
 _MATCHED_SCOPE = (
     "matched pairs only: a reference record the assignment never paired contributes to "
-    "neither side of this fraction"
+    "neither side of this fraction, nor does an unmeasured pair, counted separately"
 )
 _MISSED_SCOPE = (
     "matched pairs plus every missed record counted as wholly deleted; not-attempted "
-    "records are excluded from both rates and counted separately"
+    "and unmeasured records are excluded from both rates and counted separately"
 )
 
 _EDIT_FIELDS = (
@@ -202,6 +203,7 @@ _DENOMINATOR_FIELDS = frozenset(
         "reference_records_scored_by_export_category",
         "reference_records_missed",
         "reference_records_not_attempted",
+        "reference_records_unmeasured",
         "pipeline_acts_unmatched",
     }
 )
@@ -460,7 +462,7 @@ def evaluate_run(
     code_ref: str,
     reference_ledger: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One `recordgold-evaluation.v2` report for one sealed run against reference pages.
+    """One `recordgold-evaluation.v3` report for one sealed run against reference pages.
 
     `reference_ledger` is a `recordgold-local-admission.v1` body. It is validated
     here rather than taken on the caller's word, its digest is derived from the
@@ -620,6 +622,28 @@ def evaluate_run(
                 )
                 continue
             hypothesis = hypotheses[pair["pipeline_act_id"]]
+            if pair["unmeasured"] is not None:
+                records.append(
+                    {
+                        "physical_act_id": act["physical_act_id"],
+                        "record_id": act["record_id"],
+                        "page_ordinal": ordinal,
+                        "page_sha256": sha,
+                        "outcome": "unmeasured",
+                        "pipeline_act_id": pair["pipeline_act_id"],
+                        "export_category": hypothesis["category"],
+                        "text_status": hypothesis["text_status"],
+                        "status": pair["status"],
+                        "cer": None,
+                        "wer": None,
+                        "note": (
+                            f"{pair['unmeasured']}: the reading is beyond the scoring "
+                            "profile's text bounds; not measured, excluded from both rates "
+                            "and counted in reference_records_unmeasured"
+                        ),
+                    }
+                )
+                continue
             _accumulate(cer_total, pair["cer"])
             _accumulate(wer_total, pair["wer"])
             _accumulate(cer_with_missed, pair["cer"])
@@ -733,6 +757,9 @@ def evaluate_run(
             "reference_records_scored_by_export_category": dict(sorted(scored_by_category.items())),
             "reference_records_missed": sum(1 for row in records if row["outcome"] == "missed"),
             "reference_records_not_attempted": len(not_attempted),
+            "reference_records_unmeasured": sum(
+                1 for row in records if row["outcome"] == "unmeasured"
+            ),
             "pipeline_acts_unmatched": len(unmatched_pipeline),
         },
         "aggregate": aggregate,
@@ -761,7 +788,7 @@ def _validate_units(value: Any, what: str) -> None:
 
 
 def validate_evaluation(report: Any) -> dict[str, Any]:
-    """Refuse an evaluation that is not exactly `recordgold-evaluation.v2`.
+    """Refuse an evaluation that is not exactly `recordgold-evaluation.v3`.
 
     This is the artifact a person reads as the measurement.
 
@@ -839,7 +866,7 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
     # raises `KeyError`, which is not a refusal.
     _closed(report["run"], _RUN_FIELDS, "the run block")
     totals = _closed(report["denominators"], _DENOMINATOR_FIELDS, "the denominators")
-    outcomes = {"scored": 0, "missed": 0, "not-attempted": 0}
+    outcomes = {"scored": 0, "missed": 0, "not-attempted": 0, "unmeasured": 0}
     for row in report["records"]:
         row = _closed(row, _RECORD_ROW_FIELDS, "a record row")
         if row["outcome"] not in outcomes:
@@ -860,6 +887,7 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
         outcomes["scored"] != totals["reference_records_scored"]
         or outcomes["missed"] != totals["reference_records_missed"]
         or outcomes["not-attempted"] != totals["reference_records_not_attempted"]
+        or outcomes["unmeasured"] != totals["reference_records_unmeasured"]
     ):
         raise Refusal(
             "malformed-record: the record rows disagree with the denominators that count them"
@@ -954,7 +982,8 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"reference records scored {totals['reference_records_scored']} "
         f"(by export category {totals['reference_records_scored_by_export_category']}), missed "
         f"{totals['reference_records_missed']}, not attempted "
-        f"{totals['reference_records_not_attempted']}; pipeline acts unmatched "
+        f"{totals['reference_records_not_attempted']}, unmeasured "
+        f"{totals['reference_records_unmeasured']}; pipeline acts unmatched "
         f"{totals['pipeline_acts_unmatched']} (reported, not scored)",
     ]
     for block, prefix in (

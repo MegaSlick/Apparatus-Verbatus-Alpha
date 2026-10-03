@@ -73,7 +73,7 @@ from common.contracts.errors import IdentityRefusal
 from common.contracts.identities import physical_act_id, physical_page_id
 
 from . import CorpusRefusal
-from .normalization import GRAPHEMIC_V1, character_units
+from .normalization import GRAPHEMIC_V1, MeasurementRefusal, character_units
 from .record_url import (
     SUPPORTED_ROTATIONS,
     parse_record_url,
@@ -114,6 +114,7 @@ LOCAL_ADMISSION_REFUSAL_REASONS = frozenset(
         "unsafe-identifier-segment",
         "unsafe-source-value",
         "empty-normalized-text",
+        "text-out-of-bounds",
         "snapshot-mismatch",
         "inconsistent-transform",
         "region-outside-page",
@@ -688,7 +689,11 @@ def admit_local_set(
             # this package's vocabulary and names neither the record nor the
             # page. Refuse it here, by record, against the same profile
             # `compare.py` scores with.
-            if not character_units(text, GRAPHEMIC_V1):
+            try:
+                units = character_units(text, GRAPHEMIC_V1)
+            except MeasurementRefusal as error:
+                raise Refusal(f"text-out-of-bounds: record {record_id!r}: {error}") from error
+            if not units:
                 raise Refusal(
                     f"empty-normalized-text: record {record_id!r} carries text {text!r}, which "
                     f"normalises to nothing under {GRAPHEMIC_V1.profile_id} and could never be "

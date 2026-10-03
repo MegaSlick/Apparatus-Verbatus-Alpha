@@ -17,6 +17,10 @@ from .normalization import (
     word_units,
 )
 
+# The name a report gives a reading it could not measure because the reading
+# is beyond the normalization profile's text bounds.
+TEXT_OUT_OF_BOUNDS = "text-out-of-bounds"
+
 
 class OutputStatus(StrEnum):
     """What a reader returned for one act; every state is scored, none is dropped."""

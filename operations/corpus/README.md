@@ -87,7 +87,7 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   the Archetypus record that established it (`digest_of(text)`), maps each export
   category to the scorer's response state (a held, refused, blank or excluded act is an
   empty hypothesis against its reference -- counted, never dropped, never perfect), and
-  writes one validated, self-hashed `recordgold-evaluation.v2` record carrying run
+  writes one validated, self-hashed `recordgold-evaluation.v3` record carrying run
   configuration digests, export digest, reference ledger digest, the splits scored, and
   the whole denominator: every
   reference record scored, missed or not attempted, every read act by export
@@ -317,7 +317,7 @@ distinct `source`/`volume` splits (`"Tours/geneanet"` joined with nothing, and
 reference record set, computes IoU between every pipeline act's region (the
 Perlector's act-regions) and
 every reference box, takes the assignment maximising total IoU under a
-predeclared threshold, and writes `reference-comparison.v2` recording the whole
+predeclared threshold, and writes `reference-comparison.v3` recording the whole
 matrix: matched pairs, unmatched reference acts (misses, scored), and
 unmatched pipeline acts (reported, never scored, because `completeness` already
 says they may be legitimately out of scope). Per-act CER/WER comes from
