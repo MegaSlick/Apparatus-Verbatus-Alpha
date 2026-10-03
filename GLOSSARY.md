@@ -181,8 +181,7 @@ Armarium all count by it.
 act's region.
 
 **Lectio nuda** — a reading made with no witness shown. The pipeline never establishes
-one: the stages after the Perlector refuse it. `operations/spike_perlector/` measures it
-as an experiment.
+one: the stages after the Perlector refuse it.
 
 **Perlectio** — what the Perlector returns for one entry: the reading, what it was based
 on, and where it departed from every witness (its dissent).

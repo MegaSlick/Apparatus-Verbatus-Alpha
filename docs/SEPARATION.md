@@ -109,5 +109,4 @@ These product files mention the harness, and are trimmed when beta is copied:
 settings naming `.claude/` and `workbench`), `config/data_handling_policy.json` (a
 ledger under `workbench/standing/`), `.githooks/install.sh` (the `workbench/` folders),
 `.githooks/check-static.sh` (the session-end hook), `CONTRIBUTING.md`, `README.md` and
-`PRINCIPLES.md` (mentions of `AGENTS.md` or AI sessions), and the notification
-`SessionStart` wording in `operations/README.md` and `operations/notify/README.md`.
+`PRINCIPLES.md` (mentions of `AGENTS.md` or AI sessions).
