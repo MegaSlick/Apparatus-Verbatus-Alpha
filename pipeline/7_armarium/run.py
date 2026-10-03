@@ -59,6 +59,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import verify_self_hash  # noqa: E402
 from common.contracts.envelope import read_verified  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
+from common.contracts.identities import lot_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     CONTINUATION_FLAGS,
     ArmariumCategory,
@@ -1565,6 +1566,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 if review_basis is None
                 else {item["act_id"]: sorted(set(item["hold_codes"])) for item in delivered}
             ),
+            lot=lot_id(context.run["self_hash"]) if formats.lot else None,
         ),
         formats,
         context.tree.read_bytes,

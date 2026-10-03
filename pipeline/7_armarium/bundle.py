@@ -21,10 +21,15 @@ indistinguishable from a complete one.
 The destination gets `armarium-export.zip`, byte-identical to the sealed blob, and
 `bundle/`, the extraction that verification produced -- so the product can be read
 without a zip tool and the two can be compared.
+
+**The product stays off every repository.** It carries the run's transcriptions and
+its lot, which stay on the lead's machine or the pod, so a destination inside a git
+work tree is refused unless git ignores it (`private/`, `scriptorium/`, `workbench/`).
 """
 
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 from contextlib import suppress
@@ -38,7 +43,7 @@ from armarium_export import ARMARIUM_ARCHIVE_NAME, verify_delivered_bundle  # no
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.envelope import read_verified  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
-from common.contracts.identities import artifact_id  # noqa: E402
+from common.contracts.identities import artifact_id, lot_id  # noqa: E402
 from common.contracts.stages import ARMARIUM  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -148,6 +153,40 @@ def _expected_run_binding(payload: dict, run: dict) -> dict:
     }
 
 
+def refuse_destination_git_would_track(out_dir: Path) -> None:
+    """Refuse a destination inside a git work tree unless git ignores it.
+
+    The work tree is found by its `.git` entry, so a machine without git still
+    refuses a destination inside a checkout; only git can say a path is ignored.
+    """
+    destination = out_dir.resolve()
+    work_tree = next(
+        (folder for folder in (destination, *destination.parents) if (folder / ".git").exists()),
+        None,
+    )
+    if work_tree is None:
+        return
+    try:
+        ignored = subprocess.run(
+            ["git", "-C", str(work_tree), "check-ignore", "-q", "--no-index", str(destination)],
+            capture_output=True,
+            check=False,
+        ).returncode
+    except OSError as error:
+        raise ContractError(
+            f"{out_dir} is inside the git work tree {work_tree} and git could not be asked "
+            f"whether it ignores it ({error}); the product carries transcriptions and the "
+            "run's lot, which never enter a repository"
+        ) from error
+    if ignored != 0:
+        raise ContractError(
+            f"{out_dir} is inside the git work tree {work_tree} and git does not ignore it; "
+            "the product carries transcriptions and the run's lot, which never enter a "
+            "repository: publish outside the checkout or under an ignored folder such as "
+            "scriptorium/"
+        )
+
+
 def publish(tree: RunTree, out_dir: Path) -> dict:
     """Verify the sealed bundle and put it at `out_dir`, atomically or not at all.
 
@@ -157,6 +196,7 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
     atomic at the filesystem level. It refuses a symlink at this path too, broken or
     not, exactly as the check it replaces did.
     """
+    refuse_destination_git_would_track(out_dir)
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     try:
         out_dir.mkdir()
@@ -191,7 +231,8 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
                     "retrying publication"
                 )
             run = tree.read_run()
-            expected_run_binding = _expected_run_binding(payload, run)
+            lot = lot_id(run.get("self_hash")) if manifest["formats"]["lot"] else None
+            expected_run_binding = {**_expected_run_binding(payload, run), "lot": lot}
             if manifest.get("run") != expected_run_binding:
                 # A clean-machine verifier has no external record to compare these
                 # labels with. The publisher does: fixture/scenario come from the

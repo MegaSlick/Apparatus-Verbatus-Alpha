@@ -15,7 +15,7 @@ The knobs. One question per file, each answerable without reading code.
 | `pod_placement.toml` | planning-only GPU resource tiers, dtype floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | the default serving catalogue: fixture rows only, used unless `--serving-recipes-config` selects another file |
 | `serving_recipes_real.toml` | locked but unproven vLLM profiles for the real chairs, the CPU rows of the Designator's two detectors (the record detector in-process, Surya as a subprocess), and explicit `unsupported` rows where no engine fits; selected with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
-| `formats.toml` | which Armarium export projections are written and whether verified pixels are embedded |
+| `formats.toml` | which Armarium export projections are written, whether verified pixels are embedded, and whether rows carry the run's lot |
 | `perlector_protocol.toml` | what one whole-page reading is shown (`[feed]`), the page render's edges (`[page_context]`), and the truncation instrument's length floor and legibility gate (`[truncation]`) |
 | `alignment.toml` | the step budget of the Perlector's dissent comparisons |
 | `corpus_frame.toml` | how many pages one run (one shard of a corpus) may hold |

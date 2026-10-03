@@ -70,6 +70,7 @@ from common.contracts.canonical import (
     self_hash,
 )
 from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.identities import is_lot
 from common.contracts.outcomes import (
     CONFIRMED_NO_ACT_PAGE_REASON,
     CONTINUATION_FLAGS,
@@ -114,15 +115,16 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # whole (`common.stage.reading_acts`), and carries its `other` readings, a
 # labelled layer beside the acts, each page's accounting, and its acts counted by
 # the reading they came from (`reask`).
-EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v12"
+EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v13"
 # The act row and SQLite ids move with the row shape, so a consumer keying on the
 # id never reads an old shape out of a new row.
-ACT_RECORD_SCHEMA: Final = "armarium-act.v6"
+ACT_RECORD_SCHEMA: Final = "armarium-act.v7"
 _ACT_RECORD_FIELDS: Final = frozenset(
     {
         "schema",
         "act_id",
         "act_key",
+        "lot",
         "category",
         "canonical_clean_text",
         "canonical_text_sha256",
@@ -145,12 +147,12 @@ _ACT_RECORD_FIELDS: Final = frozenset(
 )
 # Every held or refused reading, act or other, named by `kind`; the act partition
 # is `acts.jsonl`'s row count, never this file's.
-REVIEW_ITEM_SCHEMA: Final = "armarium-review-item.v2"
+REVIEW_ITEM_SCHEMA: Final = "armarium-review-item.v3"
 _REVIEW_ITEM_FIELDS: Final = frozenset(
-    {"schema", "act_id", "act_key", "kind", "category", "reason", "evidence_refs"}
+    {"schema", "act_id", "act_key", "lot", "kind", "category", "reason", "evidence_refs"}
 )
-_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v6"
-_SQLITE_USER_VERSION: Final = 6
+_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v7"
+_SQLITE_USER_VERSION: Final = 7
 # The reading an act came from: its page's first reading, the one
 # re-ask of its page, or an operator re-read a person's page re-ask asked for,
 # which superseded the page's earlier readings. A row standing for a page with
@@ -167,13 +169,14 @@ SOURCES_SCHEMA: Final = "armarium-sources.v6"
 # The `other` readings of a page-read run travel in their own member, never in
 # `acts.jsonl`: that file is one row per counted act, and its row count is the act
 # partition a consumer reconciles against.
-OTHER_READING_SCHEMA: Final = "armarium-other-reading.v2"
+OTHER_READING_SCHEMA: Final = "armarium-other-reading.v3"
 OTHER_READINGS_MEMBER: Final = "other.jsonl"
 _OTHER_READING_FIELDS: Final = frozenset(
     {
         "schema",
         "act_id",
         "act_key",
+        "lot",
         "kind",
         "page_ordinal",
         "category",
@@ -339,6 +342,9 @@ class ArmariumProjection:
     # The model's reading of each delivered reading a person corrected
     # (`run.model_reading_row`), shown beside the person's text.
     model_readings: tuple[dict[str, Any], ...] = ()
+    # The run's lot (`identities.lot_id`), set exactly when the sealed formats say
+    # `lot = true`; every row and the manifest's `run` block carry it.
+    lot: str | None = None
 
 
 @dataclass(frozen=True)
@@ -471,6 +477,8 @@ def build_armarium_bundle(
     """
     ink_map_rows = _validate_projection(projection)
     _validate_projection_region_bindings(projection)
+    _require_lot(projection.lot, formats.lot, subject="the projection")
+    lot = projection.lot
     # Derived once and handed to every writer that states them.
     edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     other_outcomes = _other_outcomes(projection.other_readings)
@@ -554,6 +562,7 @@ def build_armarium_bundle(
                 coniector_rows,
                 operator_rows,
                 model_readings,
+                lot,
             )
         )
     if "acts-database" in formats.formats:
@@ -561,9 +570,10 @@ def build_armarium_bundle(
             projection.acts,
             {row["act_id"]: row["label"] for row in operator_rows},
             _database_run_metadata(_manifest_run_binding(projection), ledger),
+            lot,
         )
     if "jsonl" in formats.formats:
-        members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts))
+        members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts, lot))
         if coniector_rows:
             members[CONIECTOR_MEMBER] = _jsonl_bytes(list(coniector_rows))
         if operator_rows:
@@ -573,11 +583,11 @@ def build_armarium_bundle(
                 [model_reading_record(model_readings[act_id]) for act_id in sorted(model_readings)]
             )
         members[OTHER_READINGS_MEMBER] = _jsonl_bytes(
-            _other_json_records(projection.other_readings)
+            _other_json_records(projection.other_readings, lot)
         )
     if "review-items" in formats.formats:
         members["review-items.jsonl"] = _jsonl_bytes(
-            _review_records(projection.acts, projection.other_readings)
+            _review_records(projection.acts, projection.other_readings, lot)
         )
     members.update(embedded)
     members.update(embedded_crops)
@@ -678,6 +688,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
         raise SchemaRefusal("the extracted package members disagree with EXPORT_MANIFEST.json")
 
     formats = _manifest_formats(manifest)
+    _require_lot(run.get("lot"), formats.lot, subject="the manifest run binding")
     sources = _load_sources(root)
     _verify_source_references(sources["pages"], root)
     _verify_region_references(sources, root)
@@ -997,8 +1008,8 @@ _MANIFEST_FIELDS: Final = frozenset(
     }
 )
 # Two closed shapes: a manifest naming both identities or neither is refused.
-_MANIFEST_RUN_FIELDS_FIXTURE: Final = frozenset({"fixture_id", "scenario", "config_digest"})
-_MANIFEST_RUN_FIELDS_REAL: Final = frozenset({"submission_id", "scenario", "config_digest"})
+_MANIFEST_RUN_FIELDS_FIXTURE: Final = frozenset({"fixture_id", "scenario", "config_digest", "lot"})
+_MANIFEST_RUN_FIELDS_REAL: Final = frozenset({"submission_id", "scenario", "config_digest", "lot"})
 _MANIFEST_MEMBER_FIELDS: Final = frozenset({"path", "sha256", "bytes"})
 _MANIFEST_CLAIM_FIELDS: Final = frozenset(
     {
@@ -2868,7 +2879,22 @@ def _manifest_run_binding(projection: ArmariumProjection) -> dict[str, str]:
         identity = {"submission_id": projection.submission_id}
     else:
         identity = {"fixture_id": projection.fixture_id}
-    return {**identity, "scenario": projection.scenario, "config_digest": projection.config_digest}
+    return {
+        **identity,
+        "scenario": projection.scenario,
+        "config_digest": projection.config_digest,
+        "lot": projection.lot,
+    }
+
+
+def _require_lot(lot: object, enabled: bool, *, subject: str) -> None:
+    """A lot exactly when the sealed formats turn it on, and then a well-formed one."""
+    if enabled and not is_lot(lot):
+        raise SchemaRefusal(
+            f"{subject} carries no well-formed lot, and the sealed formats ask for one"
+        )
+    if not enabled and lot is not None:
+        raise SchemaRefusal(f"{subject} carries a lot, and the sealed formats turn lots off")
 
 
 def _verify_region_page_binding(
@@ -2979,11 +3005,12 @@ def _text_bundle_members(
     coniector_rows: tuple[dict[str, Any], ...] = (),
     operator_rows: tuple[dict[str, Any], ...] = (),
     model_readings: dict[str, dict[str, Any]] | None = None,
+    lot: str | None = None,
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
 
-    Each file opens with the run's status (the terminal `ledger`'s) and how many
-    of its readings were delivered, and ends with a text-free `## NOT DELIVERED`
+    Each file opens with the run's status (the terminal `ledger`'s), its lot when
+    the run has one, and how many of its readings were delivered, and ends with a text-free `## NOT DELIVERED`
     section for every unresolved page or unsealed source in the folder and every
     reading on its pages that was not delivered, so a partial run never reads as
     complete. The verifier renders every file again with this function and
@@ -3055,6 +3082,7 @@ def _text_bundle_members(
                 ledger["status"],
                 len(records) + len(other_groups[folder]),
                 len(not_delivered[folder]),
+                lot,
             ),
             "",
         ]
@@ -3151,11 +3179,14 @@ def _unresolved_page_section(row: dict[str, Any]) -> list[str]:
 _NOT_DELIVERED_PREFIX: Final = "## NOT DELIVERED "
 
 
-def _folder_status_lines(status: str, delivered: int, not_delivered: int) -> list[str]:
-    """A text-bundle file's opening lines: the run's status and this folder's count."""
+def _folder_status_lines(
+    status: str, delivered: int, not_delivered: int, lot: str | None
+) -> list[str]:
+    """A text-bundle file's opening lines: the run's status, its lot and this folder's count."""
     said = "" if status == "complete" else " (EXPORT_MANIFEST.json claims.partial_reasons says why)"
     return [
         f"run-status: {status}{said}",
+        *([f"lot: {lot}"] if lot is not None else []),
         f"folder-readings: {delivered} delivered, {not_delivered} not delivered",
     ]
 
@@ -3276,6 +3307,7 @@ def _verify_text_bundle_rendering(
             tuple(shown[tuple(act_ids)] for act_ids in sources["reconstructions"] or ()),
             tuple(sources[OPERATOR_SOURCES_FIELD] or ()),
             {model["act_id"]: model for model in sources[MODEL_READINGS_FIELD] or ()},
+            manifest["run"]["lot"],
         )
     except (KeyError, TypeError) as error:
         raise SchemaRefusal(
@@ -3624,6 +3656,7 @@ def _acts_database_bytes(
     acts: tuple[dict[str, Any], ...],
     operator_labels: dict[str, str],
     run_metadata: dict[str, str],
+    lot: str | None,
 ) -> bytes:
     """The acts table, its search layer and its metadata.
 
@@ -3653,7 +3686,7 @@ def _acts_database_bytes(
                 sorted(metadata.items()),
             )
             for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
-                row = _database_row(act, operator_labels.get(act["act_id"]))
+                row = _database_row(act, operator_labels.get(act["act_id"]), lot)
                 connection.execute(
                     f"INSERT INTO acts({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
                     tuple(row.values()),
@@ -3740,7 +3773,9 @@ def _readings_by_kind(
     return sorted(paired, key=lambda item: act_key_sort_key(item[0]["act_key"]))
 
 
-def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, Any]:
+def _database_row(
+    act: dict[str, Any], operator_label: str | None, lot: str | None
+) -> dict[str, Any]:
     """One `acts` table row, by column; text-derived columns are null without text.
 
     `operator_label` is the act's operator row's label ("released by operator",
@@ -3751,6 +3786,7 @@ def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, 
     delivered = fields[CANONICAL_TEXT_FIELD] is not None
     return {
         **_row_head(act),
+        "lot": lot,
         CANONICAL_TEXT_FIELD: fields[CANONICAL_TEXT_FIELD],
         "canonical_text_sha256": fields["canonical_text_sha256"],
         **{
@@ -3766,13 +3802,14 @@ def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, 
     }
 
 
-def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+def _act_json_records(acts: tuple[dict[str, Any], ...], lot: str | None) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
         records.append(
             {
                 "schema": ACT_RECORD_SCHEMA,
                 **_row_head(act),
+                "lot": lot,
                 **_text_fields(act),
                 "uncertainty_status": _uncertainty_status(act),
                 **_act_evidence(act),
@@ -3783,7 +3820,9 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     return records
 
 
-def _other_json_records(others: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+def _other_json_records(
+    others: tuple[dict[str, Any], ...], lot: str | None
+) -> list[dict[str, Any]]:
     """`other.jsonl`: one row per other reading, text only when it was delivered."""
     records: list[dict[str, Any]] = []
     for other in sorted(others, key=lambda item: act_key_sort_key(item["act_key"])):
@@ -3791,6 +3830,7 @@ def _other_json_records(others: tuple[dict[str, Any], ...]) -> list[dict[str, An
             {
                 "schema": OTHER_READING_SCHEMA,
                 **_row_head(other),
+                "lot": lot,
                 "kind": "other",
                 "page_ordinal": other["page_ordinal"],
                 **_text_fields(other),
@@ -3822,13 +3862,14 @@ def _export_reason(act: dict[str, Any]) -> str | None:
 
 
 def _review_records(
-    acts: tuple[dict[str, Any], ...], others: tuple[dict[str, Any], ...]
+    acts: tuple[dict[str, Any], ...], others: tuple[dict[str, Any], ...], lot: str | None
 ) -> list[dict[str, Any]]:
     """Every held or refused reading, in reading order, its `kind` act or other."""
     return [
         {
             "schema": REVIEW_ITEM_SCHEMA,
             **_row_head(reading),
+            "lot": lot,
             "kind": kind,
             "evidence_refs": reading.get("evidence_refs", []),
         }
@@ -4083,6 +4124,7 @@ _ACTS_DATABASE_DDL: Final = """
                     act_id TEXT PRIMARY KEY NOT NULL,
                     act_key TEXT UNIQUE NOT NULL,
                     category TEXT NOT NULL,
+                    lot TEXT,
                     canonical_clean_text TEXT,
                     canonical_text_sha256 TEXT,
                     provenance_json TEXT,
@@ -5269,6 +5311,8 @@ def _verify_page_layers(
                 for field in ("act_key", "page_ordinal", "category", "reason", "text_status")
             ):
                 raise SchemaRefusal("other.jsonl does not retain an other reading's exact outcome")
+            if row["lot"] != manifest["run"]["lot"]:
+                raise SchemaRefusal("other.jsonl does not carry the manifest's lot on every row")
             if act_id in delivered and (
                 canonical_text(row["provenance"]) != canonical_text(citations[act_id]["provenance"])
                 or canonical_text(row["source_regions"])
@@ -5418,6 +5462,7 @@ def _jsonl_act_records(
         )
         records[act_id] = {
             "act_key": act_key,
+            "lot": record.get("lot"),
             "category": category,
             "evidence": _act_evidence(record),
             "provenance": record.get("provenance"),
@@ -5492,7 +5537,7 @@ def _database_act_records(
         "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
         "provenance_json, source_regions_json, evidence_json, reason, "
         "uncertainty_json, uncertainty_status, text_status, reading, operator_label, "
-        "approval_ref FROM acts",
+        "approval_ref, lot FROM acts",
         "the acts database cannot be read for product accounting",
     )
     records: dict[str, dict[str, Any]] = {}
@@ -5513,6 +5558,7 @@ def _database_act_records(
         reading,
         operator_label,
         approval_ref,
+        lot,
     ) in rows:
         if (
             not _is_nonempty_str(act_id)
@@ -5557,6 +5603,7 @@ def _database_act_records(
         )
         records[act_id] = {
             "act_key": act_key,
+            "lot": lot,
             "category": category,
             "evidence": decoded[2],
             "provenance": decoded[0],
@@ -5599,6 +5646,7 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
         _verify_evidence_refs(evidence_refs, subject="a review-items JSONL row")
         records[act_id] = {
             "act_key": act_key,
+            "lot": record["lot"],
             "kind": record["kind"],
             "category": category,
             "reason": reason,
@@ -5616,10 +5664,17 @@ def _verify_exact_product_outcomes(
     outcomes: dict[str, dict[str, Any]],
     *,
     subject: str,
+    lot: str | None,
 ) -> None:
-    """Preserve terminal categories and their recorded reasons, never just their count."""
+    """Preserve terminal categories and their recorded reasons, never just their count.
+
+    Every row carries the manifest's `lot`, so a row copied out of the package still
+    names its run.
+    """
     if set(records) != set(outcomes):
         raise SchemaRefusal(f"the {subject} does not reconcile to source act outcomes")
+    if any(record["lot"] != lot for record in records.values()):
+        raise SchemaRefusal(f"the {subject} does not carry the manifest's lot on every row")
     for act_id, record in records.items():
         outcome = outcomes[act_id]
         if (
@@ -5883,7 +5938,9 @@ def _verify_product_accounting(
             raise SchemaRefusal(
                 "the acts database does not reconcile to the manifest act partition"
             )
-        _verify_exact_product_outcomes(database_records, outcomes, subject="acts database")
+        _verify_exact_product_outcomes(
+            database_records, outcomes, subject="acts database", lot=manifest["run"]["lot"]
+        )
         _verify_product_readings(database_records, readings, subject="acts database")
         _verify_exact_delivered_citations(
             database_records, citations, act_keys, subject="acts database"
@@ -5898,7 +5955,9 @@ def _verify_product_accounting(
         jsonl_records = _jsonl_act_records(root / "acts.jsonl", sources["regions"])
         if _product_categories(jsonl_records) != expected:
             raise SchemaRefusal("the acts JSONL does not reconcile to the manifest act partition")
-        _verify_exact_product_outcomes(jsonl_records, outcomes, subject="acts JSONL")
+        _verify_exact_product_outcomes(
+            jsonl_records, outcomes, subject="acts JSONL", lot=manifest["run"]["lot"]
+        )
         _verify_product_readings(jsonl_records, readings, subject="acts JSONL")
         _verify_exact_delivered_citations(jsonl_records, citations, act_keys, subject="acts JSONL")
     if "review-items" in formats.formats:
@@ -5924,6 +5983,7 @@ def _verify_product_accounting(
             review_records,
             {act_id: outcome for act_id, (_kind, outcome) in expected_review.items()},
             subject="review-items JSONL",
+            lot=manifest["run"]["lot"],
         )
     return search_fold_verification, operator_labels
 

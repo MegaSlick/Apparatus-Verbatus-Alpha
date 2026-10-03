@@ -82,7 +82,7 @@ class _RecordingContext:
         self.fixture = {"fixture_id": "synthetic-terminal-guard-v0"}
         self.scenario = "synthetic-terminal-guard"
         self.config_digest = "a" * 64
-        self.run = {"source_manifest": []}
+        self.run = {"source_manifest": [], "self_hash": "d" * 64}
         self.registry = SimpleNamespace(config=object())
         self.required_configs: list[tuple[str, str]] = []
         self.witness_chairs: list[str] = []
@@ -449,6 +449,7 @@ def test_only_sealed_canary_readings_leave_the_bundle_and_real_canary_named_path
             {"ordinal": 1, "relative_path": "canary/x.jpg", "ledger_sha256": "a" * 64},
             {"ordinal": 2, "relative_path": "bird.jpg", "ledger_sha256": "c" * 64},
         ],
+        "self_hash": "d" * 64,
     }
     rows = [_reading_row("real", "p1:1", 1), _reading_row("bird", "p2:1", 2)]
     _stub_page_export(monkeypatch, armarium, context, rows, ArmariumCategory.HELD_FOR_REVIEW)

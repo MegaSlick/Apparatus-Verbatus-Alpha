@@ -109,28 +109,39 @@ metadata, with `EXPORT_MANIFEST.json` first. It is deterministic for given input
 except that bytes 96-99 of `acts.sqlite` hold the writing library's SQLite version.
 
 The formats are the run's sealed selection, `config/formats.toml`
-(`common/armarium_formats.py`): any of `text-bundle`, `acts-database`, `jsonl` and
-`review-items`, and `embed_pixels`. The selection is sealed into the run's
-`config_digest`, so a run's product cannot be re-projected under another selection.
+(`common/armarium_formats.py`, `armarium-formats.v2`): any of `text-bundle`,
+`acts-database`, `jsonl` and `review-items`, `embed_pixels`, and `lot`. The selection is
+sealed into the run's `config_digest`, so a run's product cannot be re-projected under
+another selection.
+
+**The lot.** With `lot = true` (the committed default) the manifest's `run` block and
+every row (`acts.jsonl`, `other.jsonl`, `review-items.jsonl`, the `acts` table) carry the
+run's lot, `lot_<16 hex>` derived from `run.json`'s self-hash
+(`common.contracts.identities.lot_id`), and each `readings.txt` names it under the run's
+status; with `false` each carries `null` and `readings.txt` has no lot line. The lot
+traces a row to its run, settings, models and commit. It is written only into the
+product, which stays with the run tree on the lead's machine or the pod: `bundle.py`
+recomputes it from `run.json` before publishing and refuses a destination inside a git
+work tree that git does not ignore.
 
 | Member | Present | Schema id |
 |---|---|---|
-| `EXPORT_MANIFEST.json` | always | `armarium-export-manifest.v12` |
+| `EXPORT_MANIFEST.json` | always | `armarium-export-manifest.v13` |
 | `sources.json` | always | `armarium-sources.v6` |
 | `text/_source_folder/<folder>/readings.txt`, `text/_source_root/readings.txt` | `text-bundle`: one per source folder | — |
-| `acts.sqlite` | `acts-database` | `armarium-acts-sqlite.v6` (`PRAGMA user_version` 6) |
-| `acts.jsonl` | `jsonl` | `armarium-act.v6` |
-| `other.jsonl` | `jsonl` | `armarium-other-reading.v2` |
+| `acts.sqlite` | `acts-database` | `armarium-acts-sqlite.v7` (`PRAGMA user_version` 7) |
+| `acts.jsonl` | `jsonl` | `armarium-act.v7` |
+| `other.jsonl` | `jsonl` | `armarium-other-reading.v3` |
 | `coniector.jsonl` | `jsonl`, when a reconstruction is shown | `armarium-coniector-reconstruction.v1` |
 | `operator.jsonl` | `jsonl`, when an operator acted on a delivered reading | `armarium-operator-action.v1` |
 | `model_readings.jsonl` | `jsonl`, when a person corrected a delivered reading | `armarium-model-reading.v1` |
-| `review-items.jsonl` | `review-items` | `armarium-review-item.v2` |
+| `review-items.jsonl` | `review-items` | `armarium-review-item.v3` |
 | `pixels/pages/<ordinal>.img`, `pixels/crops/<region_id>.img` | `embed_pixels = true` | — |
 
 Every id moves with its closed field set, and the verifier recognises only these, so a
 consumer keying on an id never reads an older shape out of a newer record. Rows are in
 reading order (page, then reading number). Every row of one reading carries the same
-`act_id`, `act_key`, `category` and `reason`; a held or refused reading always carries a
+`act_id`, `act_key`, `lot`, `category` and `reason`; a held or refused reading always carries a
 reason (`"upstream recorded no reason"` when none was recorded).
 
 **Pixels.** With `embed_pixels = false` every page and crop is cited by run-relative path
@@ -187,6 +198,7 @@ One `readings.txt` per source folder, UTF-8, `\n`-separated. Each file opens wit
 ```text
 # Armarium text bundle — source folder: <folder>
 run-status: complete | partial (EXPORT_MANIFEST.json claims.partial_reasons says why)
+lot: <lot>                          (when the run has one)
 folder-readings: <n> delivered, <m> not delivered
 ```
 
@@ -232,7 +244,7 @@ person wrote is one JSON line, so none can start a line a reader parses.
 
 ### `acts.sqlite`
 
-- `acts`: one row per counted act, with `act_id`, `act_key`, `category`,
+- `acts`: one row per counted act, with `act_id`, `act_key`, `category`, `lot`,
   `canonical_clean_text`, `canonical_text_sha256`, `provenance_json`,
   `source_regions_json`, `uncertainty_json`, `uncertainty_status`, `text_status`,
   `evidence_json`, `approval_ref`, `reason`, `reading` and `operator_label` (the act's
@@ -356,8 +368,7 @@ with brackets only where the ink is: `[illegible]` for a gap and `[word?]` for a
 doubtful reading. Informed guesses are Coniector reconstructions, kept in their own
 field and never in the established text. No Obsidian vault ships. This build carries
 the gaps and doubts in the uncertainty layer beside each literal and does not yet
-render the brackets; the rendering, a CSV format and a per-row `lot` tying each row to
-its run land in the export follow-up.
+render the brackets; the rendering and a CSV format land in the export follow-up.
 
 **Other readings.** `claims.other_readings` is `{layer, counted_as_acts: false, count,
 by_category, act_ids, carried_by}`. On a page with acts, an other reading not delivered

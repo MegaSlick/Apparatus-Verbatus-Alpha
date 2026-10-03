@@ -85,9 +85,9 @@ def _export(tree: RunTree) -> dict:
 def test_run_bound_pixel_embedding_packages_page_and_crop_bytes(tmp_path):
     formats = tmp_path / "formats.toml"
     formats.write_text(
-        'schema = "armarium-formats.v1"\n'
+        'schema = "armarium-formats.v2"\n'
         'formats = ["text-bundle", "acts-database", "jsonl", "review-items"]\n'
-        "embed_pixels = true\n",
+        "embed_pixels = true\nlot = true\n",
         encoding="utf-8",
     )
     root = tmp_path / "runs"

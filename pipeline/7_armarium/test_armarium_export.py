@@ -46,6 +46,7 @@ from common.armarium_formats import ArmariumFormats
 from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, canonical_text, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
+from common.contracts.identities import lot_id
 from common.contracts.outcomes import PAGE_READ_SILENT_PAGE_REASON, ArmariumCategory
 from common.contracts.outcomes import run_aggregate as _run_aggregate
 from common.contracts.stages import ARMARIUM
@@ -133,6 +134,8 @@ def run_aggregate(*args, **kwargs):
 
 
 _POLICY_SHA256 = "e" * 64
+# A synthetic run's lot: tests carry no real run's.
+_LOT = lot_id("d" * 64)
 
 
 def _page_accounting(*ordinals: int) -> tuple[dict, ...]:
@@ -350,6 +353,7 @@ def _projection() -> ArmariumProjection:
         },
         ink_map_pages=(_mapped_page(),),
         page_accounting=_page_accounting(1),
+        lot=_LOT,
     )
     basis = projection.aggregate_basis
     return replace(
@@ -465,7 +469,7 @@ def test_act_json_records_are_emitted_in_reading_order_past_ten_readings():
         }
         for n in (1, 3, 11, 12, 2)
     )
-    records = _act_json_records(acts)
+    records = _act_json_records(acts, None)
     assert [record["act_key"] for record in records] == [
         "p1:1",
         "p1:2",
@@ -495,13 +499,54 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
     assert _verified_literals(bundle.data, tmp_path / "identity") == {"act-1": "Cǣsar d’Exemple"}
 
 
+def test_the_manifest_and_every_row_carry_the_runs_lot(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    assert bundle.manifest["run"]["lot"] == _LOT
+    for name in ("acts.jsonl", "review-items.jsonl"):
+        rows = [json.loads(line) for line in members[name].decode("utf-8").splitlines()]
+        assert rows and {row["lot"] for row in rows} == {_LOT}
+    with sqlite3.connect(tmp_path / "clean" / "acts.sqlite") as connection:
+        assert {lot for (lot,) in connection.execute("SELECT lot FROM acts")} == {_LOT}
+    assert f"lot: {_LOT}" in members[TEXT_REGISTER].decode("utf-8").split("\n")[:4]
+
+
+def test_a_row_naming_another_runs_lot_is_refused(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    rows[0]["lot"] = lot_id("f" * 64)
+    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
+    _refresh_manifest_member(members, "acts.jsonl")
+    with pytest.raises(SchemaRefusal, match="lot"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def test_a_lot_is_written_exactly_when_the_sealed_formats_turn_it_on(tmp_path):
+    off = ArmariumFormats(("text-bundle", "acts-database", "jsonl", "review-items"), False, False)
+    bundle = build_armarium_bundle(replace(_projection(), lot=None), off, _source_bytes)
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    assert bundle.manifest["run"]["lot"] is None
+    assert {json.loads(line)["lot"] for line in members["acts.jsonl"].splitlines()} == {None}
+    assert not any(line.startswith("lot: ") for line in members[TEXT_REGISTER].decode().split("\n"))
+    with pytest.raises(SchemaRefusal, match="lot"):
+        build_armarium_bundle(_projection(), off, _source_bytes)
+    with pytest.raises(SchemaRefusal, match="lot"):
+        build_armarium_bundle(
+            replace(_projection(), lot=None), _formats(embed_pixels=False), _source_bytes
+        )
+
+
 def test_a_partial_runs_text_bundle_says_it_is_partial_and_names_what_it_lacks(tmp_path):
     """A reader of readings.txt alone sees the run's status and every reading not
     delivered on its pages, text-free, rather than a file that reads as complete."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     lines = _members(bundle.data)[TEXT_REGISTER].decode("utf-8").split("\n")
-    assert lines[1:3] == [
+    assert lines[1:4] == [
         "run-status: partial (EXPORT_MANIFEST.json claims.partial_reasons says why)",
+        f"lot: {_LOT}",
         "folder-readings: 1 delivered, 1 not delivered",
     ]
     stub = lines.index("## NOT DELIVERED p1:2 (act-2)")
@@ -668,7 +713,7 @@ def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
         ).data
     )
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    assert manifest["schema"] == "armarium-export-manifest.v12"
+    assert manifest["schema"] == "armarium-export-manifest.v13"
 
     for stale in (
         "armarium-export-manifest.v2",
@@ -678,6 +723,7 @@ def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
         "armarium-export-manifest.v7",
         "armarium-export-manifest.v8",
         "armarium-export-manifest.v9",
+        "armarium-export-manifest.v12",
     ):
         manifest["schema"] = stale
         _refresh_manifest(members, manifest)
@@ -1659,6 +1705,7 @@ def test_a_projection_may_carry_a_submission_identity_instead_of_a_fixture_one(t
         "submission_id": "a" * 64,
         "scenario": projection.scenario,
         "config_digest": projection.config_digest,
+        "lot": _LOT,
     }
     verify_delivered_bundle(bundle.data, tmp_path / "delivered")
 
@@ -2913,7 +2960,7 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
 
     manifest = verify_export_bundle(bundle.data, clean)
 
-    assert manifest["schema"] == "armarium-export-manifest.v12"
+    assert manifest["schema"] == "armarium-export-manifest.v13"
     assert outside.read_bytes() == b"bytes outside the extraction root"
     assert linked.stat().st_ino != shared_inode
 

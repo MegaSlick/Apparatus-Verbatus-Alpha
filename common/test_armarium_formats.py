@@ -24,14 +24,15 @@ def test_shipped_formats_choose_only_the_plainly_approved_projections():
     _digest, formats = bind_armarium_formats(DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH)
     assert set(formats.formats) == KNOWN_FORMATS
     assert formats.embed_pixels is False
+    assert formats.lot is True
     assert "obsidian-vault" not in formats.formats
 
 
 def test_unknown_format_is_refused_instead_of_becoming_an_implicit_product(tmp_path):
     path = tmp_path / "formats.toml"
     path.write_text(
-        'schema = "armarium-formats.v1"\nformats = ["text-bundle", "obsidian-vault"]\n'
-        "embed_pixels = false\n",
+        'schema = "armarium-formats.v2"\nformats = ["text-bundle", "obsidian-vault"]\n'
+        "embed_pixels = false\nlot = true\n",
         encoding="utf-8",
     )
     with pytest.raises(SchemaRefusal, match="unknown"):
@@ -47,9 +48,10 @@ def test_direct_format_construction_cannot_bypass_the_closed_parser():
 
 def test_sealed_format_record_refuses_fields_outside_its_exact_key_set():
     record = {
-        "schema": "armarium-formats.v1",
+        "schema": "armarium-formats.v2",
         "formats": ["jsonl"],
         "embed_pixels": False,
+        "lot": True,
         "undeclared_projection": "obsidian-vault",
     }
 
@@ -59,9 +61,10 @@ def test_sealed_format_record_refuses_fields_outside_its_exact_key_set():
 
 def test_sealed_format_record_requires_formats_to_be_a_list():
     record = {
-        "schema": "armarium-formats.v1",
+        "schema": "armarium-formats.v2",
         "formats": ("jsonl",),
         "embed_pixels": False,
+        "lot": True,
     }
 
     with pytest.raises(SchemaRefusal, match="non-empty list"):
@@ -74,9 +77,9 @@ def test_format_configuration_changes_the_sealed_run_binding(tmp_path):
     baseline = run_config_bindings(registry.config, fixture, "happy")
     changed = tmp_path / "formats.toml"
     changed.write_text(
-        'schema = "armarium-formats.v1"\n'
+        'schema = "armarium-formats.v2"\n'
         'formats = ["text-bundle", "acts-database", "jsonl", "review-items"]\n'
-        "embed_pixels = true\n",
+        "embed_pixels = true\nlot = true\n",
         encoding="utf-8",
     )
     alternate = run_config_bindings(

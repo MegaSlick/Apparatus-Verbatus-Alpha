@@ -1,7 +1,8 @@
 """The sealed configuration surface for Armarium export projections.
 
 The manifest is always written; `KNOWN_FORMATS` are the projections Armarium
-can emit.
+can emit. `lot` says whether every row carries the run's lot
+(`common.contracts.identities.lot_id`).
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ from typing import Final
 from common.contracts.errors import SchemaRefusal
 from common.sealed_config import read_sealed_toml
 
-FORMAT_SCHEMA: Final = "armarium-formats.v1"
+FORMAT_SCHEMA: Final = "armarium-formats.v2"
 KNOWN_FORMATS: Final = frozenset({"text-bundle", "acts-database", "jsonl", "review-items"})
 DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "formats.toml"
@@ -26,6 +27,7 @@ class ArmariumFormats:
 
     formats: tuple[str, ...]
     embed_pixels: bool
+    lot: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -41,12 +43,15 @@ class ArmariumFormats:
             raise SchemaRefusal(f"Armarium formats names unknown format(s) {unknown}")
         if not isinstance(self.embed_pixels, bool):
             raise SchemaRefusal("Armarium embed_pixels must be a boolean")
+        if not isinstance(self.lot, bool):
+            raise SchemaRefusal("Armarium lot must be a boolean")
 
     def to_record(self) -> dict[str, object]:
         return {
             "schema": FORMAT_SCHEMA,
             "formats": list(self.formats),
             "embed_pixels": self.embed_pixels,
+            "lot": self.lot,
         }
 
 
@@ -65,10 +70,10 @@ def armarium_formats_from_record(record: object, *, source: str = "record") -> A
     """
     if not isinstance(record, dict):
         raise SchemaRefusal(f"Armarium formats {source} is not an object")
-    required = {"schema", "formats", "embed_pixels"}
+    required = {"schema", "formats", "embed_pixels", "lot"}
     if set(record) != required:
         raise SchemaRefusal(
-            f"Armarium formats {source} must contain exactly schema, formats, and embed_pixels"
+            f"Armarium formats {source} must contain exactly schema, formats, embed_pixels and lot"
         )
     if record["schema"] != FORMAT_SCHEMA:
         raise SchemaRefusal(
@@ -77,7 +82,7 @@ def armarium_formats_from_record(record: object, *, source: str = "record") -> A
     formats = record["formats"]
     if not isinstance(formats, list):
         raise SchemaRefusal("Armarium formats must be a non-empty list of names")
-    return ArmariumFormats(tuple(formats), record["embed_pixels"])
+    return ArmariumFormats(tuple(formats), record["embed_pixels"], record["lot"])
 
 
 def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:

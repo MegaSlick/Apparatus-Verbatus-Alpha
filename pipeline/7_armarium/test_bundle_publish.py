@@ -24,7 +24,7 @@ from armarium_export import EXPORT_MANIFEST_NAME
 from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.identities import artifact_id
+from common.contracts.identities import artifact_id, lot_id
 from common.contracts.stages import ARMARIUM
 from common.runtree.store import RunTree
 
@@ -116,6 +116,22 @@ def test_the_sealed_bundle_is_published_and_verifies_outside_the_run_tree(tmp_pa
         path.relative_to(extracted).as_posix() for path in extracted.rglob("*") if path.is_file()
     } == names
     assert digest_bytes(archive.read_bytes()) in result.stdout
+    manifest = json.loads((extracted / EXPORT_MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert manifest["run"]["lot"] == lot_id(RunTree(happy_run, "r").read_run()["self_hash"])
+
+
+def test_a_destination_git_would_track_is_refused(tmp_path):
+    """The product holds transcriptions and the lot: never somewhere a commit could take it."""
+    import bundle as bundle_module
+
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    (checkout / ".gitignore").write_text("scriptorium/*\n", encoding="utf-8")
+    with pytest.raises(ContractError, match="git does not ignore it"):
+        bundle_module.refuse_destination_git_would_track(checkout / "exports" / "delivery")
+    bundle_module.refuse_destination_git_would_track(checkout / "scriptorium" / "delivery")
+    bundle_module.refuse_destination_git_would_track(tmp_path / "delivery")
 
 
 def test_publication_reports_which_checks_the_clean_pass_actually_made(tmp_path, happy_run):

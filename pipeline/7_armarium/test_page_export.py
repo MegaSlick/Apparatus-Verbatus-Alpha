@@ -192,7 +192,7 @@ def _unit_types(manifest: dict) -> dict:
 def test_a_page_read_run_exports_its_acts_and_other_readings_complete(complete):
     manifest, members = complete["manifest"], complete["members"]
     claims = manifest["claims"]
-    assert manifest["schema"] == "armarium-export-manifest.v12"
+    assert manifest["schema"] == "armarium-export-manifest.v13"
     assert claims["status"] == "complete" and manifest["aggregate"]["status"] == "complete"
     partition = claims["act_partition"]
     assert partition["denominator"] == "page-read reading acts"
@@ -210,8 +210,9 @@ def test_a_page_read_run_exports_its_acts_and_other_readings_complete(complete):
     assert sorted(_jsonl(members, "other.jsonl")) == ["p1:1"]
     text = _text_bundle(members)
     assert "## OTHER p1:1 (not an act)" in text and "## p1:1 " not in text
-    assert text.split("\n")[1:3] == [
+    assert text.split("\n")[1:4] == [
         "run-status: complete",
+        f"lot: {manifest['run']['lot']}",
         "folder-readings: 3 delivered, 0 not delivered",
     ]
     assert "## NOT DELIVERED" not in text
@@ -831,15 +832,15 @@ def test_a_blinded_run_exports_each_witness_by_chair_and_by_the_label_its_reader
 def test_page_rows_carry_the_page_read_lectio_kind_under_their_own_ids(complete):
     members = complete["members"]
     for row in _jsonl(members, "acts.jsonl").values():
-        assert row["schema"] == "armarium-act.v6"
+        assert row["schema"] == "armarium-act.v7"
         assert row["uncertainty"]["lectio_kind"] == "page-read"
         assert row["uncertainty"]["self_revisions"] is None
         assert row["reading"] == "first reading"
     with sqlite3.connect(complete["clean"] / "acts.sqlite") as connection:
         assert connection.execute(
             "SELECT value FROM export_metadata WHERE key = 'schema'"
-        ).fetchone() == ("armarium-acts-sqlite.v6",)
-        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
+        ).fetchone() == ("armarium-acts-sqlite.v7",)
+        assert connection.execute("PRAGMA user_version").fetchone() == (7,)
         assert set(connection.execute("SELECT reading FROM acts")) == {("first reading",)}
 
 

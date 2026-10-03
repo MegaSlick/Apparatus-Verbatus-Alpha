@@ -5,7 +5,7 @@
 # choice is part of the run authority and a run's product cannot be re-projected
 # under a different selection without a new run over the same Exemplar. The schema
 # is closed: an unrecognised key or format name is refused rather than ignored.
-schema = "armarium-formats.v1"
+schema = "armarium-formats.v2"
 formats = ["text-bundle", "acts-database", "jsonl", "review-items"]
 
 # False means the bundle carries digest-checked references to its pages and crops and
@@ -13,3 +13,10 @@ formats = ["text-bundle", "acts-database", "jsonl", "review-items"]
 # bytes of every page and crop into the bundle, and clean-machine verification then
 # opens them.
 embed_pixels = false
+
+# True writes the run's lot into the manifest's `run` block and every row: a short id
+# derived from run.json's self-hash, which traces a row back to the exact run, its
+# settings, models and commit. The rows and the lot stay where the run tree is, on
+# the lead's machine or the pod; `bundle.py` refuses to publish into a git work tree
+# unless git ignores the destination.
+lot = true
