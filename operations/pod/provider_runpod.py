@@ -73,7 +73,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
 from typing import Callable, Final, Mapping, Protocol
@@ -786,7 +786,7 @@ class _RunPodAdapter:
             raise ProviderFailure(
                 f"RunPod create requires a {LAUNCH_TOKEN_ENV} metadata value to stay recoverable"
             )
-        existing = self._find_by_launch_token(request.name, token)
+        existing = self._find_by_launch_token(request, token)
         if existing is None and request.recovery_only:
             raise ProviderFailure(
                 "RunPod recovery lookup found no pod carrying this exact launch token; "
@@ -794,7 +794,7 @@ class _RunPodAdapter:
             )
         return existing
 
-    def _find_by_launch_token(self, name: str, token: str) -> PodRecord | None:
+    def _find_by_launch_token(self, request: PodCreateRequest, token: str) -> PodRecord | None:
         """Exactly one pod carrying this exact launch token, or nothing.
 
         The token is matched on **every** listed pod, not only name-matched
@@ -805,9 +805,11 @@ class _RunPodAdapter:
         provider did not return refuses outright rather than falling back to
         matching on the name alone: two pods can share a name, and paying twice
         for one authorised launch is the failure this whole path exists to
-        prevent.
+        prevent. The exact token match names the pod, so its record is built
+        as a fresh create's is, and an unreadable one is still bound and closed.
         """
 
+        name = request.name
         candidates: list[dict[str, object]] = []
         for row in self._pod_rows():
             env = row.get("env")
@@ -827,68 +829,77 @@ class _RunPodAdapter:
                 "RunPod reports more than one pod carrying this exact launch token; "
                 "review the console rather than creating or terminating anything"
             )
-        return self._record(candidates[0])
+        return self._created_record(candidates[0], request)
 
     def _created_record(
         self, payload: Mapping[str, object], request: PodCreateRequest
     ) -> PodRecord:
-        """The record of a pod a POST just created; a usable id is never dropped.
+        """The record of a pod this launch created; a usable id is never dropped.
 
-        A create answer that names a pod means a pod is billing. When the rest
-        of that answer cannot be read, the record is built from the sealed
-        request instead, with no contract and the reason, so `launch.py` binds
+        ``payload`` is the POST answer or the pod-list row the exact launch
+        token matched; either names a pod that is billing. When the rest of it
+        cannot be read, for any reason, the record is built from the sealed
+        request instead, with no contract and the reason, so the caller binds
         the id and closes the pod through verified shutdown. The request's
-        ``VERBATUS_REQUESTED_AT`` was stamped before the POST, so it bounds the
-        billing window from below. Only an answer with no usable id raises: the
+        ``VERBATUS_REQUESTED_AT`` was stamped before the POST (for recovery, the
+        pending lease's own creation), so it bounds the billing window from
+        below, for a readable record too. Only a payload with no usable id raises: the
         launch then stays a pending create with its recovery intent, which is
         never a claim that no pod exists.
         """
 
+        requested_at = request.metadata.get("VERBATUS_REQUESTED_AT")
         try:
-            return self._record(payload)
-        except (ProviderFailure, ValueError) as unreadable:
-            pod_id = payload.get("id")
+            record = self._record(payload)
+        except Exception as error:  # noqa: BLE001 - every failure is carried as the reason
+            unreadable = error
+        else:
+            if requested_at is None:
+                return record
+            # A pod with no start instant yet is stamped at observation, after
+            # the POST; the pre-POST instant starts its billing window instead.
             try:
-                _path_id(pod_id)  # type: ignore[arg-type]
+                requested = _timestamp(requested_at, "sealed VERBATUS_REQUESTED_AT")
             except ProviderFailure:
-                raise unreadable from None
-            state = payload.get(self._STATE_FIELD)
-            metadata = request.metadata
-            try:
-                return PodRecord(
-                    pod_id=str(pod_id),
-                    name=request.name,
-                    estimate=PodEstimate(
-                        as_decimal(
-                            metadata.get("VERBATUS_POD_HOURLY_USD"),  # type: ignore[arg-type]
-                            "sealed pod rate",
-                        ),
-                        as_decimal(
-                            metadata.get("VERBATUS_VOLUME_ONGOING_HOURLY_USD"),  # type: ignore[arg-type]
-                            "sealed volume rate",
-                        ),
-                        "launch-sealed estimate; the provider's record of the pod could not be "
-                        "read",
-                        self.now(),
+                return record
+            return replace(record, created_at=min(record.created_at, requested))
+        pod_id = payload.get("id")
+        try:
+            _path_id(pod_id)  # type: ignore[arg-type]
+        except ProviderFailure:
+            raise unreadable from None
+        reason = _error_text(unreadable)
+        state = payload.get(self._STATE_FIELD)
+        metadata = request.metadata
+        try:
+            return PodRecord(
+                pod_id=str(pod_id),
+                name=request.name,
+                estimate=PodEstimate(
+                    as_decimal(
+                        metadata.get("VERBATUS_POD_HOURLY_USD"),  # type: ignore[arg-type]
+                        "sealed pod rate",
                     ),
-                    volume_id=request.volume_id,
-                    created_at=_timestamp(
-                        metadata.get("VERBATUS_REQUESTED_AT"), "sealed VERBATUS_REQUESTED_AT"
+                    as_decimal(
+                        metadata.get("VERBATUS_VOLUME_ONGOING_HOURLY_USD"),  # type: ignore[arg-type]
+                        "sealed volume rate",
                     ),
-                    state=state.strip()
-                    if isinstance(state, str) and state.strip()
-                    else "UNREADABLE",
-                    contract_refusal=(
-                        f"RunPod created pod {pod_id} but its record could not be read: "
-                        f"{unreadable}"
-                    ),
-                )
-            except (ProviderFailure, ValueError) as unbound:
-                raise ProviderFailure(
-                    f"RunPod created pod {pod_id!r} but neither its record ({unreadable}) nor "
-                    f"the sealed request ({unbound}) can bind it; it may be billing: close it "
-                    "by this id"
-                ) from unreadable
+                    "launch-sealed estimate; the provider's record of the pod could not be read",
+                    self.now(),
+                ),
+                volume_id=request.volume_id,
+                created_at=_timestamp(requested_at, "sealed VERBATUS_REQUESTED_AT"),
+                state=state.strip() if isinstance(state, str) and state.strip() else "UNREADABLE",
+                contract_refusal=(
+                    f"RunPod created pod {pod_id} but its record could not be read: {reason}"
+                ),
+            )
+        except Exception as unbound:  # noqa: BLE001 - named in the raised failure
+            raise ProviderFailure(
+                f"RunPod created pod {pod_id!r} but neither its record ({reason}) nor "
+                f"the sealed request ({_error_text(unbound)}) can bind it; it may be "
+                "billing: close it by this id"
+            ) from unreadable
 
     def _pod_rows(self) -> list[dict[str, object]]:
         raise NotImplementedError
@@ -1026,7 +1037,7 @@ class RunPodProvider(_RunPodAdapter):
 
         pod_id = _text(payload.get("id"), "RunPod pod id")
         state = payload.get("desiredStatus")
-        if state not in _POD_STATES:
+        if not isinstance(state, str) or state not in _POD_STATES:
             raise ProviderFailure(
                 f"RunPod pod {pod_id} reports an unrecognised desiredStatus: {state!r}"
             )
@@ -1551,7 +1562,7 @@ class RunPodV2Provider(_RunPodAdapter):
 
         pod_id = _text(payload.get("id"), "RunPod pod id")
         state = payload.get("status")
-        if state not in _V2_POD_STATES:
+        if not isinstance(state, str) or state not in _V2_POD_STATES:
             raise ProviderFailure(f"RunPod pod {pod_id} reports an unrecognised status: {state!r}")
         volume_id, mount_path = _v2_network_mount(pod_id, payload)
         hourly, rate_source, rate_refusal = self._v2_rate(pod_id, str(state), payload)
@@ -1917,7 +1928,7 @@ def _outside_requested_window(bucket: datetime, started: datetime, cutoff: datet
 def _path_id(value: str) -> str:
     if (
         not isinstance(value, str)
-        or not value
+        or not value.strip()
         or value in {".", ".."}
         or "/" in value
         or "?" in value
@@ -1925,6 +1936,14 @@ def _path_id(value: str) -> str:
     ):
         raise ProviderFailure("RunPod pod id is unsafe for a path")
     return urllib.parse.quote(value, safe="")
+
+
+def _error_text(error: BaseException) -> str:
+    """An error's message, prefixed with its type unless it is a named provider refusal."""
+
+    if isinstance(error, ProviderFailure):
+        return str(error)
+    return f"{type(error).__name__}: {error}"
 
 
 def _text(value: object, label: str) -> str:

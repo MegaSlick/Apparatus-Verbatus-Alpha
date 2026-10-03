@@ -579,7 +579,7 @@ def test_adopting_a_non_running_pod_is_refused_with_its_status_named(desired_sta
         provider(transport).adopt("pod-1")
 
 
-@pytest.mark.parametrize("pod_id", [".", "..", "pod\nheader", "pod/child", "pod?query"])
+@pytest.mark.parametrize("pod_id", [".", "..", " ", "pod\nheader", "pod/child", "pod?query"])
 def test_provider_refuses_unsafe_pod_ids_before_transport(pod_id: str) -> None:
     transport = ScriptedTransport([])
 
@@ -1892,7 +1892,8 @@ def world_provider(world: V1World, clock: SharedClock) -> RunPodProvider:
     return RunPodProvider(
         world,
         pod_price=lambda gpu: Decimal("0.77"),
-        volume_price=lambda volume: Decimal("0.05"),
+        # An operator price sheet: an unlisted volume is a KeyError, not a price.
+        volume_price=lambda volume: {"volume-1": Decimal("0.05")}[volume],
         balance_observer=lambda: AccountBalanceObservation(
             Decimal("500"), clock.now(), "test balance"
         ),
@@ -2096,6 +2097,8 @@ UNREADABLE_RECORDS = {
     "no-rate": (_without("costPerHr"), "costPerHr"),
     "no-volume": (_without("networkVolume"), "no attached network volume"),
     "unknown-status": (pod_payload(desiredStatus="MIGRATING"), "desiredStatus"),
+    "list-status": (pod_payload(desiredStatus=["RUNNING"]), "desiredStatus"),
+    "unpriced-volume": (pod_payload(networkVolume={"id": "volume-9"}), "volume-9"),
 }
 
 
@@ -2140,3 +2143,46 @@ def test_a_created_answer_with_no_usable_id_stays_a_pending_create(tmp_path: Pat
     assert lease is not None and lease.phase == "pending-create"
     assert lease.pod_id is None and lease.pending_create is not None
     assert world.deleted() == []
+
+
+@pytest.mark.parametrize("shape", sorted(UNREADABLE_RECORDS))
+def test_restart_recovery_closes_a_token_matched_pod_whose_record_cannot_be_read(
+    tmp_path: Path, shape: str
+) -> None:
+    """The exact launch-token match names the pod, so recovery binds and closes it."""
+
+    payload, reason = UNREADABLE_RECORDS[shape]
+    clock = SharedClock(NOW)
+    world = V1World(pods=[payload, pod_payload(id="unrelated", env={})])
+    store = pending_lease(tmp_path)
+
+    result = recover(store, world_provider(world, clock), clock)
+
+    assert result.state is ControllerState.PENDING_CREATE_RECOVERED, result.detail
+    assert reason in result.detail
+    assert result.close_report is not None and result.close_report.verified
+    assert world.deleted() == ["/pods/pod-1"]
+    assert world.posts() == 0
+    lease = store.load()
+    assert lease is not None and lease.pod_id == "pod-1"
+    assert lease.phase == "closed-verified"
+
+
+def test_a_fresh_pod_with_no_start_instant_anchors_billing_before_the_post() -> None:
+    """A null lastStartedAt would otherwise start the window after the pod existed."""
+
+    requested = NOW - timedelta(minutes=2)
+    sealed = request(
+        metadata={
+            **request().metadata,
+            "VERBATUS_REQUESTED_AT": requested.isoformat().replace("+00:00", "Z"),
+        }
+    )
+    transport = ScriptedTransport(
+        [json_response([]), json_response(pod_payload(lastStartedAt=None), 201)]
+    )
+
+    record = provider(transport).create(sealed)
+
+    assert record.runtime_contract is not None
+    assert record.created_at == requested

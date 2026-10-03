@@ -351,6 +351,26 @@ def test_a_created_pod_whose_record_cannot_be_read_keeps_its_id_from_the_sealed_
     assert record.created_at == datetime(2026, 9, 24, 11, 39, tzinfo=UTC)
 
 
+def test_a_created_pod_reporting_a_non_text_status_keeps_its_id(on_demand_settled: None) -> None:
+    sealed = request(
+        metadata={
+            **request().metadata,
+            "VERBATUS_POD_HOURLY_USD": "0.77",
+            "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
+            "VERBATUS_REQUESTED_AT": "2026-09-24T11:39:00Z",
+        }
+    )
+    transport = ScriptedTransport(
+        [json_response(page([])), json_response(pod_payload(status=["RUNNING"]), 201)]
+    )
+
+    record = provider(transport).create(sealed)
+
+    assert record.pod_id == "pod-1"
+    assert record.runtime_contract is None
+    assert record.contract_refusal is not None and "status" in record.contract_refusal
+
+
 @pytest.mark.parametrize(
     ("status", "named"),
     [
