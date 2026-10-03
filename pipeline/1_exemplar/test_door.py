@@ -2634,7 +2634,7 @@ def test_containment_is_decided_by_filesystem_identity_not_path_spelling(tmp_pat
     here a link) must not let a run root land inside the submitted folder."""
     submitted = tmp_path / "sub"
     submitted.mkdir()
-    alias = tmp_path / "Sub"
+    alias = tmp_path / "sub-alias"
     alias.symlink_to(submitted, target_is_directory=True)
 
     with pytest.raises(ContractError, match="cannot live inside the submitted folder"):
