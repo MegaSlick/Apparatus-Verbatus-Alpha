@@ -29,7 +29,7 @@ from operations.submit.submit import build_manifest, walk_folder
 
 from .compare import compare_page_geometry, load_exemplar_page_shas, load_pipeline_reading_acts
 from .local_admission import admit_local_set
-from .normalization import GRAPHEMIC_V1
+from .normalization import GRAPHEMIC_V1, within_text_bounds
 from .reference import validate_reference_page
 from .scoring import OutputStatus, score_response
 from .witness_evaluate import CHAIRS, page_witness_index, sealed_page_bindings, witness_reading
@@ -307,6 +307,8 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 or _repeated("\n".join(texts))
             ):
                 fail(PERLECTOR, "canary-reading-empty-truncated-or-repeated")
+            elif not within_text_bounds("\n".join(texts), GRAPHEMIC_V1):
+                fail(PERLECTOR, "canary-reading-text-out-of-bounds")
             elif not _shared(
                 "\n".join(act["text"] for act in page["acts"]),
                 "\n".join(texts),
