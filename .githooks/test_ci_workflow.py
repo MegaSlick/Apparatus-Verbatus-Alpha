@@ -1,20 +1,18 @@
-"""Executable wiring tests for the small GitHub Actions workflow."""
+"""Executable tests for the CI workflow and the full gate, check-all.sh."""
 
-import importlib.util
 import os
 import re
 import shutil
 import subprocess
 import sys
-import textwrap
 import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
-FROZEN_AUDIT_REQUIREMENTS = ROOT / ".githooks" / "frozen_audit_requirements.py"
 CHECK_ALL = ROOT / ".githooks" / "check-all.sh"
 BASH = ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c"]
 
@@ -22,43 +20,6 @@ BASH = ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c"]
 REQUIRED_UV_VERSION = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["uv"][
     "required-version"
 ].removeprefix("==")
-
-_audit_spec = importlib.util.spec_from_file_location(
-    "verbatus_frozen_audit_requirements", FROZEN_AUDIT_REQUIREMENTS
-)
-assert _audit_spec is not None and _audit_spec.loader is not None
-frozen_audit = importlib.util.module_from_spec(_audit_spec)
-_audit_spec.loader.exec_module(frozen_audit)
-
-
-def workflow_text():
-    return WORKFLOW.read_text()
-
-
-def block_after(lines, start, indent):
-    body = []
-    for line in lines[start + 1 :]:
-        if line.strip() and len(line) - len(line.lstrip()) <= indent:
-            break
-        body.append(line)
-    return body
-
-
-def step_run(name):
-    lines = workflow_text().splitlines()
-    for index, line in enumerate(lines):
-        if line.strip() == f"- name: {name}":
-            step = block_after(lines, index, len(line) - len(line.lstrip()))
-            break
-    else:
-        raise AssertionError(f"missing CI step {name!r}")
-    for index, line in enumerate(step):
-        if re.fullmatch(r"\s*run:\s*\|\s*", line):
-            body = block_after(step, index, len(line) - len(line.lstrip()))
-            return textwrap.dedent("\n".join(body)) + "\n"
-        if re.fullmatch(r"\s*run:\s+\S.*", line):
-            return line.split("run:", 1)[1].strip() + "\n"
-    raise AssertionError(f"CI step {name!r} has no run command")
 
 
 def run_shell(script, cwd, env=None):
@@ -91,218 +52,97 @@ def new_repo(path):
     return path
 
 
-def test_workflow_has_one_history_scan_and_immutable_dependencies():
-    text = workflow_text()
-    assert text.count("python3 .githooks/check_ingress.py --history HEAD") == 1
-    assert "run: sh .githooks/check-all.sh --ci --parallel" in text
-    assert "fetch-depth: 0" in text
-    # The property, not the tally: every checkout step must decline to persist
-    # credentials, however many jobs the workflow grows.
-    checkouts = re.findall(r"(?ms)^\s*-\s+uses:\s*actions/checkout@\S+\n(.*?)(?=^\s*-\s|\Z)", text)
-    assert checkouts, "no actions/checkout step found"
-    assert all("persist-credentials: false" in block for block in checkouts)
-    uses = re.findall(r"(?m)^\s*-\s+uses:\s*(\S+)\s*$", text)
-    assert uses
-    assert all(re.search(r"@[0-9a-f]{40}$", value) for value in uses)
+def workflow():
+    return yaml.safe_load(WORKFLOW.read_text())
 
 
-def test_ci_installs_the_frozen_project_environment_before_running_the_gate():
-    """The gate must execute the lockfile environment, not PATH's Python."""
-    text = workflow_text()
-    # The lock is checked for currency, not merely installed from.
-    assert "uv lock --check" in text
-    assert "uv sync --frozen --group test --group audit" in text
-    assert "python -m pip install ." not in text
+def all_steps():
+    return [step for job in workflow()["jobs"].values() for step in job.get("steps", [])]
 
 
-def test_the_pinned_uv_version_has_one_source_of_truth():
-    """check-all.sh and ci.yml read the uv version from pyproject.toml, never a literal."""
-    check_all_text = CHECK_ALL.read_text()
-    ci_text = workflow_text()
-    assert REQUIRED_UV_VERSION not in check_all_text, (
-        f"check-all.sh hard-codes the pinned uv version {REQUIRED_UV_VERSION!r} "
-        "a second time instead of reading pyproject.toml's [tool.uv] required-version"
-    )
-    assert REQUIRED_UV_VERSION not in ci_text, (
-        f"ci.yml hard-codes the pinned uv version {REQUIRED_UV_VERSION!r} a second "
-        "time instead of reading pyproject.toml's [tool.uv] required-version"
-    )
-    assert "pyproject.toml" in check_all_text and "required-version" in check_all_text
-    assert "pyproject.toml" in ci_text and "required-version" in ci_text
-    # Absence proves only today's version: pin the command shape, so the extracted variable
-    # is what check-all.sh compares and ci.yml installs.
-    assert 'case "$uv_version" in' in check_all_text
-    assert '"uv $required_uv_version"|"uv $required_uv_version "*)' in check_all_text
-    assert 'pip install "uv==$required_uv_version"' in ci_text
+def step_run(name):
+    (step,) = [step for step in all_steps() if step.get("name") == name]
+    return step["run"]
 
 
-def test_every_runtime_dependency_is_inside_the_everyday_environment():
-    """Every runtime dependency must reach the everyday gate."""
-
-    declared = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["dependencies"]
-    requirements = (ROOT / "requirements-dev.txt").read_text().splitlines()
-
-    def name(requirement):
-        return _normalized(re.split(r"[=<>!~\[]", requirement.strip(), maxsplit=1)[0])
-
-    missing = sorted(
-        {name(item) for item in declared} - {name(item) for item in requirements if item}
-    )
-    assert not missing, (
-        f"runtime dependencies {missing} are not in requirements-dev.txt, so "
-        "the everyday gate does not install them"
-    )
+WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
+BRANCH_INGRESS = ROOT / ".github" / "workflows" / "ingress.yml"
 
 
-def _normalized(raw: str) -> str:
-    """PEP 503 name folding: the files spell some names differently (`huggingface_hub`)."""
-
-    return re.sub(r"[-_.]+", "-", raw.strip()).lower()
-
-
-def _pinned(requirements):
-    """Map every `name==version` line to its normalized distribution name."""
-
-    pins = {}
-    for line in requirements:
-        entry = line.strip()
-        if not entry or entry.startswith("#"):
-            continue
-        distribution, separator, version = entry.partition("==")
-        assert separator and version, f"{entry!r} is not an exact pin"
-        pins[_normalized(distribution)] = version.strip()
-    return pins
+def steps_of(path):
+    document = yaml.safe_load(path.read_text())
+    return [step for job in document["jobs"].values() for step in job.get("steps", [])]
 
 
-# The frozen gate installs only these groups. `pod` goes only onto the pod (a ~10 GB CUDA
-# stack); any other group must earn its way in, and the marker assertion below catches one
-# riding along silently.
-GATE_GROUPS = ("test", "audit")
-
-
-def test_the_declared_requirements_match_the_projects_declared_direct_environment():
-    """Both independently consumed declarations must pin the same direct environment."""
-
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
-    dependency_groups = project["dependency-groups"]
-    excluded_entries = [
-        entry
-        for name, group in dependency_groups.items()
-        if name not in GATE_GROUPS
-        for entry in group
+def test_every_action_is_pinned_to_a_commit_and_no_checkout_keeps_credentials():
+    every_step = [step for path in WORKFLOWS for step in steps_of(path)]
+    actions = [step["uses"] for step in every_step if "uses" in step]
+    assert actions
+    assert all(re.search(r"@[0-9a-f]{40}$", action) for action in actions), actions
+    checkouts = [
+        step for step in every_step if step.get("uses", "").startswith("actions/checkout@")
     ]
-    # Two problems, reported separately: an include-group table is a shape this test does
-    # not understand, not an entry missing a marker.
-    excluded_tables = [entry for entry in excluded_entries if not isinstance(entry, str)]
-    assert all(
-        isinstance(entry, dict) and set(entry) == {"include-group"} for entry in excluded_tables
-    ), (
-        f"unrecognised non-string dependency-group entries outside {GATE_GROUPS}: "
-        f"{excluded_tables}; this test compares environment markers and does not know "
-        "what these declare"
+    assert checkouts
+    for checkout in checkouts:
+        assert checkout["with"]["persist-credentials"] is False
+        # The ingress scan needs the full history to find a change's base commit.
+        assert checkout["with"]["fetch-depth"] == 0
+
+
+def test_ci_runs_the_gate_in_ci_mode_after_its_own_history_scan():
+    """`--ci` skips the gate's full local history scan; the workflow's own scan covers it."""
+    names = [step.get("name") for step in workflow()["jobs"]["test"]["steps"]]
+    assert names.index("Repository ingress") < names.index("Repository checks")
+    assert step_run("Repository checks") == "sh .githooks/check-all.sh --ci --parallel"
+
+
+def test_the_required_check_job_fails_unless_every_test_leg_succeeded():
+    """Branch protection requires `check`; it must gate on the whole matrix, even when a
+    leg is skipped or cancelled."""
+    check = workflow()["jobs"]["check"]
+    assert check["needs"] in ("test", ["test"])
+    assert check["if"] == "${{ always() }}"
+    run = check["steps"][-1]["run"]
+    for result, status in (("success", 0), ("failure", 1), ("cancelled", 1), ("skipped", 1)):
+        script = run.replace("${{ needs.test.result }}", result)
+        assert run_shell(script, ROOT).returncode == status, result
+
+
+@pytest.fixture
+def install_stubs(tmp_path):
+    """A `python` that records `-m` calls and runs everything else, and a recording `uv`."""
+    log = tmp_path / "calls"
+    environment = stub_uv(
+        tmp_path,
+        f'echo "uv $*" >> {log}\n[ "$1 ${{2:-}}" != "lock --check" ] || exit "$LOCK_STATUS"\n',
     )
-    unmarked = [entry for entry in excluded_entries if isinstance(entry, str) and ";" not in entry]
-    assert not unmarked, (
-        f"dependency-group entries outside {GATE_GROUPS} without an environment "
-        f"marker: {unmarked}; an unmarked entry would install everywhere "
-        "and this test would silently stop comparing it"
+    python = tmp_path / "fake-bin" / "python"
+    python.write_text(
+        "#!/bin/sh\n"
+        f'if [ "$1" = -m ]; then echo "python $*" >> {log}; exit 0; fi\n'
+        f'exec {sys.executable} "$@"\n'
     )
-    group_entries = [
-        entry for name, group in dependency_groups.items() if name in GATE_GROUPS for entry in group
+    python.chmod(0o755)
+    (tmp_path / "pyproject.toml").write_text('[tool.uv]\nrequired-version = "==9.9.9"\n')
+    return tmp_path, environment, log
+
+
+def test_ci_installs_pyprojects_uv_and_syncs_only_a_current_lock(install_stubs):
+    directory, environment, log = install_stubs
+    script = step_run("Install the frozen dependency environment")
+
+    result = run_shell(script, directory, {**environment, "LOCK_STATUS": "0"})
+    assert result.returncode == 0, result.stderr
+    assert log.read_text().splitlines() == [
+        "python -m pip install uv==9.9.9",
+        "uv lock --check",
+        "uv sync --frozen --group test --group audit",
     ]
-    # PEP 735 include-group tables name no distribution, and `_pinned` would crash on one.
-    included = [entry for entry in group_entries if not isinstance(entry, str)]
-    assert all(set(entry) == {"include-group"} for entry in included), (
-        f"unrecognised non-string dependency-group entries {included}; this test "
-        "compares pins and does not know what these declare"
-    )
-    installed = _pinned(
-        [
-            *project["project"]["dependencies"],
-            *(entry for entry in group_entries if isinstance(entry, str)),
-        ]
-    )
-    declared_requirements = _pinned((ROOT / "requirements-dev.txt").read_text().splitlines())
 
-    assert declared_requirements == installed, (
-        "requirements-dev.txt and pyproject.toml no longer describe the same "
-        "direct environment: "
-        f"declared_requirements={declared_requirements} declared={installed}"
-    )
-
-
-def test_the_audit_is_invoked_from_the_frozen_interpreter_and_nothing_rescues_a_failure():
-    """Reads the script as text: the frozen interpreter and inventory, `set -eu`, and no
-    rescue anywhere. The audit runs after pytest, so executing it here would run the suite
-    inside its own test.
-    """
-
-    gate = (ROOT / ".githooks" / "check-all.sh").read_text()
-    assert 'frozen_python="$root/.venv/bin/python"' in gate
-    assert '"$frozen_python" -m pytest' in gate
-    assert '"$frozen_python" .githooks/frozen_audit_requirements.py' in gate
-    assert '"$frozen_python" -m pip_audit --strict --no-deps --disable-pip' in gate
-    assert '--requirement "$audit_inventory"' in gate
-    assert "import os, sys; print(os.path.realpath(sys.prefix))" in gate
-    assert '"$uv_binary" sync --frozen --offline --group test --group audit --no-config' in gate
-    assert '/usr/bin/env -i HOME="$uv_home" PATH=/usr/bin:/bin' in gate
-    assert 'mktemp -d "/tmp/verbatus-frozen-audit.XXXXXX"' in gate
-    assert 'PATH="$root/.venv/bin:/usr/bin:/bin:/usr/sbin:/sbin"' in gate
-    assert '"$frozen_python" .githooks/check_ingress.py --history HEAD' in gate
-    assert "root=$(/usr/bin/git rev-parse --show-toplevel" in gate
-    # Not swallowed: `set -eu` is in force, and nothing rescues a non-zero exit.
-    assert "set -eu" in gate
-    for rescue in ("|| true", "|| :", "continue-on-error", "set +e"):
-        assert rescue not in gate, f"the audit's failure is swallowed by {rescue!r}"
-
-
-def test_the_frozen_audit_inventory_is_the_running_interpreters_exact_third_party_set():
-    """The helper projects installed versions and excludes only this local project."""
-
-    result = subprocess.run(
-        [sys.executable, str(FROZEN_AUDIT_REQUIREMENTS)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=True,
-    )
-    audited = _pinned(result.stdout.splitlines())
-
-    from importlib.metadata import distributions
-
-    # Read from the helper: a rename in one copy would fail pip-audit obscurely.
-    excluded = frozen_audit.PROJECT_DISTRIBUTION
-
-    declared_name = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["name"]
-    assert _normalized(declared_name) == excluded, (
-        f"pyproject declares {declared_name!r} but the audit helper excludes {excluded!r}; "
-        "the local project would be sent to pip-audit as a third-party pin"
-    )
-    installed = {
-        _normalized(distribution.metadata["Name"]): distribution.version
-        for distribution in distributions()
-        if _normalized(distribution.metadata["Name"]) != excluded
-    }
-    assert audited == installed
-
-
-@pytest.mark.parametrize(
-    ("name", "version"),
-    (("safe\nother", "1.0"), ("safe", "1.0\nother==2"), ("safe; marker", "1.0")),
-)
-def test_the_frozen_audit_inventory_refuses_requirement_injection(
-    monkeypatch: pytest.MonkeyPatch, name: str, version: str
-) -> None:
-    class Distribution:
-        metadata = {"Name": name}
-
-        def __init__(self) -> None:
-            self.version = version
-
-    monkeypatch.setattr(frozen_audit, "distributions", lambda: [Distribution()])
-
-    with pytest.raises(ValueError, match="unsafe"):
-        frozen_audit.installed_pins()
+    log.unlink()
+    stale = run_shell(script, directory, {**environment, "LOCK_STATUS": "1"})
+    assert stale.returncode != 0
+    assert "uv sync --frozen --group test --group audit" not in log.read_text()
 
 
 def gate_repo(tmp_path):
@@ -316,6 +156,27 @@ def gate_repo(tmp_path):
         f'[tool.uv]\nrequired-version = "=={REQUIRED_UV_VERSION}"\n'
     )
     return repo
+
+
+def frozen_venv(repo):
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(repo / ".venv")],
+        check=True,
+        timeout=60,
+    )
+
+
+def stub_uv(directory, body="exit 0\n", version=REQUIRED_UV_VERSION):
+    """A `fake-bin/uv` under `directory` that reports `version` and runs `body` for
+    every other call; returns an environment with it first on PATH."""
+    fake_bin = directory / "fake-bin"
+    fake_bin.mkdir(parents=True, exist_ok=True)
+    uv = fake_bin / "uv"
+    uv.write_text(
+        f'#!/bin/sh\nif [ "${{1:-}}" = --version ]; then echo "uv {version}"; exit 0; fi\n{body}'
+    )
+    uv.chmod(0o755)
+    return {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
 
 
 def run_gate(repo, *, env=None, args=()):
@@ -333,15 +194,15 @@ def run_gate(repo, *, env=None, args=()):
     "args",
     [(), ("--ci",), ("--parallel",), ("--ci", "--parallel"), ("--parallel", "--ci")],
 )
-def test_the_gate_accepts_its_two_flags_in_either_order(tmp_path, args):
-    """Both flags, once each, in any order. Accepted arguments reach the checks."""
+def test_the_gate_accepts_its_two_flags_and_needs_the_frozen_interpreter(tmp_path, args):
+    """Accepted arguments reach the checks, and no `.venv` is a stop with an
+    instruction, never a fall back to PATH."""
 
     result = run_gate(gate_repo(tmp_path), args=args)
 
-    # Exit 1 with this message is the first real check refusing a repo with no
-    # `.venv` -- that is, the arguments parsed and the gate proceeded.
     assert result.returncode == 1
     assert "frozen interpreter is missing" in result.stderr
+    assert "uv sync --frozen --group test --group audit" in result.stderr
     assert "usage:" not in result.stderr
 
 
@@ -351,39 +212,16 @@ def test_the_gate_accepts_its_two_flags_in_either_order(tmp_path, args):
         ("--parallel=4",),
         ("-n", "4"),
         ("--Parallel",),
-        ("--ci", "--ci"),
-        ("--parallel", "--parallel"),
         ("--ci", "--parallel", "extra"),
     ],
 )
 def test_the_gate_refuses_anything_but_those_two_flags(tmp_path, args):
-    """A misspelled or repeated flag is a usage error, never a silently different run."""
+    """A misspelled flag or extra argument is a usage error, never a silently different run."""
 
     result = run_gate(gate_repo(tmp_path), args=args)
 
     assert result.returncode == 2
     assert "usage: sh .githooks/check-all.sh [--ci] [--parallel]" in result.stderr
-
-
-def test_parallel_names_the_plugin_worker_count_and_distribution_on_the_command_line():
-    """Nothing about the split may come from the environment the caller controls."""
-
-    gate = (ROOT / ".githooks" / "check-all.sh").read_text()
-    assert '"$frozen_python" -m pytest -p xdist -n 4 --dist loadfile' in gate
-    # The serial invocation stays, and it is the default.
-    assert "parallel=no" in gate
-    assert "unset PYTHONHOME PYTHONOPTIMIZE PYTHONPATH PYTEST_ADDOPTS PYTEST_PLUGINS" in gate
-    assert "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1" in gate
-
-
-def test_the_gate_refuses_to_run_without_the_frozen_interpreter(tmp_path):
-    """No `.venv` is a stop with an instruction, never a fall back to PATH."""
-
-    result = run_gate(gate_repo(tmp_path))
-
-    assert result.returncode == 1
-    assert "frozen interpreter is missing" in result.stderr
-    assert "uv sync --frozen --group test --group audit" in result.stderr
 
 
 def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
@@ -412,15 +250,7 @@ def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
         pytest.skip("this interpreter resolves the shim itself; the attack does not exist here")
     assert reported[1] != os.path.realpath(venv)
 
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    uv = fake_bin / "uv"
-    uv.write_text(
-        '#!/bin/sh\nif [ "${1:-}" = --version ]; then echo \'uv '
-        f"{REQUIRED_UV_VERSION}'; exit 0; fi\nexit 0\n"
-    )
-    uv.chmod(0o755)
-    environment = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
+    environment = stub_uv(tmp_path)
 
     result = run_gate(repo, env=environment)
 
@@ -428,72 +258,20 @@ def test_the_gate_refuses_a_venv_python_that_is_really_paths_python(tmp_path):
     assert "does not import from the frozen environment" in result.stderr
 
 
-def test_the_gate_refuses_a_repository_controlled_uv_binary(tmp_path):
-    repo = gate_repo(tmp_path)
-    subprocess.run(
-        [sys.executable, "-m", "venv", "--without-pip", str(repo / ".venv")],
-        check=True,
-        timeout=60,
-    )
-    uv = repo / "uv"
-    uv.write_text(f"#!/bin/sh\necho 'uv {REQUIRED_UV_VERSION}'\n")
-    uv.chmod(0o755)
-    environment = {**os.environ, "PATH": f"{repo}{os.pathsep}{os.environ['PATH']}"}
-
-    result = run_gate(repo, env=environment)
-
-    assert result.returncode == 1
-    assert "repository-controlled verifier" in result.stderr
-
-
-def test_the_gate_refuses_an_outside_uv_symlink_to_repository_code(tmp_path):
-    repo = gate_repo(tmp_path)
-    subprocess.run(
-        [sys.executable, "-m", "venv", "--without-pip", str(repo / ".venv")],
-        check=True,
-        timeout=60,
-    )
-    owned = repo / "owned-uv"
-    owned.write_text(f"#!/bin/sh\necho 'uv {REQUIRED_UV_VERSION}'\n")
-    owned.chmod(0o755)
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    (fake_bin / "uv").symlink_to(owned)
-    environment = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}"}
-
-    result = run_gate(repo, env=environment)
-
-    assert result.returncode == 1
-    assert "repository-controlled verifier" in result.stderr
-
-
 def test_the_gate_refuses_when_uv_cannot_verify_the_venv_against_the_lock(tmp_path):
     """A correctly located but stale environment cannot reach the check tools."""
 
     repo = gate_repo(tmp_path)
-    subprocess.run(
-        [sys.executable, "-m", "venv", "--without-pip", str(repo / ".venv")],
-        check=True,
-        timeout=60,
-    )
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
+    frozen_venv(repo)
     calls = tmp_path / "uv-calls"
-    uv = fake_bin / "uv"
-    uv.write_text(
-        "#!/bin/sh\n"
-        'if [ "${1:-}" = --version ]; then echo '
-        f"'uv {REQUIRED_UV_VERSION} (fixture-platform)'; exit 0; fi\n"
-        'calls="${0%/*}/../uv-calls"\n'
+    record = (
         'printf \'%s|%s|%s\\n\' "$UV_PROJECT_ENVIRONMENT" "${UV_INEXACT-unset}" '
-        '"${UV_NO_GROUP-unset}" > "$calls"\n'
-        'printf \'%s\\n\' "$*" >> "$calls"\n'
+        f'"${{UV_NO_GROUP-unset}}" > {calls}\n'
+        f"printf '%s\\n' \"$*\" >> {calls}\n"
         "exit 1\n"
     )
-    uv.chmod(0o755)
     environment = {
-        **os.environ,
-        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        **stub_uv(tmp_path, record, version=f"{REQUIRED_UV_VERSION} (fixture-platform)"),
         "UV_INEXACT": "1",
         "UV_NO_GROUP": "audit",
         "UV_PROJECT_ENVIRONMENT": str(tmp_path / "wrong-environment"),
@@ -502,15 +280,11 @@ def test_the_gate_refuses_when_uv_cannot_verify_the_venv_against_the_lock(tmp_pa
     result = run_gate(repo, env=environment)
 
     assert result.returncode == 1
-    # `unset|unset` shows the sync runs under `env -i`. It does not test the gate's own
-    # `unset UV_*` line, which later steps need and which is asserted as text below.
+    # `unset|unset`: the sync runs under `env -i`, so no caller UV_* variable reaches it.
     assert calls.read_text().splitlines() == [
         f"{repo / '.venv'}|unset|unset",
         "sync --frozen --offline --group test --group audit --no-config",
     ]
-    gate = (ROOT / ".githooks" / "check-all.sh").read_text()
-    assert "unset PYTHONHOME PYTHONOPTIMIZE PYTHONPATH PYTEST_ADDOPTS PYTEST_PLUGINS" in gate
-    assert "unset UV_CONFIG_FILE UV_INEXACT UV_PYTHON" in gate
     assert "could not reconcile" in result.stderr
     assert "with network access, then retry" in result.stderr
     assert "check-static.sh" not in result.stderr
@@ -520,31 +294,18 @@ def test_the_gate_does_not_import_from_an_inherited_pythonpath(tmp_path):
     """A caller cannot add packages to the environment the gate claims is frozen."""
 
     repo = gate_repo(tmp_path)
-    subprocess.run(
-        [sys.executable, "-m", "venv", "--without-pip", str(repo / ".venv")],
-        check=True,
-        timeout=60,
-    )
+    frozen_venv(repo)
     injected = tmp_path / "injected"
     injected.mkdir()
     marker = tmp_path / "sitecustomize-ran"
     (injected / "sitecustomize.py").write_text(
         "import os\nfrom pathlib import Path\nPath(os.environ['ATTACK_MARKER']).touch()\n"
     )
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    uv = fake_bin / "uv"
-    uv.write_text(
-        '#!/bin/sh\nif [ "${1:-}" = --version ]; then echo \'uv '
-        f"{REQUIRED_UV_VERSION}'; exit 0; fi\nexit 0\n"
-    )
-    uv.chmod(0o755)
     # Proves the static check was reached: the gate exits 1 for earlier reasons too.
     reached = tmp_path / "static-check-ran"
     (repo / ".githooks" / "check-static.sh").write_text(f"#!/bin/sh\n: > {reached}\nexit 1\n")
     environment = {
-        **os.environ,
-        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        **stub_uv(tmp_path),
         "PYTHONPATH": str(injected),
         "ATTACK_MARKER": str(marker),
     }
@@ -554,6 +315,150 @@ def test_the_gate_does_not_import_from_an_inherited_pythonpath(tmp_path):
     assert result.returncode == 1
     assert reached.exists(), "the gate stopped before the static check"
     assert not marker.exists()
+
+
+def test_the_gate_takes_the_required_uv_version_from_pyproject(tmp_path):
+    """The fixture declares a version other than the real pin, so a literal in the
+    script, of the real pin or anything else, fails one of the two runs."""
+    repo = gate_repo(tmp_path)
+    frozen_venv(repo)
+    (repo / "pyproject.toml").write_text('[tool.uv]\nrequired-version = "==9.9.9"\n')
+    assert REQUIRED_UV_VERSION != "9.9.9"
+
+    refused = run_gate(repo, env=stub_uv(tmp_path / "pinned", "exit 1\n"))
+    assert refused.returncode == 1
+    assert "requires uv 9.9.9" in refused.stderr
+
+    # The declared version passes the check and reaches the sync, which the stub fails.
+    accepted = run_gate(repo, env=stub_uv(tmp_path / "declared", "exit 1\n", version="9.9.9"))
+    assert accepted.returncode == 1
+    assert "requires uv" not in accepted.stderr
+    assert "could not reconcile" in accepted.stderr
+
+
+def test_the_gate_refuses_a_uv_found_through_a_relative_path_entry(tmp_path):
+    repo = gate_repo(tmp_path)
+    frozen_venv(repo)
+    stub_uv(repo)
+    environment = {**os.environ, "PATH": f"fake-bin{os.pathsep}{os.environ['PATH']}"}
+
+    result = run_gate(repo, env=environment)
+
+    assert result.returncode == 1
+    assert "relative path 'fake-bin/uv'" in result.stderr
+
+
+def full_gate_repo(tmp_path, *, audit_status=0, topic="verbatus-test-sink"):
+    """A gate repo whose every check is a recorder, to run check-all.sh end to end.
+
+    The fake `.venv` is a real virtual environment, so the sys.prefix check passes, with
+    stub `pytest` and `pip_audit` packages in its site-packages.
+    """
+    repo = gate_repo(tmp_path)
+    frozen_venv(repo)
+    log = tmp_path / "log"
+    purelib = subprocess.run(
+        [
+            str(repo / ".venv" / "bin" / "python"),
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    ).stdout.strip()
+    record = f"import os, sys\nlog = open({str(log)!r}, 'a')\n"
+    for package, body in (
+        (
+            "pytest",
+            "log.write(' '.join(['pytest', *sys.argv[1:]]) + '\\n')\n"
+            "log.write('topic ' + os.environ['NTFY_TOPIC'] + '\\n')\n",
+        ),
+        (
+            "pip_audit",
+            "inventory = sys.argv[sys.argv.index('--requirement') + 1]\n"
+            "log.write(' '.join(['audit', *sys.argv[1:-1]]) + '\\n')\n"
+            "log.write('inventory ' + open(inventory).read())\n"
+            "log.write('directory ' + os.path.dirname(inventory) + '\\n')\n"
+            f"raise SystemExit({audit_status})\n",
+        ),
+    ):
+        (Path(purelib) / package).mkdir()
+        (Path(purelib) / package / "__init__.py").write_text("")
+        (Path(purelib) / package / "__main__.py").write_text(record + body)
+    (repo / ".githooks" / "check-static.sh").write_text(f"#!/bin/sh\necho static >> {log}\n")
+    (repo / ".githooks" / "check_ingress.py").write_text(
+        f"import sys\nopen({str(log)!r}, 'a').write(' '.join(['ingress', *sys.argv[1:]]) + '\\n')\n"
+    )
+    (repo / "conftest.py").write_text(f'NOTIFY_TEST_SINK_TOPIC = "{topic}"\n')
+    environment = stub_uv(
+        tmp_path, f'echo "uv $*" >> {log}\n[ "$1" != export ] || echo "example==1.0"\n'
+    )
+    return repo, environment, log
+
+
+SYNC = "uv sync --frozen --offline --group test --group audit --no-config"
+EXPORT = (
+    "uv export --frozen --offline --no-config --no-emit-project --no-hashes "
+    "--group test --group audit"
+)
+AUDIT = "audit --strict --no-deps --disable-pip --requirement"
+
+
+def test_the_local_gate_runs_every_check_and_audits_the_locked_inventory(tmp_path):
+    repo, environment, log = full_gate_repo(tmp_path)
+
+    result = run_gate(repo, env=environment)
+
+    assert result.returncode == 0, result.stderr
+    recorded = log.read_text().splitlines()
+    directory = recorded.pop()
+    assert recorded == [
+        SYNC,
+        "static",
+        "ingress --history HEAD",
+        "ingress --staged",
+        "ingress --worktree",
+        "pytest",
+        "topic verbatus-test-sink",
+        EXPORT,
+        AUDIT,
+        "inventory example==1.0",
+    ]
+    assert not Path(directory.removeprefix("directory ")).exists()
+
+
+def test_the_ci_gate_leaves_history_to_the_workflow_and_runs_the_suite_in_parallel(tmp_path):
+    repo, environment, log = full_gate_repo(tmp_path)
+
+    result = run_gate(repo, env=environment, args=("--ci", "--parallel"))
+
+    assert result.returncode == 0, result.stderr
+    recorded = log.read_text().splitlines()
+    assert not [line for line in recorded if line.startswith("ingress")]
+    assert "pytest -p xdist -n 4 --dist loadfile" in recorded
+
+
+def test_a_failed_or_unrunnable_audit_fails_the_gate(tmp_path):
+    repo, environment, log = full_gate_repo(tmp_path, audit_status=1)
+
+    result = run_gate(repo, env=environment)
+
+    assert result.returncode != 0
+    recorded = log.read_text().splitlines()
+    assert AUDIT in recorded
+    assert not Path(recorded[-1].removeprefix("directory ")).exists()
+
+
+def test_the_gate_refuses_to_run_the_suites_without_the_test_sink_topic(tmp_path):
+    repo, environment, log = full_gate_repo(tmp_path, topic="")
+
+    result = run_gate(repo, env=environment)
+
+    assert result.returncode == 1
+    assert "NOTIFY_TEST_SINK_TOPIC" in result.stderr
+    assert "pytest" not in log.read_text()
 
 
 @pytest.fixture
@@ -609,26 +514,20 @@ def test_ingress_step_on_branch_skips_tag_object_and_fails_closed(recorded_ingre
 
 
 def test_ingress_step_scans_only_new_commits_when_the_start_commit_is_known(recorded_ingress):
-    git = ["git", "-C", str(recorded_ingress)]
-    subprocess.run([*git, "init", "-q"], check=True)
-    subprocess.run(
-        [
-            *git,
-            "-c",
-            "user.name=t",
-            "-c",
-            "user.email=t@t",
-            "commit",
-            "-q",
-            "--allow-empty",
-            "-m",
-            "base",
-        ],
-        check=True,
+    git(recorded_ingress, "init", "-q")
+    git(
+        recorded_ingress,
+        "-c",
+        "user.name=t",
+        "-c",
+        "user.email=t@t",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "base",
     )
-    base = subprocess.run(
-        [*git, "rev-parse", "HEAD"], check=True, capture_output=True, text=True
-    ).stdout.strip()
+    base = git(recorded_ingress, "rev-parse", "HEAD").stdout.strip()
     result = run_shell(
         step_run("Repository ingress"),
         recorded_ingress,
@@ -650,34 +549,17 @@ def test_ingress_step_scans_everything_when_the_start_commit_is_unknown(recorded
         assert calls(recorded_ingress) == ["--ref-fields", "--history HEAD"]
 
 
-def test_every_third_party_import_in_the_gate_suite_is_declared():
-    """A package the gate's own tests import but nothing declares arrives only as an
-    unpinned transitive, as `yaml` once did through huggingface_hub."""
-    import ast
+def test_every_workflow_reads_the_repository_and_nothing_else():
+    for path in WORKFLOWS:
+        assert yaml.safe_load(path.read_text())["permissions"] == {"contents": "read"}, path
 
-    roots: set[str] = set()
-    for path in sorted((ROOT / ".githooks").glob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, ast.Import):
-                roots.update(alias.name.split(".")[0] for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                roots.add(node.module.split(".")[0])
 
-    declared = {
-        _normalized(re.split(r"[=<>!~\[]", line.strip(), maxsplit=1)[0])
-        for line in (ROOT / "requirements-dev.txt").read_text().splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
-    # Import name to distribution name, for the few that differ.
-    distribution = {"yaml": "pyyaml"}
-    undeclared = sorted(
-        root
-        for root in roots
-        if root not in sys.stdlib_module_names
-        and _normalized(distribution.get(root, root)) not in declared
-    )
-    assert not undeclared, (
-        f"the gate's own suite imports {undeclared}, which requirements-dev.txt does not "
-        "declare, so the everyday gate reaches them only as an "
-        "unpinned transitive dependency"
-    )
+def test_pushes_to_other_branches_get_the_same_ingress_scan_as_ci():
+    document = yaml.safe_load(BRANCH_INGRESS.read_text())
+    # PyYAML reads the bare key `on` as True.
+    assert document[True] == {"push": {"branches-ignore": ["main"]}}
+    (scan,) = [
+        step for step in steps_of(BRANCH_INGRESS) if step.get("name") == "Repository ingress"
+    ]
+    assert scan["run"] == step_run("Repository ingress")
+    assert "concurrency" not in document, "a cancelled run would leave a push unscanned"

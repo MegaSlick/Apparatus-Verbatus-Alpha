@@ -27,9 +27,16 @@ are binding.
 ## Setting up
 
 Follow *Getting started* in [README.md](README.md). The hooks refuse a commit on `main`
-and scan staged files for credentials and oversized payloads. Run the tests near your
-change with `.venv/bin/python -m pytest <path>`; CI runs the full suite
-(`.githooks/check-all.sh`) on every pull request.
+and scan what you commit for credentials, private paths and oversized payloads. Before
+you push, run the tests near your change and the fast checks:
+
+```sh
+.venv/bin/python -m pytest -p xdist -n 2 <paths>
+sh .githooks/check-static.sh
+```
+
+CI runs the full suite (`sh .githooks/check-all.sh`) on every pull request; it takes an
+hour or more, so locally run only what your change touches.
 
 ## Making a change
 
@@ -37,9 +44,20 @@ change with `.venv/bin/python -m pytest <path>`; CI runs the full suite
 2. Keep the change focused.
 3. Open a pull request. CI must pass, and every review comment is either fixed or
    answered with a reason.
-4. A change to README, PRINCIPLES, ARCHITECTURE, GLOSSARY or CONTRIBUTING, a new working
-   rule in AGENTS.md or CLAUDE.md, or a change to what AI sessions are allowed to do
-   (`.claude/`) needs the project lead's approval.
+4. A change to README, PRINCIPLES, ARCHITECTURE, GLOSSARY, CONTRIBUTING, AGENTS or
+   CLAUDE, or to what AI sessions are allowed to do (`.claude/`), needs the project
+   lead's approval.
+
+## How rules are written
+
+Working rules live in three places: this file for everyone, AGENTS.md for AI sessions,
+and CLAUDE.md for what is specific to Claude Code. PRINCIPLES.md holds the goals and
+ARCHITECTURE.md the design; neither holds working rules, and code comments never cite
+rules.
+
+- Write down what the lead meant, in plain words, with its reason. Do not turn a
+  direction into a count or a quota that stands in for it.
+- When a rule needs an exception, rewrite or remove the rule instead.
 
 ## Rules for what enters the repository
 
