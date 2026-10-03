@@ -15,6 +15,7 @@ from common.contracts.envelope import build_envelope
 from common.contracts.identities import act_id, artifact_id, attempt_id, page_id
 from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.runtree.store import RunTree
+from operations.corpus.normalization import MAX_TEXT_LENGTH
 from operations.corpus.scoring import OutputStatus
 
 from . import CorpusRefusal
@@ -349,6 +350,33 @@ def test_matched_pair_is_scored_and_miss_and_unmatched_are_reported():
     assert comparison["unmatched_pipeline_acts"] == [{"act_id": "act_0000000000000002"}]
     scored_act_ids = {pair["pipeline_act_id"] for pair in comparison["matched_pairs"]}
     assert "act_0000000000000002" not in scored_act_ids
+
+
+def test_a_reading_beyond_the_scoring_bounds_is_named_unmeasured_and_the_rest_scored():
+    reference = _reference(
+        [
+            _record("rec-1", {"x": 100, "y": 100, "w": 200, "h": 80}, text="Baptisé Jean"),
+            _record("rec-2", {"x": 100, "y": 300, "w": 200, "h": 80}, text="Marié Marie"),
+        ]
+    )
+    pipeline_acts = [
+        _pipeline_act("act_0000000000000001", {"x": 100, "y": 100, "w": 200, "h": 80}),
+        _pipeline_act("act_0000000000000002", {"x": 100, "y": 300, "w": 200, "h": 80}),
+    ]
+    hypotheses = {
+        "act_0000000000000001": (OutputStatus.COMPLETE, "a" * (MAX_TEXT_LENGTH + 1)),
+        "act_0000000000000002": (OutputStatus.COMPLETE, "Marié Marie"),
+    }
+
+    pairs = {
+        pair["record_id"]: pair
+        for pair in compare_page(reference, pipeline_acts, hypotheses)["matched_pairs"]
+    }
+
+    assert pairs["rec-1"]["unmeasured"] == "text-out-of-bounds"
+    assert pairs["rec-1"]["cer"] is None and pairs["rec-1"]["wer"] is None
+    assert pairs["rec-2"]["unmeasured"] is None
+    assert pairs["rec-2"]["cer"]["matches"] == pairs["rec-2"]["cer"]["reference_units"]
 
 
 def test_unmatched_reference_act_is_never_dropped_even_with_no_pipeline_acts():

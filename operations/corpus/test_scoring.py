@@ -1,6 +1,14 @@
+import unicodedata
+
 import pytest
 
-from operations.corpus.normalization import GRAPHEMIC_V1, MeasurementRefusal
+from operations.corpus import normalization
+from operations.corpus.normalization import (
+    GRAPHEMIC_V1,
+    MAX_COMBINING_RUN,
+    MAX_TEXT_LENGTH,
+    MeasurementRefusal,
+)
 from operations.corpus.scoring import OutputStatus, score_response, score_text
 
 
@@ -104,3 +112,59 @@ def test_the_textbook_word_error_rate_example():
     assert (score.edits.substitutions, score.edits.insertions, score.edits.deletions) == (0, 0, 1)
     assert score.reference_units == 4
     assert score.rate == pytest.approx(0.25)
+
+
+# U+0897 is a combining mark Unicode 16 assigned. The segmenter's pinned table
+# knows it; Python's own unicodedata (Unicode 15.1 here) calls it unassigned,
+# so a bound read from `unicodedata` would let a run of it through.
+_NEW_MARK = "\u0897"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "a" * MAX_TEXT_LENGTH,
+        "a" + "\u0301" * MAX_COMBINING_RUN,
+        "a" + _NEW_MARK * MAX_COMBINING_RUN,
+        # Decomposed at the bound as given; NFC composes it to half.
+        "e\u0301" * (MAX_TEXT_LENGTH // 2),
+    ],
+    ids=["length", "marks", "new-marks", "decomposed"],
+)
+def test_text_at_the_declared_bounds_scores(text):
+    assert score_text(text, text, profile=GRAPHEMIC_V1).cer.rate == 0
+
+
+@pytest.mark.parametrize(
+    ("text", "as_given"),
+    [
+        ("a" * (MAX_TEXT_LENGTH + 1), True),
+        ("a" + "\u0301" * (MAX_COMBINING_RUN + 1), True),
+        ("a" + _NEW_MARK * (MAX_COMBINING_RUN + 1), True),
+        # Canonically equivalent to 10,001 precomposed letters: the bound is on
+        # the text as given, before NFC could shorten it.
+        ("e\u0301" * (MAX_TEXT_LENGTH // 2) + "e", True),
+        # Within both bounds as given; normalization lengthens it past one.
+        ("\ufb03" * (MAX_TEXT_LENGTH // 3 + 1), False),
+        ("x" + "\u0344" * (MAX_COMBINING_RUN // 2 + 1), False),
+    ],
+    ids=["length", "marks", "new-marks", "decomposed", "ligatures", "decomposing-marks"],
+)
+def test_text_beyond_either_bound_is_refused_before_segmentation_or_comparison(
+    text, as_given, monkeypatch
+):
+    normalized: list[str] = []
+    nfc = unicodedata.normalize
+
+    def recording_normalize(form, value):
+        normalized.append(value)
+        return nfc(form, value)
+
+    def unreachable(*_):
+        raise AssertionError("an out-of-bounds text reached segmentation")
+
+    monkeypatch.setattr(normalization.unicodedata, "normalize", recording_normalize)
+    monkeypatch.setattr(normalization, "grapheme_clusters", unreachable)
+    with pytest.raises(MeasurementRefusal, match="bound"):
+        score_text("a", text, profile=GRAPHEMIC_V1)
+    assert (text in normalized) is not as_given

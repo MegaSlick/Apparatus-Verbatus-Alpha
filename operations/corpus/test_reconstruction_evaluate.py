@@ -11,6 +11,7 @@ from common.contracts.canonical import canonical_bytes, verify_self_hash
 from common.runtree.store import RunTree
 
 from . import CorpusRefusal
+from .normalization import MAX_TEXT_LENGTH
 from .reconstruction_evaluate import evaluate_run, main, reconstruction_report
 from .test_evaluate import ROOT, _fixture_reference_for_page_one, _orchestrate
 
@@ -84,6 +85,53 @@ def test_a_reconstruction_is_scored_beside_its_diplomatic_where_the_reference_ha
     assert row["score"]["diplomatic"]["cer_errors"] > 0
     assert report["reference"]["reconstruction"] == row["score"]["reconstruction"]
     assert report["reference"]["diplomatic"] == row["score"]["diplomatic"]
+
+
+def test_only_the_side_beyond_the_scoring_bounds_is_charged_as_wholly_deleted():
+    runaway = "a" * (MAX_TEXT_LENGTH + 1)
+    reference = {"record_id": "r-head", "text": HEAD_TEXT}
+    in_bounds = _report([_row()], {"act_h": reference})["rows"][0]["score"]
+
+    def report_with(diplomatic: str, text: str) -> dict:
+        row = _row(text=text)
+        row["diplomatic_raw_pieces"] = [diplomatic]
+        return reconstruction_report(
+            joins=[],
+            shown=[row["act_ids"]],
+            rows=[row],
+            delivered_texts={"act_h": diplomatic},
+            references_by_act={"act_h": reference},
+        )
+
+    for diplomatic, text, unmeasured, measured in [
+        (HEAD_TEXT, runaway, "reconstruction", "diplomatic"),
+        (runaway, "Le dix mai, baptise", "diplomatic", "reconstruction"),
+    ]:
+        report = report_with(diplomatic, text)
+        [row] = report["rows"]
+        assert row["unmeasured"] == "text-out-of-bounds" and row["departed_characters"] is None
+        assert row["score"][unmeasured] is None
+        assert row["score"][measured] == in_bounds[measured]
+        assert report["reference"][measured] == in_bounds[measured]
+        charged = report["reference"][unmeasured]
+        assert charged["cer_errors"] == charged["cer_units"] == in_bounds[unmeasured]["cer_units"]
+        assert charged["wer_errors"] == charged["wer_units"] == in_bounds[unmeasured]["wer_units"]
+        assert report["reconstructions"]["unmeasured"] == 1
+
+
+def test_a_join_whose_joined_reference_is_beyond_the_scoring_bounds_is_named_unmeasured():
+    half = "a" * (MAX_TEXT_LENGTH // 2 + 1)
+    references = {
+        "act_h": {"record_id": "r-head", "text": half},
+        "act_t": {"record_id": "r-tail", "text": half},
+    }
+    join = _row(("act_h", "act_t"), text=HEAD_TEXT + " " + TAIL_TEXT, unit="join")
+
+    report = _report([join], references)
+
+    [row] = report["rows"]
+    assert row["unmeasured"] == "reference-text-out-of-bounds" and row["score"] is None
+    assert report["reconstructions"]["unmeasured"] == 1
 
 
 def test_a_join_with_one_act_in_the_reference_is_counted_and_not_scored():
@@ -199,3 +247,41 @@ def test_cli_writes_the_report_outside_the_run_tree(happy_run: RunTree, tmp_path
         main([*args, "--out", str(out)])
     with pytest.raises(CorpusRefusal, match="^output-in-run-tree:"):
         main([*args, "--out", str(happy_run.root / "reconstruction.json")])
+
+
+def test_a_named_ledger_refuses_a_reference_page_admission_did_not_seal(
+    happy_run: RunTree, tmp_path: Path, capsys
+):
+    """A page with other text that hashes to itself is scored unless a ledger is named;
+    named, the ledger refuses it and admits the page it sealed."""
+    from common.contracts.canonical import digest_bytes, self_hash
+
+    from .test_evaluate import _ledger_for
+
+    admitted = _fixture_reference_for_page_one(happy_run)
+    substituted = json.loads(json.dumps(admitted))
+    act = substituted["acts"][0]
+    act["text"] += " corrigé"
+    act["text_sha256"] = digest_bytes(act["text"].encode("utf-8"))
+    del substituted["self_hash"]
+    substituted["self_hash"] = self_hash(substituted)
+    ledger = tmp_path / "ledger.json"
+    ledger.write_bytes(canonical_bytes(_ledger_for(admitted)))
+    args = ["--run-root", str(happy_run.root.parent), "--run-id", happy_run.run_id]
+
+    def run(page: dict, name: str, *extra: str) -> dict:
+        pages = tmp_path / f"{name}.jsonl"
+        pages.write_bytes(canonical_bytes(page) + b"\n")
+        out = tmp_path / f"{name}-report.json"
+        main([*args, "--reference-pages", str(pages), *extra, "--out", str(out)])
+        return json.loads(out.read_bytes())
+
+    assert run(substituted, "unbound")["reference_ledger_verified"] is False
+    assert "reference ledger not given" in capsys.readouterr().out
+    with pytest.raises(CorpusRefusal, match="^reference-page-not-in-ledger:"):
+        run(substituted, "substituted", "--reference-ledger", str(ledger))
+    assert not (tmp_path / "substituted-report.json").exists()
+    bound = run(admitted, "admitted", "--reference-ledger", str(ledger))
+    assert bound["reference_ledger_verified"] is True
+    assert "reference ledger verified" in capsys.readouterr().out
+    assert bound["reference_ledger_sha256"] == digest_bytes(ledger.read_bytes())

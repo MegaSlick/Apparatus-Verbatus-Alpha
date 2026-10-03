@@ -17,9 +17,12 @@ The grammar:
 * each act: `n` an integer, `1..k` contiguous in the order given; `kind`
   `"act"` or `"other"`; `label` absent, `null`, or a non-blank string of at
   most 80 characters; `cites` a list of strings; `text` a string; both
-  continuation flags present as booleans, and `true` only on an edge act --
-  `continues_from_previous_page` on the first, `continues_to_next_page` on the
-  last;
+  continuation flags present as booleans, and `true` only at an edge --
+  `continues_from_previous_page` on the first entry of kind `"act"`,
+  `continues_to_next_page` on the last (`common.page_edges.edge_acts`), whatever
+  `"other"` entries come before, between or after them; an `"other"` entry may
+  carry one only as the answer's first or last entry, which joins nothing and
+  the Recensor notes;
 * each set-aside entry: `id` and `reason`, both strings.
 
 Whether an id exists, whether a range is well formed and the set-aside rules
@@ -53,6 +56,8 @@ from __future__ import annotations
 
 import json
 from typing import Any, Final
+
+from common.page_edges import edge_acts
 
 PARSED: Final = "parsed"
 MALFORMED: Final = "malformed"
@@ -195,7 +200,9 @@ def _shown(value: Any) -> str:
     return "a list" if isinstance(value, list) else "an object"
 
 
-def _act_problems(index: int, act: Any, count: int) -> list[dict[str, str]]:
+def _act_problems(
+    index: int, act: Any, count: int, edges: tuple[Any, Any] | None
+) -> list[dict[str, str]]:
     where = f"acts[{index}]"
     if not isinstance(act, dict):
         return [_problem("act-not-object", f"{where} is not an object")]
@@ -232,17 +239,23 @@ def _act_problems(index: int, act: Any, count: int) -> list[dict[str, str]]:
         problems.append(_problem("cites-invalid", f"{where}.cites is not a list of strings"))
     if "text" in act and not isinstance(act["text"], str):
         problems.append(_problem("text-invalid", f"{where}.text is not a string"))
-    for flag, edge in (
-        ("continues_from_previous_page", 0),
-        ("continues_to_next_page", count - 1),
+    first, last = edges or (None, None)
+    is_act = act.get("kind") == "act"
+    for flag, edge, position, side in (
+        ("continues_from_previous_page", first, 0, "first"),
+        ("continues_to_next_page", last, count - 1, "last"),
     ):
         if flag not in act:
             continue
         if not isinstance(act[flag], bool):
             problems.append(_problem("flag-invalid", f"{where}.{flag} is not true or false"))
-        elif act[flag] and index != edge:
+        elif act[flag] and not (act is edge if is_act else index == position):
             problems.append(
-                _problem("continuation-not-at-edge", f"{where}.{flag} is true on a non-edge act")
+                _problem(
+                    "continuation-not-at-edge",
+                    f"{where}.{flag} is true on an entry that is neither the page's {side} act "
+                    f"nor its {side} entry",
+                )
             )
     return problems
 
@@ -272,8 +285,9 @@ def grammar_problems(answer: Any) -> list[dict[str, str]]:
     if not isinstance(acts, list):
         problems.append(_problem("acts-not-list", "acts is not a list"))
     else:
+        edges = edge_acts([act for act in acts if isinstance(act, dict)])
         for index, act in enumerate(acts):
-            problems.extend(_act_problems(index, act, len(acts)))
+            problems.extend(_act_problems(index, act, len(acts), edges))
     if not isinstance(set_aside, list):
         problems.append(_problem("set-aside-not-list", "set_aside is not a list"))
     else:

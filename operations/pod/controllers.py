@@ -162,7 +162,10 @@ class LaptopSupervisor:
                 lease, ControllerState.ORPHAN_RECONCILED, "orphan lease heartbeat lost"
             )
         if observed >= lease.hard_deadline:
-            return self._close(lease, ControllerState.LIFETIME_EXPIRED, "hard lifetime expired")
+            overdue = observed - lease.hard_deadline
+            return self._close(
+                lease, ControllerState.LIFETIME_EXPIRED, f"hard lifetime expired {overdue} ago"
+            )
         if lease.controller_record is None:
             # A launch binds the pod, arms both controllers, then writes the
             # receipt — and the supervisor reading this is usually the one that

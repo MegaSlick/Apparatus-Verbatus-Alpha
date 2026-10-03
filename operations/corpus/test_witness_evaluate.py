@@ -15,6 +15,7 @@ from operations.corpus.compare import (
     load_exemplar_page_shas,
     load_pipeline_reading_acts,
 )
+from operations.corpus.normalization import MAX_TEXT_LENGTH
 from operations.corpus.reference import build_reference_page
 from operations.corpus.scoring import OutputStatus
 from operations.corpus.test_evaluate import (
@@ -497,6 +498,64 @@ def test_a_record_no_unit_lies_on_is_a_whole_deletion_never_dropped():
     assert report["totals"]["w"]["references"] == 2
 
 
+def test_a_unit_beyond_the_scoring_bounds_is_named_unmeasured_and_the_rest_scored():
+    def report_with_r1_text(text):
+        feed = _feed(
+            _witness(
+                "w",
+                [_unit(text, (0, 0, 100, 50)), _unit("Le deux mai inhumé Marie", (0, 60, 100, 50))],
+            )
+        )
+        return evaluate_feed_page(reference_page=_synthetic_reference(), feed=feed)
+
+    report = report_with_r1_text("a" * (MAX_TEXT_LENGTH + 1))
+
+    runaway, read = _rows(report)[("w", "r1")], _rows(report)[("w", "r2")]
+    assert runaway["unmeasured"] == "text-out-of-bounds" and runaway["cer"] is None
+    assert read["unmeasured"] is None and read["cer"] == 0
+    totals = report["totals"]["w"]
+    assert (totals["references"], totals["unmeasured"]) == (2, 1)
+    # Counted as wholly deleted: never a better total than reading nothing.
+    assert totals == {**report_with_r1_text("")["totals"]["w"], "unmeasured": 1}
+
+
+def test_a_page_whose_joined_reference_is_beyond_the_scoring_bounds_is_named_unmeasured():
+    half = "a" * (MAX_TEXT_LENGTH // 2 + 1)
+    reference = build_reference_page(
+        page={"sha256": "a" * 64, "width": 200, "height": 200},
+        source="synthetic",
+        volume="v",
+        designation="p1",
+        split="val",
+        records=[
+            {
+                "record_id": key,
+                "region": {"x": 0, "y": y, "w": 100, "h": 50},
+                "split": "val",
+                "text": half,
+                "text_sha256": digest_bytes(half.encode("utf-8")),
+            }
+            for key, y in (("r1", 0), ("r2", 60))
+        ],
+    )
+
+    report = evaluate_page(
+        reference_page=reference, source_page_ordinal=1, proposals=[], witnesses={}, chairs=CHAIRS
+    )
+
+    assert {row["unmeasured"] for row in report["rows"]} == {"reference-text-out-of-bounds"}
+    # The units left out of the rate: each act's own, plus the space each line
+    # break joining two acts normalizes to.
+    for chair in CHAIRS:
+        total = report["totals"][chair]
+        assert total["unmeasured"] == 1
+        assert (total["unmeasured_cer_units"], total["unmeasured_wer_units"]) == (
+            2 * len(half) + 1,
+            2,
+        )
+        assert (total["cer_units"], total["wer_units"]) == (0, 0)
+
+
 def test_a_unit_straddling_two_records_belongs_to_the_one_holding_most_of_it():
     # 30 rows on r1 (0..50), 20 on r2 (60..110): r1 holds most of it.
     feed = _feed(_witness("w", [_unit("Le premier mai baptisé Jean", (0, 20, 100, 60))]))
@@ -564,7 +623,7 @@ def test_cli_scores_the_page_feed_witnesses_of_a_page_read_run(sealed_run: RunTr
     report = json.loads(output.read_bytes())
     assert verify_self_hash(report)
     assert before == _inventory(sealed_run)
-    assert report["schema"] == "recordgold-witness-evaluation.page.v1"
+    assert report["schema"] == "recordgold-witness-evaluation.page.v2"
     assert report["basis"] == "page-feed"
     assert report["reference_pages_outside_run"] == []
     assert report["reference_records"] == len(reference["acts"])

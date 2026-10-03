@@ -48,6 +48,7 @@ from common.stage import (
     REAL_CONFIGURATION_FLAGS,
     load_fixture,
     partial_real_configuration_refusal,
+    verify_final_seal,
 )
 from operations.pod.pod_run import DEFAULT_RUNS_DIRECTORY
 from operations.pod.transfer import (
@@ -159,6 +160,14 @@ class RunOutcome:
     run_id: str
     aggregate: dict[str, Any]
     export_payload: dict[str, Any]
+
+
+class UnsealedExportError(ValueError):
+    """An Armarium export record not covered by a verified completion seal.
+
+    Its own type, so callers can tell a record that exists but is unsealed
+    from one that is absent or malformed.
+    """
 
 
 class UnreconciledActPartitionError(ValueError):
@@ -1046,7 +1055,9 @@ class OperatorSurface:
     ) -> OperatorError:
         """Record why a finished run has no usable Armarium record; the refusal to raise."""
 
-        if completed.returncode == 3:
+        # An export record under a failed seal is not "held before the Armarium";
+        # it is reported as unreadable, with the seal's own refusal.
+        if completed.returncode == 3 and not isinstance(error, UnsealedExportError):
             # Held before the Armarium, so no export record exists. A held
             # Recensor's stop, with what it holds, is the orchestrator's own
             # report on stdout; any other hold's reason is its last stderr line.
@@ -1235,6 +1246,8 @@ class OperatorSurface:
                 self._require_reconciled_act_partition(export_payload)
         except UnreconciledActPartitionError as error:
             raise OperatorError(ErrorCode.EXPORT_UNRECONCILED, detail=str(error)) from error
+        except UnsealedExportError as error:
+            raise OperatorError(ErrorCode.EXPORT_UNSEALED, detail=str(error)) from error
         except Exception as error:
             raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error
         exports_dir = self.state_root / "exports"
@@ -1242,6 +1255,7 @@ class OperatorSurface:
         try:
             exports_dir.mkdir(parents=True, exist_ok=True)
             self._write_base_armarium_bundle(run_root, recorded_id, staged)
+            self._require_export_unchanged(run_root, recorded_id, export_payload)
             digest = sha256_file(staged)
             # Content-addressed, so a later export never overwrites bytes an
             # earlier receipt vouches for.
@@ -1712,10 +1726,20 @@ class OperatorSurface:
             self.present(line)
 
     def _armarium_export(self, run_root: Path, run_id: str) -> dict[str, Any]:
+        # The export record the Armarium's completion seal witnessed: a record
+        # under an unsealed or altered boundary is not a completed export.
         tree = RunTree(run_root, run_id)
-        record = tree.read_artifact(
-            ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
-        )
+        try:
+            record = verify_final_seal(tree)
+        except ContractError as error:
+            export_path = tree.artifact_path(
+                ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
+            )
+            if not (tree.root / export_path).is_file():
+                raise
+            raise UnsealedExportError(
+                f"the Armarium export record is not covered by a verified completion seal: {error}"
+            ) from error
         payload = record.get("payload")
         if not isinstance(payload, dict) or not isinstance(payload.get("aggregate"), dict):
             raise ValueError("Armarium export record has no usable aggregate")
@@ -1727,6 +1751,24 @@ class OperatorSurface:
             if not isinstance(payload[member], list):
                 raise ValueError(f"Armarium export record's {member} is not a list")
         return payload
+
+    def _require_export_unchanged(
+        self, run_root: Path, run_id: str, export_payload: dict[str, Any]
+    ) -> None:
+        """Refuse a copy unless the seal still witnesses the export record it was checked under."""
+
+        try:
+            unchanged = self._armarium_export(run_root, run_id) == export_payload
+        except (ContractError, ValueError) as error:
+            raise OperatorError(
+                ErrorCode.EXPORT_UNSEALED,
+                detail=f"the Armarium completion seal no longer verifies after the copy: {error}",
+            ) from error
+        if not unchanged:
+            raise OperatorError(
+                ErrorCode.EXPORT_UNSEALED,
+                detail="the sealed Armarium export record changed while its evidence was copied",
+            )
 
     def _require_reconciled_act_partition(self, export_payload: dict[str, Any]) -> None:
         """Refuse a `complete` export unless every expected act appears exactly once.

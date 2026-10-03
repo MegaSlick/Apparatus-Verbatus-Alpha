@@ -136,21 +136,10 @@ _CONTINUE_STATES = frozenset(
     }
 )
 
-# A floor under the sleep between ticks: `sleep_for` below is `min(...)` of two
-# non-negative terms, and a future continue-state whose deadline term has
-# already reached zero must not turn this loop into a hot spin -- every tick
-# still does a durable write (`record_tick`), which fsyncs.
-#
-# Unreachable defense-in-depth today, not proven by a drill: every state in
-# `_CONTINUE_STATES` other than `owner-heartbeat-fresh` can only be returned
-# by a tick whose own `run_once` call already found `now() < lease.hard_deadline`
-# strictly (its expiry check uses `>=`), so `sleep_for`'s deadline term is
-# strictly positive on every one of those ticks -- the same `now()` value that
-# passed the expiry check is the one `sleep_for` is computed from. And
-# `owner-heartbeat-fresh` past the deadline is caught by the explicit break
-# just above, before `sleep_for` is ever computed. What the spin drill below
-# actually proves is that break; this floor is a guard against a future
-# continue-state losing that invariant.
+# A floor under the sleep between ticks: every tick does a durable write
+# (`record_tick`, which fsyncs), so a sleep term that has reached zero or gone
+# negative -- a deadline just passed, or a foreign heartbeat that went stale
+# between the tick and the sleep -- must not turn the loop into a hot spin.
 _MIN_TICK_SECONDS = 0.05
 
 
@@ -1042,7 +1031,12 @@ def run_supervisor(
 
     Every refusal below happens before any provider call. `establish_identity`
     is the one exception that may write (the identity file only, never the
-    lease) before the first tick.
+    lease) before the first tick, and it refuses while a live rival holds the
+    lease's lock. Once ownership is settled the hard deadline is acted on
+    whatever lifetime remains: an overdue lease this driver owns is closed
+    through `VerifiedShutdown` on the first tick, and an overdue lease still
+    recorded under another owner is claimed and closed the same way once that
+    owner's heartbeat goes stale. A run that ends in exit 3 always notifies.
     """
 
     try:
@@ -1059,17 +1053,10 @@ def run_supervisor(
             f"lease already reached terminal phase {lease.phase!r}; no provider call was made",
             lease=lease,
         )
-        return result, _exit_code(result, observed_active_lease=False)
+        return _finish(result, lease_id, notifier, observed_active_lease=False)
+    # A lease at or past its hard deadline is closed on the first tick; one
+    # inside a heartbeat of it is watched to the deadline, then closed.
     heartbeat_timeout = timedelta(seconds=policy.laptop_heartbeat_timeout_seconds)
-    remaining = lease.hard_deadline - now()
-    if heartbeat_timeout >= remaining:
-        raise SuperviseRefusal(
-            "configured heartbeat timeout "
-            f"({heartbeat_timeout}) is not shorter than the lease's remaining lifetime "
-            f"({remaining}); refusing to supervise on a timeout that could not fire before "
-            "the hard deadline anyway",
-            exit_code=2,
-        )
     # This run has now confirmed a durable, active lease exists: from here on
     # a lease that goes missing or unreadable is not "nothing happened" --
     # the pod it was guarding may still be out there billing.
@@ -1107,20 +1094,52 @@ def run_supervisor(
             break
         if result.state not in _CONTINUE_STATES:
             break
-        # A foreign owner's heartbeat can stay fresh past this lease's own
-        # hard deadline -- that deadline is immutable and this driver is not
-        # the owner, so it has nothing left to try. Without this break the
-        # loop below spins: `sleep_for`'s deadline term is pinned at zero
-        # forever, and `_exit_code` already has a named answer (3, "go and
-        # look") for exactly this state once the lease is confirmed active.
-        if result.state == "owner-heartbeat-fresh" and now() >= result.lease.hard_deadline:
-            break
-        sleep_for = min(
-            heartbeat_timeout.total_seconds() / 3,
-            max((result.lease.hard_deadline - now()).total_seconds(), 0.0),
-        )
+        if result.state == "owner-heartbeat-fresh":
+            # A foreign driver that is still heartbeating at or after the hard
+            # deadline, and is still fresh now, is alive and not closing its own
+            # expired lease: this driver cannot take it over, so it stops and
+            # says go and look.
+            checked_at = now()
+            heartbeat_at = result.lease.heartbeat_at
+            deadline = result.lease.hard_deadline
+            if (
+                checked_at >= deadline
+                and heartbeat_at >= deadline
+                and checked_at - heartbeat_at < heartbeat_timeout
+            ):
+                break
+            # Otherwise the owner may be dead (a restart that lost its identity
+            # file reads its own last heartbeat as foreign): wake when that
+            # heartbeat goes stale, so `run_once` claims the orphan and closes it.
+            until_stale = heartbeat_at + heartbeat_timeout - checked_at
+            sleep_for = min(heartbeat_timeout / 3, until_stale).total_seconds()
+        else:
+            sleep_for = min(
+                heartbeat_timeout.total_seconds() / 3,
+                max((result.lease.hard_deadline - now()).total_seconds(), 0.0),
+            )
         sleeper(max(sleep_for, _MIN_TICK_SECONDS))
-    return result, _exit_code(result, observed_active_lease=observed_active_lease)
+    return _finish(result, lease_id, notifier, observed_active_lease=observed_active_lease)
+
+
+def _finish(
+    result: SuperviseResult, lease_id: str, notifier: Notifier, *, observed_active_lease: bool
+) -> tuple[SuperviseResult, int]:
+    """Pair a run's result with its exit code, notifying on every exit 3.
+
+    An unverified close was already notified when the tick produced it, so it
+    is not notified twice.
+    """
+
+    exit_code = _exit_code(result, observed_active_lease=observed_active_lease)
+    unverified_close_reported = result.close_report is not None and not result.close_report.verified
+    if exit_code == 3 and not unverified_close_reported:
+        outcome = notifier(
+            f"pod supervisor: lease {lease_id} stopped in state {result.state} without a "
+            f"verified close ({result.detail}); the pod may still be running -- go and look"
+        )
+        result = replace(result, detail=f"{result.detail} | {outcome.line()}")
+    return result, exit_code
 
 
 def _load_provider(reference: str) -> PodProvider:
@@ -1159,6 +1178,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     leases_root: Path = args.leases
     lease_id: str = args.lease
+    notifier: Notifier = silent
     try:
         # Before the store path, the lock path, or the identity path is built
         # from it. The same guard the operator-driven close takes.
@@ -1169,6 +1189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"spend policy {args.spend} is unconfigured; cannot supervise without ceilings",
                 exit_code=2,
             )
+        notifier = shell_notifier() if args.notify else silent
         provider = _load_provider(args.provider_factory)
         store = LeaseStore(Path(leases_root) / f"{lease_id}.json")
         shutdown = VerifiedShutdown(
@@ -1177,7 +1198,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             poll_seconds=float(policy.shutdown_poll_interval_seconds),
             billing_cutoff_margin_seconds=policy.billing_cutoff_margin_seconds,
         )
-        notifier = shell_notifier() if args.notify else silent
         result, exit_code = run_supervisor(
             store=store,
             leases_root=leases_root,
@@ -1238,6 +1258,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         # which is precisely where a bare traceback on stderr goes unwatched.
         # Mirrors `cli.py`'s own interrupt handling.
         detail = f"{type(error).__name__}: {error}"
+        try:
+            outcome = notifier(
+                f"pod supervisor: lease {lease_id} crashed ({detail}); the pod may still be "
+                "running -- go and look"
+            )
+            detail = f"{detail} | {outcome.line()}"
+        except Exception as notify_error:
+            detail = f"{detail}; notification also failed: {notify_error}"
         try:
             _write_final_record(
                 leases_root,

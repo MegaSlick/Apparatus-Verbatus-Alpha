@@ -87,16 +87,19 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   the Archetypus record that established it (`digest_of(text)`), maps each export
   category to the scorer's response state (a held, refused, blank or excluded act is an
   empty hypothesis against its reference -- counted, never dropped, never perfect), and
-  writes one validated, self-hashed `recordgold-evaluation.v2` record carrying run
+  writes one validated, self-hashed `recordgold-evaluation.v3` record carrying run
   configuration digests, export digest, reference ledger digest, the splits scored, and
   the whole denominator: every
-  reference record scored, missed or not attempted, every read act by export
+  reference record scored, unmeasured (its reading beyond the scoring profile's text
+  bounds), missed or not attempted, every read act by export
   category, every unmatched pipeline act reported and not scored. **Two aggregate
   rates, each labelled**: `matched_pairs_only` is the arithmetic of the pairs the
   assignment made, which a missed act cannot move in either direction, and
   `including_missed_records` counts a missed record's reference units as deletions,
-  since a missed act is worse than a poorly read one. A not-attempted record is in neither rate and
-  is counted on its own. Two facts the record states are measured rather than declared:
+  since a missed act is worse than a poorly read one. An unmeasured record is counted
+  the same way in `including_missed_records`, so a runaway reading never scores better
+  than an empty one, and is left out of `matched_pairs_only`. A not-attempted record is
+  in neither rate and is counted on its own. Two facts the record states are measured rather than declared:
   the fixture label is read from the export's own sealed identity (`fixture_id` against
   `submission_id`), not from a flag an operator could omit, and a named reference ledger
   is verified — every reference page must appear in it by `self_hash`. `code_ref`
@@ -157,7 +160,14 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   states are under `reask`, and prompt tokens compare every call. With `--selection`
   (`proof_pages`' `selection.json`, checked against the ledger) the pages in scope are
   the ones chosen for the run, so a chosen page the run did not seal is lost; `scope.basis`
-  says which. The report is a new file outside the run tree.
+  says which. `--gold` must be the exact `gold.jsonl` the ledger's receipt sealed, and
+  each admitted record's text is the gold row matching the `text_sha256` the ledger
+  holds for it (`reference-mismatch` otherwise, before any record is scored), so of two
+  rows naming one record the copy admission kept is scored; `reference` names the
+  ledger, the gold digest, the split and the gold rows not scored (`rows_not_scored`),
+  `scope.selection_self_hash` the selection, and `run` the run id and the digest of its
+  verified export (`no-export` without one). The report is a new file outside the run
+  tree.
 
   ```sh
   .venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id <run> \
@@ -190,7 +200,10 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   diplomatic literals, so the report states what the reconstruction changed; some or none
   of its acts is counted and not scored. An export that shows reconstructions but packaged
   no `coniector.jsonl` (JSONL not selected) has them counted with `measured: false` and
-  exit 1. Counts and identifiers only, never text.
+  exit 1. With `--reference-ledger`, every reference page must be one the admission
+  ledger carries, byte for byte (`reference-page-not-in-ledger` otherwise), and
+  `reference_ledger_verified` says whether one was named. Counts and identifiers only,
+  never text.
 - `proof_pages.py` — the proof-page picker. From an admitted set's ledger it takes a
   declared list (`--page-sha`, repeated) or a seeded draw (`--count N --seed TEXT`: the N
   admitted pages first by `sha256(seed:page_sha256)`), copies each image, checked against
@@ -231,7 +244,9 @@ verbatus export --run-id $RUN
   --ledger private/corpora/recordgold/admission/val/ledger.json \
   --reference-pages $P/reference-pages.jsonl --output $P/reports/witnesses.json
 .venv/bin/python -m operations.corpus.reconstruction_evaluate --run-root runs --run-id $RUN \
-  --reference-pages $P/reference-pages.jsonl --out $P/reports/reconstructions.json
+  --reference-pages $P/reference-pages.jsonl \
+  --reference-ledger private/corpora/recordgold/admission/val/ledger.json \
+  --out $P/reports/reconstructions.json
 ```
 
 `fetch-run` runs the canary check itself when `private/canary/` exists, and `export`
@@ -305,7 +320,7 @@ distinct `source`/`volume` splits (`"Tours/geneanet"` joined with nothing, and
 reference record set, computes IoU between every pipeline act's region (the
 Perlector's act-regions) and
 every reference box, takes the assignment maximising total IoU under a
-predeclared threshold, and writes `reference-comparison.v2` recording the whole
+predeclared threshold, and writes `reference-comparison.v3` recording the whole
 matrix: matched pairs, unmatched reference acts (misses, scored), and
 unmatched pipeline acts (reported, never scored, because `completeness` already
 says they may be legitimately out of scope). Per-act CER/WER comes from

@@ -102,7 +102,10 @@ succeeds only when the run's recorded state is `complete`. Over a held or partia
 copies what was delivered, prints every reason, and exits `export-partial`. A record that
 claims `complete` but whose acts do not reconcile to its own total is refused with no
 bundle written (`export-unreconciled`, distinct from an unreadable record,
-`export-missing`); use `review` to see why.
+`export-missing`); use `review` to see why. An export record whose Armarium completion
+seal is missing, does not verify, or changes while its evidence is copied is not a
+finished export: `export` refuses it as `export-unsealed` with no bundle written, and
+`run` never reports it complete.
 
 **A hold is not cleared by running the same run name again**: that republishes the same
 sealed hold. An operator review decision recorded in the run (`approval-record.v1`,
