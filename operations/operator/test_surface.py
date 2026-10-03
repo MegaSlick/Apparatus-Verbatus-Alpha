@@ -3106,25 +3106,22 @@ def test_repository_commit_lookup_is_bounded_and_names_a_timeout(
 # --- the run verb carries the real-roster pair, together or not at all --------
 
 
-def test_run_forwards_the_roster_trio_to_the_door_and_the_orchestrator(tmp_path: Path) -> None:
+def test_run_forwards_the_roster_pair_to_the_door_and_the_orchestrator(tmp_path: Path) -> None:
     surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
     roster = tmp_path / "config" / "models-real.toml"
     catalogue = tmp_path / "config" / "serving_recipes_real.toml"
-    witness_context = tmp_path / "config" / "witness_context-real.toml"
 
     with pytest.raises(OperatorError) as interrupted:
         surface.run(
             run_id="real-roster-run",
             models_config=roster,
             serving_recipes_config=catalogue,
-            witness_context_config=witness_context,
         )
 
     assert interrupted.value.code is ErrorCode.RUN_INTERRUPTED
     [(command, _cwd)] = observed
     assert _argv_value(command, "--models-config") == str(roster.absolute())
     assert _argv_value(command, "--serving-recipes-config") == str(catalogue.absolute())
-    assert _argv_value(command, "--witness-context-config") == str(witness_context.absolute())
 
 
 def test_run_without_a_roster_names_neither_flag(tmp_path: Path) -> None:
@@ -3135,18 +3132,14 @@ def test_run_without_a_roster_names_neither_flag(tmp_path: Path) -> None:
 
     [(command, _cwd)] = observed
     assert "--models-config" not in command and "--serving-recipes-config" not in command
-    assert "--witness-context-config" not in command
 
 
-@pytest.mark.parametrize(
-    "supplied", ["models_config", "serving_recipes_config", "witness_context_config"]
-)
+@pytest.mark.parametrize("supplied", ["models_config", "serving_recipes_config"])
 def test_run_refuses_part_of_a_roster_before_any_child_starts(
     tmp_path: Path, supplied: str
 ) -> None:
-    """One roster part without the others would seal the real chairs against the
-    fixture catalogue, or describe them to the Perlector with the fixture
-    declaration; the orchestrator digests all three together."""
+    """One half of the pair without the other would seal the real chairs against
+    the fixture catalogue, or the fixture chairs against the real one."""
 
     surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
 
@@ -3154,11 +3147,11 @@ def test_run_refuses_part_of_a_roster_before_any_child_starts(
         surface.run(run_id="part-roster", **{supplied: tmp_path / "part.toml"})
 
     assert refusal.value.code is ErrorCode.INVALID_COMMAND
-    assert "supply all of them or none" in str(refusal.value.detail)
+    assert "supply both or neither" in str(refusal.value.detail)
     assert not observed
 
 
-def test_cli_run_carries_the_roster_trio_to_the_operator_surface(
+def test_cli_run_carries_the_roster_pair_to_the_operator_surface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     observed: dict[str, object] = {}
@@ -3173,7 +3166,6 @@ def test_cli_run_carries_the_roster_trio_to_the_operator_surface(
     monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
     roster = tmp_path / "models-real.toml"
     catalogue = tmp_path / "serving_recipes_real.toml"
-    witness_context = tmp_path / "witness_context-real.toml"
     # `run` is refused before dispatch on a workspace that is not a checkout;
     # this test is about the arguments reaching the surface.
     for resource in ("pipeline", "config", "proof"):
@@ -3191,15 +3183,12 @@ def test_cli_run_carries_the_roster_trio_to_the_operator_surface(
                 str(roster),
                 "--serving-recipes-config",
                 str(catalogue),
-                "--witness-context-config",
-                str(witness_context),
             ]
         )
         == 0
     )
     assert observed["models_config"] == roster
     assert observed["serving_recipes_config"] == catalogue
-    assert observed["witness_context_config"] == witness_context
 
 
 # --- fetch-run: the tree comes home digest-checked, never overwriting ---------
@@ -4485,13 +4474,11 @@ def test_every_run_receipt_carries_identity_configuration_commit_and_output(
     surface._armarium_export = _complete_export  # type: ignore[method-assign]
     roster = ROOT / "config" / "models-real.toml"
     catalogue = ROOT / "config" / "serving_recipes_real.toml"
-    witness_context = ROOT / "config" / "witness_context-real.toml"
 
     surface.run(
         run_id="documented-run",
         models_config=roster,
         serving_recipes_config=catalogue,
-        witness_context_config=witness_context,
     )
 
     started, finished = _run_receipts(surface, "documented-run")
@@ -4510,7 +4497,6 @@ def test_every_run_receipt_carries_identity_configuration_commit_and_output(
             "sha256": sha256_file(roster),
         }
         assert configuration["serving_recipes_config"]["sha256"] == sha256_file(catalogue)
-        assert configuration["witness_context_config"]["sha256"] == sha256_file(witness_context)
         assert configuration["submission_manifest"] is None
         commit = receipt["repository_commit"]
         assert (commit is None) != (receipt["repository_commit_unreadable"] is None)

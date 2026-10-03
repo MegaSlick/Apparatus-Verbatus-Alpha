@@ -30,7 +30,7 @@ time to check on things and one that tidies up.
 | `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
 | `triage` | Shows the review queue `ingest` produced — each candidate with its evidence and proxy image — and records your accept or decline against it. | No — podless and offline. It shows and it records; it never opens a master and never decides for you. The double-click window shows the queue only; a decision is recorded from the command line. |
 | `upload` | Sends your images to storage. | No rented machine is needed — do it first if you like. With `--network-volume`, the volume itself costs money for as long as it exists, pod or no pod. |
-| `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. A real chair selection is the trio `--models-config config/models-real.toml`, `--serving-recipes-config config/serving_recipes_real.toml`, and `--witness-context-config config/witness_context-real.toml`; all three are sealed into the run and a partial trio is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
+| `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. A real chair selection is the pair `--models-config config/models-real.toml` and `--serving-recipes-config config/serving_recipes_real.toml`; both are sealed into the run and one without the other is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
 | `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. You have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
 | `review` | Opens one run tree read-only, before or after export, and says which stages ran, what each act's latest reading and review say, which acts are held and why, the page and crop images behind them, and the one supported next action. `--json` prints the whole projection instead. | No. It only reads the run tree. |
@@ -358,8 +358,7 @@ elsewhere and still read.
    submission paths. Re-sending the same manifest is idempotent; a different manifest at
    an occupied prefix is refused before any image is written.
 2. **`run` runs on this computer, not on a pod**, so a real-roster run stops where a stage
-   first needs a served chair. Use the shipped real trio together; a custom roster needs
-   an operator-authored witness declaration. The pod's run is
+   first needs a served chair. Use the shipped real pair together. The pod's run is
    `python -m operations.pod.pod_run`, and `fetch-run` brings its tree home.
 3. **`export` produces a base Armarium evidence bundle**, not the product export,
    and says so on screen.

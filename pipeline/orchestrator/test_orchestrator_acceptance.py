@@ -104,8 +104,8 @@ FIXTURE = "synthetic-two-page-v0"
 # the reconstructor's receipt.
 HAPPY_SNAPSHOT_FILES = 141
 REVIEW_SNAPSHOT_FILES = 132
-HAPPY_RUN_TREE_DIGEST = "26906c305ba287bc848106f0cc7292265a0c9e03eaa62f1c15f4c59522ad0c79"
-REVIEW_RUN_TREE_DIGEST = "0ff932be8dd6f2c93967eb3f32ab47a5718a349b203aa1d53cd7b010606102ef"
+HAPPY_RUN_TREE_DIGEST = "a1aee9943032b6f7ebc8ba1b885703229e73b5e3621145cd7ad95e59dabdf619"
+REVIEW_RUN_TREE_DIGEST = "7617af7f74d15d2e3a0624be2a4d8d939ba0762fedaaf54a0036568b5db2129d"
 
 
 def orchestrate_to_export(
@@ -129,7 +129,6 @@ def orchestrate(
     *,
     models_config: Path | None = None,
     serving_recipes_config: Path | None = None,
-    witness_context_config: Path | None = None,
     hard_failure_config: Path | None = None,
     submission_folder: Path | None = None,
     submission_manifest: Path | None = None,
@@ -155,8 +154,6 @@ def orchestrate(
         command.extend(("--models-config", str(models_config)))
     if serving_recipes_config is not None:
         command.extend(("--serving-recipes-config", str(serving_recipes_config)))
-    if witness_context_config is not None:
-        command.extend(("--witness-context-config", str(witness_context_config)))
     if hard_failure_config is not None:
         command.extend(("--hard-failure-config", str(hard_failure_config)))
     if submission_folder is not None:
@@ -328,7 +325,6 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         # missing exactly this for a different flag).
         placement_tier=None,
         witness_context="named",
-        witness_context_config=ROOT / "config" / "witness_context.toml",
         perlector_protocol_config=ROOT / "config" / "perlector_protocol.toml",
         perlector_audit_config=ROOT / "config" / "perlector_audit.toml",
         # The corpus-register argv surface, which `invoke` reads by name on every
@@ -392,7 +388,6 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
 
     models = ROOT / "config" / "models-real.toml"
     recipes = ROOT / "config" / "serving_recipes_real.toml"
-    witness_context = ROOT / "config" / "witness_context-real.toml"
     run_root = tmp_path / "runs"
 
     # The tier selects a live-shaped row. Its deliberately unproven preflight
@@ -406,7 +401,6 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
         "happy",
         models_config=models,
         serving_recipes_config=recipes,
-        witness_context_config=witness_context,
         placement_tier="generic-48gb",
     )
 
@@ -422,7 +416,6 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
         load_fixture(ROOT / "proof"),
         "happy",
         serving_recipes_config_path=recipes,
-        witness_context_config_path=witness_context,
     )
     assert run_record["config_digest"] == expected["config_digest"]
     assert (
@@ -442,7 +435,7 @@ def test_a_partial_real_configuration_is_refused_before_anything_is_written(tmp_
     result = orchestrate(run_root, "r", "happy", models_config=ROOT / "config" / "models-real.toml")
 
     assert result.returncode == 2
-    assert "supply all of them or none" in result.stderr
+    assert "supply both or neither" in result.stderr
     assert "--serving-recipes-config" in result.stderr
     assert not run_root.exists()
 
@@ -2246,7 +2239,6 @@ def test_an_explicitly_absent_witness_counts_against_the_floor_on_every_page(
         "happy",
         models_config=absent_third_chair_config,
         serving_recipes_config=DEFAULT_SERVING_RECIPES_CONFIG_PATH,
-        witness_context_config=ROOT / "config" / "witness_context.toml",
     )
     assert result.returncode == 3, result.stderr
     tree = RunTree(root, "r")

@@ -99,7 +99,6 @@ _RESUMED_BINDINGS: Final = frozenset(
         "--data-gate-policy",
         "--models-config",
         "--serving-recipes-config",
-        "--witness-context-config",
     }
 )
 
@@ -719,7 +718,6 @@ class OperatorSurface:
         data_gate_policy: str | Path | None = None,
         models_config: str | Path | None = None,
         serving_recipes_config: str | Path | None = None,
-        witness_context_config: str | Path | None = None,
         from_stage: str | None = None,
         to_stage: str | None = None,
     ) -> RunOutcome:
@@ -751,7 +749,6 @@ class OperatorSurface:
             data_gate_policy = recorded.get("--data-gate-policy")
             models_config = recorded.get("--models-config")
             serving_recipes_config = recorded.get("--serving-recipes-config")
-            witness_context_config = recorded.get("--witness-context-config")
         if submission_folder is None:
             for flag, value in (
                 ("--submission-manifest", submission_manifest),
@@ -765,7 +762,6 @@ class OperatorSurface:
         roster_argv = _roster_argv(
             models_config=models_config,
             serving_recipes_config=serving_recipes_config,
-            witness_context_config=witness_context_config,
         )
 
         run_root = self.state_root / "runs"
@@ -860,7 +856,6 @@ class OperatorSurface:
             "configuration": {
                 "models_config": _config_binding(models_config),
                 "serving_recipes_config": _config_binding(serving_recipes_config),
-                "witness_context_config": _config_binding(witness_context_config),
                 "submission_manifest": _config_binding(submission_manifest),
                 "data_gate_policy": _config_binding(data_gate_policy),
             },
@@ -2444,7 +2439,6 @@ def _roster_argv(
     *,
     models_config: str | Path | None,
     serving_recipes_config: str | Path | None,
-    witness_context_config: str | Path | None,
 ) -> list[str]:
     """The real configuration, forwarded whole; a partial selection is refused.
 
@@ -2455,7 +2449,7 @@ def _roster_argv(
     selected = dict(
         zip(
             REAL_CONFIGURATION_FLAGS,
-            (models_config, serving_recipes_config, witness_context_config),
+            (models_config, serving_recipes_config),
             strict=True,
         )
     )

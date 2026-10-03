@@ -129,11 +129,7 @@ DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
 def _fixture_models():
-    """Load the declared fixture roster for real-binding tests.
-
-    `_real_bindings` validates witness-context identities, so its doubles must
-    expose the same ChairIdentity records the fixture declaration addresses.
-    """
+    """Load the declared fixture roster for real-binding tests."""
     return load_models_toml(ROOT / "config" / "models.toml")
 
 

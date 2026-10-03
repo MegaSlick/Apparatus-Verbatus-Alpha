@@ -13,7 +13,6 @@ own interpreter, over the volume::
     submission          --submission-folder / --submission-manifest, inside the volume
     roster              the bootstrap plan's --models-config
     serving catalogue   the bootstrap plan's --serving-recipes-config
-    witness context     the bootstrap plan's --witness-context-config
     data gate           --data-gate-policy, inside the repository
 
 The roster and the serving catalogue are deliberately taken from the bootstrap
@@ -148,7 +147,6 @@ from common.stage import (
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     real_run_policy_digest,
     run_sealed_config_digests,
-    validate_witness_context_bindings,
     verify_predecessor_seal,
 )
 from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
@@ -362,19 +360,6 @@ class RunPlan:
         return _named(self.bootstrap.serving_recipes_config, "--serving-recipes-config")
 
     @property
-    def witness_context_config(self) -> Path:
-        """The factual witness-context declaration this run seals.
-
-        Named on the plan beside the roster, never defaulted here:
-        `bootstrap_main.resolve_plan` supplies the default when none is named.
-        After checkout, the journaled CONFIGURATION step checks known shipped
-        sentences against their present witness identities before environment
-        or model work. This property receives that resolved path selection;
-        it does not choose another declaration for the orchestrator.
-        """
-        return _named(self.bootstrap.witness_context_config, "--witness-context-config")
-
-    @property
     def repository(self) -> Path:
         return _named(self.bootstrap.repository, "--repository")
 
@@ -471,8 +456,6 @@ class RunPlan:
             str(self.models_config),
             "--serving-recipes-config",
             str(self.serving_recipes_config),
-            "--witness-context-config",
-            str(self.witness_context_config),
             "--stage-timing-journal",
             str(self.timing_journal_path),
             "--stop-record",
@@ -522,7 +505,6 @@ class RunPlan:
             "data_gate_policy": str(self.data_gate_policy),
             "models_config": str(self.models_config),
             "serving_recipes_config": str(self.serving_recipes_config),
-            "witness_context_config": str(self.witness_context_config),
             "fixture": self.fixture,
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,
@@ -638,7 +620,7 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
     the ``perlector-protocol`` digest against the file this launch would hand
     the orchestrator (read by the same seal reader the run binding uses), and,
     on a real run, the ``run-policy`` digest recomputed from
-    ``--mechanics-qualification``, the witness-context declaration and the
+    ``--mechanics-qualification`` and the
     orchestrator defaults pod_run leaves in place. A fixture run seals those
     knobs only inside its ``config_digest``, which this cannot recompute; its
     stages still refuse a mismatch.
@@ -664,8 +646,7 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
                 mismatches.append(
                     "its run policy (sealed "
                     f"{sealed['run-policy']}, this launch {policy}); pass the "
-                    "--mechanics-qualification the run started with, against the same "
-                    "--witness-context-config"
+                    "--mechanics-qualification the run started with"
                 )
     except (ContractError, OSError) as error:
         # `read_run` already turns an unreadable or non-JSON run.json into a
@@ -687,13 +668,7 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
 
 def _recomputed_run_policy(plan: RunPlan) -> str:
     defaults = ORCHESTRATOR_RUN_POLICY_DEFAULTS
-    declaration = validate_witness_context_bindings(
-        load_models_toml(plan.models_config),
-        witness_context_config_path=plan.witness_context_config,
-        **defaults,  # type: ignore[arg-type]
-    )
     return real_run_policy_digest(
-        witness_context_declaration_sha256=declaration,
         mechanics_qualification=plan.mechanics_qualification,
         **defaults,  # type: ignore[arg-type]
     )

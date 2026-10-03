@@ -32,10 +32,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.chairs.config import load_models_toml
 from common.runtree.store import RunTree
 from common.sealed_config import read_sealed_toml
-from common.stage import real_run_policy_digest, validate_witness_context_bindings
+from common.stage import real_run_policy_digest
 from operations.operator import cli as operator_cli
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.records import SCHEMA as RECEIPT_SCHEMA
@@ -305,16 +304,7 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
     runner = RecordedRunner(returncode=0)
     real_recipes = ws.repository / "config" / "serving_recipes_real.toml"
     real_roster = ws.repository / "config" / "models-real.toml"
-    real_context = ws.repository / "config" / "witness_context-real.toml"
-    argv = _run_argv(
-        ws,
-        bootstrap_extra=(
-            "--serving-recipes-config",
-            str(real_recipes),
-            "--witness-context-config",
-            str(real_context),
-        ),
-    )
+    argv = _run_argv(ws, bootstrap_extra=("--serving-recipes-config", str(real_recipes)))
     argv[argv.index("--models-config") + 1] = str(real_roster)
     environment = _environ(clock, lifetime=4.0, extra={"RUNPOD_S3_ACCESS_KEY": "user_abc"})
 
@@ -352,8 +342,6 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
         str(real_roster),
         "--serving-recipes-config",
         str(real_recipes),
-        "--witness-context-config",
-        str(real_context),
         "--stage-timing-journal",
         str(ws.volume / "pod-run-report-timings.json"),
         # A private path made for this invocation, removed once read.
@@ -1016,17 +1004,10 @@ def test_a_real_resume_without_its_sealed_mechanics_qualification_is_refused_bef
     ws = _prepared(tmp_path)
     monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
     default, _ = _protocols(ws)
-    declaration = ws.repository / "config" / "witness_context.toml"
-    declaration.write_bytes((ROOT / "config" / "witness_context.toml").read_bytes())
     # Computed here from the stage library, not through pod_run, under the
     # values the orchestrator seals when pod_run forwards none of them.
     policy = real_run_policy_digest(
         witness_context="named",
-        witness_context_declaration_sha256=validate_witness_context_bindings(
-            load_models_toml(ws.models_config),
-            witness_context="named",
-            witness_context_config_path=declaration,
-        ),
         mechanics_qualification=True,
     )
     _sealed_run(

@@ -75,7 +75,6 @@ from common.stage import (  # noqa: E402
     DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     DEFAULT_SERVING_RECIPES_CONFIG_PATH,
-    DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_FATAL,
     EXIT_HELD,
@@ -452,7 +451,6 @@ def invoke(program: str, args: argparse.Namespace) -> int:
     command += _argv(
         (
             ("--witness-context", args.witness_context),
-            ("--witness-context-config", args.witness_context_config),
             ("--perlector-protocol-config", args.perlector_protocol_config),
             ("--perlector-audit-config", args.perlector_audit_config),
         )
@@ -784,12 +782,6 @@ def main() -> int:
         default="named",
         choices=WITNESS_CONTEXT_REGIMES,
         help="the run-level named/blinded toggle the Perlector's dossier is built under",
-    )
-    parser.add_argument(
-        "--witness-context-config",
-        default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
-        action=_RealConfigurationFlag,
-        help="the Perlector-owned factual witness-context declaration this run seals",
     )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(

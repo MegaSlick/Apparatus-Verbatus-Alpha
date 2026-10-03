@@ -76,10 +76,10 @@ for review or partial, which includes an act refused inside an otherwise finishe
 4 halted.
 
 **Real pages** need a Linux GPU machine running vLLM and the real model configuration,
-which is three files given together: `--models-config config/models-real.toml`,
-`--serving-recipes-config config/serving_recipes_real.toml` and
-`--witness-context-config config/witness_context-real.toml`. Always give all three: the
-operator's `run` and the orchestrator both refuse a partial set before anything starts.
+which is two files given together: `--models-config config/models-real.toml` and
+`--serving-recipes-config config/serving_recipes_real.toml`. Always give both: the
+operator's `run` and the orchestrator both refuse one without the other before anything
+starts.
 [operations/operator/README.md](operations/operator/README.md) describes a run, and the
 RunPod tooling is in `operations/pod/`. Input can be most raster images, multi-page TIFF, HEIC
 or PDF. Output is a sealed ZIP bundle with a manifest, and it can include a text bundle,

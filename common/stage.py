@@ -115,7 +115,6 @@ from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, load_review_policy
 from common.runtree.store import PublishResult, RunTree, _inode_identity
 from common.sealed_config import read_sealed_toml, require_seal_method, require_sealed_config
 from common.witness_adapters import validate_witness_adapter_bindings
-from common.witness_context import validate_witness_context_configuration
 
 # Exit codes carry cause: a structural failure that exits 0 reports success over
 # work never done.
@@ -134,7 +133,6 @@ class RunHalted(ContractError):
 
 _CONFIG_DIR = Path(__file__).resolve().parents[1] / "config"
 DEFAULT_PDF_RENDER_CONFIG_PATH = _CONFIG_DIR / "pdf_render.toml"
-DEFAULT_WITNESS_CONTEXT_CONFIG_PATH = _CONFIG_DIR / "witness_context.toml"
 DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH = _CONFIG_DIR / "perlector_protocol.toml"
 DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH = _CONFIG_DIR / "perlector_audit.toml"
 # Padding changes the crop bytes a witness sees, so it is sealed into the run.
@@ -154,7 +152,6 @@ WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
 REAL_CONFIGURATION_FLAGS: Final = (
     "--models-config",
     "--serving-recipes-config",
-    "--witness-context-config",
 )
 
 
@@ -166,8 +163,8 @@ def partial_real_configuration_refusal(given: Iterable[str]) -> str | None:
         return None
     return (
         f"{', '.join(REAL_CONFIGURATION_FLAGS)} select one model configuration together "
-        f"(the chairs, the catalogue they are served under, and their witness context); "
-        f"supply all of them or none. Missing: {', '.join(missing)}"
+        f"(the chairs and the catalogue they are served under); "
+        f"supply both or neither. Missing: {', '.join(missing)}"
     )
 
 
@@ -542,10 +539,6 @@ class StageContext:
         `run-policy` digest `_refuse_incompatible_real_reuse` recomputes.
         """
         return self.args.witness_context
-
-    @property
-    def witness_context_config_path(self) -> str:
-        return self.args.witness_context_config
 
     @property
     def perlector_protocol_config_path(self) -> str:
@@ -1421,11 +1414,6 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
         help="the run-level named/blinded toggle a Perlectio's dossier is built under (spec 08)",
     )
     parser.add_argument(
-        "--witness-context-config",
-        default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
-        help="the Perlector-owned factual witness-context declaration this run seals",
-    )
-    parser.add_argument(
         "--placement-tier",
         default=None,
         help=(
@@ -1470,33 +1458,17 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
     return fixture
 
 
-def validate_witness_context_bindings(
-    models,
-    *,
-    witness_context: str,
-    witness_context_config_path: str | Path,
-) -> str:
-    """Refuse a bad witness-context binding before a run tree exists, on every path.
-
-    Shared by fixture and real ingress so a real run cannot get as far as the
-    Perlector before a defect is caught.  Returns the declaration's sha256.
-    """
+def require_witness_context_regime(witness_context: str) -> None:
+    """Refuse a regime outside the closed set before a run tree exists, on every path."""
     if witness_context not in WITNESS_CONTEXT_REGIMES:
         raise ContractError(
             f"witness_context {witness_context!r} is not one of {WITNESS_CONTEXT_REGIMES}"
         )
-    validation = validate_witness_context_configuration(
-        models,
-        witness_context_config_path,
-        shipped_config_root=DEFAULT_WITNESS_CONTEXT_CONFIG_PATH.parent,
-    )
-    return validation.source_sha256
 
 
 def real_run_policy_digest(
     *,
     witness_context: str,
-    witness_context_declaration_sha256: str,
     mechanics_qualification: bool = False,
 ) -> str:
     """The digest a real run seals its run-level reading knobs under.
@@ -1512,7 +1484,6 @@ def real_run_policy_digest(
     return digest_of(
         {
             "witness_context_regime": witness_context,
-            "witness_context_declaration_sha256": witness_context_declaration_sha256,
             # Sealed so a run cannot mix ordinary and mechanics-only artefacts.
             "mechanics_qualification": mechanics_qualification,
         }
@@ -1537,7 +1508,6 @@ def run_config_bindings(
     hard_failure_config_path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH,
     review_config_path: str | Path = DEFAULT_REVIEW_CONFIG_PATH,
     witness_context: str = "named",
-    witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     perlector_protocol_config_path: str | Path = DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     perlector_audit_config_path: str | Path = DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     mechanics_qualification: bool = False,
@@ -1601,11 +1571,7 @@ def run_config_bindings(
     hard_failure_policy = load_hard_failure_policy(hard_failure_config_path)
     review_policy = load_review_policy(review_config_path)
     validate_witness_adapter_bindings(models)
-    witness_context_config_digest = validate_witness_context_bindings(
-        models,
-        witness_context=witness_context,
-        witness_context_config_path=witness_context_config_path,
-    )
+    require_witness_context_regime(witness_context)
     return {
         "witness_chairs": list(models.witness_chairs),
         "config_digest": digest_of(
@@ -1630,7 +1596,6 @@ def run_config_bindings(
                 "hard_failure_policy": hard_failure_policy,
                 # Argv knobs: a resume under different values fails the digest.
                 "witness_context_regime": witness_context,
-                "witness_context_declaration_sha256": witness_context_config_digest,
                 "perlector_protocol_config_sha256": perlector_protocol_config_digest,
                 "perlector_audit_config_sha256": perlector_audit_config_digest,
                 "mechanics_qualification": mechanics_qualification,
@@ -1678,11 +1643,7 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
     standing in for what the fixture path's `config_digest` rechecks whole.
     """
     validate_witness_adapter_bindings(models)
-    witness_context_declaration_sha256 = validate_witness_context_bindings(
-        models,
-        witness_context=args.witness_context,
-        witness_context_config_path=args.witness_context_config,
-    )
+    require_witness_context_regime(args.witness_context)
     _, alignment_config_digest = load_dissent_limits(args.alignment_config)
     _corpus_frame_policy, corpus_frame_config_digest = load_corpus_frame_policy(
         DEFAULT_CORPUS_FRAME_CONFIG_PATH
@@ -1734,7 +1695,6 @@ def real_run_bindings(models: ModelsConfig, args) -> dict[str, Any]:
             "armarium-formats": armarium_formats_digest,
             "run-policy": real_run_policy_digest(
                 witness_context=args.witness_context,
-                witness_context_declaration_sha256=witness_context_declaration_sha256,
                 mechanics_qualification=getattr(args, "mechanics_qualification", False),
             ),
         },
@@ -3700,7 +3660,6 @@ def open_context(
         hard_failure_config_path=args.hard_failure_config,
         review_config_path=args.review_config,
         witness_context=args.witness_context,
-        witness_context_config_path=args.witness_context_config,
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         mechanics_qualification=getattr(args, "mechanics_qualification", False),
