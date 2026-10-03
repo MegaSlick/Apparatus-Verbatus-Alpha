@@ -6,7 +6,7 @@
 # under a different selection without a new run over the same Exemplar. The schema
 # is closed: an unrecognised key or format name is refused rather than ignored.
 schema = "armarium-formats.v2"
-formats = ["text-bundle", "acts-database", "jsonl", "review-items"]
+formats = ["text-bundle", "acts-database", "jsonl", "csv", "review-items"]
 
 # False means the bundle carries digest-checked references to its pages and crops and
 # says plainly that resolving the pixels needs source access. True copies the verified

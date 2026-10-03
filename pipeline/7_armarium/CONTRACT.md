@@ -110,12 +110,15 @@ except that bytes 96-99 of `acts.sqlite` hold the writing library's SQLite versi
 
 The formats are the run's sealed selection, `config/formats.toml`
 (`common/armarium_formats.py`, `armarium-formats.v2`): any of `text-bundle`,
-`acts-database`, `jsonl` and `review-items`, `embed_pixels`, and `lot`. The selection is
+`acts-database`, `jsonl`, `csv` and `review-items`, `embed_pixels`, and `lot`. The
+committed selection is all five, one format set: the plain-text readings, SQLite, JSONL
+and CSV each give the same reading of every act. The selection is
 sealed into the run's `config_digest`, so a run's product cannot be re-projected under
 another selection.
 
 **The lot.** With `lot = true` (the committed default) the manifest's `run` block and
-every row (`acts.jsonl`, `other.jsonl`, `review-items.jsonl`, the `acts` table) carry the
+every row (`acts.jsonl`, `other.jsonl`, `review-items.jsonl`, `acts.csv`, the `acts`
+table) carry the
 run's lot, `lot_<16 hex>` derived from `run.json`'s self-hash
 (`common.contracts.identities.lot_id`), and each `readings.txt` names it under the run's
 status; with `false` each carries `null` and `readings.txt` has no lot line. The lot
@@ -131,6 +134,7 @@ work tree that git does not ignore.
 | `text/_source_folder/<folder>/readings.txt`, `text/_source_root/readings.txt` | `text-bundle`: one per source folder | — |
 | `acts.sqlite` | `acts-database` | `armarium-acts-sqlite.v7` (`PRAGMA user_version` 7) |
 | `acts.jsonl` | `jsonl` | `armarium-act.v7` |
+| `acts.csv` | `csv` | its header row (below) |
 | `other.jsonl` | `jsonl` | `armarium-other-reading.v3` |
 | `coniector.jsonl` | `jsonl`, when a reconstruction is shown | `armarium-coniector-reconstruction.v1` |
 | `operator.jsonl` | `jsonl`, when an operator acted on a delivered reading | `armarium-operator-action.v1` |
@@ -159,7 +163,8 @@ other member's path, sha256 and byte count) and `self_hash`.
 
 `canonical_text` names the one text field (`canonical_clean_text`), its hash (SHA-256
 of its UTF-8 bytes), that derived columns are marked as derived, and the literal formats
-compared for identity (`text-bundle`, `acts-database`, `jsonl`; empty below two).
+compared for identity (`text-bundle`, `acts-database`, `jsonl`, `csv`; empty below
+two).
 
 `claims` is the closed set:
 
@@ -268,11 +273,11 @@ The database carries no other reading.
 
 ### `acts.jsonl`, `other.jsonl`, `review-items.jsonl`
 
-These files are rows only: they carry no run status or run identity and are read with
+These files are rows only: they carry no run status and are read with
 `EXPORT_MANIFEST.json`, which inventories them by digest.
 
 - `acts.jsonl`: one row per counted act, its row count the act partition: `schema`,
-  `act_id`, `act_key`, `category`, `canonical_clean_text` and `canonical_text_sha256`
+  `act_id`, `act_key`, `lot`, `category`, `canonical_clean_text` and `canonical_text_sha256`
   (null unless delivered), `provenance`, `source_regions`, `uncertainty`,
   `uncertainty_status`, `text_status`, `witnesses`, `perlectio_ref`, `recensor_ref`,
   `dissent_ref`, `approval_ref`, `reason`, `evidence_refs` and `reading`.
@@ -280,8 +285,24 @@ These files are rows only: they carry no run status or run identity and are read
   only when delivered. A separate member, because a second population in `acts.jsonl`
   would be counted as acts by any reader counting its rows.
 - `review-items.jsonl`: one row per held or refused reading, act or other: `schema`,
-  `act_id`, `act_key`, `kind` (`act` | `other`), `category`, `reason` and
+  `act_id`, `act_key`, `lot`, `kind` (`act` | `other`), `category`, `reason` and
   `evidence_refs`. It is a review queue, not a count of acts.
+
+### `acts.csv`
+
+One flat row per counted act, in reading order, for a spreadsheet: UTF-8 with a
+byte-order mark, CRLF rows, RFC 4180 quoting. Its header row is `act_key`, `act_id`,
+`lot`, `category`, `reason`, `reading`, `text_status`, `canonical_clean_text`,
+`canonical_text_sha256` and `uncertainty_json` (the layer as one canonical JSON
+object). Null is an empty cell; the text columns are empty for an act not delivered.
+
+A cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return, which a spreadsheet
+would run as a formula, is written with one leading `'`, and so is a cell already
+starting with `'`, so the escape is undone exactly by removing one leading `'`. The
+hash column is the hash of the unescaped text, and every other format carries the text
+unescaped. Verification reads each delivered act's text and layer back, compares them
+with every other literal format, and renders the file again from `sources.json`, the
+manifest's lot and those readings, requiring the same bytes.
 
 ### Labelled layers beside a delivered reading
 

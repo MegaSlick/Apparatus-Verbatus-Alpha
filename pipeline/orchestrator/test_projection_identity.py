@@ -16,7 +16,7 @@ render -> strip -> hash round-trip half of test 4 is proven separately, as a
 schema-sufficiency demonstration, in `pipeline/6_archetypus/test_annotations.py`.
 
 What this does **not** itself prove: that every *packaged* literal-text format
-(text-bundle, acts-database, jsonl) carries the same characters. All three ship
+(text-bundle, acts-database, jsonl, csv) carries the same characters. All four ship
 today as members inside the single `export` artifact kind, so a guard keyed on
 artifact *kind* would never see a new one land (F090) — this module's own guard
 used to be keyed that way and could not fire. The guard below instead reads the
@@ -124,7 +124,7 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
     bundle_bytes = tree.read_bytes(export["bundle"]["reference"]["relative_path"])
     with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as archive:
         packaged_manifest = json.loads(archive.read("EXPORT_MANIFEST.json"))
-    expected_formats = {"text-bundle", "acts-database", "jsonl", "review-items"}
+    expected_formats = {"text-bundle", "acts-database", "jsonl", "csv", "review-items"}
     produced_formats = set(packaged_manifest["formats"]["formats"])
     assert produced_formats == expected_formats, (
         f"the exported bundle selects formats {sorted(produced_formats)}; a new format "

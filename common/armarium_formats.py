@@ -15,7 +15,7 @@ from common.contracts.errors import SchemaRefusal
 from common.sealed_config import read_sealed_toml
 
 FORMAT_SCHEMA: Final = "armarium-formats.v2"
-KNOWN_FORMATS: Final = frozenset({"text-bundle", "acts-database", "jsonl", "review-items"})
+KNOWN_FORMATS: Final = frozenset({"text-bundle", "acts-database", "jsonl", "csv", "review-items"})
 DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "formats.toml"
 )

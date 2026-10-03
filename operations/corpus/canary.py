@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import io
 import json
 import sqlite3
@@ -158,6 +159,15 @@ def _canary_in_bundle(data: bytes, act_ids: set[str], ordinals: set[int]) -> boo
                         if line.startswith((b"act-id: ", b"other-id: "))
                     ):
                         return True
+        if "acts.csv" in names:
+            # Its first row names the columns; only the act id column is read.
+            text = archive.read("acts.csv").decode("utf-8-sig")
+            csv.field_size_limit(max(csv.field_size_limit(), len(text) + 1))
+            if any(
+                row.get("act_id") in act_ids
+                for row in csv.DictReader(io.StringIO(text, newline=""))
+            ):
+                return True
         if "acts.sqlite" in names:
             connection = sqlite3.connect(":memory:")
             try:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import sqlite3
 import subprocess
@@ -422,7 +424,7 @@ def _two_region_projection() -> ArmariumProjection:
 
 def _formats(*, embed_pixels: bool) -> ArmariumFormats:
     return ArmariumFormats(
-        ("text-bundle", "acts-database", "jsonl", "review-items"),
+        ("text-bundle", "acts-database", "jsonl", "csv", "review-items"),
         embed_pixels,
     )
 
@@ -537,6 +539,48 @@ def test_a_lot_is_written_exactly_when_the_sealed_formats_turn_it_on(tmp_path):
         build_armarium_bundle(
             replace(_projection(), lot=None), _formats(embed_pixels=False), _source_bytes
         )
+
+
+def _csv_rows(data: bytes) -> list[dict]:
+    text = _members(data)["acts.csv"].decode("utf-8-sig")
+    return list(csv.DictReader(io.StringIO(text, newline="")))
+
+
+def test_the_csv_is_one_flat_row_per_act_with_the_reading_every_format_gives(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    report = verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    assert "csv" in report["verification"]["projection_identity"]["compared_formats"]
+    rows = _csv_rows(bundle.data)
+    assert [(row["act_key"], row["category"]) for row in rows] == [
+        ("p1:1", "delivered"),
+        ("p1:2", "held-for-review"),
+    ]
+    assert rows[0]["canonical_clean_text"] == "Cǣsar d’Exemple"
+    assert rows[0]["lot"] == _LOT
+    assert rows[1]["canonical_clean_text"] == "" and rows[1]["reason"]
+
+
+@pytest.mark.parametrize("literal", ['=HYPERLINK("x")', "+1", "-dit", "@SUM(1)", "'quoted", "\tx"])
+def test_a_csv_cell_a_spreadsheet_would_run_is_escaped_and_the_reading_kept(tmp_path, literal):
+    projection = _projection()
+    delivered = {**projection.acts[0], CANONICAL_TEXT_FIELD: literal}
+    projection = replace(projection, acts=(delivered, projection.acts[1]))
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    assert _csv_rows(bundle.data)[0]["canonical_clean_text"] == "'" + literal
+    assert _verified_literals(bundle.data, tmp_path / "clean") == {"act-1": literal}
+
+
+def test_a_csv_cell_the_writer_would_not_write_is_refused(tmp_path):
+    single = ArmariumFormats(("csv",), False)
+    bundle = build_armarium_bundle(_projection(), single, _source_bytes)
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+    members = _members(bundle.data)
+    members["acts.csv"] = members["acts.csv"].replace(
+        b"the review remains unresolved", b"the review was resolved"
+    )
+    _refresh_manifest_member(members, "acts.csv")
+    with pytest.raises(SchemaRefusal, match="acts CSV is not exactly"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "tampered")
 
 
 def test_a_partial_runs_text_bundle_says_it_is_partial_and_names_what_it_lacks(tmp_path):
@@ -1037,7 +1081,7 @@ def test_a_unicode_line_separator_in_a_reading_does_not_stop_the_whole_export(
 
 
 def test_compare_literal_projections_refuses_an_unhandled_literal_format(tmp_path, monkeypatch):
-    """A fourth literal format with no comparison branch built for it here must
+    """A fifth literal format with no comparison branch built for it here must
     refuse by name, not fall silently out of `projections` and out of the
     identity check the branch above it exists to run.
     """
@@ -1050,10 +1094,12 @@ def test_compare_literal_projections_refuses_an_unhandled_literal_format(tmp_pat
     monkeypatch.setattr(
         armarium_export,
         "_LITERAL_TEXT_FORMATS",
-        (*armarium_export._LITERAL_TEXT_FORMATS, "csv"),
+        (*armarium_export._LITERAL_TEXT_FORMATS, "xml"),
     )
-    unhandled_formats = SimpleNamespace(formats=("text-bundle", "acts-database", "jsonl", "csv"))
-    with pytest.raises(SchemaRefusal, match="no comparison built for literal format 'csv'"):
+    unhandled_formats = SimpleNamespace(
+        formats=("text-bundle", "acts-database", "jsonl", "csv", "xml")
+    )
+    with pytest.raises(SchemaRefusal, match="no comparison built for literal format 'xml'"):
         armarium_export._compare_literal_projections(clean_root, unhandled_formats)
 
 
@@ -1391,6 +1437,7 @@ def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(t
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
     assert manifest["canonical_text"]["identity_verified_across"] == [
         "acts-database",
+        "csv",
         "jsonl",
         "text-bundle",
     ]
@@ -1400,7 +1447,7 @@ def test_the_delivered_gate_asks_both_questions_the_manifest_claims_were_asked(t
     report = verify_delivered_bundle(bundle.data, tmp_path / "intact")["verification"]
     assert report["projection_identity"] == {
         "status": "verified",
-        "compared_formats": ["acts-database", "jsonl", "text-bundle"],
+        "compared_formats": ["acts-database", "csv", "jsonl", "text-bundle"],
     }
     # Both questions in one extraction, and the fold report survives the second one.
     assert report["search_fold"]["status"] == "verified"
@@ -2804,6 +2851,7 @@ def test_the_manifest_says_whether_projection_identity_was_actually_checked(tmp_
     manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
     assert manifest["canonical_text"]["identity_verified_across"] == [
         "acts-database",
+        "csv",
         "jsonl",
         "text-bundle",
     ]

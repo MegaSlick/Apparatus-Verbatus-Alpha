@@ -15,6 +15,8 @@ content address binds the toolchain as well as the data.
 from __future__ import annotations
 
 import copy
+import csv
+import io
 import json
 import os
 import re
@@ -242,7 +244,28 @@ _UNCERTAINTY_AVAILABLE: Final = "canonical-unicode-codepoint-offsets"
 # An act with no established text, or a package with no literal-text format, has
 # no offsets to anchor to.
 _UNCERTAINTY_NOT_APPLICABLE: Final = "not-applicable"
-_LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
+_LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl", "csv")
+# The flat projection: one row per act, UTF-8 with a byte-order mark so a
+# spreadsheet reads the accents, CRLF rows as RFC 4180 writes them.
+CSV_MEMBER: Final = "acts.csv"
+_CSV_BOM: Final = b"\xef\xbb\xbf"
+_CSV_COLUMNS: Final = (
+    "act_key",
+    "act_id",
+    "lot",
+    "category",
+    "reason",
+    "reading",
+    "text_status",
+    "canonical_clean_text",
+    "canonical_text_sha256",
+    "uncertainty_json",
+)
+# A spreadsheet runs a cell starting with one of these as a formula. Such a cell,
+# and one already starting with the escape, is written with one leading `'`,
+# which the reader removes, so every other format keeps the reading unchanged.
+_CSV_FORMULA_STARTS: Final = ("=", "+", "-", "@", "\t", "\r")
+_CSV_ESCAPE: Final = "'"
 # Reading keys are `p<page>:<n>` with unpadded ordinals, so a string sort puts
 # page 10 before page 2. A page's row with no reading (`p<page>:blank`) follows
 # its numbered readings; any other key sorts as a string after every page.
@@ -572,6 +595,8 @@ def build_armarium_bundle(
             _database_run_metadata(_manifest_run_binding(projection), ledger),
             lot,
         )
+    if "csv" in formats.formats:
+        members[CSV_MEMBER] = _acts_csv_bytes(projection.acts, lot)
     if "jsonl" in formats.formats:
         members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts, lot))
         if coniector_rows:
@@ -717,6 +742,8 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     # Last, so every input the writer is fed has been checked on its own.
     if "text-bundle" in formats.formats:
         _verify_text_bundle_rendering(root, manifest, sources)
+    if "csv" in formats.formats:
+        _verify_csv_rendering(root, manifest, sources)
     verification = {}
     if search_fold_verification is not None:
         verification["search_fold"] = search_fold_verification
@@ -1371,6 +1398,8 @@ def _literal_projection(root: Path, name: str) -> dict[str, tuple]:
         return _database_literals(root / "acts.sqlite")
     if name == "jsonl":
         return _jsonl_literals(root / "acts.jsonl")
+    if name == "csv":
+        return _csv_literals(root / CSV_MEMBER)
     # A new literal format with no branch here would otherwise be skipped and
     # reported identical.
     raise SchemaRefusal(f"projection identity has no comparison built for literal format {name!r}")
@@ -3878,6 +3907,119 @@ def _review_records(
     ]
 
 
+def _csv_cell(value: str | None) -> str:
+    """One CSV cell: empty for null, and a formula start neutralised by `_CSV_ESCAPE`."""
+    if value is None:
+        return ""
+    if value.startswith((*_CSV_FORMULA_STARTS, _CSV_ESCAPE)):
+        return _CSV_ESCAPE + value
+    return value
+
+
+def _csv_value(cell: str) -> str:
+    """The value one CSV cell stands for: `_csv_cell` undone."""
+    return cell.removeprefix(_CSV_ESCAPE)
+
+
+def _acts_csv_bytes(acts: tuple[dict[str, Any], ...], lot: str | None) -> bytes:
+    """`acts.csv`: one flat row per act in reading order, text columns empty without text.
+
+    The verifier renders it again with this function from what it has already
+    checked and requires the same bytes.
+    """
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(_CSV_COLUMNS)
+    for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
+        fields = _text_fields(act)
+        delivered = fields[CANONICAL_TEXT_FIELD] is not None
+        row = {
+            **_row_head(act),
+            "lot": lot,
+            "reading": act["reading"],
+            "text_status": fields["text_status"],
+            CANONICAL_TEXT_FIELD: fields[CANONICAL_TEXT_FIELD],
+            "canonical_text_sha256": fields["canonical_text_sha256"],
+            "uncertainty_json": canonical_text(fields["uncertainty"]) if delivered else None,
+        }
+        writer.writerow([_csv_cell(row[column]) for column in _CSV_COLUMNS])
+    return _CSV_BOM + buffer.getvalue().encode("utf-8")
+
+
+def _csv_records(path: Path) -> list[dict[str, str]]:
+    """Every row of `acts.csv` by column, each cell's escape removed."""
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise SchemaRefusal("the acts CSV cannot be read") from error
+    if not data.startswith(_CSV_BOM):
+        raise SchemaRefusal("the acts CSV does not open with its UTF-8 byte-order mark")
+    try:
+        text = data[len(_CSV_BOM) :].decode("utf-8")
+        # No cell is longer than the member, so the field limit never cuts one.
+        csv.field_size_limit(max(csv.field_size_limit(), len(text) + 1))
+        rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
+    except (UnicodeDecodeError, csv.Error) as error:
+        raise SchemaRefusal("the acts CSV is not one readable UTF-8 CSV table") from error
+    if not rows or tuple(rows[0]) != _CSV_COLUMNS:
+        raise SchemaRefusal("the acts CSV does not carry exactly this build's columns")
+    if any(len(row) != len(_CSV_COLUMNS) for row in rows[1:]):
+        raise SchemaRefusal("an acts CSV row does not carry one cell per column")
+    return [
+        {column: _csv_value(cell) for column, cell in zip(_CSV_COLUMNS, row, strict=True)}
+        for row in rows[1:]
+    ]
+
+
+def _csv_literals(path: Path) -> dict[str, tuple]:
+    """Each delivered act's literal, hash, uncertainty layer and status, as `acts.csv` gives them."""
+    records: dict[str, tuple] = {}
+    for row in _csv_records(path):
+        if row["category"] != ArmariumCategory.DELIVERED.value:
+            continue
+        act_id, literal, digest = (
+            row["act_id"],
+            row[CANONICAL_TEXT_FIELD],
+            row["canonical_text_sha256"],
+        )
+        if not act_id or digest != canonical_text_sha256(literal) or act_id in records:
+            raise SchemaRefusal("an acts CSV literal identity or hash is invalid")
+        uncertainty = _decode_json(
+            row["uncertainty_json"], "an acts CSV uncertainty layer is not JSON"
+        )
+        _require_damage_record(row["text_status"], uncertainty, literal, subject="acts CSV row")
+        records[act_id] = (
+            literal,
+            digest,
+            validate_uncertainty(uncertainty, literal),
+            row["text_status"],
+        )
+    return records
+
+
+def _verify_csv_rendering(root: Path, manifest: dict[str, Any], sources: dict[str, Any]) -> None:
+    """`acts.csv` is exactly what this build writes for the package.
+
+    The writer is fed the act outcomes and readings of `sources.json`, the
+    manifest's lot and each delivered act's literal and layer as the CSV gives
+    them (hash- and damage-checked), so no other row, cell or order passes.
+    """
+    literals = _csv_literals(root / CSV_MEMBER)
+    readings = {row["act_id"]: row["reading"] for row in sources["act_readings"]}
+    acts = []
+    for act_id, outcome in _act_outcome_sources(sources).items():
+        act = {**outcome, "reading": readings.get(act_id), CANONICAL_TEXT_FIELD: None}
+        if outcome["category"] == ArmariumCategory.DELIVERED.value:
+            if act_id not in literals:
+                raise SchemaRefusal(f"the acts CSV does not deliver {act_id}")
+            act[CANONICAL_TEXT_FIELD], _digest, act["uncertainty"], _status = literals[act_id]
+        acts.append(act)
+    if (root / CSV_MEMBER).read_bytes() != _acts_csv_bytes(tuple(acts), manifest["run"]["lot"]):
+        raise SchemaRefusal(
+            "the acts CSV is not exactly what this build writes for the package's own accounting"
+        )
+
+
 def _jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
     return b"".join(canonical_bytes(record) + b"\n" for record in records)
 
@@ -4794,6 +4936,8 @@ def _required_format_members(
         required["acts-database"] = {"acts.sqlite"}
     if "jsonl" in formats.formats:
         required["jsonl"] = {"acts.jsonl"}
+    if "csv" in formats.formats:
+        required["csv"] = {CSV_MEMBER}
     if "review-items" in formats.formats:
         required["review-items"] = {"review-items.jsonl"}
     return required
