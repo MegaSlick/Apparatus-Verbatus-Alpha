@@ -11,7 +11,10 @@
       "Bash(git*commit* -n*)",
       "Bash(git*merge*--no-verify*)",
       "Bash(git*filter-branch*)",
-      "Bash(git*filter-repo*)"
+      "Bash(git*filter-repo*)",
+      "Bash(git*-c core.hooksPath*)",
+      "Bash(git config core.hooksPath *)",
+      "Bash(git config --unset core.hooksPath*)"
     ],
     "ask": [
       "Bash(runpodctl create*)",

@@ -2,8 +2,8 @@
 
 For AI sessions and the agents they start. [CONTRIBUTING.md](CONTRIBUTING.md) applies
 too. Read [README.md](README.md) and [PRINCIPLES.md](PRINCIPLES.md) first, and
-[ARCHITECTURE.md](ARCHITECTURE.md) and [GLOSSARY.md](GLOSSARY.md) before changing a
-stage, a contract or a term.
+[ARCHITECTURE.md](ARCHITECTURE.md), [GLOSSARY.md](GLOSSARY.md) and the stage's
+`CONTRACT.md` before changing a stage, a contract or a term.
 
 This page is deliberately short. Use judgement and be careful rather than look for a
 rule. For long or important sessions the lead gives a rule set for that session; it
@@ -20,6 +20,8 @@ The project lead does not write code. The lead decides:
 - **What the project claims or publishes**: calling a result proven, scaling up a small
   test, excluding material, publishing.
 - **Anything hard to undo**: deleting branches or data, rewriting history.
+- **The rules themselves**: changes to the documents CONTRIBUTING.md names and to what
+  AI sessions may do (`.claude/`).
 
 Everything else is engineering and the session decides it. Put the reason in the commit
 message or pull request, not in a TODO or a handoff.
