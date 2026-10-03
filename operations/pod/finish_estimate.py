@@ -348,16 +348,18 @@ class GuardDeadline:
     def read(self) -> datetime | None:
         try:
             text = self._path.read_text(encoding="ascii").rstrip("\n")
+            readable = True
         except (OSError, UnicodeDecodeError):
-            text = ""
+            text, readable = "", False
         if text == self._last_text:
             return self._valid
         self._last_text = text
         horizon = self._now().timestamp() + GUARD_HORIZON_SECONDS
         if text.isascii() and text.isdigit() and int(text) <= horizon:
             self._valid = datetime.fromtimestamp(int(text), UTC)
-        elif self._valid is not None and text not in self.ignored:
-            # Ignored in favour of the deadline already in force, as the guard logs it.
+        elif (readable or self._valid is not None) and text not in self.ignored:
+            # Ignored as the guard logs it; a file not there yet before any deadline is
+            # no value at all.
             self.ignored.append(text)
         return self._valid
 
@@ -370,6 +372,8 @@ class Deadline:
     at: datetime
     source: str
     extendable: bool
+    guard_unread: bool = False
+    """True when this pod's guard deadline was never readable, so the bootstrap's stands."""
 
 
 class PodDeadline:
@@ -400,7 +404,10 @@ class PodDeadline:
             return Deadline(self._bootstrap, "the pod timer's hard deadline", False)
         if guard is None:
             return Deadline(
-                self._bootstrap, "the bootstrap's hard deadline (no guard deadline read)", False
+                self._bootstrap,
+                "the bootstrap's hard deadline (no guard deadline read)",
+                False,
+                guard_unread=True,
             )
         return Deadline(guard, "the pod guard's deadline", True)
 
@@ -470,7 +477,12 @@ def deadline_at_risk_message(
             f"${budget.hard_max_cost_usd}"
         )
     )
-    if not deadline.extendable:
+    if deadline.guard_unread:
+        route = (
+            f"This deadline is {deadline.source}: no guard deadline was readable; check the "
+            "guard before relying on any deadline"
+        )
+    elif not deadline.extendable:
         route = (
             f"This deadline ({deadline.source}) cannot be extended by hand; moving the "
             "guard's deadline file does not change it"

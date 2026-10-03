@@ -1539,6 +1539,22 @@ def test_a_finish_estimate_that_fails_never_stops_the_run_and_is_reported(
     assert "unreadable tree" in watch["last_tick_failure"]
 
 
+@pytest.mark.parametrize(
+    ("rates", "reason"),
+    [
+        ({"VERBATUS_POD_HOURLY_USD": "1.99"}, "VERBATUS_VOLUME_ONGOING_HOURLY_USD missing"),
+        ({"VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.06"}, "VERBATUS_POD_HOURLY_USD missing"),
+        ({}, None),
+    ],
+)
+def test_a_half_set_pod_timer_rate_is_named_not_dropped(
+    rates: dict[str, str], reason: str | None
+) -> None:
+    plan = SimpleNamespace(hourly_usd=None)
+
+    assert pod_run._hourly_price(plan, rates) == (None, reason)  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize("price", ["abc", "0", "-1.00", "NaN"])
 def test_an_hourly_price_that_is_not_a_positive_decimal_is_refused(
     tmp_path: Path, price: str

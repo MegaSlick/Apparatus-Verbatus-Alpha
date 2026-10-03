@@ -1507,8 +1507,13 @@ def _hourly_price(
     if plan.hourly_usd is not None:
         return plan.hourly_usd, "--hourly-usd"
     values = [rates.get(name) for name in HOURLY_RATE_ENVIRONMENT]
-    if any(value is None for value in values):
+    missing = [
+        name for name, value in zip(HOURLY_RATE_ENVIRONMENT, values, strict=True) if value is None
+    ]
+    if len(missing) == len(HOURLY_RATE_ENVIRONMENT):
         return None, None
+    if missing:
+        return None, f"{' and '.join(missing)} missing"
     try:
         total = sum((Decimal(value) for value in values if value is not None), Decimal(0))
     except InvalidOperation:

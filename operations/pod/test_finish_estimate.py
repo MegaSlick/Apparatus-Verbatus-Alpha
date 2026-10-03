@@ -188,8 +188,10 @@ def test_the_guard_deadline_is_read_as_the_guard_reads_it(tmp_path: Path) -> Non
     """Only epoch seconds no more than a week out; anything else is ignored and the last
     valid deadline stands, as `pod_guard.sh` does."""
     guard, path = _guard(tmp_path)
+    assert guard.read() is None  # no file yet: nothing read, nothing ignored
     path.write_text("soon\n", encoding="ascii")
     assert guard.read() is None
+    assert guard.ignored == ["soon"]
 
     path.write_text(f"{VALID}\n", encoding="ascii")
     assert guard.read() == datetime.fromtimestamp(VALID, UTC)
@@ -213,7 +215,8 @@ def test_once_a_guard_deadline_is_seen_the_bootstrap_deadline_never_replaces_it(
     guard, path = _guard(tmp_path)
     bootstrap = NOW + timedelta(hours=1)
     deadline = PodDeadline(guard=guard, bootstrap=bootstrap, pod_timer=False)
-    assert deadline() == Deadline(bootstrap, deadline().source, extendable=False)
+    unread = deadline()
+    assert (unread.at, unread.extendable, unread.guard_unread) == (bootstrap, False, True)
 
     path.write_text(f"{VALID}\n", encoding="ascii")
     seen = deadline()
@@ -440,6 +443,25 @@ def test_a_pod_timer_deadline_offers_no_hand_route() -> None:
 
     assert "cannot be extended by hand" in message
     assert "mv " not in message and "deadline.new" not in message
+    assert _unsafe_reason(message) is None
+
+
+def test_with_no_guard_deadline_read_the_notice_says_to_check_the_guard() -> None:
+    message = deadline_at_risk_message(
+        run_id="run-1",
+        pod_id="pod123",
+        estimate=_estimate(),
+        deadline=Deadline(
+            T0 + timedelta(hours=2), "the bootstrap's", extendable=False, guard_unread=True
+        ),
+        budget=BUDGET,
+        budget_problem=None,
+        hourly_usd=Decimal("2.00"),
+        now=T0 + timedelta(minutes=10),
+    )
+
+    assert "no guard deadline was readable; check the guard" in message
+    assert "cannot be extended by hand" not in message
     assert _unsafe_reason(message) is None
 
 
