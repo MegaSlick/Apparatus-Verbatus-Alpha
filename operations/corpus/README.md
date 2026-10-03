@@ -196,7 +196,10 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   diplomatic literals, so the report states what the reconstruction changed; some or none
   of its acts is counted and not scored. An export that shows reconstructions but packaged
   no `coniector.jsonl` (JSONL not selected) has them counted with `measured: false` and
-  exit 1. Counts and identifiers only, never text.
+  exit 1. With `--reference-ledger`, every reference page must be one the admission
+  ledger carries, byte for byte (`reference-page-not-in-ledger` otherwise), and
+  `reference_ledger_verified` says whether one was named. Counts and identifiers only,
+  never text.
 - `proof_pages.py` — the proof-page picker. From an admitted set's ledger it takes a
   declared list (`--page-sha`, repeated) or a seeded draw (`--count N --seed TEXT`: the N
   admitted pages first by `sha256(seed:page_sha256)`), copies each image, checked against
@@ -237,7 +240,9 @@ verbatus export --run-id $RUN
   --ledger private/corpora/recordgold/admission/val/ledger.json \
   --reference-pages $P/reference-pages.jsonl --output $P/reports/witnesses.json
 .venv/bin/python -m operations.corpus.reconstruction_evaluate --run-root runs --run-id $RUN \
-  --reference-pages $P/reference-pages.jsonl --out $P/reports/reconstructions.json
+  --reference-pages $P/reference-pages.jsonl \
+  --reference-ledger private/corpora/recordgold/admission/val/ledger.json \
+  --out $P/reports/reconstructions.json
 ```
 
 `fetch-run` runs the canary check itself when `private/canary/` exists, and `export`

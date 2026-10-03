@@ -199,3 +199,39 @@ def test_cli_writes_the_report_outside_the_run_tree(happy_run: RunTree, tmp_path
         main([*args, "--out", str(out)])
     with pytest.raises(CorpusRefusal, match="^output-in-run-tree:"):
         main([*args, "--out", str(happy_run.root / "reconstruction.json")])
+
+
+def test_a_named_ledger_refuses_a_reference_page_admission_did_not_seal(
+    happy_run: RunTree, tmp_path: Path
+):
+    """A page with other text that hashes to itself is scored unless a ledger is named;
+    named, the ledger refuses it and admits the page it sealed."""
+    from common.contracts.canonical import digest_bytes, self_hash
+
+    from .test_evaluate import _ledger_for
+
+    admitted = _fixture_reference_for_page_one(happy_run)
+    substituted = json.loads(json.dumps(admitted))
+    act = substituted["acts"][0]
+    act["text"] += " corrigé"
+    act["text_sha256"] = digest_bytes(act["text"].encode("utf-8"))
+    del substituted["self_hash"]
+    substituted["self_hash"] = self_hash(substituted)
+    ledger = tmp_path / "ledger.json"
+    ledger.write_bytes(canonical_bytes(_ledger_for(admitted)))
+    args = ["--run-root", str(happy_run.root.parent), "--run-id", happy_run.run_id]
+
+    def run(page: dict, name: str, *extra: str) -> dict:
+        pages = tmp_path / f"{name}.jsonl"
+        pages.write_bytes(canonical_bytes(page) + b"\n")
+        out = tmp_path / f"{name}-report.json"
+        main([*args, "--reference-pages", str(pages), *extra, "--out", str(out)])
+        return json.loads(out.read_bytes())
+
+    assert run(substituted, "unbound")["reference_ledger_verified"] is False
+    with pytest.raises(CorpusRefusal, match="^reference-page-not-in-ledger:"):
+        run(substituted, "substituted", "--reference-ledger", str(ledger))
+    assert not (tmp_path / "substituted-report.json").exists()
+    bound = run(admitted, "admitted", "--reference-ledger", str(ledger))
+    assert bound["reference_ledger_verified"] is True
+    assert bound["reference_ledger_sha256"] == digest_bytes(ledger.read_bytes())

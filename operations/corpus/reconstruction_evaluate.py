@@ -49,7 +49,13 @@ from .compare import (
     load_exemplar_page_shas,
     load_pipeline_reading_acts,
 )
-from .evaluate import _established_text_hashes, hypotheses_from_export, load_reference_pages
+from .evaluate import (
+    _established_text_hashes,
+    hypotheses_from_export,
+    load_reference_ledger,
+    load_reference_pages,
+)
+from .local_admission import validate_local_admission_ledger
 from .normalization import GRAPHEMIC_V1
 from .scoring import OutputStatus, score_response
 
@@ -65,6 +71,8 @@ RECONSTRUCTION_EVALUATION_REFUSAL_REASONS = frozenset(
         "no-export",
         "output-exists",
         "output-in-run-tree",
+        "reference-ledger-invalid",
+        "reference-page-not-in-ledger",
     }
 )
 
@@ -240,8 +248,41 @@ def reconstruction_report(
     }
 
 
-def evaluate_run(tree: RunTree, reference_pages: list[dict[str, Any]]) -> dict[str, Any]:
-    """One self-hashed reconstruction report for a sealed run against reference pages."""
+def _check_in_ledger(
+    reference_pages: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any]
+) -> str:
+    """The ledger's digest, once each reference page is one it admitted, byte for byte."""
+    try:
+        ledger = validate_local_admission_ledger(dict(ledger))
+    except CorpusRefusal as error:
+        raise Refusal(f"reference-ledger-invalid: {error}") from error
+    admitted = {canonical_bytes(page) for page in ledger["reference_pages"]}
+    for page in reference_pages:
+        if canonical_bytes(dict(page)) not in admitted:
+            raise Refusal(
+                f"reference-page-not-in-ledger: the reference page for {page['page']['sha256']} "
+                "is not one the named admission ledger carries"
+            )
+    return digest_bytes(canonical_bytes(dict(ledger)))
+
+
+def evaluate_run(
+    tree: RunTree,
+    reference_pages: list[dict[str, Any]],
+    *,
+    reference_ledger: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One self-hashed reconstruction report for a sealed run against reference pages.
+
+    With `reference_ledger`, a `recordgold-local-admission.v1` body, every
+    reference page must be one the ledger carries, and the report names the
+    ledger's digest; without it the report says the pages were not verified.
+    """
+    reference_ledger_sha256 = (
+        _check_in_ledger(reference_pages, reference_ledger)
+        if reference_ledger is not None
+        else None
+    )
     read_only = ReadOnlyRunTree(tree)
     try:
         export_record = verify_final_seal(read_only)
@@ -283,6 +324,8 @@ def evaluate_run(tree: RunTree, reference_pages: list[dict[str, Any]]) -> dict[s
     body = {
         "run_id": tree.run_id,
         "export_sha256": digest_bytes(canonical_bytes(export_record)),
+        "reference_ledger_sha256": reference_ledger_sha256,
+        "reference_ledger_verified": reference_ledger is not None,
         **reconstruction_report(
             joins=joins,
             shown=shown,
@@ -313,13 +356,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--reference-pages", type=Path, required=True)
+    parser.add_argument(
+        "--reference-ledger",
+        type=Path,
+        help="the admission ledger the pages came from; every reference page must be one it carries",
+    )
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     tree = RunTree(args.run_root, args.run_id)
     output = args.out.resolve()
     if output.is_relative_to(tree.root.resolve()):
         raise Refusal("output-in-run-tree: the report must be written outside the run tree")
-    report = evaluate_run(tree, load_reference_pages(args.reference_pages))
+    try:
+        ledger = load_reference_ledger(args.reference_ledger) if args.reference_ledger else None
+    except CorpusRefusal as error:
+        raise Refusal(f"reference-ledger-invalid: {error}") from error
+    report = evaluate_run(tree, load_reference_pages(args.reference_pages), reference_ledger=ledger)
     if not write_new_file(args.out, canonical_bytes(report)):
         raise Refusal(f"output-exists: {args.out}")
     for line in summary_lines(report):
