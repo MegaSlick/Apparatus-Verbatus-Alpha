@@ -7,6 +7,7 @@ import importlib.util
 import inspect
 import json
 import os
+import pwd
 import shutil
 import stat
 import subprocess
@@ -32,6 +33,45 @@ NOTIFY_TEST_SINK_TOPIC = "verbatus-test-sink"
 def pytest_configure(config: pytest.Config) -> None:
     """Put the session on the sink topic before collection, so no test can page the lead."""
     os.environ["NTFY_TOPIC"] = NOTIFY_TEST_SINK_TOPIC
+
+
+def _account_operator_state_dirs() -> tuple[Path, ...]:
+    """Where the operator CLI keeps real state for this account when no folder is named."""
+    candidates = []
+    state_home = os.environ.get("XDG_STATE_HOME", "")
+    if os.path.isabs(state_home):
+        candidates.append(Path(state_home) / "verbatus")
+    for home in (os.environ.get("HOME", ""), pwd.getpwuid(os.getuid()).pw_dir):
+        if os.path.isabs(home):
+            candidates.append(Path(home) / ".local" / "state" / "verbatus")
+    return tuple(dict.fromkeys(candidates))
+
+
+# Read before any fixture redirects the environment.
+ACCOUNT_OPERATOR_STATE_DIRS = _account_operator_state_dirs()
+
+
+def account_operator_state_snapshot() -> dict[str, tuple[int, int] | None]:
+    """Every file under the account's real operator state, by size and mtime."""
+    snapshot: dict[str, tuple[int, int] | None] = {}
+    for directory in ACCOUNT_OPERATOR_STATE_DIRS:
+        snapshot[str(directory)] = None
+        for path in sorted(directory.rglob("*")) if directory.is_dir() else ():
+            status = path.lstat()
+            snapshot[str(path)] = (status.st_size, status.st_mtime_ns)
+    return snapshot
+
+
+@pytest.fixture(autouse=True)
+def operator_state_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch) -> Path:
+    """A fresh XDG_STATE_HOME outside the checkout for every test and its subprocesses.
+
+    The operator CLI otherwise keeps receipts in the account's real state folder, so
+    a test that names no state folder would add synthetic records to real history.
+    """
+    state_home = tmp_path_factory.mktemp("xdg-state")
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    return state_home
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
