@@ -19,3 +19,7 @@ required-version = "==0.12.1"
 package = false
 # The pod is the one place this environment runs.
 environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+# Surya caps Pillow below 11, but every Pillow security fix since is in 12.x. Upstream's
+# own pull request to lift the cap (datalab-to/surya#519) passes Surya's test suite on
+# Pillow 12.2, so this environment takes the patched release.
+override-dependencies = ["pillow==12.3.0"]
