@@ -185,8 +185,7 @@ class InProcessSupervisor:
     `supervise.record_tick`, unchanged.
 
     `run_supervisor`'s loop is the drill's, and its pre-loop refusals (a
-    missing lease, an already-terminal lease, a heartbeat timeout not shorter
-    than the remaining lifetime), its notifier wiring and its exit-code and
+    missing lease, an already-terminal lease), its notifier wiring and its exit-code and
     final-record reporting are not rehearsed here at all -- they are inert at
     the lifetimes this module uses, and `test_supervise.py` proves them.  The
     spend policy is loaded from the same ``--spend`` file the argv names, the
