@@ -96,7 +96,7 @@ def build_page_render(
     source_page_ordinal: int,
     page_context: dict[str, int],
     full_page: bool = False,
-    retain: Callable[[bytes], dict[str, str]] | None = None,
+    retain: Callable[[bytes, str], dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """The page render for one page reading, with its transform and its reason
     recorded (ARCHITECTURE invariant 3: the exact image shown is reproducible
@@ -124,8 +124,13 @@ def build_page_render(
     )
 
 
+def _is_bilevel(page_bytes: bytes) -> bool:
+    with Image.open(BytesIO(page_bytes)) as image:
+        return image.mode == "1"
+
+
 def _published_render(
-    retain: Callable[[bytes], dict[str, str]],
+    retain: Callable[[bytes, str], dict[str, str]],
     page: dict[str, Any],
     page_bytes: bytes,
     *,
@@ -140,7 +145,17 @@ def _published_render(
         raise SchemaRefusal(
             "a sealed Exemplar page could not be rendered as Perlector page context"
         ) from error
-    published = retain(downscaled)
+    try:
+        published = retain(downscaled, "the page render")
+    except SchemaRefusal as error:
+        if transform["resampler"] == "pillow-lanczos" and _is_bilevel(page_bytes):
+            raise SchemaRefusal(
+                f"{error}. This page is bilevel: bilevel pages are now resampled with "
+                "Lanczos, where earlier versions used nearest neighbour while recording "
+                "Lanczos, so a run sealed by an earlier version cannot be checked again; "
+                "start a new run"
+            ) from error
+        raise
     return {
         "source_page_id": source_page_id,
         "source_page_ordinal": source_page_ordinal,
