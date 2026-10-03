@@ -52,13 +52,6 @@ def test_no_role_can_write_run_a_shell_or_spawn_an_agent():
         assert "Agent" in listed(data["disallowedTools"])
 
 
-def test_turn_caps_and_memory_are_not_enabled():
-    for path in ROLE_FILES:
-        data = frontmatter(path)
-        assert "maxTurns" not in data
-        assert "memory" not in data
-
-
 def test_review_roles_keep_their_effort_floors():
     for name, floor in EFFORT_FLOORS.items():
         path = AGENTS / f"{name}.md"

@@ -7,7 +7,7 @@ if ! branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) &&
   echo "  BLOCKED: commit while HEAD is detached or its branch cannot be resolved." >&2
   echo "" >&2
   echo "  A detached commit can become unreachable when checkout moves. Switch" >&2
-  echo "  to your work/<topic>, audit/<topic>, or infra/<topic> branch first." >&2
+  echo "  to a named branch for the task first." >&2
   echo "" >&2
   echo "  An interactive rebase detaches HEAD legitimately. If that is where you" >&2
   echo "  are, and you mean it:" >&2
