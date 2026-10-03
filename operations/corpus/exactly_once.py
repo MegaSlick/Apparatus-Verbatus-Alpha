@@ -102,6 +102,7 @@ from . import CorpusRefusal
 from .cache import write_new_file
 from .compare import ReadOnlyRunTree, load_exemplar_page_shas
 from .local_admission import load_local_admission_ledger, validate_local_admission_ledger
+from .normalization import MeasurementRefusal, check_text_bounds
 
 SCHEMA: Final = "exactly-once-report.v3"
 GATE_EXACTLY_ONCE_BP: Final = 9_500
@@ -141,6 +142,7 @@ EXACTLY_ONCE_REFUSAL_REASONS: Final = frozenset(
         "output-in-run-tree",
         "policy-mismatch",
         "reference-mismatch",
+        "text-out-of-bounds",
     }
 )
 
@@ -506,6 +508,12 @@ def _share(numerator: int, denominator: int) -> int | None:
 
 def _gold_cer_bp(gold_text: str, reading: str) -> int:
     """Edits from the gold text to the best-matching substring of a reading, per gold letter."""
+    # Gold texts are bounded where the admission ledger validates its reference
+    # pages; a reading is bounded here, before it is normalized or compared.
+    try:
+        check_text_bounds(reading, "a reading")
+    except MeasurementRefusal as error:
+        raise Refusal(f"text-out-of-bounds: {error}") from error
     gold = normalized_text(gold_text)
     if not gold:
         raise Refusal("malformed-record: a gold record has no text to measure")

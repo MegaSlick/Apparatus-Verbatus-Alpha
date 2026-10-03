@@ -14,7 +14,7 @@ import unicodedata
 from dataclasses import dataclass
 from importlib.metadata import version as _installed_version
 
-from uniseg.graphemecluster import grapheme_clusters
+from uniseg.graphemecluster import GraphemeClusterBreak, grapheme_cluster_break, grapheme_clusters
 
 
 class MeasurementRefusal(ValueError):
@@ -86,6 +86,13 @@ MAX_TEXT_LENGTH = 20_000
 # combining marks such as U+0897.
 MAX_COMBINING_RUN = 30
 
+# A combining mark here is a code point whose Grapheme_Cluster_Break, in the
+# segmenter's own table, is Extend or ZWJ: the code points a cluster absorbs
+# without limit, and a superset of both the non-starters (canonical combining
+# class > 0) and the Indic_Conjunct_Break Extend and Linker code points whose
+# runs make segmentation quadratic.
+_COMBINING_BREAKS = frozenset({GraphemeClusterBreak.EXTEND, GraphemeClusterBreak.ZWJ})
+
 
 @dataclass(frozen=True, slots=True)
 class NormalizationProfile:
@@ -148,7 +155,10 @@ class NormalizationProfile:
             ],
             "text_bounds": {
                 "max_text_length": MAX_TEXT_LENGTH,
+                "length_unit": "code-points",
                 "max_combining_run": MAX_COMBINING_RUN,
+                "combining_mark": f"Grapheme_Cluster_Break-Extend-or-ZWJ-uniseg-{_UNISEG_VERSION}",
+                "applies_to": "text-as-given-then-normalized-text",
             },
             "character_units": f"UAX29-extended-grapheme-clusters-uniseg-{_UNISEG_VERSION}",
             "word_units": "nonempty-runs-between-canonical-U+0020-spaces",
@@ -171,13 +181,37 @@ PROFILES: dict[str, NormalizationProfile] = {
 }
 
 
+def check_text_bounds(text: str, what: str = "text") -> None:
+    """Refuse a text longer than MAX_TEXT_LENGTH code points or carrying a run of
+    more than MAX_COMBINING_RUN combining marks, before anything costly reads it."""
+
+    if len(text) > MAX_TEXT_LENGTH:
+        raise MeasurementRefusal(
+            f"{what} is {len(text)} code points, over the profile's bound of {MAX_TEXT_LENGTH}"
+        )
+    run = 0
+    for character in text:
+        run = run + 1 if grapheme_cluster_break(character) in _COMBINING_BREAKS else 0
+        if run > MAX_COMBINING_RUN:
+            raise MeasurementRefusal(
+                f"{what} carries a run of more than {MAX_COMBINING_RUN} combining marks, "
+                "over the profile's bound"
+            )
+
+
 def normalize_text(text: str, profile: NormalizationProfile) -> str:
-    """Apply the exact ordered normalization contract to one private text string."""
+    """Apply the exact ordered normalization contract to one private text string.
+
+    The text bounds hold for the text as given, so a refusal comes before any
+    normalization, and again for the result, because NFC and the ligature
+    mappings can lengthen a text or a run of marks.
+    """
 
     if not isinstance(text, str):
         raise MeasurementRefusal("only Unicode strings can be normalized")
     if not isinstance(profile, NormalizationProfile):
         raise MeasurementRefusal("normalization requires a named NormalizationProfile")
+    check_text_bounds(text)
     normalized = unicodedata.normalize("NFC", text)
     normalized = _WHITESPACE.sub(" ", normalized).strip(" ")
     normalized = normalized.translate(str.maketrans(profile.character_map()))
@@ -187,7 +221,9 @@ def normalize_text(text: str, profile: NormalizationProfile) -> str:
     # `s` + U+0301, which does compose to `ś`. Without this line the same ink
     # normalizes to different bytes depending on which spelling it arrived in,
     # and two correct readings of one character score as a substitution.
-    return unicodedata.normalize("NFC", normalized)
+    normalized = unicodedata.normalize("NFC", normalized)
+    check_text_bounds(normalized, "normalized text")
+    return normalized
 
 
 def character_units(text: str, profile: NormalizationProfile) -> tuple[str, ...]:

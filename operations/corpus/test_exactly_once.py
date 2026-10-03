@@ -31,6 +31,7 @@ from .exactly_once import (
     sealed_policy_sha256,
     summary_lines,
 )
+from .normalization import MAX_TEXT_LENGTH
 
 POLICY = load_page_accounting_policy()
 PAGE_SHA = "a" * 64
@@ -246,6 +247,14 @@ def test_every_record_read_once_passes_the_gate():
     }
     assert result["pages"]["fit_65536"] == {"fits": 1}
     assert result["pages"]["finish_length_bp"] == 0
+
+
+def test_a_reading_beyond_the_scoring_bounds_is_refused_not_measured():
+    acts = one_act_each()
+    acts[0]["text"] = "a" * (MAX_TEXT_LENGTH + 1)
+
+    with pytest.raises(Refusal, match="^text-out-of-bounds:"):
+        report([page(acts)])
 
 
 def test_two_entries_read_as_one_act_are_merged_and_caught_by_merged_detection():
