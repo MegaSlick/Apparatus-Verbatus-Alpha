@@ -1025,6 +1025,25 @@ def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_
         main([*args, "--selection", str(tmp_path / "selection.json"), "--out", str(tmp_path / "x")])
 
 
+def test_a_run_without_its_final_export_seal_is_refused_and_no_report_written(
+    tmp_path, proof_set
+):
+    import shutil
+
+    from .exactly_once import main
+
+    _, args = _seal_set(tmp_path, proof_set, proof_set["rows"])
+    runs = tmp_path / "runs"
+    shutil.copytree(proof_set["root"] / "runs", runs)
+    shutil.rmtree(runs / "r" / "7_armarium" / "artifacts" / "stage-seal")
+    args[args.index("--run-root") + 1] = str(runs)
+    out = tmp_path / "exactly-once.json"
+
+    with pytest.raises(Refusal, match="^no-export:"):
+        main([*args, "--out", str(out)])
+    assert not out.exists()
+
+
 def test_gold_text_other_than_the_admitted_file_is_refused_before_any_gate(tmp_path, proof_set):
     """The same record ids with other text -- here, text that would agree with any
     reading -- are not the reference admission sealed, so no report is written."""
