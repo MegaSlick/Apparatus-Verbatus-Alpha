@@ -16,17 +16,23 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
 from operations.conftest import dribbling_loopback_server
 
 from . import notify_hooks
-from .conftest import timer_start_command
+from .arming import ControllerReadiness
+from .conftest import SharedClock, configured_policy, timer_start_command, verified_shutdown
+from .controllers import ControllerState, LaptopSupervisor
+from .launch import LaunchState, PodRuntime
+from .lease import LeaseStore, PodLease
 from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     AccountBalanceObservation,
     BillingState,
+    PendingCreateIntent,
     PodCreateRequest,
     Presence,
     ProviderFailure,
@@ -485,13 +491,16 @@ def test_the_runtime_contract_reports_what_the_provider_says_it_created() -> Non
     assert record.runtime_contract.matches(request())
 
 
-def test_an_interruptible_pod_is_refused_rather_than_recorded() -> None:
+def test_an_interruptible_pod_is_returned_without_a_contract_so_it_can_be_closed() -> None:
     transport = ScriptedTransport(
         [json_response([]), json_response(pod_payload(interruptible=True), 201)]
     )
 
-    with pytest.raises(ProviderFailure, match="silent-loss machine"):
-        provider(transport).create(request())
+    record = provider(transport).create(request())
+
+    assert record.pod_id == "pod-1"
+    assert record.runtime_contract is None
+    assert record.contract_refusal is not None and "silent-loss machine" in record.contract_refusal
 
 
 def test_a_missing_interruptible_field_is_never_read_as_on_demand() -> None:
@@ -499,12 +508,15 @@ def test_a_missing_interruptible_field_is_never_read_as_on_demand() -> None:
     del payload["interruptible"]
     transport = ScriptedTransport([json_response([]), json_response(payload, 201)])
 
-    with pytest.raises(ProviderFailure, match="on-demand cannot be assumed"):
-        provider(transport).create(request())
+    record = provider(transport).create(request())
+
+    assert record.runtime_contract is None
+    assert record.contract_refusal is not None
+    assert "on-demand cannot be assumed" in record.contract_refusal
 
 
 @pytest.mark.parametrize("route", [None, "v2"])
-def test_a_pod_whose_env_does_not_seal_v1_is_refused(route: str | None) -> None:
+def test_an_adopted_pod_whose_env_does_not_seal_v1_carries_no_contract(route: str | None) -> None:
     payload = pod_payload()
     env = dict(payload["env"])  # type: ignore[arg-type]
     if route is None:
@@ -513,8 +525,11 @@ def test_a_pod_whose_env_does_not_seal_v1_is_refused(route: str | None) -> None:
         env["VERBATUS_RUNPOD_ROUTE"] = route
     transport = ScriptedTransport([json_response(payload | {"env": env})])
 
-    with pytest.raises(ProviderFailure, match="does not seal VERBATUS_RUNPOD_ROUTE=v1"):
-        provider(transport).adopt("pod-1")
+    record = provider(transport).adopt("pod-1")
+
+    assert record.runtime_contract is None
+    assert record.contract_refusal is not None
+    assert "does not seal VERBATUS_RUNPOD_ROUTE=v1" in record.contract_refusal
 
 
 def test_a_pod_with_no_attached_volume_is_refused() -> None:
@@ -564,7 +579,7 @@ def test_adopting_a_non_running_pod_is_refused_with_its_status_named(desired_sta
         provider(transport).adopt("pod-1")
 
 
-@pytest.mark.parametrize("pod_id", [".", "..", "pod\nheader", "pod/child", "pod?query"])
+@pytest.mark.parametrize("pod_id", [".", "..", " ", "pod\nheader", "pod/child", "pod?query"])
 def test_provider_refuses_unsafe_pod_ids_before_transport(pod_id: str) -> None:
     transport = ScriptedTransport([])
 
@@ -1803,3 +1818,371 @@ def test_a_create_interrupted_by_its_deadline_is_never_re_issued() -> None:
     record = provider(recovery).create(request().recovery_request())
     assert record.pod_id == "pod-1"
     assert [method for method, _, _ in recovery.calls] == ["GET"]
+
+
+# -- a created pod whose effective shape is refused is bound and closed ------
+
+
+class V1World:
+    """A v1 endpoint holding pods: list, POST, exact GET, DELETE and billing."""
+
+    def __init__(
+        self,
+        *,
+        post: dict[str, object] | None = None,
+        pods: list[dict[str, object]] | None = None,
+        post_failure: str | None = None,
+    ) -> None:
+        self.post = post
+        self.post_failure = post_failure
+        self.pods = {str(pod["id"]): pod for pod in pods or []}
+        self.calls: list[tuple[str, str, dict[str, object] | None]] = []
+
+    def request(
+        self, method: str, path: str, body: dict[str, object] | None = None
+    ) -> HttpResponse:
+        self.calls.append((method, path, body))
+        if method == "GET" and path.startswith("/billing/pods?"):
+            pod_id = re.search(r"podId=([^&]+)", path)
+            assert pod_id is not None
+            return json_response([billing_row(podId=pod_id.group(1))])
+        if method == "GET" and path.startswith("/pods?"):
+            return json_response(list(self.pods.values()))
+        if method == "POST" and path == "/pods":
+            if self.post_failure is not None:
+                # The request may have reached RunPod; only its answer was lost.
+                if self.post is not None:
+                    self.pods[str(self.post["id"])] = self.post
+                raise ProviderFailure(self.post_failure)
+            assert self.post is not None, "this world accepts no create"
+            self.pods[str(self.post.get("id"))] = self.post
+            return json_response(self.post, 201)
+        pod_id = path.split("?", 1)[0].rsplit("/", 1)[-1]
+        if method == "DELETE":
+            self.pods.pop(pod_id, None)
+            return HttpResponse(204, b"")
+        if method == "GET":
+            if pod_id in self.pods:
+                return json_response(self.pods[pod_id])
+            return HttpResponse(404, b"{}")
+        raise AssertionError(f"undocumented call {method} {path}")
+
+    def deleted(self) -> list[str]:
+        return [path for method, path, _ in self.calls if method == "DELETE"]
+
+    def posts(self) -> int:
+        return sum(1 for method, _, _ in self.calls if method == "POST")
+
+
+class NeverArms:
+    """Ready before create; a pod whose shape is refused must never be armed."""
+
+    def __init__(self) -> None:
+        self.armed = 0
+
+    def preflight(self, *, action, request, policy):  # type: ignore[no-untyped-def]
+        return ControllerReadiness(True, NOW, "test armer is ready", {"action": action})
+
+    def arm(self, **kwargs):  # type: ignore[no-untyped-def]
+        self.armed += 1
+        raise AssertionError("a pod with a refused runtime contract was armed")
+
+
+def world_provider(world: V1World, clock: SharedClock) -> RunPodProvider:
+    return RunPodProvider(
+        world,
+        pod_price=lambda gpu: Decimal("0.77"),
+        # An operator price sheet: an unlisted volume is a KeyError, not a price.
+        volume_price=lambda volume: {"volume-1": Decimal("0.05")}[volume],
+        balance_observer=lambda: AccountBalanceObservation(
+            Decimal("500"), clock.now(), "test balance"
+        ),
+        now=clock.now,
+    )
+
+
+def launch_runtime(
+    adapter: RunPodProvider, clock: SharedClock, root: Path, armer: NeverArms
+) -> PodRuntime:
+    tokens = iter((TOKEN, "b" * 32))
+    return PodRuntime(
+        adapter,
+        provider_name="runpod",
+        spend_policy=configured_policy(shutdown_deadline_seconds=5),
+        lease_root=root,
+        shutdown=verified_shutdown(adapter, clock),
+        now=clock.now,
+        token_factory=lambda: next(tokens),
+        challenge_factory=lambda: "0F1E2D3C4B5A6978",
+        controller_armer=armer,  # type: ignore[arg-type]
+    )
+
+
+def launch_request() -> PodCreateRequest:
+    return request(
+        hard_deadline=NOW + timedelta(minutes=30),
+        metadata={BILLING_CUTOFF_MARGIN_ENV: "3600"},
+    )
+
+
+def _without(field: str) -> dict[str, object]:
+    payload = pod_payload()
+    del payload[field]
+    return payload
+
+
+REFUSED_SHAPES = {
+    "interruptible": (pod_payload(interruptible=True), "silent-loss machine"),
+    "no-interruptible-field": (_without("interruptible"), "on-demand cannot be assumed"),
+    "no-start-command": (_without("dockerStartCmd"), "dockerStartCmd"),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(REFUSED_SHAPES))
+def test_a_created_pod_whose_effective_shape_is_refused_is_bound_and_closed(
+    tmp_path: Path, shape: str
+) -> None:
+    """A 201 that names a pod is a billing pod, whatever its shape proves.
+
+    The id goes into the durable lease before anything else is decided, and
+    the refused shape routes to the verified close: DELETE, then the exact
+    GET 404, the list absence and the billing capture.
+    """
+
+    payload, reason = REFUSED_SHAPES[shape]
+    clock = SharedClock(NOW)
+    world = V1World(post=payload)
+    armer = NeverArms()
+    pod_runtime = launch_runtime(world_provider(world, clock), clock, tmp_path, armer)
+    create_request = launch_request()
+
+    preview = pod_runtime.preview_create(create_request)
+    assert preview.state is LaunchState.PREVIEW and preview.preview is not None
+    result = pod_runtime.create(create_request, confirmation=preview.preview.confirmation_phrase)
+
+    assert result.state is LaunchState.REFUSED_RUNTIME_CONTRACT, result.detail
+    assert reason in result.detail
+    assert world.posts() == 1
+    assert world.deleted() == ["/pods/pod-1"]
+    assert result.close_report is not None and result.close_report.verified
+    lease = LeaseStore(tmp_path / f"{TOKEN}.json").load()
+    assert lease.pod_id == "pod-1"
+    assert lease.phase == "closed-verified"
+    assert armer.armed == 0
+    methods = [(method, path.split("?", 1)[0]) for method, path, _ in world.calls]
+    assert ("GET", "/pods/pod-1") in methods, "absence was not read from the exact GET"
+    assert ("GET", "/billing/pods") in methods, "billing evidence was not captured"
+
+
+def pending_lease(tmp_path: Path) -> LeaseStore:
+    """The durable lease a launch leaves when create returned no bindable record."""
+
+    sealed = request(
+        hard_deadline=launch_request().hard_deadline,
+        metadata={
+            BILLING_CUTOFF_MARGIN_ENV: "3600",
+            "VERBATUS_LAUNCH_TOKEN": TOKEN,
+            "VERBATUS_POD_HOURLY_USD": "0.77",
+            "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.05",
+        },
+    )
+    store = LeaseStore(tmp_path / f"{TOKEN}.json")
+    store.create(
+        PodLease(
+            lease_id=TOKEN,
+            launch_token=TOKEN,
+            provider_name="runpod",
+            pod_id=None,
+            volume_id="volume-1",
+            pod_hourly_usd=Decimal("0.77"),
+            volume_hourly_usd=Decimal("0.05"),
+            created_at=NOW - timedelta(minutes=5),
+            started_at=None,
+            hard_deadline=sealed.hard_deadline,
+            owner_token="refused-launcher",
+            heartbeat_at=NOW - timedelta(minutes=5),
+            pending_create=PendingCreateIntent.from_request(sealed, launch_token=TOKEN),
+        )
+    )
+    return store
+
+
+def recover(store: LeaseStore, adapter: RunPodProvider, clock: SharedClock):  # type: ignore[no-untyped-def]
+    return LaptopSupervisor(
+        store,
+        verified_shutdown(adapter, clock),
+        owner_token="restarted-laptop",
+        heartbeat_timeout=timedelta(seconds=30),
+        now=clock.now,
+    ).run_once()
+
+
+def test_restart_recovery_closes_a_pod_whose_shape_was_refused_at_create(
+    tmp_path: Path,
+) -> None:
+    """Recovery reads the same pod through the same parser, so it must not refuse it again."""
+
+    clock = SharedClock(NOW)
+    world = V1World(pods=[pod_payload(interruptible=True), pod_payload(id="unrelated", env={})])
+    store = pending_lease(tmp_path)
+
+    result = recover(store, world_provider(world, clock), clock)
+
+    assert result.state is ControllerState.PENDING_CREATE_RECOVERED, result.detail
+    assert result.close_report is not None and result.close_report.verified
+    assert world.deleted() == ["/pods/pod-1"]
+    assert world.posts() == 0
+    assert store.load().pod_id == "pod-1"
+
+
+def test_a_create_whose_answer_was_lost_never_claims_that_no_pod_exists(
+    tmp_path: Path,
+) -> None:
+    """No id came back, so the lease keeps its recovery intent and nothing is called absent.
+
+    Recovery then finds the pod the lost POST did create, by its launch token,
+    and closes it; a lookup that finds nothing stays under review.
+    """
+
+    clock = SharedClock(NOW)
+    world = V1World(post=pod_payload(), post_failure="RunPod HTTP request failed: timed out")
+    pod_runtime = launch_runtime(world_provider(world, clock), clock, tmp_path, NeverArms())
+    create_request = launch_request()
+    preview = pod_runtime.preview_create(create_request)
+    assert preview.preview is not None
+
+    result = pod_runtime.create(create_request, confirmation=preview.preview.confirmation_phrase)
+
+    assert result.state is LaunchState.PROVIDER_FAILURE
+    assert "timed out" in result.detail
+    assert "absent" not in result.detail and "no pod" not in result.detail
+    store = LeaseStore(tmp_path / f"{TOKEN}.json")
+    lease = store.load()
+    assert lease.phase == "pending-create"
+    assert lease.pod_id is None and lease.pending_create is not None
+    assert world.deleted() == []
+
+    clock.sleep(60)
+    recovered = recover(store, world_provider(world, clock), clock)
+
+    assert recovered.state is ControllerState.PENDING_CREATE_RECOVERED, recovered.detail
+    assert world.deleted() == ["/pods/pod-1"]
+    assert world.posts() == 1
+
+
+def test_a_recovery_lookup_that_finds_nothing_keeps_the_lease_under_review(
+    tmp_path: Path,
+) -> None:
+    clock = SharedClock(NOW)
+    world = V1World()
+    store = pending_lease(tmp_path)
+
+    result = recover(store, world_provider(world, clock), clock)
+
+    assert result.state is ControllerState.PENDING_CREATE_REVIEW
+    lease = store.load()
+    assert lease.phase == "pending-create" and lease.pending_create is not None
+    assert world.posts() == 0 and world.deleted() == []
+
+
+class TickingClock(SharedClock):
+    """Each reading is a second later, so the pre-POST stamp precedes the close."""
+
+    def now(self) -> datetime:
+        self.seconds += 1
+        return super().now()
+
+
+UNREADABLE_RECORDS = {
+    "no-rate": (_without("costPerHr"), "costPerHr"),
+    "no-volume": (_without("networkVolume"), "no attached network volume"),
+    "unknown-status": (pod_payload(desiredStatus="MIGRATING"), "desiredStatus"),
+    "list-status": (pod_payload(desiredStatus=["RUNNING"]), "desiredStatus"),
+    "unpriced-volume": (pod_payload(networkVolume={"id": "volume-9"}), "volume-9"),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(UNREADABLE_RECORDS))
+def test_a_created_pod_whose_record_cannot_be_read_is_still_bound_and_closed(
+    tmp_path: Path, shape: str
+) -> None:
+    """The 201 names the pod, so its id is bound from the sealed request and the pod is closed."""
+
+    payload, reason = UNREADABLE_RECORDS[shape]
+    clock = TickingClock(NOW)
+    world = V1World(post=payload)
+    pod_runtime = launch_runtime(world_provider(world, clock), clock, tmp_path, NeverArms())
+    create_request = launch_request()
+    preview = pod_runtime.preview_create(create_request)
+    assert preview.preview is not None
+
+    result = pod_runtime.create(create_request, confirmation=preview.preview.confirmation_phrase)
+
+    assert result.state is LaunchState.REFUSED_RUNTIME_CONTRACT, result.detail
+    assert reason in result.detail
+    assert world.deleted() == ["/pods/pod-1"]
+    assert result.close_report is not None and result.close_report.verified
+    lease = LeaseStore(tmp_path / f"{TOKEN}.json").load()
+    assert lease is not None and lease.pod_id == "pod-1"
+    assert lease.phase == "closed-verified"
+
+
+def test_a_created_answer_with_no_usable_id_stays_a_pending_create(tmp_path: Path) -> None:
+    clock = SharedClock(NOW)
+    world = V1World(post=_without("id"))
+    pod_runtime = launch_runtime(world_provider(world, clock), clock, tmp_path, NeverArms())
+    create_request = launch_request()
+    preview = pod_runtime.preview_create(create_request)
+    assert preview.preview is not None
+
+    result = pod_runtime.create(create_request, confirmation=preview.preview.confirmation_phrase)
+
+    assert result.state is LaunchState.PROVIDER_FAILURE
+    assert "RunPod pod id is missing" in result.detail
+    lease = LeaseStore(tmp_path / f"{TOKEN}.json").load()
+    assert lease is not None and lease.phase == "pending-create"
+    assert lease.pod_id is None and lease.pending_create is not None
+    assert world.deleted() == []
+
+
+@pytest.mark.parametrize("shape", sorted(UNREADABLE_RECORDS))
+def test_restart_recovery_closes_a_token_matched_pod_whose_record_cannot_be_read(
+    tmp_path: Path, shape: str
+) -> None:
+    """The exact launch-token match names the pod, so recovery binds and closes it."""
+
+    payload, reason = UNREADABLE_RECORDS[shape]
+    clock = SharedClock(NOW)
+    world = V1World(pods=[payload, pod_payload(id="unrelated", env={})])
+    store = pending_lease(tmp_path)
+
+    result = recover(store, world_provider(world, clock), clock)
+
+    assert result.state is ControllerState.PENDING_CREATE_RECOVERED, result.detail
+    assert reason in result.detail
+    assert result.close_report is not None and result.close_report.verified
+    assert world.deleted() == ["/pods/pod-1"]
+    assert world.posts() == 0
+    lease = store.load()
+    assert lease is not None and lease.pod_id == "pod-1"
+    assert lease.phase == "closed-verified"
+
+
+def test_a_fresh_pod_with_no_start_instant_anchors_billing_before_the_post() -> None:
+    """A null lastStartedAt would otherwise start the window after the pod existed."""
+
+    requested = NOW - timedelta(minutes=2)
+    sealed = request(
+        metadata={
+            **request().metadata,
+            "VERBATUS_REQUESTED_AT": requested.isoformat().replace("+00:00", "Z"),
+        }
+    )
+    transport = ScriptedTransport(
+        [json_response([]), json_response(pod_payload(lastStartedAt=None), 201)]
+    )
+
+    record = provider(transport).create(sealed)
+
+    assert record.runtime_contract is not None
+    assert record.created_at == requested
