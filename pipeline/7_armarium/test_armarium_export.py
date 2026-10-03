@@ -54,6 +54,7 @@ from common.contracts.outcomes import run_aggregate as _run_aggregate
 from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import validate as validate_uncertainty
 from common.imaging import encode_grayscale_png
+from common.reading_annotations import read_doubt_marks
 from common.residual_ink import (
     load_coverage_audit_config,
 )
@@ -489,7 +490,8 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
         assert not [name for name in archive.namelist() if name.startswith("pixels/")]
         text = archive.read(TEXT_REGISTER).decode("utf-8")
         assert "Cǣsar d’Exemple" in text
-        assert text.count(json.dumps("Cǣsar d’Exemple", ensure_ascii=False)) == 1
+        # Once as the literal and once as its diplomatic view, which has no doubt to bracket.
+        assert text.count(json.dumps("Cǣsar d’Exemple", ensure_ascii=False)) == 2
 
     manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
     assert manifest["claims"]["status"] == "partial"
@@ -581,6 +583,26 @@ def test_a_csv_cell_the_writer_would_not_write_is_refused(tmp_path):
     _refresh_manifest_member(members, "acts.csv")
     with pytest.raises(SchemaRefusal, match="acts CSV is not exactly"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "tampered")
+
+
+def test_the_readers_views_bracket_doubtful_ink_and_the_literal_stays_clean(tmp_path):
+    text, report = read_doubt_marks("[[?]] Cǣsar [[d’Exemple|d’Example]]")
+    layer = {
+        "uncertain_spans": report["uncertain_spans"],
+        "gaps": report["gaps"],
+        "self_revisions": None,
+        "assessment": _ASSESSED,
+        "lectio_kind": "page-read",
+    }
+    projection = _damaged_delivered(
+        _projection(), text_status="partial", canonical_clean_text=text, uncertainty=layer
+    )
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    shown = "[illegible] Cǣsar [d’Exemple?]"
+    lines = _members(bundle.data)[TEXT_REGISTER].decode("utf-8").split("\n")
+    assert lines[lines.index("diplomatic:") + 1] == json.dumps(shown, ensure_ascii=False)
+    assert _csv_rows(bundle.data)[0]["diplomatic_text"] == shown
+    assert _verified_literals(bundle.data, tmp_path / "clean") == {"act-1": text}
 
 
 def test_a_partial_runs_text_bundle_says_it_is_partial_and_names_what_it_lacks(tmp_path):

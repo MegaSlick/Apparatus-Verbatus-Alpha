@@ -219,6 +219,8 @@ source-sha256: <declared_sha256>
 canonical_text_sha256: <sha256>
 canonical_clean_text:
 <the text, as one JSON string>
+diplomatic:
+<the text as a reader is shown it, as one JSON string>
 uncertainty:
 <the uncertainty layer, as one JSON object>
 text_status: established | partial
@@ -228,8 +230,8 @@ followed, when they apply, by continuation notes (`possible-continuation-on:` an
 `possible-continuation-from:`), operator lines and reconstruction lines (below). After
 the acts come join reconstructions, then each delivered other reading as its own
 `## OTHER <act_key> (not an act)` section with fields named apart from an act's
-(`other-id:`, `other-source-page:`, `other_text:`, `other_uncertainty:`,
-`other_text_status:`), so no act reader reads one as an act. The file ends with one
+(`other-id:`, `other-source-page:`, `other_text:`, `other_diplomatic:`,
+`other_uncertainty:`, `other_text_status:`), so no act reader reads one as an act. The file ends with one
 text-free section for every unresolved sealed page and every unsealed source in the
 folder, and then for every act or other reading on its pages that was not delivered:
 
@@ -293,8 +295,8 @@ These files are rows only: they carry no run status and are read with
 One flat row per counted act, in reading order, for a spreadsheet: UTF-8 with a
 byte-order mark, CRLF rows, RFC 4180 quoting. Its header row is `act_key`, `act_id`,
 `lot`, `category`, `reason`, `reading`, `text_status`, `canonical_clean_text`,
-`canonical_text_sha256` and `uncertainty_json` (the layer as one canonical JSON
-object). Null is an empty cell; the text columns are empty for an act not delivered.
+`diplomatic_text` (the text as a reader is shown it, below), `canonical_text_sha256` and
+`uncertainty_json` (the layer as one canonical JSON object). Null is an empty cell; the text columns are empty for an act not delivered.
 
 A cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return, which a spreadsheet
 would run as a formula, is written with one leading `'`, and so is a cell already
@@ -314,7 +316,11 @@ was shown (a join only when every piece is delivered), as one
 `armarium-coniector-reconstruction.v1` row: its label, who made it, its diplomatic pieces
 with their doubt marks, its departures, its flags and, when not made, why. In the text
 bundle it follows its act's section as `reconstruction_*` lines ending with the whole
-row, and a join is its own `## JOIN RECONSTRUCTION <keys> (not an act)` section. No
+row, and a join is its own `## JOIN RECONSTRUCTION <keys> (not an act)` section. A made
+reconstruction's block carries the "with reconstructions" view, `with_reconstructions:`
+(`coniector_layer.with_reconstructions`): its diplomatic pieces with each departure
+shown as `⟨word⟩` and every other doubt mark bracketed as in the diplomatic text, beside
+the model that made it and each departure's reason. `⟨⟩` appears nowhere else. No
 reconstruction or flag enters the act count, the ledger, review items, the database or
 the aggregate. Beneath an act a person corrected, the row is held to the model's
 reading and says `made_from: "model reading (original)"`.
@@ -387,9 +393,16 @@ aggregate names it.
 **The lead's rulings on what a reader is shown.** The established text is diplomatic,
 with brackets only where the ink is: `[illegible]` for a gap and `[word?]` for a
 doubtful reading. Informed guesses are Coniector reconstructions, kept in their own
-field and never in the established text. No Obsidian vault ships. This build carries
-the gaps and doubts in the uncertainty layer beside each literal and does not yet
-render the brackets; the rendering and a CSV format land in the export follow-up.
+field and never in the established text. No Obsidian vault ships. The literal formats
+carry the established text unbracketed with its uncertainty layer beside it; the
+reader's views (`diplomatic:` and `other_diplomatic:` in `readings.txt`, the
+`diplomatic_text` column of `acts.csv`) show it as
+`common.reading_annotations.diplomatic_display` renders it from that layer: each gap
+as `[illegible]` and each uncertain span as `[word?]`. A person's correction, which
+carries no machine doubt, and a doubt report that could not be anchored are shown as
+they are. The rendering is derived, so verification renders each view again; a
+bracket the scribe wrote is shown as written, and only the layer says which brackets
+are the reader's.
 
 **Other readings.** `claims.other_readings` is `{layer, counted_as_acts: false, count,
 by_category, act_ids, carried_by}`. On a page with acts, an other reading not delivered

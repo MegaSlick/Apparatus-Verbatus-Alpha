@@ -1,5 +1,9 @@
 """The reader's doubt marks: `[[?]]` where sight failed, `[[reading|other]]` where it doubted.
 
+A reader of the export is shown the diplomatic text with brackets only where the ink
+is doubtful: `[illegible]` for a gap and `[reading?]` for a doubtful reading
+(`diplomatic_display`, `bracket_doubt_marks`).
+
 The Perlector writes its doubts inline, and this module splits a marked reading into
 the established text and a doubt report anchored to it (`read_doubt_marks`), writes
 the marks back (`render_doubt_marks`), and maps offsets between the two forms
@@ -151,6 +155,51 @@ def render_doubt_marks(clean_text: str, uncertainty: dict[str, Any]) -> str:
     if read_doubt_marks(rendered) != (clean_text, uncertainty):
         raise SchemaRefusal("the doubt report cannot be written as marks that read back to it")
     return rendered
+
+
+ILLEGIBLE_DISPLAY: Final = "[illegible]"
+
+
+def _doubtful_display(reading: str) -> str:
+    return f"[{reading}?]"
+
+
+def diplomatic_display(text: str, layer: dict[str, Any]) -> str:
+    """The established `text` as a reader is shown it, from its canonical uncertainty layer.
+
+    Each gap is `[illegible]` and each uncertain span `[reading?]`; a gap at the
+    offset where a span starts comes first. Only a reader's assessed report marks
+    doubt: a person's correction, or a report that could not be anchored, shows the
+    text as it is. Overlapping marks are refused, since no one bracketing holds them.
+    """
+    if layer["assessment"]["state"] != ASSESSMENT_ASSESSED:
+        return text
+    inserts = [(gap["start"], 0, gap["start"], ILLEGIBLE_DISPLAY) for gap in layer["gaps"]]
+    inserts += [
+        (span["start"], 1, span["end"], _doubtful_display(text[span["start"] : span["end"]]))
+        for span in layer["uncertain_spans"]
+    ]
+    pieces: list[str] = []
+    cursor = 0
+    for start, _kind, end, shown in sorted(inserts):
+        if start < cursor:
+            raise SchemaRefusal("the doubt layer's marks overlap, so no bracketing shows them")
+        pieces += [text[cursor:start], shown]
+        cursor = end
+    pieces.append(text[cursor:])
+    return "".join(pieces)
+
+
+def bracket_doubt_marks(raw: str) -> str:
+    """A marked reading as a reader is shown it: `[[?]]` as `[illegible]`, `[[a|b]]` as `[a?]`."""
+    return _MARK.sub(
+        lambda match: (
+            ILLEGIBLE_DISPLAY
+            if match.group(1) == "?"
+            else _doubtful_display(match.group(1).split("|")[0])
+        ),
+        raw,
+    )
 
 
 def doubt_mark_offsets(raw: str) -> tuple[list[int | None], list[int | None]]:

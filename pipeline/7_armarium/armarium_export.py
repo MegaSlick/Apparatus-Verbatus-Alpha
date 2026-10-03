@@ -102,6 +102,7 @@ from common.correction import (
     PROVENANCE_FIELDS as CORRECTION_PROVENANCE_FIELDS,
 )
 from common.imaging import dimensions
+from common.reading_annotations import diplomatic_display
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
 from common.review_policy import parse_share
 
@@ -258,6 +259,7 @@ _CSV_COLUMNS: Final = (
     "reading",
     "text_status",
     "canonical_clean_text",
+    "diplomatic_text",
     "canonical_text_sha256",
     "uncertainty_json",
 )
@@ -3131,6 +3133,11 @@ def _text_bundle_members(
                     f"canonical_text_sha256: {canonical_text_sha256(act[CANONICAL_TEXT_FIELD])}",
                     "canonical_clean_text:",
                     json.dumps(act[CANONICAL_TEXT_FIELD], ensure_ascii=False),
+                    "diplomatic:",
+                    json.dumps(
+                        diplomatic_display(act[CANONICAL_TEXT_FIELD], act["uncertainty"]),
+                        ensure_ascii=False,
+                    ),
                     "uncertainty:",
                     json.dumps(act["uncertainty"], ensure_ascii=False, sort_keys=True),
                     f"text_status: {act['text_status']}",
@@ -3381,6 +3388,8 @@ def _other_section(
         f"other_text_sha256: {canonical_text_sha256(literal)}",
         "other_text:",
         json.dumps(literal, ensure_ascii=False),
+        "other_diplomatic:",
+        json.dumps(diplomatic_display(literal, other["uncertainty"]), ensure_ascii=False),
         "other_uncertainty:",
         json.dumps(other["uncertainty"], ensure_ascii=False, sort_keys=True),
         f"other_text_status: {other['text_status']}",
@@ -3439,13 +3448,15 @@ def _text_bundle_other_records(
             literal = _decode_json(
                 _section_field(block, position + 2, ""), "a text-bundle other text is not JSON"
             )
-            _section_field(block, position + 3, "other_uncertainty:")
+            # The diplomatic line is derived; rendering the file again checks it.
+            _section_field(block, position + 3, "other_diplomatic:")
+            _section_field(block, position + 5, "other_uncertainty:")
             uncertainty = _decode_json(
-                _section_field(block, position + 4, ""),
+                _section_field(block, position + 6, ""),
                 "a text-bundle other uncertainty layer is not JSON",
             )
-            status = _section_field(block, position + 5, "other_text_status: ")
-            end = position + 6
+            status = _section_field(block, position + 7, "other_text_status: ")
+            end = position + 8
             if end < len(block) and block[end].startswith(OPERATOR_LABEL_LINE):
                 # Its lines are the operator row's own (`_verify_operator_layer`).
                 end = block_end(block, end)
@@ -3939,6 +3950,11 @@ def _acts_csv_bytes(acts: tuple[dict[str, Any], ...], lot: str | None) -> bytes:
             "reading": act["reading"],
             "text_status": fields["text_status"],
             CANONICAL_TEXT_FIELD: fields[CANONICAL_TEXT_FIELD],
+            "diplomatic_text": (
+                diplomatic_display(fields[CANONICAL_TEXT_FIELD], fields["uncertainty"])
+                if delivered
+                else None
+            ),
             "canonical_text_sha256": fields["canonical_text_sha256"],
             "uncertainty_json": canonical_text(fields["uncertainty"]) if delivered else None,
         }

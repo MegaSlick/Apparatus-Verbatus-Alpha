@@ -92,6 +92,13 @@ def test_each_reconstruction_stands_beneath_its_delivered_act_labelled_with_its_
     delivered = {act["act_key"]: act["text"] for act in bundle["export"]["payload"]["delivered"]}
     assert delivered["p2:1"] == "SYNTHETIC ACT TWO delta epsilon zeta eta"
     assert rows[("p2:1",)]["reconstruction_text"] == "SYNTHETIC ACT TWO delta epsilon zeta theta"
+    # The guess is shown as ⟨word⟩ only in its labelled block's own view; the
+    # diplomatic line above it brackets only doubtful ink.
+    section = text[text.index("act-id: " + rows[("p2:1",)]["act_ids"][0]) :]
+    section = section.split("\n## ")[0]
+    assert 'with_reconstructions:\n"SYNTHETIC ACT TWO delta epsilon ⟨zeta theta⟩"' in section
+    assert section.count("⟨") == 1
+    assert 'diplomatic:\n"SYNTHETIC ACT TWO delta epsilon zeta eta"' in section
 
 
 def test_the_clean_verifier_accepts_the_layer_it_recomputes(bundle, tmp_path):
