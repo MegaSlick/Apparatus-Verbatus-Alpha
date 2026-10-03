@@ -52,14 +52,18 @@ for a script to read.
 | `AGENTS.md` | HARNESS | working rules for AI sessions |
 | `ARCHITECTURE.md` | PRODUCT | |
 | `CLAUDE.md` | HARNESS | |
+| `CODE_OF_CONDUCT.md` | PRODUCT | |
 | `CONTRIBUTING.md` | PRODUCT | rewritten as a public guide, without the harness rules |
 | `GLOSSARY.md` | PRODUCT | |
+| `GOVERNANCE.md` | PRODUCT | |
 | `LICENSE` | PRODUCT | |
 | `PRINCIPLES.md` | PRODUCT | |
 | `README.md` | PRODUCT | |
+| `SECURITY.md` | PRODUCT | private vulnerability reporting |
 | `common/` | PRODUCT | |
 | `config/` | PRODUCT | |
 | `conftest.py` | PRODUCT | |
+| `docs/AI_CONTRIBUTORS.md` | PRODUCT | guide for outside contributors who use AI |
 | `docs/SEPARATION.md` | HARNESS | this page |
 | `docs/design/` | PRODUCT | design of the operator control surface |
 | `gold/` | PRODUCT | human gold sampling |
