@@ -157,11 +157,13 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   states are under `reask`, and prompt tokens compare every call. With `--selection`
   (`proof_pages`' `selection.json`, checked against the ledger) the pages in scope are
   the ones chosen for the run, so a chosen page the run did not seal is lost; `scope.basis`
-  says which. `--gold` must be the exact `gold.jsonl` the ledger's receipt sealed
-  (`reference-mismatch` otherwise) and name each record once (`duplicate-record-id`),
-  both before any record is scored; `reference` names the ledger, the gold digest and
-  the split, and `scope.selection_self_hash` the selection. The report is a new file
-  outside the run tree.
+  says which. `--gold` must be the exact `gold.jsonl` the ledger's receipt sealed, and
+  each admitted record's text is the gold row matching the `text_sha256` the ledger
+  holds for it (`reference-mismatch` otherwise, before any record is scored), so of two
+  rows naming one record the copy admission kept is scored; `reference` names the
+  ledger, the gold digest, the split and the repeated rows skipped, and
+  `scope.selection_self_hash` the selection. The report is a new file outside the run
+  tree.
 
   ```sh
   .venv/bin/python -m operations.corpus.exactly_once --run-root runs --run-id <run> \

@@ -516,8 +516,8 @@ def test_a_run_sealed_under_another_policy_is_refused_even_without_accountings()
         )
 
 
-def _sealed_ledger(gold_body: bytes) -> dict:
-    """A validated ledger admitting one record, r1, whose receipt seals `gold_body`."""
+def _sealed_ledger(gold_body: bytes, text: str = "t") -> dict:
+    """A validated ledger admitting one record, r1, as `text`, whose receipt seals `gold_body`."""
     from common.contracts.canonical import self_hash
 
     from .reference import build_reference_page
@@ -534,8 +534,8 @@ def _sealed_ledger(gold_body: bytes) -> dict:
                 "record_id": "r1",
                 "region": {"x": 10, "y": 20, "w": 30, "h": 40},
                 "split": "val",
-                "text": "t",
-                "text_sha256": digest_bytes(b"t"),
+                "text": text,
+                "text_sha256": digest_bytes(text.encode("utf-8")),
             }
         ],
     )
@@ -549,18 +549,21 @@ def _sealed_ledger(gold_body: bytes) -> dict:
 def test_gold_records_join_the_ledger_box_and_the_gold_text():
     body = b'{"record_id": "r1", "text": "t"}\n{"record_id": "r2", "text": "u"}\n'
 
-    assert gold_records(body, _sealed_ledger(body)) == [
-        {"record_id": "r1", "page_sha256": PAGE_SHA, "box_px": bx(10, 20, 40, 60), "text": "t"}
-    ]
-    with pytest.raises(Refusal, match="^reference-mismatch:"):
+    assert gold_records(body, _sealed_ledger(body)) == (
+        [{"record_id": "r1", "page_sha256": PAGE_SHA, "box_px": bx(10, 20, 40, 60), "text": "t"}],
+        0,
+    )
+    with pytest.raises(Refusal, match="^reference-mismatch: the gold file"):
         gold_records(body.replace(b'"t"', b'"T"'), _sealed_ledger(body))
     for unscorable, reason in [
         (b"", "no gold row"),
-        (b'{"record_id": "r1", "text": " -- [[?]] "}\n', "admitted record 'r1' has no text"),
-        (body + b'{"record_id": "r1", "text": "v"}\n', "^duplicate-record-id: 'r1'"),
+        (b'{"record_id": "r1", "text": "T"}\n', "^reference-mismatch: no gold row for 'r1'"),
     ]:
         with pytest.raises(Refusal, match=reason):
             gold_records(unscorable, _sealed_ledger(unscorable))
+    blank = b'{"record_id": "r1", "text": " -- [[?]] "}\n'
+    with pytest.raises(Refusal, match="admitted record 'r1' has no text to measure"):
+        gold_records(blank, _sealed_ledger(blank, " -- [[?]] "))
 
 
 class _Tree:
@@ -1007,6 +1010,7 @@ def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_
         "ledger_self_hash": ledger["self_hash"],
         "gold_jsonl_sha256": ledger["receipt"]["digests"]["gold.jsonl"],
         "split": "val",
+        "duplicate_rows_skipped": 0,
     }
     with pytest.raises(Refusal, match="^output-exists:"):
         main([*args, "--out", str(out)])
@@ -1028,20 +1032,6 @@ def test_gold_text_other_than_the_admitted_file_is_refused_before_any_gate(tmp_p
     out = tmp_path / "exactly-once.json"
 
     with pytest.raises(Refusal, match="^reference-mismatch: .*gold.jsonl"):
-        main([*args, "--out", str(out)])
-    assert not out.exists()
-
-
-def test_a_gold_file_naming_one_record_twice_is_refused(tmp_path, proof_set):
-    """Even a sealed file: which of the two texts is the reference is not decidable."""
-    from .exactly_once import main
-
-    first = proof_set["rows"][0]
-    rows = [*proof_set["rows"], {**first, "text": "une autre lecture"}]
-    _, args = _seal_set(tmp_path, proof_set, rows)
-    out = tmp_path / "exactly-once.json"
-
-    with pytest.raises(Refusal, match=f"^duplicate-record-id: {first['record_id']!r}"):
         main([*args, "--out", str(out)])
     assert not out.exists()
 
@@ -1240,3 +1230,32 @@ def test_a_page_a_person_had_read_again_is_judged_on_its_current_reading(monkeyp
     }
     with pytest.raises(Refusal, match="naming no reading of the page"):
         load_page_records(_PathTree(stray, {}))
+
+
+@pytest.mark.parametrize("repeat_text", ["une autre lecture", None])
+def test_a_record_admission_kept_once_is_scored_by_its_admitted_text(tmp_path, repeat_text):
+    """Admission seals a gold.jsonl that names a record twice, admits one copy and
+    refuses the other. The copy scored is the one whose text the ledger hashed,
+    and the other is counted as skipped."""
+    from .local_admission import admit_local_set
+    from .test_local_admission import _two_page_set
+
+    root = _two_page_set(tmp_path / "set")
+    body = (root / "gold.jsonl").read_bytes()
+    first = json.loads(body.splitlines()[0])
+    repeat = {**first, "text": repeat_text or first["text"]}
+    body += (json.dumps(repeat, ensure_ascii=False) + "\n").encode()
+    (root / "gold.jsonl").write_bytes(body)
+    receipt = json.loads((root / "fetch_receipt.json").read_text())
+    receipt["artifacts"]["gold_jsonl_sha256"] = digest_bytes(body)
+    (root / "fetch_receipt.json").write_text(json.dumps(receipt))
+    ledger = admit_local_set(root, split="val")
+    assert [row["reason"] for row in ledger["rows"] if row["decision"] == "refused"] == [
+        "duplicate-record-id"
+    ]
+
+    records, skipped = gold_records(body, ledger)
+
+    assert skipped == 1
+    [kept] = [record for record in records if record["record_id"] == first["record_id"]]
+    assert kept["text"] == first["text"]
