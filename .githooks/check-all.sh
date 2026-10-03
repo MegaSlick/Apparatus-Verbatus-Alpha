@@ -176,3 +176,9 @@ run_uv export --frozen --offline --no-config --no-emit-project --no-hashes \
   --group test --group audit > "$audit_inventory"
 "$frozen_python" -m pip_audit --strict --no-deps --disable-pip \
   --requirement "$audit_inventory"
+# The GPU pod's serving group is never installed here, so its locked inventory is
+# audited from the lock, for the pod's Linux x86_64 target whatever this host is.
+serving_export="$audit_directory/serving-export.txt"
+run_uv export --frozen --offline --no-config --no-emit-project --no-hashes \
+  --group pod > "$serving_export"
+"$frozen_python" .githooks/serving_audit.py "$serving_export" pyproject.toml "$audit_directory"

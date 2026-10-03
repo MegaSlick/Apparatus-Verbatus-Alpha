@@ -8,6 +8,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+import packaging
 import pytest
 import yaml
 
@@ -414,7 +415,7 @@ def test_the_gate_runs_a_uv_from_an_absolute_path_entry_after_a_relative_one(tmp
     assert "requires uv" in result.stderr
 
 
-def full_gate_repo(tmp_path, *, audit_status=0, topic="verbatus-test-sink"):
+def full_gate_repo(tmp_path, *, audit_status=0, serving_audit_status=0, topic="verbatus-test-sink"):
     """A gate repo whose every check is a recorder, to run check-all.sh end to end.
 
     The fake `.venv` is a real virtual environment, so the sys.prefix check passes, with
@@ -447,21 +448,53 @@ def full_gate_repo(tmp_path, *, audit_status=0, topic="verbatus-test-sink"):
             "log.write(' '.join(['audit', *sys.argv[1:-1]]) + '\\n')\n"
             "log.write('inventory ' + open(inventory).read())\n"
             "log.write('directory ' + os.path.dirname(inventory) + '\\n')\n"
-            f"raise SystemExit({audit_status})\n",
+            "serving = os.path.basename(inventory).startswith('serving-')\n"
+            f"raise SystemExit({serving_audit_status} if serving else {audit_status})\n",
         ),
     ):
         (Path(purelib) / package).mkdir()
         (Path(purelib) / package / "__init__.py").write_text("")
         (Path(purelib) / package / "__main__.py").write_text(record + body)
+    # The serving audit evaluates the lock's markers with the real `packaging`.
+    shutil.copytree(Path(packaging.__file__).parent, Path(purelib) / "packaging")
+    shutil.copy(ROOT / ".githooks" / "serving_audit.py", repo / ".githooks" / "serving_audit.py")
+    with (repo / "pyproject.toml").open("a") as pyproject:
+        pyproject.write(SERVING_PYPROJECT)
     (repo / ".githooks" / "check-static.sh").write_text(f"#!/bin/sh\necho static >> {log}\n")
     (repo / ".githooks" / "check_ingress.py").write_text(
         f"import sys\nopen({str(log)!r}, 'a').write(' '.join(['ingress', *sys.argv[1:]]) + '\\n')\n"
     )
     (repo / "conftest.py").write_text(f'NOTIFY_TEST_SINK_TOPIC = "{topic}"\n')
+    (tmp_path / "serving-export").write_text(SERVING_EXPORT_OUTPUT)
     environment = stub_uv(
-        tmp_path, f'echo "uv $*" >> {log}\n[ "$1" != export ] || echo "example==1.0"\n'
+        tmp_path,
+        f'echo "uv $*" >> {log}\n'
+        'if [ "$1" = export ]; then\n'
+        '  case " $* " in\n'
+        f'    *" --group pod "*) cat {tmp_path / "serving-export"} ;;\n'
+        '    *) echo "example==1.0" ;;\n'
+        "  esac\n"
+        "fi\n",
     )
     return repo, environment, log
+
+
+# A serving group as the lock exports it: Linux-only markers, one package locked at a
+# version per Python, and a line for another platform that the pod never installs.
+SERVING_PYPROJECT = """
+[project]
+requires-python = ">=3.12"
+
+[dependency-groups]
+pod = ["served==2.0; sys_platform == 'linux' and platform_machine == 'x86_64'"]
+"""
+SERVING_EXPORT_OUTPUT = """\
+numpy==1.0 ; python_full_version < '3.13' and sys_platform == 'linux'
+numpy==2.0 ; python_full_version >= '3.13' and sys_platform == 'linux'
+    # via served
+served==2.0 ; platform_machine == 'x86_64' and sys_platform == 'linux'
+windows-only==1.0 ; sys_platform == 'win32'
+"""
 
 
 SYNC = "uv sync --frozen --offline --group test --group audit --no-config"
@@ -470,6 +503,9 @@ EXPORT = (
     "--group test --group audit"
 )
 AUDIT = "audit --strict --no-deps --disable-pip --requirement"
+SERVING_EXPORT = (
+    "uv export --frozen --offline --no-config --no-emit-project --no-hashes --group pod"
+)
 
 
 def test_the_local_gate_runs_every_check_and_audits_the_locked_inventory(tmp_path):
@@ -479,8 +515,8 @@ def test_the_local_gate_runs_every_check_and_audits_the_locked_inventory(tmp_pat
 
     assert result.returncode == 0, result.stderr
     recorded = log.read_text().splitlines()
-    directory = recorded.pop()
-    assert recorded == [
+    directories = {line for line in recorded if line.startswith("directory ")}
+    assert [line for line in recorded if not line.startswith("directory ")] == [
         SYNC,
         "static",
         "ingress --history HEAD",
@@ -491,8 +527,16 @@ def test_the_local_gate_runs_every_check_and_audits_the_locked_inventory(tmp_pat
         EXPORT,
         AUDIT,
         "inventory example==1.0",
+        # The serving stack as the Linux x86_64 pod installs it, whatever the host.
+        SERVING_EXPORT,
+        AUDIT,
+        "inventory numpy==1.0",
+        "served==2.0",
+        AUDIT,
+        "inventory numpy==2.0",
     ]
-    assert not Path(directory.removeprefix("directory ")).exists()
+    assert len(directories) == 1
+    assert not Path(directories.pop().removeprefix("directory ")).exists()
 
 
 def test_the_ci_gate_leaves_history_to_the_workflow_and_runs_the_suite_in_parallel(tmp_path):
@@ -515,6 +559,15 @@ def test_a_failed_or_unrunnable_audit_fails_the_gate(tmp_path):
     recorded = log.read_text().splitlines()
     assert AUDIT in recorded
     assert not Path(recorded[-1].removeprefix("directory ")).exists()
+
+
+def test_a_failed_serving_audit_fails_the_gate(tmp_path):
+    repo, environment, log = full_gate_repo(tmp_path, serving_audit_status=1)
+
+    result = run_gate(repo, env=environment)
+
+    assert result.returncode != 0
+    assert SERVING_EXPORT in log.read_text().splitlines()
 
 
 def test_the_gate_refuses_to_run_the_suites_without_the_test_sink_topic(tmp_path):
