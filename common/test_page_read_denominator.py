@@ -494,6 +494,14 @@ def test_a_read_answer_naming_no_act_is_one_held_page_blank_row(happy_tree, tmp_
     assert row["region_ref"] is None and row["perlectio_ref"] is None
 
 
+def _as_other(entry: dict) -> None:
+    """`entry` read as `other`, which carries no continuation flag."""
+    entry["kind"] = "other"
+    for flag in ("continues_from_previous_page", "continues_to_next_page"):
+        if flag in entry:
+            entry[flag] = False
+
+
 def test_a_read_page_naming_only_other_entries_is_held_until_confirmed(
     happy_tree, tmp_path, monkeypatch
 ):
@@ -503,7 +511,7 @@ def test_a_read_page_naming_only_other_entries_is_held_until_confirmed(
     def other(record):
         payload = record["payload"]
         for entry in payload["answer"]["acts"] if "answer" in payload else [payload]:
-            entry["kind"] = "other"
+            _as_other(entry)
 
     for kind in ("page-reading", "act-region", "perlectio"):
         _forge(root, kind, 2, None, other)
@@ -532,9 +540,9 @@ def test_a_page_with_one_act_and_one_other_entry_is_not_held_for_naming_no_act(
     def second_is_other(record):
         payload = record["payload"]
         if "answer" in payload:
-            payload["answer"]["acts"][1]["kind"] = "other"
+            _as_other(payload["answer"]["acts"][1])
         elif payload["n"] == 2:
-            payload["kind"] = "other"
+            _as_other(payload)
 
     _forge(root, "page-reading", 1, None, second_is_other)
     for kind in ("act-region", "perlectio"):

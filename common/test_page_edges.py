@@ -1,5 +1,8 @@
 """Page edges and break chains: the pure core every page-break rule derives from."""
 
+import json
+
+from common.page_answer import parse_page_answer
 from common.page_edges import (
     act_entries_by_page,
     agreed_breaks,
@@ -7,6 +10,7 @@ from common.page_edges import (
     page_edges,
     whole_page_entries,
 )
+from common.page_review import page_breaks
 
 
 def entry(page, n, *, kind="act", start=False, end=False, attempt=1):
@@ -87,3 +91,44 @@ def test_an_other_entry_at_the_edge_does_not_hide_the_act_edge():
         entry(2, 2, start=True),
     ]
     assert keys(break_chains(entries)) == [["p1:1", "p2:2"]]
+
+
+def _read_page(ordinal, raw):
+    """A parsed page answer's entries as the rows the join reads."""
+    state, answer, problems = parse_page_answer(raw)
+    assert (state, problems) == ("parsed", [])
+    return [
+        {**entry(ordinal, act["n"], kind=act["kind"]), "act_id": f"a{ordinal}.{act['n']}", **act}
+        for act in answer["acts"]
+    ]
+
+
+def _answer(*entries):
+    return json.dumps(
+        {
+            "acts": [
+                {"n": n, "kind": kind, "cites": [], "text": "x"}
+                | {"continues_from_previous_page": start, "continues_to_next_page": end}
+                for n, (kind, start, end) in enumerate(entries, 1)
+            ],
+            "set_aside": [],
+        }
+    )
+
+
+def test_flags_the_answer_grammar_reads_reach_the_join_past_headings_and_page_numbers():
+    """The grammar and the join share one edge, so a flag the grammar reads is the one joined."""
+    page_1 = _read_page(
+        1, _answer(("act", False, False), ("act", False, True), ("other", False, False))
+    )
+    page_2 = _read_page(2, _answer(("other", False, False), ("act", True, False)))
+    assert keys(break_chains(page_1 + page_2)) == [["p1:2", "p2:2"]]
+
+
+def test_a_flag_on_one_side_of_a_break_joins_nothing_and_is_recorded_unagreed():
+    page_1 = _read_page(1, _answer(("act", False, True), ("other", False, False)))
+    page_2 = _read_page(2, _answer(("other", False, False), ("act", False, False)))
+    assert break_chains(page_1 + page_2) == []
+    [(subject, link)] = page_breaks({1: "pg_1", 2: "pg_2"}, page_1 + page_2)
+    assert subject == "page-break:1:2"
+    assert (link["from_act_key"], link["to_act_key"], link["agreed"]) == ("p1:1", "p2:2", False)

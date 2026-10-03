@@ -152,7 +152,9 @@ unit and joins nothing, but a held link counts toward the stage's held total, so
 with a one-sided break exits held, and the receipt names it. A continuation flag on an
 `act` entry that is not at its page's act edge is on no break: that entry holds
 `continuation-off-page-edge`. A flag on an `other` entry joins nothing and holds
-nothing; its review records it in `notes`.
+nothing; its review records it in `notes`. The Perlector's answer grammar already
+refuses both (`common/page_edges.py::edge_acts`), so these hold a record read from
+elsewhere, never a parsed answer.
 
 **No recovery request.** The stage asks for no reading again. A page's one re-ask is
 stage 4's own (`pipeline/4_perlector/CONTRACT.md`, "The re-ask"): every review of a unit on the page carries `recoveries_used`, the

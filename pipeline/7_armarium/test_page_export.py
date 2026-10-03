@@ -670,7 +670,7 @@ def test_a_confirmed_no_act_page_is_delivered_while_its_one_sided_break_holds_th
     no_act, tmp_path
 ):
     # The fixture's page-no-act scenario: page 2's answer names one `other`
-    # entry, which says it runs on from page 1, and DAI saw nothing on the page.
+    # entry, and DAI saw nothing on the page.
     root, options = _copy(no_act, tmp_path)
     result = _export(root, options, "page-no-act")
     assert result.returncode == 3, result.stderr
@@ -684,17 +684,6 @@ def test_a_confirmed_no_act_page_is_delivered_while_its_one_sided_break_holds_th
     # Page 1's last act says it runs on and page 2 has no act to join.
     [join] = json.loads(bundle["members"]["sources.json"])["continuation_joins"]
     assert join["status"] == "not-reconstructed"
-    # The Recensor's note on the `other` entry's flag reaches its manifest entry.
-    tree = RunTree(root, RUN_ID)
-    entries = [
-        tree.read_artifact(ARMARIUM, "manifest-entry", item["artifact_id"])["payload"]
-        for item in tree.build_manifest(ARMARIUM)["artifacts"]
-        if item["kind"] == "manifest-entry"
-    ]
-    [entry] = [entry for entry in entries if entry["act_key"] == "p2:1"]
-    assert entry["review_notes"] == [
-        {"code": "continuation-flag-on-other", "flags": ["continues_from_previous_page"]}
-    ]
 
 
 def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(tmp_path):

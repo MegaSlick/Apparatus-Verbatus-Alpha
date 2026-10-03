@@ -13,7 +13,7 @@ is `None` stands for a page with no reading and has no edge.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Final
 
 # The attempts a page reading is: the first reading, at most one re-ask (asked
@@ -51,9 +51,23 @@ def act_entries_by_page(entries: Iterable[Entry]) -> dict[int, list[Entry]]:
     return {ordinal: sorted(acts, key=lambda act: act["n"]) for ordinal, acts in by_page.items()}
 
 
+def edge_acts(page: Sequence[Mapping[str, Any]]) -> tuple[Any, Any] | None:
+    """One page's continuation edges: `(first act entry, last act entry)`, or `None` with no act.
+
+    `page` is one page's entries in answer order. Only the first `act` entry may
+    say it continues from the page before and only the last that it runs onto the
+    page after; a heading, page number or other `other` entry around or between
+    them is never an edge, and a page with no `act` entry has none. The answer
+    grammar and the page-break join both take a page's edges from here.
+    """
+    acts = [entry for entry in page if entry.get("kind") == "act"]
+    return (acts[0], acts[-1]) if acts else None
+
+
 def page_edges(entries: Iterable[Entry]) -> dict[int, tuple[Entry, Entry]]:
     """`{page_ordinal: (first act entry, last act entry)}` for each page holding an act."""
-    return {ordinal: (acts[0], acts[-1]) for ordinal, acts in act_entries_by_page(entries).items()}
+    edges = {ordinal: edge_acts(acts) for ordinal, acts in act_entries_by_page(entries).items()}
+    return {ordinal: edge for ordinal, edge in edges.items() if edge is not None}
 
 
 def agreed_breaks(entries: Iterable[Entry]) -> list[tuple[Entry, Entry]]:

@@ -443,7 +443,7 @@ answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"
 [[page_answer]]
 scenario = "page-no-act"
 page_ordinal = 2
-answer = "{\"acts\":[{\"n\":1,\"kind\":\"other\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"other\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
 
 [[page_answer]]
 scenario = "page-other"
@@ -483,7 +483,7 @@ answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"
 [[page_answer]]
 scenario = "page-review-other"
 page_ordinal = 2
-answer = "{\"acts\":[{\"n\":1,\"kind\":\"other\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"C1\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"other\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"C1\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false}],\"set_aside\":[]}"
 
 [[page_answer]]
 scenario = "page-unbroken"
