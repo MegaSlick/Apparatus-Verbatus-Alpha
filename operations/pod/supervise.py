@@ -1042,7 +1042,10 @@ def run_supervisor(
 
     Every refusal below happens before any provider call. `establish_identity`
     is the one exception that may write (the identity file only, never the
-    lease) before the first tick.
+    lease) before the first tick, and it refuses while a live rival holds the
+    lease's lock. Once ownership is settled the hard deadline is acted on
+    whatever lifetime remains: an overdue lease is closed through
+    `VerifiedShutdown` on the first tick.
     """
 
     try:
@@ -1060,16 +1063,12 @@ def run_supervisor(
             lease=lease,
         )
         return result, _exit_code(result, observed_active_lease=False)
+    # No refusal on how much lifetime is left: a lease at or past its hard
+    # deadline is the one that most needs closing. A tick closes a lease this
+    # driver owns at its deadline before it looks at the heartbeat, so an
+    # overdue lease goes straight to verified close and one close to its
+    # deadline is watched until the deadline, then closed.
     heartbeat_timeout = timedelta(seconds=policy.laptop_heartbeat_timeout_seconds)
-    remaining = lease.hard_deadline - now()
-    if heartbeat_timeout >= remaining:
-        raise SuperviseRefusal(
-            "configured heartbeat timeout "
-            f"({heartbeat_timeout}) is not shorter than the lease's remaining lifetime "
-            f"({remaining}); refusing to supervise on a timeout that could not fire before "
-            "the hard deadline anyway",
-            exit_code=2,
-        )
     # This run has now confirmed a durable, active lease exists: from here on
     # a lease that goes missing or unreadable is not "nothing happened" --
     # the pod it was guarding may still be out there billing.

@@ -419,16 +419,105 @@ def test_no_lease_refuses_without_touching_the_provider(tmp_path: Path) -> None:
     assert provider.calls == []
 
 
-def test_a_heartbeat_timeout_not_shorter_than_the_remaining_lifetime_refuses(
-    tmp_path: Path,
-) -> None:
+def _late_start(
+    tmp_path: Path, *, start_at: float, last_heartbeat: float = 0, release: bool = True
+):
+    """An armed lease with a 3600 s deadline, and a supervisor (re)started at ``start_at``."""
+
     clock = Clock()
     provider = fake(clock)
     record = provider.create(request(clock))
     store = _store(tmp_path)
     ident = supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
-    make_lease(store, record, owner=ident.owner_token, clock=clock, deadline_seconds=20)
+    lease = make_lease(
+        store,
+        record,
+        owner=ident.owner_token,
+        clock=clock,
+        deadline_seconds=3600,
+        heartbeat_offset=last_heartbeat,
+    )
+    if release:
+        # The setup call stands in for the supervisor that crashed; its lock
+        # dies with it, and `run_supervisor` below is the restart.
+        supervise.release_lock(tmp_path, LEASE_ID)
+    clock.seconds = start_at
+    provider.bill(record.pod_id, "0.30")
     provider.calls.clear()
+    return clock, provider, store, record, lease
+
+
+def test_a_supervisor_restarted_after_the_hard_deadline_closes_the_pod_verified(
+    tmp_path: Path,
+) -> None:
+    """Restarted one second past the deadline, the supervisor must close, not refuse."""
+
+    clock, provider, store, record, lease = _late_start(tmp_path, start_at=3601)
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(heartbeat_timeout=900),
+        now=clock.now,
+        sleeper=clock.sleep,
+        pid=1000,
+    )
+
+    assert result.state == "lifetime-expired"
+    assert exit_code == 0
+    assert result.close_report is not None and result.close_report.verified
+    assert provider.terminate_calls == [record.pod_id]
+    persisted = store.load()
+    assert persisted is not None and persisted.phase == "closed-verified"
+
+
+def test_a_healthy_lease_inside_one_heartbeat_of_its_deadline_is_watched_to_expiry(
+    tmp_path: Path,
+) -> None:
+    """Ten minutes left under a 900 s heartbeat: supervised until the deadline, then closed."""
+
+    clock, provider, store, record, lease = _late_start(
+        tmp_path, start_at=3000, last_heartbeat=2990
+    )
+    terminated_at: list[float] = []
+    real_terminate = provider.terminate
+
+    def timed_terminate(pod_id: str) -> None:
+        terminated_at.append(clock.seconds)
+        real_terminate(pod_id)
+
+    provider.terminate = timed_terminate  # type: ignore[method-assign]
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(heartbeat_timeout=900),
+        now=clock.now,
+        sleeper=clock.sleep,
+        pid=1000,
+    )
+
+    assert result.state == "lifetime-expired"
+    assert exit_code == 0
+    assert result.close_report is not None and result.close_report.verified
+    assert terminated_at and terminated_at[0] >= 3600, terminated_at
+    assert ("status", record.pod_id) in provider.calls
+    persisted = store.load()
+    assert persisted is not None and persisted.phase == "closed-verified"
+
+
+def test_a_competing_supervisor_is_refused_even_when_the_lease_is_overdue(
+    tmp_path: Path,
+) -> None:
+    """An overdue lease never lets a second driver past the ownership lock."""
+
+    clock, provider, store, record, lease = _late_start(tmp_path, start_at=3601, release=False)
 
     with pytest.raises(supervise.SuperviseRefusal) as excinfo:
         supervise.run_supervisor(
@@ -437,12 +526,15 @@ def test_a_heartbeat_timeout_not_shorter_than_the_remaining_lifetime_refuses(
             lease_id=LEASE_ID,
             provider=provider,
             shutdown=shutdown(provider, clock),
-            policy=policy(heartbeat_timeout=30),
+            policy=policy(heartbeat_timeout=900),
             now=clock.now,
+            sleeper=clock.sleep,
+            pid=2000,
         )
-    assert "not shorter than" in str(excinfo.value)
+    assert "already owns lease" in str(excinfo.value)
     assert excinfo.value.exit_code == 2
     assert provider.calls == []
+    assert store.load() == lease
 
 
 def test_run_supervisor_loops_to_a_verified_lifetime_expiry_and_writes_a_final_record(
