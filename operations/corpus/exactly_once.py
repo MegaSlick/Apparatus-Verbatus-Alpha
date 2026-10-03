@@ -94,6 +94,7 @@ from common.stage import run_sealed_config_digests
 from . import CorpusRefusal
 from .cache import write_new_file
 from .compare import ReadOnlyRunTree, load_exemplar_page_shas
+from .local_admission import load_local_admission_ledger, validate_local_admission_ledger
 
 SCHEMA: Final = "exactly-once-report.v2"
 GATE_EXACTLY_ONCE_BP: Final = 9_500
@@ -125,12 +126,14 @@ ANSWER_BASES: Final = {"attempt-1": FIRST_READING, "combined": REASK_READING}
 
 EXACTLY_ONCE_REFUSAL_REASONS: Final = frozenset(
     {
+        "duplicate-record-id",
         "malformed-record",
         "missing-file",
         "not-page-read",
         "output-exists",
         "output-in-run-tree",
         "policy-mismatch",
+        "reference-mismatch",
     }
 )
 
@@ -142,24 +145,34 @@ class Refusal(CorpusRefusal):
 # --- inputs ----------------------------------------------------------------------------
 
 
-def gold_records(
-    gold_rows: Sequence[Mapping[str, Any]], ledger_rows: Sequence[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
+def gold_records(gold_body: bytes, ledger: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Admitted RecordGold records as `{record_id, page_sha256, box_px, text}`.
 
-    The admission ledger gives each admitted record its page digest and its box
-    in the stored page's frame (`bbox = [x, y, w, h]`), kept as the page
-    records' own `bounds` `{x, y, w, h}`; `gold.jsonl` gives its text. A ledger
-    record with no gold row is refused by name.
+    `gold_body` is the bytes of the set's `gold.jsonl` and `ledger` its
+    admission ledger. The ledger is validated and the gold bytes must be the
+    exact file its receipt sealed, so the text scored is the text admitted. The
+    ledger gives each admitted record its page digest and its box in the stored
+    page's frame (`bbox = [x, y, w, h]`), kept as the page records' own `bounds`
+    `{x, y, w, h}`; `gold.jsonl` gives its text. A record id named twice in
+    `gold.jsonl`, or a ledger record with no gold row, is refused by name.
     """
+    ledger = validate_local_admission_ledger(ledger)
+    sealed = ledger["receipt"]["digests"]["gold.jsonl"]
+    if digest_bytes(gold_body) != sealed:
+        raise Refusal(
+            f"reference-mismatch: the gold file digests to {digest_bytes(gold_body)}, the "
+            f"admission ledger sealed gold.jsonl as {sealed}"
+        )
     texts: dict[str, str] = {}
-    for row in gold_rows:
+    for row in _jsonl_rows(gold_body, "gold.jsonl"):
         record_id, text = row.get("record_id"), row.get("text")
         if not isinstance(record_id, str) or not isinstance(text, str):
             raise Refusal("malformed-record: a gold row carries no record_id or text")
+        if record_id in texts:
+            raise Refusal(f"duplicate-record-id: {record_id!r} appears twice in gold.jsonl")
         texts[record_id] = text
     records = []
-    for row in ledger_rows:
+    for row in ledger["rows"]:
         if row.get("decision") != "admitted":
             continue
         record_id, page_sha256, bbox = row["record_id"], row["page_sha256"], row["bbox"]
@@ -1021,14 +1034,24 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
 # --- command line ----------------------------------------------------------------------
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+def _jsonl_rows(body: bytes, what: str) -> list[dict[str, Any]]:
+    try:
+        rows = [json.loads(line) for line in body.decode("utf-8").splitlines() if line]
+    except ValueError as error:
+        raise Refusal(f"malformed-record: {what} is not UTF-8 JSON lines: {error}") from error
+    if not all(isinstance(row, dict) for row in rows):
+        raise Refusal(f"malformed-record: a line of {what} is not a JSON object")
+    return rows
+
+
+def _read_bytes(path: Path) -> bytes:
     if not path.is_file():
         raise Refusal(f"missing-file: {path} is not a file")
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    return path.read_bytes()
 
 
-def selected_page_sha256s(path: Path, ledger_self_hash: str) -> set[str]:
-    """The page digests a `proof_pages` selection chose from this ledger."""
+def selected_page_sha256s(path: Path, ledger_self_hash: str) -> tuple[set[str], str]:
+    """The page digests a `proof_pages` selection chose from this ledger, and its self-hash."""
     if not path.is_file():
         raise Refusal(f"missing-file: {path} is not a file")
     selection = json.loads(path.read_bytes())
@@ -1037,13 +1060,11 @@ def selected_page_sha256s(path: Path, ledger_self_hash: str) -> set[str]:
             "malformed-record: the selection does not hash to itself or was drawn from another "
             "ledger"
         )
-    return {page["page_sha256"] for page in selection["pages"]}
+    return {page["page_sha256"] for page in selection["pages"]}, selection["self_hash"]
 
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
-
-    from .local_admission import load_local_admission_ledger
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run-root", type=Path, required=True, help="the runs directory")
@@ -1072,14 +1093,13 @@ def main(argv: list[str] | None = None) -> int:
         raise Refusal("output-in-run-tree: the report must be written outside the run tree")
     policy = load_page_accounting_policy(args.page_accounting_config)
     ledger = load_local_admission_ledger(args.ledger)
-    gold = gold_records(_read_jsonl(args.gold), ledger["rows"])
+    gold = gold_records(_read_bytes(args.gold), ledger)
     tree = ReadOnlyRunTree(run_tree)
     pages = load_page_records(tree)
-    scope = (
-        selected_page_sha256s(args.selection, ledger["self_hash"])
-        if args.selection
-        else set(load_exemplar_page_shas(tree).values())
-    )
+    if args.selection:
+        scope, selection_self_hash = selected_page_sha256s(args.selection, ledger["self_hash"])
+    else:
+        scope, selection_self_hash = set(load_exemplar_page_shas(tree).values()), None
     seconds = (
         json.loads(args.seconds_per_page.read_text(encoding="utf-8"))
         if args.seconds_per_page
@@ -1093,8 +1113,13 @@ def main(argv: list[str] | None = None) -> int:
         sealed_page_sha256s=scope,
         seconds_per_page=seconds,
     )
-    report["ledger_self_hash"] = ledger["self_hash"]
+    report["reference"] = {
+        "ledger_self_hash": ledger["self_hash"],
+        "gold_jsonl_sha256": ledger["receipt"]["digests"]["gold.jsonl"],
+        "split": ledger["split"],
+    }
     report["scope"]["basis"] = "selection" if args.selection else "sealed"
+    report["scope"]["selection_self_hash"] = selection_self_hash
     body = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if not write_new_file(args.out, body):
         raise Refusal(f"output-exists: {args.out}")

@@ -516,25 +516,51 @@ def test_a_run_sealed_under_another_policy_is_refused_even_without_accountings()
         )
 
 
-def test_gold_records_join_the_ledger_box_and_the_gold_text():
-    ledger = [
-        {
-            "record_id": "r1",
-            "page_sha256": PAGE_SHA,
-            "bbox": [10, 20, 30, 40],
-            "decision": "admitted",
-        },
-        {"record_id": "r2", "page_sha256": None, "bbox": None, "decision": "refused"},
-    ]
-    rows = [{"record_id": "r1", "text": "t"}, {"record_id": "r2", "text": "u"}]
+def _sealed_ledger(gold_body: bytes) -> dict:
+    """A validated ledger admitting one record, r1, whose receipt seals `gold_body`."""
+    from common.contracts.canonical import self_hash
 
-    assert gold_records(rows, ledger) == [
+    from .reference import build_reference_page
+    from .test_evaluate import _ledger_for
+
+    reference = build_reference_page(
+        page={"sha256": PAGE_SHA, "width": 100, "height": 100},
+        source="fixture",
+        volume="v",
+        designation="page-1",
+        split="val",
+        records=[
+            {
+                "record_id": "r1",
+                "region": {"x": 10, "y": 20, "w": 30, "h": 40},
+                "split": "val",
+                "text": "t",
+                "text_sha256": digest_bytes(b"t"),
+            }
+        ],
+    )
+    ledger = _ledger_for(reference)
+    ledger["receipt"]["digests"]["gold.jsonl"] = digest_bytes(gold_body)
+    del ledger["self_hash"]
+    ledger["self_hash"] = self_hash(ledger)
+    return ledger
+
+
+def test_gold_records_join_the_ledger_box_and_the_gold_text():
+    body = b'{"record_id": "r1", "text": "t"}\n{"record_id": "r2", "text": "u"}\n'
+
+    assert gold_records(body, _sealed_ledger(body)) == [
         {"record_id": "r1", "page_sha256": PAGE_SHA, "box_px": bx(10, 20, 40, 60), "text": "t"}
     ]
-    with pytest.raises(Refusal, match="no gold row"):
-        gold_records([], ledger)
-    with pytest.raises(Refusal, match="admitted record 'r1' has no text to measure"):
-        gold_records([{"record_id": "r1", "text": " -- [[?]] "}], ledger)
+    with pytest.raises(Refusal, match="^reference-mismatch:"):
+        gold_records(body.replace(b'"t"', b'"T"'), _sealed_ledger(body))
+    for unscorable, reason in [
+        (b"", "no gold row"),
+        (b'{"record_id": "r1", "text": " -- [[?]] "}\n', "admitted record 'r1' has no text"),
+        (body + b'{"record_id": "r1", "text": "v"}\n', "^duplicate-record-id: 'r1'"),
+    ]:
+        with pytest.raises(Refusal, match=reason):
+            gold_records(unscorable, _sealed_ledger(unscorable))
 
 
 class _Tree:
@@ -915,33 +941,60 @@ def test_reask_records_are_read_by_schema_and_kept_apart(monkeypatch):
         load_page_records(_Tree(unknown_region_attempt, {}))
 
 
-def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_tree(tmp_path):
-    from common.contracts.canonical import canonical_bytes, self_hash
+@pytest.fixture(scope="module")
+def proof_set(tmp_path_factory):
+    """A real run of `page-unbroken`, and an admission ledger sealed over its gold file."""
+    from common.contracts.canonical import self_hash
     from common.runtree.store import RunTree
 
-    from .exactly_once import main
-    from .test_evaluate import _fixture_reference_for_page_one, _ledger_for, _orchestrate
+    from .test_evaluate import _fixture_reference_for_page_one, _orchestrate
 
-    completed = _orchestrate(tmp_path / "runs", "page-unbroken")
+    root = tmp_path_factory.mktemp("proof-set")
+    completed = _orchestrate(root / "runs", "page-unbroken")
     assert completed.returncode == 0, completed.stderr
-    tree = RunTree(tmp_path / "runs", "r")
+    tree = RunTree(root / "runs", "r")
     reference = _fixture_reference_for_page_one(tree)
-    ledger = _ledger_for(reference)
+    rows = [{"record_id": act["record_id"], "text": act["text"]} for act in reference["acts"]]
+    return {"root": root, "tree": tree, "reference": reference, "rows": rows, "seal": self_hash}
+
+
+def _seal_set(tmp_path, proof_set, gold_rows, *, sealed_rows=None):
+    """Write `gold_rows` as gold.jsonl and a ledger whose receipt seals `sealed_rows`' bytes."""
+    from common.contracts.canonical import canonical_bytes
+
+    from .test_evaluate import _ledger_for
+
+    def body(rows):
+        return "".join(json.dumps(row) + "\n" for row in rows).encode("utf-8")
+
+    ledger = _ledger_for(proof_set["reference"])
+    ledger["receipt"]["digests"]["gold.jsonl"] = digest_bytes(body(sealed_rows or gold_rows))
+    del ledger["self_hash"]
+    ledger["self_hash"] = proof_set["seal"](ledger)
     (tmp_path / "ledger.json").write_bytes(canonical_bytes(ledger))
-    (tmp_path / "gold.jsonl").write_text(
-        "".join(
-            json.dumps({"record_id": act["record_id"], "text": act["text"]}) + "\n"
-            for act in reference["acts"]
-        )
-    )
+    (tmp_path / "gold.jsonl").write_bytes(body(gold_rows))
+    args = ["--run-root", str(proof_set["root"] / "runs"), "--run-id", "r"]
+    args += ["--gold", str(tmp_path / "gold.jsonl"), "--ledger", str(tmp_path / "ledger.json")]
+    return ledger, args
+
+
+def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_tree(
+    tmp_path, proof_set
+):
+    from common.contracts.canonical import canonical_bytes, self_hash
+
+    from .exactly_once import main
+
+    ledger, args = _seal_set(tmp_path, proof_set, proof_set["rows"])
     selection = {
         "ledger_self_hash": ledger["self_hash"],
-        "pages": [{"page_sha256": reference["page"]["sha256"]}, {"page_sha256": "b" * 64}],
+        "pages": [
+            {"page_sha256": proof_set["reference"]["page"]["sha256"]},
+            {"page_sha256": "b" * 64},
+        ],
     }
     selection["self_hash"] = self_hash(selection)
     (tmp_path / "selection.json").write_bytes(canonical_bytes(selection))
-    args = ["--run-root", str(tmp_path / "runs"), "--run-id", "r"]
-    args += ["--gold", str(tmp_path / "gold.jsonl"), "--ledger", str(tmp_path / "ledger.json")]
     out = tmp_path / "exactly-once.json"
 
     main([*args, "--selection", str(tmp_path / "selection.json"), "--out", str(out)])
@@ -949,15 +1002,48 @@ def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_
     written = json.loads(out.read_text())
     assert written["scope"]["basis"] == "selection"
     assert written["scope"]["sealed_pages"] == 2
-    assert written["ledger_self_hash"] == ledger["self_hash"]
+    assert written["scope"]["selection_self_hash"] == selection["self_hash"]
+    assert written["reference"] == {
+        "ledger_self_hash": ledger["self_hash"],
+        "gold_jsonl_sha256": ledger["receipt"]["digests"]["gold.jsonl"],
+        "split": "val",
+    }
     with pytest.raises(Refusal, match="^output-exists:"):
         main([*args, "--out", str(out)])
     with pytest.raises(Refusal, match="^output-in-run-tree:"):
-        main([*args, "--out", str(tree.root / "exactly-once.json")])
+        main([*args, "--out", str(proof_set["tree"].root / "exactly-once.json")])
     selection["ledger_self_hash"] = "c" * 64
     (tmp_path / "selection.json").write_bytes(canonical_bytes(selection))
     with pytest.raises(Refusal, match="^malformed-record:"):
         main([*args, "--selection", str(tmp_path / "selection.json"), "--out", str(tmp_path / "x")])
+
+
+def test_gold_text_other_than_the_admitted_file_is_refused_before_any_gate(tmp_path, proof_set):
+    """The same record ids with other text -- here, text that would agree with any
+    reading -- are not the reference admission sealed, so no report is written."""
+    from .exactly_once import main
+
+    substituted = [{**row, "text": row["text"] + " corrigé"} for row in proof_set["rows"]]
+    _, args = _seal_set(tmp_path, proof_set, substituted, sealed_rows=proof_set["rows"])
+    out = tmp_path / "exactly-once.json"
+
+    with pytest.raises(Refusal, match="^reference-mismatch: .*gold.jsonl"):
+        main([*args, "--out", str(out)])
+    assert not out.exists()
+
+
+def test_a_gold_file_naming_one_record_twice_is_refused(tmp_path, proof_set):
+    """Even a sealed file: which of the two texts is the reference is not decidable."""
+    from .exactly_once import main
+
+    first = proof_set["rows"][0]
+    rows = [*proof_set["rows"], {**first, "text": "une autre lecture"}]
+    _, args = _seal_set(tmp_path, proof_set, rows)
+    out = tmp_path / "exactly-once.json"
+
+    with pytest.raises(Refusal, match=f"^duplicate-record-id: {first['record_id']!r}"):
+        main([*args, "--out", str(out)])
+    assert not out.exists()
 
 
 def test_a_real_reasked_run_is_read_with_its_reask_as_the_receipt_binds_it(tmp_path):
