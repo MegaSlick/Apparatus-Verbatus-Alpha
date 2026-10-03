@@ -252,6 +252,9 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 if page is None:
                     continue
                 reference_text = "\n".join(act["text"] for act in page["acts"])
+                if not within_text_bounds(reference_text, GRAPHEMIC_V1):
+                    fail(chair, "canary-reference-text-out-of-bounds")
+                    continue
                 testimonium = witnessed.get(ordinal, {}).get(chair)
                 if testimonium is None:
                     fail(
@@ -301,7 +304,10 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 fail(PERLECTOR, "no-canary-reading")
                 continue
             texts = [row.get("payload", {}).get("text") for row in rows]
-            if (
+            reference_text = "\n".join(act["text"] for act in page["acts"])
+            if not within_text_bounds(reference_text, GRAPHEMIC_V1):
+                fail(PERLECTOR, "canary-reference-text-out-of-bounds")
+            elif (
                 any(row.get("outcome") not in read_outcomes for row in rows)
                 or not all(isinstance(text, str) and text.strip() for text in texts)
                 or _repeated("\n".join(texts))
@@ -310,7 +316,7 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
             elif not within_text_bounds("\n".join(texts), GRAPHEMIC_V1):
                 fail(PERLECTOR, "canary-reading-text-out-of-bounds")
             elif not _shared(
-                "\n".join(act["text"] for act in page["acts"]),
+                reference_text,
                 "\n".join(texts),
                 OutputStatus.COMPLETE,
             ):

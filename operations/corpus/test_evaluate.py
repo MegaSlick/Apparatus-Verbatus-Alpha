@@ -17,6 +17,7 @@ import json
 import subprocess
 import sys
 import tomllib
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -600,17 +601,26 @@ def test_a_missed_record_moves_only_the_aggregate_that_counts_it(sealed_run):
 def test_a_reading_beyond_the_scoring_bounds_is_an_unmeasured_row_not_a_rate(
     sealed_run, monkeypatch
 ):
-    """One runaway reading is named and counted; the other record is still scored."""
+    """One runaway reading is named and counted; the other record is still scored.
+
+    The headline rate counts it as wholly deleted, so a runaway reading never
+    scores better than reading nothing at all.
+    """
     real = evaluate.hypotheses_from_export
 
-    def one_runaway(*args):
-        hypotheses = real(*args)
-        first = min(hypotheses)
-        hypotheses[first] = {**hypotheses[first], "text": "a" * (MAX_TEXT_LENGTH + 1)}
-        return hypotheses
+    def evaluate_with_first_text(text):
+        def replaced(*args):
+            hypotheses = real(*args)
+            first = min(hypotheses)
+            hypotheses[first] = {**hypotheses[first], "text": text}
+            return hypotheses
 
-    monkeypatch.setattr(evaluate, "hypotheses_from_export", one_runaway)
-    report = evaluate_run(sealed_run, [_fixture_reference_for_page_one(sealed_run)], code_ref="t")
+        monkeypatch.setattr(evaluate, "hypotheses_from_export", replaced)
+        reference = _fixture_reference_for_page_one(sealed_run)
+        return evaluate_run(sealed_run, [reference], code_ref="t")
+
+    report = evaluate_with_first_text("a" * (MAX_TEXT_LENGTH + 1))
+    empty = evaluate_with_first_text("")
 
     rows = {row["outcome"]: row for row in report["records"]}
     assert sorted(rows) == ["scored", "unmeasured"]
@@ -622,6 +632,12 @@ def test_a_reading_beyond_the_scoring_bounds_is_an_unmeasured_row_not_a_rate(
         report["aggregate"]["matched_pairs_only"]["cer"]["reference_units"]
         == (rows["scored"]["cer"]["reference_units"])
     )
+    for unit in ("cer", "wer"):
+        headline = report["aggregate"]["including_missed_records"][unit]["rate"]
+        floor = empty["aggregate"]["including_missed_records"][unit]["rate"]
+        assert Fraction(headline["numerator"], headline["denominator"]) >= Fraction(
+            floor["numerator"], floor["denominator"]
+        )
 
 
 def test_a_page_the_run_never_sealed_leaves_its_records_not_attempted_never_scored(sealed_run):

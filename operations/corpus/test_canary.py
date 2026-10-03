@@ -391,6 +391,21 @@ def test_a_page_run_canary_names_a_reader_text_beyond_the_scoring_bounds(page_ca
     assert all(verdict["stages"][chair] for chair in canary.CHAIRS)
 
 
+def test_a_page_run_canary_names_a_joined_reference_beyond_the_scoring_bounds(
+    page_canary, monkeypatch, tmp_path
+):
+    half = "a" * (MAX_TEXT_LENGTH // 2 + 1)
+    acts = [{"physical_act_id": "gold-act", "text": half}, {"physical_act_id": "b", "text": half}]
+    monkeypatch.setattr(canary, "_references", lambda _root: {"a" * 64: {"acts": acts}})
+
+    verdict = canary.check_run(_PageRunTree(half), tmp_path)
+
+    assert sorted((row["stage"], row["rule"]) for row in verdict["dead"]) == sorted(
+        (stage, "canary-reference-text-out-of-bounds")
+        for stage in (*canary.CHAIRS, canary.PERLECTOR)
+    )
+
+
 def test_a_page_run_canary_names_a_failed_page_witness(page_canary, tmp_path):
     reference_text, testimonia = page_canary
     testimonia[("attestator_2", 2)] = _page_testimonium("unrelated symbols")

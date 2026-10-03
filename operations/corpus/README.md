@@ -90,13 +90,16 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   writes one validated, self-hashed `recordgold-evaluation.v3` record carrying run
   configuration digests, export digest, reference ledger digest, the splits scored, and
   the whole denominator: every
-  reference record scored, missed or not attempted, every read act by export
+  reference record scored, unmeasured (its reading beyond the scoring profile's text
+  bounds), missed or not attempted, every read act by export
   category, every unmatched pipeline act reported and not scored. **Two aggregate
   rates, each labelled**: `matched_pairs_only` is the arithmetic of the pairs the
   assignment made, which a missed act cannot move in either direction, and
   `including_missed_records` counts a missed record's reference units as deletions,
-  since a missed act is worse than a poorly read one. A not-attempted record is in neither rate and
-  is counted on its own. Two facts the record states are measured rather than declared:
+  since a missed act is worse than a poorly read one. An unmeasured record is counted
+  the same way in `including_missed_records`, so a runaway reading never scores better
+  than an empty one, and is left out of `matched_pairs_only`. A not-attempted record is
+  in neither rate and is counted on its own. Two facts the record states are measured rather than declared:
   the fixture label is read from the export's own sealed identity (`fixture_id` against
   `submission_id`), not from a flag an operator could omit, and a named reference ledger
   is verified — every reference page must appear in it by `self_hash`. `code_ref`
