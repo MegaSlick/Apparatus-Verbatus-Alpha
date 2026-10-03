@@ -16,7 +16,6 @@ import stat
 import sys
 import time
 import traceback
-from datetime import datetime
 from pathlib import Path
 from typing import Final, Sequence
 
@@ -25,27 +24,21 @@ from common.contracts.approval import FINDINGS, REVIEW_DECISIONS
 from common.contracts.stages import STAGES
 from common.stage import RUN_MODES
 from operations.pod.launch import launch_evidence_keys, launch_evidence_prefixes, launch_run_id
-from operations.pod.models import (
-    PodCreateRequest,
-    container_disk_gb_for_tier,
-    require_utc,
-)
 from operations.pod.transfer import normalize_transfer_prefix
 
-from . import console, notify_bridge, review_text
+from . import notify_bridge, review_text
+from . import spend as spend_view
 from .advance import (
     UnsealedBoundaryRefusal,
     boundary_summary,
     held_boundaries_for_mode,
     trigger_advance,
 )
-from .custody import python_module_command, run_confined
 from .errors import ErrorCode, OperatorError, strip_control_bytes
-from .ingest import ingest_in_custody
+from .ingest import ingest
 from .records import DescriptorStore, ReceiptStore
 from .review import ReadOnlyRun
-from .spend import SpendSurface
-from .surface import DEFAULT_FIXTURE, OperatorSurface, bounded_tail
+from .surface import DEFAULT_FIXTURE, RESUME_TO_STAGE, OperatorSurface, bounded_tail
 from .volume_s3 import VolumeSpec, VolumeTransferRefusal
 
 MAX_REQUEST_BYTES = 1024 * 1024
@@ -63,10 +56,8 @@ def _upload_prefix(value: str) -> str:
 # folder of run trees, a backup drive), so they are never checked against it.
 _CHECKOUT_RESOURCES_BY_VERB: Final[dict[str, tuple[str, ...]]] = {
     "run": ("pipeline", "config", "proof"),
-    "boot": ("config", "proof"),
     "ingest": ("config",),
     "triage": ("config",),
-    "launch": ("config",),
     "spend": ("config",),
 }
 
@@ -75,8 +66,6 @@ def _checkout_resources_read(args: argparse.Namespace) -> tuple[str, ...]:
     """The checkout directories this exact invocation will read from its workspace."""
 
     needed = _CHECKOUT_RESOURCES_BY_VERB.get(args.verb, ())
-    if args.verb == "launch" and args.spend is not None:
-        return ()
     if args.verb == "spend" and args.policy is not None:
         return ()
     if args.verb == "ingest" and args.policy is not None:
@@ -433,7 +422,7 @@ def _annotate_unrecognized(message: str) -> str:
 def build_parser() -> PlainParser:
     parser = PlainParser(
         prog="verbatus",
-        description="A safe, offline rehearsal for the Apparatus Verbatus operator flow.",
+        description="The Apparatus Verbatus operator, one plain word at a time.",
     )
     parser.add_argument(
         "--workspace",
@@ -463,17 +452,6 @@ def build_parser() -> PlainParser:
     )
     verbs = parser.add_subparsers(dest="verb", required=True, title="words you can use")
 
-    launch = verbs.add_parser(
-        "launch", help="show price and ceilings, then record a typed paid confirmation"
-    )
-    launch.add_argument("--request", type=Path, required=True, help="reviewed pod request JSON")
-    launch.add_argument("--spend", type=Path, help="reviewed spending policy TOML")
-    launch.add_argument(
-        "--adopt-pod", help="adopt this already-recorded fixture pod through the same gate"
-    )
-
-    verbs.add_parser("boot", help="run bootstrap and finish with a green or red report")
-
     upload = verbs.add_parser(
         "upload", help="seal or reuse a submission record, then transfer with zero GPU-hours"
     )
@@ -482,13 +460,11 @@ def build_parser() -> PlainParser:
     )
 
     reuse = upload.add_mutually_exclusive_group(required=True)
-    reuse.add_argument(
-        "--sealed-manifest", type=Path, help="existing sealed Spec 03 submission record"
-    )
+    reuse.add_argument("--sealed-manifest", type=Path, help="existing sealed submission record")
     reuse.add_argument(
         "--manifest-out",
         type=Path,
-        help="where Spec 03 should write a new sealed submission record",
+        help="where to write a new sealed submission record",
     )
     upload.add_argument("--policy", type=Path, help="data-handling policy used with --manifest-out")
     upload.add_argument(
@@ -542,11 +518,23 @@ def build_parser() -> PlainParser:
     ingest.add_argument(
         "--confirmation-file",
         type=Path,
-        help="canonical Unit 6B cluster-confirmation file; omit when confirming no cluster",
+        help="canonical cluster-confirmation file; omit when confirming no cluster",
     )
 
     run = verbs.add_parser("run", help="run or resume a recorded fixture or real submission")
     run.add_argument("--run-id", required=True, help="a short name for this run")
+    run.add_argument(
+        "--from",
+        dest="from_stage",
+        choices=STAGES,
+        help="resume only from this stage (with --to), e.g. recensor after a review decision",
+    )
+    run.add_argument(
+        "--to",
+        dest="to_stage",
+        choices=(RESUME_TO_STAGE,),
+        help="the last stage of the --from range: always armarium",
+    )
     run.add_argument("--scenario", default="happy", help="declared fixture scenario")
     run.add_argument("--fixture", default=DEFAULT_FIXTURE, help="declared fixture name")
     run.add_argument(
@@ -657,16 +645,9 @@ def build_parser() -> PlainParser:
         ),
     )
 
-    close = verbs.add_parser(
-        "close", help="record a typed confirmation, then verify close and captured cost"
-    )
-    close.add_argument(
-        "--pod-id", help="the recorded fixture pod id, if you want to repeat it explicitly"
-    )
-
     verbs.add_parser("status", help="read saved receipts only; it never contacts a provider")
     spend = verbs.add_parser(
-        "spend", help="show the reviewed spend floor, saved balance observations, and alert history"
+        "spend", help="show the reviewed spending policy's ceilings, floor and alert threshold"
     )
     spend.add_argument("view", choices=("show",), help="the read-only spend view")
     spend.add_argument(
@@ -799,18 +780,6 @@ def build_parser() -> PlainParser:
         "--root", type=Path, required=True, help="run tree, volume mount or export folder"
     )
     clear.add_argument("--apply", action="store_true", help="remove them instead of listing")
-    scantailor = verbs.add_parser(
-        "scantailor",
-        help="name the separate ScanTailor desktop handoff, then import its saved geometry",
-    )
-    scantailor.add_argument(
-        "--project", type=Path, required=True, help="saved ScanTailor Advanced project XML"
-    )
-    scantailor.add_argument(
-        "--geometry-out",
-        type=Path,
-        help="existing folder to receive the immutable imported geometry document",
-    )
     return parser
 
 
@@ -841,25 +810,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         volume = _network_volume(getattr(args, "network_volume", None), verb=args.verb)
         if volume is None:
-            _print("Verbatus is in offline rehearsal mode. It will not contact a cloud provider.")
+            _print("Verbatus works on this computer. It will not contact a cloud provider.")
         else:
-            _print("Verbatus will not start, adopt or close any pod: that stays offline.")
+            _print("Verbatus never starts, adopts or closes a pod.")
             if args.verb == "fetch-run":
                 _print(f"You asked it to read a run tree from {volume.describe()}.")
             else:
                 _print(f"You asked it to send files to {volume.describe()}.")
-        if args.verb == "launch":
-            request = load_request(args.request)
-            spend = args.spend or workspace / "config" / "spend.toml"
-            _print(f"Using reviewed spending policy: {spend}")
-            prepared = surface.prepare_launch(
-                request, policy_path=spend, adopt_pod_id=args.adopt_pod
-            )
-            confirmation = _typed_paid_confirmation()
-            surface.launch(prepared, confirmation)
-        elif args.verb == "boot":
-            surface.boot()
-        elif args.verb == "upload":
+        if args.verb == "upload":
             if args.sealed_manifest is not None:
                 if args.policy is not None:
                     raise OperatorError(
@@ -885,7 +843,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     volume=volume,
                 )
         elif args.verb == "ingest":
-            ingest_in_custody(
+            ingest(
                 source=args.source,
                 output_dir=args.output_dir,
                 policy_path=args.policy,
@@ -906,6 +864,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 models_config=args.models_config,
                 serving_recipes_config=args.serving_recipes_config,
                 witness_context_config=args.witness_context_config,
+                from_stage=args.from_stage,
+                to_stage=args.to_stage,
             )
         elif args.verb == "fetch-run":
             derived = _derived_evidence_keys(args.launch_receipt, volume, args.run_id)
@@ -932,27 +892,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             surface.fetch_run(**fetch_arguments)  # type: ignore[arg-type]
         elif args.verb == "export":
             surface.export(run_id=args.run_id, run_root=args.run_root)
-        elif args.verb == "close":
-            prepared_close = surface.prepare_close(pod_id=args.pod_id)
-            confirmation = _typed_close_confirmation(prepared_close.phrase)
-            surface.close(prepared_close, confirmation)
         elif args.verb == "status":
             surface.status()
         elif args.verb == "spend":
             policy = args.policy or workspace / "config" / "spend.toml"
-            for line in SpendSurface(surface.receipts, surface.now()).show(policy):
+            for line in spend_view.show(policy):
                 _print(line)
         elif args.verb == "review":
-            _review_in_custody(
-                args.run_root, args.run_id, workspace, raw=args.json, review_page=args.review_page
-            )
+            _review(args.run_root, args.run_id, raw=args.json, review_page=args.review_page)
         elif args.verb == "advance":
             _advance_with_confirmation(
                 args.run_root,
                 args.run_id,
                 args.stage,
                 reason=args.reason,
-                workspace=workspace,
                 surface=surface,
                 mode=args.mode,
                 from_stage=args.from_stage,
@@ -971,27 +924,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 note=args.note,
             )
         elif args.verb == "backup":
-            _backup_in_custody(args.run_root, args.run_id, args.mac_directory, workspace, surface)
+            _backup(args.run_root, args.run_id, args.mac_directory, surface)
         elif args.verb == "triage":
             _triage_queue(args, workspace)
         elif args.verb == "clear-leftovers":
             _clear_leftovers(args.root, apply=args.apply)
-        elif args.verb == "scantailor":
-            from .scantailor import import_in_custody, instruction
-
-            if args.geometry_out is not None:
-                _print(
-                    "Importing the ScanTailor project as it is saved right now. "
-                    "If you have not yet saved its page-split geometry, stop and do that first."
-                )
-                import_in_custody(
-                    project=args.project,
-                    output_dir=args.geometry_out,
-                    workspace=workspace,
-                    printer=_print,
-                )
-            else:
-                _print(instruction(args.project, workspace=workspace))
         else:
             raise OperatorError(
                 ErrorCode.INVALID_COMMAND, detail="the requested word has no action"
@@ -1131,19 +1068,8 @@ def _bound_run_tree(run_tree_class, run_root: Path, run_id: str):
         raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
 
 
-def _review_in_custody(
-    run_root: Path, run_id: str, workspace: Path, *, raw: bool = False, review_page: int = 1
-) -> None:
-    """Exec the renderer with no credential and a kernel-enforced no-write policy.
-
-    The run tree is opened once, read-only, by the parent, and the child
-    receives only the resulting immutable JSON value stream, never a
-    run-tree path or object; a compromised child can deceive its viewer
-    about those bytes but cannot reopen the evidence or reach any
-    pipeline/provider module. The parent reads the child's JSON out in plain
-    language (`review_text.render`), or prints it as-is when `raw` is asked
-    for.
-    """
+def _review(run_root: Path, run_id: str, *, raw: bool = False, review_page: int = 1) -> None:
+    """Read the run tree once, read-only, and show it in plain language or as raw JSON."""
 
     from common.runtree.store import RunTree
 
@@ -1151,133 +1077,40 @@ def _review_in_custody(
     projection = dataclasses.asdict(
         ReadOnlyRun(run_root, run_id).projection(review_page=review_page)
     )
-    command = python_module_command("operations.operator.console")
-    backend, completed = run_confined(
-        command,
-        writable=None,
-        cwd=workspace,
-        input_text=json.dumps(projection),
-    )
-    if completed.returncode != 0:
-        launcher = backend.launcher_failure(completed)
-        if launcher is not None:
-            # A platform-enforcement refusal: the launcher never exec'd the
-            # console, so this is not a claim the run tree is unreadable.
-            raise OperatorError(ErrorCode.CONSOLE_CUSTODY_REFUSED, detail=launcher)
-        if completed.returncode == console.PROJECTION_UNREADABLE_EXIT:
-            # The console never opened the run tree here either.
-            raise OperatorError(
-                ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
-                detail=completed.stderr or completed.stdout,
-            )
-        raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail=completed.stdout or completed.stderr
-        )
     if raw:
-        _print(completed.stdout.rstrip())
+        _print(json.dumps(projection, sort_keys=True))
         return
     try:
-        returned = json.loads(completed.stdout)
-    except ValueError as error:
-        # A fault of this tool's pipe, not a claim about the run tree.
-        raise OperatorError(
-            ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
-            detail=(
-                f"the console returned text that is not the projection JSON "
-                f"({type(error).__name__}); the run tree itself is not in question"
-            ),
-        ) from error
-    if not isinstance(returned, dict):
-        raise OperatorError(
-            ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
-            detail="the console returned JSON that is not a projection object",
-        )
-    try:
-        lines = review_text.render(returned)
+        lines = review_text.render(projection)
     except review_text.ProjectionShapeError as error:
-        raise OperatorError(
-            ErrorCode.CONSOLE_PROJECTION_UNREADABLE,
-            detail=f"the console returned a projection this tool cannot read out: {error}",
-        ) from error
+        raise OperatorError(ErrorCode.CONSOLE_PROJECTION_UNREADABLE, detail=str(error)) from error
     for line in lines:
         _print(line)
 
 
-def _backup_in_custody(
-    run_root: Path,
-    run_id: str,
-    mac_directory: Path,
-    _workspace: Path,
-    surface: OperatorSurface,
-) -> None:
-    """Copy evidence only in the no-network, credential-free custody child.
+def _backup(run_root: Path, run_id: str, mac_directory: Path, surface: OperatorSurface) -> None:
+    """Copy one run tree into the Mac directory, read the snapshot back, and record the attempt.
 
     ``surface`` records the operator's own receipt of the attempt: which run
     root was copied where, with what snapshot, or why it was refused; without
     it, `status` could not say a backup had ever happened.
     """
 
-    from .backup import (
-        BackupRefusal,
-        BackupReport,
-        destination_identities,
-        prepare_backup_layout,
-        required_identity,
-        resolve_backup_paths,
-        verify_backup_snapshot,
-    )
+    from .backup import BackupRefusal, BackupUnverified, sync_run_tree
 
     facts = {
         "run_id": run_id,
         "run_root": str(Path(run_root).absolute()),
         "mac_directory": str(Path(mac_directory).absolute()),
     }
-    # The parent rejects overlap before creating the layout, since custody
-    # grants the child publication rights but withholds directory creation:
-    # unchecked, setup could write `objects/`/`snapshots/` inside the source.
     try:
-        source, destination = resolve_backup_paths(run_root, run_id, mac_directory)
-        prepare_backup_layout(source, destination)
-        source_identity = required_identity(source, what="source run tree")
-        destination_identity = destination_identities(destination)
-    except BackupRefusal as refusal:
-        surface.record_backup(state="refused", facts=facts, detail=str(refusal))
-        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
-    # `--workspace` selects project data for other verbs; it is not authority
-    # to replace this custody worker's code, so its root is pinned here
-    # rather than taken from a caller-nominated path.
-    worker_root = Path(__file__).resolve().parents[2]
-    command = python_module_command("operations.operator.backup_worker")
-    request = json.dumps(
-        {
-            "run_root": str(run_root.resolve()),
-            "run_id": run_id,
-            "mac_directory": str(destination),
-            "source_identity": list(source_identity),
-            "destination_identities": [list(identity) for identity in destination_identity],
-        }
-    )
-    backend, completed = run_confined(
-        command, writable=destination, cwd=worker_root, input_text=request
-    )
-    if completed.returncode != 0:
-        launcher = backend.launcher_failure(completed)
-        detail = launcher or completed.stderr.strip() or completed.stdout.strip()
-        if not detail:
-            detail = f"backup worker exited {completed.returncode} without a diagnostic"
-        surface.record_backup(state="worker-failed", facts=facts, detail=detail)
-        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=detail)
-    try:
-        report = BackupReport.from_record(json.loads(completed.stdout))
-        verify_backup_snapshot(
-            destination,
-            run_id,
-            report,
-            expected_destination_identities=destination_identity,
-        )
-    except (BackupRefusal, ValueError, RecursionError) as error:
+        report = sync_run_tree(Path(run_root).resolve(), run_id, mac_directory)
+    except BackupUnverified as error:
         surface.record_backup(state="unverified", facts=facts, detail=str(error))
         raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(error)) from error
+    except (BackupRefusal, OSError, ValueError, TypeError, RecursionError) as refusal:
+        surface.record_backup(state="refused", facts=facts, detail=str(refusal))
+        raise OperatorError(ErrorCode.BACKUP_FAILED, detail=str(refusal)) from refusal
     receipt = surface.record_backup(state="complete", facts=facts, report=report.to_record())
     _print(
         "Mac backup complete: "
@@ -1374,13 +1207,12 @@ def _advance_with_confirmation(
     stage: str,
     *,
     reason: str,
-    workspace: Path,
     surface: OperatorSurface | None = None,
     mode: str = "manual",
     from_stage: str | None = None,
     to_stage: str | None = None,
 ) -> None:
-    """Bind a human confirmation to one observed digest, then launch the worker."""
+    """Bind a human confirmation to one observed digest, then record the advance."""
 
     from common.contracts.errors import ApprovalRefusal
     from common.runtree.store import RunTree
@@ -1470,7 +1302,6 @@ def _advance_with_confirmation(
         run_id,
         stage,
         reason=reason,
-        workspace=workspace,
         expected_digest=digest,
     )
     _print(f"Advance record: {reference.relative_path} ({reference.sha256})")
@@ -1587,85 +1418,6 @@ def _decide_with_confirmation(
         _print(line)
 
 
-def load_request(path: str | Path) -> PodCreateRequest:
-    """Read the strict request shape without showing a JSON/parser traceback."""
-
-    source = Path(path)
-    try:
-        descriptor = os.open(source, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-        with os.fdopen(descriptor, "rb") as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise OSError("the pod request is not a regular file")
-            data = handle.read(MAX_REQUEST_BYTES + 1)
-        if len(data) > MAX_REQUEST_BYTES:
-            raise ValueError(f"the pod request exceeds {MAX_REQUEST_BYTES} bytes")
-        raw = json.loads(data.decode("utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND, detail="the pod request JSON could not be read"
-        ) from error
-    if not isinstance(raw, dict):
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND, detail="the pod request must be a JSON object"
-        )
-    allowed = {
-        "name",
-        "gpu_type",
-        "image",
-        "volume_id",
-        "volume_mount_path",
-        "docker_start_cmd",
-        "hard_deadline",
-        "repository_commit",
-        "container_disk_gb",
-        "template",
-        "metadata",
-        "interruptible",
-        "recovery_only",
-    }
-    unknown = sorted(set(raw) - allowed)
-    if unknown:
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND,
-            detail=f"the pod request contains unknown fields: {', '.join(unknown)}",
-        )
-    try:
-        command = raw["docker_start_cmd"]
-        if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
-            raise ValueError("docker_start_cmd must be a list of words")
-        metadata = raw.get("metadata", {})
-        if not isinstance(metadata, dict) or not all(
-            isinstance(key, str) and isinstance(value, str) for key, value in metadata.items()
-        ):
-            raise ValueError("metadata must map words to words")
-        interruptible = raw.get("interruptible", False)
-        recovery_only = raw.get("recovery_only", False)
-        if not isinstance(interruptible, bool) or not isinstance(recovery_only, bool):
-            raise ValueError("interruptible and recovery_only must be true or false")
-        deadline = datetime.fromisoformat(str(raw["hard_deadline"]).replace("Z", "+00:00"))
-        return PodCreateRequest(
-            name=raw["name"],
-            gpu_type=raw["gpu_type"],
-            image=raw["image"],
-            volume_id=raw["volume_id"],
-            volume_mount_path=raw["volume_mount_path"],
-            docker_start_cmd=tuple(command),
-            hard_deadline=require_utc(deadline, "hard deadline"),
-            repository_commit=raw["repository_commit"],
-            # Absent falls back to the reviewed default, not the provider's.
-            container_disk_gb=raw.get("container_disk_gb", container_disk_gb_for_tier(None)),
-            template=raw.get("template"),
-            metadata=metadata,
-            interruptible=interruptible,
-            recovery_only=recovery_only,
-        )
-    except (KeyError, TypeError, ValueError) as error:
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND,
-            detail=f"the reviewed pod request is incomplete or invalid: {error}",
-        ) from error
-
-
 def _network_volume(value: str | None, *, verb: str) -> VolumeSpec | None:
     """Read `DATACENTER:VOLUME_ID` without letting a typo become a raw traceback.
 
@@ -1697,7 +1449,7 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, scantailor, launch, boot, upload, run, fetch-run, export, close, status, spend, review, decide, advance, backup, or clear-leftovers."
+        "Choose one word: ingest, triage, upload, run, fetch-run, export, status, spend, review, decide, advance, backup, or clear-leftovers."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1707,22 +1459,6 @@ def _interactive_arguments() -> list[str]:
     if not verb:
         _print("No action was chosen. Nothing changed.")
         return []
-    if verb == "launch":
-        request = _ask("Path to the reviewed pod request file")
-        spend = _ask("Path to the reviewed spending-policy file")
-        if not request or not spend:
-            _print(
-                "Launch needs both a reviewed pod request and a reviewed spending policy. "
-                "One of them was left blank, so nothing changed or billed."
-            )
-            return []
-        adoption_id = _ask(
-            "Recorded fixture pod ID to adopt (leave blank to create a new fixture pod)"
-        )
-        arguments = ["launch", "--request", request, "--spend", spend]
-        if adoption_id:
-            arguments.extend(("--adopt-pod", adoption_id))
-        return arguments
     if verb == "upload":
         source = _ask("Folder containing the submitted files")
         if not source:
@@ -1817,20 +1553,6 @@ def _interactive_arguments() -> list[str]:
             "--mode-record",
             mode_record,
         ]
-    if verb == "scantailor":
-        project = _ask("Saved ScanTailor Advanced project XML")
-        output = _ask(
-            "Existing folder for the imported geometry document (leave blank for instructions only)"
-        )
-        if not project:
-            _print(
-                "ScanTailor needs its saved project file. It was left blank, so nothing changed."
-            )
-            return []
-        arguments = ["scantailor", "--project", project]
-        if output:
-            arguments.extend(("--geometry-out", output))
-        return arguments
     if verb == "clear-leftovers":
         root = _ask("Folder to check for leftovers")
         if not root:
@@ -1899,8 +1621,6 @@ def _interactive_arguments() -> list[str]:
         return arguments
     if verb == "export":
         return ["export"]
-    if verb == "close":
-        return ["close"]
     if verb == "spend":
         policy = _ask("Reviewed spending-policy file (leave blank for config/spend.toml)")
         arguments = ["spend", "show"]
@@ -1983,20 +1703,6 @@ def _ask(label: str, *, default: str | None = None) -> str:
     except EOFError:
         answer = ""
     return answer or (default or "")
-
-
-def _typed_paid_confirmation() -> str | None:
-    try:
-        return input("Type the confirmation shown above to continue with this paid action: ")
-    except EOFError:
-        return None
-
-
-def _typed_close_confirmation(phrase: str) -> str | None:
-    try:
-        return input(f"Type this line exactly, with no quotation marks:\n{phrase}\n> ")
-    except EOFError:
-        return None
 
 
 def _typed_decide_confirmation(phrase: str) -> str | None:

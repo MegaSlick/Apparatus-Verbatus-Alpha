@@ -20,9 +20,7 @@ from the repository alone.
 - **The build side** writes pagekit's code, tests and README. Each build-side agent
   works in its own git worktree under a brief made from
   [templates/builder-brief.md](templates/builder-brief.md). There is no special agent
-  definition for it: this repository's agent roles must be read-only (the roster test
-  in `.claude/agents/` refuses a role that can write or run commands), so builders are
-  ordinary worktree agents bound by their brief.
+  definition for it: builders are ordinary worktree agents bound by their brief.
 - **The reading side** may read ScanTailor and ScanTailor Advanced source, only to
   compare their behaviour with pagekit's. It is a read-only agent (it can read,
   search and fetch web pages, and writes nothing) under a brief made from

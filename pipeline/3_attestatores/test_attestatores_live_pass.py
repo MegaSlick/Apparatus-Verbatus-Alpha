@@ -193,8 +193,6 @@ def _vllm_row(
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
-        "enable_tower_connector_lora": False,
-        "max_lora_rank": 16,
         "generation_config": "vllm",
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,
@@ -661,7 +659,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
     moved_trigger = copy.deepcopy(record)
     moved_trigger["payload"]["returned_condition"] = "inference-error"
     with pytest.raises(SchemaRefusal, match="retry trigger|trigger disagrees"):
-        attestatores._validate_chandra_terminal(
+        attestatores.chandra_native._validate_chandra_terminal(
             context,
             subject_id=entry["subject_id"],
             native_attempt_ordinal=ordinal,
@@ -673,7 +671,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
         "transport_response_ref"
     ]
     with pytest.raises(SchemaRefusal, match="serving call record"):
-        attestatores._validate_chandra_terminal(
+        attestatores.chandra_native._validate_chandra_terminal(
             context,
             subject_id=entry["subject_id"],
             native_attempt_ordinal=ordinal,
@@ -685,7 +683,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
         "transport_response_ref"
     ]
     with pytest.raises(SchemaRefusal, match="trigger disagrees|model output"):
-        attestatores._validate_chandra_terminal(
+        attestatores.chandra_native._validate_chandra_terminal(
             context,
             subject_id=entry["subject_id"],
             native_attempt_ordinal=ordinal,
@@ -697,7 +695,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
         "transport_response_ref"
     ]
     with pytest.raises(SchemaRefusal, match="serving call record moved"):
-        attestatores._validate_chandra_terminal(
+        attestatores.chandra_native._validate_chandra_terminal(
             context,
             subject_id=entry["subject_id"],
             native_attempt_ordinal=ordinal,
@@ -712,7 +710,7 @@ def test_chandra_terminal_reconciles_trigger_call_raw_and_receipt(live_run, tmp_
         context, json.dumps(call, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
     with pytest.raises(SchemaRefusal, match="serving call record moved"):
-        attestatores._validate_chandra_terminal(
+        attestatores.chandra_native._validate_chandra_terminal(
             context,
             subject_id=entry["subject_id"],
             native_attempt_ordinal=ordinal,
@@ -727,7 +725,9 @@ def test_chandra_orphan_intent_fails_closed_without_reissuing(live_run, tmp_path
     def crash_after_call_record(*_args, **_kwargs):
         raise RuntimeError("simulated crash after response and call record")
 
-    monkeypatch.setattr(attestatores, "_publish_chandra_terminal", crash_after_call_record)
+    monkeypatch.setattr(
+        attestatores.chandra_native, "_publish_chandra_terminal", crash_after_call_record
+    )
     with pytest.raises(RuntimeError, match="after response and call record"):
         run_attestatores(live_run, run_root, factory=world.factory)
     monkeypatch.undo()
@@ -765,13 +765,13 @@ def test_chandra_error_terminal_resume_waits_full_backoff_before_next_request(
     def crash_during_backoff(_seconds):
         raise RuntimeError("simulated crash during native error backoff")
 
-    monkeypatch.setattr(attestatores.time, "sleep", crash_during_backoff)
+    monkeypatch.setattr(attestatores.chandra_native.time, "sleep", crash_during_backoff)
     with pytest.raises(RuntimeError, match="during native error backoff"):
         run_attestatores(live_run, run_root, factory=interrupted.factory)
     assert len(interrupted.requests("attestator_1")) == 1
 
     delays: list[int] = []
-    monkeypatch.setattr(attestatores.time, "sleep", delays.append)
+    monkeypatch.setattr(attestatores.chandra_native.time, "sleep", delays.append)
     resumed_scripts = default_scripts()
     resumed_scripts["attestator_1"] = [
         ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="stop"),
@@ -783,16 +783,25 @@ def test_chandra_error_terminal_resume_waits_full_backoff_before_next_request(
     assert [request["temperature"] for request in resumed.requests("attestator_1")] == [0.2, 0.0]
 
 
-def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(live_run, tmp_path):
+def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(
+    live_run, tmp_path, monkeypatch
+):
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
-    scripts["attestator_1"] = [
-        ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="unmeasured-stop")
-    ]
+    scripts["attestator_1"] = [ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="stop")]
+    real_capture = attestatores.live_witness.captured_page_attempt
+
+    def refusing_capture(context, page_ordinal, chair, *args, **kwargs):
+        if chair == "attestator_1":
+            raise ContractError("simulated post-response refusal")
+        return real_capture(context, page_ordinal, chair, *args, **kwargs)
+
+    monkeypatch.setattr(attestatores.live_witness, "captured_page_attempt", refusing_capture)
     first = LiveWorld(live_run, tmp_path / "first", scripts)
-    with pytest.raises(ContractError, match="unmeasured-stop"):
+    with pytest.raises(ContractError, match="simulated post-response refusal"):
         run_attestatores(live_run, run_root, factory=first.factory)
     assert len(first.requests("attestator_1")) == 1
+    monkeypatch.undo()
 
     tree = RunTree(run_root, RUN_ID)
     assert any(
@@ -800,7 +809,7 @@ def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(live
         for entry in tree.build_manifest(ATTESTATORES)["artifacts"]
     )
     resumed = LiveWorld(live_run, tmp_path / "resumed", {"attestator_1": []})
-    with pytest.raises(ContractError, match="unmeasured-stop") as caught:
+    with pytest.raises(ContractError, match="simulated post-response refusal") as caught:
         run_attestatores(live_run, run_root, factory=resumed.factory)
     assert "delivery is unknown" not in str(caught.value)
     assert resumed.requests("attestator_1") == []
@@ -830,9 +839,9 @@ def test_chandra_retry_retains_post_response_refusal_in_earlier_terminal(live_ru
     assert len(refused) == 1
     first_attempt = refused[0]["payload"]["resolved_attempt"]
     assert first_attempt["outcome"] == "failed"
-    assert first_attempt["reason"].startswith("retained Chandra response refused: ")
-    assert "unmeasured-stop" in first_attempt["reason"]
-    assert first_attempt["native_capture"]["parse"]["state"] == "parsed"
+    assert "'unmeasured-stop'" in first_attempt["reason"]
+    assert "retained and not read" in first_attempt["reason"]
+    assert first_attempt["native_capture"] is None
 
 
 def test_chandra_fatal_capture_accounting_stops_before_terminal_or_retry(
@@ -875,7 +884,7 @@ def test_chandra_error_exhaustion_is_failed_and_records_every_backoff(
         ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
     ]
     delays: list[int] = []
-    monkeypatch.setattr(attestatores.time, "sleep", delays.append)
+    monkeypatch.setattr(attestatores.chandra_native.time, "sleep", delays.append)
     world = LiveWorld(live_run, tmp_path, scripts)
 
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
@@ -978,12 +987,6 @@ def test_capacity_refusal_attempt_declares_the_refused_chairs_own_format_capabil
     )
     assert bare.format_capabilities == attestatores.DEFAULT_FORMAT_CAPABILITIES
 
-    # An adapter that declares none falls back to the blanket default.
-    undeclared = attestatores.capacity_refusal_attempt(
-        error, receipt_ref=receipt_ref, what="the test request", adapter=SimpleNamespace()
-    )
-    assert undeclared.format_capabilities == attestatores.DEFAULT_FORMAT_CAPABILITIES
-
     # An adapter that names its own grammar: that value, not the default.
     declared = {"can_express_uncertainty": True, "can_express_layout": True}
     adapter = SimpleNamespace(format_capabilities=declared)
@@ -1015,21 +1018,21 @@ def test_a_captured_pages_own_format_capabilities_reaches_its_testimonium(
     """The captured attempt's declared value must reach the sealed page record.
 
     `True`/`True` differs from `run.py`'s `DEFAULT_FORMAT_CAPABILITIES`
-    (`False`/`False`), so `attempt_from_live` is wrapped to hand back the same
-    `Attempt` with that non-default value, exactly as if `captured_page_attempt`
-    had read it off a declaring adapter -- proving the write is not hardcoded.
+    (`False`/`False`), so `captured_page_attempt` is wrapped to hand back the
+    same `Attempt` with that non-default value, exactly as if it had read it off
+    a declaring adapter -- proving the write is not hardcoded.
     """
 
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path, default_scripts())
     declared = {"can_express_uncertainty": True, "can_express_layout": True}
-    real_attempt_from_live = attestatores.attempt_from_live
+    real_captured_page_attempt = attestatores.live_witness.captured_page_attempt
 
-    def relabeled_attempt_from_live(live):
-        attempt = real_attempt_from_live(live)
+    def relabeled(*args, **kwargs):
+        attempt = real_captured_page_attempt(*args, **kwargs)
         return attempt._replace(format_capabilities=declared)
 
-    monkeypatch.setattr(attestatores, "attempt_from_live", relabeled_attempt_from_live)
+    monkeypatch.setattr(attestatores.live_witness, "captured_page_attempt", relabeled)
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
 
     tree = RunTree(run_root, RUN_ID)
@@ -1038,6 +1041,32 @@ def test_a_captured_pages_own_format_capabilities_reaches_its_testimonium(
     page = page_records(tree)[(1, "attestator_3")]["payload"]
     assert page["format_capabilities"] == declared
     assert page["format_capabilities"] != attestatores.DEFAULT_FORMAT_CAPABILITIES
+
+
+@pytest.mark.parametrize("chair", ["attestator_3", "attestator_2"])
+def test_a_page_record_its_readers_would_refuse_is_never_published(
+    live_run, tmp_path, monkeypatch, chair
+):
+    """Both page-record writers check the record exactly as every reader will,
+    before it becomes immutable: one whose presentation names another page is
+    refused, and nothing is sealed for it."""
+
+    run_root = fresh_tree(live_run, tmp_path)
+    world = LiveWorld(live_run, tmp_path)
+    real_payload = attestatores.page_testimonium_payload
+
+    def misattributed(**fields):
+        payload = real_payload(**fields)
+        if payload["chair"] == chair and payload["page_ordinal"] == 1:
+            payload = {**payload, "page_ordinal": 2}
+        return payload
+
+    monkeypatch.setattr(attestatores, "page_testimonium_payload", misattributed)
+    with pytest.raises(SchemaRefusal, match="names a different page"):
+        run_attestatores(live_run, run_root, factory=world.factory)
+
+    assert (1, chair) not in page_records(RunTree(run_root, RUN_ID))
+    assert (2, chair) not in page_records(RunTree(run_root, RUN_ID))
 
 
 def test_a_prompt_too_long_400_at_the_page_unit_still_stops_the_stage(live_run, tmp_path):
@@ -1309,31 +1338,22 @@ def test_the_production_serving_factory_binds_the_run_that_will_record_the_readi
         client._retain(b"{}")
 
 
-def test_a_stop_word_that_cannot_be_recorded_honestly_refuses_before_publication():
-    """One refusal, on the transport word alone, whatever the adapter.
-
-    The shared capture contract checks the transport word only for
-    `churro.v1`, so an unreadable engine word from any other adapter would
-    otherwise travel into a record unexamined. The check reads the response's
-    own word directly rather than off a capture, so it also covers a wire body
-    `ChairClient` could not parse at all (`native_capture = None`), whose
-    engine word is still recorded verbatim in its `chair-call-record.v1` blob.
-    """
-    with pytest.raises(ContractError, match="never measured a meaning for"):
-        attestatores.refuse_unpublishable_stop_word("abort", "the response for page 1")
-
-
-def test_an_unreported_stop_word_is_recorded_rather_than_refused():
-    """The vocabulary admits the absence marker; only unmeasured words refuse.
-
-    The one question this guard asks: has this pipeline ever measured a
-    meaning for this word?
-    """
-    attestatores.refuse_unpublishable_stop_word(
-        attestatores.STOP_REASON_UNREPORTED, "the response for page 1"
+@pytest.mark.parametrize("word", [None, "stop", "length"])
+def test_a_measured_or_absent_stop_word_leaves_the_response_to_be_read(word):
+    response = SimpleNamespace(finish_reason=word)
+    assert (
+        attestatores.live_witness.unmeasured_stop_reason(response, "the response for page 1")
+        is None
     )
-    for word in ("stop", "length", "eos", "max_new_tokens"):
-        attestatores.refuse_unpublishable_stop_word(word, "the response for page 1")
+
+
+# The fixture transport's own words are not words a served engine has been measured to send.
+@pytest.mark.parametrize("word", ["abort", "eos", "max_new_tokens"])
+def test_an_unmeasured_stop_word_is_named_as_the_reason_its_response_is_not_read(word):
+    reason = attestatores.live_witness.unmeasured_stop_reason(
+        SimpleNamespace(finish_reason=word), "the response for page 1"
+    )
+    assert reason is not None and repr(word) in reason and "not read" in reason
 
 
 def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name(
@@ -1379,9 +1399,8 @@ def test_a_live_roster_reads_each_chair_once_through_its_own_scope(live_run, tmp
 
     assert run_attestatores(live_run, run_root, factory=world.factory) == 0
 
-    # One load per chair, in the deterministic chair-outer order the schedule
-    # builds; a second load of an unloaded chair is what `SingleChairResidency`
-    # and `execute_stage_major_schedule` exist to refuse.
+    # One load per chair, chair by chair in a fixed order; a chair is never
+    # loaded a second time.
     assert world.loads == sorted(LIVE_CHAIRS)
     # Two sealed pages, so a whole-page chair answers twice.
     assert len(world.requests("attestator_1")) == 2
@@ -1774,17 +1793,44 @@ def test_a_resumed_live_pass_uses_chandra_terminal_evidence_without_reissuing(
     )
 
 
-def test_an_engine_stop_word_this_pipeline_cannot_read_is_refused_not_defaulted(live_run, tmp_path):
+@pytest.mark.parametrize("chair", ["attestator_1", "attestator_2", "attestator_3"])
+def test_an_engine_stop_word_this_pipeline_cannot_read_fails_that_page_alone(
+    live_run, tmp_path, chair
+):
+    """The answer is kept, not read and not defaulted to whole or cut off; the
+    page's record says why, and every other page and chair is still read."""
     run_root = fresh_tree(live_run, tmp_path)
     scripts = default_scripts()
-    scripts["attestator_1"] = [ScriptedAnswer(content=CHANDRA_BODY, finish_reason="abort")]
+    first = scripts[chair][0]
+    scripts[chair][0] = ScriptedAnswer(content=first.content, finish_reason="abort")
     world = LiveWorld(live_run, tmp_path, scripts)
 
-    with pytest.raises(ContractError, match="'abort'"):
-        run_attestatores(live_run, run_root, factory=world.factory)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == attestatores.EXIT_COMPLETE
 
-    # Nothing about that response was published, and its bytes are retained.
-    assert (1, "attestator_1") not in page_records(RunTree(run_root, RUN_ID))
+    tree = RunTree(run_root, RUN_ID)
+    records = page_records(tree)
+    failed = records[(1, chair)]
+    assert failed["outcome"] == "failed"
+    payload = failed["payload"]
+    assert "'abort'" in json.dumps(payload)
+    # A whole page answer is not read at all; DAI's page joins its other records.
+    assert payload["payload"] is None or chair == "attestator_2"
+    # A whole-page chair's record is that one answer, kept unread: the same
+    # unrecordable health DAI's unit attempt carries, its basis the reason.
+    if chair != "attestator_2":
+        assert payload["content_health"] == attestatores.unrecordable_health(payload["reason"])
+    assert records[(2, chair)]["outcome"] == "read"
+    assert all(
+        records[(page, other)]["outcome"] == "read"
+        for page in (1, 2)
+        for other in {"attestator_1", "attestator_2", "attestator_3"} - {chair}
+    )
+    # The answer is kept: the record binds the call record, which names its bytes.
+    call_ref = payload.get("serving_call_ref") or payload["unit_call_refs"][0]
+    assert call_ref in failed["inputs"]
+    call = json.loads(tree.read_bytes(call_ref["relative_path"]))
+    assert call["finish_reason"] == "abort"
+    assert tree.read_bytes(call["raw_response_ref"]["relative_path"])
 
 
 def test_a_churro_response_with_no_engine_stop_word_publishes_unknown_truncation(
@@ -1844,11 +1890,11 @@ def test_a_resumed_terminal_refuses_a_capture_read_under_a_retired_text_view():
     def refuse_read(relative_path):
         raise AssertionError(f"a retired capture's bytes must not be reused: {relative_path}")
 
-    evidence = dict.fromkeys(attestatores._CHANDRA_RESULT_FIELDS)
+    evidence = dict.fromkeys(attestatores.chandra_native._CHANDRA_RESULT_FIELDS)
     evidence["native_capture"] = capture
     refusal = "the retired text view chandra-layout-text.v1.*re-run the submission from the Door"
     with pytest.raises(SchemaRefusal, match=refusal):
-        attestatores._attempt_from_evidence_record(
+        attestatores.chandra_native._attempt_from_evidence_record(
             SimpleNamespace(tree=SimpleNamespace(read_bytes=refuse_read)), evidence
         )
 
@@ -2025,3 +2071,53 @@ def test_a_live_unit_that_retains_a_response_and_names_no_call_is_refused():
     )
     fixture, _call, _retained = _call_world({}, endpoint="fixture://offline-chair-runner")
     attestatores.verify_page_call_sampling(fixture, record, "attestator_2")
+
+
+def test_a_chandra_answer_under_an_unmeasured_stop_word_resumes_from_its_terminal(
+    live_run, tmp_path, monkeypatch
+):
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_1"][0] = ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="abort")
+    crashed = LiveWorld(live_run, tmp_path / "crashed", scripts)
+    _crash_once(monkeypatch, "attestator_1", 1)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        run_attestatores(live_run, run_root, factory=crashed.factory)
+    monkeypatch.undo()
+
+    resumed_scripts = default_scripts()
+    resumed_scripts["attestator_1"] = resumed_scripts["attestator_1"][1:]
+    resumed = LiveWorld(live_run, tmp_path / "resumed", resumed_scripts)
+    assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
+
+    # Page 1 is rebuilt from its sealed terminal; only page 2 is asked.
+    assert len(resumed.requests("attestator_1")) == 1
+    record = page_records(RunTree(run_root, RUN_ID))[(1, "attestator_1")]
+    assert record["outcome"] == "failed"
+    assert "'abort'" in record["payload"]["reason"]
+
+
+@pytest.mark.parametrize("damage", ["changed", "removed"])
+def test_a_response_kept_unread_is_bound_to_its_page_record(live_run, tmp_path, damage):
+    """Its bytes are an input of the page record itself, not only named inside its
+    call record, so changing or losing them is refused when the record is read."""
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    scripts["attestator_3"][0] = ScriptedAnswer(content=CHURRO_PAGE_ONE, finish_reason="abort")
+    world = LiveWorld(live_run, tmp_path, scripts)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    tree = RunTree(run_root, RUN_ID)
+    record = page_records(tree)[(1, "attestator_3")]
+    call = json.loads(tree.read_bytes(record["payload"]["serving_call_ref"]["relative_path"]))
+    unread = call["raw_response_ref"]
+    assert unread in record["inputs"]
+    assert unread in record["payload"]["raw_response_refs"]
+
+    blob = tree.resolve(unread["relative_path"])
+    if damage == "changed":
+        blob.write_bytes(b"another answer")
+    else:
+        blob.unlink()
+    with pytest.raises(Exception, match="digest|missing|No such file|not found"):
+        tree.read_artifact(ATTESTATORES, "page-testimonium", record["artifact_id"])

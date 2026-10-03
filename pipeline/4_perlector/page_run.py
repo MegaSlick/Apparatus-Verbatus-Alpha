@@ -50,8 +50,7 @@ The sealed Pass-C audit policy is recorded on every `page-reading` as not run.
 What the records derive rather than state -- an answer's problems, each
 entry's plan, the accounting's inputs -- is `common/page_path.py`, the one
 derivation the page-read denominator recomputes them with, and the re-ask's
-plan is `common/page_reask.py`'s. The record shapes are in CONTRACT.md, "Page
-reading".
+plan is `common/page_reask.py`'s. The record shapes are in CONTRACT.md.
 """
 
 from __future__ import annotations
@@ -62,9 +61,9 @@ from dataclasses import dataclass, field
 from functools import partial
 from typing import Any, Callable, Final
 
+import live_calls
 from throughput import planned_seconds_per_page
 
-import operations.serving.errors as serving_errors
 from common import (
     page_accounting,
     page_path,
@@ -97,7 +96,6 @@ from common.page_path import (
     PERLECTIO_KIND,
     READ,
     REFUSED_CAPACITY,
-    RETIRED_PAGE_READING_SCHEMAS,
 )
 from common.page_testimonia import (
     current_page_testimonia,
@@ -108,12 +106,12 @@ from common.request_capacity import RequestCapacityRefusal
 from common.stage import (
     SECONDARY_PROPOSER_CHAIR,
     exemplar_page_ids,
+    fixture_serving_details,
+    is_real_ingress,
     stage_manifest,
 )
 from operations.serving.assembly import bound_serving_recipes
-from operations.serving.chat_request import EngineSignalRefusal, send_page_request
-from operations.serving.errors import ChairResponseRefusal
-from operations.serving.http import EndpointUnavailable
+from operations.serving.chat_request import send_page_request
 
 # The `reader-sent` pass a page's call is recorded under, its re-ask's, and an
 # operator re-read's.
@@ -121,41 +119,72 @@ PAGE_READING_PASS: Final = "page-reading"
 PAGE_REASK_PASS: Final = "page-reask"
 PAGE_REREAD_PASS: Final = "page-reread"
 
-_PAGE_LOCAL_CALL_FAILURES: Final = (
-    EngineSignalRefusal,
-    ChairResponseRefusal,
-    EndpointUnavailable,
-    serving_errors.ChairTransportFailure,
-)
-
-
-@dataclass(frozen=True)
-class StageHooks:
-    """The helpers of `run.py` the page path reads its evidence through."""
-
-    provenance_for: Callable[..., dict[str, Any]]
-    engine_call_inputs: Callable[..., list[dict[str, str]]]
-    start_chair: Callable[..., None]
-    publish_sent: Callable[..., None]
-    sent_records: Callable[..., list[dict[str, Any]]]
-    unrecorded_replies: Callable[..., tuple[list[dict[str, Any]], bool]]
-    answers_a_send: Callable[..., bool]
-    in_order_window: Callable[..., list[Any]]
-    refuse_past_deadline: Callable[..., None]
-    failure_record: Callable[..., dict[str, Any] | None]
-    real_ingress: Callable[..., bool]
-    sent_kind: str
-
-
-# --- stage open -------------------------------------------------------------------
-
-
-# --- sealed inputs ----------------------------------------------------------------
-
 
 def page_key(page_ordinal: int) -> str:
     """The key a page's `reader-sent` records name, as the Attestatores key a page."""
     return f"page-{page_ordinal}"
+
+
+def provenance_for(
+    context,
+    resolved: ChairIdentity | AbsentChair,
+    *,
+    attempted: bool,
+    receipt_ref: dict[str, str] | None = None,
+) -> dict:
+    """Project one Perlector outcome's immutable provenance.
+
+    An outcome that attempted no reading (a page not asked, an absent chair) names what
+    would have read and carries no receipt. An attempted reading re-verifies the snapshot when
+    it is made. `receipt_ref` is the live chair's own receipt, passed only
+    in live mode: a fixture receipt beside a real engine's reading would put a declared
+    value where a measurement belongs.
+    """
+    if receipt_ref is not None and not attempted:
+        raise SchemaRefusal(
+            "a Perlector outcome that attempted no reading cannot carry a serving receipt; "
+            "a page not asked and an absent chair name what would have read and stop there"
+        )
+    if receipt_ref is not None and isinstance(resolved, AbsentChair):
+        raise SchemaRefusal(
+            "an absent Perlector chair served nothing, so a receipt reference "
+            "would name a serving moment this chair never had"
+        )
+    regime = {
+        # A reading's provenance includes what its reader was shown, so every Perlectio
+        # records its witness regime.
+        "witness_regime": context.witness_context,
+        "adapter_revision": context.adapter_revision,
+    }
+    if isinstance(resolved, AbsentChair):
+        return {
+            "chair": resolved.role,
+            "chair_state": "absent",
+            "absence": resolved.to_record(),
+            "resolved_identity": None,
+            "resolved_revision": None,
+            "receipt_ref": None,
+            **regime,
+        }
+    return {
+        "chair": resolved.role,
+        "chair_state": "configured",
+        "resolved_identity": resolved.to_record(),
+        "resolved_revision": {
+            "kind": resolved.receipt_revision_kind,
+            "value": resolved.receipt_revision,
+        },
+        "receipt_ref": (
+            (
+                dict(receipt_ref)
+                if receipt_ref is not None
+                else context.write_serving_receipt(resolved, fixture_serving_details(resolved))
+            )
+            if attempted
+            else None
+        ),
+        **regime,
+    }
 
 
 # --- one page ---------------------------------------------------------------------
@@ -203,6 +232,10 @@ class _Page:
     plans: list[dict[str, Any]] = field(default_factory=list)
     # The page's operator re-reads in attempt order: those already read, then a new one.
     rereads: list[_Request] = field(default_factory=list)
+    # The entry plans an operator re-read is planned against: the first reading's
+    # with any the re-ask added, then the last operator re-read's that read anything
+    # and kept every act it replaced.
+    counted: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -222,7 +255,6 @@ class _PagePass:
     """What every page of one pass reads under."""
 
     run: Any
-    hooks: StageHooks
     audit: dict[str, Any]
     page_chairs: set[str]
     testimonia: dict[str, list[dict[str, Any]]]
@@ -320,7 +352,7 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
         current=current,
         surya_census=state.surya,
         serving_recipe=run.chair.serving_recipe if state.chair_present else None,
-        fixture_placeholders=not state.hooks.real_ingress(context),
+        fixture_placeholders=not is_real_ingress(context.run),
     )
     published = context.publish(
         kind=PAGE_FEED_KIND,
@@ -380,7 +412,7 @@ def _refuse_past_page_deadline(state: _PagePass, seconds_needed: int, what: str)
     """The deadline check in pages: a page-read pass reads every sealed page, so only
     a later deadline makes room."""
     per_page = planned_seconds_per_page(state.run.page_max_tokens)
-    state.hooks.refuse_past_deadline(
+    live_calls.refuse_past_deadline(
         state.run.args.reading_deadline,
         seconds_needed,
         what,
@@ -391,7 +423,7 @@ def _refuse_past_page_deadline(state: _PagePass, seconds_needed: int, what: str)
 
 def _job(state: _PagePass, page: _Page, request: _Request, finish: Callable[[Any], Any]):
     """One request's call, if it is sent, and its in-order finish."""
-    run, hooks = state.run, state.hooks
+    run = state.run
     if not _sends(state, page, request):
         return None, finish
     what = {FIRST_READING: "reading", REASK_READING: "re-asking"}.get(request.ordinal, "re-reading")
@@ -400,8 +432,8 @@ def _job(state: _PagePass, page: _Page, request: _Request, finish: Callable[[Any
     )
     images = page_path.request_images(page.feed, state.context.tree.read_bytes)
     if run.service.client is None:
-        hooks.start_chair(run)
-    hooks.publish_sent(
+        live_calls.start_chair(run)
+    live_calls.publish_sent(
         run,
         page.page_id,
         page_key(page.ordinal),
@@ -423,7 +455,7 @@ def _call(run, page: _Page, request: _Request, images: list[bytes]) -> dict[str,
             max_tokens=request.capacity["max_tokens"],
             what=f"page {page.page_id}",
         )
-    except _PAGE_LOCAL_CALL_FAILURES as error:
+    except live_calls.CALL_FAILURES as error:
         return error
 
 
@@ -464,6 +496,7 @@ def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | 
         if state.reask_budget and not state.live:
             page_path.fixture_reask_answer(state.context, page.ordinal, planned=False)
         publish_act_records(state, page, reading, plans, accounting)
+        page.counted = plans
         return
     page.reading, page.plans = reading, plans
     page.reask = _prepare_reask(state, page, reading, accounting, named)
@@ -635,12 +668,15 @@ def _finish_reread(
             truncation_policy=state.run.protocol_config["truncation"],
             accounting_policy=state.accounting_policy,
             attempt=request.ordinal,
+            superseded=page.counted,
         )
         if payload["disposition"] == READ
         else []
     )
     accounting = publish_page_accounting(state, page, reading, plans, attempt=request.ordinal)
     publish_act_records(state, page, reading, plans, accounting)
+    if page_path.keeps_counted(plans):
+        page.counted = plans
 
 
 def _prepare_reask(
@@ -730,6 +766,7 @@ def _finish_reask(state: _PagePass, page: _Page, result: dict[str, Any] | Except
     )[len(page.plans) :]
     publish_act_records(state, page, page.reading, page.plans, accounting)
     publish_act_records(state, page, second, recovered, accounting)
+    page.counted = page.plans + recovered
 
 
 def _reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[str, Any]:
@@ -741,7 +778,7 @@ def _reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[s
 
 
 def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[str, Any]:
-    run, hooks, context = state.run, state.hooks, state.context
+    run, context = state.run, state.context
     not_run = page.not_run if page_path.is_whole_page_reading(request.ordinal) else []
     attempted = not not_run and request.refusal is None
     engine_call = capacity = failure = answer = None
@@ -771,14 +808,11 @@ def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -
     else:
         receipt_ref = run.receipt_ref
         capacity = request.capacity
-        inputs += [
-            context.artifact_ref(PERLECTOR, hooks.sent_kind, marker["artifact_id"])
-            for marker in hooks.sent_records(
-                context, page.page_id, page_key(page.ordinal), request.ordinal, request.pass_name
-            )
-        ]
+        inputs += live_calls.sent_refs(
+            context, page.page_id, page_key(page.ordinal), request.ordinal, request.pass_name
+        )
         if isinstance(result, Exception):
-            failure = hooks.failure_record(result, phase=request.pass_name)
+            failure = live_calls.failure_record(result, phase=request.pass_name)
             if failure is None:
                 raise result
             parse_state = CALL_FAILED
@@ -791,7 +825,7 @@ def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -
         else:
             engine_call = result["engine_call"]
             finish_reason, stop_reason = result["finish_reason"], result["stop_reason"]
-            inputs += hooks.engine_call_inputs(context, engine_call)
+            inputs += live_calls.engine_call_inputs(context, engine_call)
             parse_state, answer, problems = page_path.read_reply(
                 result["content"], stop_reason, page.feed, state.accounting_policy, request.named
             )
@@ -820,7 +854,7 @@ def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -
         "reask": request.reask,
         **({} if request.reread is None else {OPERATOR_REREAD_FIELD: request.reread}),
         "audit": state.audit,
-        "provenance": hooks.provenance_for(
+        "provenance": provenance_for(
             context, run.chair, attempted=attempted, receipt_ref=receipt_ref
         ),
     }
@@ -849,11 +883,6 @@ def _check_adopted(
     """
     payload = record["payload"]
     schema = payload.get("schema") if isinstance(payload, dict) else None
-    if schema in RETIRED_PAGE_READING_SCHEMAS:
-        raise ContractError(
-            f"page {page.page_id}'s retained page reading is {schema}, a retired shape; it is "
-            "not adopted and the page is not asked again. Read this page in a new run"
-        )
     if (
         schema != PAGE_READING_SCHEMA
         or payload.get("feed_ref") != page.feed_ref
@@ -861,9 +890,10 @@ def _check_adopted(
         or payload.get("disposition") not in (READ, HELD)
     ):
         raise ContractError(
-            f"page {page.page_id}'s retained page reading was made from another feed or "
-            "configuration than this page has now; it is not adopted and the page is not "
-            "asked again. Read this page in a new run"
+            f"page {page.page_id}'s retained page reading (schema {schema!r}) was made from "
+            "another feed or configuration than this page has now, or under another schema "
+            f"than {PAGE_READING_SCHEMA}; it is not adopted and the page is not asked again. "
+            "Read this page in a new run"
         )
     if payload.get(OPERATOR_REREAD_FIELD) != request.reread:
         raise FatalAccounting(
@@ -880,7 +910,7 @@ def _check_adopted(
         )
     if payload.get("engine_call") is not None:
         # The retained call record is held to the sealed row it was sent under.
-        state.hooks.engine_call_inputs(state.context, payload["engine_call"])
+        live_calls.engine_call_inputs(state.context, payload["engine_call"])
         if payload.get("sampling") != page_path.page_sampling(
             state.run.decoding_policy, state.run.chair.role
         ):
@@ -947,7 +977,7 @@ def publish_act_records(
         "relative_path": page.page_record["payload"]["image_path"],
         "sha256": page.page_record["payload"]["source_sha256"],
     }
-    engine_inputs = state.hooks.engine_call_inputs(context, payload["engine_call"])
+    engine_inputs = live_calls.engine_call_inputs(context, payload["engine_call"])
     for plan in plans:
         act, union, act_id = plan["act"], plan["union_box_px"], plan["act_id"]
         crop = (
@@ -1091,7 +1121,7 @@ def publish_page_accounting(
         record_detector_configured=isinstance(
             context.registry.resolve(SECONDARY_PROPOSER_CHAIR), ChairIdentity
         ),
-        fixture_placeholders=not state.hooks.real_ingress(context),
+        fixture_placeholders=not is_real_ingress(context.run),
         reask=reask,
         attempt=attempt,
     )
@@ -1141,8 +1171,8 @@ def publish_page_accounting(
 
 
 def _first_requests(page: _Page) -> list[_Request]:
-    """The page's first reading request, if it has one."""
-    return [] if page.first is None else [page.first]
+    """The page's first reading request."""
+    return [page.first]
 
 
 def _reask_requests(page: _Page) -> list[_Request]:
@@ -1165,19 +1195,19 @@ def _left_to_send(
     the row's capacity. A request with sends and no reading is sent again only
     when no retained reply could be its answer.
     """
-    context, hooks = state.context, state.hooks
+    context = state.context
     left, unrecorded, replies = 0, [], None
     chosen = [(page, request) for page in prepared for request in select(page)]
     for page, request in chosen:
         if not _sends(state, page, request):
             continue
-        markers = hooks.sent_records(
+        markers = live_calls.sent_records(
             context, page.page_id, page_key(page.ordinal), request.ordinal, request.pass_name
         )
         if markers:
-            replies = hooks.unrecorded_replies(context) if replies is None else replies
+            replies = live_calls.unrecorded_replies(context) if replies is None else replies
             calls, unattributed = replies
-            if unattributed or hooks.answers_a_send(calls, markers):
+            if unattributed or live_calls.answers_a_send(calls, markers):
                 unrecorded.append(page.page_id)
                 continue
         left += 1
@@ -1200,7 +1230,7 @@ def _refuse_past_phase_deadline(state: _PagePass, left: int, what: str) -> None:
     )
 
 
-def read_the_pages(run, hooks: StageHooks) -> None:
+def read_the_pages(run) -> None:
     """Read every sealed Exemplar page once, re-ask the planned ones, then read again
     each page a person asked for.
 
@@ -1215,7 +1245,6 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         raise ContractError("the Exemplar sealed no page, so the page path has nothing to read")
     state = _PagePass(
         run=run,
-        hooks=hooks,
         audit=audit_not_run(run.audit_policy, run.audit_sha256),
         page_chairs=declared_page_witness_chairs(context),
         testimonia=current_page_testimonia(context),
@@ -1234,7 +1263,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         if left:
             _refuse_past_phase_deadline(state, left, "reading")
     print(f"perlector: reading {len(pages)} pages whole", file=sys.stderr)
-    hooks.in_order_window(
+    live_calls.in_order_window(
         run.concurrency,
         (_job(state, page, page.first, partial(_finish, state, page)) for page in prepared),
     )
@@ -1245,7 +1274,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
             if left:
                 _refuse_past_phase_deadline(state, left, "re-asking")
         print(f"perlector: re-asking {len(planned)} pages", file=sys.stderr)
-        hooks.in_order_window(
+        live_calls.in_order_window(
             run.concurrency,
             (
                 _job(state, page, page.reask, partial(_finish_reask, state, page))
@@ -1261,7 +1290,7 @@ def read_the_pages(run, hooks: StageHooks) -> None:
         if left:
             _refuse_past_phase_deadline(state, left, "re-reading")
     print(f"perlector: reading {len(reread)} pages again as a person asked", file=sys.stderr)
-    hooks.in_order_window(
+    live_calls.in_order_window(
         run.concurrency,
         (
             _job(state, page, request, partial(_finish_reread, state, page, request))

@@ -1,4 +1,4 @@
-"""Acceptance coverage for the confined, podless ingest console path."""
+"""Acceptance coverage for the podless ingest: shown first, then written exactly as shown."""
 
 from __future__ import annotations
 
@@ -15,14 +15,11 @@ import pytest
 from PIL import Image
 
 from common.contracts.canonical import canonical_bytes, digest_of
-from conftest import code_text
-from operations.operator import cli, custody, ingest, ingest_worker
-from operations.operator.ingest_protocol import EXPECTED_DIGEST_FIELDS
+from operations.operator import cli, ingest
+from operations.operator.errors import ErrorCode, OperatorError
 from operations.submit import gate, inventory
 from operations.triage import instrument
 from operations.triage.producer import CONFIRMATION_SCHEMA
-
-from .conftest import requires_host_boundary
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,52 +47,15 @@ def _inputs(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     return source, output, policy_path, approved
 
 
-def _request(
-    source: Path,
-    output: Path,
-    policy: Path,
-    *,
-    operation: str,
-    expected_submission_manifest_sha256: str | None = None,
-    expected_confirmation_sha256: str | None = None,
-    expected_instrument_config_sha256: str | None = None,
-    expected_data_handling_policy_sha256: str | None = None,
-) -> dict[str, object]:
+def _request(source: Path, output: Path, policy: Path) -> dict[str, object]:
     return {
-        "operation": operation,
         "source": str(source),
         "output_dir": str(output),
         "policy": str(policy),
         "corpus_id": "synthetic-console",
         "mode": "auto",
         "confirmation_file": None,
-        "expected_submission_manifest_sha256": expected_submission_manifest_sha256,
-        "expected_confirmation_sha256": expected_confirmation_sha256,
-        "expected_instrument_config_sha256": expected_instrument_config_sha256,
-        "expected_data_handling_policy_sha256": expected_data_handling_policy_sha256,
-        "expected_output_device": None,
-        "expected_output_inode": None,
     }
-
-
-def _pinned_commit_request(
-    source: Path, output: Path, policy: Path, preview_summary: dict[str, object]
-) -> dict[str, object]:
-    """A commit request pinned to exactly what a preceding preview showed."""
-    request = _request(
-        source,
-        output,
-        policy,
-        operation="commit",
-        expected_submission_manifest_sha256=preview_summary["submission_manifest_sha256"],
-        expected_confirmation_sha256=preview_summary["confirmation_sha256"],
-        expected_instrument_config_sha256=preview_summary["instrument_config_sha256"],
-        expected_data_handling_policy_sha256=preview_summary["data_handling_policy_sha256"],
-    )
-    output_status = output.stat(follow_symlinks=False)
-    request["expected_output_device"] = output_status.st_dev
-    request["expected_output_inode"] = output_status.st_ino
-    return request
 
 
 def test_ingest_preview_builds_the_whole_submission_and_triage_plan_without_a_write(
@@ -103,8 +63,8 @@ def test_ingest_preview_builds_the_whole_submission_and_triage_plan_without_a_wr
 ):
     source, output, policy, _approved = _inputs(tmp_path)
 
-    prepared = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    summary = ingest_worker._summary(prepared)
+    prepared = ingest._prepare(_request(source, output, policy))
+    summary = ingest._summary(prepared)
 
     assert summary["submission_files"] == 3
     assert summary["candidate_count"] >= 1
@@ -119,13 +79,9 @@ def test_ingest_commit_makes_an_immutable_ready_folder_and_keeps_source_bytes_un
 ):
     source, output, policy, _approved = _inputs(tmp_path)
     before = {path.name: path.read_bytes() for path in source.iterdir()}
-    previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    preview_summary = ingest_worker._summary(previewed)
-    prepared = ingest_worker._prepare(
-        _pinned_commit_request(source, output, policy, preview_summary)
-    )
+    prepared = ingest._prepare(_request(source, output, policy))
 
-    ingest_worker._commit(prepared)
+    ingest._commit(prepared)
 
     names = {path.name for path in output.iterdir()}
     assert {
@@ -147,23 +103,19 @@ def test_a_stray_publication_temporary_does_not_block_the_ready_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     source, output, policy, _approved = _inputs(tmp_path)
-    previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    prepared = ingest_worker._prepare(
-        _pinned_commit_request(source, output, policy, ingest_worker._summary(previewed))
-    )
-    real_create = ingest_worker.submit.atomic_create
+    prepared = ingest._prepare(_request(source, output, policy))
+    real_create = ingest.submit.atomic_create
 
     def create_and_strand(path: Path, data: bytes) -> bool:
         (path.parent / f".{path.name}.tmp-stray").write_bytes(b"")
         return real_create(path, data)
 
-    monkeypatch.setattr(ingest_worker.submit, "atomic_create", create_and_strand)
-    ingest_worker._commit(prepared)
+    monkeypatch.setattr(ingest.submit, "atomic_create", create_and_strand)
+    ingest._commit(prepared)
 
     assert (output / "ingest-ready.json").is_file()
 
 
-@requires_host_boundary
 def test_ingest_refusal_shows_the_unit_6b_reason_verbatim_and_writes_nothing(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -213,8 +165,7 @@ def test_ingest_refusal_shows_the_unit_6b_reason_verbatim_and_writes_nothing(
     assert not list(output.iterdir())
 
 
-@requires_host_boundary
-def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
+def test_an_ingest_commit_failure_says_records_may_have_been_written(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
@@ -225,7 +176,7 @@ def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
         output.chmod(0o700)
         pytest.skip(
             f"this process (uid={os.getuid()}) can write a mode-0500 directory; "
-            "the worker write-failure case cannot be built"
+            "the commit write-failure case cannot be built"
         )
     try:
         exit_code = cli.main(
@@ -255,15 +206,9 @@ def test_ingest_commit_failure_shows_the_workers_own_reason_not_a_raw_json_dict(
     # Phrases this test owns, not `ERRORS[...]` lookups, so an edit that gave
     # the uncertain-commit case the wrong words has to change this too.
     assert "Ingest did not return a checked ready-folder record." in rendered
-    assert "could not complete inside its OS boundary" not in rendered
-    # Nor a refused preview, which promises the output folder is untouched:
-    # this test's subject is a failure that may already have written records.
-    assert "could not show you the plan" not in rendered
-    assert "the preview runs with no write rights at all" not in rendered
 
 
 @pytest.mark.hostile_local
-@requires_host_boundary
 def test_ingest_does_not_resolve_a_source_symlink_past_the_data_gate(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -296,11 +241,11 @@ def test_ingest_does_not_resolve_a_source_symlink_past_the_data_gate(
     assert not list(output.iterdir())
 
 
-def test_ingest_refuses_an_empty_confirmation_before_the_commit_child_can_write(
+def test_ingest_refuses_an_empty_confirmation_before_anything_is_written(
     tmp_path: Path,
 ):
     source, output, policy, _approved = _inputs(tmp_path)
-    first = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
+    first = ingest._prepare(_request(source, output, policy))
     confirmation = {
         "schema": CONFIRMATION_SCHEMA,
         "corpus_id": "synthetic-console",
@@ -312,11 +257,11 @@ def test_ingest_refuses_an_empty_confirmation_before_the_commit_child_can_write(
     }
     confirmation_path = tmp_path / "empty-confirmation.json"
     confirmation_path.write_bytes(canonical_bytes(confirmation))
-    request = _request(source, output, policy, operation="preview")
+    request = _request(source, output, policy)
     request["confirmation_file"] = str(confirmation_path)
 
     with pytest.raises(Exception, match="confirmation names no cluster"):
-        ingest_worker._prepare(request)
+        ingest._prepare(request)
 
     assert not list(output.iterdir())
 
@@ -325,7 +270,7 @@ def test_ingest_accepts_a_valid_confirmation_file_and_retains_its_authority(
     tmp_path: Path,
 ):
     source, output, policy, _approved = _inputs(tmp_path)
-    first = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
+    first = ingest._prepare(_request(source, output, policy))
     pair = first.evidence[0]["both_digests"]
     confirmation = {
         "schema": CONFIRMATION_SCHEMA,
@@ -349,15 +294,11 @@ def test_ingest_accepts_a_valid_confirmation_file_and_retains_its_authority(
     }
     confirmation_path = tmp_path / "confirmation.json"
     confirmation_path.write_bytes(canonical_bytes(confirmation))
-    preview_request = _request(source, output, policy, operation="preview")
-    preview_request["confirmation_file"] = str(confirmation_path)
-    previewed = ingest_worker._prepare(preview_request)
-    preview_summary = ingest_worker._summary(previewed)
-    request = _pinned_commit_request(source, output, policy, preview_summary)
+    request = _request(source, output, policy)
     request["confirmation_file"] = str(confirmation_path)
-
-    prepared = ingest_worker._prepare(request)
-    ingest_worker._commit(prepared)
+    prepared = ingest._prepare(request)
+    preview_summary = ingest._summary(prepared)
+    ingest._commit(prepared)
 
     assert (
         json.loads((output / "triage-confirmation.json").read_text(encoding="utf-8"))
@@ -384,7 +325,7 @@ def test_ingest_does_not_publish_ready_when_the_register_digest_is_not_verified(
     monkeypatch: pytest.MonkeyPatch,
 ):
     source, output, policy, _approved = _inputs(tmp_path)
-    first = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
+    first = ingest._prepare(_request(source, output, policy))
     pair = first.evidence[0]["both_digests"]
     confirmation = {
         "schema": CONFIRMATION_SCHEMA,
@@ -408,45 +349,21 @@ def test_ingest_does_not_publish_ready_when_the_register_digest_is_not_verified(
     }
     confirmation_path = tmp_path / "confirmation.json"
     confirmation_path.write_bytes(canonical_bytes(confirmation))
-    preview_request = _request(source, output, policy, operation="preview")
-    preview_request["confirmation_file"] = str(confirmation_path)
-    previewed = ingest_worker._prepare(preview_request)
-    commit_request = _pinned_commit_request(
-        source, output, policy, ingest_worker._summary(previewed)
-    )
-    commit_request["confirmation_file"] = str(confirmation_path)
-    prepared = ingest_worker._prepare(commit_request)
-    real_commit = ingest_worker.producer.commit_confirmed_production
+    request = _request(source, output, policy)
+    request["confirmation_file"] = str(confirmation_path)
+    prepared = ingest._prepare(request)
+    real_commit = ingest.producer.commit_confirmed_production
 
     def return_unmatched_digest(*args, **kwargs):  # type: ignore[no-untyped-def]
         produced, _digest = real_commit(*args, **kwargs)
         return produced, "0" * 64
 
-    monkeypatch.setattr(
-        ingest_worker.producer, "commit_confirmed_production", return_unmatched_digest
-    )
+    monkeypatch.setattr(ingest.producer, "commit_confirmed_production", return_unmatched_digest)
 
     with pytest.raises(ValueError, match="does not match the verified chain digest"):
-        ingest_worker._commit(prepared)
+        ingest._commit(prepared)
 
     assert not (output / "ingest-ready.json").exists()
-
-
-@pytest.mark.hostile_local
-def test_ingest_commit_refuses_when_the_submitted_folder_changed_after_the_preview(
-    tmp_path: Path,
-):
-    """Preview and commit are two independent worker launches with no shared state."""
-    source, output, policy, _approved = _inputs(tmp_path)
-    previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    preview_summary = ingest_worker._summary(previewed)
-
-    (source / "page-1.png").write_bytes(_distinct_png_bytes())
-
-    commit_request = _pinned_commit_request(source, output, policy, preview_summary)
-    with pytest.raises(ValueError, match="changed after the ingest preview was shown"):
-        ingest_worker._prepare(commit_request)
-    assert not list(output.iterdir())
 
 
 @pytest.mark.hostile_local
@@ -455,66 +372,19 @@ def test_ingest_commit_refuses_when_the_output_directory_inode_changed_after_pre
 ):
     """The selected destination is an inode, not only a reusable path spelling."""
     source, output, policy, approved = _inputs(tmp_path)
-    previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    pinned = _pinned_commit_request(source, output, policy, ingest_worker._summary(previewed))
+    prepared = ingest._prepare(_request(source, output, policy))
     original = approved / "original-ready"
     output.rename(original)
     output.mkdir()
 
     with pytest.raises(ValueError, match="output folder changed after the preview"):
-        ingest_worker._prepare(pinned)
+        ingest._commit(prepared)
 
     assert not list(output.iterdir())
     assert not list(original.iterdir())
 
 
-def test_ingest_commit_refuses_when_the_confirmation_file_changed_after_the_preview(
-    tmp_path: Path,
-):
-    """A confirmation swapped in after the shown preview must not commit silently."""
-    source, output, policy, _approved = _inputs(tmp_path)
-    first = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    pair = first.evidence[0]["both_digests"]
-    shared_fields = {
-        "schema": CONFIRMATION_SCHEMA,
-        "corpus_id": "synthetic-console",
-        "authority": {"kind": "human", "identity": "operator", "revision": None},
-        "instrument_config_sha256": first.recipe["instrument_config_sha256"],
-        "evidence_manifest_sha256": digest_of(first.evidence_manifest),
-        "clusters": [
-            {
-                "pages": [
-                    {
-                        "volume_id": "volume-1",
-                        "designation": "opening-1",
-                        "member_frame_sha256": list(pair),
-                    }
-                ],
-                "evidence_pairs": [list(pair)],
-            }
-        ],
-    }
-    previewed_confirmation = {**shared_fields, "appending_run": "operator-preview"}
-    confirmation_path = tmp_path / "confirmation.json"
-    confirmation_path.write_bytes(canonical_bytes(previewed_confirmation))
-
-    preview_request = _request(source, output, policy, operation="preview")
-    preview_request["confirmation_file"] = str(confirmation_path)
-    previewed = ingest_worker._prepare(preview_request)
-    preview_summary = ingest_worker._summary(previewed)
-
-    swapped_confirmation = {**shared_fields, "appending_run": "swapped-after-preview"}
-    confirmation_path.write_bytes(canonical_bytes(swapped_confirmation))
-
-    commit_request = _pinned_commit_request(source, output, policy, preview_summary)
-    commit_request["confirmation_file"] = str(confirmation_path)
-    with pytest.raises(ValueError, match="confirmation file changed after the ingest preview"):
-        ingest_worker._prepare(commit_request)
-    assert not list(output.iterdir())
-
-
-@requires_host_boundary
-def test_scripted_ingest_walk_uses_the_confined_console_and_prints_door_summary(
+def test_scripted_ingest_walk_prints_the_preview_then_the_door_summary(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
@@ -599,29 +469,6 @@ def test_each_ingest_relevant_verb_has_a_double_click_console_surface(
     assert selected_with_policy[-2:] == ["--policy", "/reviewed/data-policy.json"]
 
 
-def test_ingest_presenter_has_no_image_or_producer_writer_and_uses_the_custody_seam():
-    """The presenter names neither producer nor submit, and launches through custody.
-
-    The two negatives read the source text on purpose. A module-namespace or
-    resolved-import check sees only what the module imported at import time, and
-    would pass a function-local `import operations.triage` inside a branch no
-    test happens to take — which is exactly how the producer would come back
-    into the presenter. Reading the text catches it wherever it is written.
-
-    The writable targets are *not* asserted here as text. They are pinned as
-    behaviour by the custody-launch coverage in
-    `test_the_double_click_route_reaches_the_one_confined_ingest_implementation`,
-    which records every launch and asserts `[None, output.resolve()]` — the same
-    property, checked by observing it rather than by matching a keyword
-    argument's spelling.
-    """
-    source = code_text(ingest)
-    assert "operations.triage" not in source
-    assert "operations.submit" not in source
-    assert ingest.run_confined is custody.run_confined
-
-
-@requires_host_boundary
 def test_ingest_refuses_an_output_folder_inside_the_submitted_folder(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -661,7 +508,6 @@ def test_ingest_refuses_an_output_folder_inside_the_submitted_folder(
     assert marker.read_text(encoding="utf-8") == "must survive the refusal"
 
 
-@requires_host_boundary
 @pytest.mark.hostile_local
 def test_a_case_variant_spelling_cannot_place_the_output_inside_the_submission(
     tmp_path: Path,
@@ -700,51 +546,6 @@ def test_a_case_variant_spelling_cannot_place_the_output_inside_the_submission(
     assert list(inside.iterdir()) == []
 
 
-def test_ingest_commit_refuses_when_the_instrument_settings_changed_after_the_preview(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """Instrument bytes determine proxies, verdicts, recipes, and evidence names."""
-    source, output, policy, _approved = _inputs(tmp_path)
-    previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    preview_summary = ingest_worker._summary(previewed)
-    commit_request = _pinned_commit_request(source, output, policy, preview_summary)
-
-    # Bytes the loader accepts and that change no threshold: the point is that the
-    # sealed instrument digest moved, not that a verdict did.
-    edited = tmp_path / "instrument.toml"
-    edited.write_text(
-        instrument.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8") + "\n", encoding="utf-8"
-    )
-    # `load_config`'s default path is bound at definition, so replace the call the
-    # worker actually makes: this is the second launch reading different bytes.
-    real_load_config = instrument.load_config
-    monkeypatch.setattr(instrument, "load_config", lambda path=edited: real_load_config(path))
-
-    with pytest.raises(
-        ValueError, match="triage instrument configuration changed after the ingest preview"
-    ):
-        ingest_worker._prepare(commit_request)
-    assert not list(output.iterdir())
-
-
-def test_ingest_commit_refuses_when_the_data_handling_policy_changed_after_the_preview(
-    tmp_path: Path,
-):
-    """The gate authority shown by preview is a mutable input too."""
-    source, output, policy, _approved = _inputs(tmp_path)
-    previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    preview_summary = ingest_worker._summary(previewed)
-    commit_request = _pinned_commit_request(source, output, policy, preview_summary)
-
-    policy.write_text(policy.read_text(encoding="utf-8") + "\n", encoding="utf-8")
-
-    with pytest.raises(ValueError, match="data-handling policy changed after the ingest preview"):
-        ingest_worker._prepare(commit_request)
-    assert not list(output.iterdir())
-
-
-@requires_host_boundary
 def test_ingest_names_every_undecodable_file_by_position_and_digest(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -788,12 +589,9 @@ def test_ingest_refuses_a_submitted_file_larger_than_the_retained_byte_ceiling(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """An unbounded read of a real master folder ends as an unreadable failure.
+    """An oversized master is a named refusal, not an out-of-memory failure.
 
-    The producer's API takes whole frames, so the bytes are held either way; what
-    the bound changes is that an oversized submission becomes a named refusal
-    instead of an OOM kill of the confined child, which returns no JSON and
-    reaches the operator with an empty detail. The ceiling is
+    The producer's API takes whole frames, so the bytes are held either way. The ceiling is
     `inventory.MAX_SUBMITTED_BYTES` — this repository's own declared limit on
     retained submitted bytes — not a second hand-kept copy of the Door's.
     """
@@ -801,7 +599,7 @@ def test_ingest_refuses_a_submitted_file_larger_than_the_retained_byte_ceiling(
     monkeypatch.setattr(inventory, "MAX_SUBMITTED_BYTES", 64)
 
     with pytest.raises(ValueError, match="larger than the 64-byte ceiling"):
-        ingest_worker._prepare(_request(source, output, policy, operation="preview"))
+        ingest._prepare(_request(source, output, policy))
     assert not list(output.iterdir())
 
 
@@ -810,10 +608,10 @@ def test_ingest_refuses_a_frame_count_that_would_amplify_proxy_work(
     monkeypatch: pytest.MonkeyPatch,
 ):
     source, output, policy, _approved = _inputs(tmp_path)
-    monkeypatch.setattr(ingest_worker, "MAX_INGEST_FRAMES", 2)
+    monkeypatch.setattr(ingest, "MAX_INGEST_FRAMES", 2)
 
     with pytest.raises(ValueError, match="more than 2 image masters"):
-        ingest_worker._prepare(_request(source, output, policy, operation="preview"))
+        ingest._prepare(_request(source, output, policy))
 
     assert not list(output.iterdir())
 
@@ -823,30 +621,29 @@ def test_ingest_refuses_candidate_amplification_before_full_comparisons(
     monkeypatch: pytest.MonkeyPatch,
 ):
     source, output, policy, _approved = _inputs(tmp_path)
-    monkeypatch.setattr(ingest_worker, "MAX_INGEST_CANDIDATE_PAIRS", 2)
+    monkeypatch.setattr(ingest, "MAX_INGEST_CANDIDATE_PAIRS", 2)
 
     with pytest.raises(instrument.InstrumentRefusal, match="above the 2-pair ceiling"):
-        ingest_worker._prepare(_request(source, output, policy, operation="preview"))
+        ingest._prepare(_request(source, output, policy))
 
     assert not list(output.iterdir())
 
 
 def test_ingest_refuses_a_corpus_id_that_amplifies_every_produced_row(tmp_path: Path):
     source, output, policy, _approved = _inputs(tmp_path)
-    request = _request(source, output, policy, operation="preview")
-    request["corpus_id"] = "x" * (ingest_worker.MAX_CORPUS_ID_CHARACTERS + 1)
+    request = _request(source, output, policy)
+    request["corpus_id"] = "x" * (ingest.MAX_CORPUS_ID_CHARACTERS + 1)
 
     with pytest.raises(ValueError, match="corpus id is longer"):
-        ingest_worker._request(request)
+        ingest._request(request)
 
 
 def test_the_console_shows_the_ledger_digest_the_run_tree_will_carry(tmp_path: Path):
     """The displayed ledger identity must be the self-hash every page carries."""
     source, output, policy, _approved = _inputs(tmp_path)
-    previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    summary = ingest_worker._summary(previewed)
-    prepared = ingest_worker._prepare(_pinned_commit_request(source, output, policy, summary))
-    ingest_worker._commit(prepared)
+    prepared = ingest._prepare(_request(source, output, policy))
+    summary = ingest._summary(prepared)
+    ingest._commit(prepared)
 
     manifest = json.loads((output / "submission-manifest.json").read_text(encoding="utf-8"))
     assert summary["submission_ledger_self_hash"] == manifest["self_hash"]
@@ -857,7 +654,6 @@ def test_the_console_shows_the_ledger_digest_the_run_tree_will_carry(tmp_path: P
     assert ready["data_handling_policy_sha256"] == gate.load_policy_binding(policy).config_sha256
 
 
-@requires_host_boundary
 def test_the_ready_folder_is_admitted_by_the_real_door_exactly_as_the_console_claimed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -935,79 +731,6 @@ def test_the_ready_folder_is_admitted_by_the_real_door_exactly_as_the_console_cl
     assert f"ledger self-hash {ledger['self_hash']}" in rendered
 
 
-@requires_host_boundary
-def test_a_failed_preview_never_tells_the_operator_records_may_have_been_written(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-):
-    """A no-write preview cannot use commit's possibly-partial recovery text."""
-    source, output, policy, _approved = _inputs(tmp_path)
-
-    monkeypatch.setattr(
-        ingest,
-        "_decode_response",
-        lambda _value: {"status": "wrong-shape"},
-    )
-    assert (
-        cli.main(
-            [
-                "--workspace",
-                str(ROOT),
-                "--state-dir",
-                str(tmp_path / "state"),
-                "ingest",
-                "--source",
-                str(source),
-                "--output-dir",
-                str(output),
-                "--policy",
-                str(policy),
-                "--corpus-id",
-                "synthetic-console",
-            ]
-        )
-        == 2
-    )
-    rendered = capsys.readouterr().out
-    assert "the preview runs with no write rights at all" in rendered
-    assert "immutable ingest records may have been written" not in rendered
-    assert not list(output.iterdir())
-
-
-def test_a_replayed_commit_can_only_ever_write_what_its_pin_already_described(
-    tmp_path: Path,
-):
-    """The pin is an equality test: it refuses, and it never authorises."""
-    source, first_output, policy, approved = _inputs(tmp_path)
-    previewed = ingest_worker._prepare(_request(source, first_output, policy, operation="preview"))
-    summary = ingest_worker._summary(previewed)
-    pinned = _pinned_commit_request(source, first_output, policy, summary)
-    ingest_worker._commit(ingest_worker._prepare(pinned))
-    written = {path.name: path.read_bytes() for path in first_output.iterdir()}
-
-    second_output = approved / "replayed"
-    second_output.mkdir()
-    replayed = {**pinned, "output_dir": str(second_output)}
-    with pytest.raises(ValueError, match="output folder changed after the preview"):
-        ingest_worker._prepare(replayed)
-    assert not list(second_output.iterdir())
-
-    with pytest.raises(ValueError, match="output folder is not empty"):
-        ingest_worker._prepare(pinned)
-    assert {path.name: path.read_bytes() for path in first_output.iterdir()} == written
-
-
-def test_a_preview_request_may_not_carry_any_expected_digest(tmp_path: Path):
-    """A preview establishes the pin; a preview that arrives holding one is not one."""
-    source, output, policy, _approved = _inputs(tmp_path)
-    for field in EXPECTED_DIGEST_FIELDS:
-        request = _request(source, output, policy, operation="preview")
-        request[field] = "0" * 64
-        with pytest.raises(ValueError, match="may not already carry an expected digest"):
-            ingest_worker._request(request)
-
-
 def test_prepare_refuses_a_proxy_whose_computed_digest_does_not_match(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1022,72 +745,22 @@ def test_prepare_refuses_a_proxy_whose_computed_digest_does_not_match(
     monkeypatch.setattr(instrument, "build_proxies_from_bytes", corrupt_proxy)
 
     with pytest.raises(instrument.InstrumentRefusal, match="does not match the digest"):
-        ingest_worker._prepare(_request(source, output, policy, operation="preview"))
+        ingest._prepare(_request(source, output, policy))
 
     assert not list(output.iterdir())
 
 
-def test_parent_refuses_a_malformed_or_amplified_worker_summary(tmp_path: Path):
-    source, output, policy, _approved = _inputs(tmp_path)
-    prepared = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    summary = ingest_worker._summary(prepared)
-    summary["candidates"] = [
-        "x" * (ingest.MAX_PREVIEW_LINE_CHARACTERS + 1) for _candidate in summary["candidates"]
-    ]
-
-    with pytest.raises(ingest.OperatorError, match="could not show"):
-        ingest._summary(
-            {"status": "preview", "summary": summary},
-            ingest.ErrorCode.INGEST_PREVIEW_UNRESOLVED,
-        )
-
-
-def test_the_double_click_route_reaches_the_one_confined_ingest_implementation(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """The interactive path must not be a second, weaker copy of the verb path.
-
-    Both routes exist only as argv: `_interactive_arguments` asks a person for the
-    same facts a flag would carry and hands the result to the same `parse_args`,
-    so there is exactly one dispatch and exactly one call site for the confined
-    flow. That is asserted here rather than assumed, because "a person can drive
-    it" is this unit's exit and a divergent second implementation is precisely how
-    the interactive route would come to hold weaker guarantees than the verb one.
-    """
-    assert code_text(cli).count("ingest_in_custody(") == 1
-    # The interactive branch supplies flags to the parser and nothing else: it
-    # never reaches the worker, the custody seam, or a path of its own.
-    interactive = code_text(cli._interactive_arguments)
-    assert "ingest_in_custody" not in interactive
-    assert "run_confined" not in interactive
-
-    answers = iter(("ingest", "/approved/masters", "/approved/ready", "", "corpus", "semi", ""))
-    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-    parsed = cli.build_parser().parse_args(cli._interactive_arguments())
-    assert (parsed.verb, parsed.mode, parsed.policy, parsed.confirmation_file) == (
-        "ingest",
-        "semi",
-        None,
-        None,
-    )
-
-
-@requires_host_boundary
 @pytest.mark.parametrize("with_confirmation", (False, True), ids=("no-confirmation", "confirmed"))
 def test_the_committed_folder_holds_exactly_the_files_the_preview_listed(
     tmp_path: Path,
     with_confirmation: bool,
-    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ):
-    """Preview and commit file sets must match, including the persistent lock.
-
-    The console route uses the real custody launcher so no in-process stub can hide
-    a file created by the confined worker.
-    """
+    """Preview and commit file sets must match, including the persistent lock."""
     source, output, policy, _approved = _inputs(tmp_path)
     confirmation_path: Path | None = None
     if with_confirmation:
-        first = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
+        first = ingest._prepare(_request(source, output, policy))
         pair = first.evidence[0]["both_digests"]
         confirmation_path = tmp_path / "confirmation.json"
         confirmation_path.write_bytes(
@@ -1115,29 +788,6 @@ def test_the_committed_folder_holds_exactly_the_files_the_preview_listed(
             )
         )
 
-    planned: list[str] = []
-    real_print_preview = ingest._print_preview
-
-    def observe_preview(summary, printer):  # type: ignore[no-untyped-def]
-        planned.extend(summary["planned_files"])
-        real_print_preview(summary, printer)
-
-    launches: list[Path | None] = []
-    real_run_confined = ingest.run_confined
-
-    def observed_confined_launch(  # type: ignore[no-untyped-def]
-        command, *, writable, cwd, input_text
-    ):
-        launches.append(writable)
-        return real_run_confined(
-            command,
-            writable=writable,
-            cwd=cwd,
-            input_text=input_text,
-        )
-
-    monkeypatch.setattr(ingest, "_print_preview", observe_preview)
-    monkeypatch.setattr(ingest, "run_confined", observed_confined_launch)
     arguments = [
         "--workspace",
         str(ROOT),
@@ -1158,7 +808,10 @@ def test_the_committed_folder_holds_exactly_the_files_the_preview_listed(
 
     assert cli.main(arguments) == 0
 
-    assert launches == [None, output.resolve()]
+    printed = capsys.readouterr().out.splitlines()
+    start = printed.index("The following immutable files are written now, from exactly this plan:")
+    end = next(i for i in range(start, len(printed)) if printed[i].startswith("The write first"))
+    planned = [line.strip() for line in printed[start + 1 : end]]
     assert sorted(planned) == sorted(path.name for path in output.iterdir())
     assert len(planned) == len(set(planned))
     # Three candidate-evidence records make the exact branch totals 15 and 18.
@@ -1193,26 +846,18 @@ def _file_sizes(source: Path) -> list[int]:
 
 
 def _too_many_frames(source, output, policy, monkeypatch):
-    monkeypatch.setattr(ingest_worker, "MAX_INGEST_FRAMES", len(_file_sizes(source)) - 1)
-    return _request(source, output, policy, operation="preview")
-
-
-def _replaced_output_folder(source, output, policy, _monkeypatch):
-    previewed = ingest_worker._prepare(_request(source, output, policy, operation="preview"))
-    pinned = _pinned_commit_request(source, output, policy, ingest_worker._summary(previewed))
-    output.rename(output.with_name("original-ready"))
-    output.mkdir()
-    return pinned
+    monkeypatch.setattr(ingest, "MAX_INGEST_FRAMES", len(_file_sizes(source)) - 1)
+    return _request(source, output, policy)
 
 
 def _one_master_over_the_ceiling(source, output, policy, monkeypatch):
     monkeypatch.setattr(inventory, "MAX_SUBMITTED_BYTES", min(_file_sizes(source)) - 1)
-    return _request(source, output, policy, operation="preview")
+    return _request(source, output, policy)
 
 
 def _retained_bytes_over_the_ceiling(source, output, policy, monkeypatch):
     monkeypatch.setattr(inventory, "MAX_SUBMITTED_BYTES", max(_file_sizes(source)))
-    return _request(source, output, policy, operation="preview")
+    return _request(source, output, policy)
 
 
 def _proxy_that_disagrees_with_its_own_digest(source, output, policy, monkeypatch):
@@ -1222,12 +867,12 @@ def _proxy_that_disagrees_with_its_own_digest(source, output, policy, monkeypatc
         return replace(real(data, config), signature_png_sha256="0" * 64)
 
     monkeypatch.setattr(instrument, "build_proxies_from_bytes", corrupt)
-    return _request(source, output, policy, operation="preview")
+    return _request(source, output, policy)
 
 
 def _output_folder_replaced_during_preparation(source, output, policy, monkeypatch):
     """The second identity read, which exists to catch a swap mid-preparation."""
-    real = ingest_worker._directory_identity
+    real = ingest._directory_identity
     reads = []
 
     def drifting(path):
@@ -1235,20 +880,19 @@ def _output_folder_replaced_during_preparation(source, output, policy, monkeypat
         device, inode = real(path)
         return (device, inode) if len(reads) == 1 else (device, inode + 1)
 
-    monkeypatch.setattr(ingest_worker, "_directory_identity", drifting)
-    return _request(source, output, policy, operation="preview")
+    monkeypatch.setattr(ingest, "_directory_identity", drifting)
+    return _request(source, output, policy)
 
 
 def _too_many_candidate_pairs(source, output, policy, monkeypatch):
-    monkeypatch.setattr(ingest_worker, "MAX_INGEST_CANDIDATE_PAIRS", 0)
-    return _request(source, output, policy, operation="preview")
+    monkeypatch.setattr(ingest, "MAX_INGEST_CANDIDATE_PAIRS", 0)
+    return _request(source, output, policy)
 
 
 @pytest.mark.parametrize(
     ("build", "named"),
     (
         pytest.param(_too_many_frames, "image masters", id="frame-ceiling"),
-        pytest.param(_replaced_output_folder, "output folder changed", id="output-replaced"),
         pytest.param(_one_master_over_the_ceiling, "in the ledger's path order", id="one-master"),
         pytest.param(
             _retained_bytes_over_the_ceiling, "may hold in memory at once", id="retained-bytes"
@@ -1289,10 +933,158 @@ def test_a_refused_ingest_preparation_wrote_nothing_it_disowned(
     before = _tree_snapshot(approved)
 
     with pytest.raises((ValueError, instrument.InstrumentRefusal)) as refusal:
-        ingest_worker._prepare(request)
+        ingest._prepare(request)
 
     assert named in str(refusal.value)
     assert "nothing was written" in str(refusal.value)
     assert _stray_writes(before, _tree_snapshot(approved)) == [], (
         "the refusal wrote to the approved tree it disowned"
     )
+
+
+def test_the_ingest_child_receives_no_provider_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """The child decodes untrusted masters, so no credential reaches its environment."""
+    source, output, policy, _approved = _inputs(tmp_path)
+    for name in ("RUNPOD_API_KEY", "RUNPOD_S3_ACCESS_KEY", "RUNPOD_S3_SECRET_KEY", "HF_TOKEN"):
+        monkeypatch.setenv(name, f"secret-for-{name}")
+    monkeypatch.setenv("VERBATUS_INGEST_TEST_SENTINEL", "preserved")
+    observed: dict[str, object] = {}
+    real_popen = ingest.subprocess.Popen
+
+    def recording_popen(command, **kwargs):  # type: ignore[no-untyped-def]
+        observed.update(kwargs)
+        return real_popen(command, **kwargs)
+
+    monkeypatch.setattr(ingest.subprocess, "Popen", recording_popen)
+    printed: list[str] = []
+    ingest.ingest(
+        source=source,
+        output_dir=output,
+        policy_path=policy,
+        corpus_id="synthetic-console",
+        mode="auto",
+        confirmation_file=None,
+        workspace=ROOT,
+        printer=printed.append,
+    )
+
+    environment = observed["env"]
+    assert isinstance(environment, dict)
+    assert not {name for name in environment if "RUNPOD" in name or name == "HF_TOKEN"}
+    assert environment["VERBATUS_INGEST_TEST_SENTINEL"] == "preserved"
+    assert (output / "ingest-ready.json").is_file()
+    assert any(line.startswith("Ready-to-submit folder:") for line in printed)
+
+
+def _ingest_into(source: Path, output: Path, policy: Path, printed: list[str]) -> None:
+    ingest.ingest(
+        source=source,
+        output_dir=output,
+        policy_path=policy,
+        corpus_id="synthetic-console",
+        mode="auto",
+        confirmation_file=None,
+        workspace=ROOT,
+        printer=printed.append,
+    )
+
+
+def test_the_masters_are_decoded_only_in_the_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """With every decoder broken in the parent, ingest still writes its ready folder."""
+    source, output, policy, _approved = _inputs(tmp_path)
+
+    def no_decoding_here(*_args, **_kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("the parent decoded a submitted master")
+
+    monkeypatch.setattr(instrument, "build_proxies_from_bytes", no_decoding_here)
+    monkeypatch.setattr(Image, "open", no_decoding_here)
+    printed: list[str] = []
+    _ingest_into(source, output, policy, printed)
+
+    assert (output / "ingest-ready.json").is_file()
+    assert ingest.WRITING_MARKER not in printed
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="prctl is Linux-only")
+def test_the_parent_is_not_dumpable_when_the_child_starts(tmp_path: Path):
+    """A non-dumpable parent's /proc entries are closed to the same-user child.
+
+    Checked in a fresh process at the moment `ingest` starts its child, so the
+    flag is proven to be set by `ingest` itself, not by a direct call.
+    """
+    source, output, policy, _approved = _inputs(tmp_path)
+    probe = (
+        "import ctypes, sys\n"
+        "from pathlib import Path\n"
+        "from operations.operator import ingest\n"
+        "def recorded(*_args):\n"
+        "    print(ctypes.CDLL(None).prctl(3, 0, 0, 0, 0))\n"  # PR_GET_DUMPABLE
+        "    return 0, '', ''\n"
+        "ingest._run_child = recorded\n"
+        "ingest.ingest(source=Path(sys.argv[1]), output_dir=Path(sys.argv[2]),\n"
+        "    policy_path=Path(sys.argv[3]), corpus_id='synthetic-console', mode='auto',\n"
+        "    confirmation_file=None, workspace=Path.cwd(), printer=print)\n"
+    )
+    result = ingest.subprocess.run(
+        [sys.executable, "-c", probe, str(source), str(output), str(policy)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == "0"
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "code"),
+    [
+        # Killed before preparation finished: nothing was written.
+        (-9, "", "INGEST_REFUSED"),
+        # Killed after the marker: the write may have begun.
+        (-9, f"{ingest.WRITING_MARKER}\nPlan line\n", "INGEST_UNRESOLVED"),
+        # The child's own unresolved status stands even when no marker survived.
+        (ingest.UNRESOLVED_EXIT, "Plan line\n", "INGEST_UNRESOLVED"),
+        (ingest.REFUSED_EXIT, "Plan line\n", "INGEST_REFUSED"),
+    ],
+)
+def test_a_child_that_stops_before_it_writes_is_a_refusal_and_after_is_unresolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, code: str
+):
+    source, output, policy, _approved = _inputs(tmp_path)
+    monkeypatch.setattr(ingest, "_run_child", lambda *_args: (returncode, stdout, ""))
+    printed: list[str] = []
+
+    with pytest.raises(OperatorError) as failure:
+        _ingest_into(source, output, policy, printed)
+
+    assert failure.value.code is getattr(ErrorCode, code)
+    assert ingest.WRITING_MARKER not in printed
+
+
+def test_the_child_output_kept_by_the_parent_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source, output, policy, _approved = _inputs(tmp_path)
+    monkeypatch.setattr(ingest, "MAX_CHILD_STDOUT_BYTES", 200)
+    real_run_child = ingest._run_child
+    kept_stdout: list[str] = []
+
+    def recording(*args):  # type: ignore[no-untyped-def]
+        result = real_run_child(*args)
+        kept_stdout.append(result[1])
+        return result
+
+    monkeypatch.setattr(ingest, "_run_child", recording)
+    printed: list[str] = []
+    _ingest_into(source, output, policy, printed)
+
+    # The marker comes first, so the bound never drops it.
+    assert kept_stdout[0].startswith(ingest.WRITING_MARKER + "\n")
+    assert ingest.WRITING_MARKER not in printed
+
+    kept = "\n".join(printed)
+    assert kept.endswith("[output past 200 bytes was dropped]")
+    assert len(kept.encode("utf-8")) < 300
+    assert (output / "ingest-ready.json").is_file()

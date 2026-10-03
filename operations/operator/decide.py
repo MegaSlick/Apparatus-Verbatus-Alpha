@@ -47,6 +47,8 @@ from common.page_review import override_refusal, published_units
 from common.review_decisions import CURRENT, published_basis, review_decision
 from common.runtree.store import RunTree
 
+from .surface import resume_command
+
 # What each decision asks of the run after it, in words.
 NEXT_STEP: Final = {
     "release": "the Recensor clears the unit's own holds",
@@ -257,22 +259,22 @@ def report(prepared: PreparedDecision, reference: ApprovalRecordReference) -> li
         f"{', '.join(prepared.held_codes) or 'nothing'}.",
         f"Decision record: {reference.relative_path} ({reference.sha256})",
         f"When the Recensor runs again, {effect}.",
-        _next_step(decision == "re-ask" and review["scope"] == PAGE_SCOPE),
+        _next_step(review["run_id"], decision == "re-ask" and review["scope"] == PAGE_SCOPE),
     ]
 
 
-def _next_step(reread: bool) -> str:
+def _next_step(run_id: str, reread: bool) -> str:
     """How the run goes on after the decision: from the Perlector for a page re-ask, which
     must read the page again before the Recensor reviews it, else from the Recensor."""
-    if reread:
-        return (
-            "Next: resume the run from the perlector (`--from perlector --to armarium`), which "
-            "reads the page again and then has the Recensor apply every decision recorded; it "
-            "goes on to export once nothing is held, or once `verbatus advance --stage "
-            "recensor` passes its new seal."
-        )
+    stage = "perlector" if reread else "recensor"
+    what = (
+        "reads the page again and then has the Recensor apply every decision recorded"
+        if reread
+        else "applies every decision recorded"
+    )
     return (
-        "Next: resume the run from the recensor (`--from recensor --to armarium`), which "
-        "applies every decision recorded; it goes on to export once nothing is held, or once "
-        "`verbatus advance --stage recensor` passes its new seal."
+        f"Next: resume the run from the {stage}, which {what}: "
+        f"{resume_command(run_id, stage)} for a run this tool started, or `pod_run --from "
+        f"{stage} --to armarium` on its pod. It goes on to export once nothing is held, or "
+        "once `verbatus advance --stage recensor` passes its new seal."
     )

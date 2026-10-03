@@ -43,6 +43,7 @@ from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_HOLD,
     boundary_advanced,
+    canary_ordinals,
     exemplar_page_ids,
     latest_attempt,
     real_page_entries,
@@ -690,9 +691,11 @@ def held_pages_after_review(tree) -> tuple[list[int], int]:
     been; a page the Recensor never reached (refused at the Door, say) is the
     census's to report, not a page the review passed. A page is held when any
     unit on it is held, or when the current `review-decisions` record still
-    holds it (a page whose every unit was excluded keeps its page holds). Read
-    from the run tree alone, like `held_by_recensor`.
+    holds it (a page whose every unit was excluded keeps its page holds). A
+    canary page is neither held nor counted: it is a control, not a page of
+    the register. Read from the run tree alone, like `held_by_recensor`.
     """
+    canaries = canary_ordinals(tree.read_run())
     decisions: list[dict[str, Any]] = []
     for entry in tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
         if entry["kind"] == REVIEW_DECISIONS_KIND:
@@ -703,6 +706,8 @@ def held_pages_after_review(tree) -> tuple[list[int], int]:
     held: set[int] = set()
     for review in _current_reviews(tree).values():
         ordinal = _payload(review)["page_ordinal"]
+        if ordinal in canaries:
+            continue
         pages.add(ordinal)
         if review.get("outcome") == HELD:
             held.add(ordinal)
@@ -710,7 +715,7 @@ def held_pages_after_review(tree) -> tuple[list[int], int]:
         record = latest_attempt(
             decisions, "Recensor review-decisions record", operation=REVIEW_DECISIONS_OPERATION
         )
-        held |= {row["page_ordinal"] for row in _payload(record)["page_holds"]}
+        held |= {row["page_ordinal"] for row in _payload(record)["page_holds"]} - canaries
     return sorted(held), len(pages)
 
 

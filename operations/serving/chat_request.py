@@ -18,6 +18,7 @@ import base64
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from common.chair_wire import chat_template_kwargs_for
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
 from common.contracts.serving import reading_stop_reason
@@ -113,15 +114,16 @@ def send_chat_request(
 
     Returns `{content, stop_reason, finish_reason, request_sha256, engine_call}`.
     """
+    generation_sent: dict[str, Any] = {"max_tokens": max_tokens}
+    template_kwargs = chat_template_kwargs_for(client.identity.role)
+    if template_kwargs is not None:
+        generation_sent["chat_template_kwargs"] = template_kwargs
     request = ChairRequest(
         kind="chat-completions",
         messages=({"role": "user", "content": content},),
         image_sha256s=tuple(image_sha256s),
         generation_declared={},
-        generation_sent={
-            "chat_template_kwargs": {"enable_thinking": False},
-            "max_tokens": max_tokens,
-        },
+        generation_sent=generation_sent,
         capacity=capacity,
     )
     response = client.read(request)

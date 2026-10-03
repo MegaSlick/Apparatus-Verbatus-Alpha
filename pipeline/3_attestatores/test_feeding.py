@@ -13,17 +13,13 @@ from feeding import (
     CHURRO_OUTPUT_TOKENS,
     DAI_FORMAT_CAPABILITIES,
     DAI_MAX_WIDTH_PX,
-    SCHEDULING_POLICY,
-    SingleChairResidency,
     churro_generation,
     dai_generation,
     dai_generation_accounting,
     dai_model_view,
     dai_prompt,
     detect_repetition,
-    execute_stage_major_schedule,
     retain_model_view,
-    stage_major_schedule,
     validate_dai_generation_accounting,
     validate_dai_model_view,
     validate_dai_text,
@@ -93,7 +89,7 @@ class _Tree:
             raise FileNotFoundError(2, "No such file or directory", path) from None
 
 
-# --- Churro on its vendor's own grammar (U10) ---------------------------------
+# --- Churro on its vendor's own grammar --------------------------------------
 #
 # The chair carries no prompt bytes of this repository's any more: what it is
 # asked is one of two vendor-attested system strings in
@@ -1188,241 +1184,6 @@ def test_dai_model_view_refuses_rehashed_limits_that_change_the_sealed_ceiling()
         validate_dai_model_view(view)
 
 
-def test_schedule_is_stage_major_chair_outer_page_inner_and_refuses_duplicate_chairs():
-    schedule = stage_major_schedule(
-        "parish-7",
-        [{"unit_id": "a2", "page_ordinal": 1}, {"unit_id": "a1", "page_ordinal": 0}],
-        ["attestator_3", "attestator_1"],
-    )
-    assert schedule == [
-        {
-            "policy": SCHEDULING_POLICY,
-            "parish_id": "parish-7",
-            "chair": "attestator_1",
-            "unit_id": "a1",
-        },
-        {
-            "policy": SCHEDULING_POLICY,
-            "parish_id": "parish-7",
-            "chair": "attestator_1",
-            "unit_id": "a2",
-        },
-        {
-            "policy": SCHEDULING_POLICY,
-            "parish_id": "parish-7",
-            "chair": "attestator_3",
-            "unit_id": "a1",
-        },
-        {
-            "policy": SCHEDULING_POLICY,
-            "parish_id": "parish-7",
-            "chair": "attestator_3",
-            "unit_id": "a2",
-        },
-    ]
-    with pytest.raises(SchemaRefusal, match="repeats a chair"):
-        stage_major_schedule(
-            "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1", "attestator_1"]
-        )
-
-
-def test_schedule_refuses_a_repeated_unit_for_the_same_reason_it_refuses_a_chair():
-    with pytest.raises(SchemaRefusal, match="repeats a unit"):
-        stage_major_schedule(
-            "parish-7",
-            [{"unit_id": "a1", "page_ordinal": 0}, {"unit_id": "a1", "page_ordinal": 1}],
-            ["attestator_1", "attestator_2"],
-        )
-
-
-@pytest.mark.parametrize(
-    ("units", "chairs", "message"),
-    [
-        ([{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1", ""], "chair identity is blank"),
-        ([{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1", 7], "chair identity is blank"),
-        (["a1"], ["attestator_1"], "unit has no identity"),
-        ([{"unit_id": "a1", "page_ordinal": "0"}], ["attestator_1"], "ordinal is not an integer"),
-        ([{"unit_id": "a1", "page_ordinal": True}], ["attestator_1"], "ordinal is not an integer"),
-    ],
-)
-def test_schedule_refuses_malformed_rows_instead_of_failing_inside_a_sort(units, chairs, message):
-    with pytest.raises(SchemaRefusal, match=message):
-        stage_major_schedule("parish-7", units, chairs)
-
-
-def test_stage_major_execution_refuses_a_schedule_that_serves_one_unit_twice():
-    schedule = stage_major_schedule(
-        "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1"]
-    )
-    residency = SingleChairResidency(lambda chair: chair, lambda *_: None)
-    with pytest.raises(SchemaRefusal, match="serves one unit twice"):
-        execute_stage_major_schedule(
-            [schedule[0], dict(schedule[0])], residency=residency, serve=lambda *_: None
-        )
-    assert residency.resident is None
-
-
-def test_stage_major_execution_never_exposes_two_resident_chairs():
-    schedule = stage_major_schedule(
-        "parish-7",
-        [{"unit_id": "a2", "page_ordinal": 1}, {"unit_id": "a1", "page_ordinal": 0}],
-        ["attestator_2", "attestator_1"],
-    )
-    loaded = set()
-    events = []
-
-    def load(chair):
-        assert not loaded
-        loaded.add(chair)
-        events.append(("load", chair))
-        return {"chair": chair}
-
-    def unload(chair, resource):
-        assert resource["chair"] == chair
-        assert loaded == {chair}
-        loaded.remove(chair)
-        events.append(("unload", chair))
-
-    residency = SingleChairResidency(load, unload)
-
-    def serve(resource, row):
-        assert residency.resident == row["chair"] == resource["chair"]
-        assert loaded == {row["chair"]}
-        with pytest.raises(SchemaRefusal, match="while chair"):
-            with residency.occupy("attestator_9"):
-                raise AssertionError("a nested second chair must never load")
-        events.append(("serve", row["chair"], row["unit_id"]))
-        return row["unit_id"]
-
-    assert execute_stage_major_schedule(schedule, residency=residency, serve=serve) == [
-        "a1",
-        "a2",
-        "a1",
-        "a2",
-    ]
-    assert loaded == set()
-    assert residency.resident is None
-    assert events == [
-        ("load", "attestator_1"),
-        ("serve", "attestator_1", "a1"),
-        ("serve", "attestator_1", "a2"),
-        ("unload", "attestator_1"),
-        ("load", "attestator_2"),
-        ("serve", "attestator_2", "a1"),
-        ("serve", "attestator_2", "a2"),
-        ("unload", "attestator_2"),
-    ]
-
-
-@pytest.mark.parametrize("failing_unit", ["a1", "a2"])
-def test_stage_major_execution_unloads_before_propagating_a_unit_failure(failing_unit):
-    schedule = stage_major_schedule(
-        "parish-7",
-        [{"unit_id": "a1", "page_ordinal": 0}, {"unit_id": "a2", "page_ordinal": 1}],
-        ["attestator_1"],
-    )
-    loaded = set()
-
-    def load(chair):
-        loaded.add(chair)
-        return chair
-
-    def unload(chair, resource):
-        assert resource == chair
-        loaded.remove(chair)
-
-    residency = SingleChairResidency(load, unload)
-
-    def serve(_resource, row):
-        if row["unit_id"] == failing_unit:
-            raise RuntimeError("fixture unit failure")
-
-    with pytest.raises(RuntimeError, match="fixture unit failure"):
-        execute_stage_major_schedule(schedule, residency=residency, serve=serve)
-    assert loaded == set()
-    assert residency.resident is None
-
-
-def test_stage_major_execution_refuses_reentry_and_fails_closed_on_unload_failure():
-    loaded = set()
-
-    def load(chair):
-        assert not loaded
-        loaded.add(chair)
-        return chair
-
-    def unload(_chair, _resource):
-        raise RuntimeError("unload not verified")
-
-    residency = SingleChairResidency(load, unload)
-    schedule = stage_major_schedule(
-        "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1"]
-    )
-    with pytest.raises(RuntimeError, match="unload not verified"):
-        execute_stage_major_schedule(schedule, residency=residency, serve=lambda *_: None)
-    assert residency.resident == "attestator_1"
-    assert loaded == {"attestator_1"}
-    with pytest.raises(SchemaRefusal, match="while chair 'attestator_1' is resident"):
-        execute_stage_major_schedule(
-            stage_major_schedule(
-                "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_2"]
-            ),
-            residency=residency,
-            serve=lambda *_: None,
-        )
-
-
-def test_unload_failure_cannot_mask_a_security_refusal_from_the_resident_body():
-    def unload_fails(*_args):
-        raise RuntimeError("unload not verified")
-
-    residency = SingleChairResidency(lambda chair: chair, unload_fails)
-
-    with pytest.raises(SchemaRefusal, match="security refusal survives cleanup") as caught:
-        with residency.occupy("attestator_1"):
-            raise SchemaRefusal("security refusal survives cleanup")
-
-    assert isinstance(caught.value.__cause__, RuntimeError)
-    assert str(caught.value.__cause__) == "unload not verified"
-    assert residency.resident == "attestator_1"
-
-
-def test_stage_major_execution_fails_closed_when_the_load_itself_fails():
-    """A chair whose load raised is resident, not vacant: nothing may follow it.
-
-    Distinct from the failed-unload case above. There the resource was known to
-    have been loaded; here it may have been half loaded, and the reservation is
-    deliberately taken before `load` so that the difference cannot be guessed at.
-    """
-    unloads = []
-
-    def load(chair):
-        raise RuntimeError("chair weights did not map")
-
-    def unload(chair, resource):
-        unloads.append((chair, resource))
-
-    residency = SingleChairResidency(load, unload)
-    with pytest.raises(RuntimeError, match="did not map"):
-        execute_stage_major_schedule(
-            stage_major_schedule(
-                "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_1"]
-            ),
-            residency=residency,
-            serve=lambda *_: None,
-        )
-    assert residency.resident == "attestator_1"
-    assert unloads == [], "no unload may be claimed for a resource that never loaded"
-    with pytest.raises(SchemaRefusal, match="while chair 'attestator_1' is resident"):
-        execute_stage_major_schedule(
-            stage_major_schedule(
-                "parish-7", [{"unit_id": "a1", "page_ordinal": 1}], ["attestator_2"]
-            ),
-            residency=residency,
-            serve=lambda *_: None,
-        )
-
-
 def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending():
     tree = _Tree()
     with pytest.raises(SchemaRefusal, match="does not run for adapter"):
@@ -1446,19 +1207,6 @@ def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending(
     assert unparsed["raw_response_ref"]["relative_path"].startswith(
         f"{writing_directory(ATTESTATORES)}/{BLOBS_DIR}/"
     )
-
-
-def test_stage_major_execution_refuses_a_schedule_that_returns_to_a_prior_chair():
-    schedule = stage_major_schedule(
-        "parish-7",
-        [{"unit_id": "a1", "page_ordinal": 1}, {"unit_id": "a2", "page_ordinal": 2}],
-        ["attestator_1", "attestator_2"],
-    )
-    tampered = [schedule[0], schedule[2], schedule[1], schedule[3]]
-    residency = SingleChairResidency(lambda chair: chair, lambda *_: None)
-    with pytest.raises(SchemaRefusal, match="returns to an unloaded chair"):
-        execute_stage_major_schedule(tampered, residency=residency, serve=lambda *_: None)
-    assert residency.resident is None
 
 
 def test_a_raw_chair_response_is_not_stored_after_the_seal():

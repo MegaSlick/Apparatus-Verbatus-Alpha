@@ -1,15 +1,12 @@
-"""The safe, plain-language façade for the operator's seven words.
+"""The plain-language surface behind `upload`, `run`, `fetch-run`, `export` and `status`.
 
-Pod actions run against a fake provider, so they are an offline rehearsal;
-network-volume transfers the operator asks for go through S3
-(`S3VolumeTarget` in upload, `S3VolumeObjectReader` in `fetch_run`). It records
-what the operator confirmed before each action.
+Network-volume transfers the operator asks for go through S3 (`S3VolumeTarget`
+in upload, `S3VolumeObjectReader` in `fetch_run`). Every action leaves an
+operator receipt in the state directory, which `status` reads back.
 """
 
 from __future__ import annotations
 
-import errno
-import fcntl
 import hashlib
 import importlib.util
 import io
@@ -22,22 +19,20 @@ import stat
 import subprocess
 import sys
 import tempfile
-import time
 import unicodedata
 import zipfile
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Final, Iterator, Protocol, Sequence
+from typing import Any, Callable, Final, Protocol, Sequence
 
-from common.chairs.config import load_models_toml, parse_models_config
-from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
+from common.contracts.canonical import canonical_bytes, is_sha256
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, validate_run_id
 from common.contracts.outcomes import SYSTEMIC_REASON_PREFIX
 from common.contracts.stages import ARMARIUM, WRITING_DIRECTORIES
+from common.credentials import looks_like_credential_env
 from common.durability import is_temporary_name
 from common.review_policy import systemic_notice
 from common.runtree.store import (
@@ -49,61 +44,8 @@ from common.runtree.store import (
     SERVING_LOGS_DIR,
     RunTree,
 )
-from common.sealed_config import read_sealed_toml
 from common.stage import load_fixture
-from common.witness_context import validate_witness_context_configuration
-from operations.pod.arming import ControllerArming, ControllerReadiness
-from operations.pod.bootstrap import (
-    CONFIGURATION_RECEIPT_SCHEMA,
-    BootstrapJournal,
-    Bootstrapper,
-    BootstrapPlan,
-    BootstrapStep,
-    BootstrapStepFailure,
-)
-from operations.pod.launch import (
-    LaunchResult,
-    LaunchState,
-    PaidActionPreview,
-    PodRuntime,
-    phraseless,
-    price_move_note,
-)
-from operations.pod.lease import LeaseStore, PodLease
-from operations.pod.models import (
-    PodCreateRequest,
-    PodEstimate,
-    PodRecord,
-    PodRuntimeContract,
-    ProviderFailure,
-    container_disk_gb_for_tier,
-    require_billing_cutoff_margin_seconds,
-    require_utc,
-)
 from operations.pod.pod_run import DEFAULT_RUNS_DIRECTORY
-from operations.pod.preflight import (
-    CacheMismatch,
-    GpuProfile,
-    PreflightRunner,
-    SmokeResult,
-    UtilizationSample,
-    load_placement_table,
-)
-from operations.pod.shutdown import CloseReport, VerifiedShutdown
-from operations.pod.spend import (
-    PRICE_MOVE_MARKER,
-    SpendPolicy,
-    load_spend_policy,
-)
-from operations.pod.supervise import (
-    identity_path as _supervisor_identity_path,
-)
-from operations.pod.supervise import (
-    peek_running as _supervisor_peek_running,
-)
-from operations.pod.supervise import (
-    read_identity as _read_supervisor_identity,
-)
 from operations.pod.transfer import (
     ChecksummedTransfer,
     TransferFailure,
@@ -114,19 +56,16 @@ from operations.submit import submit as submission_door
 
 from . import notify_bridge
 from ._run_tree_paths import is_publication_temporary
-from .custody import credential_free_environment
 from .errors import ErrorCode, OperatorError, strip_control_bytes
-from .fakes import LocalFixtureObjectStore, OperatorFakeProvider
+from .local_volume import LocalFixtureObjectStore
 from .notify_bridge import Notifier
 from .records import (
-    MAX_RECORD_BYTES,
     DescriptorStore,
     ReceiptStore,
     RecordError,
     sha256_file,
     utc_stamp,
 )
-from .volume_cost import volume_cost_lines
 from .volume_s3 import (
     S3VolumeObjectReader,
     S3VolumeTarget,
@@ -135,7 +74,6 @@ from .volume_s3 import (
 )
 
 UTC = timezone.utc
-OPERATOR_CLOSE_PREFIX = "CLOSE"
 DEFAULT_FIXTURE = "synthetic-two-page-v0"
 MAX_SEALED_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_NOTIFY_MESSAGE_CHARACTERS = 500
@@ -145,6 +83,28 @@ otherwise build one entry per page with no ceiling at all."""
 DOOR_PROGRAM = "pipeline/1_exemplar/door.py"
 _COPY_CHUNK_BYTES = 1024 * 1024
 FETCH_RUN_PREFIX = DEFAULT_RUNS_DIRECTORY
+# A resumed range always ends at the export, so its outcome is this run's.
+RESUME_TO_STAGE: Final = "armarium"
+# The orchestrator flags that bind a run, reused when it is resumed.
+_RESUMED_BINDINGS: Final = frozenset(
+    {
+        "--scenario",
+        "--fixture",
+        "--submission-folder",
+        "--submission-manifest",
+        "--data-gate-policy",
+        "--models-config",
+        "--serving-recipes-config",
+        "--witness-context-config",
+    }
+)
+
+
+def resume_command(run_id: str, from_stage: str) -> str:
+    """The one spelling of the command that resumes `run_id` from `from_stage`."""
+    return f"`verbatus run --run-id {run_id} --from {from_stage} --to {RESUME_TO_STAGE}`"
+
+
 """Where `pod_run` writes run trees on the volume, relative to its mount:
 `<volume>/runs/<run_id>` (`operations/pod/pod_run.py`, `DEFAULT_RUNS_DIRECTORY`)."""
 FETCH_EVIDENCE_PREFIX = "preflight"
@@ -166,10 +126,6 @@ MAX_FETCH_OBJECT_BYTES = 256 * 1024 * 1024
 """One object's bound. A whole-page blob is the largest thing a run tree holds;
 the manifest walk already refuses an artifact above 64 MiB, and a quarter of a
 gigabyte is past any page this project has rendered."""
-# The fake provider stamps its billing cutoff one hour ahead of its clock, so the
-# margin must reach forward at least that far. A smaller margin is not safer: it
-# makes a fixture shutdown report UNVERIFIED.
-FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS = 3600
 
 
 class _UploadManifestConflict(TransferFailure):
@@ -187,61 +143,8 @@ class Presenter(Protocol):
 class Faults:
     """One-shot failure injection used only by the hardening drills."""
 
-    provider_timeout: bool = False
-    provider_error: bool = False
     partial_upload: bool = False
-    failed_close: bool = False
     laptop_crash: bool = False
-    cache_failure: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedLaunch:
-    """The exact preview the operator saw before typing a paid confirmation."""
-
-    request: PodCreateRequest
-    action: str
-    adopted_pod_id: str | None
-    result: LaunchResult
-    policy: SpendPolicy
-    runtime: PodRuntime
-
-    @property
-    def review_record(self) -> dict[str, object]:
-        """The reviewed request and priced preview in the one record the UI keeps."""
-
-        if self.result.preview is None:
-            raise OperatorError(ErrorCode.CONFIRMATION_REQUIRED)
-        return _review_record(self.request, self.action, self.adopted_pod_id, self.result.preview)
-
-    @property
-    def review_digest(self) -> str:
-        """The digest of the exact request, price, and ceilings presented."""
-
-        return digest_bytes(canonical_bytes(self.review_record))
-
-    @property
-    def confirmation_phrase(self) -> str:
-        """The phrase this exact price screen requires.
-
-        It is built from the action, subject and rates shown, so it cannot be
-        typed from memory without reading the price.
-        """
-
-        if self.result.preview is None:
-            raise OperatorError(ErrorCode.CONFIRMATION_REQUIRED)
-        return self.result.preview.confirmation_phrase
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedClose:
-    """The exact close notice the operator saw before typing its confirmation."""
-
-    launch: dict[str, Any]
-    record: PodRecord
-    lease_store: LeaseStore
-    lease: PodLease
-    phrase: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -255,188 +158,6 @@ class RunOutcome:
     export_payload: dict[str, Any]
 
 
-class FixtureControllerArmer:
-    """A visibly fixture-only two-controller acknowledgement for fake pod drills."""
-
-    def __init__(self, now: Callable[[], datetime]) -> None:
-        self.now = now
-
-    def preflight(
-        self, *, action: str, request: PodCreateRequest, policy: SpendPolicy
-    ) -> ControllerReadiness:
-        return ControllerReadiness(
-            True,
-            self.now(),
-            "fixture controller handshake is available",
-            {"action": action, "mode": "offline-fixture"},
-        )
-
-    def arm(self, *, action, request, record, lease, store, owner_token, policy):  # type: ignore[no-untyped-def]
-        del action, store, owner_token, policy
-        observed = self.now()
-        stamp = utc_stamp(observed)
-        # Echo the sealed request's launch-bound `--report-path`; arming
-        # validation compares it exactly, so a constant would never match.
-        command = request.docker_start_cmd
-        report_path = command[command.index("--report-path") + 1]
-        return ControllerArming(
-            True,
-            True,
-            observed,
-            "fixture laptop controller and fixture pod timer acknowledged",
-            {
-                "lease_id": lease.lease_id,
-                "pod_id": record.pod_id,
-                "hard_deadline": utc_stamp(lease.hard_deadline),
-                "laptop_supervisor": {
-                    "identity": "fixture-laptop-supervisor",
-                    "started_at": stamp,
-                },
-                "pod_timer": {
-                    "report_path": report_path,
-                    "acknowledged_at": stamp,
-                },
-            },
-        )
-
-
-class FixtureCache:
-    """A preflight cache seam that reports fixture verification only."""
-
-    def __init__(self, *, fail: bool = False) -> None:
-        self.fail = fail
-
-    def verify(self, identity):  # type: ignore[no-untyped-def]
-        if self.fail:
-            raise CacheMismatch("injected fixture cache mismatch")
-        return {"state": "fixture-verified", "chair": identity.role}
-
-    def manifest(self, identity):  # type: ignore[no-untyped-def]
-        raise RuntimeError(
-            f"the fixture cache holds no pinned manifest for chair {identity.role}; "
-            "a fixture preflight runs no subprocess chair"
-        )
-
-
-class FixtureSmokeReader:
-    """A proof-page seam that never claims to have reached a model service."""
-
-    def read(self, identity, fixture, placement):  # type: ignore[no-untyped-def]
-        del fixture, placement
-        return SmokeResult(
-            True,
-            True,
-            True,
-            {"state": "fixture-smoke", "chair": identity.role},
-            (UtilizationSample(Decimal("0"), Decimal("0")),),
-        )
-
-
-class FixtureBootstrapActions:
-    """Runs the real Bootstrapper journal without checkout, download, or network effects."""
-
-    def __init__(self, surface: "OperatorSurface", *, transfer_receipt: Path | None) -> None:
-        self.surface = surface
-        self.transfer_receipt = transfer_receipt
-
-    def checkout_commit(self, commit: str) -> dict[str, object]:
-        return {"commit": commit, "mode": "fixture-only; no network checkout"}
-
-    def validate_configuration(self) -> dict[str, object]:
-        root = self.surface.workspace
-        config_root = root / "config"
-        shipped_config_root = Path(__file__).resolve().parents[2] / "config"
-        models_path = config_root / "models.toml"
-        models_raw, models_sha256 = read_sealed_toml(models_path, "models.toml")
-        validation = validate_witness_context_configuration(
-            parse_models_config(models_raw, source_path=models_path),
-            config_root / "witness_context.toml",
-            shipped_config_root=shipped_config_root,
-        )
-        seals = {
-            "models_config": models_sha256,
-            "witness_context_config": validation.source_sha256,
-        }
-        for name, filename in (
-            ("serving_recipes_config", "serving_recipes.toml"),
-            ("placement_config", "pod_placement.toml"),
-        ):
-            seals[name] = read_sealed_toml(config_root / filename, filename)[1]
-        return {
-            "schema": CONFIGURATION_RECEIPT_SCHEMA,
-            "bindings": {
-                name: {"path": str(config_root / filename), "sha256": seals[name]}
-                for name, filename in (
-                    ("models_config", "models.toml"),
-                    ("witness_context_config", "witness_context.toml"),
-                    ("serving_recipes_config", "serving_recipes.toml"),
-                    ("placement_config", "pod_placement.toml"),
-                )
-            },
-            "witness_context_validation": validation.to_record(),
-        }
-
-    def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
-        if not lockfile.is_file():
-            raise BootstrapStepFailure(
-                BootstrapStep.UV_ENVIRONMENT,
-                "the pinned lockfile is missing",
-                "Restore the repository lockfile, then run `verbatus boot` again.",
-            )
-        return {
-            "lockfile": str(lockfile),
-            "sha256": sha256_file(lockfile),
-            "mode": "fixture-only; no environment was changed",
-        }
-
-    def configure_cuda_compat(self) -> dict[str, object]:
-        return {"driver": "fixture", "gpus": [], "compat_path": None, "action": "fixture-only"}
-
-    def resume_transfer(self) -> dict[str, object]:
-        if self.transfer_receipt is None:
-            return {"state": "no-upload-recorded", "mode": "fixture-only"}
-        return {"state": "recorded-upload", "receipt": str(self.transfer_receipt)}
-
-    def materialize_model_store(self) -> dict[str, object]:
-        """Report the step without fetching weights, so a green journal cannot omit it."""
-        return {"state": "no-materialization", "mode": "fixture-only; no weights are fetched"}
-
-    def verify_chair_cache(self) -> dict[str, object]:
-        return {"state": "fixture-cache-check", "mode": "no download"}
-
-    def run_preflight(self) -> dict[str, object]:
-        root = self.surface.workspace
-        models = load_models_toml(root / "config" / "models.toml")
-        injected_cache_failure = self.surface.faults.cache_failure
-        self.surface.faults.cache_failure = False
-        runner = PreflightRunner(
-            models,
-            load_placement_table(root / "config" / "pod_placement.toml"),
-            FixtureCache(fail=injected_cache_failure),
-            FixtureSmokeReader(),
-            root / "proof" / "fixtures" / DEFAULT_FIXTURE / "page-1.png",
-        )
-        report = runner.run(
-            GpuProfile(
-                name="fixture 48 GiB GPU",
-                cuda_version="fixture",
-                driver_version="fixture",
-                compute_capability=(9, 0),
-                vram_gib=Decimal("48"),
-                disk_gib=Decimal("100"),
-                dtype="float16",
-            )
-        )
-        record = report.to_record()
-        if report.color != "green":
-            raise BootstrapStepFailure(
-                BootstrapStep.PREFLIGHT,
-                "fixture preflight returned red",
-                "Repair the named fixture check, then run `verbatus boot` again; this is safe.",
-            )
-        return record
-
-
 class UnreconciledActPartitionError(ValueError):
     """A `complete` Armarium export whose act partition does not reconcile.
 
@@ -446,38 +167,27 @@ class UnreconciledActPartitionError(ValueError):
 
 
 class OperatorSurface:
-    """One durable, fake-only surface over launch, boot, upload, run, export, close, and status."""
+    """The operator's durable surface over upload, run, fetch-run, export and status."""
 
     def __init__(
         self,
         workspace: str | Path,
         state_root: str | Path,
         *,
-        provider: OperatorFakeProvider | None = None,
         now: Callable[[], datetime] | None = None,
         present: Presenter | None = None,
         faults: Faults | None = None,
         runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
         notifier: Notifier | None = None,
-        monotonic: Callable[[], float] | None = None,
-        sleeper: Callable[[float], None] | None = None,
     ) -> None:
         self.workspace = Path(workspace).resolve()
         self.state_root = Path(state_root).resolve()
         self.now = now or (lambda: datetime.now(UTC))
         self._present: Presenter = present or print
-        candidate = provider or OperatorFakeProvider(now=self.now)
-        # OperatorFakeProvider, not the base FakeProvider: close relies on its
-        # extra methods and on the billing-margin floor gated on this subclass.
-        if not isinstance(candidate, OperatorFakeProvider):
-            raise OperatorError(ErrorCode.LIVE_PROVIDER_BLOCKED)
-        self.provider = candidate
         self.faults = faults or Faults()
         self.runner = runner or _run_program
         # Silent unless asked: no test and no first rehearsal sends a ping.
         self.notifier: Notifier = notifier or notify_bridge.silent
-        self.monotonic = monotonic or time.monotonic
-        self.sleeper = sleeper or time.sleep
         self.receipts = ReceiptStore(self.state_root, now=self.now)
         self.descriptor = DescriptorStore(self.state_root)
 
@@ -489,177 +199,6 @@ class OperatorSurface:
         """
 
         self._present(strip_control_bytes(line))
-
-    def prepare_launch(
-        self,
-        request: PodCreateRequest,
-        *,
-        policy_path: str | Path,
-        adopt_pod_id: str | None = None,
-    ) -> PreparedLaunch:
-        """Make the non-billable preview that must precede every paid action."""
-
-        try:
-            policy = _load_policy(policy_path)
-        except OperatorError as error:
-            if adopt_pod_id is not None and error.code is ErrorCode.SPEND_POLICY_REQUIRED:
-                raise OperatorError(ErrorCode.ADOPTION_REFUSED, detail=error.detail) from error
-            raise
-        self._refuse_if_active_pod()
-        self._inject_provider_preview_fault()
-        runtime = self._runtime(policy)
-        result = (
-            runtime.preview_adopt(adopt_pod_id, expected=request)
-            if adopt_pod_id is not None
-            else runtime.preview_create(request)
-        )
-        action = "adopt" if adopt_pod_id is not None else "create"
-        prepared = PreparedLaunch(request, action, adopt_pod_id, result, policy, runtime)
-        self._show_paid_preview(prepared)
-        self._record_spend_alert(prepared)
-        if result.state is not LaunchState.PREVIEW or result.preview is None:
-            self._record_failure("launch", result.state.value, result.detail)
-            if adopt_pod_id is not None:
-                raise OperatorError(ErrorCode.ADOPTION_REFUSED, detail=result.detail)
-            raise self._launch_error(result)
-        if not result.preview.assessment.allowed:
-            assessment = result.preview.assessment
-            if assessment.balance_unobservable_triggered:
-                refusal_state = LaunchState.REFUSED_BALANCE_UNOBSERVABLE.value
-                code = ErrorCode.BALANCE_UNOBSERVABLE
-            elif assessment.hard_floor_triggered:
-                refusal_state = LaunchState.REFUSED_BALANCE_FLOOR.value
-                code = ErrorCode.BALANCE_FLOOR_REACHED
-            else:
-                refusal_state = LaunchState.REFUSED_CEILING.value
-                code = (
-                    ErrorCode.SPEND_POLICY_REQUIRED
-                    if not policy.configured
-                    else ErrorCode.PAID_ACTION_REFUSED
-                )
-            self._record_failure("launch", refusal_state, result.detail)
-            if adopt_pod_id is not None:
-                code = ErrorCode.ADOPTION_REFUSED
-            raise OperatorError(code, detail=result.detail)
-        return prepared
-
-    def launch(self, prepared: PreparedLaunch, confirmation: str | None) -> LaunchResult:
-        """Record the typed value, then let the spend gate validate it once."""
-
-        with self._exclusive_paid_launch():
-            # Inside the cross-process claim: the active receipt does not exist
-            # until the provider call returns.
-            self._refuse_if_active_pod()
-            # Read first, so a missing preview refuses cleanly instead of raising
-            # AttributeError below.
-            review = prepared.review_record
-            # Only PodRuntime may validate and consume a challenge. This durable
-            # receipt commits to the input bytes without retaining a spendable phrase.
-            confirmation_receipt = self._write_action(
-                "launch-confirmation",
-                {
-                    "summary": f"Paid {prepared.action} confirmation recorded before the provider call.",
-                    "action": prepared.action,
-                    "adopted_pod_id": prepared.adopted_pod_id,
-                    "request": _request_record(prepared.request),
-                    "preview": review["preview"],
-                    "review": review,
-                    "review_sha256": prepared.review_digest,
-                    "confirmation_sha256": (
-                        None if confirmation is None else digest_bytes(confirmation.encode("utf-8"))
-                    ),
-                },
-                descriptor_action="launch-confirmation",
-                failure_code=ErrorCode.CONFIRMATION_RECORD_FAILED,
-            )
-            result = (
-                prepared.runtime.adopt(
-                    prepared.adopted_pod_id or "",
-                    expected=prepared.request,
-                    confirmation=confirmation,
-                )
-                if prepared.adopted_pod_id is not None
-                else prepared.runtime.create(prepared.request, confirmation=confirmation)
-            )
-            if not result.green or result.record is None:
-                receipt = self._write_action(
-                    "launch",
-                    {
-                        "summary": f"Paid {prepared.action} did not become ready: {result.state.value}.",
-                        "state": result.state.value,
-                        "detail": result.detail,
-                        "confirmation_receipt": self._state_relative(confirmation_receipt),
-                        "presented_review_sha256": prepared.review_digest,
-                        "current_preview": (
-                            None
-                            if result.preview is None
-                            else phraseless(result.preview).to_record()
-                        ),
-                        "current_review_sha256": (
-                            None
-                            if result.preview is None
-                            else digest_bytes(
-                                canonical_bytes(
-                                    _review_record(
-                                        prepared.request,
-                                        prepared.action,
-                                        prepared.adopted_pod_id,
-                                        result.preview,
-                                    )
-                                )
-                            )
-                        ),
-                    },
-                    descriptor_action="launch",
-                )
-                if prepared.action == "adopt":
-                    raise OperatorError(
-                        ErrorCode.ADOPTION_REFUSED,
-                        detail=f"{result.detail} Saved receipt: {receipt}",
-                    )
-                raise self._launch_error(result, receipt=receipt)
-            receipt = self._write_action(
-                "launch",
-                {
-                    "summary": (
-                        "Fixture pod is created with both fixture safety timers recorded."
-                        if prepared.action == "create"
-                        else "Existing fixture pod is adopted with both fixture safety timers recorded."
-                    ),
-                    "state": result.state.value,
-                    # Gate detail is the only durable evidence of a post-claim price move.
-                    "detail": result.detail,
-                    "action": prepared.action,
-                    "pod": _pod_record(result.record),
-                    "request": _request_record(prepared.request),
-                    "confirmation_receipt": self._state_relative(confirmation_receipt),
-                    # State-root relative, so a moved state directory still
-                    # finds its lease.
-                    "lease": (
-                        self._state_relative(result.lease_path)
-                        if result.lease_path is not None
-                        else None
-                    ),
-                    "controller_arming": (
-                        result.controller_arming.to_record()
-                        if result.controller_arming is not None
-                        else None
-                    ),
-                },
-                descriptor_action="active-launch",
-                additional_descriptor_actions=("launch",),
-            )
-        moved = (
-            ""
-            if result.preview is None
-            else price_move_note(prepared.result.preview.assessment, result.preview.assessment)
-        )
-        if moved:
-            self.present(f"Price notice{moved}.")
-        self.present("Launch rehearsal complete. Both fixture safety timers are recorded.")
-        self.present(f"Saved receipt: {receipt}")
-        self.present("This rehearsal contacted no cloud provider and created no bill.")
-        return result
 
     def submit_and_upload(
         self,
@@ -848,48 +387,6 @@ class OperatorSurface:
             else "Upload found no sealed submission record to send; nothing was transferred."
         )
         self.present(f"Saved receipt: {receipt}")
-        return receipt
-
-    def boot(self) -> Path:
-        """Run the real bootstrap journal with explicit fixture-only effects."""
-
-        launch_receipt = self._active_launch_receipt()
-        upload_receipt = self._descriptor_receipt("upload")
-        commit = _repository_commit(self.workspace)
-        plan = BootstrapPlan(commit, self.workspace / "uv.lock")
-        journal = BootstrapJournal(self.state_root / "boot" / "bootstrap.json", plan, now=self.now)
-        report = Bootstrapper(
-            journal,
-            FixtureBootstrapActions(self, transfer_receipt=upload_receipt),
-        ).run()
-        payload = {
-            "summary": (
-                "Boot report is green for the fixture-only environment. No real GPU or model service was measured."
-                if report.green
-                else "Boot report is red; the fixture-only environment is not ready."
-            ),
-            "report": report.to_record(),
-            "bootstrap_journal": self._state_relative(journal.path),
-            "launch_receipt": (
-                self._state_relative(launch_receipt) if launch_receipt is not None else None
-            ),
-            "upload_receipt": (
-                self._state_relative(upload_receipt) if upload_receipt is not None else None
-            ),
-        }
-        receipt = self._write_action("boot", payload, descriptor_action="boot")
-        if not report.green:
-            self.present("Boot report: RED. The environment is not ready.")
-            if report.remediation:
-                self.present(f"Next step from the report: {report.remediation}")
-            raise OperatorError(ErrorCode.BOOT_RED, detail=f"Saved report: {receipt}")
-        self.present("Boot report: GREEN for the fixture-only rehearsal.")
-        self.present("No real GPU or model service was measured or claimed ready.")
-        if launch_receipt is None:
-            self.present("No launch record was present; boot checked only the local fixture setup.")
-        if upload_receipt is None:
-            self.present("No upload record was present; no transfer was assumed complete.")
-        self.present(f"Saved report: {receipt}")
         return receipt
 
     def fetch_run(
@@ -1219,7 +716,38 @@ class OperatorSurface:
         models_config: str | Path | None = None,
         serving_recipes_config: str | Path | None = None,
         witness_context_config: str | Path | None = None,
+        from_stage: str | None = None,
+        to_stage: str | None = None,
     ) -> RunOutcome:
+        """Run or resume `run_id` under this state's run root.
+
+        `from_stage` and `to_stage` resume a run this state started over only
+        that inclusive range of stages, ending at the Armarium: after a review
+        decision, from the Recensor (or the Perlector for a page re-ask). A
+        resume runs under the bindings the run was started with (scenario,
+        fixture, real submission and roster), read from its own latest run
+        receipt, never under the defaults of the command that resumes it.
+        """
+        if (from_stage is None) != (to_stage is None):
+            raise OperatorError(
+                ErrorCode.INVALID_COMMAND,
+                detail="--from and --to name a range of stages together; give both or neither",
+            )
+        if to_stage is not None and to_stage != RESUME_TO_STAGE:
+            raise OperatorError(
+                ErrorCode.INVALID_COMMAND,
+                detail=f"a resumed range ends at {RESUME_TO_STAGE}, so its export is this run's",
+            )
+        if from_stage is not None:
+            recorded = self._recorded_bindings(run_id)
+            scenario = recorded.get("--scenario", scenario)
+            fixture = recorded.get("--fixture", fixture)
+            submission_folder = recorded.get("--submission-folder")
+            submission_manifest = recorded.get("--submission-manifest")
+            data_gate_policy = recorded.get("--data-gate-policy")
+            models_config = recorded.get("--models-config")
+            serving_recipes_config = recorded.get("--serving-recipes-config")
+            witness_context_config = recorded.get("--witness-context-config")
         if submission_folder is None:
             for flag, value in (
                 ("--submission-manifest", submission_manifest),
@@ -1274,7 +802,12 @@ class OperatorSurface:
             opening = f"Run started. {extent}"
         self.present(opening)
 
-        if submission_folder is None:
+        if from_stage is not None:
+            self.present(
+                f"Working next: stages {from_stage} through {to_stage} only, under the run's "
+                "recorded bindings; every earlier stage's sealed records are reused."
+            )
+        elif submission_folder is None:
             self.present("Working next: reading each page; the page reading names its acts.")
             self.present(
                 "This rehearsal uses declared synthetic pages, not an uploaded real submission."
@@ -1301,6 +834,7 @@ class OperatorSurface:
             "--run-root",
             str(run_root),
             *stage_argv,
+            *(() if from_stage is None else ("--from", from_stage, "--to", str(to_stage))),
         ]
         # Every receipt this run writes carries the same identity facts, since
         # a later diagnosis may have only the state directory.
@@ -1627,7 +1161,7 @@ class OperatorSurface:
             capture_output=True,
             text=True,
             check=False,
-            env=_stage_environment(),
+            env=credential_free_environment(),
         )
 
     def _present_review_command(self, run_root: Path, run_id: str) -> None:
@@ -1761,12 +1295,12 @@ class OperatorSurface:
                 "reasons": (
                     [str(reason) for reason in reasons] if isinstance(reasons, list) else None
                 ),
-                "assumption": "Spec 11 is not in this tree; this is a copy of the base Armarium evidence, not a Spec 11 product bundle.",
+                "assumption": "This is a copy of the run's base Armarium evidence, not the product bundle the Armarium seals.",
             },
             descriptor_action="export",
         )
         self.present(f"Local Armarium evidence bundle: {destination}")
-        self.present("This is base Armarium evidence, not a Spec 11 product bundle.")
+        self.present("This is base Armarium evidence, not the product bundle.")
         self.present(f"Saved export receipt: {receipt}")
         if complete:
             self._notify(
@@ -1796,187 +1330,16 @@ class OperatorSurface:
             ),
         )
 
-    def prepare_close(self, *, pod_id: str | None = None) -> PreparedClose:
-        """Resolve the recorded pod and show the close notice before any confirmation."""
-
-        launch_receipt = self._active_launch_receipt()
-        if launch_receipt is None:
-            raise OperatorError(ErrorCode.CLOSE_NOTHING)
-        launch = self._read_receipt(launch_receipt)["payload"]
-        pod_raw = launch.get("pod")
-        if not isinstance(pod_raw, dict):
-            raise OperatorError(ErrorCode.CLOSE_NOTHING)
-        record = _pod_from_record(pod_raw)
-        if pod_id is not None and pod_id != record.pod_id:
-            raise OperatorError(
-                ErrorCode.CLOSE_NOTHING,
-                detail="the requested pod is not the pod recorded for this operator session",
-            )
-        close_receipt = self._descriptor_receipt("close")
-        if close_receipt is not None:
-            prior = self._read_receipt(close_receipt)["payload"]
-            if prior.get("pod_id") == record.pod_id:
-                prior_report = prior.get("close_report")
-                if (
-                    isinstance(prior_report, dict)
-                    and prior_report.get("state") == "verified"
-                    and prior.get("lease_reconciled") is True
-                ):
-                    raise OperatorError(
-                        ErrorCode.CLOSE_NOTHING,
-                        detail="a verified close result is already recorded for this pod",
-                    )
-                self.present(
-                    "A prior close result was unverified. This new check needs its own confirmation."
-                )
-        try:
-            lease_store, lease = self._lease_for_close(launch, record)
-        except OperatorError:
-            # The volume's ongoing price is shown on every close, verified or not.
-            self._show_volume_cost(
-                volume_id=record.volume_id, hourly_usd=str(record.estimate.volume_hourly_usd)
-            )
-            raise
-        if lease.phase == "closed-verified":
-            raise OperatorError(
-                ErrorCode.CLOSE_NOTHING,
-                detail="the recorded safety lease already has a verified close result",
-            )
-        phrase = f"{OPERATOR_CLOSE_PREFIX} {record.pod_id}"
-        self.present(f"Close will remove fixture pod {record.pod_id}.")
-        self.present("The attached volume is retained and keeps its own ongoing price.")
-        self.present(f"Type exactly {phrase!r} to continue.")
-        return PreparedClose(launch, record, lease_store, lease, phrase)
-
-    def close(self, prepared: PreparedClose, confirmation: str | None) -> CloseReport:
-        """Confirm a prepared close, then record it before the fake provider sees it."""
-
-        launch, record, lease_store, lease = (
-            prepared.launch,
-            prepared.record,
-            prepared.lease_store,
-            prepared.lease,
-        )
-        if confirmation != prepared.phrase:
-            raise OperatorError(ErrorCode.CLOSE_REFUSED)
-        confirmation_receipt = self._write_action(
-            "close-confirmation",
-            {
-                "summary": "Manual close confirmation recorded before the provider call.",
-                "pod_id": record.pod_id,
-                "confirmation": prepared.phrase,
-            },
-            descriptor_action="close-confirmation",
-            failure_code=ErrorCode.CONFIRMATION_RECORD_FAILED,
-        )
-        provider = self._provider_for_record(launch, record)
-        if self.faults.failed_close:
-            self.faults.failed_close = False
-            provider.inject_failure(
-                "terminate", ProviderFailure("injected close failure"), times=100
-            )
-        else:
-            provider.clear_failures("terminate")
-            provider.bill(record.pod_id, Decimal("0.82"), description="fixture pod runtime")
-        policy, policy_error = self._close_policy()
-        if policy_error is not None:
-            self.present(
-                "Your reviewed spend policy could not be read; close is using its "
-                "built-in operational deadline instead."
-            )
-        report = self._shutdown(policy).close(record, reason="manual operator close")
-        recorded = {
-            "pod_id": record.pod_id,
-            "confirmation_receipt": self._state_relative(confirmation_receipt),
-            "close_report": report.to_record(),
-            "lease": self._state_relative(lease_store.path),
-            "spend_policy_error": policy_error,
-        }
-        try:
-            lease_store.record_close(
-                owner_token=lease.owner_token,
-                close_record=report.to_record(),
-                verified=report.verified,
-                now=self.now(),
-            )
-        except Exception as error:
-            receipt = self._write_action(
-                "close",
-                {
-                    **recorded,
-                    "summary": "Close is UNVERIFIED because the safety lease could not record the provider evidence.",
-                    "lease_reconciled": False,
-                    "lease_record_error": str(error),
-                },
-                descriptor_action="close",
-            )
-            self.present(
-                "UNVERIFIED CLOSE: provider evidence could not be joined to the safety lease."
-            )
-            self.present(
-                "Manual check: Review the saved close receipt and the safety lease before any retry."
-            )
-            self._present_captured_cost(report)
-            self._show_volume_cost(
-                volume_id=report.volume_id, hourly_usd=str(report.volume_ongoing_hourly_usd)
-            )
-            self.present("Saved close receipt: " + str(receipt))
-            raise OperatorError(
-                ErrorCode.CLOSE_LEASE_RECORD_FAILED,
-                detail="Saved close receipt: " + str(receipt),
-            ) from error
-        receipt = self._write_action(
-            "close",
-            {
-                "summary": (
-                    "Close is verified by fixture absence and fixture billing evidence."
-                    if report.verified
-                    else "Close is UNVERIFIED; manual reconciliation is required."
-                ),
-                **recorded,
-                "lease_reconciled": True,
-            },
-            descriptor_action="close",
-        )
-        self._show_close(report, receipt)
-        if not report.verified:
-            raise OperatorError(
-                ErrorCode.CLOSE_UNVERIFIED, detail=f"Saved close receipt: {receipt}"
-            )
-        return report
-
     def status(self) -> list[str]:
-        """Read descriptors, receipts, and leases without writes or provider calls."""
+        """Read the saved receipts back without writing anything or contacting a provider."""
 
         descriptor = self._load_descriptor()
-        # A lease is operator evidence even when no receipt was written; unreadable
-        # lease evidence likewise prevents an honest claim that the state is empty.
-        open_leases, lease_unreadable = self._open_leases()
-        if (
-            (descriptor is None or not descriptor["actions"])
-            and not open_leases
-            and not lease_unreadable
-        ):
+        if descriptor is None or not descriptor["actions"]:
             raise OperatorError(ErrorCode.STATUS_EMPTY)
         lines = ["Saved operator records (read-only; no new provider check was made):"]
-        unreadable: list[str] = list(lease_unreadable)
-        for path, lease in open_leases:
-            lines.append(
-                f"- open safety lease {path.name}: {lease.phase}"
-                + ("" if lease.pod_id is None else f" for pod {lease.pod_id}")
-                + f"; hard deadline {utc_stamp(lease.hard_deadline)}."
-            )
-            lines.append(
-                "  No verified close is recorded for it. A pod may still be billing; "
-                "the lease-backed safety controllers own it until that deadline."
-            )
-            lines.extend(self._supervisor_status_lines(lease))
-        for reason in lease_unreadable:
-            lines.append(f"- safety lease: UNREADABLE; it was not treated as closed. {reason}")
-        if descriptor is not None and descriptor["actions"]:
-            for action, path_texts in sorted(descriptor["history"].items()):
-                if action != "active-launch":
-                    lines.extend(self._action_history_lines(action, path_texts, unreadable))
+        unreadable: list[str] = []
+        for action, path_texts in sorted(descriptor["history"].items()):
+            lines.extend(self._action_history_lines(action, path_texts, unreadable))
         for line in lines:
             self.present(line)
         if unreadable:
@@ -2030,179 +1393,6 @@ class OperatorSurface:
             unreadable.append(f"{label}: {failure}")
             lines.append(f"- {label}: UNREADABLE; it was not treated as success.")
         return lines
-
-    def _runtime(self, policy: SpendPolicy) -> PodRuntime:
-        return PodRuntime(
-            self.provider,
-            provider_name="offline-fixture",
-            spend_policy=policy,
-            lease_root=self.state_root / "leases",
-            shutdown=self._shutdown(policy),
-            now=self.now,
-            controller_armer=FixtureControllerArmer(self.now),
-            notifier=self._notify_spend,
-        )
-
-    def _close_policy(self) -> tuple[SpendPolicy | None, str | None]:
-        """The reviewed policy for close timing, or why it was unavailable.
-
-        Always the workspace's `config/spend.toml`: no launch records which policy
-        path it used. Unlike launch, close never refuses over a missing policy,
-        because leaving a pod running is never safer.
-        """
-
-        try:
-            return load_spend_policy(self.workspace / "config" / "spend.toml"), None
-        except Exception as error:
-            return None, str(error)
-
-    def _shutdown(self, policy: SpendPolicy | None) -> VerifiedShutdown:
-        """Close timing from the reviewed policy, else `VerifiedShutdown`'s defaults.
-
-        Tests speed it up with an injected clock, never a shorter constant: a
-        close that gives up too early always reports UNVERIFIED.
-        """
-
-        timings: dict[str, float | int] = {
-            "billing_cutoff_margin_seconds": FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS
-        }
-        if policy is not None and policy.configured:
-            margin = policy.billing_cutoff_margin_seconds
-            if isinstance(self.provider, OperatorFakeProvider):
-                # The fake provider's cutoff is an hour ahead, so a smaller
-                # reviewed margin would fail every healthy fixture close. Gated on
-                # the fake so a real provider uses the reviewed margin as is.
-                margin = max(margin, FIXTURE_BILLING_CUTOFF_MARGIN_SECONDS)
-            timings = {
-                "timeout_seconds": policy.shutdown_deadline_seconds,
-                "poll_seconds": policy.shutdown_poll_interval_seconds,
-                "billing_cutoff_margin_seconds": margin,
-            }
-        return VerifiedShutdown(
-            self.provider,
-            monotonic=self.monotonic,
-            sleeper=self.sleeper,
-            now=self.now,
-            **timings,
-        )
-
-    def _show_paid_preview(self, prepared: PreparedLaunch) -> None:
-        preview = prepared.result.preview
-        if preview is None:
-            self.present("Launch could not obtain a price preview.")
-            return
-        assessment = preview.assessment
-        self.present("Paid-action preview (fixture prices only):")
-        self.present(
-            "- Reviewed request: "
-            f"{prepared.request.name}; GPU {prepared.request.gpu_type}; "
-            f"volume {prepared.request.volume_id}; hard deadline "
-            f"{utc_stamp(prepared.request.hard_deadline)}"
-        )
-        self.present(f"- Pod hourly price: ${assessment.estimate.pod_hourly_usd}")
-        self.present(f"- Attached-volume hourly price: ${assessment.estimate.volume_hourly_usd}")
-        self.present(
-            "- Combined estimated cost through the hard lifetime: "
-            f"${_display_usd(assessment.estimated_total_cost_usd)}"
-        )
-        if assessment.policy.configured:
-            self.present(f"- Hourly ceiling: ${assessment.policy.max_hourly_usd}")
-            self.present(
-                f"- Lifetime cost ceiling: ${assessment.policy.max_estimated_metered_cost_usd}"
-            )
-            self.present(
-                "- Hard lifetime ceiling: "
-                + _human_duration(assessment.policy.hard_lifetime_seconds)
-            )
-            self.present(
-                f"- Account-balance hard floor: ${assessment.policy.account_balance_floor_usd}"
-            )
-            self.present(
-                "- Account-balance warning threshold: "
-                f"${assessment.policy.account_balance_alert_usd}"
-            )
-            observation = assessment.balance_observation
-            if observation is None:
-                self.present("- Observed account balance: unavailable")
-            else:
-                self.present(
-                    "- Observed account balance: "
-                    f"${observation.available_usd} at {observation.observed_at.isoformat()} "
-                    f"from {observation.source}"
-                )
-            self.present(f"- Other reserved liability: ${assessment.reserved_liability_usd}")
-        else:
-            self.present("- Spending ceiling: not configured")
-        for alert in assessment.alerts:
-            self.present(f"- Warning: {alert}")
-        for notification in assessment.alert_notifications:
-            self.present(notification)
-        if assessment.reasons:
-            for reason in assessment.reasons:
-                self.present(f"- Check: {reason}")
-        if assessment.allowed:
-            self.present(
-                f"- Reviewed request, price, and ceilings digest: {prepared.review_digest}"
-            )
-            self.present(
-                f"Type exactly {prepared.confirmation_phrase!r} to continue with this paid action."
-            )
-
-    def _launch_error(self, result: LaunchResult, *, receipt: Path | None = None) -> OperatorError:
-        detail = result.detail if receipt is None else f"{result.detail} Saved receipt: {receipt}"
-        if result.state is LaunchState.REFUSED_CONFIRMATION:
-            # The gate's marker tells a moved price from a mistyped confirmation.
-            if PRICE_MOVE_MARKER in result.detail:
-                return OperatorError(ErrorCode.PRICE_CHANGED, detail=detail)
-            return OperatorError(ErrorCode.CONFIRMATION_REQUIRED, detail=detail)
-        if result.state is LaunchState.REFUSED_CEILING:
-            return OperatorError(ErrorCode.PAID_ACTION_REFUSED, detail=detail)
-        if (
-            result.state
-            in {
-                LaunchState.REFUSED_BALANCE_FLOOR,
-                LaunchState.REFUSED_BALANCE_UNOBSERVABLE,
-            }
-            and result.record is not None
-        ):
-            return OperatorError(ErrorCode.LAUNCH_UNRESOLVED, detail=detail)
-        if result.state is LaunchState.REFUSED_BALANCE_FLOOR:
-            return OperatorError(ErrorCode.BALANCE_FLOOR_REACHED, detail=detail)
-        if result.state is LaunchState.REFUSED_BALANCE_UNOBSERVABLE:
-            return OperatorError(ErrorCode.BALANCE_UNOBSERVABLE, detail=detail)
-        if result.state is LaunchState.REFUSED_SPEND_LOCK_UNAVAILABLE:
-            return OperatorError(ErrorCode.SPEND_LOCK_UNAVAILABLE, detail=detail)
-        if result.state in {
-            LaunchState.REFUSED_SHUTDOWN_NOT_READY,
-            LaunchState.REFUSED_CONTROLLER_NOT_READY,
-            LaunchState.LEASE_FAILURE,
-        }:
-            return OperatorError(ErrorCode.SAFETY_CHECK_FAILED, detail=detail)
-        if result.state in {
-            LaunchState.REFUSED_RUNTIME_CONTRACT,
-            LaunchState.CREATE_UNLEASED,
-            LaunchState.CONTROLLERS_UNARMED,
-            # The console's earlier lease read raced the gate's.
-            LaunchState.REFUSED_ACTIVE_LEASE,
-        }:
-            return OperatorError(ErrorCode.LAUNCH_UNRESOLVED, detail=detail)
-        if result.state is LaunchState.PROVIDER_FAILURE:
-            if result.lease_path is not None:
-                return OperatorError(ErrorCode.LAUNCH_UNRESOLVED, detail=detail)
-            # With no lease no pod can exist, so the provider's wording may pick
-            # between retryable codes.
-            if "timeout" in detail.lower():
-                return OperatorError(ErrorCode.PROVIDER_TIMEOUT, detail=detail)
-            return OperatorError(ErrorCode.PROVIDER_ERROR, detail=detail)
-        return OperatorError(ErrorCode.SAFETY_CHECK_FAILED, detail=detail)
-
-    def _inject_provider_preview_fault(self) -> None:
-        if self.faults.provider_timeout:
-            self.faults.provider_timeout = False
-            self.provider.inject_failure("estimate", ProviderFailure("injected provider timeout"))
-        elif self.faults.provider_error:
-            self.faults.provider_error = False
-            self.provider.inject_failure("estimate", ProviderFailure("injected provider failure"))
 
     def _upload_target(
         self, volume: VolumeSpec | None, manifest_path: Path, prefix: str
@@ -2387,202 +1577,27 @@ class OperatorSurface:
             descriptor_action="advance",
         )
 
-    def _active_launch_receipt(self) -> Path | None:
-        return self._descriptor_receipt("active-launch", "launch")
+    def _recorded_bindings(self, run_id: str) -> dict[str, str]:
+        """The run's bindings as its latest run receipt's orchestrator argv names them."""
 
-    def _refuse_if_active_pod(self) -> None:
-        """Keep every open cost path visible until its own verified close.
-
-        Two readings, because the receipt and the lease become true at different
-        moments and a paid action lives in the gap between them.
-        """
-
-        self._refuse_if_recorded_active_pod()
-        self._refuse_if_open_lease()
-
-    def _refuse_if_recorded_active_pod(self) -> None:
-        """Keep a recorded open cost path visible until its own verified close."""
-
-        try:
-            launch_receipt = self._active_launch_receipt()
-            if launch_receipt is None:
-                return
-            launch = self._read_receipt(launch_receipt)["payload"]
-            pod_raw = launch.get("pod")
-            if not isinstance(pod_raw, dict):
-                # A launch receipt without a pod is a refusal; an active-launch
-                # one is broken and must not read as "nothing is running".
-                if self._descriptor_receipt("active-launch") is None:
-                    return
-                raise ValueError("active launch has no pod record")
-            record = _pod_from_record(pod_raw)
-            _, lease = self._lease_for_close(launch, record)
-        except Exception as error:
-            reason = getattr(error, "detail", None) or str(error)
-            raise OperatorError(
-                ErrorCode.SAFETY_CHECK_FAILED,
-                detail=f"the recorded active fixture pod could not be checked safely: {reason}",
-            ) from error
-        if lease.phase != "closed-verified":
-            raise OperatorError(
-                ErrorCode.ACTIVE_POD_REQUIRES_CLOSE,
-                detail="recorded fixture pod " + record.pod_id + " has lease state " + lease.phase,
-            )
-
-    def _open_leases(self) -> tuple[list[tuple[Path, PodLease]], list[str]]:
-        """Every durable lease in this state that has not reached a verified close.
-
-        Unreadable leases, symlinks included, are returned rather than skipped:
-        no caller may infer a verified close from one, and a link to a closed
-        lease would hide an open pod.
-        """
-
-        root = self.state_root / "leases"
-        unreadable: list[str] = []
-        try:
-            paths = sorted(root.glob("*.json"))
-        except OSError as error:
-            return [], [f"the lease directory {root} could not be listed: {error}"]
-        open_leases: list[tuple[Path, PodLease]] = []
-        for path in paths:
-            if path.is_symlink():
-                unreadable.append(f"lease {path} is a symlink")
+        for _path, payload in reversed(self._run_receipts()):
+            if payload.get("run_id") != run_id:
                 continue
-            try:
-                lease = _read_published_lease(path)
-            except Exception as error:
-                unreadable.append(f"lease {path} could not be read: {error}")
-                continue
-            if lease is None or lease.phase == "closed-verified":
-                continue
-            open_leases.append((path, lease))
-        return open_leases, unreadable
-
-    def _supervisor_status_lines(self, lease: PodLease) -> list[str]:
-        """Read-only supervisor telemetry for one open lease, from local files only."""
-
-        leases_root = self.state_root / "leases"
-        path = _supervisor_identity_path(leases_root, lease.lease_id)
-        try:
-            identity = _read_supervisor_identity(path)
-        except Exception as error:
-            return [f"  supervisor: identity file UNREADABLE ({error})."]
-        if identity is None:
-            return ["  supervisor: absent -- no identity file has been written for this lease yet."]
-        # The token-free projection, so the lease's close capability cannot
-        # reach a terminal.
-        telemetry = identity.telemetry()
-        try:
-            running = _supervisor_peek_running(leases_root, lease.lease_id)
-        except Exception as error:
-            # The billing warning below must still print.
-            running = f"UNREADABLE ({error})"
-        age = max((self.now() - telemetry["started_at"]).total_seconds(), 0.0)
-        if running is True:
-            word = "running"
-        elif running is False:
-            word = "absent (pid " + str(telemetry["pid"]) + " not found)"
-        elif running is None:
-            word = (
-                "UNKNOWN -- the ownership lock could not be checked; "
-                "treat this pod as unsupervised and go look"
-            )
-        else:
-            word = str(running)
-        lines = [f"  supervisor: {word}, identity file age {age:.0f}s (pid {telemetry['pid']})."]
-        if telemetry["last_tick_at"] is not None:
-            lines.append(
-                f"  last tick: {telemetry['last_tick_state']} at "
-                f"{utc_stamp(telemetry['last_tick_at'])} -- {telemetry['last_tick_detail']}"
-            )
-        else:
-            lines.append("  last tick: none recorded yet.")
-        if lease.close_record is not None:
-            lines.append(
-                "  last close record: "
-                + json.dumps(lease.close_record, sort_keys=True, separators=(",", ":"))
-            )
-        else:
-            lines.append("  last close record: none; this lease has not closed.")
-        lines.append(f"  volume's ongoing hourly price: ${lease.volume_hourly_usd}.")
-        return lines
-
-    def _refuse_if_open_lease(self) -> None:
-        """Refuse while a paid action is armed without a verified close.
-
-        The lease precedes the provider request, so it cannot say whether the pod exists.
-        """
-
-        open_leases, unreadable = self._open_leases()
-        if unreadable:
-            raise OperatorError(
-                ErrorCode.SAFETY_CHECK_FAILED,
-                detail="; ".join(unreadable),
-            )
-        if not open_leases:
-            return
-        described = "; ".join(
-            f"{path} is {lease.phase}"
-            + ("" if lease.pod_id is None else f" for pod {lease.pod_id}")
-            for path, lease in open_leases
-        )
+            argv = payload.get("argv")
+            if not isinstance(argv, list) or not all(isinstance(word, str) for word in argv):
+                break
+            return {
+                flag: argv[index + 1]
+                for index, flag in enumerate(argv[:-1])
+                if flag in _RESUMED_BINDINGS
+            }
         raise OperatorError(
-            ErrorCode.LAUNCH_UNRESOLVED,
+            ErrorCode.INVALID_COMMAND,
             detail=(
-                "a paid action was armed here and no verified close is recorded for it: "
-                f"{described}. The lease-backed safety controllers own that pod until its "
-                "hard deadline; do not start another one on top of it."
+                f"no readable run receipt for run {run_id} is saved in this state, so its "
+                "bindings are unknown; --from resumes a run this state started"
             ),
         )
-
-    @contextmanager
-    def _exclusive_paid_launch(self) -> Iterator[None]:
-        """Hold the paid-launch claim across the active check and result record.
-
-        The claim is non-blocking so another window receives a refusal without
-        spending its challenge. Process death releases this claim; durable lease
-        evidence, not the lock file, carries any unresolved provider action.
-        """
-
-        self.state_root.mkdir(parents=True, exist_ok=True)
-        path = self.state_root / ".paid-launch.lock"
-        try:
-            # O_NOFOLLOW, so a planted link cannot redirect the claim.
-            descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        except OSError as error:
-            raise OperatorError(
-                ErrorCode.SAFETY_CHECK_FAILED,
-                detail=f"the paid-launch claim {path} could not be opened: {error}",
-            ) from error
-        handle = os.fdopen(descriptor, "r+b")
-        with handle:
-            try:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as error:
-                raise OperatorError(
-                    ErrorCode.LAUNCH_ALREADY_IN_FLIGHT,
-                    detail=(
-                        f"another process holds the paid-launch claim {path} ({error}); "
-                        "no paid action was sent from this window"
-                    ),
-                ) from error
-            except OSError as error:
-                raise OperatorError(
-                    ErrorCode.SAFETY_CHECK_FAILED,
-                    detail=(
-                        f"the paid-launch claim {path} could not be taken, so this window "
-                        f"cannot prove it is the only one launching: {error}; no paid "
-                        "action was sent from this window"
-                    ),
-                ) from error
-            try:
-                yield
-            finally:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    # Closing the handle releases the lock anyway.
-                    pass
 
     def _prior_run_state(self, run_id: str) -> str | None:
         """The state this run's own latest receipt records, matched by run id."""
@@ -2634,28 +1649,6 @@ class OperatorSurface:
             )
         except OperatorError as record_error:
             # The original failure stays the result; the record failure is shown.
-            for line in record_error.render().splitlines():
-                self.present(line)
-
-    def _record_spend_alert(self, prepared: PreparedLaunch) -> None:
-        """Persist warning/delivery evidence without retaining its live challenge."""
-
-        preview = prepared.result.preview
-        if preview is None or not preview.assessment.alerts:
-            return
-        try:
-            self._write_action(
-                "spend-alert",
-                {
-                    "summary": "A low account-balance warning was assessed.",
-                    "action": preview.action,
-                    "subject": preview.subject,
-                    "spend": preview.assessment.to_record(),
-                },
-                descriptor_action="spend-alert",
-            )
-        except OperatorError as record_error:
-            # Shown, but bookkeeping must not gate a paid action.
             for line in record_error.render().splitlines():
                 self.present(line)
 
@@ -2831,72 +1824,6 @@ class OperatorSurface:
                     os.close(open_descriptor)
             temporary.unlink(missing_ok=True)
 
-    def _provider_for_record(
-        self, launch: dict[str, Any], record: PodRecord
-    ) -> OperatorFakeProvider:
-        """Recreate the one fake pod when a later CLI process performs close."""
-
-        if record.pod_id in self.provider.pods:
-            return self.provider
-        request_raw = launch.get("request")
-        if not isinstance(request_raw, dict):
-            raise OperatorError(
-                ErrorCode.CLOSE_NOTHING, detail="the launch receipt has no exact request"
-            )
-        request = _request_from_record(request_raw)
-        # The live clock, not one frozen at creation: the billing cutoff and the
-        # shutdown check must share a clock, or drift past the one-hour buffer
-        # makes a healthy close UNVERIFIED.
-        recreated = OperatorFakeProvider(now=self.now)
-        try:
-            recreated.seed_existing(record, request)
-        except ValueError as error:
-            raise OperatorError(
-                ErrorCode.CLOSE_NOTHING, detail="the fixture pod cannot be safely reconstructed"
-            ) from error
-        self.provider = recreated
-        return recreated
-
-    def _lease_for_close(
-        self, launch: dict[str, Any], record: PodRecord
-    ) -> tuple[LeaseStore, PodLease]:
-        """Read the exact launch lease before a close can alter a provider state."""
-
-        lease_text = launch.get("lease")
-        if not isinstance(lease_text, str):
-            raise OperatorError(
-                ErrorCode.CLOSE_LEASE_UNREADABLE,
-                detail="the launch receipt does not name its safety lease",
-            )
-        try:
-            # State-relative, or absolute in older receipts.
-            lease_path = self._state_path(lease_text).resolve()
-            lease_root = (self.state_root / "leases").resolve()
-            if not lease_path.is_relative_to(lease_root):
-                raise ValueError("the launch lease is outside this operator state")
-            store = LeaseStore(lease_path)
-            lease = store.load()
-            if lease is None or lease.pod_id != record.pod_id:
-                raise ValueError("the launch lease does not bind this exact recorded pod")
-        except (OSError, RuntimeError, ValueError) as error:
-            raise OperatorError(ErrorCode.CLOSE_LEASE_UNREADABLE, detail=str(error)) from error
-        return store, lease
-
-    def _show_volume_cost(self, *, volume_id: str | None, hourly_usd: str) -> None:
-        """Printed on every close, verified or not: the pod stopped, the volume did not."""
-
-        for line in volume_cost_lines(volume_id=volume_id, hourly_usd=hourly_usd):
-            self.present(line)
-
-    def _present_captured_cost(self, report: CloseReport) -> None:
-        if report.captured_cost_usd is not None:
-            self.present(
-                f"Charges captured through {utc_stamp(report.cutoff_at)}: "
-                f"${report.captured_cost_usd} (fixture billing, not a measurement)."
-            )
-        else:
-            self.present("No captured-cost line was available; this close remains unverified.")
-
     def _notify(self, event: str, message: str) -> None:
         """One standing moment, reported honestly and never able to fail a verb."""
 
@@ -2916,38 +1843,6 @@ class OperatorSurface:
                 True, False, f"the notifier raised: {type(error).__name__}"
             )
         self.present(outcome.line())
-
-    def _notify_spend(self, message: str) -> notify_bridge.NotifyOutcome:
-        """Adapt the event-aware notifier without letting failure gate spend."""
-
-        one_line = " ".join(message.split()) or "no spend-warning detail recorded"
-        try:
-            outcome = self.notifier("milestone", one_line)
-        except Exception as error:  # a broken notifier is not a spend gate
-            return notify_bridge.NotifyOutcome(
-                True, False, f"the notifier raised: {type(error).__name__}"
-            )
-        return outcome
-
-    def _show_close(self, report: CloseReport, receipt: Path) -> None:
-        self._present_captured_cost(report)
-        if report.verified:
-            self.present(
-                "Close verified by the fixture provider's exact-pod and list observations."
-            )
-        else:
-            self.present(
-                "UNVERIFIED CLOSE: fixture absence and billing evidence did not both prove the result."
-            )
-            self.present(
-                "Manual check: Open the saved close receipt. Confirm it names this fixture pod, "
-                "shows it absent in both saved checks, and gives the billed-through time. "
-                "If any part is missing, leave this close unverified and ask for help."
-            )
-        self._show_volume_cost(
-            volume_id=report.volume_id, hourly_usd=str(report.volume_ongoing_hourly_usd)
-        )
-        self.present(f"Saved close receipt: {receipt}")
 
 
 def reconciliation_table(export_payload: dict[str, Any]) -> list[str]:
@@ -3001,14 +1896,7 @@ def _status_projection(
     lines: list[str] = []
     run_id = payload.get("run_id")
     state = payload.get("state")
-    if action == "boot":
-        report = payload.get("report")
-        if isinstance(report, dict) and isinstance(report.get("color"), str):
-            lines.append(f"  Saved boot report: {report['color'].upper()}.")
-            remediation = report.get("remediation")
-            if report["color"] != "green" and isinstance(remediation, str) and remediation:
-                lines.append(f"  Saved boot next step: {remediation}")
-    elif action == "upload":
+    if action == "upload":
         if payload.get("zero_gpu_hours") is True:
             lines.append("  Saved upload statement: zero GPU-hours were used.")
         # Local paths are machine details; the digest is the durable manifest identity.
@@ -3102,27 +1990,6 @@ def _status_projection(
         cwd = payload.get("cwd")
         if isinstance(cwd, str):
             lines.append(f"  Working directory: {cwd}")
-    elif action == "close":
-        report = payload.get("close_report")
-        if not isinstance(report, dict):
-            return lines
-        close_state = report.get("state")
-        cost = report.get("cost_capture")
-        volume = report.get("volume")
-        if isinstance(cost, dict):
-            cutoff = cost.get("cutoff_at")
-            total = cost.get("total_usd")
-            if isinstance(cutoff, str) and isinstance(total, str):
-                lines.append(
-                    "  Saved charges captured through {}: ${} (fixture billing, not a "
-                    "measurement).".format(cutoff, total)
-                )
-        if close_state != "verified" and isinstance(close_state, str):
-            lines.append(f"  Saved close state: {close_state.upper()}.")
-        if isinstance(volume, dict) and isinstance(volume.get("ongoing_hourly_usd"), str):
-            lines.append(
-                "  Saved retained-volume price: $" + volume["ongoing_hourly_usd"] + " per hour."
-            )
     return lines
 
 
@@ -3229,264 +2096,16 @@ def _publish_if_absent(
     return _remote_state(store, key, data, sha256)
 
 
-def _load_policy(path: str | Path) -> SpendPolicy:
-    try:
-        return load_spend_policy(path)
-    except Exception as error:
-        raise OperatorError(ErrorCode.SPEND_POLICY_REQUIRED, detail=str(error)) from error
+def credential_free_environment(source: dict[str, str] | None = None) -> dict[str, str]:
+    """A process environment with every credential-shaped name removed.
 
-
-def _read_published_lease(path: Path) -> PodLease | None:
-    """Read one published lease without writing anything beside it.
-
-    `LeaseStore.load()` creates a lock file, and `status` must work on a
-    read-only state directory. Leases are published whole, so a
-    lock-free read is never torn; the paid gate keeps its own locked read.
-    No-follow, non-blocking and regular-only, so a raced link or a FIFO cannot
-    fool or hang `status`; bounded, because only a foreign file is that large.
+    Stages and the ingest child decode untrusted images, so no credential may
+    reach them. The shared predicate means a credential shape added there is
+    stripped here too.
     """
 
-    try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
-    except FileNotFoundError:
-        return None
-    with os.fdopen(descriptor, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise OSError(errno.EINVAL, "a lease needs a regular file", str(path))
-        data = handle.read(MAX_RECORD_BYTES + 1)
-    if len(data) > MAX_RECORD_BYTES:
-        raise RecordError(f"lease {path} is larger than {MAX_RECORD_BYTES} bytes and was not read")
-    return PodLease.from_record(json.loads(data.decode("utf-8")))
-
-
-def _request_record(request: PodCreateRequest) -> dict[str, Any]:
-    return {
-        "name": request.name,
-        "gpu_type": request.gpu_type,
-        "image": request.image,
-        "volume_id": request.volume_id,
-        "volume_mount_path": request.volume_mount_path,
-        "docker_start_cmd": list(request.docker_start_cmd),
-        "hard_deadline": utc_stamp(request.hard_deadline),
-        "repository_commit": request.repository_commit,
-        "container_disk_gb": request.container_disk_gb,
-        "template": request.template,
-        "metadata": dict(request.metadata),
-        "interruptible": request.interruptible,
-        "recovery_only": request.recovery_only,
-    }
-
-
-def _review_record(
-    request: PodCreateRequest,
-    action: str,
-    adopted_pod_id: str | None,
-    preview: PaidActionPreview,
-) -> dict[str, object]:
-    """Return the phraseless preimage of the UI review digest.
-
-    Records must not keep a spendable phrase, and the digest must be
-    recomputable from the record.
-    """
-
-    return {
-        "action": action,
-        "adopted_pod_id": adopted_pod_id,
-        "request": _request_record(request),
-        "preview": phraseless(preview).to_record(),
-    }
-
-
-def _request_from_record(value: dict[str, Any]) -> PodCreateRequest:
-    try:
-        required = {
-            "name",
-            "gpu_type",
-            "image",
-            "volume_id",
-            "volume_mount_path",
-            "docker_start_cmd",
-            "hard_deadline",
-            "repository_commit",
-            "template",
-            "metadata",
-            "interruptible",
-            "recovery_only",
-        }
-        # Optional so older records still load: `close` reads them, and it
-        # must be able to stop a billing pod.
-        optional = {"container_disk_gb"}
-        if set(value) - optional != required:
-            raise ValueError("request has missing or unknown fields")
-        deadline_text = value["hard_deadline"]
-        if not isinstance(deadline_text, str):
-            raise ValueError("deadline is invalid")
-        deadline = datetime.fromisoformat(deadline_text.replace("Z", "+00:00"))
-        command = value["docker_start_cmd"]
-        metadata = value["metadata"]
-        interruptible = value["interruptible"]
-        recovery_only = value["recovery_only"]
-        if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
-            raise ValueError("command is invalid")
-        if not isinstance(metadata, dict) or not all(
-            isinstance(key, str) and isinstance(item, str) for key, item in metadata.items()
-        ):
-            raise ValueError("metadata is invalid")
-        if not isinstance(interruptible, bool) or not isinstance(recovery_only, bool):
-            raise ValueError("request booleans are invalid")
-        return PodCreateRequest(
-            name=value["name"],
-            gpu_type=value["gpu_type"],
-            image=value["image"],
-            volume_id=value["volume_id"],
-            volume_mount_path=value["volume_mount_path"],
-            docker_start_cmd=tuple(command),
-            hard_deadline=require_utc(deadline, "recorded hard deadline"),
-            repository_commit=value["repository_commit"],
-            container_disk_gb=value.get("container_disk_gb", container_disk_gb_for_tier(None)),
-            template=value["template"],
-            metadata=metadata,
-            interruptible=interruptible,
-            recovery_only=recovery_only,
-        )
-    except (KeyError, TypeError, ValueError) as error:
-        raise OperatorError(
-            ErrorCode.CLOSE_NOTHING, detail="the saved launch request is invalid"
-        ) from error
-
-
-def _pod_record(record: PodRecord) -> dict[str, Any]:
-    contract = record.runtime_contract
-    return {
-        "pod_id": record.pod_id,
-        "name": record.name,
-        "volume_id": record.volume_id,
-        "created_at": utc_stamp(record.created_at),
-        "state": record.state,
-        "estimate": {
-            "pod_hourly_usd": str(record.estimate.pod_hourly_usd),
-            "volume_hourly_usd": str(record.estimate.volume_hourly_usd),
-            "source": record.estimate.source,
-            "observed_at": utc_stamp(record.estimate.observed_at),
-        },
-        "runtime_contract": None
-        if contract is None
-        else {
-            "interruptible": contract.interruptible,
-            "gpu_type": contract.gpu_type,
-            "image": contract.image,
-            "volume_id": contract.volume_id,
-            "volume_mount_path": contract.volume_mount_path,
-            "docker_start_cmd": list(contract.docker_start_cmd),
-            "billing_cutoff_margin_seconds": contract.billing_cutoff_margin_seconds,
-            "template": contract.template,
-        },
-    }
-
-
-def _pod_from_record(value: dict[str, Any]) -> PodRecord:
-    try:
-        required = {
-            "pod_id",
-            "name",
-            "volume_id",
-            "created_at",
-            "state",
-            "estimate",
-            "runtime_contract",
-        }
-        if set(value) != required:
-            raise ValueError("pod record has missing or unknown fields")
-        estimate_raw = value["estimate"]
-        contract_raw = value["runtime_contract"]
-        if not isinstance(estimate_raw, dict) or not isinstance(contract_raw, dict):
-            raise ValueError("pod record is missing immutable observations")
-        if set(estimate_raw) != {
-            "pod_hourly_usd",
-            "volume_hourly_usd",
-            "source",
-            "observed_at",
-        }:
-            raise ValueError("pod estimate has missing or unknown fields")
-        if set(contract_raw) != {
-            "interruptible",
-            "gpu_type",
-            "image",
-            "volume_id",
-            "volume_mount_path",
-            "docker_start_cmd",
-            "billing_cutoff_margin_seconds",
-            "template",
-        }:
-            raise ValueError("pod runtime contract has missing or unknown fields")
-        created_text = value["created_at"]
-        observed_text = estimate_raw["observed_at"]
-        if not isinstance(created_text, str) or not isinstance(observed_text, str):
-            raise ValueError("pod observation times are invalid")
-        if not all(
-            isinstance(value[field], str) for field in ("pod_id", "name", "volume_id", "state")
-        ):
-            raise ValueError("pod identity fields are invalid")
-        if not all(
-            isinstance(estimate_raw[field], str)
-            for field in ("pod_hourly_usd", "volume_hourly_usd", "source")
-        ):
-            raise ValueError("pod estimate fields are invalid")
-        interruptible = contract_raw["interruptible"]
-        if not isinstance(interruptible, bool):
-            raise ValueError("pod interruptible observation is invalid")
-        if not all(
-            isinstance(contract_raw[field], str)
-            for field in ("gpu_type", "image", "volume_id", "volume_mount_path")
-        ):
-            raise ValueError("pod runtime identity fields are invalid")
-        template = contract_raw["template"]
-        if template is not None and not isinstance(template, str):
-            raise ValueError("pod template is invalid")
-        created = datetime.fromisoformat(created_text.replace("Z", "+00:00"))
-        observed = datetime.fromisoformat(observed_text.replace("Z", "+00:00"))
-        command = contract_raw["docker_start_cmd"]
-        if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
-            raise ValueError("pod command is invalid")
-        return PodRecord(
-            pod_id=value["pod_id"],
-            name=value["name"],
-            estimate=PodEstimate(
-                pod_hourly_usd=Decimal(estimate_raw["pod_hourly_usd"]),
-                volume_hourly_usd=Decimal(estimate_raw["volume_hourly_usd"]),
-                source=estimate_raw["source"],
-                observed_at=require_utc(observed, "recorded estimate time"),
-            ),
-            volume_id=value["volume_id"],
-            created_at=require_utc(created, "recorded pod creation time"),
-            state=value["state"],
-            runtime_contract=PodRuntimeContract(
-                interruptible=interruptible,
-                gpu_type=contract_raw["gpu_type"],
-                image=contract_raw["image"],
-                volume_id=contract_raw["volume_id"],
-                volume_mount_path=contract_raw["volume_mount_path"],
-                docker_start_cmd=tuple(command),
-                billing_cutoff_margin_seconds=require_billing_cutoff_margin_seconds(
-                    contract_raw["billing_cutoff_margin_seconds"], "recorded billing cutoff margin"
-                ),
-                template=template,
-            ),
-        )
-    except (KeyError, TypeError, ValueError) as error:
-        raise OperatorError(
-            ErrorCode.CLOSE_NOTHING, detail="the saved pod record is invalid"
-        ) from error
-
-
-def _stage_environment() -> dict[str, str]:
-    """The ordinary environment with every provider credential stripped.
-
-    Stages decode untrusted images, so no credential may reach them. The shared
-    predicate means a credential shape added there is stripped here too.
-    """
-
-    return credential_free_environment()
+    values = dict(os.environ if source is None else source)
+    return {key: value for key, value in values.items() if not looks_like_credential_env(key)}
 
 
 def _sha256_regular_file_nofollow(path: Path) -> str:
@@ -3690,7 +2309,12 @@ def _write_bundle_directory(
     return written
 
 
-def _repository_commit(workspace: Path) -> str:
+def _repository_commit_or_reason(workspace: Path) -> tuple[str | None, str | None]:
+    """The commit a run is about to use, or the reason it could not be read.
+
+    A run proceeds without one: a copied tree on a pod is not a git checkout.
+    """
+
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -3701,33 +2325,15 @@ def _repository_commit(workspace: Path) -> str:
             timeout=30,
         )
     except (OSError, subprocess.SubprocessError) as error:
-        raise OperatorError(
-            ErrorCode.BOOT_RED,
-            detail=f"the current repository commit could not be read: {error}",
-        ) from error
+        return None, f"the current repository commit could not be read: {error}"
     value = result.stdout.strip()
     if (
         result.returncode != 0
         or len(value) != 40
         or any(character not in "0123456789abcdef" for character in value)
     ):
-        raise OperatorError(
-            ErrorCode.BOOT_RED, detail="the current repository commit could not be read"
-        )
-    return value
-
-
-def _repository_commit_or_reason(workspace: Path) -> tuple[str | None, str | None]:
-    """The commit a run is about to use, or the reason it could not be read.
-
-    Unlike `boot`, a run proceeds without one: a copied tree on a pod is not a
-    git checkout.
-    """
-
-    try:
-        return _repository_commit(workspace), None
-    except OperatorError as error:
-        return None, error.detail or str(error)
+        return None, "the current repository commit could not be read"
+    return value, None
 
 
 def _config_binding(path: str | Path | None) -> dict[str, Any] | None:
@@ -4275,30 +2881,6 @@ def _fetched_manifest(tree: RunTree, relative: str) -> dict[str, Any]:
 def _sha256_of(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
-def _display_usd(amount: Decimal) -> str:
-    """Round a dollar amount to two places for display only.
-
-    Records keep the exact value, and the confirmation phrase uses the hourly
-    rates, not this total.
-    """
-
-    return str(amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
-
-
-def _human_duration(seconds: int) -> str:
-    """Pair an exact limit with the duration a person can recognize quickly."""
-
-    if seconds % 3600 == 0:
-        count = seconds // 3600
-        unit = "hour" if count == 1 else "hours"
-        return f"{count} {unit} ({seconds} seconds)"
-    if seconds % 60 == 0:
-        count = seconds // 60
-        unit = "minute" if count == 1 else "minutes"
-        return f"{count} {unit} ({seconds} seconds)"
-    return f"{seconds} seconds"
 
 
 def _door_module(workspace: Path):

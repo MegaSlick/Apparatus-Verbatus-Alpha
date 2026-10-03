@@ -70,7 +70,7 @@ from conftest import (
 )
 from conftest import file_digest_snapshot as snapshot
 from operations.operator import surface, volume_s3
-from operations.operator.custody import credential_free_environment
+from operations.operator.surface import credential_free_environment
 from operations.submit import gate, submit
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -104,8 +104,8 @@ FIXTURE = "synthetic-two-page-v0"
 # the reconstructor's receipt.
 HAPPY_SNAPSHOT_FILES = 141
 REVIEW_SNAPSHOT_FILES = 132
-HAPPY_RUN_TREE_DIGEST = "16446054c0f8b357d1371456987849202596a3689d0909cb6d1b132b4f8c42cb"
-REVIEW_RUN_TREE_DIGEST = "84953ed5aeea8e476d1a1c1921cd1671a852c4cdb751b0f22e873f7b86c51b5b"
+HAPPY_RUN_TREE_DIGEST = "7e945adb6411cf9306a99d1407739b9655e1542bb69e63ff56d93e9b0087bad7"
+REVIEW_RUN_TREE_DIGEST = "d0ad55d4750305e3d97e34d987f06927c3d8240c5ce19a694f2d88e1b545d7e4"
 
 
 def orchestrate_to_export(
@@ -588,7 +588,7 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
 
     for label, built in (
         ("orchestrator", orchestrator.stage_environment()),
-        ("operator surface", surface._stage_environment()),
+        ("operator surface", surface.credential_free_environment()),
     ):
         leaked = volume_s3.TRANSFER_CREDENTIAL_ENV.intersection(built)
         assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
@@ -625,7 +625,7 @@ def test_orchestrator_and_surface_strip_every_provider_credential(
     reference = credential_free_environment()
     for label, built in (
         ("orchestrator", orchestrator.stage_environment()),
-        ("operator surface", surface._stage_environment()),
+        ("operator surface", surface.credential_free_environment()),
     ):
         leaked = set(representative_names) & set(built)
         assert not leaked, f"{label} passed {sorted(leaked)} to a stage"
