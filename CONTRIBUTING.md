@@ -50,14 +50,8 @@ hour or more, so locally run only what your change touches.
 
 ## How rules are written
 
-Working rules live in three places: this file for everyone, AGENTS.md for AI sessions,
-and CLAUDE.md for what is specific to Claude Code. PRINCIPLES.md holds the goals and
-ARCHITECTURE.md the design; neither holds working rules, and code comments never cite
-rules.
-
-- Write down what the lead meant, in plain words, with its reason. Do not turn a
-  direction into a count or a quota that stands in for it.
-- When a rule needs an exception, rewrite or remove the rule instead.
+Working rules live here for everyone, in AGENTS.md for AI sessions and in CLAUDE.md for
+Claude Code. Keep them few and give each its reason; code comments never cite rules.
 
 ## Rules for what enters the repository
 
