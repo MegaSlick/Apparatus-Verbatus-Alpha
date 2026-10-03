@@ -1,0 +1,48 @@
+name: Branch ingress
+
+# A branch that never opens a pull request is not covered by ci.yml, and this
+# repository is public, so every push to any other branch gets the same credential and
+# private-path scan. main and tags are scanned by ci.yml.
+on:
+  push:
+    branches-ignore: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ingress:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # v6.1.0, pinned by commit so a moved tag cannot change the code that runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        # v6.3.0, pinned by commit like every action.
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+
+      # The same step as ci.yml's; a test keeps the two run blocks identical. A new
+      # branch has no previous commit, so it gets the full history.
+      - name: Repository ingress
+        shell: bash
+        env:
+          SCAN_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          printf '%s\0%s\0' "$GITHUB_REF" "$GITHUB_HEAD_REF" |
+            python3 .githooks/check_ingress.py --ref-fields
+          if [[ "$GITHUB_REF" != refs/tags/* && "${SCAN_BASE:-}" =~ ^[0-9a-f]{40}$ &&
+                "$SCAN_BASE" != 0000000000000000000000000000000000000000 ]] &&
+             git cat-file -e "$SCAN_BASE^{commit}" 2>/dev/null; then
+            python3 .githooks/check_ingress.py --history "$SCAN_BASE..HEAD"
+          else
+            python3 .githooks/check_ingress.py --history HEAD
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            python3 .githooks/check_ingress.py --ref-object "$GITHUB_REF"
+          fi
