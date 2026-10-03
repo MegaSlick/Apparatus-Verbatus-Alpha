@@ -115,8 +115,8 @@ def test_the_textbook_word_error_rate_example():
 
 
 # U+0897 is a combining mark Unicode 16 assigned. The segmenter's pinned table
-# knows it; Python 3.13's own database (Unicode 15.1) calls it unassigned, so a
-# bound read from `unicodedata` would let a run of it through.
+# knows it; Python's own unicodedata (Unicode 15.1 here) calls it unassigned,
+# so a bound read from `unicodedata` would let a run of it through.
 _NEW_MARK = "\u0897"
 
 

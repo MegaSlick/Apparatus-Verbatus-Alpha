@@ -56,8 +56,8 @@ from .evaluate import (
     load_reference_pages,
 )
 from .local_admission import validate_local_admission_ledger
-from .normalization import GRAPHEMIC_V1, within_text_bounds
-from .scoring import TEXT_OUT_OF_BOUNDS, OutputStatus, score_response
+from .normalization import GRAPHEMIC_V1, character_units, within_text_bounds, word_units
+from .scoring import REFERENCE_TEXT_OUT_OF_BOUNDS, TEXT_OUT_OF_BOUNDS, OutputStatus, score_response
 
 SCHEMA = "recordgold-reconstruction-evaluation.v3"
 # The Armarium's member for the Coniector's rows (`pipeline/7_armarium/coniector_layer.py`).
@@ -121,6 +121,18 @@ def _score(reference: str, text: str) -> dict[str, int]:
         "cer_units": scored.cer.reference_units,
         "wer_errors": scored.wer.edits.errors,
         "wer_units": scored.wer.reference_units,
+    }
+
+
+def _wholly_deleted(reference: str) -> dict[str, int]:
+    """A reference's units charged as errors, for a text that could not be measured."""
+    cer_units = len(character_units(reference, GRAPHEMIC_V1))
+    wer_units = len(word_units(reference, GRAPHEMIC_V1))
+    return {
+        "cer_errors": cer_units,
+        "cer_units": cer_units,
+        "wer_errors": wer_units,
+        "wer_units": wer_units,
     }
 
 
@@ -188,16 +200,23 @@ def reconstruction_report(
         paired = sum(reference is not None for reference in references)
         sides = "all" if paired == len(act_ids) else "some" if paired else "none"
         # A reconstruction or literal beyond the scoring bounds is named, and
-        # neither scored nor compared with its literals.
-        unmeasured = (
-            TEXT_OUT_OF_BOUNDS
-            if made
-            and not all(within_text_bounds(item, GRAPHEMIC_V1) for item in (text, diplomatic))
-            else None
+        # neither scored nor compared with its literals; where the reference has
+        # every act, both sides are charged as wholly deleted. A joined
+        # reference beyond the bounds is named and charged to neither side.
+        readable = not made or all(
+            within_text_bounds(item, GRAPHEMIC_V1) for item in (text, diplomatic)
         )
-        score = None
-        if made and sides == "all" and unmeasured is None:
+        unmeasured = None if readable else TEXT_OUT_OF_BOUNDS
+        reference_text = None
+        if made and sides == "all":
             reference_text = "\n".join(reference["text"] for reference in references)
+            if not within_text_bounds(reference_text, GRAPHEMIC_V1):
+                unmeasured = REFERENCE_TEXT_OUT_OF_BOUNDS
+            elif unmeasured is not None:
+                _add(reconstruction_score, _wholly_deleted(reference_text))
+                _add(diplomatic_score, _wholly_deleted(reference_text))
+        score = None
+        if reference_text is not None and unmeasured is None:
             score = {
                 "reconstruction": _score(reference_text, text),
                 "diplomatic": _score(reference_text, diplomatic),
@@ -216,7 +235,7 @@ def reconstruction_report(
                 "not_made": sorted(reason["code"] for reason in row["not_made"]),
                 "departures": len(row["departures"]),
                 "departed_characters": (
-                    Levenshtein.distance(text, diplomatic) if made and unmeasured is None else None
+                    Levenshtein.distance(text, diplomatic) if made and readable else None
                 ),
                 "flags": sorted(flag["code"] for flag in row["flags"]),
                 "reference_record_ids": [
@@ -230,7 +249,7 @@ def reconstruction_report(
     by_status = Counter(join.get("status") for join in joins)
     by_reason = Counter(join.get("not_reconstructed_reason") for join in joins)
     made_rows = [row for row in out_rows if row["made"]]
-    measured_rows = [row for row in made_rows if row["unmeasured"] is None]
+    compared_rows = [row for row in made_rows if row["departed_characters"] is not None]
     return {
         "schema": SCHEMA,
         "joins": {
@@ -246,10 +265,10 @@ def reconstruction_report(
             "by_maker": dict(sorted(by_maker.items())),
             "made": len(made_rows),
             "not_made_by_code": dict(sorted(not_made.items())),
-            "unmeasured": len(made_rows) - len(measured_rows),
+            "unmeasured": sum(1 for row in made_rows if row["unmeasured"] is not None),
             "departures": sum(row["departures"] for row in made_rows),
-            "departing": sum(1 for row in measured_rows if row["departed_characters"]),
-            "departed_characters": sum(row["departed_characters"] for row in measured_rows),
+            "departing": sum(1 for row in compared_rows if row["departed_characters"]),
+            "departed_characters": sum(row["departed_characters"] for row in compared_rows),
             "flags_by_code": dict(sorted(flags.items())),
         },
         "reference": {

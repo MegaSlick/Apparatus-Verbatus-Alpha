@@ -20,9 +20,11 @@ Two aggregate rates: the matched-pairs rate is the arithmetic of the pairs the
 assignment made, so a record the pipeline never found affects it not at all. The
 second rate additionally counts every missed record's reference units as
 deletions, since a missed act is worse than a poorly read one — this
-is the number a capture failure actually moves. Neither rate counts a
-not-attempted or an unmeasured record; `reference_records_not_attempted` and
-`reference_records_unmeasured` are where a reader sees those gaps.
+is the number a capture failure actually moves. An unmeasured record is counted
+the same way in the second rate, so a runaway reading never scores better than
+an empty one, and is left out of the first. Neither rate counts a not-attempted
+record; `reference_records_not_attempted` and `reference_records_unmeasured`
+are where a reader sees those gaps.
 
 The run's own facts (export digest, run and config digests, fixture-vs-real)
 come from the sealed tree, read from the export payload's own identity field
@@ -138,8 +140,8 @@ _MATCHED_SCOPE = (
     "neither side of this fraction, nor does an unmeasured pair, counted separately"
 )
 _MISSED_SCOPE = (
-    "matched pairs plus every missed record counted as wholly deleted; not-attempted "
-    "and unmeasured records are excluded from both rates and counted separately"
+    "matched pairs plus every missed or unmeasured record counted as wholly deleted; "
+    "not-attempted records are excluded from both rates and counted separately"
 )
 
 _EDIT_FIELDS = (
@@ -623,6 +625,13 @@ def evaluate_run(
                 continue
             hypothesis = hypotheses[pair["pipeline_act_id"]]
             if pair["unmeasured"] is not None:
+                # Charged in the headline rate as wholly deleted, like a missed
+                # record, so a runaway reading never scores better than none.
+                _accumulate(
+                    cer_with_missed,
+                    _wholly_deleted(len(character_units(act["text"], PROFILE))),
+                )
+                _accumulate(wer_with_missed, _wholly_deleted(len(word_units(act["text"], PROFILE))))
                 records.append(
                     {
                         "physical_act_id": act["physical_act_id"],
@@ -638,8 +647,9 @@ def evaluate_run(
                         "wer": None,
                         "note": (
                             f"{pair['unmeasured']}: the reading is beyond the scoring "
-                            "profile's text bounds; not measured, excluded from both rates "
-                            "and counted in reference_records_unmeasured"
+                            "profile's text bounds; not measured, left out of the matched-pairs "
+                            "rate, counted as wholly deleted in the including-missed aggregate "
+                            "and in reference_records_unmeasured"
                         ),
                     }
                 )

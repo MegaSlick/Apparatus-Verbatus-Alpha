@@ -20,6 +20,9 @@ from .normalization import (
 # The name a report gives a reading it could not measure because the reading
 # is beyond the normalization profile's text bounds.
 TEXT_OUT_OF_BOUNDS = "text-out-of-bounds"
+# The name for a reference that is within the bounds act by act but not once a
+# whole page's or a join's acts are joined into one text.
+REFERENCE_TEXT_OUT_OF_BOUNDS = "reference-text-out-of-bounds"
 
 
 class OutputStatus(StrEnum):

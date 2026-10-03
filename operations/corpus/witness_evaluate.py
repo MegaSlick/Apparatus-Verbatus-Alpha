@@ -47,9 +47,15 @@ from .compare import (
     load_pipeline_reading_acts,
 )
 from .local_admission import validate_local_admission_ledger
-from .normalization import GRAPHEMIC_V1, within_text_bounds
+from .normalization import GRAPHEMIC_V1, character_units, within_text_bounds, word_units
 from .reference import validate_reference_page
-from .scoring import TEXT_OUT_OF_BOUNDS, OutputStatus, hypothesis_for_status, score_response
+from .scoring import (
+    REFERENCE_TEXT_OUT_OF_BOUNDS,
+    TEXT_OUT_OF_BOUNDS,
+    OutputStatus,
+    hypothesis_for_status,
+    score_response,
+)
 
 DESCRIPTION = "Read-only per-witness RecordGold scoring over sealed page Testimonia."
 
@@ -120,16 +126,27 @@ def _score_row(
         "reason": reason,
         "unmeasured": None,
     }
-    # A reading beyond the scoring bounds is named and carries no rate; the
-    # chair's other rows are still scored.
+    # A text beyond the scoring bounds is named and carries no rate; the
+    # chair's other rows are still scored. A joined reference that is out of
+    # bounds has no units to charge; an out-of-bounds reading keeps its
+    # reference units, which the totals charge as wholly deleted.
+    if not within_text_bounds(reference["text"], GRAPHEMIC_V1):
+        return {
+            **row,
+            "unmeasured": REFERENCE_TEXT_OUT_OF_BOUNDS,
+            "cer": None,
+            "cer_units": None,
+            "wer": None,
+            "wer_units": None,
+        }
     if not within_text_bounds(hypothesis_for_status(status, text), GRAPHEMIC_V1):
         return {
             **row,
             "unmeasured": TEXT_OUT_OF_BOUNDS,
             "cer": None,
-            "cer_units": None,
+            "cer_units": len(character_units(reference["text"], GRAPHEMIC_V1)),
             "wer": None,
-            "wer_units": None,
+            "wer_units": len(word_units(reference["text"], GRAPHEMIC_V1)),
         }
     score = score_response(reference["text"], status=status, text=text, profile=GRAPHEMIC_V1)
     return {
@@ -141,6 +158,11 @@ def _score_row(
     }
 
 
+def _charged(row: Mapping[str, Any], unit: str) -> int:
+    """A row's errors in `unit`, an out-of-bounds reading charged as wholly deleted."""
+    return row[f"{unit}_units"] if row["unmeasured"] == TEXT_OUT_OF_BOUNDS else row[unit]
+
+
 def _totals(
     rows: Sequence[Mapping[str, Any]],
     chairs: Sequence[str],
@@ -149,18 +171,18 @@ def _totals(
     totals: dict[str, dict[str, Any]] = {}
     for chair in chairs:
         chair_rows = [row for row in rows if row["chair"] == chair]
-        measured = [row for row in chair_rows if row["unmeasured"] is None]
+        counted = [row for row in chair_rows if row["cer_units"] is not None]
         statuses = Counter(row["status"] for row in chair_rows)
         totals[chair] = {
             "references": len(chair_rows),
             "scoreable": statuses[OutputStatus.COMPLETE.value]
             + statuses[OutputStatus.TRUNCATED.value],
             "statuses": {status.value: statuses[status.value] for status in OutputStatus},
-            "unmeasured": len(chair_rows) - len(measured),
-            "cer_errors": sum(row["cer"] for row in measured),
-            "cer_units": sum(row["cer_units"] for row in measured),
-            "wer_errors": sum(row["wer"] for row in measured),
-            "wer_units": sum(row["wer_units"] for row in measured),
+            "unmeasured": sum(1 for row in chair_rows if row["unmeasured"] is not None),
+            "cer_errors": sum(_charged(row, "cer") for row in counted),
+            "cer_units": sum(row["cer_units"] for row in counted),
+            "wer_errors": sum(_charged(row, "wer") for row in counted),
+            "wer_units": sum(row["wer_units"] for row in counted),
         }
         if missing_proposals is not None:
             totals[chair]["missing_proposals"] = missing_proposals
@@ -782,9 +804,9 @@ def evaluate_page_feed_run(
             for row in rows
             if row["chair"] == name
             and row["status"] in {OutputStatus.COMPLETE.value, OutputStatus.TRUNCATED.value}
-            and row["unmeasured"] is None
+            and row["cer_units"] is not None
         ]
-        total["scoreable_cer_errors"] = sum(row["cer"] for row in scoreable_rows)
+        total["scoreable_cer_errors"] = sum(_charged(row, "cer") for row in scoreable_rows)
         total["scoreable_cer_units"] = sum(row["cer_units"] for row in scoreable_rows)
         total["reasons"] = dict(
             sorted(

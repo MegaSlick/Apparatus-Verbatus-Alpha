@@ -100,7 +100,28 @@ def test_a_reconstruction_beyond_the_scoring_bounds_is_named_unmeasured_and_the_
     assert runaway["score"] is None and runaway["departed_characters"] is None
     assert scored["unmeasured"] is None and scored["score"] is not None
     assert report["reconstructions"]["unmeasured"] == 1
-    assert report["reference"]["reconstruction"] == scored["score"]["reconstruction"]
+    # Counted as wholly deleted on both sides: never better than an empty reconstruction.
+    empty = _report([_row(text=""), _row(("act_t",))], references)["reference"]
+    for side in ("reconstruction", "diplomatic"):
+        total = report["reference"][side]
+        assert total["cer_units"] == empty[side]["cer_units"]
+        assert total["cer_errors"] >= empty[side]["cer_errors"]
+        assert total["wer_errors"] >= empty[side]["wer_errors"]
+
+
+def test_a_join_whose_joined_reference_is_beyond_the_scoring_bounds_is_named_unmeasured():
+    half = "a" * (MAX_TEXT_LENGTH // 2 + 1)
+    references = {
+        "act_h": {"record_id": "r-head", "text": half},
+        "act_t": {"record_id": "r-tail", "text": half},
+    }
+    join = _row(("act_h", "act_t"), text=HEAD_TEXT + " " + TAIL_TEXT, unit="join")
+
+    report = _report([join], references)
+
+    [row] = report["rows"]
+    assert row["unmeasured"] == "reference-text-out-of-bounds" and row["score"] is None
+    assert report["reconstructions"]["unmeasured"] == 1
 
 
 def test_a_join_with_one_act_in_the_reference_is_counted_and_not_scored():
