@@ -12,7 +12,9 @@ if [ -x .venv/bin/ruff ]; then
 fi
 
 sh .githooks/check-documents.sh
-git diff --check HEAD --
+# Whitespace errors in every tracked file as it stands in the working tree, so a clean
+# CI checkout checks the committed content and a local run checks edits as well.
+git diff --check "$(git hash-object -t tree /dev/null)" --
 ruff check .
 ruff format --check .
 
@@ -34,8 +36,7 @@ operations/pod/session_end_pod_check.sh"
 # shellcheck disable=SC2086
 shellcheck $scripts
 # `sh -n` parses only its first operand, so walk the list. Prefer dash: macOS /bin/sh
-# is bash in POSIX mode and accepts bashisms CI's dash refuses. shellcheck catches the
-# ones no `-n` parse sees (`[[`, `${x^^}`).
+# is bash in POSIX mode and accepts bashisms dash refuses.
 syntax_shell="sh"
 if command -v dash >/dev/null 2>&1; then
   syntax_shell="dash"

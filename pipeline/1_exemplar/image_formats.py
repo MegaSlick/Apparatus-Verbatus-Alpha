@@ -35,6 +35,7 @@ from common.image_sniff import (
     sniff,
 )
 from common.imaging import (
+    DETERMINISTIC_ENCODER,
     imaging_library_versions,
     raster_mode_transform,
     render_triage_derivative,
@@ -1267,7 +1268,7 @@ def render_raster_page(
                 "container_page_index": page_index,
                 "width": output_geometry["width"],
                 "height": output_geometry["height"],
-                "deterministic_encoder": "common.imaging.encode_image_deterministic-v1",
+                "deterministic_encoder": DETERMINISTIC_ENCODER,
             },
         )
     try:
