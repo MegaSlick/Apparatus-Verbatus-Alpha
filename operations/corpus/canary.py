@@ -25,14 +25,13 @@ from common.contracts.stages import (
 )
 from common.runtree.store import RunTree
 from common.stage import canary_ordinals
-from operations.spike_perlector.models import OutputStatus
-from operations.spike_perlector.normalization import GRAPHEMIC_V1
-from operations.spike_perlector.scoring import score_response
 from operations.submit.submit import build_manifest, walk_folder
 
 from .compare import compare_page_geometry, load_exemplar_page_shas, load_pipeline_reading_acts
 from .local_admission import admit_local_set
+from .normalization import GRAPHEMIC_V1
 from .reference import validate_reference_page
+from .scoring import OutputStatus, score_response
 from .witness_evaluate import CHAIRS, page_witness_index, sealed_page_bindings, witness_reading
 
 MIN_ACTS_FOUND = 0.5

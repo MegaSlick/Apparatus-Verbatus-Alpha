@@ -1,19 +1,14 @@
 # Paid infrastructure — pods, GPUs, and anything that bills
 
 **Read this before invoking anything that can start a meter**: RunPod, any GPU host, any
-hosted inference, any storage or egress that is charged. If your task appears to need one
-of these, this file is the whole rule; `AGENTS.md` ("Who decides") is why.
+hosted inference, any storage or egress that is charged.
 
 ## The rule
 
-**Unless the project lead has directed it in the current session, you do not invoke a
-billing action.** Not a launch, a resume, a resize, a persistent volume, or a "just to
-check" call that provisions anything.
-
-Permission covers **one exact action**, named with its cost. It is never inferred from
-another permission and never carried forward from an earlier session: permission to run a
-pod on Tuesday is not permission to run one on Wednesday, and permission to launch is not
-permission to resize.
+Who may start, switch or delete paid infrastructure, and what a permission covers, is
+`AGENTS.md`, "Who decides". It is stated there once and not restated here. In short: no
+billing action without the project lead's permission in the current session, and a
+permission never carries over from an earlier one.
 
 **Reading costs nothing and is always allowed**: listing pods, reading status, checking
 whether something is running, reading billing. "Is anything running right now?" is worth
@@ -312,6 +307,10 @@ orchestrator and records it in the report. `--stage` runs one boundary, `--from`
 selects Door through Attestatores on a cheap card; `--models big` resumes Perlector
 through Armarium on a big card, after verifying this run's sealed Attestatores
 stage on the volume before bootstrap. The two model toggles use the same range validation.
+A selection preflights only the chairs its stages use: the Designator's, the witnesses,
+the Perlector, and the Coniector's `reconstructor` when `config/reconstruction.toml`
+has the stage ask it (`mode = "on"`); the run is refused unless each has green
+PREFLIGHT evidence.
 Any range is the orchestrator's semi mode, which stops at the first held stage. In every
 mode, auto included, a run whose Recensor holds anything stops there, before Archetypus
 and Armarium, after running the Coniector when the selection includes it
@@ -462,17 +461,7 @@ stage's environment. With no readable topic file, a link or anything but a regul
 - **One lease root per provider account.** Separate roots cannot see each other's
   liabilities, and nothing can enforce this without an account identifier.
 
-### Per-stage boots, transfer and preflight
-
-`staged.py` runs one collection stage per independently authorized boot, then takes the pod
-down; it never adopts. No launch or collection path calls it; its tests are its only
-caller. Its durable records on the run volume: a **claim** keyed by the grant
-reference, written before the provider is touched, so one grant cannot buy a second pod
-(a retry after a refused create records a fresh reference); an explicitly unknown **cost
-intent**, fsynced first, so a lost create response never reads as zero; a **boot record**
-binding pod, collection, stage and grant, whose failure triggers immediate pod-down; and
-one **close record** per boot, including a close-failure record when the close raised or
-could not run. `render_boot_schedule` prints every expected boot before any is requested.
+### Transfer, bootstrap and preflight
 
 `transfer.py` carries sealed submission-manifest rows through a generic storage seam,
 verifying SHA-256 and size before and after upload and never overwriting conflicting bytes.
@@ -506,9 +495,8 @@ weight bundle onto the network volume by running `operations/serving/surya/prefe
 in that environment, and refuses it unless its measured manifest is the pinned one, so
 MODEL_STORE needs that environment synced first. The CHAIR_CACHE step copies the
 verified bundle to where the real roster binds it, `config/real-models/designator_surya`
-on container-local disk (`operations/serving/surya/README.md`, "On the pod"). The boot
-schedule names Surya on the Designator's pod. `pod_run` counts Surya among the
-Designator's chairs: a selection that runs the Designator with Surya configured is
+on container-local disk (`operations/serving/surya/README.md`, "On the pod").
+`pod_run` counts Surya among the Designator's chairs: a selection that runs the Designator with Surya configured is
 refused unless the preflight report places Surya as a subprocess, verified its cache and
 carries its golden-page run in `subprocess_receipts`.
 
@@ -518,7 +506,23 @@ carries its golden-page run in `subprocess_receipts`.
 or when it has done no work for 30 minutes: no GPU use (under 5 % at every one-minute
 sample; a GPU that cannot report counts as busy), no container CPU use (under half a core,
 from the container's own cgroup, not the shared host's load), no download (under
-256 KB/s received), and no touch of the pod's keep-alive file. A deadline more than a week
+256 KB/s received), and no touch of the pod's keep-alive file. `pod_run` touches that
+file on every liveness tick while the orchestrator shows progress: new output in its
+transcript, or anything written in its run tree outside the `serving-logs` directories.
+CPU time is not progress, because an idle model server in the run's process tree uses a
+little on every tick, and its engine log keeps growing too. A working run never depends
+on the counters. A live run that shows no progress for 15 minutes (`RUN_STALL_SECONDS`, not yet
+measured against a real stage) stops touching it and sends one notice ("run on <pod>
+shows no progress since <time>; the idle guard now decides"); the guard's own counters
+then decide, and touching resumes if the run moves again. An unreadable CPU counter never deletes a pod. If it cannot be
+read from the start, or stays unreadable, the guard counts the pod as busy, keeps
+trying the read every minute, and sends one notice ("CPU idle detection unavailable
+on <pod>; held until its deadline <time>"), and one more if the read comes back, after
+which idle counting resumes. A counter that keeps dropping out and coming back reaches the
+phone at most once an hour; every episode is still in `guard.log`. A single missed read
+between good ones is skipped: it neither adds idle time nor resets it, and the next good
+read is judged over both ticks. The deadline deletes the pod either way.
+A deadline more than a week
 out is taken as a typo and ignored. It needs nothing from the laptop or a Claude session, so a crashed
 session, a closed app or a sleeping Mac cannot leave a pod billing. It uses RunPod's
 documented self-stop route: every pod has `runpodctl` and a pod-scoped `RUNPOD_API_KEY`.
@@ -584,7 +588,11 @@ is fetched from an older commit.
   checked before any longer run relies on it.
 - The guard is a backstop, not the shutdown: close pods yourself when work ends and verify
   the close against RunPod's own state and billing. `session_end_pod_check.sh`, a Claude
-  Code SessionEnd hook, pings the lead if a pod is still running when a session closes.
+  Code SessionEnd hook, pings the lead with every pod that still exists, in any state, when
+  a session closes. A missing `runpodctl`, a failed listing or a table it does not
+  recognise is pinged too, never read as "no pods", and so are an empty listing and one
+that does not answer within 30 seconds. The same report (pod ids and states)
+  is not sent twice within two hours, and is recorded only once delivered.
 
 ## The hand route: a proof run started by hand
 
@@ -941,19 +949,9 @@ root:
 bash operations/pod/prepare_runtime.sh
 ```
 
-It installs the official `uv 0.12.1` at `/usr/local/bin/uv`, `ninja-build` at
-`/usr/bin/ninja` (without it the Chandra and DAI vLLM warm-up fails), and a
-Landlock-capable `setpriv` at `/usr/bin/setpriv` (stock Ubuntu 24.04's lacks
-`--landlock-access`). A working `setpriv` is kept; otherwise it verifies pinned SHA-256
-digests, builds only `setpriv` from util-linux 2.42.3, and keeps the old binary at
-`/usr/local/lib/verbatus-runtime-prerequisites/setpriv.before-util-linux-2.42.3`. It is
-idempotent, with bounded, retried downloads. Either `setpriv` must pass:
-
-```bash
-setpriv --no-new-privs --landlock-access fs:write-file -- /bin/true
-```
-
-A kernel without working Landlock is a refusal: choose another host, never bypass it.
+It installs the official `uv 0.12.1` at `/usr/local/bin/uv`, checked against its pinned
+SHA-256, and `ninja-build` at `/usr/bin/ninja` (without it the Chandra and DAI vLLM
+warm-up fails). It is idempotent, with bounded, retried downloads.
 
 Keep the repository, `.venv` and `UV_CACHE_DIR` on container-local disk. The serving stack
 keeps only the active model in its container-local cache. Keep inputs, outputs,

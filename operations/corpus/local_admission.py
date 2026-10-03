@@ -2,12 +2,10 @@
 
 **The producer of these sets is outside this repository and unverified.** Each
 set is a directory holding a `pages/` folder, a `page_manifest.jsonl`, a
-`gold.jsonl` and a `fetch_receipt.json` naming their digests. `fetch.py` did not
-write them: it writes a content-addressed cache, a `fetch-log.json` and a
-`refusals.json`, and none of those four names. The only identity the material
-carries is the receipt's own schema string, `recordgold_full_page_fetch_v1`,
-which appears nowhere else in this repository and is therefore a label rather
-than a contract this tree can check. So this module trusts the receipt for one
+`gold.jsonl` and a `fetch_receipt.json` naming their digests. The only identity
+the material carries is the receipt's own schema string,
+`recordgold_full_page_fetch_v1`, which is a label rather than a contract this
+tree can check. So this module trusts the receipt for one
 thing only -- that `gold.jsonl` and `page_manifest.jsonl` are the exact bytes it
 names -- and measures everything else against the stored pixels, against the
 `record_url` the row itself carries, and, when the caller supplies one, against
@@ -19,9 +17,9 @@ to the corpus facts and the ledger says so in `row_snapshot`.
 Forty of the records are stated in a 180-degree IIIF view: `record_url` carries
 `/180/`, `source_bbox` is the box in that rotated frame, and `bbox` is the same
 box carried into the stored page's frame by `(W - x - w, H - y - h, w, h)`.
-`plan.py`'s fetch-time parser refuses those rows by name, correctly, because at
-fetch time it holds no page dimensions to convert with. This module does hold
-them -- the stored page is decoded and measured before any record on it is
+`record_url.py` refuses those rows by default, because a box in a rotated frame
+cannot be carried without the page's dimensions. This module holds them -- the
+stored page is decoded and measured before any record on it is
 admitted -- so it carries the box across and records every fact of the crossing:
 the original URL, the rotation, the original box, the transformed box, the
 page's digest and dimensions. Nothing is treated as unrotated that was not; a
@@ -45,15 +43,10 @@ the corpus. Every listed page ends in exactly one outcome too, and the ledger
 refuses to validate if the outcomes do not account for the manifest.
 
 **The held-out split is not admitted by accident.** `split="test"` is the
-DAI-comparability set `holdout.py` protects; it is admitted only when the caller
-passes `release_test_split`, exactly as `fetch.py` requires `--release-test-split`,
-and that flag releases the held split alone. It is the same condition as the
-fetcher's, so it refuses under the fetcher's own name --
-`holdout-ledger-required` -- rather than inventing a second word for one concept.
-This route reproduces that layer of the hold-out and not the other two: it never
-consults the hold-out ledger, because the sets it reads carry their own split
-labels and were not produced by the fetcher. `README.md`'s hold-out section says
-so.
+DAI-comparability set; it is admitted only when the caller passes
+`release_test_split`, and that flag releases the held split alone. Without it the
+refusal is `holdout-ledger-required`. The sets carry their own split labels, and
+`README.md`'s hold-out section says what that does and does not protect.
 
 Reference truth built here is `reference.py`'s family and nothing more: one
 unnamed expert reading, records-only completeness, no adjudication. The
@@ -78,11 +71,15 @@ from common.contracts.canonical import (
 )
 from common.contracts.errors import IdentityRefusal
 from common.contracts.identities import physical_act_id, physical_page_id
-from operations.spike_perlector.normalization import GRAPHEMIC_V1, character_units
 
 from . import CorpusRefusal
-from .holdout import HELD_SPLIT
-from .plan import SUPPORTED_ROTATIONS, parse_record_url, unsafe_segment, volume_and_designation
+from .normalization import GRAPHEMIC_V1, character_units
+from .record_url import (
+    SUPPORTED_ROTATIONS,
+    parse_record_url,
+    unsafe_segment,
+    volume_and_designation,
+)
 from .reference import CORPUS_ID, SPLITS, build_reference_page, validate_reference_page
 from .rows import validate_snapshot
 
@@ -90,6 +87,7 @@ DESCRIPTION = "Admit the RecordGold pages and records already on this machine as
 
 SCHEMA = "recordgold-local-admission.v1"
 RECEIPT_SCHEMA = "recordgold_full_page_fetch_v1"
+HELD_SPLIT = "test"
 _EXIF_ORIENTATION_TAG = 0x0112
 
 LOCAL_ADMISSION_REFUSAL_REASONS = frozenset(
@@ -329,8 +327,7 @@ def _receipt(set_root: Path) -> dict[str, Any]:
 def _decode_page(body: bytes, *, width: int, height: int) -> None:
     """Decode the stored page and hold it to the manifest's own frame.
 
-    The same three refusals `fetch.py` applies at fetch time, applied again at
-    admission: the manifest's width/height are the frame every `bbox` is stated
+    The manifest's width/height are the frame every `bbox` is stated
     in, and a page that no longer decodes to them, or that carries an EXIF
     display rotation, would put every box on it in the wrong frame. There is no
     switch to skip this: a ledger built with the check off would be
@@ -359,7 +356,7 @@ def _decode_page(body: bytes, *, width: int, height: int) -> None:
 def _page_image_path(set_root: Path, image_rel: Any, page_id: str) -> Path:
     """The manifest's `image` resolved inside the set, or a named refusal.
 
-    `plan.py`'s segment rule applied to a manifest field: an absolute path, a
+    `record_url.py`'s segment rule applied to a manifest field: an absolute path, a
     `..` or control-character segment, or a resolved path that leaves the set
     root is refused rather than read. Without this a crafted or damaged manifest
     makes admission hash a file outside the set it was pointed at and record its
