@@ -3,18 +3,16 @@
 `pyproject.toml` carries no parquet reader: a 40 MB compiled runtime dependency
 to read 1.9 MB of metadata once. A one-shot
 scratch converter outside this repository reads the parquets with a throwaway
-`pyarrow` environment and calls `build_snapshot` here to write the sealed JSON this
-package actually depends on. Everything downstream — `plan.py`, `holdout.py`, and
-every later unit — reads only that file, never a parquet, so the whole build is
-reproducible from one gitignored, self-hashed artifact and no tracked module ever
-imports `pyarrow`.
+`pyarrow` environment and calls `build_snapshot` here to write the sealed JSON.
+`local_admission.py --row-snapshot` reads only that file, never a parquet, and no
+tracked module imports `pyarrow`.
 
 `recordgold-rows.v1` is deliberately thin: it carries exactly the eight parquet
 columns per row (`split, source, record_id, record_url, start_date, end_date,
 parish, text`), plus a `text_sha256` the converter computes and this module
 verifies, plus the source facts that let a reader tell which parquets produced it.
-Nothing here parses `record_url` — that is `plan.py`'s job, kept separate so a
-change to the URL grammar never touches the snapshot's own validity.
+Nothing here parses `record_url` — that is `record_url.py`'s job, kept separate so
+a change to the URL grammar never touches the snapshot's own validity.
 """
 
 from typing import Any
@@ -27,8 +25,7 @@ SCHEMA = "recordgold-rows.v1"
 CORPUS_ID = "recordgold"
 
 # The three splits the dataset card names. Closed: an unrecognised fourth split
-# in a future re-export must refuse rather than pass through into a fetch plan
-# that has no hold-out rule for it.
+# in a future re-export must refuse rather than pass through with no hold-out rule.
 SPLITS = frozenset({"train", "val", "test"})
 
 _ROW_FIELDS = frozenset(

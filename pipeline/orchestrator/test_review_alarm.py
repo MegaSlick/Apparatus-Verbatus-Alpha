@@ -1,10 +1,11 @@
 """A run holding more of its pages than its sealed review policy allows says so at its stop.
 
 The fixture's `page-review` scenario holds one of its two pages after the
-Recensor: a share of 1/2, far above the committed 1/50, so the run stops before
-export and its report opens with the systemic alarm. Under a policy sealed at
-exactly 1/2 the same holds are a person's to decide one by one, and no alarm
-is raised. A person's advance may pass the systemic stop, and the alarm goes
+Recensor: a share of 1/2, far above 1/50. The committed policy wants at least
+two held pages before it calls a share systemic, so these runs seal a policy of
+1/50 from one held page: the run stops before export and its report opens with
+the systemic alarm. Under the committed policy, or a policy sealed at exactly
+1/2, the same hold is a person's to decide, and no alarm is raised. A person's advance may pass the systemic stop, and the alarm goes
 with the run: it is said again at the advance, and the export carries it as a
 reason the terminal report names.
 """
@@ -50,22 +51,30 @@ def _orchestrate(root: Path, *extra: str) -> subprocess.CompletedProcess:
     return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
 
 
-def _review_config(tmp_path: Path, share: str) -> Path:
-    path = tmp_path / "review.toml"
-    path.write_text(f'[review]\nmax_held_page_share = "{share}"\n', encoding="utf-8")
+def _review_config(tmp_path: Path, share: str, minimum: int = 1) -> Path:
+    path = tmp_path / f"review-{share.replace('/', '-')}-{minimum}.toml"
+    path.write_text(
+        f'[review]\nmax_held_page_share = "{share}"\nmin_systemic_held_pages = {minimum}\n',
+        encoding="utf-8",
+    )
     return path
+
+
+def _alarming(tmp_path: Path) -> tuple[str, str]:
+    """The options sealing 1/50 from one held page, so the scenario's one hold sounds it."""
+    return ("--review-config", str(_review_config(tmp_path, "1/50")))
 
 
 def test_a_held_share_above_the_sealed_limit_stops_the_run_with_the_systemic_alarm(tmp_path):
     root = tmp_path / "runs"
-    result = _orchestrate(root)
+    result = _orchestrate(root, *_alarming(tmp_path))
     assert result.returncode == EXIT_HELD, result.stderr
     lines = result.stdout.splitlines()
     [stop] = [index for index, line in enumerate(lines) if HELD_RECENSOR_STOP in line]
     [line] = [line for line in lines if "systemic:" in line]
     # The alarm's counts are the tree's own: page 2 of the two reviewed pages.
     assert held_pages_after_review(RunTree(root, "r")) == ([2], 2)
-    assert line == alarm_line("r", [2], 2, load_review_policy())
+    assert line == alarm_line("r", [2], 2, load_review_policy(_alarming(tmp_path)[1]))
     assert line.startswith(ALARM)
     assert "more than the sealed limit of 1/50" in line and "(held pages: 2)" in line
     # The report opens with it, straight after the stop.
@@ -77,7 +86,7 @@ def test_the_stop_record_names_the_systemic_alarm_for_a_caller_without_the_trans
 ):
     """The pod route reads the alarm from here to send it to the phone."""
     stop = tmp_path / "stop.json"
-    result = _orchestrate(tmp_path / "runs", "--stop-record", str(stop))
+    result = _orchestrate(tmp_path / "runs", *_alarming(tmp_path), "--stop-record", str(stop))
     assert result.returncode == EXIT_HELD, result.stderr
     [line] = [line for line in result.stdout.splitlines() if "systemic:" in line]
     assert json.loads(stop.read_text(encoding="utf-8"))["systemic"] == line
@@ -173,6 +182,16 @@ def test_a_refusal_after_the_alarm_still_leaves_a_stop_record_carrying_it(tmp_pa
     }
 
 
+def test_one_held_page_under_the_committed_policy_raises_no_alarm(tmp_path):
+    """One held page is fewer than the committed minimum, though it is half the run."""
+    stop = tmp_path / "stop.json"
+    result = _orchestrate(tmp_path / "runs", "--stop-record", str(stop))
+    assert result.returncode == EXIT_HELD, result.stderr
+    assert "stopped at a held recensor, before the archetypus" in result.stdout
+    assert "systemic:" not in result.stdout
+    assert json.loads(stop.read_text(encoding="utf-8"))["systemic"] is None
+
+
 def test_a_held_share_at_the_sealed_limit_raises_no_alarm(tmp_path):
     stop = tmp_path / "stop.json"
     result = _orchestrate(
@@ -191,7 +210,7 @@ def test_a_held_share_at_the_sealed_limit_raises_no_alarm(tmp_path):
 def test_a_sealed_run_cannot_be_resumed_under_another_review_policy(tmp_path):
     """The limit is the run's: loosening it later cannot quiet the alarm."""
     root = tmp_path / "runs"
-    assert _orchestrate(root).returncode == EXIT_HELD
+    assert _orchestrate(root, *_alarming(tmp_path)).returncode == EXIT_HELD
     result = _orchestrate(root, "--review-config", str(_review_config(tmp_path, "1/2")))
     assert result.returncode not in (0, EXIT_HELD)
     assert "bound to different sealed_config_digests" in result.stderr
@@ -210,9 +229,9 @@ def _export_reasons(root: Path) -> list[str]:
 def test_an_advance_past_a_systemic_stop_keeps_the_alarm_in_the_report_and_export(tmp_path):
     """A person may pass a systemic share; the alarm is said again and the export carries it."""
     root = tmp_path / "runs"
-    assert _orchestrate(root).returncode == EXIT_HELD
+    assert _orchestrate(root, *_alarming(tmp_path)).returncode == EXIT_HELD
     advance_held_recensor(root, "r")
-    result = _orchestrate(root, "--from", "recensor", "--to", "armarium")
+    result = _orchestrate(root, *_alarming(tmp_path), "--from", "recensor", "--to", "armarium")
     assert result.returncode == EXIT_HELD, result.stderr
     reason = systemic_reason([2], 2, "1/50")
     lines = result.stdout.splitlines()

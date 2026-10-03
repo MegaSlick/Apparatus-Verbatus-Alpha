@@ -1,165 +1,23 @@
-"""The content-addressed cache and the never-re-fetch request ledger.
+"""Write a new file atomically, never over an existing one."""
 
-Resumable, never re-fetching, is two stores with different keys:
-
-  cache/<response-sha256>.jpg      the bytes themselves, addressed by their own
-                                    digest — two identifiers that return the same
-                                    bytes share one file, for free.
-  cache/requests/<request-key>.json  a marker that a given request has already
-                                    been *answered*, addressed by the request's
-                                    own inputs (`sha256(kind||identifier||region||
-                                    size||rotation||quality||format)`).
-
-The request-key store is the one `fetch.py` actually consults before issuing a
-network call: `load_request_record` returning non-`None` means "do not ask the
-server this question again." The response store is where the answer's bytes
-live; a request record and a response file are written only after a fetch has
-*fully* completed, so a run killed mid-body leaves neither — the request will be
-retried, not silently treated as answered: an interrupt loses at most one
-in-flight body.
-
-Both writes are atomic creates, never overwrites: `write_new_file` (via
-`common.durability.atomic_create`) hard-links a
-completed temp file onto its destination, which raises `FileExistsError`
-atomically if the destination is already there — the one race a sequential,
-single-connection fetcher still has to guard against is its own crash-and-resume,
-not concurrency, but "atomic" here means "survives being killed between the
-write and the rename," not "safe under concurrent writers."
-"""
-
-import json
 from pathlib import Path
-from typing import Any
 
-from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.durability import HardLinkUnsupported, atomic_create
 
 from . import CorpusRefusal
 
-CACHE_REFUSAL_REASONS = frozenset(
-    {
-        "malformed-digest",
-        "duplicate-request-record",
-        "no-hard-link-support",
-        "unreadable-request-record",
-    }
-)
-
 
 class Refusal(CorpusRefusal):
-    reasons = CACHE_REFUSAL_REASONS
-
-
-class CacheUnusable(Refusal):
-    """The cache root itself cannot hold the store — not one page's problem."""
-
-
-# The request-key formula covers every kind of
-# request this package issues, not only image fetches. `info.json` has no
-# region/size/rotation/quality/format of its own, so it fills those fields with
-# the fixed sentinel `"info"` rather than omitting them — one formula, one
-# function, every request kind keyed the same way.
-INFO_SENTINEL = "info"
-
-
-def compute_request_key(
-    *,
-    kind: str,
-    identifier: str,
-    region: str,
-    size: str,
-    rotation: str,
-    quality: str,
-    format: str,
-) -> str:
-    """`sha256` over the closed tuple that identifies one request, canonically."""
-    payload = {
-        "kind": kind,
-        "identifier": identifier,
-        "region": region,
-        "size": size,
-        "rotation": rotation,
-        "quality": quality,
-        "format": format,
-    }
-    return digest_bytes(canonical_bytes(payload))
-
-
-def _require_sha256(value: str, what: str) -> str:
-    if not is_sha256(value):
-        raise Refusal(f"malformed-digest: {what} {value!r} is not a lowercase sha256 hex digest")
-    return value
-
-
-def body_path(cache_root: Path, response_sha256: str) -> Path:
-    """Where a response's content-addressed bytes live, given their own digest."""
-    _require_sha256(response_sha256, "response digest")
-    return Path(cache_root) / f"{response_sha256}.jpg"
-
-
-def owner_path(cache_root: Path, response_sha256: str) -> Path:
-    """Where the first *verified* claim on a response digest is recorded.
-
-    Written only after a page has passed every check in `fetch.py:fetch_page`
-    (decode, dimensions, EXIF, region) — never from the raw request record, which
-    is written as soon as the bytes are down but before any of that verification
-    runs. `write_new_file` makes the first writer permanent: whichever identifier
-    claims a digest first, across any number of runs, owns it forever, regardless
-    of the order a later run happens to revisit identifiers in.
-    """
-    _require_sha256(response_sha256, "response digest")
-    return Path(cache_root) / "owners" / f"{response_sha256}.json"
-
-
-def request_record_path(cache_root: Path, request_key: str) -> Path:
-    """Where the never-re-fetch marker for one request lives."""
-    _require_sha256(request_key, "request key")
-    return Path(cache_root) / "requests" / f"{request_key}.json"
-
-
-def load_request_record(cache_root: Path, request_key: str) -> dict[str, Any] | None:
-    """The recorded answer to `request_key`, or `None` if it has never been asked.
-
-    Raises `CorpusRefusal` (`"unreadable-request-record"`) if the file exists but
-    is not readable JSON, or is JSON that is not an object — a request record
-    damaged by something outside this module's own writes (a half-finished
-    copy of a cache root, a restored backup, a hand-edited file) must not reach
-    a caller as a raw `JSONDecodeError`; `write_new_file` never leaves a partial
-    file at this path, so a damaged record here always came from outside a
-    completed run of this code.
-    """
-    path = request_record_path(cache_root, request_key)
-    if not path.exists():
-        return None
-    try:
-        record = json.loads(path.read_bytes())
-    except ValueError as error:
-        raise Refusal(
-            f"unreadable-request-record: {path} is not readable JSON ({error}); delete it "
-            "to force a re-fetch"
-        ) from error
-    if not isinstance(record, dict):
-        raise Refusal(
-            f"unreadable-request-record: {path} does not contain a JSON object; delete it "
-            "to force a re-fetch"
-        )
-    return record
+    reasons = frozenset({"no-hard-link-support"})
 
 
 def write_new_file(path: Path, data: bytes) -> bool:
     """Write `data` to `path` only if `path` does not already exist, atomically.
 
-    Returns `True` if this call created the file, `False` if it already existed
-    (in which case `data` was NOT written — for the content-addressed cache the
-    two are guaranteed identical because the path is a digest of the content, but
-    for a request record the existing file is the answer of record and this
-    function never overwrites it).
-
-    Raises `CacheUnusable` (`"no-hard-link-support"`) if the cache root's
-    filesystem refuses hard links outright (EPERM/EOPNOTSUPP/ENOSYS) — that is
-    a constraint on the cache root, not on this one file, and the caller should
-    let it propagate rather than treat it as one failed write. Any other
-    `OSError` (ENOSPC, EIO, ...) propagates unchanged.
+    Returns `True` if this call created the file and `False` if it already existed,
+    in which case `data` was not written. A filesystem that refuses hard links
+    outright raises `Refusal` (`no-hard-link-support`); any other `OSError`
+    propagates unchanged.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -167,38 +25,5 @@ def write_new_file(path: Path, data: bytes) -> bool:
     except FileExistsError:
         return False
     except HardLinkUnsupported as error:
-        raise CacheUnusable(f"no-hard-link-support: {error.strerror}") from error
+        raise Refusal(f"no-hard-link-support: {error.strerror}") from error
     return True
-
-
-def store_response_body(cache_root: Path, body: bytes) -> str:
-    """Store `body` content-addressed under `cache/<sha256>.jpg`; return its digest.
-
-    Idempotent: a second page whose response is byte-identical to an earlier
-    one's writes nothing new and returns the same digest — the mechanism that
-    makes `duplicate-page-bytes` detectable at all.
-    """
-    digest = digest_bytes(body)
-    path = body_path(cache_root, digest)
-    if not path.exists():
-        write_new_file(path, body)
-    return digest
-
-
-def write_request_record(cache_root: Path, request_key: str, record: dict[str, Any]) -> None:
-    """Record that `request_key` has been fully answered — atomically, once.
-
-    Call this only after a fetch has completed in full (the whole body read and,
-    for image bodies, stored via `store_response_body`); never on a request that
-    raised partway through. That ordering is what makes an interrupt mid-body
-    leave no request record: the write this function performs is the only one
-    that exists, and it never runs until there is a complete answer to record.
-    """
-    path = request_record_path(cache_root, request_key)
-    data = canonical_bytes(record)
-    if not write_new_file(path, data):
-        raise Refusal(
-            f"duplicate-request-record: {request_key!r} already has a recorded answer — "
-            "never re-fetch means never re-record either; the caller should have checked "
-            "load_request_record first"
-        )

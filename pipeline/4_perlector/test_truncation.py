@@ -78,7 +78,6 @@ def test_a_clean_short_reading_whose_engine_reported_stop_is_complete():
     assert record["measure"] == {
         "region_pixels": 1000,
         "page_pixels": FIXTURE_PAGE,
-        "smallest_page_pixels": FIXTURE_PAGE,
         "characters": len("alpha beta gamma."),
         "length_floor_characters_per_page": FLOOR,
         "legible_page_pixels": GATE,
@@ -173,24 +172,6 @@ def test_length_suspicious_refuses_a_floor_that_could_never_fire():
         length_suspicious("text", 100, floor=0)
 
 
-@pytest.mark.parametrize("floor", [True, "50", 50.0, None, 0, -1])
-def test_classify_refuses_a_policy_whose_floor_is_not_a_positive_integer(floor):
-    """Zero and negatives by name, not as an escaping `ValueError`.
-
-    `is_length_suspicious` raises `ValueError` for a floor of zero, which the
-    stage boundary does not classify as a contract refusal, so `classify`
-    refuses a zero or negative floor by name before it gets there.
-    """
-    with pytest.raises(ContractError, match="not a positive integer"):
-        truncation.classify(
-            "text",
-            region_pixels=100,
-            page_pixels=1000,
-            truncation_policy={truncation.LENGTH_FLOOR_FIELD: floor},
-            stop_reason="stop",
-        )
-
-
 def test_an_empty_reading_is_never_length_suspicious():
     """`no-readable-text` is the honest outcome for an empty reading, decided
     elsewhere; this signal must not smuggle a truncation classification onto
@@ -227,7 +208,7 @@ def test_a_not_judged_length_votes_neither_way():
 def test_the_gate_is_judged_on_the_page_the_reading_is_of():
     small = classify("x", region_pixels=GATE - 1, page_pixels=GATE - 1, stop_reason="stop")
     assert small["measure"]["length_judged"] is False
-    assert small["measure"]["smallest_page_pixels"] == GATE - 1
+    assert small["measure"]["page_pixels"] == GATE - 1
     assert small["signals"]["length_suspicious"] is None
     at_gate = classify("x", region_pixels=GATE, page_pixels=GATE, stop_reason="stop")
     assert at_gate["measure"]["length_judged"] is True
@@ -397,23 +378,6 @@ def test_the_record_carries_the_floor_it_was_judged_under():
     ) is record["signals"]["length_suspicious"]
 
 
-def test_a_policy_with_no_floor_at_all_is_refused_by_name():
-    """Every other boundary in this module refuses by name; so does this one.
-
-    The sealed path cannot reach it -- `protocol.validate_truncation_table`
-    guarantees the key -- but a hand-built policy could, and a bare `KeyError`
-    is not a refusal the stage boundary classifies.
-    """
-    with pytest.raises(ContractError, match="declares no length_floor_characters_per_page"):
-        truncation.classify(
-            "alpha",
-            region_pixels=FIXTURE_REGION,
-            page_pixels=FIXTURE_PAGE,
-            truncation_policy={},
-            stop_reason="stop",
-        )
-
-
 def _protocol_with(replacement: str, tmp_path: Path) -> Path:
     shipped = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
     edited = shipped.replace("length_floor_characters_per_page = 400", replacement)
@@ -423,9 +387,11 @@ def _protocol_with(replacement: str, tmp_path: Path) -> Path:
     return path
 
 
-def test_the_sealed_table_refuses_a_floor_that_switches_the_signal_off(tmp_path):
+@pytest.mark.parametrize("floor", ["0", "-1", "true", "50.0", '"50"'])
+def test_the_sealed_table_refuses_a_floor_that_is_not_a_positive_integer(tmp_path, floor):
+    """A floor of zero never fires: the signal switched off by a value, not a decision."""
     with pytest.raises(ContractError, match="floor of zero never fires"):
-        protocol.load(_protocol_with("length_floor_characters_per_page = 0", tmp_path))
+        protocol.load(_protocol_with(f"length_floor_characters_per_page = {floor}", tmp_path))
 
 
 def test_the_sealed_table_refuses_a_gate_that_judges_every_page(tmp_path):

@@ -43,9 +43,9 @@ from common.contracts.identities import (
     physical_act_id,
     physical_page_id,
 )
-from operations.spike_perlector.normalization import GRAPHEMIC_V1, character_units
 
 from . import CorpusRefusal
+from .normalization import GRAPHEMIC_V1, character_units
 
 SCHEMA = "reference-page-truth.v1"
 CORPUS_ID = "recordgold"
@@ -152,8 +152,8 @@ def build_reference_page(
     `records` is the caller's own per-act facts for this page: each entry is
     `{"record_id": str, "region": {x,y,w,h}, "split": str, "text": str,
     "text_sha256": str}`, in RecordGold's page
-    pixel space (the sealed raster's own coordinate frame — `fetch.py`'s
-    dimension check is what makes that frame trustworthy). `physical_act_id`
+    pixel space (the stored page's own coordinate frame, whose dimensions the
+    caller has checked). `physical_act_id`
     is minted here, from the physical page identity and each record's own
     `record_id`, never accepted as caller-supplied: a reference record cannot
     silently carry a forged join key.
@@ -387,7 +387,7 @@ def validate_reference_page(reference: Any) -> dict[str, Any]:
         if not isinstance(text, str) or not text:
             raise Refusal(f"empty-text: reference act {record_id!r} carries no text")
         # Non-empty ink that normalises to nothing is not scoreable: the scorer
-        # refuses a blank checked reference (`spike_perlector/scoring.py`) with a
+        # refuses a blank checked reference (`scoring.py`) with a
         # `MeasurementRefusal` that names neither record nor page and that no
         # caller in this package catches. `local_admission.py` refuses it at
         # admission, but the evaluate command line reads reference pages from a

@@ -40,8 +40,7 @@ class Page(TypedDict):
 # the three acts are visibly and byte-wise distinguishable from each other
 # and from the page background. Bounds sit inside the page with margin and
 # never overlap. Page 2's single act is the geometric continuation of page
-# 1's second act — same act ordinal, a fresh rectangle on the next page;
-# linking the two into one logical act is a different unit's job.
+# 1's second act — same act ordinal, a fresh rectangle on the next page.
 _BACKGROUND = 230
 
 PAGES: tuple[Page, ...] = (
@@ -77,8 +76,8 @@ PAGES: tuple[Page, ...] = (
 )
 
 # A genuinely ink-free page is admitted only for the named integration
-# scenarios. The two-page base fixture remains the input for every pre-existing
-# scenario, while this extra page lets the real downstream stage programs prove
+# scenarios. The two-page base fixture is the input for every other
+# scenario; this extra page lets the real downstream stage programs prove
 # that a Designator-minted page fallback is witnessed and read
 # (`ink-free-page`), and that it holds rather than reporting a blank when no
 # witness response is declared for it at all (`ink-free-page-unwitnessed`).
@@ -93,32 +92,6 @@ SCENARIO_PAGES: tuple[Page, ...] = (
 )
 
 ALL_PAGES: tuple[Page, ...] = PAGES + SCENARIO_PAGES
-
-# An act that runs across a page break with nothing declaring it: page 1's
-# second act reaches the bottom edge and page 2 opens, unanchored, at the top
-# edge in the same ink. Never part of the committed fixture, whose declaration
-# is sealed into every fixture run's config digest; tests submit these pages as
-# a real submission.
-PAGE_BREAK_PAGES: tuple[Page, ...] = (
-    {
-        "ordinal": 1,
-        "width": 200,
-        "height": 260,
-        "acts": (
-            {"ordinal": 0, "bounds": {"x": 20, "y": 20, "w": 160, "h": 80}, "ink": 40},
-            {"ordinal": 1, "bounds": {"x": 20, "y": 120, "w": 160, "h": 140}, "ink": 90},
-        ),
-    },
-    {
-        "ordinal": 2,
-        "width": 200,
-        "height": 260,
-        "acts": (
-            {"ordinal": 1, "bounds": {"x": 20, "y": 0, "w": 160, "h": 60}, "ink": 90},
-            {"ordinal": 2, "bounds": {"x": 20, "y": 100, "w": 160, "h": 80}, "ink": 40},
-        ),
-    },
-)
 
 
 def _render_rows(width: int, height: int, acts: tuple[Act, ...]) -> list[bytearray]:

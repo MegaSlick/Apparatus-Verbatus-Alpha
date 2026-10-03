@@ -56,13 +56,6 @@ from common.contracts.errors import ContractError
 from common.contracts.stages import ARCHETYPUS
 from common.runtree.store import RunTree
 from common.stage import verify_final_seal
-from operations.spike_perlector.models import OutputStatus
-from operations.spike_perlector.normalization import (
-    GRAPHEMIC_V1,
-    PROFILES,
-    character_units,
-    word_units,
-)
 
 from . import CorpusRefusal
 from .cache import write_new_file
@@ -75,7 +68,14 @@ from .compare import (
     validate_comparison,
 )
 from .local_admission import load_local_admission_ledger, validate_local_admission_ledger
+from .normalization import (
+    GRAPHEMIC_V1,
+    PROFILES,
+    character_units,
+    word_units,
+)
 from .reference import validate_reference_page
+from .scoring import OutputStatus
 
 DESCRIPTION = (
     "Score what a sealed run actually exported against reference truth, denominator whole."

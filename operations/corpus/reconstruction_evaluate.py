@@ -40,9 +40,6 @@ from common.contracts.errors import ContractError
 from common.reading_annotations import read_doubt_marks
 from common.runtree.store import RunTree
 from common.stage import verify_final_seal
-from operations.spike_perlector.models import OutputStatus
-from operations.spike_perlector.normalization import GRAPHEMIC_V1
-from operations.spike_perlector.scoring import score_response
 
 from . import CorpusRefusal
 from .cache import write_new_file
@@ -53,6 +50,8 @@ from .compare import (
     load_pipeline_reading_acts,
 )
 from .evaluate import _established_text_hashes, hypotheses_from_export, load_reference_pages
+from .normalization import GRAPHEMIC_V1
+from .scoring import OutputStatus, score_response
 
 SCHEMA = "recordgold-reconstruction-evaluation.v2"
 # The Armarium's member for the Coniector's rows (`pipeline/7_armarium/coniector_layer.py`).

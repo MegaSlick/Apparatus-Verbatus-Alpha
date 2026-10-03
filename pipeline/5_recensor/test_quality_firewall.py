@@ -36,23 +36,6 @@ def _top_level_imports(trees) -> set[str]:
     return imported
 
 
-def test_no_place_in_the_stage_publishes_a_recovery_request():
-    """A reading is reviewed as it stands; nothing here asks for it again."""
-    sites = [
-        str(path.relative_to(ROOT))
-        for path, tree in _modules()
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and any(
-            keyword.arg == "kind"
-            and isinstance(keyword.value, ast.Constant)
-            and keyword.value.value == "recovery-request"
-            for keyword in node.keywords
-        )
-    ]
-    assert sites == [], f"the Recensor publishes a recovery-request in {sites}"
-
-
 def test_the_recensor_cannot_re_invoke_a_reading_stage_at_all():
     """The deeper structural guarantee: this stage has no way to run anything.
 

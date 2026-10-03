@@ -23,6 +23,7 @@ from armarium_export import (
     ArmariumProjection,
     _act_json_records,
     _jsonl_act_records,
+    _jsonl_literals,
     _not_measured_status,
     _page_ledger_category,
     _terminal_ledger,
@@ -38,16 +39,14 @@ from armarium_export import (
     edge_hold_pages_from_rows,
     verify_delivered_bundle,
     verify_export_bundle,
-    verify_projection_identity,
 )
-from display import DISPLAY_CONVENTION, render_display
 from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats
 from common.contracts.approval import real_ingress_record
-from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
+from common.contracts.canonical import canonical_bytes, canonical_text, digest_bytes, self_hash
 from common.contracts.errors import ApprovalRefusal, SchemaRefusal
-from common.contracts.outcomes import ArmariumCategory
+from common.contracts.outcomes import PAGE_READ_SILENT_PAGE_REASON, ArmariumCategory
 from common.contracts.outcomes import run_aggregate as _run_aggregate
 from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import validate as validate_uncertainty
@@ -239,7 +238,7 @@ def _basis_for_acts(acts, *, sealed_pages=1):
     return basis
 
 
-def _projection(*, salvage_items=()) -> ArmariumProjection:
+def _projection() -> ArmariumProjection:
     page = _source_bytes("1_exemplar/blobs/sha256/page")
     crop = _source_bytes("2_designator/blobs/sha256/crop")
     region = {
@@ -269,7 +268,7 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                 "act_key": "p1:1",
                 "category": "delivered",
                 "reading": "first reading",
-                "canonical_clean_text": "Cǣsar d’Amours",
+                "canonical_clean_text": "Cǣsar d’Exemple",
                 "uncertainty": {
                     "lectio_kind": "page-read",
                     "uncertain_spans": [],
@@ -278,7 +277,6 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
                     "assessment": _NOT_ASSESSED,
                 },
                 "text_status": "established",
-                "transcription_annotations": [],
                 "provenance": {"chair": "perlector"},
                 "source_regions": [region],
                 "reason": None,
@@ -350,7 +348,6 @@ def _projection(*, salvage_items=()) -> ArmariumProjection:
             "continuation_flags": {},
             "page_witness_chairs": ["attestator_1"],
         },
-        salvage_items=tuple(salvage_items),
         ink_map_pages=(_mapped_page(),),
         page_accounting=_page_accounting(1),
     )
@@ -421,20 +418,9 @@ def _two_region_projection() -> ArmariumProjection:
 
 def _formats(*, embed_pixels: bool) -> ArmariumFormats:
     return ArmariumFormats(
-        ("text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"),
+        ("text-bundle", "acts-database", "jsonl", "review-items"),
         embed_pixels,
     )
-
-
-def _salvage_item(content: str) -> dict:
-    region = dict(_projection().acts[0]["source_regions"][0])
-    region["region_id"] = "salvage-region-1"
-    return {
-        "salvage_id": "salvage-1",
-        "content": content,
-        "source_regions": [region],
-        "provenance": {"collection": "separate tier"},
-    }
 
 
 def test_act_key_sort_key_is_reading_order_past_ten_pages_and_ten_readings():
@@ -496,19 +482,122 @@ def test_every_literal_projection_has_the_same_clean_text_and_hash(tmp_path):
         assert archive.namelist()[0] == EXPORT_MANIFEST_NAME
         assert not [name for name in archive.namelist() if name.startswith("pixels/")]
         text = archive.read(TEXT_REGISTER).decode("utf-8")
-        assert "Cǣsar d’Amours" in text
-        assert f"display_convention: {DISPLAY_CONVENTION}" in text
-        # Twice: the canonical field, and the rendering beside it, which with no
-        # uncertainty layer in the Archetypus record is the same text unchanged.
-        assert text.count(json.dumps("Cǣsar d’Amours", ensure_ascii=False)) == 2
+        assert "Cǣsar d’Exemple" in text
+        assert text.count(json.dumps("Cǣsar d’Exemple", ensure_ascii=False)) == 1
 
     manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
     assert manifest["claims"]["status"] == "partial"
-    assert manifest["claims"]["partial_reasons"][0].startswith("act act-2 is held-for-review")
+    # One line for the one unresolved fact, keyed by the act's key, with its reason.
+    assert manifest["claims"]["partial_reasons"] == [
+        "act p1:2 is held-for-review: the review remains unresolved"
+    ]
     assert manifest["claims"]["pixels"]["resolution_claim"].startswith("reference validity")
-    assert verify_projection_identity(bundle.data, tmp_path / "identity") == {
-        "act-1": "Cǣsar d’Amours"
-    }
+    assert _verified_literals(bundle.data, tmp_path / "identity") == {"act-1": "Cǣsar d’Exemple"}
+
+
+def test_a_partial_runs_text_bundle_says_it_is_partial_and_names_what_it_lacks(tmp_path):
+    """A reader of readings.txt alone sees the run's status and every reading not
+    delivered on its pages, text-free, rather than a file that reads as complete."""
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    lines = _members(bundle.data)[TEXT_REGISTER].decode("utf-8").split("\n")
+    assert lines[1:3] == [
+        "run-status: partial (EXPORT_MANIFEST.json claims.partial_reasons says why)",
+        "folder-readings: 1 delivered, 1 not delivered",
+    ]
+    stub = lines.index("## NOT DELIVERED p1:2 (act-2)")
+    assert lines[stub : stub + 4] == [
+        "## NOT DELIVERED p1:2 (act-2)",
+        "not-delivered: act held-for-review",
+        'not-delivered-reason: "the review remains unresolved"',
+        "",
+    ]
+
+
+def test_a_partial_runs_acts_database_says_whose_run_it_is_and_that_it_is_partial(tmp_path):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    verify_export_bundle(bundle.data, tmp_path / "clean")
+    with sqlite3.connect(tmp_path / "clean" / "acts.sqlite") as connection:
+        metadata = dict(connection.execute("SELECT key, value FROM export_metadata"))
+    assert metadata["run_status"] == "partial"
+    assert json.loads(metadata["partial_reasons"]) == bundle.manifest["claims"]["partial_reasons"]
+    assert json.loads(metadata["run"]) == bundle.manifest["run"]
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("run_status", "complete"),
+        ("partial_reasons", "[]"),
+        ("run", '{"fixture_id":"another"}'),
+    ],
+)
+def test_an_acts_database_that_misstates_its_run_is_refused(tmp_path, key, value):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    database = tmp_path / "tampered.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE export_metadata SET value = ? WHERE key = ?", (value, key))
+    members["acts.sqlite"] = database.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+    with pytest.raises(SchemaRefusal, match="does not name the package's run"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+
+
+def _edited_text_bundle(data: bytes, edit) -> bytes:
+    members = _members(data)
+    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
+    edit(lines)
+    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
+    _refresh_manifest_member(members, TEXT_REGISTER)
+    return _zip_bytes(members)
+
+
+def _stub_first(lines: list[str]) -> None:
+    """The NOT DELIVERED section moved ahead of the delivered act's, content intact."""
+    stub = lines.index("## NOT DELIVERED p1:2 (act-2)")
+    section = lines[stub : stub + 4]
+    del lines[stub : stub + 4]
+    lines[4:4] = section
+
+
+def _drop_stub(lines: list[str]) -> None:
+    stub = lines.index("## NOT DELIVERED p1:2 (act-2)")
+    del lines[stub : stub + 4]
+
+
+@pytest.mark.parametrize(
+    "edit, refusal",
+    [
+        (
+            lambda lines: lines.__setitem__(1, "run-status: complete"),
+            "is not exactly what this build writes",
+        ),
+        (
+            lambda lines: lines.__setitem__(2, "folder-readings: 1 delivered, 0 not delivered"),
+            "is not exactly what this build writes",
+        ),
+        (_drop_stub, "is not exactly what this build writes"),
+        (lambda lines: lines.insert(4, "a line no writer wrote"), "is not exactly what"),
+        (
+            lambda lines: lines.__setitem__(0, "# Armarium text bundle — source folder: other"),
+            "is not exactly what",
+        ),
+        (_stub_first, "is not exactly what"),
+    ],
+    ids=[
+        "status-made-complete",
+        "count-edited",
+        "stub-dropped",
+        "free-line-inserted",
+        "title-edited",
+        "section-reordered",
+    ],
+)
+def test_a_text_bundle_that_hides_a_partial_run_is_refused(tmp_path, edit, refusal):
+    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
+    with pytest.raises(SchemaRefusal, match=refusal):
+        verify_export_bundle(_edited_text_bundle(bundle.data, edit), tmp_path / "clean")
 
 
 def _otherwise_complete(**fields) -> ArmariumProjection:
@@ -579,7 +668,7 @@ def test_a_required_claim_moves_the_manifest_schema_identity(tmp_path):
         ).data
     )
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    assert manifest["schema"] == "armarium-export-manifest.v11"
+    assert manifest["schema"] == "armarium-export-manifest.v12"
 
     for stale in (
         "armarium-export-manifest.v2",
@@ -805,7 +894,7 @@ def test_a_flagged_page_with_no_re_measurement_cannot_reach_an_export():
 
 
 def test_manifest_uncertainty_status_reflects_no_literal_format_carriage(tmp_path):
-    formats = ArmariumFormats(("review-items", "salvage-tier"), embed_pixels=False)
+    formats = ArmariumFormats(("review-items",), embed_pixels=False)
     bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
     manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
 
@@ -817,7 +906,7 @@ def test_manifest_uncertainty_status_reflects_no_literal_format_carriage(tmp_pat
 
 
 def test_manifest_refuses_available_uncertainty_with_no_literal_carrier(tmp_path):
-    formats = ArmariumFormats(("review-items", "salvage-tier"), embed_pixels=False)
+    formats = ArmariumFormats(("review-items",), embed_pixels=False)
     bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
     members = _members(bundle.data)
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
@@ -828,7 +917,7 @@ def test_manifest_refuses_available_uncertainty_with_no_literal_carrier(tmp_path
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
-def test_literal_display_markers_do_not_refuse_or_change_an_established_text(tmp_path):
+def test_markup_like_characters_in_a_literal_do_not_refuse_or_change_it(tmp_path):
     projection = _projection()
     literal = r"Act ⟨literal⟩, gap glyphs ⟦not markup⟧, and a \\ path"
     delivered = {**projection.acts[0], "canonical_clean_text": literal}
@@ -838,7 +927,7 @@ def test_literal_display_markers_do_not_refuse_or_change_an_established_text(tmp
         _source_bytes,
     )
 
-    assert verify_projection_identity(bundle.data, tmp_path) == {"act-1": literal}
+    assert _verified_literals(bundle.data, tmp_path) == {"act-1": literal}
 
 
 def test_an_act_missing_the_canonical_text_field_entirely_is_refused(tmp_path):
@@ -898,7 +987,7 @@ def test_a_unicode_line_separator_in_a_reading_does_not_stop_the_whole_export(
         _source_bytes,
     )
 
-    assert verify_projection_identity(bundle.data, tmp_path / name) == {"act-1": literal}
+    assert _verified_literals(bundle.data, tmp_path / name) == {"act-1": literal}
 
 
 def test_compare_literal_projections_refuses_an_unhandled_literal_format(tmp_path, monkeypatch):
@@ -937,7 +1026,7 @@ def test_projection_identity_refuses_a_self_consistent_package_with_one_drifted_
     tampered = _zip_bytes(members)
     verify_export_bundle(tampered, tmp_path / "clean")
     with pytest.raises(SchemaRefusal, match="projection differs"):
-        verify_projection_identity(tampered, tmp_path / "identity")
+        verify_delivered_bundle(tampered, tmp_path / "identity")
 
 
 def test_projection_identity_refuses_a_self_consistent_package_with_drifted_uncertainty(tmp_path):
@@ -974,7 +1063,7 @@ def test_projection_identity_refuses_a_self_consistent_package_with_drifted_unce
     tampered = _zip_bytes(members)
     verify_export_bundle(tampered, tmp_path / "clean")
     with pytest.raises(SchemaRefusal, match="projection differs"):
-        verify_projection_identity(tampered, tmp_path / "identity")
+        verify_delivered_bundle(tampered, tmp_path / "identity")
 
 
 def test_text_bundle_refuses_two_uncertainty_lines_for_one_literal(tmp_path):
@@ -988,7 +1077,7 @@ def test_text_bundle_refuses_two_uncertainty_lines_for_one_literal(tmp_path):
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="more than one uncertainty layer"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 def test_text_bundle_refuses_a_literal_section_with_no_uncertainty_layer(tmp_path):
@@ -1002,7 +1091,7 @@ def test_text_bundle_refuses_a_literal_section_with_no_uncertainty_layer(tmp_pat
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="literal with no uncertainty layer"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(tmp_path):
@@ -1012,12 +1101,12 @@ def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(
     then declared a *second* `canonical_clean_text:` recorded the new literal
     beside the first literal's layer -- offsets into a text this act no longer
     carries -- and every remaining check passed: the second literal has its own
-    valid hash line and its own display that strips back to it. Two or more
+    valid hash line. Two or more
     literal formats show the drift as a projection-identity mismatch, but a
     package may legally select the text bundle as its one literal format, and
     there this section is the whole reading of the act.
     """
-    formats = ArmariumFormats(("text-bundle", "review-items", "salvage-tier"), False)
+    formats = ArmariumFormats(("text-bundle", "review-items"), False)
     original = _projection()
     literal = original.acts[0]["canonical_clean_text"]
     delivered = {
@@ -1051,7 +1140,6 @@ def test_text_bundle_refuses_a_second_literal_that_would_orphan_its_uncertainty(
         "canonical_clean_text:",
         json.dumps(replacement, ensure_ascii=False),
     ]
-    lines[lines.index("display:") + 1] = json.dumps(render_display(replacement), ensure_ascii=False)
     members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
     _refresh_manifest_member(members, TEXT_REGISTER)
 
@@ -1073,7 +1161,7 @@ def test_text_bundle_refuses_an_uncertainty_line_before_its_literal(tmp_path):
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="has no literal to anchor to"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal(tmp_path):
@@ -1104,7 +1192,7 @@ def test_text_bundle_refuses_uncertainty_valid_only_for_a_different_acts_literal
     _refresh_manifest_member(members, TEXT_REGISTER)
 
     with pytest.raises(SchemaRefusal, match="does not anchor to its own act's literal"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 # Ten thousand levels of nesting around a 4,301-digit integer. CPython 3.12
@@ -1149,8 +1237,8 @@ def test_a_deeply_nested_retained_reference_is_refused_by_name_not_a_recursion_e
     dict/list/tuple value, not only 'evidence') must still be refused by name
     rather than reaching callers as a bare `RecursionError`. Testing the
     shared `_verify_retained_references_bounded` wrapper directly, once,
-    covers all six call sites that use it (acts JSONL, acts database,
-    review-items JSONL, salvage-tier JSONL, act-citation evidence, and
+    covers all five call sites that use it (acts JSONL, acts database,
+    review-items JSONL, act-citation evidence, and
     `_export_bundle`'s sources.json check)."""
     nested: object = "leaf"
     for _ in range(5000):
@@ -1163,8 +1251,8 @@ def test_jsonl_uncertainty_status_may_not_contradict_the_layer_beside_it(tmp_pat
     """The declaration a recipient reads is checked against the payload it describes.
 
     Cross-format identity compares layer to layer; it never reads
-    `uncertainty_status`, so before this guard a delivered JSONL row could carry a
-    valid canonical layer while telling every reader of that row there was none.
+    `uncertainty_status`, so without this check a delivered JSONL row could carry
+    a valid canonical layer while telling every reader of that row there was none.
     """
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
@@ -1203,7 +1291,7 @@ def test_a_single_literal_format_package_still_reads_back_its_uncertainty(tmp_pa
     verified: the same defect `verify_delivered_bundle` exists to refuse for the
     one text.
     """
-    formats = ArmariumFormats(("jsonl", "review-items", "salvage-tier"), False)
+    formats = ArmariumFormats(("jsonl", "review-items"), False)
     bundle = build_armarium_bundle(_projection(), formats, _source_bytes)
     members = _members(bundle.data)
     records = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
@@ -1461,7 +1549,7 @@ def test_a_full_text_index_repointed_at_a_decoy_content_table_is_refused(tmp_pat
             """
             CREATE TABLE decoy(rowid INTEGER PRIMARY KEY, derived_search_text TEXT);
             INSERT INTO decoy(rowid, derived_search_text)
-                VALUES (1, 'caesar damours and fabricated terms');
+                VALUES (1, 'caesar dexemple and fabricated terms');
             DROP TABLE acts_fts;
             CREATE VIRTUAL TABLE acts_fts USING fts5(
                 derived_search_text,
@@ -1733,7 +1821,6 @@ def test_unselected_format_members_cannot_hide_inside_a_self_consistent_bundle(t
     # mismatch a single selected literal format now produces.
     manifest["canonical_text"]["identity_verified_across"] = []
     manifest["claims"]["uncertainty"]["carried_by"] = ["jsonl"]
-    manifest["claims"]["transcription_annotations"]["carried_by"] = ["jsonl"]
     manifest["self_hash"] = self_hash(manifest)
     members[EXPORT_MANIFEST_NAME] = canonical_bytes(manifest)
 
@@ -2009,7 +2096,6 @@ def test_text_bundle_keeps_every_cited_source_folder_when_no_act_is_delivered(tm
             canonical_clean_text=None,
             uncertainty=None,
             text_status=None,
-            transcription_annotations=None,
             provenance=None,
             source_regions=[],
         )
@@ -2070,7 +2156,6 @@ def test_source_root_and_a_named_source_root_folder_cannot_collide(tmp_path):
             "canonical_clean_text": None,
             "uncertainty": None,
             "text_status": None,
-            "transcription_annotations": None,
             "provenance": None,
             "source_regions": [],
         }
@@ -2290,7 +2375,7 @@ def test_database_keeps_literal_and_derived_search_layers_separate(tmp_path):
     finally:
         connection.close()
 
-    assert literal == "Cǣsar d’Amours"
+    assert literal == "Cǣsar d’Exemple"
     assert literal_hash == canonical_text_sha256(literal)
     assert derived == search_fold(literal)
     assert revision == TEXTNORM_REVISION
@@ -2388,118 +2473,6 @@ def test_embedded_page_and_crop_pixels_open_on_a_clean_machine(tmp_path):
     assert manifest["claims"]["pixels"]["embedded"] is True
 
 
-def test_salvage_stays_out_of_every_act_projection(tmp_path):
-    salvage_content = "marginal material, not an established act"
-    projection = _projection(salvage_items=(_salvage_item(salvage_content),))
-    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
-    with ZipFile(BytesIO(bundle.data)) as archive:
-        assert salvage_content in archive.read("salvage/items.jsonl").decode("utf-8")
-        assert salvage_content not in archive.read("acts.jsonl").decode("utf-8")
-        assert salvage_content not in archive.read(TEXT_REGISTER).decode("utf-8")
-        assert salvage_content.encode("utf-8") not in archive.read("acts.sqlite")
-
-    leaked = replace(
-        projection,
-        salvage_items=(
-            {
-                **_salvage_item(salvage_content),
-                "act_id": "act-1",
-            },
-        ),
-    )
-    with pytest.raises(SchemaRefusal, match="acts namespace"):
-        build_armarium_bundle(leaked, _formats(embed_pixels=False), _source_bytes)
-
-    region_leak = replace(
-        projection,
-        salvage_items=(
-            {
-                **_salvage_item(salvage_content),
-                "source_regions": [
-                    {
-                        **_salvage_item(salvage_content)["source_regions"][0],
-                        "canonical_clean_text": "not-an-act",
-                    }
-                ],
-            },
-        ),
-    )
-    with pytest.raises(SchemaRefusal, match="salvage-tier .*reaches into the acts namespace"):
-        build_armarium_bundle(region_leak, _formats(embed_pixels=False), _source_bytes)
-
-    false_page_binding = replace(
-        projection,
-        salvage_items=(
-            {
-                **_salvage_item(salvage_content),
-                "source_regions": [
-                    {
-                        **_salvage_item(salvage_content)["source_regions"][0],
-                        "declared_path": "other-folio.png",
-                    }
-                ],
-            },
-        ),
-    )
-    with pytest.raises(SchemaRefusal, match="disagrees with its cited source page"):
-        build_armarium_bundle(false_page_binding, _formats(embed_pixels=False), _source_bytes)
-
-    nested_provenance_leak = replace(
-        projection,
-        salvage_items=(
-            {
-                **_salvage_item(salvage_content),
-                "provenance": {
-                    "collection": "separate tier",
-                    "act_id": "act-1",
-                    "canonical_clean_text": "purported act text",
-                },
-            },
-        ),
-    )
-    with pytest.raises(SchemaRefusal, match="salvage-tier item reaches into the acts namespace"):
-        build_armarium_bundle(nested_provenance_leak, _formats(embed_pixels=False), _source_bytes)
-
-
-def test_nonempty_salvage_inventory_requires_the_salvage_tier_format():
-    projection = _projection(salvage_items=(_salvage_item("marginal material"),))
-    formats = ArmariumFormats(
-        ("text-bundle", "acts-database", "jsonl", "review-items"),
-        False,
-    )
-
-    with pytest.raises(SchemaRefusal, match="non-empty sealed salvage inventory requires"):
-        build_armarium_bundle(projection, formats, _source_bytes)
-
-
-def test_salvage_requires_cited_ink_and_collection_provenance():
-    content = "marginal material, not an established act"
-    missing_regions = {**_salvage_item(content), "source_regions": []}
-    missing_provenance = {**_salvage_item(content), "provenance": {}}
-    for item, message in (
-        (missing_regions, "source-region provenance"),
-        (missing_provenance, "collection provenance"),
-    ):
-        with pytest.raises(SchemaRefusal, match=message):
-            build_armarium_bundle(
-                _projection(salvage_items=(item,)), _formats(embed_pixels=False), _source_bytes
-            )
-
-
-def test_missing_sealed_salvage_inventory_is_visible_not_an_invented_zero(tmp_path):
-    bundle = build_armarium_bundle(
-        replace(_projection(), salvage_items=None), _formats(embed_pixels=False), _source_bytes
-    )
-    manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
-    assert manifest["claims"]["salvage"] == {
-        "namespace": "salvage",
-        "status": "not-produced-no-sealed-salvage-inventory",
-        "count": None,
-        "reason": "this run has no sealed salvage inventory to account for",
-        "promotion": "recorded approval then pipeline re-entry; never export-time act promotion",
-    }
-
-
 def test_bundle_bytes_are_deterministic_for_the_same_sealed_projection():
     first = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     second = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
@@ -2533,12 +2506,14 @@ def test_the_terminal_ledger_partitions_sources_pages_and_acts_totally(tmp_path)
         "act:act-2": "held-for-review",
     }
     assert ledger["status"] == "partial"
-    assert ledger["unresolved_reasons"][0].startswith("act act-2 is held-for-review")
+    assert ledger["unresolved_reasons"] == [
+        "act p1:2 is held-for-review: the review remains unresolved"
+    ]
     assert "one unit per page or frame" in ledger["granularity_limit"]
 
 
 def test_page_ledger_category_inherits_confirmed_blank_and_excluded_when_every_act_agrees():
-    """The two page-category branches spec 11 test 1 names besides delivered/held.
+    """The two page categories a page inherits besides delivered and held.
 
     Driven against the pure function because nothing upstream emits either outcome
     yet, so a full-projection fixture would be synthetic in exactly the same way this
@@ -2586,7 +2561,6 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
             "canonical_clean_text": None,
             "uncertainty": None,
             "text_status": None,
-            "transcription_annotations": None,
             "provenance": None,
             "source_regions": [],
             "reason": None,
@@ -2624,10 +2598,59 @@ def test_a_held_page_makes_the_bundle_partial_where_the_run_aggregate_reconciles
     )
 
     assert bundle.manifest["claims"]["status"] == "partial"
-    assert [
-        reason
-        for reason in bundle.manifest["claims"]["partial_reasons"]
-        if reason.startswith("page 1 is held-for-review")
+    assert bundle.manifest["claims"]["partial_reasons"] == [
+        "page 1 delivered no act; its acts are confirmed-blank, excluded-with-approval"
+    ]
+    text = _members(bundle.data)[TEXT_REGISTER].decode("utf-8")
+    assert "## NOT DELIVERED page 1\nnot-delivered: page held-for-review\n" in text
+    assert (
+        "## NOT DELIVERED p1:2 (act-2)\nnot-delivered: act excluded-with-approval\n"
+        'not-delivered-reason: null\nnot-delivered-approval: "approvals/exclusion-1"\n'
+    ) in text
+    # Another fact about the same page (a person's clearance of it) does not
+    # stand in for this one: each fact is its own string, named once.
+    cleared = run_aggregate(
+        {
+            "p1:1": ArmariumCategory.CONFIRMED_BLANK,
+            "p1:2": ArmariumCategory.EXCLUDED_WITH_APPROVAL,
+        },
+        original.aggregate_basis["coverage_records"],
+        {1: dict(original.pages[0])},
+        unaddressed_chairs=[],
+        act_pages=original.aggregate_basis["act_pages"],
+        act_text_status={},
+        review_clearances=[
+            {
+                "scope": "page",
+                "subject": 1,
+                "page": 1,
+                "decision": "no-missed-act",
+                "cleared": ["merged-detection"],
+            }
+        ],
+    )
+    [clearance] = cleared["reasons"]
+    assert clearance.startswith("page 1 ")
+    ledger = _terminal_ledger(
+        [
+            {
+                "act_id": act["act_id"],
+                "act_key": act["act_key"],
+                "category": act["category"],
+                "reason": act["reason"],
+                "text_status": None,
+            }
+            for act in acts
+        ],
+        [dict(original.pages[0])],
+        original.aggregate_basis["act_pages"],
+        cleared,
+        (),
+        [],
+    )
+    assert ledger["unresolved_reasons"] == [
+        clearance,
+        "page 1 delivered no act; its acts are confirmed-blank, excluded-with-approval",
     ]
     # And the clean-machine verifier recomputes the same disagreement rather than
     # reading the reassuring half of it out of the manifest.
@@ -2698,36 +2721,29 @@ def test_a_refused_source_and_a_silent_page_each_land_in_a_named_set(tmp_path):
     assert "counts no reading of it" in units["page:3"]["reason"]
     assert ledger["by_unit_type"] == {"source": 3, "page": 2, "act": 2, "other": 0}
     assert sum(ledger["by_category"].values()) == ledger["unit_count"] == 7
+    # The readable text names the refused source and the silent page as well.
+    text = _members(bundle.data)[TEXT_REGISTER].decode("utf-8")
+    assert (
+        "## NOT DELIVERED source 2\nnot-delivered: source refused-with-reason\n"
+        'not-delivered-reason: "the submitted bytes were not a readable image"\n'
+    ) in text
+    assert "## NOT DELIVERED page 3\nnot-delivered: page held-for-review\n" in text
+    verify_export_bundle(bundle.data, tmp_path / "clean")
+    # Five unresolved units, three facts: each named once, by the act's key or
+    # the page's ordinal, never again as the source or page unit beside it.
+    assert ledger["unresolved_reasons"] == [
+        "act p1:2 is held-for-review: the review remains unresolved",
+        "page 2 was refused: the submitted bytes were not a readable image",
+        PAGE_READ_SILENT_PAGE_REASON.format(ordinal=3),
+    ]
 
 
-def test_a_display_that_does_not_strip_back_to_the_canonical_field_is_refused(tmp_path):
-    """Spec 11 test 2's rendered half, on the written product.
-
-    A display convention that changed the reading -- rather than annotating it --
-    would be a second text leaving the pipeline, when every export must show the
-    same established reading. The verifier strips the rendering and requires the
-    canonical field back exactly.
-    """
+def test_a_section_that_drops_its_last_field_is_refused(tmp_path):
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     members = _members(bundle.data)
     lines = members[TEXT_REGISTER].decode("utf-8").splitlines()
-    display_at = lines.index("display:") + 1
-    lines[display_at] = json.dumps("Caesar d'Amours", ensure_ascii=False)
-    members[TEXT_REGISTER] = ("\n".join(lines) + "\n").encode("utf-8")
-    _refresh_manifest_member(members, TEXT_REGISTER)
-
-    with pytest.raises(SchemaRefusal, match="does not strip back"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-def test_a_bundle_that_drops_its_rendering_is_refused(tmp_path):
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    lines = members[TEXT_REGISTER].decode("utf-8").splitlines()
-    convention_at = next(
-        index for index, line in enumerate(lines) if line.startswith("display_convention: ")
-    )
-    del lines[convention_at : convention_at + 3]
+    last = next(index for index, line in enumerate(lines) if line.startswith("text_status: "))
+    del lines[last]
     members[TEXT_REGISTER] = ("\n".join(lines) + "\n").encode("utf-8")
     _refresh_manifest_member(members, TEXT_REGISTER)
 
@@ -2735,53 +2751,8 @@ def test_a_bundle_that_drops_its_rendering_is_refused(tmp_path):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
-def test_the_manifest_says_the_display_convention_is_only_proposed(tmp_path):
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
-
-    assert manifest["claims"]["display"] == {
-        "convention": DISPLAY_CONVENTION,
-        "status": "proposed-not-yet-chosen",
-        "alters_stored_text": False,
-        "renders_canonical_uncertainty": False,
-        "exercised_against_real_spans": False,
-        "reason": (
-            "the rendering is not fed this package's canonical uncertainty "
-            "layer, which travels beside each literal instead; no span-marking "
-            "convention has been chosen for displayed readings"
-        ),
-    }
-    # The same package says, two claims above, that it carries the canonical
-    # layer. Both statements are about this build's uncertainty; a manifest whose
-    # display claim contradicted its uncertainty claim would be a package arguing
-    # with itself about what it contains.
-    assert manifest["claims"]["uncertainty"]["status"] == "canonical-unicode-codepoint-offsets"
-    members = _members(bundle.data)
-    manifest["claims"]["display"]["status"] = "chosen"
-    _refresh_manifest(members, manifest)
-    with pytest.raises(SchemaRefusal, match="display claim is not the verified claim"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-def test_the_manifest_may_not_claim_the_rendering_carries_the_canonical_layer(tmp_path):
-    """The non-carriage declaration is verified, not merely written.
-
-    A package whose display claim said the rendering carried the layer would be
-    describing a `display:` line this build does not produce -- the failure mode
-    the claim exists to prevent, one field over from the convention itself.
-    """
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    manifest["claims"]["display"]["renders_canonical_uncertainty"] = True
-    _refresh_manifest(members, manifest)
-
-    with pytest.raises(SchemaRefusal, match="display claim is not the verified claim"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
 def test_the_manifest_says_whether_projection_identity_was_actually_checked(tmp_path):
-    """Below two literal formats, `verify_projection_identity` never runs -- say so."""
+    """Below two literal formats, nothing is compared across formats -- say so."""
     bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
     manifest = json.loads(_members(bundle.data)[EXPORT_MANIFEST_NAME])
     assert manifest["canonical_text"]["identity_verified_across"] == [
@@ -2800,48 +2771,6 @@ def test_the_manifest_says_whether_projection_identity_was_actually_checked(tmp_
     _refresh_manifest(members, manifest)
     with pytest.raises(SchemaRefusal, match="canonical-text claim is not this build's fixed claim"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-@pytest.mark.parametrize(
-    "field", ["salvage_id", "harvested_content", "harvest_kind", "content", "promotion"]
-)
-def test_a_salvage_shaped_record_cannot_enter_the_acts_namespace(field, tmp_path):
-    """Spec 11 test 4, in the direction the reserved-field guard does not cover.
-
-    A salvage item that resembles an act must be refused by name, not left to fail on
-    a missing key somewhere downstream. Promotion re-enters the pipeline under the
-    project lead's recorded approval; there is no export-time promotion.
-    """
-    base = _projection()
-    smuggled = {**base.acts[0], field: "a grid tiling nobody established"}
-    with pytest.raises(SchemaRefusal, match="carries salvage-tier field"):
-        build_armarium_bundle(
-            replace(base, acts=(smuggled, base.acts[1])),
-            _formats(embed_pixels=False),
-            _source_bytes,
-        )
-
-
-def test_a_deeply_nested_salvage_item_becomes_a_refusal_not_a_recursion_crash(tmp_path):
-    """`_reject_salvage_act_namespace` walks a harvested salvage item whole, before
-    any of its own field checks (`_validate_salvage_items`), so unvalidated
-    provenance can nest past Python's recursion limit. That must become a
-    `SchemaRefusal`, never an uncaught `RecursionError` that would crash the
-    whole export and take every other act down with it."""
-    nested: object = "leaf"
-    for _ in range(5000):
-        nested = {"nested": nested}
-    item = {**_salvage_item("scrap"), "provenance": {"collection": "tier", "detail": nested}}
-    base = _projection()
-    # The salvage walk's own wording, not the shared "nests too deeply" prefix:
-    # the retained-reference walk and the sources.json parser raise refusals
-    # carrying that prefix too, so a bare match could not prove which guard held.
-    with pytest.raises(SchemaRefusal, match="salvage-tier .* nests too deeply for this machine"):
-        build_armarium_bundle(
-            replace(base, salvage_items=(item,)),
-            _formats(embed_pixels=False),
-            _source_bytes,
-        )
 
 
 def test_bytes_that_are_not_an_archive_are_refused_rather_than_raising_out_of_the_verifier(
@@ -2984,7 +2913,7 @@ def test_a_preexisting_hard_link_is_replaced_without_writing_outside_the_clean_r
 
     manifest = verify_export_bundle(bundle.data, clean)
 
-    assert manifest["schema"] == "armarium-export-manifest.v11"
+    assert manifest["schema"] == "armarium-export-manifest.v12"
     assert outside.read_bytes() == b"bytes outside the extraction root"
     assert linked.stat().st_ino != shared_inode
 
@@ -3056,20 +2985,6 @@ def test_a_nul_in_a_declared_source_path_is_refused(tmp_path):
     _refresh_manifest_member(members, "sources.json")
 
     with pytest.raises(SchemaRefusal, match="is unsafe"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
-
-
-def test_a_display_rendering_that_cannot_be_parsed_is_refused_not_raised(tmp_path):
-    """`strip_display` raises `ValueError` on markup it cannot parse. Every one of
-    those is reachable from a package a recipient was handed."""
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    lines = members[TEXT_REGISTER].decode("utf-8").split("\n")
-    lines[lines.index("display:") + 1] = json.dumps("⟨never closed", ensure_ascii=False)
-    members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
-    _refresh_manifest_member(members, TEXT_REGISTER)
-
-    with pytest.raises(SchemaRefusal, match="not a renderable display convention"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
@@ -3145,6 +3060,14 @@ def test_a_clean_root_whose_path_carries_uri_syntax_still_verifies(tmp_path):
     assert manifest["claims"]["status"] == "partial"
 
 
+def _verified_literals(data: bytes, clean_root: Path) -> dict[str, str]:
+    """The delivered literals of a package that verified whole, formats compared."""
+    verify_delivered_bundle(data, clean_root)
+    return {
+        act_id: record[0] for act_id, record in _jsonl_literals(clean_root / "acts.jsonl").items()
+    }
+
+
 def _members(data: bytes) -> dict[str, bytes]:
     with ZipFile(BytesIO(data)) as archive:
         return {name: archive.read(name) for name in archive.namelist()}
@@ -3197,13 +3120,10 @@ def test_unicode_uncertainty_offsets_survive_every_literal_projection(tmp_path, 
     assert json.loads(stored) == layer
 
 
-# --- The damage record: text_status and the transcription annotation layer ------
+# --- The damage record: text_status and the uncertainty layer ---------------------
 #
-# F1 / Sol-S4 (T0 export honesty). The Archetypus knew an act was damaged; nothing here read
-# the field, so a partial act was exported and aggregated exactly like a whole one
-# and the run said `complete` with an empty reason list. These are the projection-
-# layer half of that repair; the end-to-end demonstration through the real CLIs is
-# `pipeline/6_archetypus/test_annotations.py`.
+# A delivered act whose reading records unread ink is `partial` in every format, and
+# the run's aggregate names it.
 
 
 def _internal_gap_layer(text: str) -> dict:
@@ -3224,7 +3144,7 @@ def _partial_projection() -> ArmariumProjection:
 
 
 def test_a_delivered_act_with_a_gap_reaches_every_selected_literal_format(tmp_path):
-    """Spec 11's honesty, measured on the written product rather than asserted.
+    """A damaged act is partial in the written product, not only in the projection.
 
     One schema-legal internal gap: the status says `partial` in the readable
     bundle, the JSONL hand-off and the acts database, the run aggregate names the
@@ -3238,7 +3158,6 @@ def test_a_delivered_act_with_a_gap_reaches_every_selected_literal_format(tmp_pa
     assert "text_status: partial" in members[TEXT_REGISTER].decode("utf-8")
     row = json.loads(members["acts.jsonl"].splitlines()[0])
     assert row["text_status"] == "partial"
-    assert row["transcription_annotations"] == []
     database = tmp_path / "acts.sqlite"
     database.write_bytes(members["acts.sqlite"])
     with sqlite3.connect(database) as connection:
@@ -3255,6 +3174,15 @@ def test_a_delivered_act_with_a_gap_reaches_every_selected_literal_format(tmp_pa
     assert manifest["claims"]["status"] == "partial"
 
 
+def test_an_empty_reading_is_never_delivered():
+    """No text and no gap is `no_readable_text`, which no stage delivers."""
+    projection = _damaged_delivered(
+        _projection(), text_status="no_readable_text", canonical_clean_text=""
+    )
+    with pytest.raises(SchemaRefusal, match="no text and no gap"):
+        build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+
+
 def test_a_projection_claiming_established_over_its_own_gap_is_refused():
     """The status is recomputed, never carried: the whole finding in one assertion."""
     projection = _partial_projection()
@@ -3265,26 +3193,6 @@ def test_a_projection_claiming_established_over_its_own_gap_is_refused():
             _formats(embed_pixels=False),
             _source_bytes,
         )
-
-
-def test_a_row_claiming_produced_semantic_annotations_is_refused(tmp_path):
-    """The fixed claim is checked from the product side, not only asserted.
-
-    Nothing in this repository produces a semantic annotation, so a packaged row
-    saying one was produced must be refused by the verifier that knows that —
-    not accepted because nothing disproves it.
-    """
-    bundle = build_armarium_bundle(_projection(), _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-    rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
-    for row in rows:
-        if row["category"] == "delivered":
-            row["semantic_annotations"] = [{"kind": "person", "value": "Jean"}]
-    members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
-    _refresh_manifest_member(members, "acts.jsonl")
-
-    with pytest.raises(SchemaRefusal, match="semantic annotation claim"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
 def test_a_non_delivered_row_carrying_a_text_status_is_refused(tmp_path):
@@ -3353,77 +3261,31 @@ def test_a_package_whose_basis_alone_calls_a_damaged_act_whole_is_refused(tmp_pa
         verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
-def test_a_sealed_transcription_annotation_is_never_replaced_by_the_semantic_claim(tmp_path):
-    """The unbuilt *semantic* layer's own not-produced claim must never stand in
-    for the *transcription* layer's real marks: both travel under their own
-    names and both are asserted here.
-    """
-    literal = _projection().acts[0][CANONICAL_TEXT_FIELD]
-    mark = {"kind": "illegible", "start": 3, "end": 3, "witness_evidence": []}
-    projection = _damaged_delivered(
-        _projection(), text_status="partial", transcription_annotations=[mark]
-    )
-    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
-    members = _members(bundle.data)
-
-    row = json.loads(members["acts.jsonl"].splitlines()[0])
-    assert row["transcription_annotations"] == [mark]
-    assert row["semantic_annotations"] == []
-    assert row["semantic_annotation_status"] == "not-produced-pending-architecture-approval"
-    assert json.dumps([mark], ensure_ascii=False, sort_keys=True) in members[TEXT_REGISTER].decode(
-        "utf-8"
-    )
-    database = tmp_path / "acts.sqlite"
-    database.write_bytes(members["acts.sqlite"])
-    with sqlite3.connect(database) as connection:
-        stored, semantic, status = connection.execute(
-            "SELECT transcription_annotations_json, semantic_annotations_json, "
-            "semantic_annotation_status FROM acts WHERE act_id = 'act-1'"
-        ).fetchone()
-    assert json.loads(stored) == [mark]
-    assert json.loads(semantic) == []
-    assert status == "not-produced-pending-architecture-approval"
-
-    manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
-    # The package says both things about annotations, and says which is which.
-    assert manifest["claims"]["semantic_annotations"] == {
-        "status": "semantic-annotations-not-produced",
-        "text_writable": False,
-    }
-    assert manifest["claims"]["transcription_annotations"]["carried_by"] == [
-        "acts-database",
-        "jsonl",
-        "text-bundle",
-    ]
-    # The literal that the mark anchors to is untouched by carrying it.
-    assert verify_projection_identity(bundle.data, tmp_path / "identity") == {"act-1": literal}
-
-
 def test_projection_identity_refuses_a_package_whose_formats_disagree_about_damage(tmp_path):
-    """Two deliverables cannot disagree about whether the same act is damaged.
+    """Two deliverables cannot disagree about the doubt carried with one reading.
 
     The literal is byte-identical in every format, so the text comparison passes
-    by construction; the damage record is part of the same one reading and rides
-    in the same equality check (one reading per act covers more than the characters).
+    by construction; the uncertainty layer is part of the same one reading and
+    rides in the same equality check.
     """
     bundle = build_armarium_bundle(
         _partial_projection(), _formats(embed_pixels=False), _source_bytes
     )
     members = _members(bundle.data)
-    mark = {"kind": "illegible", "start": 1, "end": 1, "witness_evidence": []}
+    span = {"start": 0, "end": 1, "alternatives": ["?"], "confidence": "low"}
     rows = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
     for row in rows:
         if row["text_status"] is not None:
-            row["transcription_annotations"] = [mark]
+            row["uncertainty"]["uncertain_spans"] = [span]
     members["acts.jsonl"] = b"".join(canonical_bytes(row) + b"\n" for row in rows)
     _refresh_manifest_member(members, "acts.jsonl")
 
     tampered = _zip_bytes(members)
     # Package verification alone is green: the edited layer is well-formed, and
-    # `partial` is still the honest status for a row that carries a gap either way.
+    # `partial` is still the honest status for a row that carries its gap.
     verify_export_bundle(tampered, tmp_path / "clean")
     with pytest.raises(SchemaRefusal, match="projection differs"):
-        verify_projection_identity(tampered, tmp_path / "identity")
+        verify_delivered_bundle(tampered, tmp_path / "identity")
 
 
 def test_the_text_bundle_refuses_a_literal_section_with_no_damage_record(tmp_path):
@@ -3436,8 +3298,8 @@ def test_the_text_bundle_refuses_a_literal_section_with_no_damage_record(tmp_pat
     members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
     _refresh_manifest_member(members, TEXT_REGISTER)
 
-    with pytest.raises(SchemaRefusal, match="no established-text status"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+    with pytest.raises(SchemaRefusal, match="no completed literal record"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 def test_the_text_bundle_refuses_two_established_text_statuses_for_one_literal(tmp_path):
@@ -3449,8 +3311,8 @@ def test_the_text_bundle_refuses_two_established_text_statuses_for_one_literal(t
     members[TEXT_REGISTER] = "\n".join(lines).encode("utf-8")
     _refresh_manifest_member(members, TEXT_REGISTER)
 
-    with pytest.raises(SchemaRefusal, match="more than one established-text status"):
-        verify_projection_identity(_zip_bytes(members), tmp_path)
+    with pytest.raises(SchemaRefusal, match="established-text status has no literal to describe"):
+        verify_delivered_bundle(_zip_bytes(members), tmp_path)
 
 
 # --- `claims.not_measured`: what this run did not measure ---------------------
@@ -3797,7 +3659,7 @@ def test_perlector_basis_counts_must_reconcile_with_the_projected_acts():
 
 
 _HEAD_TEXT, _TAIL_TEXT = "Cǣsar d’Amo-", "urs fils"
-_FORMATS_WITHOUT_TEXT = ArmariumFormats(("review-items", "salvage-tier"), False)
+_FORMATS_WITHOUT_TEXT = ArmariumFormats(("review-items",), False)
 
 
 def _later_page(
@@ -3977,7 +3839,6 @@ def test_code_never_joins_two_literals_and_the_join_stays_out_of_the_act_account
     )
     assert join["join_rule"] == "verbatus-page-join.v3"
     text = _text(members)
-    assert "RECONSTRUCTED" not in text
     assert _HEAD_TEXT + "\n" + _TAIL_TEXT not in text
     assert "possible-continuation-on: p2:1 (page 2) [join-1-2-0]" in text
     assert "possible-continuation-from: p1:1 (page 1) [join-1-2-0]" in text
@@ -3991,21 +3852,6 @@ def test_code_never_joins_two_literals_and_the_join_stays_out_of_the_act_account
     assert any("no reconstruction was made (no-code-join)" in line for line in partial)
 
 
-def test_a_code_joined_section_is_refused(tmp_path):
-    members = _joined_members()
-    (name,) = [name for name in members if name.startswith("text/")]
-    joined = json.dumps(_HEAD_TEXT + "\n" + _TAIL_TEXT, ensure_ascii=False)
-    members[name] = (
-        members[name].decode("utf-8")
-        + "## RECONSTRUCTED join-1-2-0 (not an act)\nreconstructed_text:\n"
-        + joined
-        + "\n"
-    ).encode("utf-8")
-    _refresh_manifest_member(members, name)
-    with pytest.raises(SchemaRefusal, match="joins two readings by code"):
-        verify_export_bundle(_zip_bytes(members), tmp_path / "forged")
-
-
 def test_a_note_moved_to_another_act_is_refused(tmp_path):
     members = _joined_members()
     note = "possible-continuation-on: p2:1 (page 2) [join-1-2-0]\n"
@@ -4014,7 +3860,7 @@ def test_a_note_moved_to_another_act_is_refused(tmp_path):
     anchor = "act-id: act-4\nreading: first reading\n"
     members[name] = text.replace(anchor, anchor + note, 1).encode("utf-8")
     _refresh_manifest_member(members, name)
-    with pytest.raises(SchemaRefusal, match="notes do not mirror"):
+    with pytest.raises(SchemaRefusal, match="is not exactly what this build writes"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "moved")
 
 
@@ -4030,7 +3876,6 @@ def test_a_text_bundle_only_export_joins_nothing_and_verifies(tmp_path):
     verify_delivered_bundle(bundle.data, tmp_path / "clean")
     members = _members(bundle.data)
     assert "reconstructions.jsonl" not in members
-    assert "RECONSTRUCTED" not in _text(members)
 
 
 def test_with_no_literal_format_a_join_names_no_text(tmp_path):
@@ -4059,7 +3904,6 @@ def test_an_unjoinable_candidate_is_not_reconstructed_and_carries_no_text(tmp_pa
     (join,) = json.loads(members["sources.json"])["continuation_joins"]
     assert (join["status"], join["not_reconstructed_reason"]) == ("not-reconstructed", reason)
     assert "reconstructions.jsonl" not in members
-    assert "RECONSTRUCTED" not in _text(members)
     partial = json.loads(members[EXPORT_MANIFEST_NAME])["claims"]["partial_reasons"]
     assert any(f"no reconstruction was made ({reason})" in line for line in partial)
 
@@ -4111,8 +3955,14 @@ _NOTE = "possible-continuation-on: p2:1 (page 2) [join-1-2-0]\n"
 @pytest.mark.parametrize(
     ("place", "refusal"),
     [
-        (lambda text: text.replace(_NOTE, _NOTE + _NOTE, 1), "notes do not mirror"),
-        (lambda text: text.replace("\n\n", "\n" + _NOTE + "\n", 1), "outside its section"),
+        (
+            lambda text: text.replace(_NOTE, _NOTE + _NOTE, 1),
+            "is not exactly what this build writes",
+        ),
+        (
+            lambda text: text.replace("\n\n", "\n" + _NOTE + "\n", 1),
+            "is not exactly what this build writes",
+        ),
     ],
 )
 def test_a_duplicated_or_stray_note_is_refused(tmp_path, place, refusal):
@@ -4156,7 +4006,6 @@ def test_a_join_across_two_folders_notes_each_side_in_its_own_folder(tmp_path):
     members = _members(bundle.data)
     head_text = members[TEXT_REGISTER].decode("utf-8")
     tail_text = members["text/_source_folder/other/readings.txt"].decode("utf-8")
-    assert "RECONSTRUCTED" not in head_text + tail_text
     assert "possible-continuation-on: p2:1 (page 2) [join-1-2-0]" in head_text
     assert "possible-continuation-from: p1:1 (page 1) [join-1-2-0]" in tail_text
 
@@ -4194,6 +4043,21 @@ def recipient_happy_run(tmp_path_factory):
     return root
 
 
+def _set_database_run(members: dict[str, bytes], run: dict, tmp_path: Path) -> None:
+    """A thorough resealer rewrites the acts database's run binding too."""
+    database = tmp_path / "resealed-run.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE export_metadata SET value = ? WHERE key = 'run'", (canonical_text(run),)
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    members["acts.sqlite"] = database.read_bytes()
+
+
 @pytest.mark.hostile_local
 @pytest.mark.parametrize(
     ("case", "expected"),
@@ -4201,7 +4065,6 @@ def recipient_happy_run(tmp_path_factory):
         ("real-run-type", "non-blank submission and scenario identities"),
         ("real-run-blank", "non-blank submission and scenario identities"),
         ("real-run-extra", "unrecognized field set"),
-        ("salvage-status-type", "invalid salvage-tier status"),
         ("fixture-run-type", "non-blank fixture and scenario identities"),
         ("scenario-run-type", "non-blank fixture and scenario identities"),
         ("run-both-identities", "both a fixture identifier and a submission"),
@@ -4214,8 +4077,6 @@ def recipient_happy_run(tmp_path_factory):
         ("manifest-pixels-extra", "unrecognized field set"),
         ("manifest-act-denominator", "not this build's fixed claim"),
         ("manifest-page-denominator", "not this build's fixed claim"),
-        ("manifest-display-reason", "display claim"),
-        ("manifest-salvage-promotion", "not this build's fixed claim"),
         ("not-measured-status", "status.*disagrees with its detail"),
         ("geometry-configurations", "canonical order"),
         ("geometry-zero-samples", "sample_count is zero"),
@@ -4242,7 +4103,6 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
         "real-run-type": lambda m: m["run"].update(submission_id=["not", "an", "identity"]),
         "real-run-blank": lambda m: m["run"].update(submission_id="   "),
         "real-run-extra": lambda m: m["run"].update(operator="nobody"),
-        "salvage-status-type": lambda m: m["claims"]["salvage"].update(status=["accounted"]),
         "fixture-run-type": lambda m: m["run"].update(fixture_id=["not", "an", "identity"]),
         "scenario-run-type": lambda m: m["run"].update(scenario=["not", "an", "identity"]),
         "run-both-identities": lambda m: m["run"].update(submission_id="a" * 64),
@@ -4260,10 +4120,6 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
         ),
         "manifest-page-denominator": lambda m: m["claims"]["page_census"].update(
             denominator="other"
-        ),
-        "manifest-display-reason": lambda m: m["claims"]["display"].update(reason="approved"),
-        "manifest-salvage-promotion": lambda m: m["claims"]["salvage"].update(
-            promotion="automatic"
         ),
         "not-measured-status": lambda m: _entry(m["claims"]["not_measured"], "perlector-pass-c")[
             "detail"
@@ -4386,13 +4242,15 @@ def test_recipient_refuses_resealed_or_damaged_claims(case, expected, tmp_path, 
                     row["detail"]["sealed_audit_round_cap"] += 1
             elif case == "publish-submission":
 
-                def mutate(_members, manifest):
+                def mutate(members, manifest):
                     manifest["run"].pop("fixture_id")
                     manifest["run"]["submission_id"] = "a" * 64
+                    _set_database_run(members, manifest["run"], tmp_path)
             else:
 
-                def mutate(_members, manifest):
+                def mutate(members, manifest):
                     manifest["run"]["scenario"] = "a run that never happened"
+                    _set_database_run(members, manifest["run"], tmp_path)
 
             _recipient_reseal_export(tree, mutate)
             if case in {"publish-submission", "publish-retained-manifest"}:
@@ -4644,6 +4502,28 @@ def test_a_reading_released_on_its_own_holds_carries_them_and_verifies(tmp_path)
     assert [row["reading_hold_codes"] for row in sources["operator_actions"]] == [[_UNIT_HOLD]]
     assert all(not row["hold_codes"] for row in sources["page_accounting"])
     verify_export_bundle(bundle.data, tmp_path / "clean")
+    # A database-only reader sees the release too.
+    with sqlite3.connect(tmp_path / "clean" / "acts.sqlite") as connection:
+        assert dict(connection.execute("SELECT act_id, operator_label FROM acts")) == {
+            "act-1": "released by operator",
+            "act-2": None,
+        }
+
+
+@pytest.mark.parametrize("label", [None, "corrected by a person"])
+def test_an_acts_database_that_misstates_an_operator_label_is_refused(tmp_path, label):
+    bundle = build_armarium_bundle(
+        _released_on_its_own_holds(), _formats(embed_pixels=False), _source_bytes
+    )
+    members = _members(bundle.data)
+    database = tmp_path / "tampered.sqlite"
+    database.write_bytes(members["acts.sqlite"])
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE acts SET operator_label = ? WHERE act_id = 'act-1'", (label,))
+    members["acts.sqlite"] = database.read_bytes()
+    _refresh_manifest_member(members, "acts.sqlite")
+    with pytest.raises(SchemaRefusal, match="does not label exactly the acts an operator"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
 
 
 @pytest.mark.parametrize(

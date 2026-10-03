@@ -50,7 +50,7 @@ from operations.serving.config import (
     load_serving_recipes,
     profile_preflight_digest,
 )
-from operations.serving.errors import ServiceStopError
+from operations.serving.errors import ChairTransportFailure, ServiceStopError
 from operations.serving.fakes import (
     FakeEndpoint,
     FakeLauncher,
@@ -75,6 +75,7 @@ READING = "SYNTHETIC LIVE READING alpha beta gamma delta epsilon zeta eta theta 
 
 
 perlector = load_stage("4_perlector")
+live_calls = perlector.page_run.live_calls
 
 
 def _perlector_identity():
@@ -129,8 +130,6 @@ def _live_row(identity, *, max_num_seqs: int = 1) -> dict[str, Any]:
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
-        "enable_tower_connector_lora": False,
-        "max_lora_rank": 64,
         "generation_config": "vllm",
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,
@@ -434,8 +433,6 @@ def test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_
 
 def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
     """A dispatched request's uncertain outcome keeps its closed call evidence."""
-    failure_type = getattr(perlector.serving_errors, "ChairTransportFailure", None)
-    assert failure_type is not None, "the serving transport-failure contract is required"
     call_ref = {
         "relative_path": "r/operations/serving/calls/transport.json",
         "sha256": "a" * 64,
@@ -444,7 +441,7 @@ def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
         "relative_path": "r/operations/serving/receipts/receipt.json",
         "sha256": "b" * 64,
     }
-    error = failure_type(
+    error = ChairTransportFailure(
         "timed out after request dispatch",
         call_record_ref=call_ref,
         request_sha256="c" * 64,
@@ -453,7 +450,7 @@ def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
     )
 
     phase = perlector.page_run.PAGE_READING_PASS
-    assert perlector._failure_record(error, phase=phase) == {
+    assert live_calls.failure_record(error, phase=phase) == {
         "phase": phase,
         "kind": "transport",
         "code": "CHAIR_TRANSPORT_FAILURE",
@@ -473,7 +470,7 @@ def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
 def test_an_outcome_that_attempted_no_reading_cannot_carry_a_receipt():
     """A page not asked and an absent chair name what would have read and stop there."""
     with pytest.raises(SchemaRefusal, match="attempted no reading"):
-        perlector.provenance_for(
+        perlector.page_run.provenance_for(
             SimpleNamespace(),
             _perlector_identity(),
             attempted=False,
@@ -489,7 +486,7 @@ def test_an_absent_chair_that_attempted_a_reading_cannot_carry_a_receipt(
     the other reading that never happened."""
     absent = ChairRegistry.from_toml(str(absent_third_chair_config)).resolve("attestator_3")
     with pytest.raises(SchemaRefusal, match="absent"):
-        perlector.provenance_for(
+        perlector.page_run.provenance_for(
             SimpleNamespace(),
             absent,
             attempted=True,
@@ -514,7 +511,7 @@ def test_two_digests_for_one_input_path_are_refused():
         distinct_refs([first, second])
 
 
-def _engine_call_world(tree, *, seed: int, schema: str = "chair-call-record.v3"):
+def _engine_call_world(tree, *, seed: int, schema: str = live_calls.CHAIR_CALL_RECORD_SCHEMA):
     """A retained Perlector call record at its sealed row, and a context that reads it.
 
     The serving receipt's seed is 7.
@@ -567,10 +564,10 @@ def test_an_engine_call_naming_bytes_that_moved_is_refused(live_run):
     root, _catalogue = live_run
     context, full_call = _engine_call_world(RunTree(root, "r"), seed=7)
     honest = [full_call["raw_response_ref"], full_call["call_record_ref"]]
-    assert perlector.engine_call_inputs(context, full_call) == honest
+    assert live_calls.engine_call_inputs(context, full_call) == honest
     lying = {"relative_path": full_call["raw_response_ref"]["relative_path"], "sha256": "c" * 64}
     with pytest.raises(SchemaRefusal, match="retained bytes at that path"):
-        perlector.engine_call_inputs(
+        live_calls.engine_call_inputs(
             context,
             {**full_call, "raw_response_ref": lying, "response_sha256": lying["sha256"]},
         )
@@ -583,10 +580,10 @@ def test_an_engine_call_is_held_to_the_receipts_sealed_seed(live_run):
     arm_seed = 8
     tree = RunTree(root, "r")
     context, at_receipt_seed = _engine_call_world(tree, seed=7)
-    perlector.engine_call_inputs(context, at_receipt_seed)
+    live_calls.engine_call_inputs(context, at_receipt_seed)
     _context, at_arm_seed = _engine_call_world(tree, seed=arm_seed)
     with pytest.raises(SchemaRefusal, match=f"sent seed {arm_seed}, not 7"):
-        perlector.engine_call_inputs(context, at_arm_seed)
+        live_calls.engine_call_inputs(context, at_arm_seed)
 
 
 def test_an_engine_call_off_its_sealed_row_or_retired_is_refused(live_run):
@@ -594,7 +591,7 @@ def test_an_engine_call_off_its_sealed_row_or_retired_is_refused(live_run):
     tree = RunTree(root, "r")
     context, retired = _engine_call_world(tree, seed=7, schema="chair-call-record.v2")
     with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
-        perlector.engine_call_inputs(context, retired)
+        live_calls.engine_call_inputs(context, retired)
 
 
 def test_an_engine_call_with_the_wrong_shape_is_refused_by_name():
@@ -602,7 +599,7 @@ def test_an_engine_call_with_the_wrong_shape_is_refused_by_name():
     until this refusal: every other field's shape is checked, and a live
     reading's `engine_call` should not be the one exception."""
     with pytest.raises(SchemaRefusal, match="wrong shape"):
-        perlector.engine_call_inputs(SimpleNamespace(), {"raw_response_ref": {}})
+        live_calls.engine_call_inputs(SimpleNamespace(), {"raw_response_ref": {}})
 
 
 def test_an_engine_call_with_two_digests_for_one_response_is_refused():
@@ -618,7 +615,7 @@ def test_an_engine_call_with_two_digests_for_one_response_is_refused():
         "served_model_id": SERVED_MODEL_ID,
     }
     with pytest.raises(SchemaRefusal, match="two different digests"):
-        perlector.engine_call_inputs(SimpleNamespace(), engine_call)
+        live_calls.engine_call_inputs(SimpleNamespace(), engine_call)
 
 
 # --- the shutdown-before-seal ordering, and the production factory ------------
@@ -627,11 +624,9 @@ def test_an_engine_call_with_two_digests_for_one_response_is_refused():
 def test_a_failed_chair_shutdown_stops_the_pass_before_the_seal_is_written(
     live_run, tmp_path, monkeypatch
 ):
-    """CONTRACT.md: 'One chair, started late, stopped before the seal.' Nothing
-    else in this module pins the ordering of `service.close()` ahead of
-    `context.seal_boundary()`. This makes the shutdown itself fail and checks the seal was never reached:
-    if `close()` ran *after* the seal, the failure would either be swallowed by
-    `main`'s own `finally` or reported over an already-sealed stage."""
+    """The chair is stopped before the seal. The shutdown itself fails here, and the
+    seal must never be reached: had `close()` run after the seal, the failure would
+    be swallowed by `main`'s own `finally` or reported over an already-sealed stage."""
     root, catalogue = live_run
     endpoint = FakeEndpoint(
         served_model_id=SERVED_MODEL_ID,
@@ -791,7 +786,7 @@ def test_one_retained_response_named_by_both_halves_of_a_page_record_is_one_inpu
     overshoot finding is *required* by the shared contract to be traceable
     through `raw_response_refs` while the capture still names it
     (`common/native_witness.py`). The producer names it once
-    (`pipeline/3_attestatores/run.py::_named_once`), and the envelope refuses a
+    (`pipeline/3_attestatores/retained.py::named_once`), and the envelope refuses a
     repeated path outright, so no publishable record could ever have carried
     two entries. Concatenating the two fields here without de-duplication
     therefore built an expectation nothing could satisfy: a correct record,
@@ -866,7 +861,7 @@ def test_the_window_finishes_in_order_within_its_bound():
         return index
 
     jobs = ((partial(call, index), finished.append) for index in range(5))
-    perlector._in_order_window(3, jobs)
+    live_calls.in_order_window(3, jobs)
     assert finished == [0, 1, 2, 3, 4]
     assert most == 3
 
@@ -888,7 +883,7 @@ def test_the_window_never_holds_more_than_width_unfinished_jobs():
         unfinished -= 1
         order.append(name)
 
-    perlector._in_order_window(2, jobs())
+    live_calls.in_order_window(2, jobs())
     assert most == 2
     assert order == [str(index) for index in range(6)]
 
@@ -912,7 +907,7 @@ def test_a_call_that_raises_re_raises_at_its_place_after_every_sent_job_is_finis
             yield partial(call, index), finished.append
 
     with pytest.raises(RuntimeError, match="not act-local") as raised:
-        perlector._in_order_window(3, jobs())
+        live_calls.in_order_window(3, jobs())
     # Job 1's failure stops the drawing; job 0 finished before it, and every job
     # already sent after it was finished too rather than dropped.
     assert finished == [0] + [index for index in sorted(started) if index > 2]
@@ -929,7 +924,7 @@ def test_a_refused_job_source_still_finishes_every_job_already_sent():
         raise ContractError("refused while preparing the third")
 
     with pytest.raises(ContractError, match="third"):
-        perlector._in_order_window(3, jobs())
+        live_calls.in_order_window(3, jobs())
     assert finished == [0, 1]
 
 
@@ -945,7 +940,7 @@ def test_a_reply_another_record_binds_answers_no_send():
     receipt = {"relative_path": "receipts/r.json", "sha256": "0" * 64}
     images = ["1" * 64]
     call = {
-        "schema": perlector.CHAIR_CALL_RECORD_SCHEMA,
+        "schema": live_calls.CHAIR_CALL_RECORD_SCHEMA,
         "receipt_ref": receipt,
         "image_sha256s": images,
         "raw_response_ref": {"relative_path": "4_perlector/blobs/raw", "sha256": "2" * 64},
@@ -967,16 +962,15 @@ def test_a_reply_another_record_binds_answers_no_send():
 
     send = [{"payload": {"receipt_ref": receipt, "image_sha256s": images}}]
     paths = ["4_perlector/blobs/call", "4_perlector/blobs/raw"]
-    calls, unattributed = perlector._unrecorded_replies(context(paths))
+    calls, unattributed = live_calls.unrecorded_replies(context(paths))
     assert (calls, unattributed) == ([], False)
-    assert not perlector._answers_a_send(calls, send)
-    calls, unattributed = perlector._unrecorded_replies(context([]))
-    assert not unattributed and perlector._answers_a_send(calls, send)
+    assert not live_calls.answers_a_send(calls, send)
+    calls, unattributed = live_calls.unrecorded_replies(context([]))
+    assert not unattributed and live_calls.answers_a_send(calls, send)
     # Raw bytes with no call record naming them cannot be attributed to any send.
     del blobs["call"]
-    assert perlector._unrecorded_replies(context([])) == ([], True)
-    # A call record from before the decoding bump is refused by its name, not
-    # counted as a reply no record binds.
+    assert live_calls.unrecorded_replies(context([])) == ([], True)
+    # A blob of any other schema is no call record, so it too may be an unattributed reply.
+    # The raw bytes are bound here, so only the unknown-schema blob can count.
     blobs["call"] = json.dumps({**call, "schema": "chair-call-record.v2"}).encode()
-    with pytest.raises(ContractError, match="written as chair-call-record.v2"):
-        perlector._unrecorded_replies(context([]))
+    assert live_calls.unrecorded_replies(context(["4_perlector/blobs/raw"])) == ([], True)

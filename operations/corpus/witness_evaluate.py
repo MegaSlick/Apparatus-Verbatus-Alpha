@@ -37,9 +37,6 @@ from common.page_feed import SCHEMA as PAGE_FEED_SCHEMA
 from common.page_path import PAGE_FEED_KIND
 from common.runtree.store import RunTree
 from common.stage import latest_attempt
-from operations.spike_perlector.models import OutputStatus
-from operations.spike_perlector.normalization import GRAPHEMIC_V1
-from operations.spike_perlector.scoring import score_response
 
 from . import CorpusRefusal
 from .cache import write_new_file
@@ -50,7 +47,9 @@ from .compare import (
     load_pipeline_reading_acts,
 )
 from .local_admission import validate_local_admission_ledger
+from .normalization import GRAPHEMIC_V1
 from .reference import validate_reference_page
+from .scoring import OutputStatus, score_response
 
 DESCRIPTION = "Read-only per-witness RecordGold scoring over sealed page Testimonia."
 

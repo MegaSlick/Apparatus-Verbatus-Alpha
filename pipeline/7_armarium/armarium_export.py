@@ -2,8 +2,7 @@
 
 The only source of delivered act text is ``canonical_clean_text`` from the checked
 Archetypus record; every writer receives it from one projection object and none reads
-a witness, Perlectio or other text-shaped field. Salvage records carry their own
-harvested ``content``, written only as salvage, never as act text.
+a witness, Perlectio or other text-shaped field.
 
 ``EXPORT_MANIFEST.json`` is always the first member. The ZIP is stored with fixed
 metadata, so the container adds no nondeterminism. The bytes are still not
@@ -42,7 +41,6 @@ from coniector_layer import (
     text_bundle_placements,
     verify_row,
 )
-from display import DISPLAY_CONVENTION, render_display, strip_display
 from operator_layer import LABEL_LINE as OPERATOR_LABEL_LINE
 from operator_layer import (
     MODEL_READING_SCHEMA,
@@ -63,7 +61,6 @@ from textnorm import TEXTNORM_REVISION, search_fold
 
 from common.armarium_formats import ArmariumFormats, armarium_formats_from_record
 from common.calibration import calibrated_claim_has_sample_evidence
-from common.contracts.annotations import validate_annotations
 from common.contracts.canonical import (
     canonical_bytes,
     canonical_text,
@@ -81,8 +78,11 @@ from common.contracts.outcomes import (
     TEXT_STATUSES,
     ArmariumCategory,
     derive_record_text_status,
+    edge_hold_reason,
     require_approval,
     run_aggregate,
+    unresolved_act_reason,
+    unsealed_page_reason,
 )
 from common.contracts.stages import ARMARIUM
 from common.contracts.uncertainty import CORRECTED_LECTIO, corrected_layer, utf8_round_trip
@@ -114,10 +114,10 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # whole (`common.stage.reading_acts`), and carries its `other` readings, a
 # labelled layer beside the acts, each page's accounting, and its acts counted by
 # the reading they came from (`reask`).
-EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v11"
+EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v12"
 # The act row and SQLite ids move with the row shape, so a consumer keying on the
 # id never reads an old shape out of a new row.
-ACT_RECORD_SCHEMA: Final = "armarium-act.v5"
+ACT_RECORD_SCHEMA: Final = "armarium-act.v6"
 _ACT_RECORD_FIELDS: Final = frozenset(
     {
         "schema",
@@ -131,9 +131,6 @@ _ACT_RECORD_FIELDS: Final = frozenset(
         "uncertainty",
         "uncertainty_status",
         "text_status",
-        "transcription_annotations",
-        "semantic_annotations",
-        "semantic_annotation_status",
         "witnesses",
         "perlectio_ref",
         "recensor_ref",
@@ -146,11 +143,14 @@ _ACT_RECORD_FIELDS: Final = frozenset(
         "reading",
     }
 )
+# Every held or refused reading, act or other, named by `kind`; the act partition
+# is `acts.jsonl`'s row count, never this file's.
+REVIEW_ITEM_SCHEMA: Final = "armarium-review-item.v2"
 _REVIEW_ITEM_FIELDS: Final = frozenset(
-    {"schema", "act_id", "act_key", "category", "reason", "evidence_refs"}
+    {"schema", "act_id", "act_key", "kind", "category", "reason", "evidence_refs"}
 )
-_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v5"
-_SQLITE_USER_VERSION: Final = 5
+_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v6"
+_SQLITE_USER_VERSION: Final = 6
 # The reading an act came from: its page's first reading, the one
 # re-ask of its page, or an operator re-read a person's page re-ask asked for,
 # which superseded the page's earlier readings. A row standing for a page with
@@ -163,11 +163,11 @@ _ACT_READING_FIELDS: Final = frozenset({"act_id", "act_key", "page_ordinal", "re
 # A counted page-read act's key, `p<page>:<entry n>`, or a page row with no entry.
 _PAGE_ACT_KEY: Final = re.compile(r"p([1-9][0-9]*):(?:([1-9][0-9]*)|unread|blank)")
 # Field sets are checked exactly, so each shape change needs a new id.
-SOURCES_SCHEMA: Final = "armarium-sources.v5"
+SOURCES_SCHEMA: Final = "armarium-sources.v6"
 # The `other` readings of a page-read run travel in their own member, never in
 # `acts.jsonl`: that file is one row per counted act, and its row count is the act
 # partition a consumer reconciles against.
-OTHER_READING_SCHEMA: Final = "armarium-other-reading.v1"
+OTHER_READING_SCHEMA: Final = "armarium-other-reading.v2"
 OTHER_READINGS_MEMBER: Final = "other.jsonl"
 _OTHER_READING_FIELDS: Final = frozenset(
     {
@@ -181,7 +181,6 @@ _OTHER_READING_FIELDS: Final = frozenset(
         "canonical_text_sha256",
         "text_status",
         "uncertainty",
-        "transcription_annotations",
         "provenance",
         "source_regions",
         "witnesses",
@@ -210,7 +209,6 @@ _PAGE_ACCOUNTING_DENOMINATOR: Final = "every real sealed page, read whole"
 _PAGE_ACCOUNTING_ROW_FIELDS: Final = frozenset(
     {"ordinal", "page_id", "rules", "hold_codes", "policy_sha256", "accounting_ref"}
 )
-SALVAGE_RECORD_SCHEMA: Final = "armarium-salvage-item.v1"
 # Code never joins text across a page break: a join row records only that an
 # act may cross it. The Coniector alone reconstructs across one, and only on a
 # run sealed `pages_are_consecutive` (`coniector_layer`).
@@ -241,16 +239,6 @@ _UNCERTAINTY_AVAILABLE: Final = "canonical-unicode-codepoint-offsets"
 # An act with no established text, or a package with no literal-text format, has
 # no offsets to anchor to.
 _UNCERTAINTY_NOT_APPLICABLE: Final = "not-applicable"
-_SEMANTIC_ANNOTATION_NOT_PRODUCED: Final = "not-produced-pending-architecture-approval"
-# The package-level claim; it names the semantic layer so it is not read as
-# "no annotations of any kind".
-_SEMANTIC_ANNOTATIONS_CLAIM: Final = "semantic-annotations-not-produced"
-# Two annotation layers with separate names: the semantic layer (person, date,
-# kinship; no code produces it) and the transcription layer (the
-# Archetypus record's sealed uncertain/illegible marks, which are real). Neither
-# takes the bare name "annotations", so one cannot answer for the other.
-_TRANSCRIPTION_ANNOTATIONS_CARRIED: Final = "archetypus-sealed-uncertain-and-illegible-marks"
-_TRANSCRIPTION_ANNOTATIONS_NOT_APPLICABLE: Final = "not-applicable"
 _LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
 # Reading keys are `p<page>:<n>` with unpadded ordinals, so a string sort puts
 # page 10 before page 2. A page's row with no reading (`p<page>:blank`) follows
@@ -290,15 +278,6 @@ _CONTAINER_GRANULARITY_LIMIT: Final = (
 )
 _ACT_PARTITION_DENOMINATOR: Final = "page-read reading acts"
 _PAGE_CENSUS_DENOMINATOR: Final = "run.json source-page/frame rows"
-_SALVAGE_PROMOTION_CLAIM: Final = (
-    "recorded approval then pipeline re-entry; never export-time act promotion"
-)
-_SALVAGE_ABSENCE_REASON: Final = "this run has no sealed salvage inventory to account for"
-_DISPLAY_REASON: Final = (
-    "the rendering is not fed this package's canonical uncertainty layer, which travels "
-    "beside each literal instead; no span-marking convention has been chosen for "
-    "displayed readings"
-)
 _COMPLETED_CATEGORIES: Final = frozenset(
     {
         ArmariumCategory.DELIVERED.value,
@@ -310,25 +289,6 @@ _KNOWN_CATEGORIES: Final = frozenset(category.value for category in ArmariumCate
 _REVIEW_CATEGORIES: Final = frozenset(
     {ArmariumCategory.HELD_FOR_REVIEW.value, ArmariumCategory.REFUSED_WITH_REASON.value}
 )
-# Any one of these marks a record as salvage-tier, so a salvage item cannot pass
-# as an act.
-_SALVAGE_DISCRIMINANT_FIELDS: Final = frozenset(
-    {"salvage_id", "harvested_content", "harvest_kind", "content", "promotion"}
-)
-_SALVAGE_RESERVED_FIELDS: Final = frozenset(
-    {
-        "act_id",
-        "act_key",
-        "canonical_clean_text",
-        "canonical_text_sha256",
-        "category",
-        "dissent_ref",
-        "perlectio_ref",
-        "recensor_ref",
-        "approval_ref",
-        "text",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -336,8 +296,7 @@ class ArmariumProjection:
     """The one checked record every product writer is allowed to see.
 
     Only delivered acts have a literal ``canonical_clean_text``; every other act
-    carries ``None`` rather than an invented empty reading. Salvage items are kept
-    apart from acts.
+    carries ``None`` rather than an invented empty reading.
     """
 
     # Exactly one of ``fixture_id``/``submission_id`` is set, so a real corpus
@@ -356,8 +315,6 @@ class ArmariumProjection:
     aggregate_basis: dict[str, Any]
     # The filename ledger's self-hash (``common.stage.submission_identity``).
     submission_id: str | None = None
-    # ``None`` (no sealed inventory) must not be exported as a count of zero.
-    salvage_items: tuple[dict[str, Any], ...] | None = None
     # The held set is derived from these rows, never stored beside them.
     ink_map_pages: tuple[dict[str, Any], ...] = ()
     # `None` means the basis is missing, not that everything was measured;
@@ -414,25 +371,6 @@ def _uncertainty_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
     return {
         "status": _UNCERTAINTY_AVAILABLE if carried_by else _UNCERTAINTY_NOT_APPLICABLE,
         "offset_unit": "unicode-code-point",
-        "carried_by": carried_by,
-    }
-
-
-def _transcription_annotations_claim(formats: tuple[str, ...] | list[str]) -> dict[str, Any]:
-    """Measure which selected formats carry the Archetypus's own annotation layer.
-
-    The layer rides with the text in the literal-text formats, so the claim is
-    measured from the selection rather than fixed.
-    """
-    carried_by = _literal_formats_in(formats)
-    return {
-        "status": (
-            _TRANSCRIPTION_ANNOTATIONS_CARRIED
-            if carried_by
-            else _TRANSCRIPTION_ANNOTATIONS_NOT_APPLICABLE
-        ),
-        "authority": "archetypus",
-        "text_writable": False,
         "carried_by": carried_by,
     }
 
@@ -531,12 +469,19 @@ def build_armarium_bundle(
     ``read_bytes`` is used only for image blobs already verified by Armarium's
     upstream boundary.  It is never used to discover or recover text.
     """
-    _validate_projection(projection)
-    if projection.salvage_items is not None:
-        _validate_salvage_items(projection.salvage_items)
-    if projection.salvage_items and "salvage-tier" not in formats.formats:
-        raise SchemaRefusal("a non-empty sealed salvage inventory requires the salvage-tier format")
+    ink_map_rows = _validate_projection(projection)
     _validate_projection_region_bindings(projection)
+    # Derived once and handed to every writer that states them.
+    edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
+    other_outcomes = _other_outcomes(projection.other_readings)
+    ledger = _terminal_ledger(
+        _act_outcomes(projection.acts),
+        list(projection.pages),
+        projection.aggregate_basis["act_pages"],
+        projection.aggregate,
+        edge_hold_pages,
+        other_outcomes,
+    )
 
     members: dict[str, bytes] = {}
     source_rows, embedded = _source_rows(projection.pages, formats.embed_pixels, read_bytes)
@@ -546,19 +491,11 @@ def build_armarium_bundle(
     projected_others, embedded_other_crops = _acts_with_source_references(
         projection.other_readings, formats.embed_pixels, read_bytes
     )
-    projected_salvage, embedded_salvage = _salvage_with_source_references(
-        projection.salvage_items, formats.embed_pixels, read_bytes
-    )
     projection = replace(
         projection,
         acts=tuple(_mark_retained_references(record) for record in projected_acts),
         other_readings=tuple(_mark_retained_references(record) for record in projected_others),
         page_accounting=tuple(_mark_retained_references(list(projection.page_accounting))),
-        salvage_items=(
-            tuple(_mark_retained_references(record) for record in projected_salvage)
-            if projected_salvage is not None
-            else None
-        ),
     )
     sources_record: dict[str, Any] = {
         "schema": SOURCES_SCHEMA,
@@ -569,10 +506,9 @@ def build_armarium_bundle(
         "aggregate_basis": projection.aggregate_basis,
         "witness_chairs": list(projection.witness_chairs),
         "witness_floor": projection.witness_floor,
-        "salvage_regions": _salvage_regions(projection.salvage_items),
         # Lets a clean-machine verifier derive the page-level hold itself.
         "ink_map_pages": list(projection.ink_map_pages),
-        "other_outcomes": _other_outcomes(projection.other_readings),
+        "other_outcomes": other_outcomes,
         "other_citations": _act_citations(projection.other_readings),
         "page_accounting": list(projection.page_accounting),
         "act_readings": _act_readings(projection.acts),
@@ -612,6 +548,7 @@ def build_armarium_bundle(
             _text_bundle_members(
                 projection.acts,
                 source_rows,
+                ledger,
                 projection.continuation_joins,
                 projection.other_readings,
                 coniector_rows,
@@ -620,7 +557,11 @@ def build_armarium_bundle(
             )
         )
     if "acts-database" in formats.formats:
-        members["acts.sqlite"] = _acts_database_bytes(projection.acts)
+        members["acts.sqlite"] = _acts_database_bytes(
+            projection.acts,
+            {row["act_id"]: row["label"] for row in operator_rows},
+            _database_run_metadata(_manifest_run_binding(projection), ledger),
+        )
     if "jsonl" in formats.formats:
         members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts))
         if coniector_rows:
@@ -635,17 +576,16 @@ def build_armarium_bundle(
             _other_json_records(projection.other_readings)
         )
     if "review-items" in formats.formats:
-        members["review-items.jsonl"] = _jsonl_bytes(_review_records(projection.acts))
-    if "salvage-tier" in formats.formats:
-        members["salvage/items.jsonl"] = _jsonl_bytes(
-            _salvage_records(projection.salvage_items or ())
+        members["review-items.jsonl"] = _jsonl_bytes(
+            _review_records(projection.acts, projection.other_readings)
         )
     members.update(embedded)
     members.update(embedded_crops)
     members.update(embedded_other_crops)
-    members.update(embedded_salvage)
 
-    manifest = _export_manifest(projection, formats, members)
+    manifest = _export_manifest(
+        projection, formats, members, ledger, ink_map_rows, edge_hold_pages, other_outcomes
+    )
     archive_members = {EXPORT_MANIFEST_NAME: canonical_bytes(manifest), **members}
     data = _zip_bytes(archive_members)
     # A package that does not survive a clean extraction must fail before it
@@ -741,19 +681,18 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     sources = _load_sources(root)
     _verify_source_references(sources["pages"], root)
     _verify_region_references(sources, root)
-    _verify_salvage_region_references(sources, root)
     _act_citation_sources(sources)
     _act_outcome_sources(sources)
     _verify_retained_references_bounded(sources)
     _verify_manifest_source_counts(manifest, sources)
     _verify_pixel_claims(manifest, formats, sources)
-    _verify_display_claim(manifest)
     _verify_retained_run_claim(manifest)
     _verify_canonical_text_claim(manifest)
-    _verify_annotations_claims(manifest)
     _verify_uncertainty_claim(manifest)
     _verify_exact_product_members(formats, sources, actual_names)
-    search_fold_verification = _verify_product_accounting(root, manifest, formats, sources)
+    search_fold_verification, operator_labels = _verify_product_accounting(
+        root, manifest, formats, sources
+    )
     _verify_page_layers(root, manifest, formats, sources)
     _verify_continuation_joins(root, formats, sources)
     # The operator rows and the model readings beside corrected ones, read once
@@ -761,7 +700,12 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     recorded = _operator_rows(sources, manifest)
     models = _model_readings_shown(root, formats, sources, actual_names, recorded)
     _verify_coniector_layer(root, formats, sources, actual_names, models)
-    _verify_operator_layer(root, manifest, formats, sources, actual_names, recorded)
+    _verify_operator_layer(
+        root, manifest, formats, sources, actual_names, recorded, operator_labels
+    )
+    # Last, so every input the writer is fed has been checked on its own.
+    if "text-bundle" in formats.formats:
+        _verify_text_bundle_rendering(root, manifest, sources)
     verification = {}
     if search_fold_verification is not None:
         verification["search_fold"] = search_fold_verification
@@ -1066,11 +1010,7 @@ _MANIFEST_CLAIM_FIELDS: Final = frozenset(
         "page_census",
         "pixels",
         "retained_run_references",
-        "semantic_annotations",
-        "transcription_annotations",
         "uncertainty",
-        "display",
-        "salvage",
         "ink_map",
         "not_measured",
         "other_readings",
@@ -1094,24 +1034,6 @@ _CLAIM_SUBFIELDS: Final = {
     "page_census": frozenset({"denominator", "counted", "status"}),
     "ink_map": frozenset({"denominator", "held_pages", "unmeasurable_pages"}),
     "pixels": frozenset({"embedded", "resolution_claim"}),
-    "display": frozenset(
-        {
-            "convention",
-            "status",
-            "alters_stored_text",
-            "renders_canonical_uncertainty",
-            "exercised_against_real_spans",
-            "reason",
-        }
-    ),
-}
-# Two closed sets, not a union: an `accounted` claim carrying an absence reason is
-# refused.
-_SALVAGE_CLAIM_FIELDS: Final = {
-    "accounted": frozenset({"namespace", "status", "count", "promotion"}),
-    "not-produced-no-sealed-salvage-inventory": frozenset(
-        {"namespace", "status", "count", "reason", "promotion"}
-    ),
 }
 
 
@@ -1281,14 +1203,6 @@ def _verify_manifest_field_closure(manifest: dict[str, Any]) -> None:
     )
     if act_partition["denominator"] != _ACT_PARTITION_DENOMINATOR:
         raise SchemaRefusal("the manifest act denominator is not this build's fixed claim")
-    salvage = claims["salvage"]
-    if not isinstance(salvage, dict):
-        raise SchemaRefusal("the manifest salvage claim is not an object")
-    status = salvage.get("status")
-    expected = _SALVAGE_CLAIM_FIELDS.get(status) if isinstance(status, str) else None
-    if expected is None:
-        raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid salvage-tier status")
-    _require_exact_fields(salvage, expected, subject="the manifest salvage claim")
     rows = claims["act_partition"]["categories"]
     if not isinstance(rows, list):
         raise SchemaRefusal("EXPORT_MANIFEST.json has no category rows")
@@ -1393,17 +1307,6 @@ def _verify_not_measured_block(block: object) -> None:
         )
 
 
-def verify_projection_identity(data: bytes, clean_root) -> dict[str, str]:
-    """Prove every selected literal-text format carries identical clean text.
-
-    A package can pass digest verification while one writer transformed the
-    literal differently; this compares the values themselves.
-    """
-    manifest = verify_export_bundle(data, clean_root)
-    formats = _manifest_formats(manifest)
-    return _compare_literal_projections(clean_root, formats)
-
-
 def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
     """Package integrity and one reading per act across formats, in a single extraction.
 
@@ -1429,8 +1332,7 @@ def verify_delivered_bundle(data: bytes, clean_root) -> dict[str, Any]:
 def _compare_literal_projections(root: Path, formats: ArmariumFormats) -> dict[str, str]:
     """Compare already-verified literal members without extracting the package again.
 
-    Uncertainty, text status and transcription annotations are compared with the
-    text, so formats that disagree about whether an act is damaged fail as a
+    Uncertainty and text status are compared with the text, so formats that disagree about whether an act is damaged fail as a
     diverging literal would.
     """
     projections: dict[str, dict[str, tuple]] = {}
@@ -1535,8 +1437,6 @@ def _verify_continuation_joins(root: Path, formats: ArmariumFormats, sources: di
             raise SchemaRefusal(
                 f"continuation join {join['join_id']} does not recompute from its acts' literals"
             )
-    if "text-bundle" in formats.formats:
-        _verify_text_bundle_joins(root, sources, joins, act_keys)
 
 
 def _verify_coniector_layer(
@@ -1708,15 +1608,25 @@ def _verify_operator_layer(
     sources: dict[str, Any],
     actual_names: set[str],
     recorded: list[dict[str, Any]],
+    operator_labels: dict[str, str | None] | None,
 ) -> None:
     """Every format that carries the operator layer shows exactly the rows `sources.json` records.
 
-    `operator.jsonl` carries them when the JSONL format is selected, and the
-    text bundle shows each once beneath its reading's section in every folder
-    that sections the reading, so a label dropped from a format is refused.
+    `operator.jsonl` carries them when the JSONL format is selected, the text
+    bundle shows each once beneath its reading's section in every folder that
+    sections the reading, and the acts database names each act's label in its
+    `operator_label` column (`operator_labels`, by act id; None without the
+    database), so a label dropped from a format is refused.
     """
     _verify_reading_holds(sources, manifest, recorded)
     _verify_corrections(root, formats, sources, recorded)
+    if operator_labels is not None:
+        expected = {row["act_id"]: row["label"] for row in recorded if row["kind"] == "act"}
+        if operator_labels != {act_id: expected.get(act_id) for act_id in operator_labels}:
+            raise SchemaRefusal(
+                "the acts database does not label exactly the acts an operator released or "
+                "corrected, as their operator rows do"
+            )
     shown: list[tuple[str, list[dict[str, Any]]]] = []
     if "jsonl" in formats.formats:
         rows = (
@@ -1984,33 +1894,6 @@ def _operator_released_pages(
     }
 
 
-def _verify_text_bundle_joins(root, sources, joins, act_keys) -> None:
-    """Each act section's continuation notes mirror its join rows, and no section joins text."""
-    expected_notes = _join_notes(joins, act_keys)
-    folders = {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
-    for folder in sorted(folders):
-        lines = [*_package_lines(root / _text_member_path(folder), "text bundle"), ""]
-        act_id, act_notes = None, None
-        for line in lines:
-            if act_notes is not None and (not line or line.startswith("## ")):
-                if act_notes != expected_notes.get(act_id, []):
-                    raise SchemaRefusal(
-                        "the text bundle's continuation notes do not mirror its join rows"
-                    )
-                act_notes = None
-            if line.startswith("## RECONSTRUCTED ") or line == "reconstructed_text:":
-                raise SchemaRefusal(
-                    "the text bundle joins two readings by code; only the Coniector "
-                    "reconstructs across a page break"
-                )
-            if line.startswith("act-id: "):
-                act_id, act_notes = line.removeprefix("act-id: "), []
-            elif line.startswith("possible-continuation-"):
-                if act_notes is None:
-                    raise SchemaRefusal("a text-bundle continuation line sits outside its section")
-                act_notes.append(line)
-
-
 INK_MAP_DENOMINATOR: Final = "ink-map sealed pages"
 _INK_MAP_ROW_FIELDS: Final = frozenset({"ordinal", "initial_outcome", "remeasured"})
 # The gates travel with the counts because a clean-machine verifier recomputes
@@ -2046,8 +1929,7 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
     if not isinstance(rows, list | tuple):
         raise SchemaRefusal(
             f"{subject} does not carry its ink-map page rows as a list. Its page-level edge "
-            "holds cannot be derived or checked. Rebuild the export from an Armarium v3 source "
-            "graph."
+            "holds cannot be derived or checked. Rebuild the export from the intact run tree."
         )
     ordinals: set[int] = set()
     validated: list[dict[str, Any]] = []
@@ -2055,8 +1937,8 @@ def _validate_ink_map_pages(rows: Any, subject: str) -> list[dict[str, Any]]:
         if not isinstance(row, dict) or set(row) != _INK_MAP_ROW_FIELDS:
             raise SchemaRefusal(
                 f"{subject} has an ink-map row that is not its closed shape. The verifier cannot "
-                "tell which page measurement the row states. Rebuild the export from an intact "
-                "Armarium v3 source graph."
+                "tell which page measurement the row states. Rebuild the export from the intact "
+                "run tree."
             )
         ordinal, outcome, remeasured = row["ordinal"], row["initial_outcome"], row["remeasured"]
         if not is_plain_int(ordinal) or ordinal <= 0:
@@ -2256,7 +2138,8 @@ def _not_measured_claim(projection: ArmariumProjection) -> dict[str, Any]:
     }
 
 
-def _validate_projection(projection: ArmariumProjection) -> None:
+def _validate_projection(projection: ArmariumProjection) -> list[dict[str, Any]]:
+    """Refuse a projection no run could produce; return its validated ink-map rows."""
     has_fixture = _is_nonempty_str(projection.fixture_id)
     has_submission = _is_nonempty_str(projection.submission_id)
     if not has_fixture and not has_submission:
@@ -2376,6 +2259,7 @@ def _validate_projection(projection: ArmariumProjection) -> None:
     )
     if canonical_text(projection.aggregate) != canonical_text(expected_aggregate):
         raise SchemaRefusal("an Armarium projection aggregate does not match its measured basis")
+    return ink_map_rows
 
 
 def _validate_page_projection(
@@ -2452,11 +2336,8 @@ def _other_outcomes(others: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     """Each other reading's text-free terminal record, beside the act outcomes."""
     return [
         {
-            "act_id": other["act_id"],
-            "act_key": other["act_key"],
+            **_row_head(other),
             "page_ordinal": other["page_ordinal"],
-            "category": other["category"],
-            "reason": _export_reason(other),
             "text_status": other.get("text_status"),
         }
         for other in sorted(others, key=lambda item: item["act_id"])
@@ -2596,7 +2477,6 @@ def _validate_projection_act(act: dict[str, Any]) -> None:
         utf8_round_trip(act.get("uncertainty"), literal)
         _require_damage_record(
             act.get("text_status"),
-            act.get("transcription_annotations"),
             act.get("uncertainty"),
             literal,
             subject="Armarium projection act",
@@ -2606,15 +2486,11 @@ def _validate_projection_act(act: dict[str, Any]) -> None:
     elif act.get("uncertainty") is not None:
         # Offsets into a text the act does not have.
         raise SchemaRefusal("a non-delivered act may not carry an uncertainty layer")
-    elif act.get("text_status") is not None or act.get("transcription_annotations") is not None:
-        # An act with no Archetypus record has no status or annotation layer.
-        raise SchemaRefusal(
-            "a non-delivered act may not carry an established-text status or a "
-            "transcription annotation layer"
-        )
+    elif act.get("text_status") is not None:
+        # An act with no Archetypus record has no status.
+        raise SchemaRefusal("a non-delivered act may not carry an established-text status")
     if category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value:
         require_approval(ARMARIUM, category, act.get("approval_ref"))
-    _reject_act_salvage_namespace(act)
 
 
 def _delivered_doubt_counts(acts: tuple[dict[str, Any], ...]) -> dict[str, int]:
@@ -2653,17 +2529,16 @@ def _delivered_doubt_counts(acts: tuple[dict[str, Any], ...]) -> dict[str, int]:
 
 def _require_damage_record(
     text_status: Any,
-    annotations: Any,
     uncertainty: Any,
     literal: str,
     *,
     subject: str,
 ) -> None:
-    """Recompute a delivered act's text status from the layers carried beside it.
+    """Recompute a delivered act's text status from the uncertainty layer beside it.
 
     A carried status is never believed: a package must not say `established` over
-    an act whose own gap list records unread ink.
-    `annotations == []` means no damage was marked; `None` means no record.
+    an act whose own gap list records unread ink. A reading with no text and no
+    gap is never delivered: an empty reading is held before the Archetypus.
     """
     # Type before membership, so an unhashable JSON value is refused, not raised.
     if not isinstance(text_status, str) or text_status not in TEXT_STATUSES:
@@ -2671,28 +2546,22 @@ def _require_damage_record(
             f"a delivered {subject} carries established-text status {text_status!r}, which is "
             f"not one of {sorted(TEXT_STATUSES)}"
         )
-    if not isinstance(annotations, list):
-        raise SchemaRefusal(f"a delivered {subject} carries no transcription annotation layer")
-    # This layer holds free text, so it gets the producer's own validator.
-    # `witnesses=None`: the roster stays in the retained run, where attribution
-    # was checked at sealing.
     try:
-        validate_annotations(annotations, literal, None, f"{subject} transcription annotation")
+        expected = derive_record_text_status(literal, uncertainty)
     except SchemaRefusal as error:
         raise SchemaRefusal(
-            f"a delivered {subject}'s transcription annotation layer is not the closed "
-            f"layer this pipeline seals: {error}"
+            f"a delivered {subject}'s uncertainty layer cannot be read for the status of its text"
         ) from error
-    try:
-        expected = derive_record_text_status(literal, annotations, uncertainty)
-    except SchemaRefusal as error:
+    if expected == "no_readable_text":
         raise SchemaRefusal(
-            f"a delivered {subject}'s damage layers cannot be read for the status of its own text"
-        ) from error
+            f"a delivered {subject} has no text and no gap; an empty reading is held for "
+            "review, never delivered"
+        )
     if text_status != expected:
         raise SchemaRefusal(
-            f"a delivered {subject} claims established-text status {text_status!r} over damage "
-            f"layers that say {expected!r}; a damaged act may not be projected as a whole one"
+            f"a delivered {subject} claims established-text status {text_status!r} over an "
+            f"uncertainty layer that says {expected!r}; a damaged act may not be projected as "
+            "a whole one"
         )
 
 
@@ -2946,70 +2815,6 @@ def _aggregate_from_basis(
         raise SchemaRefusal("an Armarium aggregate basis cannot be reconciled") from error
 
 
-def _validate_salvage_items(items: tuple[dict[str, Any], ...]) -> None:
-    seen: set[str] = set()
-    for item in items:
-        if not isinstance(item, dict):
-            raise SchemaRefusal("a salvage-tier item is not an object")
-        _reject_salvage_act_namespace(item, subject="item")
-        salvage_id = item.get("salvage_id")
-        if not _is_safe_path_segment(salvage_id) or salvage_id in seen:
-            raise SchemaRefusal("a salvage-tier item has no unique, safe salvage identity")
-        if not isinstance(item.get("content"), str):
-            raise SchemaRefusal("a salvage-tier item has no separately named content")
-        regions = item.get("source_regions")
-        if not isinstance(regions, list) or not regions:
-            raise SchemaRefusal("a salvage-tier item has no source-region provenance")
-        if not isinstance(item.get("provenance"), dict) or not item["provenance"]:
-            raise SchemaRefusal("a salvage-tier item has no collection provenance")
-        for region in regions:
-            _validate_salvage_region(region)
-        seen.add(salvage_id)
-
-
-def _reject_act_salvage_namespace(act: dict[str, Any]) -> None:
-    """The salvage firewall in the other direction: no salvage record becomes an act.
-
-    A salvage record arriving as an act would have its harvested scrap written as
-    established text. This stage never writes act text; promotion is a pipeline
-    re-entry the project lead approves.
-    """
-    reached = sorted(set(act) & _SALVAGE_DISCRIMINANT_FIELDS)
-    if reached:
-        raise SchemaRefusal(
-            f"an Armarium projection act carries salvage-tier field(s) {reached}; "
-            "salvage is promoted by re-entering the pipeline, never by export"
-        )
-
-
-def _reject_salvage_act_namespace(value: Any, *, subject: str) -> None:
-    """The salvage firewall applies to nested provenance as well as record headers."""
-    try:
-        _reject_salvage_act_namespace_walk(value, subject=subject)
-    except RecursionError as error:
-        # Runs on unvalidated harvested content, which can nest past the
-        # recursion limit.
-        raise SchemaRefusal(
-            f"a salvage-tier {subject} nests too deeply for this machine to walk, so its "
-            "acts-namespace screen was never computable"
-        ) from error
-
-
-def _reject_salvage_act_namespace_walk(value: Any, *, subject: str) -> None:
-    if isinstance(value, dict):
-        forbidden = sorted(set(value) & _SALVAGE_RESERVED_FIELDS)
-        if forbidden:
-            raise SchemaRefusal(
-                f"a salvage-tier {subject} reaches into the acts namespace through "
-                f"reserved field(s) {forbidden}"
-            )
-        for item in value.values():
-            _reject_salvage_act_namespace_walk(item, subject=subject)
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            _reject_salvage_act_namespace_walk(item, subject=subject)
-
-
 def _validate_cited_region(region: object, *, subject: str) -> None:
     """Validate a crop citation before it is attached to any export namespace."""
     if not isinstance(region, dict):
@@ -3036,13 +2841,6 @@ def _validate_cited_region(region: object, *, subject: str) -> None:
     transform = region.get("transform")
     if not isinstance(transform, dict) or transform.get("operation") != "crop":
         raise SchemaRefusal(f"a {subject} source region has no crop transform")
-
-
-def _validate_salvage_region(region: object) -> None:
-    """Keep tier-only material cited to ink without turning it into an act."""
-    if isinstance(region, dict):
-        _reject_salvage_act_namespace(region, subject="source region")
-    _validate_cited_region(region, subject="salvage-tier")
 
 
 def _pages_by_ordinal(
@@ -3095,10 +2893,6 @@ def _validate_projection_region_bindings(projection: ArmariumProjection) -> None
         for region in act.get("source_regions", []):
             _validate_cited_region(region, subject="exported act")
             _verify_region_page_binding(region, pages, subject="exported act")
-    for item in projection.salvage_items or ():
-        for region in item["source_regions"]:
-            _validate_salvage_region(region)
-            _verify_region_page_binding(region, pages, subject="salvage-tier")
 
 
 def _source_rows(
@@ -3179,6 +2973,7 @@ def _image_reference(
 def _text_bundle_members(
     acts: tuple[dict[str, Any]],
     source_rows: list[dict[str, Any]],
+    ledger: dict[str, Any],
     joins: tuple[dict[str, Any], ...] = (),
     others: tuple[dict[str, Any], ...] = (),
     coniector_rows: tuple[dict[str, Any], ...] = (),
@@ -3186,6 +2981,13 @@ def _text_bundle_members(
     model_readings: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
+
+    Each file opens with the run's status (the terminal `ledger`'s) and how many
+    of its readings were delivered, and ends with a text-free `## NOT DELIVERED`
+    section for every unresolved page or unsealed source in the folder and every
+    reading on its pages that was not delivered, so a partial run never reads as
+    complete. The verifier renders every file again with this function and
+    requires the same bytes.
 
     A reading an operator acted on carries its operator lines, and a corrected
     one the model's reading beside the person's (`model_readings`, by id).
@@ -3234,9 +3036,28 @@ def _text_bundle_members(
     released = {row["act_id"]: row for row in operator_rows}
     models = model_readings or {}
     members: dict[str, bytes] = {}
+    not_delivered = _not_delivered_by_folder(
+        [
+            _not_delivered_row(reading, kind)
+            for reading, kind in _readings_by_kind(acts, others)
+            if reading["category"] != ArmariumCategory.DELIVERED.value
+        ],
+        source_rows,
+    )
+    unresolved_pages: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in _unresolved_page_rows(ledger["units"]):
+        unresolved_pages[_source_folder_for_declared_path(row["declared_path"])].append(row)
     for folder in sorted(folders):
         records = grouped[folder]
-        lines = [f"# Armarium text bundle — source folder: {folder or '.'}", ""]
+        lines = [
+            f"# Armarium text bundle — source folder: {folder or '.'}",
+            *_folder_status_lines(
+                ledger["status"],
+                len(records) + len(other_groups[folder]),
+                len(not_delivered[folder]),
+            ),
+            "",
+        ]
         for act in sorted(records, key=lambda item: act_key_sort_key(item["act_key"])):
             regions = act["source_regions"]
             lines.extend([f"## {act['act_key']} ({act['act_id']})", f"act-id: {act['act_id']}"])
@@ -3256,15 +3077,6 @@ def _text_bundle_members(
                     "uncertainty:",
                     json.dumps(act["uncertainty"], ensure_ascii=False, sort_keys=True),
                     f"text_status: {act['text_status']}",
-                    "transcription_annotations:",
-                    json.dumps(
-                        act["transcription_annotations"], ensure_ascii=False, sort_keys=True
-                    ),
-                    # Beside the canonical field, never instead of it: the verifier
-                    # strips it back and requires the canonical text exactly.
-                    f"display_convention: {DISPLAY_CONVENTION}",
-                    "display:",
-                    json.dumps(render_display(act[CANONICAL_TEXT_FIELD]), ensure_ascii=False),
                     *notes.get(act["act_id"], []),
                     *(
                         lines_for(released[act["act_id"]], models.get(act["act_id"]))
@@ -3289,8 +3101,193 @@ def _text_bundle_members(
             lines.extend(
                 _other_section(other, released.get(other["act_id"]), models.get(other["act_id"]))
             )
+        for row in unresolved_pages[folder]:
+            lines.extend(_unresolved_page_section(row))
+        for row in not_delivered[folder]:
+            lines.extend(_not_delivered_section(row))
         members[_text_member_path(folder)] = "\n".join(lines).encode("utf-8")
     return members
+
+
+def _unresolved_page_rows(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every unresolved sealed page, and every unsealed source, from the ledger's units.
+
+    A sealed page's source unit shares its page unit's category, so only the
+    page is named.
+    """
+    rows = []
+    for unit in units:
+        unit_type, ordinal = unit["unit_id"].split(":", 1)
+        if unit["category"] in _COMPLETED_CATEGORIES or not (
+            unit_type == "page"
+            or (
+                unit_type == "source"
+                and unit["category"] == ArmariumCategory.REFUSED_WITH_REASON.value
+            )
+        ):
+            continue
+        rows.append(
+            {
+                "kind": unit_type,
+                "ordinal": int(ordinal),
+                "category": unit["category"],
+                "reason": unit["reason"],
+                "declared_path": unit["declared_path"],
+            }
+        )
+    return sorted(rows, key=lambda row: row["ordinal"])
+
+
+def _unresolved_page_section(row: dict[str, Any]) -> list[str]:
+    """One text-free section for a page or source the run did not resolve."""
+    return [
+        f"{_NOT_DELIVERED_PREFIX}{row['kind']} {row['ordinal']}",
+        f"not-delivered: {row['kind']} {row['category']}",
+        f"not-delivered-reason: {json.dumps(row['reason'], ensure_ascii=False)}",
+        "",
+    ]
+
+
+_NOT_DELIVERED_PREFIX: Final = "## NOT DELIVERED "
+
+
+def _folder_status_lines(status: str, delivered: int, not_delivered: int) -> list[str]:
+    """A text-bundle file's opening lines: the run's status and this folder's count."""
+    said = "" if status == "complete" else " (EXPORT_MANIFEST.json claims.partial_reasons says why)"
+    return [
+        f"run-status: {status}{said}",
+        f"folder-readings: {delivered} delivered, {not_delivered} not delivered",
+    ]
+
+
+def _not_delivered_row(reading: dict[str, Any], kind: str) -> dict[str, Any]:
+    """What a text bundle says of a reading it does not deliver: who, where, and why."""
+    page = _key_page(reading["act_key"]) if kind == "act" else reading["page_ordinal"]
+    return {
+        **_row_head(reading),
+        "kind": kind,
+        "page_ordinal": page,
+        "approval_ref": reading.get("approval_ref"),
+    }
+
+
+def _not_delivered_by_folder(
+    rows: list[dict[str, Any]], pages: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    """Each not-delivered reading under the folder of the page it was read on, in reading order."""
+    paths = {page["ordinal"]: page["declared_path"] for page in pages}
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in sorted(rows, key=lambda item: act_key_sort_key(item["act_key"])):
+        if row["page_ordinal"] not in paths:
+            raise SchemaRefusal(f"the not-delivered reading {row['act_key']} names no source page")
+        grouped[_source_folder_for_declared_path(paths[row["page_ordinal"]])].append(row)
+    return grouped
+
+
+def _not_delivered_section(row: dict[str, Any]) -> list[str]:
+    """One text-free section for a reading the package does not deliver."""
+    return [
+        f"{_NOT_DELIVERED_PREFIX}{row['act_key']} ({row['act_id']})",
+        f"not-delivered: {row['kind']} {row['category']}",
+        f"not-delivered-reason: {json.dumps(row['reason'], ensure_ascii=False)}",
+        *(
+            [f"not-delivered-approval: {json.dumps(row['approval_ref'], ensure_ascii=False)}"]
+            if row["approval_ref"] is not None
+            else []
+        ),
+        "",
+    ]
+
+
+def _verify_text_bundle_rendering(
+    root: Path, manifest: dict[str, Any], sources: dict[str, Any]
+) -> None:
+    """Every text-bundle file is exactly what this build's writer renders for the package.
+
+    The writer is fed only what verification has already checked: the
+    accounting, citations, readings, joins, operator rows and model readings of
+    `sources.json`, the manifest's ledger, and each delivered reading's literal,
+    uncertainty layer and status as the text bundle carries them (hash- and
+    damage-checked by the parsers) with the reconstruction rows it shows (each
+    recomputed). Any other line, a changed title, or a moved section is refused.
+    """
+    act_texts = _text_bundle_records(root, sources["pages"])
+    other_texts = _text_bundle_other_records(root, sources["pages"])
+    readings = {row["act_id"]: row["reading"] for row in sources["act_readings"]}
+
+    def projected(outcome: dict[str, Any], citations: dict[str, Any], text: Any) -> dict[str, Any]:
+        reading = {**outcome, CANONICAL_TEXT_FIELD: None}
+        if outcome["category"] == ArmariumCategory.DELIVERED.value:
+            literal, uncertainty, status = text
+            reading.update(
+                {
+                    CANONICAL_TEXT_FIELD: literal,
+                    "uncertainty": uncertainty,
+                    "text_status": status,
+                    "source_regions": citations[outcome["act_id"]]["source_regions"],
+                }
+            )
+        return reading
+
+    act_citations = _act_citation_sources(sources)
+    acts = tuple(
+        {
+            **projected(
+                outcome,
+                act_citations,
+                (record.literal, record.uncertainty, record.text_status)
+                if (record := act_texts.get(act_id)) is not None
+                else None,
+            ),
+            "reading": readings.get(act_id),
+        }
+        for act_id, outcome in _act_outcome_sources(sources).items()
+    )
+    other_citations = _act_citation_sources(sources, "other_citations")
+    others = tuple(
+        projected(
+            outcome,
+            other_citations,
+            (record[1], record[4], record[5])
+            if (record := other_texts.get(act_id)) is not None
+            else None,
+        )
+        for act_id, outcome in _other_outcome_sources(sources).items()
+    )
+    folders = sorted(
+        {_source_folder_for_declared_path(page["declared_path"]) for page in sources["pages"]}
+    )
+    files = {
+        folder: _package_lines(root / _text_member_path(folder), "text bundle")
+        for folder in folders
+    }
+    shown = {
+        tuple(row["act_ids"]): row
+        for lines in files.values()
+        for _place, row in text_bundle_placements(lines)[1]
+    }
+    try:
+        expected = _text_bundle_members(
+            acts,
+            sources["pages"],
+            manifest["claims"]["terminal_ledger"],
+            tuple(sources["continuation_joins"] or ()),
+            others,
+            tuple(shown[tuple(act_ids)] for act_ids in sources["reconstructions"] or ()),
+            tuple(sources[OPERATOR_SOURCES_FIELD] or ()),
+            {model["act_id"]: model for model in sources[MODEL_READINGS_FIELD] or ()},
+        )
+    except (KeyError, TypeError) as error:
+        raise SchemaRefusal(
+            "the text bundle cannot be rendered again from the package's own accounting"
+        ) from error
+    for folder in folders:
+        path = _text_member_path(folder)
+        if "\n".join(files[folder]).encode("utf-8") != expected.get(path):
+            raise SchemaRefusal(
+                f"the text bundle for folder {folder or '.'!r} is not exactly what this build "
+                "writes for the package's own accounting"
+            )
 
 
 _OTHER_SECTION_PREFIX: Final = "## OTHER "
@@ -3456,44 +3453,6 @@ def _acts_with_source_references(
     return tuple(projected), embedded
 
 
-def _salvage_with_source_references(
-    items: tuple[dict[str, Any], ...] | None,
-    embed_pixels: bool,
-    read_bytes: Callable[[str], bytes],
-) -> tuple[tuple[dict[str, Any], ...] | None, dict[str, bytes]]:
-    """Project cited salvage regions without ever constructing an act record."""
-    if items is None:
-        return None, {}
-    projected: list[dict[str, Any]] = []
-    embedded: dict[str, bytes] = {}
-    for item in items:
-        salvage_id = item["salvage_id"]
-        copied_item = dict(item)
-        regions: list[dict[str, Any]] = []
-        seen_regions: set[str] = set()
-        for region in item["source_regions"]:
-            _validate_salvage_region(region)
-            copied = dict(region)
-            region_id = copied["region_id"]
-            if region_id in seen_regions:
-                raise SchemaRefusal("a salvage-tier item repeats a source-region identity")
-            seen_regions.add(region_id)
-            copied["crop_image"] = _image_reference(
-                copied["image_path"],
-                copied["image_sha256"],
-                f"pixels/salvage/{salvage_id}/{region_id}.img",
-                embed_pixels,
-                read_bytes,
-                embedded,
-                changed="a salvage-tier source crop changed while export was built",
-                collision="two salvage source crops claim one package member",
-            )
-            regions.append(copied)
-        copied_item["source_regions"] = regions
-        projected.append(copied_item)
-    return tuple(projected), embedded
-
-
 _UNSAFE_PATH_CHARACTERS: Final = frozenset({"\\", "\x00"})
 
 
@@ -3648,7 +3607,29 @@ def _text_member_path(folder: str) -> str:
     return f"text/_source_folder/{folder}/readings.txt"
 
 
-def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
+def _database_run_metadata(run: dict[str, str], ledger: dict[str, Any]) -> dict[str, str]:
+    """What the acts database says of its run: who, and whether it is complete and why not.
+
+    The manifest's `run` binding and its ledger's status and reasons, so a reader
+    of the database alone sees that a partial run is partial.
+    """
+    return {
+        "run": canonical_text(run),
+        "run_status": ledger["status"],
+        "partial_reasons": canonical_text(ledger["unresolved_reasons"]),
+    }
+
+
+def _acts_database_bytes(
+    acts: tuple[dict[str, Any], ...],
+    operator_labels: dict[str, str],
+    run_metadata: dict[str, str],
+) -> bytes:
+    """The acts table, its search layer and its metadata.
+
+    `operator_labels` are by act id, from the operator rows; `run_metadata` is
+    `_database_run_metadata`'s.
+    """
     with tempfile.TemporaryDirectory(prefix="armarium-sqlite-") as directory:
         path = f"{directory}/acts.sqlite"
         connection = sqlite3.connect(path)
@@ -3665,49 +3646,19 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
                 "normalizer_revision": TEXTNORM_REVISION,
                 "schema": _SQLITE_SCHEMA,
                 "unidata_version": unicodedata.unidata_version,
+                **run_metadata,
             }
             connection.executemany(
                 "INSERT INTO export_metadata(key, value) VALUES (?, ?)",
                 sorted(metadata.items()),
             )
             for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
-                literal = act[CANONICAL_TEXT_FIELD]
-                text_hash = canonical_text_sha256(literal) if literal is not None else None
+                row = _database_row(act, operator_labels.get(act["act_id"]))
                 connection.execute(
-                    """
-                    INSERT INTO acts(
-                        act_id, act_key, category, canonical_clean_text,
-                        canonical_text_sha256, provenance_json, source_regions_json,
-                        uncertainty_json, uncertainty_status, text_status,
-                        transcription_annotations_json, semantic_annotations_json,
-                        semantic_annotation_status, evidence_json, approval_ref, reason,
-                        reading
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        act["act_id"],
-                        act["act_key"],
-                        act["category"],
-                        literal,
-                        text_hash,
-                        canonical_text(act["provenance"]) if literal is not None else None,
-                        canonical_text(act["source_regions"]) if literal is not None else None,
-                        canonical_text(act["uncertainty"]) if literal is not None else None,
-                        _UNCERTAINTY_AVAILABLE
-                        if literal is not None
-                        else _UNCERTAINTY_NOT_APPLICABLE,
-                        act["text_status"] if literal is not None else None,
-                        canonical_text(act["transcription_annotations"])
-                        if literal is not None
-                        else None,
-                        "[]",
-                        _SEMANTIC_ANNOTATION_NOT_PRODUCED,
-                        canonical_text(_act_evidence(act)),
-                        act.get("approval_ref"),
-                        _export_reason(act),
-                        act["reading"],
-                    ),
+                    f"INSERT INTO acts({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
+                    tuple(row.values()),
                 )
+                literal, text_hash = row[CANONICAL_TEXT_FIELD], row["canonical_text_sha256"]
                 if literal is not None:
                     derived = search_fold(literal)
                     cursor = connection.execute(
@@ -3744,35 +3695,88 @@ def _acts_database_bytes(acts: tuple[dict[str, Any], ...]) -> bytes:
         return Path(path).read_bytes()
 
 
+def _row_head(reading: dict[str, Any]) -> dict[str, Any]:
+    """The fields every row of one reading carries, in every row-shaped member.
+
+    `acts.jsonl`, `other.jsonl`, `review-items.jsonl` and the acts database each
+    build their rows on this, so a field every row carries is added here once.
+    """
+    return {
+        "act_id": reading["act_id"],
+        "act_key": reading["act_key"],
+        "category": reading["category"],
+        "reason": _export_reason(reading),
+    }
+
+
+def _text_fields(reading: dict[str, Any]) -> dict[str, Any]:
+    """A reading's text and the fields that describe it, all null (regions empty) without text."""
+    literal = reading[CANONICAL_TEXT_FIELD]
+    delivered = literal is not None
+    return {
+        CANONICAL_TEXT_FIELD: literal,
+        "canonical_text_sha256": canonical_text_sha256(literal) if delivered else None,
+        "provenance": reading.get("provenance") if delivered else None,
+        "source_regions": reading.get("source_regions", []) if delivered else [],
+        "uncertainty": reading.get("uncertainty") if delivered else None,
+        "text_status": reading.get("text_status") if delivered else None,
+    }
+
+
+def _uncertainty_status(reading: dict[str, Any]) -> str:
+    """Whether a row's uncertainty layer anchors to a text it carries."""
+    return (
+        _UNCERTAINTY_AVAILABLE
+        if reading[CANONICAL_TEXT_FIELD] is not None
+        else _UNCERTAINTY_NOT_APPLICABLE
+    )
+
+
+def _readings_by_kind(
+    acts: tuple[dict[str, Any], ...], others: tuple[dict[str, Any], ...]
+) -> list[tuple[dict[str, Any], str]]:
+    """Every reading with its kind, acts and other readings together, in reading order."""
+    paired = [(act, "act") for act in acts] + [(other, "other") for other in others]
+    return sorted(paired, key=lambda item: act_key_sort_key(item[0]["act_key"]))
+
+
+def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, Any]:
+    """One `acts` table row, by column; text-derived columns are null without text.
+
+    `operator_label` is the act's operator row's label ("released by operator",
+    "corrected by a person"), so a database-only reader sees that a person
+    acted on the reading; null for an act no operator acted on.
+    """
+    fields = _text_fields(act)
+    delivered = fields[CANONICAL_TEXT_FIELD] is not None
+    return {
+        **_row_head(act),
+        CANONICAL_TEXT_FIELD: fields[CANONICAL_TEXT_FIELD],
+        "canonical_text_sha256": fields["canonical_text_sha256"],
+        **{
+            f"{name}_json": canonical_text(fields[name]) if delivered else None
+            for name in ("provenance", "source_regions", "uncertainty")
+        },
+        "uncertainty_status": _uncertainty_status(act),
+        "text_status": fields["text_status"],
+        "evidence_json": canonical_text(_act_evidence(act)),
+        "approval_ref": act.get("approval_ref"),
+        "reading": act["reading"],
+        "operator_label": operator_label,
+    }
+
+
 def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
-        literal = act[CANONICAL_TEXT_FIELD]
         records.append(
             {
                 "schema": ACT_RECORD_SCHEMA,
-                "act_id": act["act_id"],
-                "act_key": act["act_key"],
-                "category": act["category"],
-                CANONICAL_TEXT_FIELD: literal,
-                "canonical_text_sha256": canonical_text_sha256(literal)
-                if literal is not None
-                else None,
-                "provenance": act.get("provenance") if literal is not None else None,
-                "source_regions": act.get("source_regions", []) if literal is not None else [],
-                "uncertainty": act.get("uncertainty") if literal is not None else None,
-                "uncertainty_status": _UNCERTAINTY_AVAILABLE
-                if literal is not None
-                else _UNCERTAINTY_NOT_APPLICABLE,
-                "text_status": act.get("text_status") if literal is not None else None,
-                "transcription_annotations": act.get("transcription_annotations")
-                if literal is not None
-                else None,
-                "semantic_annotations": [],
-                "semantic_annotation_status": _SEMANTIC_ANNOTATION_NOT_PRODUCED,
+                **_row_head(act),
+                **_text_fields(act),
+                "uncertainty_status": _uncertainty_status(act),
                 **_act_evidence(act),
                 "approval_ref": act.get("approval_ref"),
-                "reason": _export_reason(act),
                 "reading": act["reading"],
             }
         )
@@ -3783,27 +3787,14 @@ def _other_json_records(others: tuple[dict[str, Any], ...]) -> list[dict[str, An
     """`other.jsonl`: one row per other reading, text only when it was delivered."""
     records: list[dict[str, Any]] = []
     for other in sorted(others, key=lambda item: act_key_sort_key(item["act_key"])):
-        literal = other[CANONICAL_TEXT_FIELD]
-        delivered = literal is not None
         records.append(
             {
                 "schema": OTHER_READING_SCHEMA,
-                "act_id": other["act_id"],
-                "act_key": other["act_key"],
+                **_row_head(other),
                 "kind": "other",
                 "page_ordinal": other["page_ordinal"],
-                "category": other["category"],
-                CANONICAL_TEXT_FIELD: literal,
-                "canonical_text_sha256": canonical_text_sha256(literal) if delivered else None,
-                "text_status": other.get("text_status") if delivered else None,
-                "uncertainty": other.get("uncertainty") if delivered else None,
-                "transcription_annotations": other.get("transcription_annotations")
-                if delivered
-                else None,
-                "provenance": other.get("provenance") if delivered else None,
-                "source_regions": other.get("source_regions", []) if delivered else [],
+                **_text_fields(other),
                 **_act_evidence(other),
-                "reason": _export_reason(other),
             }
         )
     return records
@@ -3830,32 +3821,19 @@ def _export_reason(act: dict[str, Any]) -> str | None:
     return act.get("reason")
 
 
-def _review_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+def _review_records(
+    acts: tuple[dict[str, Any], ...], others: tuple[dict[str, Any], ...]
+) -> list[dict[str, Any]]:
+    """Every held or refused reading, in reading order, its `kind` act or other."""
     return [
         {
-            "schema": "armarium-review-item.v1",
-            "act_id": act["act_id"],
-            "act_key": act["act_key"],
-            "category": act["category"],
-            "reason": _export_reason(act),
-            "evidence_refs": act.get("evidence_refs", []),
+            "schema": REVIEW_ITEM_SCHEMA,
+            **_row_head(reading),
+            "kind": kind,
+            "evidence_refs": reading.get("evidence_refs", []),
         }
-        for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"]))
-        if act["category"] in _REVIEW_CATEGORIES
-    ]
-
-
-def _salvage_records(items: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
-    return [
-        {
-            "schema": SALVAGE_RECORD_SCHEMA,
-            "salvage_id": item["salvage_id"],
-            "content": item["content"],
-            "source_regions": item["source_regions"],
-            "provenance": item.get("provenance"),
-            "promotion": "requires-recorded-approval-and-pipeline-re-entry",
-        }
-        for item in sorted(items, key=lambda item: item["salvage_id"])
+        for reading, kind in _readings_by_kind(acts, others)
+        if reading["category"] in _REVIEW_CATEGORIES
     ]
 
 
@@ -3896,7 +3874,6 @@ class _TextBundleRecord(NamedTuple):
     citations: tuple[tuple[str, str], ...]
     uncertainty: dict[str, Any]
     text_status: str
-    annotations: list[Any]
     heading_key: str
     # An act's reading, on the line after its act-id; `None` without one.
     reading: str | None = None
@@ -3934,8 +3911,6 @@ def _text_bundle_records(
         heading_key: str | None = None
         pending: tuple[str, str, tuple[tuple[str, str], ...]] | None = None
         pending_uncertainty: dict[str, Any] | None = None
-        pending_text_status: str | None = None
-        pending_annotations: list[Any] | None = None
         reading: str | None = None
         citations: list[tuple[str, str]] = []
         for index, line in enumerate(lines):
@@ -3955,7 +3930,7 @@ def _text_bundle_records(
                 if not heading_key:
                     raise SchemaRefusal("a text-bundle human heading has no act key")
                 citations = []
-                pending = pending_uncertainty = pending_text_status = pending_annotations = None
+                pending = pending_uncertainty = None
                 reading = None
             elif line.startswith(_READING_PREFIX):
                 if current_id is None or not lines[index - 1].startswith("act-id: "):
@@ -4019,64 +3994,24 @@ def _text_bundle_records(
                         "a text-bundle uncertainty layer does not anchor to its own act's literal"
                     ) from error
             elif line.startswith("text_status: "):
+                # The section's last field completes its record.
                 if current_id is None or pending is None:
                     raise SchemaRefusal(
                         "a text-bundle established-text status has no literal to describe"
                     )
-                if pending_text_status is not None:
-                    raise SchemaRefusal(
-                        "a text-bundle section carries more than one established-text status"
-                    )
-                pending_text_status = line.removeprefix("text_status: ")
-            elif line == "transcription_annotations:":
-                if current_id is None or pending is None or index + 1 >= len(lines):
-                    raise SchemaRefusal(
-                        "a text-bundle transcription annotation layer has no literal to mark up"
-                    )
-                if pending_annotations is not None:
-                    raise SchemaRefusal(
-                        "a text-bundle section carries more than one transcription annotation layer"
-                    )
-                pending_annotations = _decode_json(
-                    lines[index + 1], "a text-bundle transcription annotation layer is not JSON"
-                )
-            elif line == "display:":
-                # Stripping the display must return the canonical text exactly, so
-                # display markup never enters the hashed text.
-                if current_id is None or pending is None or index + 1 >= len(lines):
-                    raise SchemaRefusal("a text-bundle display has no literal to render")
                 if pending_uncertainty is None:
                     raise SchemaRefusal(
                         "a text-bundle section carries a literal with no uncertainty layer"
                     )
+                text_status = line.removeprefix("text_status: ")
                 # Recomputed here because the text bundle may be the only literal
                 # format, where cross-format identity catches nothing.
-                if pending_text_status is None or pending_annotations is None:
-                    raise SchemaRefusal(
-                        "a text-bundle section carries a literal with no established-text "
-                        "status or no transcription annotation layer"
-                    )
                 _require_damage_record(
-                    pending_text_status,
-                    pending_annotations,
+                    text_status,
                     pending_uncertainty,
                     pending[0],
                     subject="text-bundle section",
                 )
-                convention_line = lines[index - 1] if index else ""
-                if convention_line != f"display_convention: {DISPLAY_CONVENTION}":
-                    raise SchemaRefusal("a text-bundle display names no known convention")
-                rendered = _decode_json(lines[index + 1], "a text-bundle display is not JSON")
-                try:
-                    stripped = strip_display(rendered) if isinstance(rendered, str) else None
-                except ValueError as error:
-                    raise SchemaRefusal(
-                        "a text-bundle display is not a renderable display convention"
-                    ) from error
-                if stripped != pending[0]:
-                    raise SchemaRefusal(
-                        "a text-bundle display does not strip back to its canonical clean text"
-                    )
                 citation_folders = sorted(
                     {_source_folder_for_declared_path(path) for path, _digest in citations}
                 )
@@ -4085,8 +4020,7 @@ def _text_bundle_records(
                 candidate = _TextBundleRecord(
                     *pending,
                     pending_uncertainty,
-                    pending_text_status,
-                    pending_annotations,
+                    text_status,
                     heading_key,
                     reading,
                 )
@@ -4106,7 +4040,6 @@ def _text_bundle_records(
                 record_locations.add(location)
                 records[current_id] = candidate
                 current_id, heading_key, pending, pending_uncertainty = None, None, None, None
-                pending_text_status, pending_annotations = None, None
         if current_id is not None:
             raise SchemaRefusal("a text-bundle section has no completed literal record")
     return records
@@ -4119,13 +4052,24 @@ def _text_bundle_literals(root) -> dict[str, tuple]:
             record.digest,
             record.uncertainty,
             record.text_status,
-            record.annotations,
         )
         for act_id, record in _text_bundle_records(root).items()
     }
 
 
 _STORED_ACTS_TABLES: Final = ("acts", "act_search", "export_metadata")
+_DATABASE_METADATA_KEYS: Final = frozenset(
+    {
+        "canonical_text_encoding",
+        "canonical_text_field",
+        "normalizer_revision",
+        "schema",
+        "unidata_version",
+        "run",
+        "run_status",
+        "partial_reasons",
+    }
+)
 _SQLITE_PRODUCT_TABLES: Final = (*_STORED_ACTS_TABLES, "acts_fts")
 # Writer and verifier share this DDL, so the schema check covers FTS shadow
 # tables and implicit indexes without a second spelling. The `acts` table
@@ -4146,13 +4090,11 @@ _ACTS_DATABASE_DDL: Final = """
                     uncertainty_json TEXT,
                     uncertainty_status TEXT NOT NULL,
                     text_status TEXT,
-                    transcription_annotations_json TEXT,
-                    semantic_annotations_json TEXT NOT NULL,
-                    semantic_annotation_status TEXT NOT NULL,
                     evidence_json TEXT NOT NULL,
                     approval_ref TEXT,
                     reason TEXT,
-                    reading TEXT
+                    reading TEXT,
+                    operator_label TEXT
                 );
                 CREATE TABLE act_search (
                     rowid INTEGER PRIMARY KEY,
@@ -4288,7 +4230,7 @@ def _database_literals(path) -> dict[str, tuple]:
         path,
         """
         SELECT act_id, canonical_clean_text, canonical_text_sha256, uncertainty_json,
-               text_status, transcription_annotations_json
+               text_status
         FROM acts
         WHERE canonical_clean_text IS NOT NULL
         ORDER BY act_id
@@ -4296,28 +4238,23 @@ def _database_literals(path) -> dict[str, tuple]:
         "the acts database cannot be read for projection identity",
     )
     records: dict[str, tuple] = {}
-    for act_id, literal, digest, uncertainty_json, text_status, annotations_json in rows:
+    for act_id, literal, digest, uncertainty_json, text_status in rows:
         if (
             not isinstance(act_id, str)
             or not isinstance(literal, str)
             or not isinstance(digest, str)
             or not isinstance(uncertainty_json, str)
-            or not isinstance(annotations_json, str)
         ):
             raise SchemaRefusal("the acts database has an untyped literal row")
         if digest != canonical_text_sha256(literal) or act_id in records:
             raise SchemaRefusal("the acts database literal identity or hash is invalid")
         uncertainty = _database_json_layer(uncertainty_json, "uncertainty")
-        annotations = _database_json_layer(annotations_json, "transcription annotation")
-        _require_damage_record(
-            text_status, annotations, uncertainty, literal, subject="acts database row"
-        )
+        _require_damage_record(text_status, uncertainty, literal, subject="acts database row")
         records[act_id] = (
             literal,
             digest,
             validate_uncertainty(uncertainty, literal),
             text_status,
-            annotations,
         )
     return records
 
@@ -4342,7 +4279,6 @@ def _jsonl_literals(path) -> dict[str, tuple]:
             raise SchemaRefusal("an acts JSONL literal identity or hash is invalid")
         _require_damage_record(
             record.get("text_status"),
-            record.get("transcription_annotations"),
             record.get("uncertainty"),
             literal,
             subject="acts JSONL row",
@@ -4352,7 +4288,6 @@ def _jsonl_literals(path) -> dict[str, tuple]:
             digest,
             validate_uncertainty(record.get("uncertainty"), literal),
             record.get("text_status"),
-            record.get("transcription_annotations"),
         )
     return records
 
@@ -4373,7 +4308,7 @@ def _page_ledger_category(
     if edge_hold:
         return (
             ArmariumCategory.HELD_FOR_REVIEW.value,
-            f"unclaimed-edge-ink: page {ordinal} carries unreleased ink-map evidence",
+            edge_hold_reason(ordinal),
         )
     if not act_categories:
         # Every page read has a row, so one with no act row holds only other
@@ -4465,6 +4400,8 @@ def _terminal_ledger(
         others_on_page.setdefault(record["page_ordinal"], []).append(record["category"])
     page_units: list[dict[str, Any]] = []
     source_units: list[dict[str, Any]] = []
+    # Each unresolved page's one fact, in the words the aggregate uses for it.
+    page_facts: list[str] = []
     for page in sorted(pages, key=lambda row: row["ordinal"]):
         ordinal = page["ordinal"]
         if page.get("outcome") == "sealed":
@@ -4475,9 +4412,14 @@ def _terminal_ledger(
                 other_categories=others_on_page.get(ordinal, []),
             )
             page_units.append(_page_ledger_unit("page", page, category, reason))
+            if category not in _COMPLETED_CATEGORIES:
+                page_facts.append(reason)
         else:
             category = ArmariumCategory.REFUSED_WITH_REASON.value
             reason = page.get("reason") or "no reason was recorded"
+            page_facts.append(
+                unsealed_page_reason(ordinal, page.get("outcome"), page.get("reason"))
+            )
         source_units.append(_page_ledger_unit("source", page, category, reason))
 
     act_units = [
@@ -4519,17 +4461,11 @@ def _terminal_ledger(
     if sum(by_category.values()) != len(units):
         raise SchemaRefusal("a terminal ledger unit landed in no category at all")
 
-    unresolved = [
-        f"{unit['unit_type']} {unit['unit_id'].split(':', 1)[1]} is {unit['category']}"
-        + (f": {unit['reason']}" if unit["reason"] else "")
-        for unit in units
-        if unit["category"] not in _COMPLETED_CATEGORIES
-    ]
-    reasons = list(unresolved)
-    if aggregate.get("status") != "complete":
-        for reason in aggregate.get("reasons", []):
-            if reason not in reasons:
-                reasons.append(reason)
+    reasons = _unresolved_reasons(
+        units,
+        aggregate.get("reasons", []) if aggregate.get("status") != "complete" else [],
+        page_facts,
+    )
     return {
         "schema": TERMINAL_LEDGER_SCHEMA,
         "denominator": _LEDGER_DENOMINATOR,
@@ -4544,10 +4480,60 @@ def _terminal_ledger(
     }
 
 
+def _unresolved_reasons(
+    units: list[dict[str, Any]], aggregate_reasons: list[str], page_facts: list[str]
+) -> list[str]:
+    """One line per unresolved fact: the aggregate's reasons, then what only the ledger knows.
+
+    Both sides state a fact with the same `common.contracts.outcomes` sentence,
+    so a fact is one string and is named once. The aggregate's line for an
+    unresolved act gains the act's recorded reason; an act it does not name is
+    still named, so no unit drops out. Every unresolved `other` reading is named
+    by key with its reason, since the aggregate names only its page. Each
+    unresolved page or unsealed source adds its own fact (`page_facts`).
+    """
+
+    def line(unit: dict[str, Any]) -> str:
+        fact = (
+            unresolved_act_reason(unit["act_key"], unit["category"])
+            if unit["unit_type"] == "act"
+            else f"other {unit['act_key']} is {unit['category']}"
+        )
+        return f"{fact}: {unit['reason']}" if unit["reason"] else fact
+
+    unresolved = [unit for unit in units if unit["category"] not in _COMPLETED_CATEGORIES]
+    acts = {
+        unresolved_act_reason(unit["act_key"], unit["category"]): unit
+        for unit in unresolved
+        if unit["unit_type"] == "act"
+    }
+    reasons: list[str] = []
+
+    def add(reason: str) -> None:
+        if reason not in reasons:
+            reasons.append(reason)
+
+    for reason in aggregate_reasons:
+        unit = acts.pop(reason, None)
+        add(line(unit) if unit is not None else reason)
+    for unit in acts.values():
+        add(line(unit))
+    for unit in unresolved:
+        if unit["unit_type"] == "other":
+            add(line(unit))
+    for fact in page_facts:
+        add(fact)
+    return reasons
+
+
 def _export_manifest(
     projection: ArmariumProjection,
     formats: ArmariumFormats,
     members: dict[str, bytes],
+    ledger: dict[str, Any],
+    ink_map_rows: list[dict[str, Any]],
+    edge_hold_pages: tuple[int, ...],
+    other_outcomes: list[dict[str, Any]],
 ) -> dict[str, Any]:
     counts = Counter(act["category"] for act in projection.acts)
     categories = [
@@ -4565,28 +4551,6 @@ def _export_manifest(
         for row in projection.source_manifest
         if isinstance(row, dict) and isinstance(row.get("relative_path"), str)
     }
-    if projection.salvage_items is None:
-        salvage_status = {
-            "status": "not-produced-no-sealed-salvage-inventory",
-            "count": None,
-            "reason": _SALVAGE_ABSENCE_REASON,
-        }
-    else:
-        salvage_status = {"status": "accounted", "count": len(projection.salvage_items)}
-    ink_map_rows = _validate_ink_map_pages(list(projection.ink_map_pages), "an Armarium projection")
-    edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
-    unmeasurable_ink_map_pages = _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
-    other_outcomes = _other_outcomes(projection.other_readings)
-    ledger = _terminal_ledger(
-        _act_outcomes(projection.acts),
-        list(projection.pages),
-        projection.aggregate_basis.get("act_pages")
-        if isinstance(projection.aggregate_basis, dict)
-        else None,
-        projection.aggregate,
-        edge_hold_pages,
-        other_outcomes,
-    )
     manifest: dict[str, Any] = {
         "schema": EXPORT_MANIFEST_SCHEMA,
         "canonical_text": _canonical_text_claim(formats.formats),
@@ -4599,7 +4563,9 @@ def _export_manifest(
             "ink_map": {
                 "denominator": INK_MAP_DENOMINATOR,
                 "held_pages": list(edge_hold_pages),
-                "unmeasurable_pages": list(unmeasurable_ink_map_pages),
+                "unmeasurable_pages": list(
+                    _unmeasurable_ink_map_pages_from_validated_rows(ink_map_rows)
+                ),
             },
             "act_partition": _act_partition_claim(projection, categories),
             "submission_inventory": {
@@ -4624,28 +4590,7 @@ def _export_manifest(
                 "availability": _RUN_ACCESS_REQUIRED,
                 "resolution_claim": "artifact and receipt citations require retained-run access",
             },
-            "semantic_annotations": {
-                "status": _SEMANTIC_ANNOTATIONS_CLAIM,
-                "text_writable": False,
-            },
-            "transcription_annotations": _transcription_annotations_claim(formats.formats),
             "uncertainty": _uncertainty_claim(formats.formats),
-            # A proposal: the display convention is the project lead's choice, and
-            # nothing hashed depends on it. The rendering does not show uncertainty;
-            # the `uncertainty:` field beside each literal carries it.
-            "display": {
-                "convention": DISPLAY_CONVENTION,
-                "status": "proposed-not-yet-chosen",
-                "alters_stored_text": False,
-                "renders_canonical_uncertainty": False,
-                "exercised_against_real_spans": False,
-                "reason": _DISPLAY_REASON,
-            },
-            "salvage": {
-                "namespace": "salvage",
-                **salvage_status,
-                "promotion": _SALVAGE_PROMOTION_CLAIM,
-            },
             "not_measured": _not_measured_claim(projection),
             "other_readings": _other_readings_claim(other_outcomes, formats.formats),
             "page_accounting": _page_accounting_claim(
@@ -4693,7 +4638,6 @@ _SOURCES_LIST_FIELDS: Final = (
     "regions",
     "act_citations",
     "act_outcomes",
-    "salvage_regions",
     "other_outcomes",
     "other_citations",
     "page_accounting",
@@ -4708,7 +4652,6 @@ _SOURCES_FIELDS: Final = (
     "ink_map_pages",
     "witness_chairs",
     "witness_floor",
-    "salvage_regions",
     "other_outcomes",
     "other_citations",
     "page_accounting",
@@ -4811,8 +4754,6 @@ def _required_format_members(
         required["jsonl"] = {"acts.jsonl"}
     if "review-items" in formats.formats:
         required["review-items"] = {"review-items.jsonl"}
-    if "salvage-tier" in formats.formats:
-        required["salvage-tier"] = {"salvage/items.jsonl"}
     return required
 
 
@@ -4826,11 +4767,6 @@ def _all_pixel_references(sources: dict[str, list[dict[str, Any]]]) -> list[Any]
     ]
     references.extend(
         region.get("crop_image") for region in sources["regions"] if isinstance(region, dict)
-    )
-    references.extend(
-        region.get("crop_image")
-        for region in sources["salvage_regions"]
-        if isinstance(region, dict)
     )
     return references
 
@@ -5135,6 +5071,7 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             "category",
             "reason",
             "text_status",
+            "approval_ref",
         }:
             raise SchemaRefusal("a source act-outcome record has an unrecognized field set")
         act_id, act_key, category, reason, text_status = (
@@ -5162,6 +5099,15 @@ def _act_outcome_sources(sources: dict[str, list[dict[str, Any]]]) -> dict[str, 
             )
         if category in _REVIEW_CATEGORIES and not reason:
             raise SchemaRefusal("a source review outcome has no explicit reason")
+        # An exclusion names the approval it rests on, and nothing else names one.
+        approval = record["approval_ref"]
+        if (category == ArmariumCategory.EXCLUDED_WITH_APPROVAL.value) != (
+            _is_nonempty_str(approval)
+        ) or not isinstance(approval, str | None):
+            raise SchemaRefusal(
+                "a source act-outcome record names an approval exactly when it is not an "
+                "exclusion, or an exclusion without one"
+            )
         records[act_id] = record
     return records
 
@@ -5258,7 +5204,6 @@ def _other_jsonl_records(
             utf8_round_trip(record["uncertainty"], literal)
             _require_damage_record(
                 record["text_status"],
-                record["transcription_annotations"],
                 record["uncertainty"],
                 literal,
                 subject="other-reading JSONL row",
@@ -5271,7 +5216,6 @@ def _other_jsonl_records(
                     "canonical_text_sha256",
                     "text_status",
                     "uncertainty",
-                    "transcription_annotations",
                     "provenance",
                 )
             )
@@ -5468,14 +5412,8 @@ def _jsonl_act_records(
         )
         _verify_carried_damage(
             record.get("text_status"),
-            record.get("transcription_annotations"),
             record.get("uncertainty"),
             literal if category == ArmariumCategory.DELIVERED.value else None,
-            subject="acts JSONL",
-        )
-        _verify_semantic_annotation_row(
-            record.get("semantic_annotations"),
-            record.get("semantic_annotation_status"),
             subject="acts JSONL",
         )
         records[act_id] = {
@@ -5487,6 +5425,7 @@ def _jsonl_act_records(
             "reason": reason,
             "text_status": record.get("text_status"),
             "reading": record.get("reading"),
+            "approval_ref": record.get("approval_ref"),
         }
     return records
 
@@ -5530,32 +5469,18 @@ def _verify_carried_uncertainty(
 
 
 def _verify_carried_damage(
-    text_status: Any, annotations: Any, uncertainty: Any, literal: str | None, *, subject: str
+    text_status: Any, uncertainty: Any, literal: str | None, *, subject: str
 ) -> None:
     """Read one act row's established-text status and the layer it derives from.
 
     A well-anchored gap list can still sit beside a row claiming `established`, so
-    the status is recomputed from the row's own damage layers.
+    the status is recomputed from the row's own uncertainty layer.
     """
     if literal is None:
-        if text_status is not None or annotations is not None:
-            raise SchemaRefusal(
-                f"a non-delivered {subject} row carries an established-text status or a "
-                "transcription annotation layer"
-            )
+        if text_status is not None:
+            raise SchemaRefusal(f"a non-delivered {subject} row carries an established-text status")
         return
-    _require_damage_record(text_status, annotations, uncertainty, literal, subject=f"{subject} row")
-
-
-def _verify_semantic_annotation_row(layer: Any, status: Any, *, subject: str) -> None:
-    """Require the fixed "not produced" semantic-annotation claim on every row.
-
-    Nothing produces a semantic annotation yet, so a row claiming one is refused.
-    """
-    if layer != [] or status != _SEMANTIC_ANNOTATION_NOT_PRODUCED:
-        raise SchemaRefusal(
-            f"a {subject} row's semantic annotation claim is not this build's fixed claim"
-        )
+    _require_damage_record(text_status, uncertainty, literal, subject=f"{subject} row")
 
 
 def _database_act_records(
@@ -5566,9 +5491,8 @@ def _database_act_records(
         path,
         "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
         "provenance_json, source_regions_json, evidence_json, reason, "
-        "uncertainty_json, uncertainty_status, text_status, "
-        "transcription_annotations_json, semantic_annotations_json, "
-        "semantic_annotation_status, reading FROM acts",
+        "uncertainty_json, uncertainty_status, text_status, reading, operator_label, "
+        "approval_ref FROM acts",
         "the acts database cannot be read for product accounting",
     )
     records: dict[str, dict[str, Any]] = {}
@@ -5586,10 +5510,9 @@ def _database_act_records(
         uncertainty_json,
         uncertainty_status,
         text_status,
-        transcription_annotations_json,
-        semantic_annotations_json,
-        semantic_annotation_status,
         reading,
+        operator_label,
+        approval_ref,
     ) in rows:
         if (
             not _is_nonempty_str(act_id)
@@ -5628,14 +5551,8 @@ def _database_act_records(
         )
         _verify_carried_damage(
             text_status,
-            _database_json_layer(transcription_annotations_json, "transcription annotation"),
             _database_json_layer(uncertainty_json, "uncertainty"),
             literal if category == ArmariumCategory.DELIVERED.value else None,
-            subject="acts database",
-        )
-        _verify_semantic_annotation_row(
-            _database_json_layer(semantic_annotations_json, "semantic annotation"),
-            semantic_annotation_status,
             subject="acts database",
         )
         records[act_id] = {
@@ -5647,6 +5564,8 @@ def _database_act_records(
             "reason": reason,
             "text_status": text_status,
             "reading": reading,
+            "operator_label": operator_label,
+            "approval_ref": approval_ref,
         }
     return records, literals
 
@@ -5664,11 +5583,12 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
             record.get("category"),
             record.get("reason"),
         )
-        if record.get("schema") != "armarium-review-item.v1" or set(record) != _REVIEW_ITEM_FIELDS:
+        if record.get("schema") != REVIEW_ITEM_SCHEMA or set(record) != _REVIEW_ITEM_FIELDS:
             raise SchemaRefusal("a review-items JSONL row has an unrecognized field set")
         if (
             not _is_nonempty_str(act_id)
             or not _is_nonempty_str(act_key)
+            or record["kind"] not in {"act", "other"}
             or category not in _REVIEW_CATEGORIES
             or not isinstance(reason, str)
             or not reason
@@ -5679,62 +5599,12 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
         _verify_evidence_refs(evidence_refs, subject="a review-items JSONL row")
         records[act_id] = {
             "act_key": act_key,
+            "kind": record["kind"],
             "category": category,
             "reason": reason,
             "evidence_refs": evidence_refs,
         }
     return records
-
-
-def _salvage_product_records(path: Path) -> tuple[dict[str, Any], ...]:
-    """Read the tier-only JSONL and reapply its no-acts firewall."""
-    records: list[dict[str, Any]] = []
-    for record in _jsonl_rows(path, "salvage-tier JSONL", "a salvage-tier JSONL row"):
-        if not isinstance(record, dict) or record.get("schema") != SALVAGE_RECORD_SCHEMA:
-            raise SchemaRefusal("a salvage-tier JSONL row has no recognized schema")
-        _verify_retained_references_bounded(record)
-        if set(record) != {
-            "schema",
-            "salvage_id",
-            "content",
-            "source_regions",
-            "provenance",
-            "promotion",
-        }:
-            raise SchemaRefusal("a salvage-tier JSONL row has an unrecognized field set")
-        records.append({key: value for key, value in record.items() if key != "schema"})
-    _validate_salvage_items(tuple(records))
-    return tuple(records)
-
-
-def _verify_salvage_claim(
-    manifest: dict[str, Any],
-    records: tuple[dict[str, Any], ...],
-    sources: dict[str, list[dict[str, Any]]],
-) -> None:
-    salvage = _manifest_claim(manifest, "salvage")
-    if not isinstance(salvage, dict) or salvage.get("namespace") != "salvage":
-        raise SchemaRefusal("EXPORT_MANIFEST.json has no salvage-tier claim")
-    status, count = salvage.get("status"), salvage.get("count")
-    if salvage.get("promotion") != _SALVAGE_PROMOTION_CLAIM:
-        raise SchemaRefusal("the salvage-tier promotion claim is not this build's fixed claim")
-    if status == "accounted":
-        if not is_plain_int(count) or count != len(records):
-            raise SchemaRefusal("the salvage-tier count does not reconcile to its records")
-    elif status == "not-produced-no-sealed-salvage-inventory":
-        if (
-            count is not None
-            or records
-            or sources["salvage_regions"]
-            or salvage.get("reason") != _SALVAGE_ABSENCE_REASON
-        ):
-            raise SchemaRefusal("an unproduced salvage tier claims or carries material")
-    else:
-        raise SchemaRefusal("EXPORT_MANIFEST.json has an invalid salvage-tier status")
-
-    flattened = _salvage_regions(records)
-    if canonical_text(flattened) != canonical_text(sources["salvage_regions"]):
-        raise SchemaRefusal("salvage-tier records do not reconcile to their source citations")
 
 
 def _product_categories(records: dict[str, dict[str, Any]]) -> dict[str, str]:
@@ -5757,6 +5627,7 @@ def _verify_exact_product_outcomes(
             or record["category"] != outcome["category"]
             or record.get("reason") != outcome["reason"]
             or record.get("text_status") != outcome["text_status"]
+            or record.get("approval_ref") != outcome.get("approval_ref")
         ):
             raise SchemaRefusal(f"the {subject} does not retain its exact terminal reason")
 
@@ -5936,8 +5807,12 @@ def _verify_product_accounting(
     manifest: dict[str, Any],
     formats: ArmariumFormats,
     sources: dict[str, list[dict[str, Any]]],
-) -> dict[str, str] | None:
-    """Require every selected act projection to match the manifest denominator."""
+) -> tuple[dict[str, str] | None, dict[str, str | None] | None]:
+    """Require every selected act projection to match the manifest denominator.
+
+    Returns the search-fold verification and each act's operator label from the
+    acts database, both None without it.
+    """
     expected = _manifest_act_categories(manifest)
     _verify_honest_status_claims(manifest, expected, sources)
     act_keys = _manifest_act_keys(manifest, expected)
@@ -5978,15 +5853,29 @@ def _verify_product_accounting(
                 raise SchemaRefusal(
                     "the text bundle does not retain every delivered source citation"
                 )
-    search_fold_verification = None
+    search_fold_verification = operator_labels = None
     if "acts-database" in formats.formats:
-        database_schema = _read_acts_database(
-            root / "acts.sqlite",
-            "SELECT value FROM export_metadata WHERE key = 'schema'",
-            "the acts database has no readable schema",
+        metadata = dict(
+            _read_acts_database(
+                root / "acts.sqlite",
+                "SELECT key, value FROM export_metadata",
+                "the acts database has no readable metadata",
+            )
         )
-        if database_schema != [(_SQLITE_SCHEMA,)]:
+        if metadata.get("schema") != _SQLITE_SCHEMA:
             raise SchemaRefusal("the acts database's schema is not the one this build writes")
+        claims = manifest["claims"]
+        expected_run = _database_run_metadata(
+            manifest["run"],
+            {"status": claims["status"], "unresolved_reasons": claims["partial_reasons"]},
+        )
+        if set(metadata) != _DATABASE_METADATA_KEYS or any(
+            metadata[key] != value for key, value in expected_run.items()
+        ):
+            raise SchemaRefusal(
+                "the acts database does not name the package's run, status and partial "
+                "reasons as its manifest does"
+            )
         database_records, database_literals = _database_act_records(
             root / "acts.sqlite", sources["regions"]
         )
@@ -5999,6 +5888,9 @@ def _verify_product_accounting(
         _verify_exact_delivered_citations(
             database_records, citations, act_keys, subject="acts database"
         )
+        operator_labels = {
+            act_id: record["operator_label"] for act_id, record in database_records.items()
+        }
         search_fold_verification = _verify_search_fold_claim(
             root / "acts.sqlite", database_literals
         )
@@ -6010,26 +5902,30 @@ def _verify_product_accounting(
         _verify_product_readings(jsonl_records, readings, subject="acts JSONL")
         _verify_exact_delivered_citations(jsonl_records, citations, act_keys, subject="acts JSONL")
     if "review-items" in formats.formats:
+        # Every held or refused reading: the acts, then the other readings.
         expected_review = {
-            act_id for act_id, category in expected.items() if category in _REVIEW_CATEGORIES
+            act_id: ("act", outcomes[act_id])
+            for act_id, category in expected.items()
+            if category in _REVIEW_CATEGORIES
         }
+        for act_id, outcome in _other_outcome_sources(sources).items():
+            if outcome["category"] in _REVIEW_CATEGORIES:
+                expected_review[act_id] = ("other", outcome)
         review_records = _review_item_records(root / "review-items.jsonl")
-        if set(review_records) != expected_review:
-            raise SchemaRefusal("review-items JSONL does not reconcile to the manifest review acts")
+        if set(review_records) != set(expected_review) or any(
+            record["kind"] != expected_review[act_id][0]
+            for act_id, record in review_records.items()
+        ):
+            raise SchemaRefusal(
+                "review-items JSONL does not list exactly the package's held and refused "
+                "readings, each under its kind"
+            )
         _verify_exact_product_outcomes(
             review_records,
-            {act_id: outcomes[act_id] for act_id in expected_review},
+            {act_id: outcome for act_id, (_kind, outcome) in expected_review.items()},
             subject="review-items JSONL",
         )
-    if "salvage-tier" in formats.formats:
-        _verify_salvage_claim(
-            manifest,
-            _salvage_product_records(root / "salvage/items.jsonl"),
-            sources,
-        )
-    else:
-        _verify_salvage_claim(manifest, (), sources)
-    return search_fold_verification
+    return search_fold_verification, operator_labels
 
 
 def _verify_pixel_claims(
@@ -6052,21 +5948,6 @@ def _verify_pixel_claims(
             raise SchemaRefusal(
                 "a package source citation disagrees with its selected pixel-embedding setting"
             )
-
-
-def _verify_display_claim(manifest: dict[str, Any]) -> None:
-    """A rendering may be proposed; it may not be presented as settled or as text."""
-    display = _manifest_claim(manifest, "display")
-    if (
-        not isinstance(display, dict)
-        or display.get("convention") != DISPLAY_CONVENTION
-        or display.get("status") != "proposed-not-yet-chosen"
-        or display.get("alters_stored_text") is not False
-        or display.get("renders_canonical_uncertainty") is not False
-        or display.get("exercised_against_real_spans") is not False
-        or display.get("reason") != _DISPLAY_REASON
-    ):
-        raise SchemaRefusal("the package display claim is not the verified claim")
 
 
 def _verify_retained_run_claim(manifest: dict[str, Any]) -> None:
@@ -6093,24 +5974,6 @@ def _verify_canonical_text_claim(manifest: dict[str, Any]) -> None:
         raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
     if canonical_text != _canonical_text_claim(selected_formats):
         raise SchemaRefusal("the package canonical-text claim is not this build's fixed claim")
-
-
-def _verify_annotations_claims(manifest: dict[str, Any]) -> None:
-    """Two annotation layers, two claims, neither allowed to answer for the other.
-
-    The semantic claim is a fixed constant because no semantic annotator exists
-    yet; the transcription claim is recomputed from the selected formats.
-    """
-    semantic = _manifest_claim(manifest, "semantic_annotations")
-    if semantic != {"status": _SEMANTIC_ANNOTATIONS_CLAIM, "text_writable": False}:
-        raise SchemaRefusal(
-            "the package semantic-annotations claim is not this build's fixed claim"
-        )
-    transcription = _manifest_claim(manifest, "transcription_annotations")
-    if transcription != _transcription_annotations_claim(_manifest_format_names(manifest) or []):
-        raise SchemaRefusal(
-            "the package transcription-annotations claim is not the measured carriage claim"
-        )
 
 
 def _verify_uncertainty_claim(manifest: dict[str, Any]) -> None:
@@ -6194,24 +6057,6 @@ def _verify_region_references(sources: dict[str, list[dict[str, Any]]], root) ->
         _verify_reference(region.get("crop_image"), root)
 
 
-def _verify_salvage_region_references(sources: dict[str, list[dict[str, Any]]], root) -> None:
-    """Verify cited salvage ink separately from, and never as, an act region."""
-    pages = _pages_by_ordinal(sources["pages"])
-    seen: set[tuple[str, str]] = set()
-    for region in sources["salvage_regions"]:
-        if not isinstance(region, dict) or not isinstance(region.get("salvage_id"), str):
-            raise SchemaRefusal("a salvage-tier source region has no tier identity")
-        _validate_salvage_region(region)
-        key = (region["salvage_id"], region["region_id"])
-        if key in seen:
-            raise SchemaRefusal("a salvage-tier source region repeats its tier identity")
-        seen.add(key)
-        _verify_region_page_binding(region, pages, subject="salvage-tier")
-        page_reference = pages[region["source_page_ordinal"]].get("page_image")
-        _verify_reference(page_reference, root)
-        _verify_reference(region.get("crop_image"), root)
-
-
 def _act_outcomes(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     """Keep the non-text terminal reason that review-items must reproduce exactly.
 
@@ -6220,11 +6065,9 @@ def _act_outcomes(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     """
     return [
         {
-            "act_id": act["act_id"],
-            "act_key": act["act_key"],
-            "category": act["category"],
-            "reason": _export_reason(act),
+            **_row_head(act),
             "text_status": act.get("text_status"),
+            "approval_ref": act.get("approval_ref"),
         }
         for act in sorted(acts, key=lambda item: item["act_id"])
     ]
@@ -6257,22 +6100,6 @@ def _source_regions(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
                 raise SchemaRefusal("one source-region identity carries conflicting provenance")
             regions[region_id] = region
     return [regions[region_id] for region_id in sorted(regions)]
-
-
-def _salvage_regions(items: tuple[dict[str, Any], ...] | None) -> list[dict[str, Any]]:
-    """Flatten cited salvage regions with their tier identity, never an act id."""
-    if items is None:
-        return []
-    regions: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for item in sorted(items, key=lambda record: record["salvage_id"]):
-        for region in item["source_regions"]:
-            key = (item["salvage_id"], region["region_id"])
-            if key in seen:
-                raise SchemaRefusal("a salvage-tier source region repeats its tier identity")
-            seen.add(key)
-            regions.append({"salvage_id": item["salvage_id"], **region})
-    return sorted(regions, key=lambda record: (record["salvage_id"], record["region_id"]))
 
 
 def _verify_reference(reference: Any, root) -> None:

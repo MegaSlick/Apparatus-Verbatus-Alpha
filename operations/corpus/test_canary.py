@@ -15,7 +15,7 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from operations.corpus import canary
 from operations.corpus.local_admission import admit_local_set
 from operations.corpus.reference import build_reference_page
-from operations.spike_perlector.models import OutputStatus
+from operations.corpus.scoring import OutputStatus
 
 from .test_local_admission import _two_page_set
 

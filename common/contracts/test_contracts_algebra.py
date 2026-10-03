@@ -837,70 +837,40 @@ def _layer(gaps=()):
     return {"uncertain_spans": [], "gaps": list(gaps), "self_revisions": []}
 
 
-def _illegible(position=0):
-    return {"kind": "illegible", "start": position, "end": position, "witness_evidence": []}
-
-
-def test_a_clean_reading_over_both_layers_is_established():
-    assert outcomes.derive_record_text_status("some real ink", [], _layer()) == "established"
+def test_a_clean_reading_is_established():
+    assert outcomes.derive_record_text_status("some real ink", _layer()) == "established"
 
 
 def test_a_canonical_gap_makes_an_otherwise_readable_record_partial():
     gap = {"position": "internal", "start": 4, "end": 4, "witness_evidence": []}
-    assert outcomes.derive_record_text_status("some real ink", [], _layer([gap])) == "partial"
-
-
-def test_an_older_illegible_annotation_still_makes_a_record_partial():
-    """Both layers travel, and either one recording unread ink is enough. Neither
-    can hide damage the other saw, which is what makes carrying both honest."""
-    assert (
-        outcomes.derive_record_text_status("some real ink", [_illegible(3)], _layer()) == "partial"
-    )
+    assert outcomes.derive_record_text_status("some real ink", _layer([gap])) == "partial"
 
 
 def test_a_canonical_gap_over_empty_text_is_partial_and_never_a_proved_blank():
     """ "We could not read it" must never quietly become "there was nothing to read".
 
-    A whole-act gap is the middle silence -- ink present, wholly unread. Asking
-    about the canonical gaps only where the rest already said `established`
-    returned `no_readable_text` for exactly this record, which is a proved blank
-    sealed beside a gap saying the opposite. The older annotation layer has always
-    been ordered this way (`pipeline/6_archetypus/test_text_status.py`).
+    A whole-act gap is ink present and wholly unread, so the gaps are asked about
+    before the empty text.
     """
     gap = {"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}
-    assert outcomes.derive_record_text_status("", [], _layer([gap])) == "partial"
+    assert outcomes.derive_record_text_status("", _layer([gap])) == "partial"
 
 
-def test_an_empty_reading_with_no_damage_recorded_anywhere_is_no_readable_text():
-    assert outcomes.derive_record_text_status("", [], _layer()) == "no_readable_text"
+def test_an_empty_reading_with_no_gap_is_no_readable_text():
+    assert outcomes.derive_record_text_status("", _layer()) == "no_readable_text"
+    assert outcomes.derive_record_text_status("  \n\t ", _layer()) == "no_readable_text"
 
 
-def test_a_malformed_record_that_also_carries_a_gap_is_refused_rather_than_partial():
-    """The one branch that could reach a status without ever looking at the text.
-
-    A canonical gap decides `partial` on its own, so this derivation could return
-    it over a text field that is not a string and an annotation layer nothing can
-    read -- and the record would leave the pipeline described by a word no one
-    had checked it against. The otherwise-unused `derive_text_status` call inside
-    the gap branch is the whole of what prevents that: remove it and both
-    assertions below return `"partial"` instead of refusing.
-    """
+def test_a_malformed_record_is_refused_rather_than_given_a_status():
+    """A gap decides `partial` on its own, so the text is checked first: a record
+    is never described by a word nobody checked it against."""
     gap = {"position": "internal", "start": 4, "end": 4, "witness_evidence": []}
     with pytest.raises(SchemaRefusal, match="exactly one string text"):
-        outcomes.derive_record_text_status(None, [], _layer([gap]))
-    with pytest.raises(SchemaRefusal, match="carries no kind"):
-        outcomes.derive_record_text_status("ink", [{"start": 0, "end": 0}], _layer([gap]))
-
-
-def test_a_damage_layer_that_cannot_be_read_is_refused_rather_than_called_whole():
-    """A malformed layer is not a zero. Refusing here is what lets the Armarium
-    turn it into a named fatal refusal instead of exporting `established`."""
-    with pytest.raises(SchemaRefusal, match="carries no kind"):
-        outcomes.derive_record_text_status("ink", [{"start": 0, "end": 0}], _layer())
-    with pytest.raises(SchemaRefusal, match="canonical uncertainty layer's own gap list"):
-        outcomes.derive_record_text_status("ink", [], {"uncertain_spans": []})
+        outcomes.derive_record_text_status(None, _layer([gap]))
     with pytest.raises(SchemaRefusal, match="exactly one string text"):
-        outcomes.derive_record_text_status(None, [], _layer())
+        outcomes.derive_record_text_status(None, _layer())
+    with pytest.raises(SchemaRefusal, match="canonical uncertainty layer's own gap list"):
+        outcomes.derive_record_text_status("ink", {"uncertain_spans": []})
 
 
 def test_a_page_read_aggregate_names_its_pages_in_the_page_path_s_words() -> None:
