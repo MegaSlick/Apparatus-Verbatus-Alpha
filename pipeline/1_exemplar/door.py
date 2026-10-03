@@ -37,10 +37,8 @@ DECLARED_SYNTHETIC_FIXTURE_ROOT: Final = ROOT / "proof"
 
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-sys.path.insert(0, str(ROOT / "pipeline" / "0_triage"))
 
 import admission  # noqa: E402
-import manifest as triage_manifest  # noqa: E402
 import pdf_render  # noqa: E402
 import render_config  # noqa: E402
 from admission import RefusalReason  # noqa: E402
@@ -57,13 +55,8 @@ from image_formats import (  # noqa: E402
     sniff,
 )
 
-from common.alignment import DEFAULT_ALIGNMENT_CONFIG_PATH, load_dissent_limits  # noqa: E402
-from common.armarium_formats import (  # noqa: E402
-    DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
-    bind_armarium_formats,
-)
-from common.background import DEFAULT_INK_MAP_CONFIG_PATH  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
+from common.contracts import triage as triage_manifest  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
     real_ingress_record,
     synthetic_fixture_ingress_record,
@@ -75,7 +68,6 @@ from common.contracts.canonical import (  # noqa: E402
     self_hash,
 )
 from common.contracts.errors import ContractError  # noqa: E402
-from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA  # noqa: E402
 from common.contracts.stages import DOOR  # noqa: E402
 from common.corpus_register import (  # noqa: E402
     membership_heads,
@@ -83,31 +75,13 @@ from common.corpus_register import (  # noqa: E402
     read_snapshot,
     validate_register_bytes,
 )
-from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.image_sniff import SIGNATURE_PREFIX_BYTES  # noqa: E402
-from common.page_accounting import (  # noqa: E402
-    DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
-    load_page_accounting_policy,
-)
-from common.reconstruction import (  # noqa: E402
-    DEFAULT_RECONSTRUCTION_CONFIG_PATH,
-    load_reconstruction_policy,
-)
-from common.recovery import load_recovery_policy  # noqa: E402
-from common.residual_ink import ink_map_config_digest  # noqa: E402
-from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, load_review_policy  # noqa: E402
+from common.imaging import TRIAGE_APPLY_RECIPE  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
-from common.sealed_config import read_sealed_toml  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
-    DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
-    DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
-    DEFAULT_POD_PLACEMENT_CONFIG_PATH,
-    DEFAULT_SERVING_RECIPES_CONFIG_PATH,
-    DEFAULT_TRIAGE_MODES_CONFIG_PATH,
-    DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     REAL_DOOR_ADAPTER_REVISION,
     REAL_SCENARIO,
@@ -115,8 +89,7 @@ from common.stage import (  # noqa: E402
     adapter_recipe_for,
     load_corpus_frame_policy,
     load_fixture,
-    load_triage_modes,
-    real_run_policy_digest,
+    real_run_bindings,
     refuse_halted_run,
     require_corpus_frame_shard,
     require_triage_modes,
@@ -126,7 +99,6 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_witness_context_bindings,
 )
-from common.witness_adapters import validate_witness_adapter_bindings  # noqa: E402
 from operations.submit import gate, inventory  # noqa: E402
 from operations.submit import submit as submission_ledger  # noqa: E402
 
@@ -199,6 +171,15 @@ DOOR_REFUSAL_REPORT_SUBJECT: Final = "refusal-report"
 DOOR_DUPLICATE_REPORT_SCHEMA: Final = "door-duplicate-report.v0"
 DOOR_DUPLICATE_REPORT_SUBJECT: Final = "duplicate-report"
 DOOR_CLUSTER_REPORT_SCHEMA: Final = "door-re-shoot-cluster-report.v1"
+# No stage links captures of one leaf, so a run takes one capture per leaf and no
+# cluster. Followed literally this passes: the manifest validator refuses rows that
+# name a cluster without its records, and records listing frames whose rows name none.
+RE_SHOOT_REMEDY: Final = (
+    "Submit one capture per leaf: keep one capture of each leaf in the submitted folder "
+    "and its filename ledger, regenerate the triage decision manifest with no re-shoot "
+    "cluster (every row's re_shoot_cluster_id null), omit --triage-clusters, and resubmit "
+    "under a new run id"
+)
 _SOURCE_HASH_CHUNK: Final = 1024 * 1024
 # Triage JSON is untrusted input. A run holds at most one 1,000-page shard (the
 # corpus-frame validator's ceiling), so bound both before the triage manifest's
@@ -210,10 +191,6 @@ MAX_TRIAGE_DERIVATIVE_PAGES: Final = 1_000
 # A triage row describes one single-frame raster (expansion refuses any other),
 # so its derivative is always cut from frame zero.
 _TRIAGE_FRAME_INDEX: Final = 0
-
-
-def _is_positive_int(value: Any) -> bool:
-    return is_plain_int(value) and value >= 1
 
 
 def _source_digest_stream(handle: BinaryIO) -> tuple[str, int]:
@@ -482,7 +459,6 @@ def _refuse_triage_amplification(document: Any, clusters: Any) -> None:
 def decide(
     data: bytes | None,
     source: SourceEntry,
-    policy: dict[str, str],
     pdf_settings: render_config.PdfRenderSettings,
     *,
     source_digest: str | None = None,
@@ -505,7 +481,7 @@ def decide(
     else:
         detected = detected_format or sniff(data)
         whole_digest = source_digest or digest_bytes(data)
-    verdict = admission.classify_detected_format(detected, policy)
+    verdict = admission.route_for(detected)
     if source.declared_sha256 is not None and whole_digest != source.declared_sha256:
         return _refused_for(
             RefusalReason.DIGEST_MISMATCH,
@@ -560,14 +536,7 @@ def decide(
                     "triage_manifest_row": source.triage_row,
                     "triage_backlink": backlink,
                     "operation_order": source.triage_row["split"]["operation_order"],
-                    "apply_recipe": {
-                        "schema": "triage-raster-apply-v1",
-                        "rotation_resample": "Pillow.Resampling.BICUBIC",
-                        "rotation_fill": "Pillow-default-zero",
-                        "rotation_expand": True,
-                        "colour_conversion": "Pillow.Image.convert-direct-or-via-RGB",
-                        "encoder": "common.imaging.encode_image_deterministic-v1",
-                    },
+                    "apply_recipe": dict(TRIAGE_APPLY_RECIPE),
                     "operations": [
                         {"operation": "split", "region": part["region"]},
                         {"operation": "crop", "bounds": part["crop_box"]},
@@ -577,7 +546,7 @@ def decide(
                 },
             },
         }
-        return _rendered_page_decision(page_bytes, policy, rendered_from)
+        return _rendered_page_decision(page_bytes, rendered_from)
 
     if source.container_page_index is None:
         if verdict == admission.RENDER_PAGES:
@@ -588,9 +557,7 @@ def decide(
             )
         if data is None:
             raise ValueError("only a PDF container may be decided without its bytes")
-        result = admission.inspect_source(
-            data, declared_sha256=source.declared_sha256, policy=policy
-        )
+        result = admission.inspect_source(data, declared_sha256=source.declared_sha256)
         return _Decision(
             result.outcome,
             result.reason,
@@ -638,14 +605,12 @@ def decide(
     except FormatRefusal as error:
         return _format_refused(error)
 
-    return _rendered_page_decision(page_bytes, policy, rendered_from)
+    return _rendered_page_decision(page_bytes, rendered_from)
 
 
-def _rendered_page_decision(
-    page_bytes: bytes, policy: dict[str, str], rendered_from: dict[str, Any]
-) -> _Decision:
+def _rendered_page_decision(page_bytes: bytes, rendered_from: dict[str, Any]) -> _Decision:
     """Admit a page the Door rendered, or refuse it in one wording for every renderer."""
-    checked = admission.inspect_rendered_page(page_bytes, policy=policy)
+    checked = admission.inspect_rendered_page(page_bytes)
     if checked.outcome != "admitted":
         # The check's own code stands: a rendered page over its byte bound is
         # too large, not damaged.
@@ -658,7 +623,6 @@ def _rendered_page_decision(
 def expand_sources(
     files: list[dict[str, Any]],
     read_bytes: Callable[[str], bytes],
-    policy: dict[str, str],
     *,
     open_source: Callable[[str], Any] | None = None,
     triage_rows: Mapping[str, dict[str, Any]] | None = None,
@@ -795,7 +759,7 @@ def expand_sources(
                 None, expansion_refusal=admission.reason(RefusalReason.UNREADABLE, str(error))
             )
             continue
-        route = admission.classify_detected_format(detected, policy)
+        route = admission.route_for(detected)
         if data is not None and len(data) > MAX_SOURCE_BYTES:
             append_declared_pages(detected)
             continue
@@ -880,9 +844,8 @@ def expand_sources(
             members = set(record["member_frame_sha256"])
             if not members <= submitted_digests:
                 raise ContractError(
-                    "a re-shoot cluster would cross this submitted shard; no source expansion was "
-                    "returned because every member must remain visible together and no canonical "
-                    "frame may be selected; submit every cluster member in the same shard and retry"
+                    "a re-shoot cluster names a capture that is not in this submission; no "
+                    f"source expansion was returned. {RE_SHOOT_REMEDY}"
                 )
     # Rows for frames outside this submission are expected: the manifest is
     # corpus-scoped and a submission is one shard.
@@ -914,85 +877,12 @@ def _require_case_unique_paths(files: list[dict[str, Any]]) -> None:
         seen.add(portable)
 
 
-def content_aware_shards(
-    sources: list[SourceEntry], *, max_pages_per_shard: int, max_shards: int | None = None
-) -> list[list[SourceEntry]]:
-    """Choose only seams that keep a split pair and re-shoot cluster whole.
-
-    Call it before creating each RunTree: cutting after a run exists would
-    change its immutable denominator. The page cap is sealed policy; pass
-    ``max_shards`` only for a caller's own ceiling.
-    """
-    if not _is_positive_int(max_pages_per_shard) or (
-        max_shards is not None and not _is_positive_int(max_shards)
-    ):
-        raise ContractError(
-            "content-aware sharding received a non-positive or non-integer page or shard limit; "
-            "no shard plan was returned because slice boundaries must be exact page counts; "
-            "pass positive integer limits and retry"
-        )
-    ordered = sorted(sources, key=lambda source: source.ordinal)
-    if not ordered:
-        raise ContractError(
-            "content-aware sharding received no submitted pages; no shard plan was returned "
-            "because an empty plan would hide an empty submission; supply a non-empty post-split "
-            "page census and retry"
-        )
-    blocked: set[int] = set()
-    # Split parts are adjacent, so block every seam inside one; a cluster may be
-    # scattered, so block every seam between its first and last member.
-    for left, right in zip(ordered, ordered[1:], strict=False):
-        if (
-            left.triage_row is not None
-            and right.triage_row is not None
-            and left.declared_path == right.declared_path
-            and left.declared_sha256 == right.declared_sha256
-            and left.triage_part_index is not None
-            and right.triage_part_index is not None
-        ):
-            blocked.add(left.ordinal)
-    clusters: dict[str, list[int]] = {}
-    for source in ordered:
-        if source.triage_row is None:
-            continue
-        cluster_id = source.triage_row["re_shoot_cluster_id"]
-        if cluster_id is not None:
-            clusters.setdefault(cluster_id, []).append(source.ordinal)
-    for ordinals in clusters.values():
-        blocked.update(range(min(ordinals), max(ordinals)))
-    shards: list[list[SourceEntry]] = []
-    start = 0
-    while start < len(ordered):
-        end = min(start + max_pages_per_shard, len(ordered))
-        if end < len(ordered):
-            while end > start and ordered[end - 1].ordinal in blocked:
-                end -= 1
-            if end == start:
-                raise ContractError(
-                    "content-aware shard refusal: every legal seam within the configured "
-                    "page cap would cut a split pair or re-shoot cluster; no shard plan was "
-                    "returned because those units must remain whole; place the whole unit in a "
-                    "shard within the sealed cap, or stop for the project lead if the cap itself conflicts"
-                )
-        shards.append(ordered[start:end])
-        start = end
-    if max_shards is not None and len(shards) > max_shards:
-        raise ContractError(
-            "content-aware shard refusal: the configured shard count is exhausted without "
-            "cutting a split pair or re-shoot cluster; no shard plan was returned because the "
-            "caller ceiling cannot be met honestly; remove or increase that caller-supplied "
-            "ceiling and retry"
-        )
-    return shards
-
-
 def process_sources(
     context: StageContext,
     tree: RunTree,
     sources: list[SourceEntry],
     read_bytes: Callable[[str], bytes],
     *,
-    policy: dict[str, str],
     pdf_settings: render_config.PdfRenderSettings,
     open_source: Callable[[str], Any] | None = None,
 ) -> int:
@@ -1005,11 +895,11 @@ def process_sources(
     after the run sealed: the `computed_sha256` comparison below depends on it.
 
     Per-file, never per-folder: one refused source does not stop the rest.
-    Byte-identical pages within one PDF stay distinct, and a second path with the
-    same bytes is admitted under its own ordinal with a duplicate fact.
+    Byte-identical pages within one PDF stay distinct. Two paths with the same
+    bytes are each admitted here; `publish_duplicate_report` names them and
+    `require_no_duplicate_sources` then refuses the run.
     """
     admitted = 0
-    seen_sources: dict[str, tuple[str, int]] = {}
     # One cached raster, not a map: a path's ordinals are contiguous, and a map
     # would grow memory with the number of rasters.
     cached_path: str | None = None
@@ -1106,14 +996,13 @@ def process_sources(
                     decision = decide(
                         None,
                         source,
-                        policy,
                         pdf_settings,
                         source_digest=actual_digest,
                         detected_format="pdf",
                         opened_pdf=opened_pdf,
                     )
             else:
-                decision = decide(data, source, policy, pdf_settings, source_digest=actual_digest)
+                decision = decide(data, source, pdf_settings, source_digest=actual_digest)
 
             if decision.outcome == "refused":
                 _publish(context, source, outcome="refused", reason=decision.reason)
@@ -1127,18 +1016,7 @@ def process_sources(
                     _publish_refusal(context, source, RefusalReason.DIGEST_MISMATCH, str(error))
                     continue
 
-            # Only admitted sources register: a corrupt twin gets its own
-            # refusal, and a valid second path stays admitted with a duplicate fact.
-            first = seen_sources.get(actual_digest)
-            duplicate_of = None
-            if first is not None and first[0] != source.declared_path:
-                duplicate_of = {
-                    "first_declared_path": first[0],
-                    "first_ordinal": first[1],
-                    "source_sha256": actual_digest,
-                }
-            seen_sources.setdefault(actual_digest, (source.declared_path, source.ordinal))
-            _publish_admission(context, tree, source, decision, data, actual_digest, duplicate_of)
+            _publish_admission(context, tree, source, decision, data, actual_digest)
             admitted += 1
 
     return admitted
@@ -1151,7 +1029,6 @@ def _publish_admission(
     decision: _Decision,
     data: bytes | None,
     actual_digest: str,
-    duplicate_of: dict[str, Any] | None,
 ) -> None:
     _, published = tree.put_blob(DOOR, decision.store_bytes)
     inputs = [context.input_ref(published.relative_path)]
@@ -1180,8 +1057,6 @@ def _publish_admission(
         # master one blob; envelope inputs may not repeat.
         if parent.relative_path != published.relative_path:
             inputs.append(context.input_ref(parent.relative_path))
-    if duplicate_of is not None:
-        extra["duplicate_of"] = duplicate_of
     _publish(context, source, outcome="admitted", payload_extra=extra, inputs=inputs)
 
 
@@ -1300,10 +1175,11 @@ def publish_refusal_report(context: StageContext) -> Report | None:
 
 
 def publish_duplicate_report(context: StageContext) -> Report | None:
-    """Seal the duplicate fact without refusing either source.
+    """Seal which admitted paths share one submitted digest, before the run is refused.
 
     Groups every admitted path sharing one submitted digest and names the first
-    filename and ordinal, so no later stage rediscovers it from blobs.
+    filename and ordinal. Pages of one container share its digest under one path
+    and are not duplicates.
     """
     grouped: dict[str, list[tuple[int, str, dict[str, str]]]] = {}
     for entry, payload in _iter_admissions(context, "admitted"):
@@ -1450,22 +1326,16 @@ def _publish_report(
 
 
 def require_no_duplicate_sources(duplicate_report: Report | None) -> None:
-    """Refuse a submission in which two submitted files derive one page identity.
+    """Refuse a submission in which two submitted files carry identical bytes.
 
-    Byte-identical files derive one `page_id`, but every later stage works one
-    page per submitted row, so the run would read one page where two were submitted.
-
-    The whole submission is refused, never one file, and there is no override
-    flag: the bytes cannot tell a page shot twice from one scan exported twice, so
-    the Door refuses rather than choosing which copy to drop.
+    Page identity binds the submitted bytes, so two such files would be one page
+    read twice. The whole submission is refused, never one file, and there is no
+    override: the bytes cannot tell a page shot twice from one scan exported
+    twice, so the Door refuses rather than choosing which copy to drop.
 
     The error names ordinals only, since `run_stage` prints it to stderr and the
     data-handling policy keeps paths out of logs; the duplicate report sealed
     before this refusal names the files.
-
-    Only identical submitted bytes are caught here. Different sources whose triage
-    derivatives coincide are refused by `common/exemplar_boundary` at the first
-    consumer, so page identity is derived in one place.
     """
     if duplicate_report is None:
         return
@@ -1475,30 +1345,32 @@ def require_no_duplicate_sources(duplicate_report: Report | None) -> None:
     )
     raise ContractError(
         "this submission derives one page identity from more than one submitted file: "
-        f"submitted ordinal(s) {named} carry identical bytes. Byte-identical sources "
-        "derive one page_id, so the Exemplar would seal one page citing every one of "
-        "them while every stage behind it still works one page per submitted row, and "
-        "the run would read one page where two files were submitted. Nothing is "
-        "excluded here and nothing is dropped: the submission is refused whole, and "
-        f"the sealed duplicate report at {duplicate_report.path} names each "
-        "filename. Re-submit with a --submission-manifest naming each distinct scan "
-        "once, or ask the project lead if a repeated scan is genuinely two pages"
+        f"submitted ordinal(s) {named} carry identical bytes, so the run would read one "
+        "page where two files were submitted. Nothing is excluded here and nothing is "
+        "dropped: the submission is refused whole, and the sealed duplicate report at "
+        f"{duplicate_report.path} names each filename. Re-submit with a "
+        "--submission-manifest naming each distinct scan once"
     )
 
 
-def require_confirmed_re_shoots(context: StageContext, cluster_report: Report | None) -> None:
-    """Refuse a submission holding a triage re-shoot the corpus register does not confirm.
+def require_no_re_shoots(context: StageContext, cluster_report: Report | None) -> None:
+    """Refuse a submission holding a triage re-shoot cluster, confirmed or not.
 
-    Only a register membership tells later stages that captures show one page; without
-    it each capture becomes its own act, and one physical act is read and exported once
-    per capture with nothing linking them. A cluster is confirmed when every member sits
-    in a current membership of some physical page of the cluster's own corpus: one
-    cluster may span several pages with different members (a split opening), and the
-    sealed cluster report carries no page ids to check page by page. The submission is
-    refused whole before the seal, so no page is lost.
+    No stage after the Door links two captures of one leaf, so each capture would
+    be read and exported as its own act: one physical act exported once per
+    capture, with nothing marking the copies as one. The whole submission is
+    refused after the cluster report is sealed and before the Door's seal, so no
+    page is lost and the report names every member's file.
+
+    Clusters are named by their position in the report and their member ordinals,
+    never by cluster id or filename: the message goes to the terminal, and a
+    hand-written id could be a filename. A cluster some member of which is not in a
+    current membership of a physical page of its corpus in the run's register is
+    marked unconfirmed, since its captures may not be one leaf at all.
     """
     if cluster_report is None:
         return
+    clusters = cluster_report.payload["clusters"]
     register = read_snapshot(context.tree, context.run)
     corpus_of = {
         record["physical_page_id"]: record["corpus_id"]
@@ -1510,27 +1382,26 @@ def require_confirmed_re_shoots(context: StageContext, cluster_report: Report | 
         for page, (_digest, members) in membership_heads(register).items()
         for capture in members
     }
-    unconfirmed = sorted(
-        cluster["cluster_id"]
-        for cluster in cluster_report.payload["clusters"]
-        if any(
+
+    def described(index: int, cluster: dict[str, Any]) -> str:
+        ordinals = ", ".join(
+            str(page["ordinal"]) for member in cluster["members"] for page in member["pages"]
+        )
+        unconfirmed = any(
             (cluster["corpus_id"], member["source_frame_sha256"]) not in confirmed
             for member in cluster["members"]
         )
+        mark = ", not confirmed by the run's corpus register" if unconfirmed else ""
+        return f"cluster {index} (submitted ordinal(s) {ordinals}{mark})"
+
+    named = "; ".join(described(index, cluster) for index, cluster in enumerate(clusters, 1))
+    raise ContractError(
+        f"re-shoot: triage links captures as one leaf: {named}. No later stage links "
+        "captures of one leaf, so each would be read and exported as a separate copy of the "
+        "same acts. Nothing is sealed and no page is dropped: the submission is refused "
+        f"whole, and the sealed cluster report at {cluster_report.path} lists the clusters "
+        f"in this order and names each member's file. {RE_SHOOT_REMEDY}"
     )
-    named = ", ".join(unconfirmed)
-    if unconfirmed:
-        raise ContractError(
-            f"unconfirmed-re-shoot: triage links re-shoot cluster(s) {named}, but the corpus "
-            "register this run was created with does not record every capture in them as a "
-            "member of a physical page of that corpus, so each capture would be read and "
-            "exported as a separate act. Nothing is sealed and no page is dropped: the "
-            f"submission is refused whole, and the sealed cluster report at {cluster_report.path} "
-            "names each member. Confirm the cluster into the corpus register (or remove the "
-            "triage link if the captures are not one page), then resubmit under a new run id "
-            "with --corpus-register; this run id stays bound to the register and triage "
-            "inputs it was created with and refuses reuse"
-        )
 
 
 def require_some_admitted(
@@ -1636,7 +1507,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     )
     parser.add_argument(
         "--triage-producer-recipe",
-        help="sealed triage-producer-recipe.v1 for the pre-door producer run",
+        help="sealed triage-producer-recipe.v2 for the pre-door producer run",
     )
     args = parser.parse_args()
     registry = (
@@ -1702,7 +1573,7 @@ def _finish_door_run(context: StageContext, admitted: int, *, canary_admitted: i
     _announce_refusal_report(refusal_report)
     _announce_duplicate_report(duplicate_report)
     require_no_duplicate_sources(duplicate_report)
-    require_confirmed_re_shoots(context, cluster_report)
+    require_no_re_shoots(context, cluster_report)
     require_some_admitted(admitted, refusal_report, canary_admitted=canary_admitted)
     context.seal_boundary()
     context.finish(DOOR)
@@ -1715,7 +1586,6 @@ def fixture_submission(args, registry) -> int:
     fixture = load_fixture(str(fixture_root))
     pages = fixture_pages_for_scenario(fixture, args.scenario)
     declared = declared_digests(fixture, args.scenario)
-    policy = admission.load_format_policy()
     pdf_render_binding = _load_pdf_render_binding(args)
     pdf_settings = pdf_render_binding.settings
     bindings = run_config_bindings(
@@ -1773,7 +1643,6 @@ def fixture_submission(args, registry) -> int:
         tree,
         sources,
         lambda declared_path: (fixture_root / declared_path).read_bytes(),
-        policy=policy,
         pdf_settings=pdf_settings,
     )
     return _finish_door_run(context, admitted)
@@ -1803,8 +1672,11 @@ def real_submission(args, registry) -> int:
     manifest_path = gate.require_approved_storage_location(
         Path(args.submission_manifest), roots, "submission filename ledger"
     )
+    # The tree is written at run_root/run_id, so that is what must stay apart
+    # from the submitted folder, and checked before anything under it is read.
+    tree_root = RunTree(run_root, args.run_id).root
+    _refuse_overlapping_run_tree(tree_root, submission_folder, "submitted folder")
     _refuse_halted_run_root(run_root, args)
-    _refuse_inside_submission(run_root, submission_folder, "run root")
     _refuse_inside_submission(manifest_path, submission_folder, "submission filename ledger")
     ledger = submission_ledger.load_manifest(manifest_path)
     canary_ledger = None
@@ -1821,16 +1693,14 @@ def real_submission(args, registry) -> int:
         canary_manifest_path = gate.require_approved_storage_location(
             Path(args.canary_manifest), roots, "canary filename ledger"
         )
-        if (
-            canary_folder == submission_folder
-            or canary_folder in submission_folder.parents
-            or submission_folder in canary_folder.parents
+        if gate.same_or_inside(canary_folder, submission_folder) or gate.same_or_inside(
+            submission_folder, canary_folder
         ):
             raise ContractError("canary and real submission folders must be disjoint")
         _refuse_inside_submission(canary_manifest_path, canary_folder, "canary filename ledger")
         _refuse_inside_submission(canary_manifest_path, submission_folder, "canary filename ledger")
         _refuse_inside_submission(manifest_path, canary_folder, "submission filename ledger")
-        _refuse_inside_submission(run_root, canary_folder, "run root")
+        _refuse_overlapping_run_tree(tree_root, canary_folder, "canary folder")
         canary_ledger = submission_ledger.load_manifest(canary_manifest_path)
         real_paths = {row["relative_path"] for row in ledger["files"]}
         real_digests = {row["sha256"] for row in ledger["files"]}
@@ -1870,7 +1740,6 @@ def real_submission(args, registry) -> int:
         else (None, None, {})
     )
 
-    format_policy = admission.load_format_policy()
     pdf_render_binding = _load_pdf_render_binding(args)
     pdf_settings = pdf_render_binding.settings
     # Inventory keeps no source bodies; later reads reopen by directory
@@ -1912,30 +1781,12 @@ def real_submission(args, registry) -> int:
 
     bindings = _real_bindings(
         registry.config,
+        args,
         ledger,
-        format_policy,
         pdf_settings,
-        load_recovery_policy(args.recovery_config),
-        load_hard_failure_policy(args.hard_failure_config),
-        args.formats_config,
-        review_config_path=args.review_config,
         pdf_render_config_sha256=pdf_render_binding.config_sha256,
         data_handling_config_sha256=data_policy_binding.config_sha256,
-        designator_geometry_config_sha256=read_sealed_toml(
-            args.designator_geometry_config, "Designator geometry configuration"
-        )[1],
-        alignment_config_path=args.alignment_config,
-        page_accounting_config_path=args.page_accounting_config,
-        ink_map_config_path=args.ink_map_config,
-        reconstruction_config_path=args.reconstruction_config,
-        serving_recipes_config_path=args.serving_recipes_config,
         triage_document_digests=triage_digests,
-        witness_context=args.witness_context,
-        witness_context_config_path=args.witness_context_config,
-        perlector_protocol_config_path=args.perlector_protocol_config,
-        perlector_audit_config_path=args.perlector_audit_config,
-        decoding_config_path=args.decoding_config,
-        mechanics_qualification=getattr(args, "mechanics_qualification", False),
         canary_ledger=canary_ledger,
     )
     # The modes seal must be proved before triage rows can shape master-frame geometry.
@@ -1952,7 +1803,6 @@ def real_submission(args, registry) -> int:
             for source in ledger["files"]
         ],
         read_bytes,
-        format_policy,
         open_source=open_source,
         triage_rows=triage_rows,
         triage_clusters=triage_clusters,
@@ -1970,7 +1820,6 @@ def real_submission(args, registry) -> int:
                 for source in canary_ledger["files"]
             ],
             read_bytes,
-            format_policy,
             open_source=open_source,
         )
         canary_sources = [
@@ -2010,7 +1859,6 @@ def real_submission(args, registry) -> int:
             tree,
             ledger_sources,
             read_bytes,
-            policy=format_policy,
             pdf_settings=pdf_settings,
             open_source=open_source,
         )
@@ -2019,8 +1867,27 @@ def real_submission(args, registry) -> int:
     return _finish_door_run(context, admitted, canary_admitted=canary_admitted)
 
 
+def _refuse_overlapping_run_tree(tree_root: Path, folder: Path, label: str) -> None:
+    """Refuse a run tree that is, holds, or lies inside a folder of submitted pages.
+
+    Inside the folder, the next inventory would read pipeline records as sources;
+    holding it, the run would write into material it was handed. Compared by
+    filesystem identity, as `_refuse_inside_submission` explains.
+    """
+    if gate.same_or_inside(folder, tree_root) or gate.same_or_inside(tree_root, folder):
+        raise ContractError(
+            f"the run tree (run root plus run id) and the {label} overlap; a run may "
+            "neither write into submitted material nor be inventoried as part of it"
+        )
+
+
 def _refuse_inside_submission(location: Path, submission_folder: Path, label: str) -> None:
-    if location.is_relative_to(submission_folder):
+    """Refuse a record or run root inside a submitted folder, by filesystem identity.
+
+    Compared by device and inode, not spelling: on a case-insensitive volume
+    `private/Sub/run` lies inside `private/sub`.
+    """
+    if gate.same_or_inside(submission_folder, location):
         raise ContractError(
             f"the {label} cannot live inside the submitted folder; otherwise the next "
             "inventory includes pipeline-produced records as submitted sources"
@@ -2068,158 +1935,84 @@ def _announce_duplicate_report(duplicate_report: Report | None) -> None:
 
 def _real_bindings(
     models,
-    ledger,
-    format_policy,
-    pdf_settings,
-    recovery_policy,
-    hard_failure_policy,
-    armarium_formats_config_path=DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH,
-    corpus_frame_config_path=DEFAULT_CORPUS_FRAME_CONFIG_PATH,
+    args,
+    ledger: dict[str, Any],
+    pdf_settings: render_config.PdfRenderSettings,
     *,
     pdf_render_config_sha256: str,
     data_handling_config_sha256: str,
-    designator_geometry_config_sha256: str,
-    alignment_config_path=DEFAULT_ALIGNMENT_CONFIG_PATH,
-    page_accounting_config_path=DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
-    ink_map_config_path=DEFAULT_INK_MAP_CONFIG_PATH,
-    reconstruction_config_path=DEFAULT_RECONSTRUCTION_CONFIG_PATH,
     triage_document_digests: dict[str, str] | None = None,
-    witness_context: str = "named",
-    witness_context_config_path: str | Path = DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
-    perlector_protocol_config_path=DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
-    perlector_audit_config_path=DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
-    decoding_config_path=DEFAULT_DECODING_CONFIG_PATH,
-    mechanics_qualification: bool = False,
-    serving_recipes_config_path: str | Path = DEFAULT_SERVING_RECIPES_CONFIG_PATH,
-    pod_placement_config_path: str | Path = DEFAULT_POD_PLACEMENT_CONFIG_PATH,
     canary_ledger: dict[str, Any] | None = None,
-    review_config_path: str | Path = DEFAULT_REVIEW_CONFIG_PATH,
 ) -> dict[str, Any]:
     """The sealed configuration facts for a real submission.
 
-    The source manifest binds the bytes; `config_digest` binds everything else
-    that shaped the door's output, so `RunTree.create` refuses a resume under
-    different settings. The data-handling policy digest is provenance, not an
-    approval.
+    Composes `common.stage.real_run_bindings`, the names every later stage
+    recomputes at open, and adds what only the Door knows: the data-handling
+    policy that gated the input, the canary ledger, the PDF render settings it
+    rendered with, and `config_digest`. That digest binds the submission ledger
+    and everything that shaped the Door's output, so `RunTree.create` refuses a
+    resume under different settings; no later stage can recompute it.
     """
-    validate_witness_adapter_bindings(models)
-    # Bound as on the fixture path, so a changed serving catalogue changes `config_digest`.
-    serving_recipes_config_digest = read_sealed_toml(
-        serving_recipes_config_path, "serving recipes configuration"
-    )[1]
-    pod_placement_config_digest = read_sealed_toml(
-        pod_placement_config_path, "pod placement configuration"
-    )[1]
+    base = real_run_bindings(models, args)
+    sealed = dict(base["sealed_config_digests"])
+    sealed["pdf-render"] = pdf_render_config_sha256
+    sealed["data-handling"] = data_handling_config_sha256
+    if canary_ledger:
+        sealed["canary-ledger"] = canary_ledger["self_hash"]
+    corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
+        DEFAULT_CORPUS_FRAME_CONFIG_PATH
+    )
     witness_context_declaration_sha256 = validate_witness_context_bindings(
         models,
-        witness_context=witness_context,
-        witness_context_config_path=witness_context_config_path,
+        witness_context=args.witness_context,
+        witness_context_config_path=args.witness_context_config,
     )
-    _, alignment_config_sha256 = load_dissent_limits(alignment_config_path)
-    page_accounting_config_sha256 = load_page_accounting_policy(page_accounting_config_path).sha256
-    reconstruction_config_sha256 = load_reconstruction_policy(reconstruction_config_path).sha256
-    ink_map_config_sha256 = ink_map_config_digest(ink_map_config_path)
-    _decoding_policy, decoding_config_sha256 = load_decoding_policy(decoding_config_path)
-    adapter_recipes = dict(sorted(models.adapter_recipes.items()))
-    adapter_recipes[DOOR] = REAL_DOOR_ADAPTER_REVISION
-    armarium_formats_digest, armarium_formats = bind_armarium_formats(armarium_formats_config_path)
-    corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
-        corpus_frame_config_path
+    config_digest = digest_of(
+        {
+            "submission": [
+                {
+                    "relative_path": source["relative_path"],
+                    "sha256": source["sha256"],
+                    "bytes": source["bytes"],
+                }
+                for source in ledger["files"]
+            ],
+            "submission_ledger_sha256": ledger["self_hash"],
+            **({"canary_ledger_sha256": canary_ledger["self_hash"]} if canary_ledger else {}),
+            "format_policy": dict(admission.FORMAT_ROUTES),
+            "pdf_render_config_sha256": pdf_render_config_sha256,
+            "data_handling_policy_sha256": data_handling_config_sha256,
+            "door_execution_recipe": _door_execution_recipe(pdf_settings),
+            "door_implementation_revision": REAL_DOOR_ADAPTER_REVISION,
+            "armarium_formats_config_sha256": sealed["armarium-formats"],
+            "armarium_formats": base["armarium_formats"].to_record(),
+            "recovery_policy": base["recovery_policy"],
+            "hard_failure_policy": load_hard_failure_policy(args.hard_failure_config),
+            "designator_geometry_config_sha256": sealed["designator-geometry"],
+            "alignment_config_sha256": sealed["alignment"],
+            "page_accounting_config_sha256": sealed["page-accounting"],
+            "reconstruction_config_sha256": sealed["reconstruction"],
+            "ink_map_config_sha256": sealed["ink-map"],
+            "triage_modes_config_sha256": sealed["triage-modes"],
+            # Triage decisions shape pixels, so a re-run triage pass under one run
+            # id is refused by name. Empty without split decisions.
+            "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
+            "corpus_frame_policy": corpus_frame_policy,
+            "corpus_frame_config_sha256": corpus_frame_config_sha256,
+            "decoding_config_sha256": sealed["decoding"],
+            "models": models.to_record(),
+            "witness_context_regime": args.witness_context,
+            "witness_context_declaration_sha256": witness_context_declaration_sha256,
+            "perlector_protocol_config_sha256": sealed["perlector-protocol"],
+            "perlector_audit_config_sha256": sealed["perlector-audit"],
+            "serving_config_inputs": base["serving_config_inputs"],
+        }
     )
-    perlector_protocol_config_sha256 = read_sealed_toml(
-        perlector_protocol_config_path, "Perlector protocol configuration"
-    )[1]
-    perlector_audit_config_sha256 = read_sealed_toml(
-        perlector_audit_config_path, "Perlector audit configuration"
-    )[1]
-    # The shared default that `require_triage_modes` also reads; a second
-    # spelling could drift and refuse every triage run as "changed".
-    triage_modes_config_sha256 = load_triage_modes(DEFAULT_TRIAGE_MODES_CONFIG_PATH)
     return {
-        "witness_chairs": list(models.witness_chairs),
-        "config_digest": digest_of(
-            {
-                "submission": [
-                    {
-                        "relative_path": source["relative_path"],
-                        "sha256": source["sha256"],
-                        "bytes": source["bytes"],
-                    }
-                    for source in ledger["files"]
-                ],
-                "submission_ledger_sha256": ledger["self_hash"],
-                **({"canary_ledger_sha256": canary_ledger["self_hash"]} if canary_ledger else {}),
-                "format_policy": format_policy,
-                "pdf_render_config_sha256": pdf_render_config_sha256,
-                # Provenance, not a gate: which policy did the storage-root check.
-                "data_handling_policy_sha256": data_handling_config_sha256,
-                "door_execution_recipe": _door_execution_recipe(pdf_settings),
-                "door_implementation_revision": REAL_DOOR_ADAPTER_REVISION,
-                "armarium_formats_config_sha256": armarium_formats_digest,
-                "armarium_formats": armarium_formats.to_record(),
-                "recovery_policy": recovery_policy,
-                "hard_failure_policy": hard_failure_policy,
-                "designator_geometry_config_sha256": designator_geometry_config_sha256,
-                "alignment_config_sha256": alignment_config_sha256,
-                "page_accounting_config_sha256": page_accounting_config_sha256,
-                "reconstruction_config_sha256": reconstruction_config_sha256,
-                "ink_map_config_sha256": ink_map_config_sha256,
-                "triage_modes_config_sha256": triage_modes_config_sha256,
-                # Triage decisions shape pixels, so a re-run triage pass under one
-                # run id is refused by name. Empty without split decisions.
-                "triage_document_digests": dict(sorted((triage_document_digests or {}).items())),
-                "corpus_frame_policy": corpus_frame_policy,
-                "corpus_frame_config_sha256": corpus_frame_config_sha256,
-                "decoding_config_sha256": decoding_config_sha256,
-                "models": models.to_record(),
-                # Run-level witness settings, validated and bound as on the
-                # fixture path, so a bad declaration refuses before any paid work.
-                "witness_context_regime": witness_context,
-                "witness_context_declaration_sha256": witness_context_declaration_sha256,
-                "perlector_protocol_config_sha256": perlector_protocol_config_sha256,
-                "perlector_audit_config_sha256": perlector_audit_config_sha256,
-                "serving_config_inputs": {
-                    "schema": SERVING_CONFIG_INPUTS_SCHEMA,
-                    "serving_recipes_sha256": serving_recipes_config_digest,
-                    "pod_placement_sha256": pod_placement_config_digest,
-                },
-            }
-        ),
-        "adapter_recipes": adapter_recipes,
-        # Named as on the fixture path, so point-of-use rechecks find them on
-        # real runs too.
-        "sealed_config_digests": {
-            "designator-geometry": designator_geometry_config_sha256,
-            "alignment": alignment_config_sha256,
-            "page-accounting": page_accounting_config_sha256,
-            "reconstruction": reconstruction_config_sha256,
-            "ink-map": ink_map_config_sha256,
-            "corpus-frame-shard": corpus_frame_config_sha256,
-            "decoding": decoding_config_sha256,
-            "perlector-protocol": perlector_protocol_config_sha256,
-            "perlector-audit": perlector_audit_config_sha256,
-            "pdf-render": pdf_render_config_sha256,
-            "recovery": recovery_policy["config_sha256"],
-            "hard-failure": hard_failure_policy["config_sha256"],
-            "review": load_review_policy(review_config_path)["config_sha256"],
-            "triage-modes": triage_modes_config_sha256,
-            # Real ingress only: the fixture route is not gated.
-            "data-handling": data_handling_config_sha256,
-            "serving-recipes": serving_recipes_config_digest,
-            "pod-placement": pod_placement_config_digest,
-            # Real ingress only: downstream stages cannot recompute the real
-            # `config_digest` (it binds the ledger and this machine's decoder),
-            # so the facts stages 3-7 act on are rechecked by these names at
-            # every open.
-            "models": models.models_digest,
-            "armarium-formats": armarium_formats_digest,
-            "run-policy": real_run_policy_digest(
-                witness_context=witness_context,
-                witness_context_declaration_sha256=witness_context_declaration_sha256,
-                mechanics_qualification=mechanics_qualification,
-            ),
-            **({"canary-ledger": canary_ledger["self_hash"]} if canary_ledger else {}),
-        },
+        "witness_chairs": base["witness_chairs"],
+        "config_digest": config_digest,
+        "adapter_recipes": base["adapter_recipes"],
+        "sealed_config_digests": sealed,
     }
 
 

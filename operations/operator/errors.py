@@ -19,30 +19,13 @@ class ErrorCode(StrEnum):
     """Every operator-facing non-success state, with no fallback vocabulary."""
 
     INVALID_COMMAND = "invalid-command"
-    LIVE_PROVIDER_BLOCKED = "live-provider-blocked"
-    SPEND_POLICY_REQUIRED = "spend-policy-required"
     SPEND_POLICY_UNCONFIGURED = "spend-policy-unconfigured"
     SPEND_POLICY_UNREADABLE = "spend-policy-unreadable"
-    CONFIRMATION_REQUIRED = "confirmation-required"
-    CONFIRMATION_RECORD_FAILED = "confirmation-record-failed"
     RECORD_WRITE_FAILED = "record-write-failed"
-    PRICE_CHANGED = "price-changed"
-    BALANCE_FLOOR_REACHED = "balance-floor-reached"
-    BALANCE_UNOBSERVABLE = "balance-unobservable"
-    SAFETY_CHECK_FAILED = "safety-check-failed"
-    LAUNCH_UNRESOLVED = "launch-unresolved"
-    LAUNCH_ALREADY_IN_FLIGHT = "launch-already-in-flight"
-    SPEND_LOCK_UNAVAILABLE = "spend-lock-unavailable"
-    ACTIVE_POD_REQUIRES_CLOSE = "active-pod-requires-close"
-    ADOPTION_REFUSED = "adoption-refused"
-    PAID_ACTION_REFUSED = "paid-action-refused"
-    PROVIDER_TIMEOUT = "provider-timeout"
-    PROVIDER_ERROR = "provider-error"
     UPLOAD_MANIFEST_MISSING = "upload-manifest-missing"
     UPLOAD_PARTIAL = "upload-partial"
     UPLOAD_REFUSED = "upload-refused"
     UPLOAD_VOLUME_UNAVAILABLE = "upload-volume-unavailable"
-    BOOT_RED = "boot-red"
     RUN_INTERRUPTED = "run-interrupted"
     RUN_FAILED = "run-failed"
     RUN_HELD = "run-held"
@@ -51,14 +34,8 @@ class ErrorCode(StrEnum):
     EXPORT_FAILED = "export-failed"
     EXPORT_PARTIAL = "export-partial"
     EXPORT_UNRECONCILED = "export-unreconciled"
-    CLOSE_NOTHING = "close-nothing"
-    CLOSE_LEASE_UNREADABLE = "close-lease-unreadable"
-    CLOSE_LEASE_RECORD_FAILED = "close-lease-record-failed"
-    CLOSE_UNVERIFIED = "close-unverified"
-    CLOSE_REFUSED = "close-refused"
     STATUS_EMPTY = "status-empty"
     STATUS_UNREADABLE = "status-unreadable"
-    CONSOLE_CUSTODY_REFUSED = "console-custody-refused"
     CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
     CONSOLE_PROJECTION_UNREADABLE = "console-projection-unreadable"
     ADVANCE_REFUSED = "advance-refused"
@@ -70,11 +47,8 @@ class ErrorCode(StrEnum):
     CANARY_VERDICT_SAVE_FAILED = "canary-verdict-save-failed"
     CANARY_VERDICT_CONFLICT = "canary-verdict-conflict"
     INGEST_REFUSED = "ingest-refused"
-    INGEST_PREVIEW_UNRESOLVED = "ingest-preview-unresolved"
     INGEST_UNRESOLVED = "ingest-unresolved"
     TRIAGE_REFUSED = "triage-refused"
-    SCANTAILOR_REFUSED = "scantailor-refused"
-    SCANTAILOR_UNRESOLVED = "scantailor-unresolved"
     NOT_A_CHECKOUT = "not-a-checkout"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
@@ -104,16 +78,6 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Nothing was started, changed, or billed.",
         "Run `verbatus` to see the available words, then try again; this is safe.",
     ),
-    ErrorCode.LIVE_PROVIDER_BLOCKED: ErrorCopy(
-        "This copy of Verbatus is not allowed to contact a cloud provider.",
-        "No pod was inspected, started, or billed.",
-        "Use the offline rehearsal only, or ask for the separately approved live demonstration; this is safe.",
-    ),
-    ErrorCode.SPEND_POLICY_REQUIRED: ErrorCopy(
-        "Launch could not proceed because no reviewed spend limit is configured.",
-        "Verbatus sent no new paid provider action.",
-        "Set the GPU and spending limits in the reviewed policy, then run `verbatus launch` again; this is safe.",
-    ),
     ErrorCode.SPEND_POLICY_UNCONFIGURED: ErrorCopy(
         "The reviewed spend policy is intentionally unconfigured.",
         "It has no approved ceilings, balance floor, or alert threshold, so Verbatus will not display it as configured.",
@@ -121,83 +85,13 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ),
     ErrorCode.SPEND_POLICY_UNREADABLE: ErrorCopy(
         "Verbatus could not read the reviewed spend policy.",
-        "No policy, balance observation, or alert history was presented as current, and no provider was contacted.",
+        "No policy was presented as current, and no provider was contacted.",
         "Preserve the saved detail and use a readable reviewed policy file; this command changes nothing.",
-    ),
-    ErrorCode.CONFIRMATION_REQUIRED: ErrorCopy(
-        "The required typed confirmation was not received.",
-        "No new paid or destructive action was started.",
-        "Read the price or close notice, then type the exact confirmation when you are ready; this is safe.",
-    ),
-    ErrorCode.CONFIRMATION_RECORD_FAILED: ErrorCopy(
-        "Verbatus could not save your confirmation before acting.",
-        "No paid or destructive action was started, because a usable indexed record is missing.",
-        "Check that the project folder can be written, then try the command again; this is safe.",
     ),
     ErrorCode.RECORD_WRITE_FAILED: ErrorCopy(
         "Verbatus could not save the result of this step.",
-        "The step is not claimed complete, and a paid or destructive action may already have reached its fixture boundary.",
-        "Do not repeat a paid or destructive action. Preserve this message and its saved receipt path, then run `verbatus status`; if status cannot show it, ask for help.",
-    ),
-    ErrorCode.PRICE_CHANGED: ErrorCopy(
-        "The fixture price changed after the screen you confirmed.",
-        "Your earlier confirmation was not used to authorize a different price.",
-        "Read the new price and ceilings, then type a new confirmation only if they are acceptable; this is safe.",
-    ),
-    ErrorCode.BALANCE_FLOOR_REACHED: ErrorCopy(
-        "Launch could not preserve the reviewed account-balance reserve.",
-        "Verbatus sent no new paid provider action from this refusal path.",
-        "Read the observed balance and reserved liabilities, restore enough available balance, then preview launch again; this is safe.",
-    ),
-    ErrorCode.BALANCE_UNOBSERVABLE: ErrorCopy(
-        "Launch could not establish the current account balance or reserved liability.",
-        "Verbatus sent no new paid provider action because the reviewed reserve could not be proved.",
-        "Repair the named balance source or lease record, then preview launch again; this is safe.",
-    ),
-    ErrorCode.SAFETY_CHECK_FAILED: ErrorCopy(
-        "Launch could not prove that its runtime safeguards were ready.",
-        "No paid provider action was sent from this refusal path.",
-        "Read the saved detail, repair the named controller, lease, or close-readiness problem, then preview launch again; this is safe.",
-    ),
-    ErrorCode.LAUNCH_UNRESOLVED: ErrorCopy(
-        "Launch could not prove that its fixture pod is safely accounted for.",
-        "It is not called ready, and a provider request may already have occurred.",
-        "Do not launch again. Run `verbatus status`, preserve the saved receipt, and resolve the named close evidence before retrying.",
-    ),
-    ErrorCode.SPEND_LOCK_UNAVAILABLE: ErrorCopy(
-        "Launch could not take the spend-reservation lock, usually because another launch holds it.",
-        "This attempt sent no paid provider action and spent nothing.",
-        "Wait for the other launch to finish, or check for a stuck launch process and the lock error in the saved detail, then preview launch again; this is safe.",
-    ),
-    ErrorCode.LAUNCH_ALREADY_IN_FLIGHT: ErrorCopy(
-        "Another Verbatus window is already part-way through a paid launch.",
-        "This window sent no paid provider action, because two of them cannot both be trusted to see the other's result.",
-        "Wait for the other window to finish and show its result, read `verbatus status`, then preview launch again; this is safe.",
-    ),
-    ErrorCode.ACTIVE_POD_REQUIRES_CLOSE: ErrorCopy(
-        "A recorded fixture pod is still awaiting a verified close.",
-        "Verbatus will not begin or adopt another fixture pod while that cost record is open.",
-        "Run `verbatus close` for the recorded pod, then read `verbatus status` before another launch; this is safe.",
-    ),
-    ErrorCode.ADOPTION_REFUSED: ErrorCopy(
-        "The existing fixture pod was not adopted by Verbatus.",
-        "Verbatus sent no new paid provider action, but that existing pod may still be billing.",
-        "Run `verbatus status`, read the saved pod and cost records, and do not assume billing ended before deciding what to do next.",
-    ),
-    ErrorCode.PAID_ACTION_REFUSED: ErrorCopy(
-        "Launch exceeds a reviewed spending limit.",
-        "Verbatus sent no new paid provider action.",
-        "Read the stated price and limit, revise the reviewed policy or request if appropriate, then run `verbatus launch` again; this is safe.",
-    ),
-    ErrorCode.PROVIDER_TIMEOUT: ErrorCopy(
-        "The test provider did not answer in time.",
-        "Verbatus cannot say that the requested action happened.",
-        "Run `verbatus status` to read the saved record, then retry only if it says to; this is safe.",
-    ),
-    ErrorCode.PROVIDER_ERROR: ErrorCopy(
-        "The test provider could not complete the requested check or action.",
-        "The result is recorded as unresolved rather than treated as success.",
-        "Run `verbatus status`, read the saved result, then retry the named step when it is safe.",
+        "The step is not claimed complete, though its action may already have happened.",
+        "Do not repeat the step blindly. Preserve this message and its saved receipt path, then run `verbatus status`; if status cannot show it, ask for help.",
     ),
     ErrorCode.UPLOAD_MANIFEST_MISSING: ErrorCopy(
         "Upload needs a sealed submission record, but one was not available.",
@@ -219,11 +113,6 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Nothing was sent, nothing was started, and no pod was involved.",
         "Check the volume id, its datacenter, and that both storage-key environment "
         "variables are set on this computer, then run `verbatus upload` again; this is safe.",
-    ),
-    ErrorCode.BOOT_RED: ErrorCopy(
-        "Boot finished with a red report.",
-        "The environment is not ready to run, and Verbatus did not call it ready.",
-        "Repair the named setup, cache, or proof-page check, then run `verbatus boot` again; this is safe.",
     ),
     ErrorCode.RUN_INTERRUPTED: ErrorCopy(
         "The run was interrupted before all pages and acts were finished.",
@@ -284,31 +173,6 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "source with the project lead; this is not a corrupted export, it is a record that cannot back "
         "up its own claim. Nothing was started or charged; this is safe.",
     ),
-    ErrorCode.CLOSE_NOTHING: ErrorCopy(
-        "There is no recorded pod waiting to be closed.",
-        "No close request was sent and nothing changed.",
-        "Run `verbatus status` to read the saved records before taking another step; this is safe.",
-    ),
-    ErrorCode.CLOSE_LEASE_UNREADABLE: ErrorCopy(
-        "Verbatus could not read the safety lease for the recorded pod.",
-        "No close request was sent, so the pod and its billing may still exist.",
-        "Do not assume billing ended. Preserve the saved launch receipt and ask for the lease record to be repaired before trying close again.",
-    ),
-    ErrorCode.CLOSE_LEASE_RECORD_FAILED: ErrorCopy(
-        "Close reached the fixture provider, but Verbatus could not update its safety lease.",
-        "The result is not treated as complete, even if provider evidence was observed.",
-        "Do not repeat close until you have checked the recorded pod and repaired the named lease record; this is safe.",
-    ),
-    ErrorCode.CLOSE_UNVERIFIED: ErrorCopy(
-        "Close could not verify both pod absence and billing evidence.",
-        "The pod is not claimed closed, and no claim is made about future charges.",
-        "Follow the manual check named in the close record now, then run `verbatus close` again only when it is safe.",
-    ),
-    ErrorCode.CLOSE_REFUSED: ErrorCopy(
-        "Close was not authorized by its typed confirmation.",
-        "No close request was sent and the recorded pod was left unchanged.",
-        "Read the close notice, then type the exact confirmation when you are ready; this is safe.",
-    ),
     ErrorCode.STATUS_EMPTY: ErrorCopy(
         "There are no saved operator records to show.",
         "Status did not contact a provider or make a new record.",
@@ -319,35 +183,20 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Status did not guess what the record meant or contact a provider.",
         "Preserve that record for review and repair or replace it before continuing; this is safe.",
     ),
-    ErrorCode.CONSOLE_CUSTODY_REFUSED: ErrorCopy(
-        "The operator console or a custody worker could not complete inside its OS boundary.",
-        "No provider action was reached. An advance may have appended a record, and a backup may have added verified objects, even though no checked result returned.",
-        "Follow the saved detail below. Inspect advance_records before retrying an advance; for a backup, keep its objects and retry after fixing the named boundary; otherwise fix Landlock or Seatbelt before reopening the console.",
-    ),
     ErrorCode.CONSOLE_TREE_UNREADABLE: ErrorCopy(
-        "The operator console could not read the selected run tree safely.",
+        "Verbatus could not read the selected run tree safely.",
         "It did not guess at missing evidence or change the run tree.",
         "Preserve the run tree unchanged and investigate the named evidence problem. Resume only from retained valid evidence, or create a new run; never edit the damaged evidence in place.",
     ),
     ErrorCode.CONSOLE_PROJECTION_UNREADABLE: ErrorCopy(
-        "The operator console could not read the view this command handed it.",
-        "The run tree was never opened by that process, so nothing about the evidence is in question and nothing was changed.",
-        "Run the same `verbatus review` again. If it repeats, keep the saved detail below and report it; do not alter the run tree, which is not what failed.",
-    ),
-    ErrorCode.SCANTAILOR_REFUSED: ErrorCopy(
-        "ScanTailor geometry could not be imported.",
-        "No geometry document was written or applied, and no source image was changed.",
-        "Keep the project file. The saved detail names what was refused: fix it in ScanTailor if it is a project detail, or name an existing folder if it is the geometry folder, then import again; this is safe.",
-    ),
-    ErrorCode.SCANTAILOR_UNRESOLVED: ErrorCopy(
-        "ScanTailor geometry import did not return a checked committed result.",
-        "An immutable geometry document may have been written even though the import was not reported as complete. No geometry was applied and no source image was changed.",
-        "Keep the project and geometry folder. Inspect any content-addressed scantailor-geometry document and the saved detail before retrying; an unchanged retry safely accepts identical bytes.",
+        "Verbatus could not read out the view of the run it built.",
+        "This is a fault in this tool's own view, not a claim about the run tree, which was only read and is unchanged.",
+        "Run the same `verbatus review` with `--json` to see the whole view, keep the saved detail below, and report it.",
     ),
     ErrorCode.ADVANCE_REFUSED: ErrorCopy(
         "The requested stage boundary could not be advanced.",
-        "No later stage was started. A worker failure after append may have left an immutable advance record even though no checked result returned.",
-        "Open review and inspect advance_records before retrying, then address the named seal or worker problem; never assume a retry is record-free.",
+        "No later stage was started. A failure after the record was written leaves that immutable advance record in the run tree.",
+        "Open review and inspect advance_records before retrying, then address the named seal problem; never assume a retry is record-free.",
     ),
     ErrorCode.DECISION_REFUSED: ErrorCopy(
         "The review decision was not recorded.",
@@ -357,7 +206,7 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
     ErrorCode.BACKUP_FAILED: ErrorCopy(
         "The Mac backup did not finish with a verified snapshot.",
         "Existing content-addressed backup objects remain intact, but this run is not called backed up.",
-        "Keep the saved detail, repair the named source, backup-directory, or worker-report problem, then run `verbatus backup` again; it safely reuses verified files.",
+        "Keep the saved detail, repair the named source or backup-directory problem, then run `verbatus backup` again; it safely reuses verified files.",
     ),
     ErrorCode.CLEAR_LEFTOVERS_STOPPED: ErrorCopy(
         "Clearing leftovers stopped part-way: part of the named folder could not be read or changed.",
@@ -388,11 +237,6 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The submission could not be prepared for the Door.",
         "No folder was called ready to submit, and no pod was started or billed.",
         "Read the refusal reason below, correct the named source, output folder, policy, instrument setting, or confirmation, then run `verbatus ingest` again; this is safe.",
-    ),
-    ErrorCode.INGEST_PREVIEW_UNRESOLVED: ErrorCopy(
-        "Ingest could not show you the plan it was going to write.",
-        "Nothing was written: the preview runs with no write rights at all, so the output folder you chose is untouched.",
-        "Keep the saved detail and run `verbatus ingest` again with the same empty output folder; this is safe.",
     ),
     ErrorCode.INGEST_UNRESOLVED: ErrorCopy(
         "Ingest did not return a checked ready-folder record.",
@@ -525,19 +369,11 @@ def sanitize_detail(value: str, *, maximum: int = 2000) -> str:
         compact = " ".join(
             part for part in (prefix, "[technical trace omitted from this message]") if part
         )
-    compact = " ".join(_translate_close_vocabulary(word) for word in compact.split(" "))
     if len(compact) <= maximum:
         return compact
     marker = f" … (detail truncated at {maximum} characters)"
     return compact[:maximum] + marker
 
-
-_CLOSE_VOCABULARY: Final = (
-    (re.compile(r"(?<![\w.-])shutdown(?![\w.-])", re.IGNORECASE), "close"),
-    (re.compile(r"(?<![\w.-])termination(?![\w.-])", re.IGNORECASE), "close"),
-    (re.compile(r"(?<![\w.-])terminate(?:d|s|ing)?(?![\w.-])", re.IGNORECASE), "close"),
-    (re.compile(r"(?<![\w.-])stop(?:ped|s|ping)?(?![\w.-])", re.IGNORECASE), "paused"),
-)
 
 # Match real Python traceback structure, not a bare word that may legitimately
 # occur in a path, pod id, filename, or step name.
@@ -545,20 +381,3 @@ _TRACEBACK_SHAPE: Final = re.compile(
     r"Traceback\s+\(most recent call last\):?.*",
     re.IGNORECASE | re.DOTALL,
 )
-
-
-def _translate_close_vocabulary(word: str) -> str:
-    """Rewrite old close vocabulary in one prose word, never inside a path.
-
-    A receipt path with "stop" or "shutdown" in one of its directory names
-    is an identifier a person needs intact, not prose to translate. Dots,
-    underscores and hyphens touching the vocabulary are also preserved,
-    since a bare submitted name such as ``stop-list`` has no path separator
-    but is still an identifier the person needs byte-true.
-    """
-
-    if "/" in word or "\\" in word:
-        return word
-    for pattern, replacement in _CLOSE_VOCABULARY:
-        word = pattern.sub(replacement, word)
-    return word

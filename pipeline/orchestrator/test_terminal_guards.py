@@ -221,6 +221,7 @@ class _RecordingContext:
             read_artifact=read_artifact,
             # This run stores no operator review decision.
             review_decision_records=lambda: [],
+            read_run=lambda: self.run,
         )
 
     def publish(self, **record) -> None:

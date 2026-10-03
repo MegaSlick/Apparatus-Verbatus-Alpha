@@ -68,6 +68,10 @@ class BackupRefusal(RuntimeError):
     """The backup is incomplete or cannot be verified; it is never called current."""
 
 
+class BackupUnverified(BackupRefusal):
+    """The snapshot was published but did not read back; it is never called current."""
+
+
 @dataclass(frozen=True, slots=True)
 class BackupReport:
     snapshot_sha256: str
@@ -82,46 +86,10 @@ class BackupReport:
             "reused": self.reused,
         }
 
-    @classmethod
-    def from_record(cls, value: object) -> BackupReport:
-        """The parent must verify every worker-reported type before declaring success."""
 
-        fields = {"schema", "snapshot_sha256", "copied", "reused"}
-        if not isinstance(value, dict) or set(value) != fields:
-            raise BackupRefusal(f"backup worker report must contain exactly {sorted(fields)}")
-        if value["schema"] != SCHEMA:
-            raise BackupRefusal(
-                f"backup worker report declares schema {value['schema']!r}, not {SCHEMA!r}"
-            )
-        snapshot_sha256 = value["snapshot_sha256"]
-        if not is_sha256(snapshot_sha256):
-            raise BackupRefusal("backup worker report has no lowercase snapshot sha256")
-        counts: dict[str, int] = {}
-        for field in ("copied", "reused"):
-            count = value[field]
-            if not isinstance(count, int) or isinstance(count, bool):
-                raise BackupRefusal(f"backup worker report field {field!r} is not an integer")
-            if count < 0 or count > MAX_BACKUP_FILES:
-                raise BackupRefusal(
-                    f"backup worker report field {field!r} is outside 0..{MAX_BACKUP_FILES}"
-                )
-            counts[field] = count
-        if counts["copied"] + counts["reused"] == 0:
-            raise BackupRefusal("backup worker report claims a successful snapshot of no files")
-        if counts["copied"] + counts["reused"] > MAX_BACKUP_FILES:
-            raise BackupRefusal(f"backup worker report claims more than {MAX_BACKUP_FILES} files")
-        return cls(snapshot_sha256, counts["copied"], counts["reused"])
-
-
-def sync_run_tree(
-    run_root: Path,
-    run_id: str,
-    mac_directory: Path,
-    *,
-    expected_source_identity: tuple[int, int] | None = None,
-    expected_destination_identities: tuple[tuple[int, int], ...] | None = None,
-) -> BackupReport:
-    """Copy one run's regular files into a verified, append-only local store.
+def sync_run_tree(run_root: Path, run_id: str, mac_directory: Path) -> BackupReport:
+    """Copy one run's regular files into a verified, append-only local store, then
+    read the snapshot and every object back through the same opened destination.
 
     A run may be resumed while this command is running.  We therefore scan it
     before and after the copy and refuse to publish a snapshot if either view
@@ -138,12 +106,7 @@ def sync_run_tree(
     except ContractError as error:
         raise BackupRefusal(f"the selected run tree could not be bound: {error}") from error
     with _open_directory(source, what="source run tree") as source_descriptor:
-        _require_descriptor_identity(
-            source_descriptor, expected_source_identity, what="source run tree"
-        )
-        with _opened_destination(
-            root, expected_identities=expected_destination_identities
-        ) as destination:
+        with _opened_destination(root) as destination:
             before, before_temporaries = _inventory_descriptor(source_descriptor, managed_paths)
             copied = reused = 0
             for relative, digest in before.items():
@@ -197,16 +160,17 @@ def sync_run_tree(
                 data,
             )
             _sync_directory(destination.snapshots, root / "snapshots" / "sha256")
-            return BackupReport(snapshot_sha256, copied, reused)
+            report = BackupReport(snapshot_sha256, copied, reused)
+            try:
+                _verify_backup_snapshot(destination, run_id, report)
+            except (BackupRefusal, OSError, ValueError, TypeError, RecursionError) as error:
+                raise BackupUnverified(str(error)) from error
+            return report
 
 
 def resolve_backup_paths(run_root: Path, run_id: str, mac_directory: Path) -> tuple[Path, Path]:
-    """Check source and destination before any destination component is created.
-
-    The parent creates the layout before confinement because custody grants the
-    child publication, not directory creation. Delaying overlap checks to the
-    child could therefore create the layout inside the sealed source first.
-    """
+    """Check source and destination before any destination component is created,
+    so the layout is never made inside the sealed source."""
 
     try:
         checked_run_id = validate_run_id(run_id)
@@ -258,14 +222,7 @@ def _validate_backup_layout(source: Path, root: Path) -> None:
 
 
 def prepare_backup_layout(source: Path, root: Path) -> None:
-    """Create each child through its already-open, no-follow parent descriptor.
-
-    Public because the trusted parent must run it too: custody grants the
-    confined child publication into the destination but not directory
-    creation, so `cli._backup_in_custody` builds the closed layout before the
-    worker starts. A step another module is required to call is part of this
-    module's surface, not a private detail a rename could quietly break.
-    """
+    """Create each child through its already-open, no-follow parent descriptor."""
 
     _validate_backup_layout(source, root)
     try:
@@ -379,9 +336,7 @@ class _DestinationDescriptors:
 
 
 @contextmanager
-def _opened_destination(
-    root: Path, *, expected_identities: tuple[tuple[int, int], ...] | None = None
-) -> Iterator[_DestinationDescriptors]:
+def _opened_destination(root: Path) -> Iterator[_DestinationDescriptors]:
     descriptors: list[int] = []
     try:
         root_descriptor = _open_directory_descriptor(root, what=f"backup layout path {root}")
@@ -410,15 +365,9 @@ def _opened_destination(
             what=f"backup layout path {root / 'snapshots' / 'sha256'}",
         )
         descriptors.append(snapshots)
-        opened = _DestinationDescriptors(
+        yield _DestinationDescriptors(
             root_descriptor, objects_parent, objects, snapshots_parent, snapshots
         )
-        observed = tuple(_descriptor_identity(descriptor) for descriptor in descriptors)
-        if expected_identities is not None and observed != expected_identities:
-            raise BackupRefusal(
-                "the Mac backup layout changed filesystem identity before it could be used"
-            )
-        yield opened
     finally:
         for descriptor in reversed(descriptors):
             os.close(descriptor)
@@ -427,33 +376,6 @@ def _opened_destination(
 def _descriptor_identity(descriptor: int) -> tuple[int, int]:
     details = os.fstat(descriptor)
     return (details.st_dev, details.st_ino)
-
-
-def required_identity(path: Path, *, what: str) -> tuple[int, int]:
-    """Return the directory identity that a custody child must see again."""
-
-    with _open_directory(path, what=what) as descriptor:
-        return _descriptor_identity(descriptor)
-
-
-def destination_identities(root: Path) -> tuple[tuple[int, int], ...]:
-    """Bind every fixed layout directory across the parent/child boundary."""
-
-    with _opened_destination(root) as destination:
-        return (
-            _descriptor_identity(destination.root),
-            _descriptor_identity(destination.objects_parent),
-            _descriptor_identity(destination.objects),
-            _descriptor_identity(destination.snapshots_parent),
-            _descriptor_identity(destination.snapshots),
-        )
-
-
-def _require_descriptor_identity(
-    descriptor: int, expected: tuple[int, int] | None, *, what: str
-) -> None:
-    if expected is not None and _descriptor_identity(descriptor) != expected:
-        raise BackupRefusal(f"the {what} changed filesystem identity before it could be used")
 
 
 def _identity(path: Path) -> tuple[int, int] | None:
@@ -891,18 +813,10 @@ def _publish_bytes(snapshots_descriptor: int, name: str, target: Path, data: byt
                 raise BackupRefusal("backup snapshot did not verify after publication")
 
 
-def verify_backup_snapshot(
-    root: Path,
-    run_id: str,
-    report: BackupReport,
-    *,
-    expected_destination_identities: tuple[tuple[int, int], ...] | None = None,
-) -> dict[str, object]:
+def verify_backup_snapshot(root: Path, run_id: str, report: BackupReport) -> dict[str, object]:
     """Read back the snapshot and every object before reporting backup success."""
 
-    with _opened_destination(
-        root, expected_identities=expected_destination_identities
-    ) as destination:
+    with _opened_destination(root) as destination:
         return _verify_backup_snapshot(destination, run_id, report)
 
 
@@ -917,9 +831,9 @@ def _verify_backup_snapshot(
         limit=MAX_SNAPSHOT_BYTES,
     )
     if data is None:
-        raise BackupRefusal("backup worker reported a snapshot that does not exist")
+        raise BackupRefusal("the backup snapshot it published does not exist")
     if digest_bytes(data) != report.snapshot_sha256:
-        raise BackupRefusal("backup worker reported a snapshot whose bytes do not match its sha256")
+        raise BackupRefusal("the backup snapshot's bytes do not match its sha256")
     try:
         value = json.loads(data)
     except (UnicodeDecodeError, ValueError, RecursionError) as error:
@@ -975,7 +889,9 @@ def _verify_backup_snapshot(
                 f"backup snapshot has an unsafe or APFS-colliding temporary path: {error}"
             ) from error
     if len(checked_rows) != report.copied + report.reused:
-        raise BackupRefusal("backup worker report counts do not reconcile with its snapshot")
+        raise BackupRefusal(
+            "the backup's copied and reused counts do not reconcile with its snapshot"
+        )
     for digest in sorted({digest for _relative, digest in checked_rows}):
         if (
             _existing_digest(destination.objects, digest, what=f"backup object {digest!r}")

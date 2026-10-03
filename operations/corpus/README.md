@@ -477,8 +477,7 @@ from — not a schema migration, because RecordGold truth was never filed where
 RecordGold page manifest would qualify for crops on request: a second round in
 which the Perlector, having read the whole page from its capped render, is sent
 up to k regions of the sealed page at native resolution. It decides whether a
-paid on/off comparison is worth running; the feature itself stays off
-(`[feed] crops = "off"`).
+paid on/off comparison is worth running; the feature itself is not built.
 
 ```sh
 .venv/bin/python -m operations.corpus.crop_census /path/to/set/page_manifest.jsonl \

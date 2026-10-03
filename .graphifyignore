@@ -22,7 +22,6 @@ raw/
 quarantine/
 graphify-out/
 proof/fixtures/
-operations/triage/measured/
 *.egg-info/
 __pycache__/
 .pytest_cache/

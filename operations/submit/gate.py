@@ -23,24 +23,6 @@ from common.contracts.errors import ContractError
 ROOT: Final = Path(__file__).resolve().parents[2]
 DEFAULT_POLICY_PATH: Final = ROOT / "config" / "data_handling_policy.json"
 
-# Every prose clause the policy must carry, checked for type and a minimum
-# length so a boolean or empty value cannot pass as a stated rule.
-# `policy_version` is excluded: it is a label, not a rule, so it is checked
-# separately rather than held to a prose floor.
-_REQUIRED_PROSE_CLAUSES: Final = (
-    "storage_roots_note",
-    "logging_rule",
-    "temp_file_handling",
-    "retention_and_deletion",
-    "routing_rule",
-    "third_party_transmission",
-    "cleanup_drill",
-    "alpha_shortcuts_ledger",
-)
-_POLICY_FIELDS: Final = frozenset({*_REQUIRED_PROSE_CLAUSES, "storage_roots", "policy_version"})
-# A floor under "present", not a quality judgement of what a clause says.
-_MINIMUM_CLAUSE_LENGTH: Final = 8
-
 
 class GateRefusal(ContractError):
     """The policy could not be loaded, or a location is outside every approved root.
@@ -87,34 +69,22 @@ def load_policy(path: Path = DEFAULT_POLICY_PATH) -> dict[str, Any]:
 
 
 def _parse_policy(raw: bytes, path: Path | str) -> dict[str, Any]:
-    """Validate one already-read policy document. The only parser for this file."""
+    """Validate one already-read policy document. The only parser for this file.
+
+    Only `storage_roots` drives a check, so only it and the `policy_version`
+    label are validated. The policy's prose clauses are for people; their bytes
+    still enter the policy digest every run seals.
+    """
     try:
         record = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
         raise GateRefusal(f"data-handling policy at {path} could not be read: {error}") from error
     if not isinstance(record, dict):
         raise GateRefusal(f"{path} is not a data-handling policy record")
-    if set(record) != _POLICY_FIELDS:
-        missing = sorted(_POLICY_FIELDS - set(record))
-        unknown = sorted(set(record) - _POLICY_FIELDS)
-        raise GateRefusal(
-            f"{path} does not carry exactly the clauses this gate enforces. "
-            f"Missing: {missing}. Unknown: {unknown}. A policy with a clause absent is "
-            "not a shorter policy, it is one that was never approved; and a clause "
-            "nothing here checks is one the project lead approved and nothing enforces"
-        )
-    for field in _REQUIRED_PROSE_CLAUSES:
-        value = record[field]
-        if not isinstance(value, str) or len(value.strip()) < _MINIMUM_CLAUSE_LENGTH:
-            raise GateRefusal(
-                f"{path} gives clause {field!r} a value that is not a stated rule "
-                f"({type(value).__name__}); each clause must be written out as text of at "
-                f"least {_MINIMUM_CLAUSE_LENGTH} characters"
-            )
-    version = record["policy_version"]
+    version = record.get("policy_version")
     if not isinstance(version, str) or not version.strip():
         raise GateRefusal(f"{path} gives no policy version")
-    roots = record["storage_roots"]
+    roots = record.get("storage_roots")
     if not isinstance(roots, list) or not roots:
         raise GateRefusal(f"{path} names no approved storage roots")
     if any(not isinstance(root, str) or not root.strip() for root in roots):

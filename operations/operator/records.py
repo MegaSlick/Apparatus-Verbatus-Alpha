@@ -239,48 +239,6 @@ class ReceiptStore:
     def records_of_kind(self, kind: str) -> list[tuple[Path, dict[str, Any]]]:
         return [(path, record) for path, record in self.list() if record["kind"] == kind]
 
-    def readable_records_of_kind(
-        self, kind: str
-    ) -> tuple[list[tuple[Path, dict[str, Any]]], list[str]]:
-        """Read one kind while naming its failures beside the records that survive.
-
-        The filename prefix avoids unrelated failures, but hyphenated kinds can
-        make the prefix overmatch; only the validated record's exact kind decides.
-        """
-
-        loaded: list[tuple[Path, dict[str, Any]]] = []
-        unreadable: list[str] = []
-        with self._bound_receipts() as directory:
-            if directory is None:
-                return [], []
-            for name in _entries(directory, f"{kind}-"):
-                try:
-                    linked = stat.S_ISLNK(
-                        os.stat(name, dir_fd=directory, follow_symlinks=False).st_mode
-                    )
-                except OSError:
-                    # The entry was listed and is now gone or unstattable;
-                    # named rather than silently dropped.
-                    unreadable.append(f"{name}: it could not be examined")
-                    continue
-                if linked:
-                    # `read` validates the resolved name against the bytes
-                    # it hashed, so a link may carry any name at all. A
-                    # receipt is a file this store created, not a name
-                    # pointing at one.
-                    unreadable.append(
-                        f"{name}: it is a link rather than a receipt this store wrote"
-                    )
-                    continue
-                try:
-                    record = self._read_at(directory, name)
-                except RecordError as error:
-                    unreadable.append(f"{name}: {error}")
-                    continue
-                if record["kind"] == kind:
-                    loaded.append((self.receipts / name, record))
-        return loaded, unreadable
-
 
 def _entries(directory: int, prefix: str) -> list[str]:
     """The receipt filenames of an open directory, sorted, dot names excluded.

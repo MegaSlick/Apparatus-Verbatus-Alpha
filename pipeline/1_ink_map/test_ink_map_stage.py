@@ -192,7 +192,7 @@ def test_the_ink_map_refuses_a_page_the_submitted_manifest_does_not_name_once(mo
     A page claiming an ordinal nobody submitted, or two sealed pages claiming
     the same one, would each put a page's evidence into the census under an
     identity the run authority does not carry -- and this census is the
-    denominator Unit 14 derives coverage from. The Exemplar boundary proof is
+    denominator later coverage checks derive from. The Exemplar boundary proof is
     stubbed out for the duplicate case on purpose: the rule under test is a
     statement about the census as a whole, and it must hold whether or not each
     page individually satisfies its own boundary.

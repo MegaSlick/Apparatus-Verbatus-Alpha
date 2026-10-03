@@ -296,8 +296,8 @@ def atomic_create(target: Path, data: bytes) -> bool:
 
     Evidence is never overwritten. Identical bytes are a true no-op, so a byte-identical resubmission
     stays idempotent. Returns True when created, False when an identical file
-    was reused; public because `operations/operator/ingest_worker.py` depends
-    on exactly this three-way created/reused/`ExistingRecordRefusal` contract.
+    was reused; public because the operator's ingest (`operations/operator/ingest.py`)
+    depends on exactly this three-way created/reused/`ExistingRecordRefusal` contract.
     """
     # Each OSError becomes a refusal: a traceback would print the path, and
     # terminal output names no path.

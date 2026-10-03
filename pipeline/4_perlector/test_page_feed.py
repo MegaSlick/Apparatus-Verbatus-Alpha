@@ -16,7 +16,7 @@ from PIL import Image, ImageColor, ImageDraw
 
 from common import page_feed, page_overlay, page_prompt, page_testimonia, page_witness_units
 from common.churro_document import churro_system_prompt
-from common.contracts.canonical import code_digest, digest_bytes
+from common.contracts.canonical import code_digest, digest_bytes, digest_of
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.native_witness import (
     CHURRO_OUTPUT_TOKENS,
@@ -301,7 +301,6 @@ def test_the_shipped_protocol_shows_every_feed_input():
         "witness_coordinates": True,
         "surya_lines": True,
         "surya_blocks": True,
-        "crops": "off",
         "page_overlay": "off",
     }
 
@@ -317,7 +316,7 @@ def _write(tmp_path, old: str, new: str):
 @pytest.mark.parametrize(
     ("old", "new", "message"),
     [
-        ('crops = "off"', 'crops = "on-request"', "crops"),
+        ('page_overlay = "off"', 'page_overlay = "off"\ncrops = "off"', "closed schema"),
         ('page_image = "legible"', 'page_image = "tiny"', "page_image"),
         ('witness_units = "own"', 'witness_units = "lines"', "witness_units"),
         ("surya_lines = true", 'surya_lines = "yes"', "surya_lines"),
@@ -396,7 +395,8 @@ def test_the_default_feed_shows_each_witness_in_its_own_units():
         "act_entries": 3,
         "surya_lines": 3,
     }
-    page_feed.verify_feed_digest(feed)
+    body = {key: value for key, value in feed.items() if key != "feed_digest"}
+    assert feed["feed_digest"] == digest_of(body)
 
 
 def test_box_1000_rounds_half_to_even_from_page_pixels():
@@ -1650,7 +1650,6 @@ def test_every_reported_string_is_a_part_charged_per_byte_and_the_parts_join_to_
 
 def test_the_renderer_digest_names_the_overlay_code_and_its_encoder():
     from common import imaging
-    from common.contracts.canonical import digest_of
 
     assert page_overlay.RENDERER_SHA256 == digest_of(
         {

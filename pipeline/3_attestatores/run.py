@@ -7,75 +7,45 @@ for channel health, which comes from the response and transport.
 
 import json
 import sys
-import time
 from collections.abc import Callable
 from functools import partial
 from pathlib import Path
-from typing import Any, Final, Mapping, NamedTuple
+from typing import Any, Final, Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import chandra  # noqa: E402
+import chandra_native  # noqa: E402
 import feeding  # noqa: E402
 import live_witness  # noqa: E402
 import witness_adapters  # noqa: E402
+from attempt import (  # noqa: E402
+    NO_RESPONSE_HEALTH,
+    Attempt,
+    content_health,
+    native_problem,
+    no_response_health,
+    unrecordable_health,
+)
+from retained import (  # noqa: E402
+    is_positive_int,
+    named_once,
+    validate_raw_response_ref,
+    validate_retained_response_blob,
+)
 
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.chandra_native_retry import (  # noqa: E402
-    ATTEMPT_SCHEMA as CHANDRA_ATTEMPT_SCHEMA,
-)
-from common.chandra_native_retry import (
-    CHANDRA_MAX_ATTEMPTS,
-    CHANDRA_MAX_OUTPUT_TOKENS,
-)
-from common.chandra_native_retry import (
-    INTENT_SCHEMA as CHANDRA_INTENT_SCHEMA,
-)
-from common.chandra_native_retry import (
-    TRACE_SCHEMA as CHANDRA_TRACE_SCHEMA,
-)
-from common.chandra_native_retry import (
-    attempt_parameters as chandra_attempt_parameters,
-)
-from common.chandra_native_retry import (
-    error_backoff_seconds as chandra_error_backoff_seconds,
-)
-from common.chandra_native_retry import (
-    exhausted_condition as chandra_exhausted_condition,
-)
-from common.chandra_native_retry import (
-    recipe_record as chandra_recipe_record,
-)
-from common.chandra_native_retry import (
-    refuse_orphan_intent as refuse_chandra_orphan_intent,
-)
-from common.chandra_native_retry import (
-    retry_trigger as chandra_retry_trigger,
-)
-from common.chandra_native_retry import (
-    validate_trace as validate_chandra_trace,
-)
 from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
-from common.contracts.envelope import read_verified  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
 from common.contracts.serving import (  # noqa: E402
-    CHANDRA_NATIVE_CALL_RECORD_FIELDS,
-    CHANDRA_NATIVE_CALL_RECORD_SCHEMA,
-    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS,
-    CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
     RAW_RESPONSE_MODEL_OUTPUT,
-    RAW_RESPONSE_TRANSPORT_BODY,
-    STOP_REASON_UNREPORTED,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.decoding import (  # noqa: E402
-    SAMPLING_FIELDS,
     load_decoding_policy,
-    refuse_retired_call_record,
-    verify_call_sampling,
 )
 from common.exemplar_boundary import (  # noqa: E402
     read_sealed_page,
@@ -85,12 +55,7 @@ from common.imaging import crop_png, dimensions  # noqa: E402
 from common.native_witness import (  # noqa: E402
     REPORTED_BOUNDS_SOURCES,
     native_parse_refusal,
-    record_presentations,
     split_page_edge_overshoots,
-    validate_capture_text_view,
-    validate_native_capture,
-    validate_native_witness_geometry,
-    validate_presented_page_binding,
 )
 from common.native_witness import (
     validate_page_testimonium_payload as validate_shared_page_testimonium_payload,
@@ -104,7 +69,6 @@ from common.page_testimonia import (  # noqa: E402
     BLANK_TESTIMONY_HEALTH,
     NO_DETECTOR_RECORD_REASON,
     declared_page_witness_chairs,
-    is_detector_blank_testimony,
     validate_page_testimonium_record,
     verify_page_native_capture,
 )
@@ -121,7 +85,6 @@ from common.stage import (  # noqa: E402
     latest_attempt,
     open_stage_context,
     run_stage,
-    sealed_decoding_policy,
     stage_manifest,
     stage_parser,
     validate_serving_provenance,
@@ -129,14 +92,11 @@ from common.stage import (  # noqa: E402
 )
 from operations.serving.assembly import (  # noqa: E402
     bound_serving_recipes,
-    retain_chair_bytes,
     stage_chair_client,
 )
 from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
 from operations.serving.config import ServingRecipes  # noqa: E402
 from operations.serving.errors import (  # noqa: E402
-    ChairResponseRefusal,
-    ChairTransportFailure,
     ServingError,
 )
 
@@ -151,11 +111,6 @@ DEFAULT_FORMAT_CAPABILITIES = {
     "can_express_uncertainty": False,
     "can_express_layout": False,
 }
-
-
-def _declared_format_capabilities(adapter: Any) -> dict[str, Any]:
-    """Record adapter expressiveness even when a request is refused pre-send."""
-    return witness_adapters.declared_format_capabilities(adapter)
 
 
 def real_ingress(context) -> bool:
@@ -194,12 +149,6 @@ def _confidence_problem(value: Any, path: str = "witness_reported") -> str | Non
             if problem := _confidence_problem(item, f"{path}[{index}]"):
                 return problem
     return None
-
-
-# A witness response is untrusted: deep nesting would raise an uncaught
-# `RecursionError` in `_native_problem` and kill the whole run, not one attempt.
-# Real output nests a few levels, so this is headroom.
-_MAX_NATIVE_DEPTH = 64
 
 
 REGION_PRESENTATION_FIELDS: Final = ("region_id", "image_path", "image_sha256")
@@ -375,52 +324,10 @@ def _sealed_source_page(
     return page, page_bytes, dimensions(page_bytes)
 
 
-def validate_testimonium_presentation(context, record: dict[str, Any]) -> None:
-    """Re-derive the presentation's sealed page and its blob binding.
-
-    An unpresented record binds no input, except a record reader's blank
-    testimony, whose one input is its detector's census
-    (`common.page_testimonia.validate_page_testimonium_record` checks it).
-    """
-    payload = record["payload"]
-    presented = payload["presented"]
-    validate_native_witness_geometry(payload)
-    if presented == {}:
-        if record.get("inputs") != [] and not is_detector_blank_testimony(context, record):
-            raise SchemaRefusal("an unpresented Testimonium carries image inputs")
-        return
-    page, page_bytes, page_size = _sealed_source_page(context, presented)
-    validate_native_witness_geometry(payload, page_size=page_size)
-    for shown in record_presentations(payload):
-        validate_presented_page_binding(
-            shown,
-            page_ordinal=page["payload"]["ordinal"],
-            page_image_path=page["payload"]["image_path"],
-            page_sha256=page["payload"]["source_sha256"],
-            page_size=page_size,
-            page_bytes=page_bytes,
-        )
-        if not any(
-            item == {"relative_path": shown["image_path"], "sha256": shown["image_sha256"]}
-            for item in record.get("inputs", [])
-        ):
-            raise SchemaRefusal(
-                "a Testimonium presented image is not digest-bound in record.inputs"
-            )
-
-
-def _is_positive_int(value: Any) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
-
-
-def _sorted_refs(references: list[dict[str, str]]) -> list[dict[str, str]]:
-    return sorted(references, key=lambda ref: (ref.get("relative_path", ""), ref.get("sha256", "")))
-
-
 def _declared_for_ordinal(row: dict[str, Any], ordinal: int) -> bool:
     """An unnumbered fixture row belongs to attempt one, never to a later attempt."""
     declared = row.get("attempt_ordinal", 1)
-    if not _is_positive_int(declared):
+    if not is_positive_int(declared):
         raise SchemaRefusal("a fixture witness declaration has no positive attempt ordinal")
     return declared == ordinal
 
@@ -436,122 +343,6 @@ def _scenario_rows(context, rows) -> list[dict[str, Any]]:
         elif declared_scenario == context.scenario:
             scoped.append(row)
     return scoped or base
-
-
-def _native_problem(value: Any, path: str = "payload", *, depth: int = 0) -> str | None:
-    """Return why a native response cannot be retained as canonical JSON.
-
-    Checked here so a bad response becomes a retained ``failed`` attempt rather than
-    a crash in the artifact writer or a silent repair.
-    """
-    if depth > _MAX_NATIVE_DEPTH:
-        return f"{path} nests deeper than {_MAX_NATIVE_DEPTH} levels"
-    if value is None or isinstance(value, (bool, int)):
-        return None
-    if isinstance(value, str):
-        try:
-            value.encode("utf-8", "strict")
-        except UnicodeEncodeError:
-            return f"{path} contains text that is not valid UTF-8"
-        return None
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            if problem := _native_problem(item, f"{path}[{index}]", depth=depth + 1):
-                return problem
-        return None
-    if isinstance(value, dict):
-        for key, item in value.items():
-            if not isinstance(key, str):
-                return f"{path} has a non-string object key"
-            try:
-                key.encode("utf-8", "strict")
-            except UnicodeEncodeError:
-                return f"{path} has an object key that is not valid UTF-8"
-            if problem := _native_problem(item, f"{path}.{key}", depth=depth + 1):
-                return problem
-        return None
-    return f"{path} has unsupported native type {type(value).__name__!r}"
-
-
-def _native_type(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, int):
-        return "integer"
-    if isinstance(value, str):
-        return "string"
-    if isinstance(value, list):
-        return "array"
-    if isinstance(value, dict):
-        return "object"
-    return type(value).__name__
-
-
-# Shared by the writer and `validate_content_health` so both agree on "no response".
-NO_RESPONSE_HEALTH = {
-    "native_type": None,
-    "encoding": "not-applicable",
-    "recordable": None,
-    "empty": None,
-    "blank": None,
-    "truncated": None,
-    "characters": None,
-}
-
-
-def no_response_health(*, reason: str) -> dict[str, Any]:
-    """Health for a chair with no native response, never an empty reading."""
-    return {**NO_RESPONSE_HEALTH, "truncation_basis": reason}
-
-
-def _unrecordable_health(basis: str, *, native_type: str = "unrecordable") -> dict[str, Any]:
-    return {
-        "native_type": native_type,
-        "encoding": "invalid-or-unrecordable",
-        "recordable": False,
-        "empty": None,
-        "blank": None,
-        "truncated": None,
-        "characters": None,
-        "truncation_basis": basis,
-    }
-
-
-def content_health(native_payload: Any, *, completed: bool | None = None) -> dict[str, Any]:
-    """Compute deterministic channel facts from native output alone.
-
-    ``witness_reported`` is deliberately not an input: a self-report never becomes
-    health. ``completed`` must come from a trusted response boundary, or be None.
-    """
-    if (problem := _native_problem(native_payload)) is not None:
-        return _unrecordable_health(problem, native_type=_native_type(native_payload))
-
-    if isinstance(native_payload, str):
-        empty = native_payload == ""
-        blank = native_payload.strip() == ""
-        characters: int | None = len(native_payload)
-    elif isinstance(native_payload, (dict, list)):
-        empty = len(native_payload) == 0
-        blank = None
-        characters = None
-    else:
-        empty = False
-        blank = None
-        characters = None
-    return {
-        "native_type": _native_type(native_payload),
-        "encoding": "utf-8-json-native",
-        "recordable": True,
-        "empty": empty,
-        "blank": blank,
-        "truncated": None if completed is None else not completed,
-        "characters": characters,
-        "truncation_basis": (
-            "trusted-response-boundary" if completed is not None else "not-recorded"
-        ),
-    }
 
 
 def validate_content_health(native_payload: Any, health: Any) -> None:
@@ -575,7 +366,7 @@ def validate_content_health(native_payload: Any, health: Any) -> None:
 
     recordable = health["recordable"]
     if recordable is True:
-        if problem := _native_problem(native_payload):
+        if problem := native_problem(native_payload):
             raise SchemaRefusal(problem)
         expected = content_health(native_payload, completed=None)
         for field in ("native_type", "encoding", "recordable", "empty", "blank", "characters"):
@@ -643,7 +434,7 @@ def format_capabilities_for(row: dict[str, Any]) -> dict[str, Any]:
     for field in ("can_express_uncertainty", "can_express_layout"):
         if not isinstance(capabilities.get(field), bool):
             raise SchemaRefusal(f"witness format_capabilities.{field} is not a boolean")
-    if problem := _native_problem(capabilities, "format_capabilities"):
+    if problem := native_problem(capabilities, "format_capabilities"):
         raise SchemaRefusal(problem)
     return capabilities
 
@@ -669,7 +460,7 @@ def prepared_response(
     if health["recordable"] is not True:
         return None, None, None, health, str(health["truncation_basis"])
     witness_reported = row.get("witness_reported")
-    report_problem = _native_problem(witness_reported, "witness_reported")
+    report_problem = native_problem(witness_reported, "witness_reported")
     if report_problem is None:
         report_problem = _confidence_problem(witness_reported)
     if report_problem is not None:
@@ -742,25 +533,6 @@ def declared_adapter_metadata(
     return None if rule is None else {"geometry_quantization": rule}
 
 
-def validate_stage_blob_ref(reference: Any, field: str) -> dict[str, str]:
-    """Close one content-addressed reference to this stage's own blob store."""
-    prefix = "3_attestatores/blobs/sha256/"
-    if (
-        not isinstance(reference, dict)
-        or set(reference) != {"relative_path", "sha256"}
-        or not isinstance(reference["relative_path"], str)
-        or not is_sha256(reference["sha256"])
-        or reference["relative_path"] != prefix + reference["sha256"]
-    ):
-        raise SchemaRefusal(f"a Testimonium {field} is not an Attestatores blob reference")
-    return reference
-
-
-def validate_raw_response_ref(reference: Any) -> dict[str, str]:
-    """Close one retained-response reference to this stage's own blob store."""
-    return validate_stage_blob_ref(reference, "raw_response_ref")
-
-
 def _provenance_adapter_name(payload: dict[str, Any]) -> Any:
     provenance = payload.get("provenance")
     identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
@@ -789,26 +561,6 @@ def validate_adapter_metadata(payload: Any) -> None:
             )
 
 
-def _named_once(references: list[Any]) -> list[Any]:
-    """Keep the first mention of each input reference, in the order given.
-
-    A repeat is not a second response and must not read as one.
-    """
-    seen: list[str] = []
-    kept: list[Any] = []
-    for reference in references:
-        key = (
-            json.dumps(reference, sort_keys=True)
-            if isinstance(reference, dict)
-            else repr(reference)
-        )
-        if key in seen:
-            continue
-        seen.append(key)
-        kept.append(reference)
-    return kept
-
-
 def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
     """Require retained bytes and their adapter rule to describe one record."""
     has_references = bool(payload.get("raw_response_refs"))
@@ -823,45 +575,23 @@ def validate_retained_response_pairing(payload: dict[str, Any]) -> None:
             )
 
 
-def validate_retained_response_blob(
-    tree: Any, reference: Any, field: str = "raw_response_ref"
-) -> None:
-    """Re-hash the named response or call blob during tally read-back."""
-    checked = validate_stage_blob_ref(reference, field)
-    what = f"retained witness {field}"
-    read_verified(tree.read_bytes, checked, what)
-
-
 def validate_page_testimonium_payload(
     payload: Any, *, testimonium_id: str | None = None
 ) -> dict[str, Any]:
     """The page-record seam is closed before publication and on later reads."""
+    _validate_stage_payload(payload)
+    return validate_shared_page_testimonium_payload(payload, testimonium_id=testimonium_id)
+
+
+def _validate_stage_payload(payload: Any) -> None:
+    """The page-record checks this stage adds to the shared schema."""
     if isinstance(payload, dict):
         for reference in payload.get("raw_response_refs", []):
             validate_raw_response_ref(reference)
         validate_adapter_metadata(payload)
         validate_retained_response_pairing(payload)
-        if "native_inference" in payload:
-            _require_chandra_native_testimonium_scope(payload)
         if problem := _confidence_problem(payload.get("witness_reported")):
             raise SchemaRefusal(problem)
-    return validate_shared_page_testimonium_payload(payload, testimonium_id=testimonium_id)
-
-
-def _require_chandra_native_testimonium_scope(payload: dict[str, Any]) -> None:
-    """Keep the native retry capability on Chandra's one admitted chair/scope."""
-    provenance = payload.get("provenance")
-    identity = provenance.get("resolved_identity") if isinstance(provenance, dict) else None
-    if (
-        payload.get("chair") != "attestator_1"
-        or not isinstance(identity, dict)
-        or identity.get("role") != "attestator_1"
-        or identity.get("witness_adapter") != "chandra.v1"
-        or identity.get("witness_scope") != "page"
-    ):
-        raise SchemaRefusal(
-            "native_inference belongs only to page-scoped attestator_1 with adapter chandra.v1"
-        )
 
 
 def require_accounted_unrecordable_channel(record: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -896,34 +626,6 @@ def _positive_ordinal(value: str) -> int:
     if ordinal < 1:
         raise ValueError("attempt ordinal must be positive")
     return ordinal
-
-
-class Attempt(NamedTuple):
-    """One chair's resolved outcome for one page on one attempt.
-
-    Describes one chair only; nothing here compares or ranks witnesses.
-    """
-
-    outcome: str
-    native_payload: Any
-    witness_reported: Any
-    format_capabilities: dict[str, Any] | None
-    health: dict[str, Any]
-    reason: str | None
-    raw_response_ref: dict[str, str] | None = None
-    observation_payload: Any = None
-    # Live-only fields, appended last so positional fixture constructors are
-    # unchanged. `serving_call_ref` names this request's call-record blob.
-    native_capture: dict[str, Any] | None = None
-    serving_call_ref: dict[str, str] | None = None
-    receipt_ref: dict[str, str] | None = None
-    # Which sort of bytes `raw_response_ref` names; `None` on the fixture path.
-    raw_response_kind: str | None = None
-    # Chandra-only provenance over every physical request; not the payload.
-    native_inference: dict[str, Any] | None = None
-    # Fixture responses `(bytes, reference)` the page geometry is derived from,
-    # each named in the page record's `raw_response_refs`.
-    retained_responses: tuple[tuple[bytes, dict[str, str]], ...] = ()
 
 
 _CHURRO_PAGE_RESPONSE_FIELDS: Final = frozenset(
@@ -1043,7 +745,7 @@ def captured_churro_page_attempt(
         parser="xml",
     )
     # Read from the adapter, as the live path does, so the two cannot diverge.
-    capabilities = _declared_format_capabilities(adapter)
+    capabilities = witness_adapters.declared_format_capabilities(adapter)
     parsed = capture["parse"]
     # Post-hoc findings cannot decide whether the transport cut off the response.
     cut_off = stop in _CHURRO_CUTOFF_STOP_REASONS
@@ -1100,7 +802,7 @@ def captured_churro_page_attempt(
             None,
             None,
             capabilities,
-            _unrecordable_health(basis),
+            unrecordable_health(basis),
             f"Churro response retained but not usable: {cut_note}{parse_refusal}",
         ),
         capture,
@@ -1338,7 +1040,7 @@ def fixture_page_attempt(
             None,
             None,
             DEFAULT_FORMAT_CAPABILITIES,
-            _unrecordable_health(reason),
+            unrecordable_health(reason),
             f"the provider response was refused without repair: {reason}",
         )
     if table == "witness_empty":
@@ -1456,7 +1158,6 @@ def page_testimonium_payload(
     attempt: Attempt,
     presented: dict[str, Any],
     observed: list[dict[str, Any]],
-    testimonium_id: str,
     page_edge_overshoots: list[dict[str, Any]] | None = None,
     raw_response_refs: list[dict[str, str]] | None = None,
     adapter_metadata: dict[str, str] | None = None,
@@ -1492,8 +1193,6 @@ def page_testimonium_payload(
         unit_call_refs=unit_call_refs,
         serving_call_ref=attempt.serving_call_ref,
     )
-    validate_page_testimonium_payload(record, testimonium_id=testimonium_id)
-    validate_page_record_facts(record, attempt.outcome)
     return record
 
 
@@ -1513,6 +1212,19 @@ def validate_page_record_facts(payload: dict[str, Any], outcome: str) -> None:
             raise SchemaRefusal(
                 f"a {outcome} Testimonium records no reason for its non-reading outcome"
             )
+
+
+def _seal_page_testimonium(context, **fields: Any) -> None:
+    """Publish a page record only once it passes the check every reader applies to it.
+
+    Validated once, as the envelope `publish` will write: the stage's own checks,
+    then the shared record validator, which closes the payload schema itself.
+    `publish` builds that same envelope again from the same fields.
+    """
+    _validate_stage_payload(fields["payload"])
+    validate_page_record_facts(fields["payload"], fields["outcome"])
+    validate_page_testimonium_record(context, context.envelope(kind="page-testimonium", **fields))
+    context.publish(kind="page-testimonium", **fields)
 
 
 def publish_page_testimonium(
@@ -1537,7 +1249,6 @@ def publish_page_testimonium(
     attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
     page_subject_id = page_subject(context, page_ordinal, page_ids=page_ids)
     page_attempt = attempt_id(page_subject_id, f"read:{chair}", ordinal)
-    page_artifact_id = artifact_id(ATTESTATORES, "page-testimonium", page_subject_id, page_attempt)
     presented: dict[str, Any] = {}
     adapter = None
     if attempted:
@@ -1555,6 +1266,15 @@ def publish_page_testimonium(
         attempt=attempt,
         live=live,
     )
+    if (
+        attempt.native_capture is None
+        and attempt.raw_response_ref is not None
+        and attempt.raw_response_ref not in response_refs
+    ):
+        # A response kept unread has no capture to name its bytes, so the page
+        # record binds them itself; otherwise they could change or vanish
+        # behind a call record that only names them.
+        response_refs = [*response_refs, dict(attempt.raw_response_ref)]
     payload = page_testimonium_payload(
         chair=chair,
         page_ordinal=page_ordinal,
@@ -1566,24 +1286,22 @@ def publish_page_testimonium(
         attempt=attempt,
         presented=presented,
         observed=observed,
-        testimonium_id=page_artifact_id,
         # Absent for a page never presented: no box was reported to reject.
         page_edge_overshoots=edge_overshoots if presented else None,
         raw_response_refs=response_refs,
         adapter_metadata=declared_adapter_metadata(resolved, has_raw_response=bool(response_refs)),
     )
     inputs = [context.input_ref(presented["image_path"])] if presented else []
-    validate_testimonium_presentation(context, {"payload": payload, "inputs": inputs})
     verify_page_call_sampling(context, payload, chair)
-    context.publish(
-        kind="page-testimonium",
+    _seal_page_testimonium(
+        context,
         subject_id=page_subject_id,
         outcome=attempt.outcome,
         attempt=page_attempt,
         # Every retained response is an input, because `read_artifact` re-hashes
         # only `inputs`. A live Chandra page reaches one blob twice, so each is
         # named once.
-        inputs=_named_once(
+        inputs=named_once(
             inputs
             + response_refs
             + (
@@ -1591,7 +1309,7 @@ def publish_page_testimonium(
                 if attempt.native_capture is not None
                 else []
             )
-            + _chandra_trace_inputs(attempt.native_inference)
+            + chandra_native.trace_inputs(attempt.native_inference)
             + ([attempt.serving_call_ref] if attempt.serving_call_ref is not None else [])
         ),
         payload=payload,
@@ -1912,51 +1630,6 @@ def production_serving_factory(
     )
 
 
-def attempt_from_live(live: live_witness.LiveAttempt) -> Attempt:
-    """Convert one `LiveAttempt` into the `Attempt` every write path shares."""
-    return Attempt(
-        outcome=live.outcome,
-        native_payload=live.native_payload,
-        witness_reported=live.witness_reported,
-        format_capabilities=(
-            dict(live.format_capabilities) if live.format_capabilities is not None else None
-        ),
-        health=dict(live.health),
-        reason=live.reason,
-        raw_response_ref=dict(live.raw_response_ref) if live.raw_response_ref else None,
-        observation_payload=live.observation_payload,
-        native_capture=dict(live.native_capture) if live.native_capture is not None else None,
-        serving_call_ref=dict(live.call_record_ref) if live.call_record_ref else None,
-        receipt_ref=dict(live.receipt_ref) if live.receipt_ref else None,
-        raw_response_kind=live.raw_response_kind,
-        native_inference=None,
-    )
-
-
-# vLLM's `stop` and `length`, the fixture transport's synonyms for them, and the
-# no-stop-reason marker. Any other word has no measured meaning.
-_LIVE_ENGINE_STOP_WORDS: Final = _CHURRO_STOP_REASONS | {STOP_REASON_UNREPORTED}
-
-
-def refuse_unpublishable_stop_word(transport_stop_reason: str, what: str) -> None:
-    """Refuse an unknown engine stop word, even when the body did not parse.
-
-    Calling it complete or cut off would invent a measurement; bytes are retained.
-    """
-    if transport_stop_reason not in _LIVE_ENGINE_STOP_WORDS:
-        raise ContractError(
-            f"{what} reports transport_stop_reason {transport_stop_reason!r}, which this "
-            "pipeline has never measured a meaning for; recording it as complete or as cut "
-            "off would assert a boundary nobody observed. The response bytes are retained "
-            "and nothing was published for it"
-        )
-
-
-def _refuse_unpublishable_response(response: Any, what: str) -> None:
-    stop_word = response.finish_reason
-    refuse_unpublishable_stop_word(STOP_REASON_UNREPORTED if stop_word is None else stop_word, what)
-
-
 def capacity_refusal_attempt(
     error: RequestCapacityRefusal,
     *,
@@ -1976,7 +1649,7 @@ def capacity_refusal_attempt(
         native_payload=None,
         witness_reported=None,
         format_capabilities=(
-            _declared_format_capabilities(adapter)
+            witness_adapters.declared_format_capabilities(adapter)
             if adapter is not None
             else DEFAULT_FORMAT_CAPABILITIES
         ),
@@ -2165,7 +1838,7 @@ def fixture_detector_units(
     exactly as for a served record; only the answer is declared.
     """
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
-    capabilities = _declared_format_capabilities(adapter)
+    capabilities = witness_adapters.declared_format_capabilities(adapter)
     prompt = adapter.prompt()
     served = []
     for region in units:
@@ -2207,7 +1880,7 @@ def fixture_detector_units(
                 None,
                 None,
                 capabilities,
-                _unrecordable_health(parsed["reason"]),
+                unrecordable_health(parsed["reason"]),
                 reason,
                 raw_response_ref=capture["raw_response_ref"],
                 native_capture=capture,
@@ -2304,11 +1977,8 @@ def publish_detector_page_testimonium(
         )
     page_subject_id = page_subject(context, page_ordinal, page_ids=page_ids)
     page_attempt_id = attempt_id(page_subject_id, f"read:{chair}", ordinal)
-    page_artifact_id = artifact_id(
-        ATTESTATORES, "page-testimonium", page_subject_id, page_attempt_id
-    )
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
-    capabilities = _declared_format_capabilities(adapter)
+    capabilities = witness_adapters.declared_format_capabilities(adapter)
     if not served:
         if detection_count is None:
             raise FatalAccounting(
@@ -2344,7 +2014,6 @@ def publish_detector_page_testimonium(
             attempt=attempt,
             presented={},
             observed=[],
-            testimonium_id=page_artifact_id,
         )
         inputs: list[dict[str, str]] = [] if census is None else [census]
     else:
@@ -2366,7 +2035,7 @@ def publish_detector_page_testimonium(
             receipt_ref=receipt_ref,
         )
         presentations = [presented for _region, presented, _attempt in served]
-        raw_refs = _named_once(
+        raw_refs = named_once(
             [a.raw_response_ref for _r, _p, a in served if a.raw_response_ref is not None]
         )
         unit_call_refs = [a.serving_call_ref for _r, _p, a in served]
@@ -2378,23 +2047,19 @@ def publish_detector_page_testimonium(
             attempt=attempt,
             presented=presentations[0],
             observed=observed,
-            testimonium_id=page_artifact_id,
             raw_response_refs=raw_refs,
             presentations=presentations,
             unit_captures=[a.native_capture for _r, _p, a in served],
             unit_call_refs=unit_call_refs,
         )
-        inputs = _named_once(
+        inputs = named_once(
             [context.input_ref(presented["image_path"]) for presented in presentations]
             + raw_refs
             + [reference for reference in unit_call_refs if reference is not None]
         )
         verify_page_call_sampling(context, payload, chair)
-    validate_testimonium_presentation(
-        context, {"outcome": attempt.outcome, "payload": payload, "inputs": inputs}
-    )
-    context.publish(
-        kind="page-testimonium",
+    _seal_page_testimonium(
+        context,
         subject_id=page_subject_id,
         outcome=attempt.outcome,
         attempt=page_attempt_id,
@@ -2436,21 +2101,25 @@ def _serve_detector_page(
             )
         else:
             response = client.read(built.request)
-            live = live_witness.live_attempt_from_response(
-                context,
-                adapter,
-                resolved.witness_adapter,
+            attempt = live_witness.read_unless_unmeasured_stop(
                 response,
-                presentation=source,
-                presented=built.presented,
-                prompt=built.prompt,
-                generation_declared=built.request.generation_declared,
-                parser="text",
-                generation_accounting=built.generation_accounting,
+                adapter=adapter,
+                what=f"the {resolved.witness_adapter} response for record {region['subject_id']}",
+                read=partial(
+                    live_witness.live_attempt_from_response,
+                    context,
+                    adapter,
+                    resolved.witness_adapter,
+                    response,
+                    presentation=source,
+                    presented=built.presented,
+                    prompt=built.prompt,
+                    generation_declared=built.request.generation_declared,
+                    parser="text",
+                    generation_accounting=built.generation_accounting,
+                ),
             )
-            _refuse_unpublishable_response(response, what.replace("request", "response"))
             presented = built.presented
-            attempt = attempt_from_live(live)
         witness_adapters.validate_adapter_presentation(resolved.witness_adapter, source, presented)
         served.append((region, presented, attempt))
     publish_detector_page_testimonium(
@@ -2593,918 +2262,6 @@ def verify_page_call_sampling(context, payload: dict[str, Any], chair: str) -> N
         ) from error
 
 
-def _chandra_native_subject(page_subject_id: str, chair: str, witness_attempt_ordinal: int) -> str:
-    return f"{page_subject_id}:{chair}:witness-{witness_attempt_ordinal}"
-
-
-def _chandra_native_artifact_ref(
-    context, kind: str, subject_id: str, native_attempt_ordinal: int
-) -> dict[str, str]:
-    operation = (
-        "chandra-native-intent"
-        if kind == "chandra-native-attempt-intent"
-        else "chandra-native-attempt"
-    )
-    native_attempt = attempt_id(subject_id, operation, native_attempt_ordinal)
-    return context.artifact_ref(
-        ATTESTATORES,
-        kind,
-        artifact_id(ATTESTATORES, kind, subject_id, native_attempt),
-    )
-
-
-_CHANDRA_RESULT_FIELDS: Final = (
-    "outcome",
-    "native_payload",
-    "witness_reported",
-    "format_capabilities",
-    "health",
-    "reason",
-    "raw_response_ref",
-    "native_capture",
-    "serving_call_ref",
-    "receipt_ref",
-    "raw_response_kind",
-)
-
-
-def _attempt_evidence_record(attempt: Attempt) -> dict[str, Any]:
-    return {field: getattr(attempt, field) for field in _CHANDRA_RESULT_FIELDS}
-
-
-def _attempt_from_evidence_record(context, value: Any) -> Attempt:
-    if not isinstance(value, dict) or set(value) != set(_CHANDRA_RESULT_FIELDS):
-        raise SchemaRefusal("a Chandra native terminal artifact has no closed result record")
-    observation_payload = None
-    capture = value["native_capture"]
-    if capture is not None:
-        validate_capture_text_view(validate_native_capture(capture))
-        reference = validate_raw_response_ref(capture["raw_response_ref"])
-        observation_payload = read_verified(
-            context.tree.read_bytes,
-            reference,
-            "a Chandra native terminal artifact's model output",
-        )
-    return Attempt(**value, observation_payload=observation_payload)
-
-
-def _chandra_error_attempt(error: ServingError, adapter: Any) -> Attempt:
-    reason = f"the Chandra native inference call failed: {error}"
-    raw_response_ref = getattr(error, "raw_response_ref", None)
-    return Attempt(
-        outcome="failed",
-        native_payload=None,
-        witness_reported=None,
-        format_capabilities=_declared_format_capabilities(adapter),
-        health=no_response_health(reason=reason),
-        reason=reason,
-        raw_response_ref=dict(raw_response_ref) if raw_response_ref is not None else None,
-        native_capture=None,
-        serving_call_ref=dict(error.call_record_ref),
-        receipt_ref=dict(error.receipt_ref),
-        raw_response_kind=(RAW_RESPONSE_TRANSPORT_BODY if raw_response_ref is not None else None),
-    )
-
-
-_CHANDRA_APPLICATION_REFUSAL_PREFIX: Final = "retained Chandra response refused: "
-
-
-def _chandra_application_refusal_attempt(
-    context, response: Any, adapter: Any, error: ContractError, attempt: Attempt | None
-) -> Attempt:
-    """Retain a known post-response refusal as terminal evidence, never an orphan."""
-
-    reason = _CHANDRA_APPLICATION_REFUSAL_PREFIX + str(error)
-    if attempt is not None:
-        return attempt._replace(outcome="failed", reason=reason)
-    model_output_ref = retain_chair_bytes(context, response.content.encode("utf-8"))
-    return Attempt(
-        outcome="failed",
-        native_payload=None,
-        witness_reported=None,
-        format_capabilities=_declared_format_capabilities(adapter),
-        health=no_response_health(reason=reason),
-        reason=reason,
-        raw_response_ref=model_output_ref,
-        observation_payload=None,
-        native_capture=None,
-        serving_call_ref=dict(response.call_record_ref),
-        receipt_ref=dict(response.receipt_ref),
-        raw_response_kind=RAW_RESPONSE_MODEL_OUTPUT,
-    )
-
-
-def _raise_chandra_application_refusal(attempt: Attempt) -> None:
-    reason = attempt.reason
-    if isinstance(reason, str) and reason.startswith(_CHANDRA_APPLICATION_REFUSAL_PREFIX):
-        raise ContractError(reason.removeprefix(_CHANDRA_APPLICATION_REFUSAL_PREFIX))
-
-
-def _chandra_ref(value: Any, label: str) -> dict[str, str]:
-    if (
-        not isinstance(value, dict)
-        or set(value) != {"relative_path", "sha256"}
-        or not isinstance(value.get("relative_path"), str)
-        or not value["relative_path"].strip()
-        or not is_sha256(value.get("sha256"))
-    ):
-        raise SchemaRefusal(f"a Chandra native {label} is not a content-addressed reference")
-    return value
-
-
-def _validate_chandra_intent(
-    context,
-    *,
-    subject_id: str,
-    native_attempt_ordinal: int,
-    intent_ref: Any,
-) -> dict[str, Any]:
-    reference = _chandra_ref(intent_ref, "intent reference")
-    record = context.tree.read_artifact_reference(
-        reference,
-        stage=ATTESTATORES,
-        kind="chandra-native-attempt-intent",
-        subject_id=subject_id,
-    )
-    payload = record.get("payload")
-    required = {
-        "schema",
-        "recipe",
-        "page_ordinal",
-        "chair",
-        "witness_attempt_ordinal",
-        "native_attempt_ordinal",
-        "parameters",
-        "request_sha256",
-        "request_body_ref",
-        "image_sha256s",
-        "receipt_ref",
-        "compatibility",
-    }
-    if not isinstance(payload, dict) or set(payload) != required:
-        raise SchemaRefusal("a Chandra native attempt intent is not its closed schema")
-    if (
-        payload["schema"] != CHANDRA_INTENT_SCHEMA
-        or payload["recipe"] != chandra_recipe_record()
-        or payload["chair"] != "attestator_1"
-        or payload["native_attempt_ordinal"] != native_attempt_ordinal
-        or payload["parameters"] != chandra_attempt_parameters(native_attempt_ordinal)
-        or not is_sha256(payload["request_sha256"])
-        or not _is_positive_int(payload["page_ordinal"])
-        or not _is_positive_int(payload["witness_attempt_ordinal"])
-    ):
-        raise SchemaRefusal("a Chandra native attempt intent moved from its pinned request")
-    if payload["compatibility"] != {
-        "scope": "attestator_1-page-chandra.v1",
-        "per_request_seed": "omitted-to-match-pinned-upstream",
-        "enable_thinking": "local-vllm-template-compatibility-false",
-    }:
-        raise SchemaRefusal("a Chandra native attempt intent moved its compatibility declaration")
-    if not isinstance(payload["image_sha256s"], list) or any(
-        not is_sha256(digest) for digest in payload["image_sha256s"]
-    ):
-        raise SchemaRefusal("a Chandra native attempt intent has invalid image digests")
-    _chandra_ref(payload["receipt_ref"], "receipt reference")
-    body_ref = validate_stage_blob_ref(payload["request_body_ref"], "request_body_ref")
-    if body_ref["sha256"] != payload["request_sha256"]:
-        raise SchemaRefusal("a Chandra native attempt intent's retained request body moved")
-    read_verified(
-        context.tree.read_bytes,
-        body_ref,
-        "a Chandra native attempt intent's retained request body",
-    )
-    expected_inputs = _named_once(
-        [
-            {
-                "relative_path": context.tree.blob_path(ATTESTATORES, digest),
-                "sha256": digest,
-            }
-            for digest in payload["image_sha256s"]
-        ]
-        + [body_ref, payload["receipt_ref"]]
-    )
-    if record.get("inputs") != _sorted_refs(expected_inputs):
-        raise SchemaRefusal("a Chandra native attempt intent does not bind its exact request")
-    return payload
-
-
-def _chandra_conditions(
-    raw: str, inference_error: bool, native_attempt_ordinal: int
-) -> tuple[str | None, str | None]:
-    """The retry trigger a response sets and the condition the loop returns with."""
-    trigger = chandra_retry_trigger(
-        raw, inference_error=inference_error, attempt_ordinal=native_attempt_ordinal
-    )
-    if native_attempt_ordinal == CHANDRA_MAX_ATTEMPTS:
-        return trigger, chandra_exhausted_condition(raw, inference_error=inference_error)
-    return trigger, trigger
-
-
-def _chandra_backoff(completed_attempt_ordinal: int) -> None:
-    delay = chandra_error_backoff_seconds(completed_attempt_ordinal)
-    if delay is None:
-        raise FatalAccounting("the final Chandra attempt requested an impossible retry")
-    time.sleep(delay)
-
-
-def _validated_chandra_serving_call(context, payload, native_attempt_ordinal, intent):
-    resolved = _attempt_from_evidence_record(context, payload["resolved_attempt"])
-    call_ref = validate_stage_blob_ref(resolved.serving_call_ref, "serving_call_ref")
-    validate_retained_response_blob(context.tree, call_ref, "serving_call_ref")
-    try:
-        call_record = json.loads(context.tree.read_bytes(call_ref["relative_path"]))
-    except (UnicodeDecodeError, ValueError, RecursionError) as error:
-        raise SchemaRefusal("a Chandra native serving call record is not JSON") from error
-    if isinstance(call_record, dict):
-        refuse_retired_call_record(
-            call_record.get("schema"),
-            subject="a Chandra native serving call record",
-            error_type=SchemaRefusal,
-        )
-    schemas = {
-        CHANDRA_NATIVE_CALL_RECORD_SCHEMA: CHANDRA_NATIVE_CALL_RECORD_FIELDS,
-        CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA: (
-            CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS
-        ),
-    }
-    expected_fields = (
-        schemas.get(call_record.get("schema")) if isinstance(call_record, dict) else None
-    )
-    if expected_fields is None or set(call_record) != expected_fields:
-        raise SchemaRefusal("a Chandra native serving call record is not its closed schema")
-    configured = context.registry.resolve("attestator_1")
-    if not isinstance(configured, ChairIdentity):
-        raise SchemaRefusal("the Chandra native serving call names no configured Attestator 1")
-    receipt = context.tree.read_run_receipt(intent["receipt_ref"])
-    expected_receipt = {
-        "chair": configured.role,
-        "source": configured.source,
-        "resolved": configured.source_reference,
-        "revision": configured.receipt_revision,
-        "revision_kind": configured.receipt_revision_kind,
-        "digest_manifest": configured.digest_manifest,
-    }
-    if any(receipt.get(field) != value for field, value in expected_receipt.items()):
-        raise SchemaRefusal(
-            "a Chandra native serving receipt disagrees with Attestator 1's sealed identity"
-        )
-    if (
-        call_record.get("resolved_identity") != configured.to_record()
-        or call_record.get("resolved_revision") != configured.receipt_revision
-        or call_record.get("serving_recipe") != configured.serving_recipe
-        or call_record.get("kind") != "chat-completions"
-        or not isinstance(call_record.get("served_model_id"), str)
-        or not call_record["served_model_id"].strip()
-    ):
-        raise SchemaRefusal(
-            "a Chandra native serving call record disagrees with its sealed chair identity"
-        )
-    context.require_sealed_config("decoding", call_record.get("decoding_config_sha256"))
-    inference_error = (
-        call_record["schema"] == CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA
-        or call_record.get("parse_problem") is not None
-    )
-    if payload["error"] is not inference_error:
-        raise SchemaRefusal(
-            "a Chandra native terminal's error fact disagrees with its retained serving call"
-        )
-    if inference_error and resolved.outcome != "failed":
-        raise SchemaRefusal("a Chandra native inference error retained a non-failed attempt")
-    if inference_error:
-        expected_error_code = (
-            ChairTransportFailure.code
-            if call_record["schema"] == CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA
-            else call_record.get("parse_problem")
-        )
-        if payload["error_code"] != expected_error_code:
-            raise SchemaRefusal(
-                "a Chandra native terminal's error code disagrees with its retained serving call"
-            )
-        if (
-            call_record["schema"] == CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA
-            and payload["error_detail"] != call_record["transport_problem"]["detail"]
-        ):
-            raise SchemaRefusal(
-                "a Chandra native terminal's transport error detail disagrees with its call"
-            )
-    sent = call_record.get("generation_sent")
-    if (
-        call_record.get("native_attempt_intent_ref") != payload["intent_ref"]
-        or call_record.get("request_sha256") != payload["request_sha256"]
-        or call_record.get("chair") != "attestator_1"
-        or call_record.get("receipt_ref") != intent["receipt_ref"]
-        or call_record.get("image_sha256s") != intent["image_sha256s"]
-        or resolved.receipt_ref != intent["receipt_ref"]
-        or call_record.get("generation_declared") != {"max_new_tokens": CHANDRA_MAX_OUTPUT_TOKENS}
-        or not isinstance(sent, dict)
-        or set(sent) - {"chat_template_kwargs", "max_tokens"} - SAMPLING_FIELDS
-        or sent.get("chat_template_kwargs") != {"enable_thinking": False}
-        or sent.get("max_tokens", CHANDRA_MAX_OUTPUT_TOKENS) != CHANDRA_MAX_OUTPUT_TOKENS
-    ):
-        raise SchemaRefusal("a Chandra native serving call record moved its pinned request")
-    decoding_policy, _decoding_sha256 = sealed_decoding_policy(context)
-    try:
-        # The pinned upstream client sends no per-request seed.
-        verify_call_sampling(
-            call_record,
-            decoding_policy,
-            "attestator_1",
-            attempt_ordinal=native_attempt_ordinal,
-            expected_seed=None,
-        )
-    except ContractError as error:
-        raise SchemaRefusal(
-            f"a Chandra native serving call record moved its pinned request: {error}"
-        ) from error
-    return resolved, call_ref, call_record, inference_error
-
-
-def _validate_chandra_terminal_response(
-    context,
-    payload,
-    record,
-    native_attempt_ordinal,
-    resolved,
-    call_ref,
-    call_record,
-    inference_error,
-    conditions,
-):
-    response_ref = payload["transport_response_ref"]
-    if response_ref is not None:
-        validate_stage_blob_ref(response_ref, "transport_response_ref")
-        validate_retained_response_blob(context.tree, response_ref, "transport_response_ref")
-    if call_record.get("raw_response_ref") != response_ref:
-        raise SchemaRefusal(
-            "a Chandra native terminal names a different transport response than its call record"
-        )
-    if (
-        (response_ref is None and call_record.get("response_sha256") is not None)
-        or (
-            response_ref is not None
-            and call_record.get("response_sha256") != response_ref["sha256"]
-        )
-        or (
-            not inference_error
-            and call_record.get("response_model") != call_record.get("served_model_id")
-        )
-    ):
-        raise SchemaRefusal(
-            "a Chandra native terminal's retained response disagrees with its serving call"
-        )
-    if resolved.native_capture is not None and (
-        resolved.raw_response_kind != RAW_RESPONSE_MODEL_OUTPUT
-        or resolved.raw_response_ref != resolved.native_capture["raw_response_ref"]
-    ):
-        raise SchemaRefusal(
-            "a Chandra native terminal's final model output disagrees with its retained capture"
-        )
-    if inference_error and (
-        resolved.raw_response_ref != response_ref
-        or (response_ref is not None and resolved.raw_response_kind != RAW_RESPONSE_TRANSPORT_BODY)
-        or (response_ref is None and resolved.raw_response_kind is not None)
-    ):
-        raise SchemaRefusal(
-            "a Chandra native error terminal disagrees with its retained transport response"
-        )
-
-    raw = ""
-    if not inference_error:
-        if resolved.raw_response_kind != RAW_RESPONSE_MODEL_OUTPUT:
-            raise SchemaRefusal(
-                "a successful Chandra native terminal retains no final model-output bytes"
-            )
-        model_output_ref = validate_raw_response_ref(resolved.raw_response_ref)
-        model_output = read_verified(
-            context.tree.read_bytes,
-            model_output_ref,
-            "a Chandra native terminal's final model output",
-        )
-        try:
-            raw = model_output.decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise SchemaRefusal("a Chandra native terminal's model output is not UTF-8") from error
-    if conditions != _chandra_conditions(raw, inference_error, native_attempt_ordinal):
-        raise SchemaRefusal(
-            "a Chandra native terminal's trigger disagrees with its retained response/error"
-        )
-    expected_inputs: list[dict[str, str]] = [payload["intent_ref"], call_ref]
-    for reference in (
-        response_ref,
-        resolved.raw_response_ref,
-        resolved.native_capture["raw_response_ref"] if resolved.native_capture else None,
-    ):
-        if reference is not None:
-            expected_inputs.append(reference)
-    if "inputs" in record and record["inputs"] != _sorted_refs(_named_once(expected_inputs)):
-        raise SchemaRefusal("a Chandra native terminal artifact does not bind all call evidence")
-
-
-def _validate_chandra_terminal(
-    context,
-    *,
-    subject_id: str,
-    native_attempt_ordinal: int,
-    record: Mapping[str, Any],
-) -> dict[str, Any]:
-    payload = record.get("payload")
-    required = {
-        "schema",
-        "recipe",
-        "native_attempt_ordinal",
-        "parameters",
-        "request_sha256",
-        "intent_ref",
-        "trigger",
-        "returned_condition",
-        "error",
-        "error_code",
-        "error_detail",
-        "transport_response_ref",
-        "resolved_attempt",
-    }
-    if not isinstance(payload, dict) or set(payload) != required:
-        raise SchemaRefusal("a Chandra native terminal artifact is not its closed schema")
-    parameters = chandra_attempt_parameters(native_attempt_ordinal)
-    trigger = payload["trigger"]
-    returned = payload["returned_condition"]
-    if (
-        payload["schema"] != CHANDRA_ATTEMPT_SCHEMA
-        or payload["recipe"] != chandra_recipe_record()
-        or payload["native_attempt_ordinal"] != native_attempt_ordinal
-        or payload["parameters"] != parameters
-        or not is_sha256(payload["request_sha256"])
-        or trigger not in {None, "repeat-token", "inference-error"}
-        or returned not in {None, "repeat-token", "inference-error"}
-        or not isinstance(payload["error"], bool)
-    ):
-        raise SchemaRefusal("a Chandra native terminal artifact moved from its pinned attempt")
-    if native_attempt_ordinal < CHANDRA_MAX_ATTEMPTS and returned != trigger:
-        raise SchemaRefusal("a Chandra native terminal artifact disagrees with its retry trigger")
-    if native_attempt_ordinal == CHANDRA_MAX_ATTEMPTS and trigger is not None:
-        raise SchemaRefusal("the seventh Chandra native terminal artifact still requests a retry")
-    if payload["error"]:
-        if not isinstance(payload["error_code"], str) or not payload["error_code"].strip():
-            raise SchemaRefusal("a failed Chandra native attempt has no error code")
-        if not isinstance(payload["error_detail"], str) or not payload["error_detail"].strip():
-            raise SchemaRefusal("a failed Chandra native attempt has no error detail")
-    elif payload["error_code"] is not None or payload["error_detail"] is not None:
-        raise SchemaRefusal("a successful Chandra native attempt carries an invented error")
-
-    intent = _validate_chandra_intent(
-        context,
-        subject_id=subject_id,
-        native_attempt_ordinal=native_attempt_ordinal,
-        intent_ref=payload["intent_ref"],
-    )
-    if intent["request_sha256"] != payload["request_sha256"]:
-        raise SchemaRefusal("a Chandra native terminal artifact names a different intended request")
-
-    resolved, call_ref, call_record, inference_error = _validated_chandra_serving_call(
-        context, payload, native_attempt_ordinal, intent
-    )
-    _validate_chandra_terminal_response(
-        context,
-        payload,
-        record,
-        native_attempt_ordinal,
-        resolved,
-        call_ref,
-        call_record,
-        inference_error,
-        (trigger, returned),
-    )
-    return payload
-
-
-def _chandra_trace_inputs(trace: dict[str, Any] | None) -> list[dict[str, str]]:
-    if trace is None:
-        return []
-    checked = validate_chandra_trace(trace)
-    return [
-        reference
-        for row in checked["attempts"]
-        for reference in (row["intent_ref"], row["attempt_ref"])
-    ]
-
-
-def _publish_chandra_intent(
-    context,
-    *,
-    subject_id: str,
-    page_ordinal: int,
-    chair: str,
-    witness_attempt_ordinal: int,
-    native_attempt_ordinal: int,
-    dispatch: Any,
-    receipt_ref: Mapping[str, str],
-) -> tuple[dict[str, str], bool]:
-    native_attempt = attempt_id(subject_id, "chandra-native-intent", native_attempt_ordinal)
-    image_refs = [
-        {
-            "relative_path": context.tree.blob_path(ATTESTATORES, digest),
-            "sha256": digest,
-        }
-        for digest in dispatch.request.image_sha256s
-    ]
-    request_body_ref = retain_chair_bytes(context, dispatch.body)
-    payload = {
-        "schema": CHANDRA_INTENT_SCHEMA,
-        "recipe": chandra_recipe_record(),
-        "page_ordinal": page_ordinal,
-        "chair": chair,
-        "witness_attempt_ordinal": witness_attempt_ordinal,
-        "native_attempt_ordinal": native_attempt_ordinal,
-        "parameters": chandra_attempt_parameters(native_attempt_ordinal),
-        "request_sha256": dispatch.request_sha256,
-        "request_body_ref": request_body_ref,
-        "image_sha256s": list(dispatch.request.image_sha256s),
-        "receipt_ref": dict(receipt_ref),
-        "compatibility": {
-            "scope": "attestator_1-page-chandra.v1",
-            "per_request_seed": "omitted-to-match-pinned-upstream",
-            "enable_thinking": "local-vllm-template-compatibility-false",
-        },
-    }
-    published = context.publish(
-        kind="chandra-native-attempt-intent",
-        subject_id=subject_id,
-        outcome="recorded",
-        attempt=native_attempt,
-        inputs=_named_once(image_refs + [request_body_ref, dict(receipt_ref)]),
-        payload=payload,
-    )
-    return (
-        _chandra_native_artifact_ref(
-            context, "chandra-native-attempt-intent", subject_id, native_attempt_ordinal
-        ),
-        published.reused,
-    )
-
-
-def _publish_chandra_terminal(
-    context,
-    *,
-    subject_id: str,
-    native_attempt_ordinal: int,
-    intent_ref: dict[str, str],
-    request_sha256: str,
-    attempt: Attempt,
-    trigger: str | None,
-    returned_condition: str | None,
-    error: bool,
-    error_code: str | None,
-    error_detail: str | None,
-    transport_response_ref: dict[str, str] | None,
-) -> tuple[dict[str, Any], dict[str, str]]:
-    native_attempt = attempt_id(subject_id, "chandra-native-attempt", native_attempt_ordinal)
-    payload = {
-        "schema": CHANDRA_ATTEMPT_SCHEMA,
-        "recipe": chandra_recipe_record(),
-        "native_attempt_ordinal": native_attempt_ordinal,
-        "parameters": chandra_attempt_parameters(native_attempt_ordinal),
-        "request_sha256": request_sha256,
-        "intent_ref": intent_ref,
-        "trigger": trigger,
-        "returned_condition": returned_condition,
-        "error": error,
-        "error_code": error_code,
-        "error_detail": error_detail,
-        "transport_response_ref": transport_response_ref,
-        "resolved_attempt": _attempt_evidence_record(attempt),
-    }
-    refs: list[dict[str, str]] = [intent_ref]
-    for reference in (
-        attempt.serving_call_ref,
-        transport_response_ref,
-        attempt.raw_response_ref,
-        attempt.native_capture["raw_response_ref"] if attempt.native_capture else None,
-    ):
-        if reference is not None:
-            refs.append(reference)
-    _validate_chandra_terminal(
-        context,
-        subject_id=subject_id,
-        native_attempt_ordinal=native_attempt_ordinal,
-        record={"payload": payload},
-    )
-    context.publish(
-        kind="chandra-native-attempt",
-        subject_id=subject_id,
-        outcome="recorded",
-        attempt=native_attempt,
-        inputs=_named_once(refs),
-        payload=payload,
-    )
-    return payload, _chandra_native_artifact_ref(
-        context, "chandra-native-attempt", subject_id, native_attempt_ordinal
-    )
-
-
-def _sealed_chandra_records(context, subject_id: str, kind: str, what: str):
-    """Yield each retained `kind` record for the subject with its checked native ordinal."""
-    for entry in context.tree.build_manifest(ATTESTATORES)["artifacts"]:
-        if entry["kind"] != kind or entry["subject_id"] != subject_id:
-            continue
-        record = context.tree.read_artifact(ATTESTATORES, kind, entry["artifact_id"])
-        payload = record.get("payload")
-        ordinal = payload.get("native_attempt_ordinal") if isinstance(payload, dict) else None
-        if not _is_positive_int(ordinal) or ordinal > CHANDRA_MAX_ATTEMPTS:
-            raise SchemaRefusal(f"a retained Chandra native {what} has no valid ordinal")
-        yield entry, record, ordinal
-
-
-def _by_native_ordinal(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return sorted(rows, key=lambda record: record["payload"]["native_attempt_ordinal"])
-
-
-def _sealed_chandra_intents(context, subject_id: str) -> list[dict[str, Any]]:
-    """Return the validated intent chain, including a possible unmatched tail."""
-    rows: list[dict[str, Any]] = []
-    kind = "chandra-native-attempt-intent"
-    for entry, record, ordinal in _sealed_chandra_records(context, subject_id, kind, "intent"):
-        expected_artifact_id = artifact_id(
-            ATTESTATORES, kind, subject_id, attempt_id(subject_id, "chandra-native-intent", ordinal)
-        )
-        if entry["artifact_id"] != expected_artifact_id:
-            raise SchemaRefusal("a retained Chandra native intent has a moved identity")
-        _validate_chandra_intent(
-            context,
-            subject_id=subject_id,
-            native_attempt_ordinal=ordinal,
-            intent_ref=context.artifact_ref(ATTESTATORES, kind, entry["artifact_id"]),
-        )
-        rows.append(record)
-    return _by_native_ordinal(rows)
-
-
-def _sealed_chandra_attempts(context, subject_id: str) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for _entry, record, ordinal in _sealed_chandra_records(
-        context, subject_id, "chandra-native-attempt", "terminal"
-    ):
-        _validate_chandra_terminal(
-            context, subject_id=subject_id, native_attempt_ordinal=ordinal, record=record
-        )
-        rows.append(record)
-    return _by_native_ordinal(rows)
-
-
-def _chandra_retry_trace(
-    context, subject_id: str, terminal_records: list[dict[str, Any]]
-) -> dict[str, Any]:
-    attempts: list[dict[str, Any]] = []
-    for expected, record in enumerate(terminal_records, 1):
-        payload = _validate_chandra_terminal(
-            context,
-            subject_id=subject_id,
-            native_attempt_ordinal=expected,
-            record=record,
-        )
-        attempts.append(
-            {
-                "attempt_ordinal": expected,
-                "parameters": payload["parameters"],
-                "intent_ref": payload["intent_ref"],
-                "attempt_ref": _chandra_native_artifact_ref(
-                    context, "chandra-native-attempt", subject_id, expected
-                ),
-                "trigger": payload["trigger"],
-                "error": payload["error"],
-            }
-        )
-    final = terminal_records[-1]["payload"]
-    trace = {
-        "schema": CHANDRA_TRACE_SCHEMA,
-        "recipe": chandra_recipe_record(),
-        "physical_request_count": len(attempts),
-        "returned_attempt_ordinal": len(attempts),
-        "exhausted_condition": final["returned_condition"]
-        if len(attempts) == CHANDRA_MAX_ATTEMPTS
-        else None,
-        "attempts": attempts,
-    }
-    return validate_chandra_trace(trace)
-
-
-def _with_chandra_trace(
-    context, subject_id: str, terminal_records: list[dict[str, Any]], attempt: Attempt
-) -> Attempt:
-    trace = _chandra_retry_trace(context, subject_id, terminal_records)
-    exhausted = trace["exhausted_condition"]
-    if exhausted == "repeat-token":
-        # There is no partial outcome, so an exhausted repeat is `failed` with its
-        # text and capture retained.
-        attempt = attempt._replace(
-            outcome="failed",
-            reason=(
-                "the pinned Chandra native recipe exhausted six retries and returned a "
-                "response still matching its repeat-token detector; retained as partial"
-            ),
-        )
-    elif exhausted == "inference-error":
-        attempt = attempt._replace(
-            outcome="failed",
-            reason=(
-                attempt.reason
-                or "the pinned Chandra native recipe exhausted six retries on inference errors"
-            ),
-        )
-    return attempt._replace(native_inference=trace)
-
-
-def _resumed_chandra_native_attempt(context, subject_id, intent_records, terminal_records):
-    if len(terminal_records) > CHANDRA_MAX_ATTEMPTS:
-        raise FatalAccounting("a Chandra native retry chain exceeds seven physical requests")
-    if len(intent_records) not in {len(terminal_records), len(terminal_records) + 1}:
-        raise FatalAccounting(
-            "a Chandra native retry chain has intents that do not match its terminal evidence"
-        )
-    for expected, record in enumerate(intent_records, 1):
-        if record["payload"]["native_attempt_ordinal"] != expected:
-            raise FatalAccounting("a Chandra native intent chain has a non-contiguous ordinal")
-    if len(intent_records) == len(terminal_records) + 1:
-        # Checked before any republish: a resumed service has a new receipt, which
-        # would surface as byte drift instead of the real delivery ambiguity.
-        refuse_chandra_orphan_intent()
-
-    # A terminal's trigger says whether the loop had another request to make.
-    if terminal_records:
-        for expected, record in enumerate(terminal_records, 1):
-            payload = record["payload"]
-            if payload.get("native_attempt_ordinal") != expected:
-                raise FatalAccounting("a Chandra native retry chain has a non-contiguous ordinal")
-            if expected < len(terminal_records) and payload.get("trigger") is None:
-                raise FatalAccounting("a Chandra native retry chain continued after vendor return")
-        last_payload = terminal_records[-1]["payload"]
-        if last_payload.get("trigger") is None:
-            returned_attempt = _attempt_from_evidence_record(
-                context, last_payload["resolved_attempt"]
-            )
-            _raise_chandra_application_refusal(returned_attempt)
-            return _with_chandra_trace(context, subject_id, terminal_records, returned_attempt)
-    return None
-
-
-class _ChandraPhysicalResult(NamedTuple):
-    attempt: Attempt
-    raw: str
-    inference_error: bool
-    transport_response_ref: Any
-    error_code: Any
-    error_detail: Any
-    application_refusal: ContractError | None
-
-
-def _read_chandra_native_result(
-    context, client, dispatch, intent_ref, page_ordinal, chair, resolved, adapter, framing
-) -> _ChandraPhysicalResult:
-    response = None
-    error: ServingError | None = None
-    try:
-        response = client.read_chandra_native(dispatch, intent_ref=intent_ref)
-    except (ChairResponseRefusal, ChairTransportFailure) as caught:
-        error = caught
-
-    application_refusal: ContractError | None = None
-    live = None
-    if error is not None:
-        attempt = _chandra_error_attempt(error, adapter)
-        raw = ""
-        inference_error = True
-        transport_response_ref = getattr(error, "raw_response_ref", None)
-        error_code = error.code
-        error_detail = getattr(error, "detail", str(error))
-    else:
-        assert response is not None
-        try:
-            live = live_witness.captured_page_attempt(
-                context,
-                page_ordinal,
-                chair,
-                resolved.witness_adapter,
-                adapter,
-                response,
-                framing=framing,
-            )
-            _refuse_unpublishable_response(
-                response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
-            )
-        except FatalAccounting:
-            raise
-        except ContractError as caught:
-            application_refusal = caught
-        attempt = (
-            _chandra_application_refusal_attempt(
-                context,
-                response,
-                adapter,
-                application_refusal,
-                attempt_from_live(live) if live is not None else None,
-            )
-            if application_refusal is not None
-            else attempt_from_live(live)
-        )
-        raw = response.content if isinstance(response.content, str) else ""
-        inference_error = response.parse_problem is not None
-        transport_response_ref = dict(response.raw_response_ref)
-        error_code = response.parse_problem
-        error_detail = (
-            "the retained response could not be parsed as one OpenAI-compatible reading"
-            if inference_error
-            else None
-        )
-    return _ChandraPhysicalResult(
-        attempt,
-        raw,
-        inference_error,
-        transport_response_ref,
-        error_code,
-        error_detail,
-        application_refusal,
-    )
-
-
-def _serve_chandra_native_page(
-    context,
-    *,
-    client: ChairClient,
-    chair: str,
-    resolved: ChairIdentity,
-    adapter: Any,
-    page_ordinal: int,
-    witness_attempt_ordinal: int,
-    request: Any,
-    framing: str | None,
-    page_subject_id: str,
-) -> Attempt:
-    """Run or resume the pinned vendor loop and return only its final result."""
-
-    subject_id = _chandra_native_subject(page_subject_id, chair, witness_attempt_ordinal)
-    intent_records = _sealed_chandra_intents(context, subject_id)
-    terminal_records = _sealed_chandra_attempts(context, subject_id)
-    resumed = _resumed_chandra_native_attempt(context, subject_id, intent_records, terminal_records)
-    if resumed is not None:
-        return resumed
-
-    next_ordinal = len(terminal_records) + 1
-    if terminal_records and terminal_records[-1]["payload"].get("trigger") == "inference-error":
-        # A crash during the backoff cannot show how much elapsed, so the full
-        # delay is repeated.
-        _chandra_backoff(next_ordinal - 1)
-    while next_ordinal <= CHANDRA_MAX_ATTEMPTS:
-        dispatch = client.prepare_chandra_native(request, attempt_ordinal=next_ordinal)
-        intent_ref, reused_intent = _publish_chandra_intent(
-            context,
-            subject_id=subject_id,
-            page_ordinal=page_ordinal,
-            chair=chair,
-            witness_attempt_ordinal=witness_attempt_ordinal,
-            native_attempt_ordinal=next_ordinal,
-            dispatch=dispatch,
-            receipt_ref=client.handle.receipt_reference,
-        )
-        if reused_intent:
-            # No terminal exists, so the request may have reached vLLM before a
-            # crash; reissuing could duplicate it. An operator must decide.
-            refuse_chandra_orphan_intent()
-
-        result = _read_chandra_native_result(
-            context, client, dispatch, intent_ref, page_ordinal, chair, resolved, adapter, framing
-        )
-        trigger, returned_condition = _chandra_conditions(
-            result.raw, result.inference_error, next_ordinal
-        )
-        payload, _terminal_ref = _publish_chandra_terminal(
-            context,
-            subject_id=subject_id,
-            native_attempt_ordinal=next_ordinal,
-            intent_ref=intent_ref,
-            request_sha256=dispatch.request_sha256,
-            attempt=result.attempt,
-            trigger=trigger,
-            returned_condition=returned_condition,
-            error=result.inference_error,
-            error_code=result.error_code,
-            error_detail=result.error_detail,
-            transport_response_ref=(
-                dict(result.transport_response_ref)
-                if result.transport_response_ref is not None
-                else None
-            ),
-        )
-        terminal_records.append({"payload": payload})
-        if trigger is None:
-            if result.application_refusal is not None:
-                raise result.application_refusal
-            return _with_chandra_trace(context, subject_id, terminal_records, result.attempt)
-        if trigger == "inference-error":
-            _chandra_backoff(next_ordinal)
-        next_ordinal += 1
-
-    raise FatalAccounting("the Chandra native retry loop ended without a returned attempt")
-
-
 def _serve_page_unit(
     context,
     *,
@@ -3539,7 +2296,7 @@ def _serve_page_unit(
         )
     else:
         if resolved.role == "attestator_1" and resolved.witness_adapter == "chandra.v1":
-            attempt = _serve_chandra_native_page(
+            attempt = chandra_native.serve_page(
                 context,
                 client=client,
                 chair=chair,
@@ -3553,19 +2310,20 @@ def _serve_page_unit(
             )
         else:
             response = client.read(request)
-            live = live_witness.captured_page_attempt(
-                context,
-                page_ordinal,
-                chair,
-                resolved.witness_adapter,
-                adapter,
+            attempt = live_witness.read_unless_unmeasured_stop(
                 response,
-                framing=framing,
+                adapter=adapter,
+                what=f"the {resolved.witness_adapter} response for page {page_ordinal}",
+                read=lambda: live_witness.captured_page_attempt(
+                    context,
+                    page_ordinal,
+                    chair,
+                    resolved.witness_adapter,
+                    adapter,
+                    response,
+                    framing=framing,
+                ),
             )
-            _refuse_unpublishable_response(
-                response, f"the {resolved.witness_adapter} response for page {page_ordinal}"
-            )
-            attempt = attempt_from_live(live)
     publish_page_testimonium(
         context,
         chair=chair,
@@ -3724,72 +2482,48 @@ def live_pass(
             settled = len(pages) - len(to_read[chair])
         recorded += settled
 
-    # One schedule per chair keeps each page unit with its resident chair.
-    units: dict[tuple[str, str], int] = {}
-    schedule: list[dict[str, str]] = []
-    for chair in sorted(to_read):
-        rows = []
-        for page_ordinal in to_read[chair]:
-            unit_id = page_ids[page_ordinal]
-            units[(chair, unit_id)] = page_ordinal
-            rows.append({"unit_id": unit_id, "page_ordinal": page_ordinal})
-        schedule.extend(feeding.stage_major_schedule(context.tree.run_id, rows, [chair]))
     # `None` for an adapter with a single framing.
     framings = {
         chair: witness_adapters.framing_for(context.registry.config, chair) for chair in roster
     }
-
-    def serve(client: ChairClient, row: dict[str, str]) -> None:
-        nonlocal recorded
-        chair = row["chair"]
-        resolved = context.registry.resolve(chair)
-        adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
-        page_ordinal = units[(chair, row["unit_id"])]
-        if chair in detector_chairs:
-            _serve_detector_page(
-                context,
-                client=client,
-                chair=chair,
-                resolved=resolved,
-                adapter=adapter,
-                page_ordinal=page_ordinal,
-                ordinal=ordinal,
-                units=detector[0][page_ordinal],
-                page_ids=page_ids,
-            )
-        else:
-            _serve_page_unit(
-                context,
-                client=client,
-                chair=chair,
-                resolved=resolved,
-                adapter=adapter,
-                page_ordinal=page_ordinal,
-                ordinal=ordinal,
-                page_ids=page_ids,
-                framing=framings[chair],
-            )
-        recorded += 1
-
-    def load(chair: str) -> ChairClient:
-        client = serving_factory(context, context.registry.resolve(chair), tier)
-        client.__enter__()
-        return client
-
-    def unload(chair: str, client: ChairClient) -> None:
-        del chair
-        client.__exit__(None, None, None)
-
-    if schedule:
-        try:
-            feeding.execute_stage_major_schedule(
-                schedule,
-                residency=feeding.SingleChairResidency(load, unload),
-                serve=serve,
-            )
-        except ServingError as error:
-            # Reported as a refusal; everything that arrived is already sealed.
-            raise ContractError(f"a live witness reading was refused: {error}") from error
+    try:
+        # One chair resident at a time, its pages in order; a chair with
+        # nothing left to read is never loaded.
+        for chair in sorted(to_read):
+            if not to_read[chair]:
+                continue
+            resolved = context.registry.resolve(chair)
+            adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+            with serving_factory(context, resolved, tier) as client:
+                for page_ordinal in sorted(to_read[chair]):
+                    if chair in detector_chairs:
+                        _serve_detector_page(
+                            context,
+                            client=client,
+                            chair=chair,
+                            resolved=resolved,
+                            adapter=adapter,
+                            page_ordinal=page_ordinal,
+                            ordinal=ordinal,
+                            units=detector[0][page_ordinal],
+                            page_ids=page_ids,
+                        )
+                    else:
+                        _serve_page_unit(
+                            context,
+                            client=client,
+                            chair=chair,
+                            resolved=resolved,
+                            adapter=adapter,
+                            page_ordinal=page_ordinal,
+                            ordinal=ordinal,
+                            page_ids=page_ids,
+                            framing=framings[chair],
+                        )
+                    recorded += 1
+    except ServingError as error:
+        # Reported as a refusal; everything that arrived is already sealed.
+        raise ContractError(f"a live witness reading was refused: {error}") from error
     return recorded
 
 

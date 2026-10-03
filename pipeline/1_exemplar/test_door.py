@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 import door
 import pytest
-from admission import RefusalReason, load_format_policy, reason_code
+from admission import RefusalReason, reason_code
 from door import SourceEntry, expand_sources, process_sources
 from image_formats import MAX_SOURCE_BYTES, validate_png
 from PIL import Image
@@ -50,10 +50,12 @@ from common.contracts.errors import ContractError, IncompatibleReuse
 from common.contracts.identities import physical_page_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.corpus_register import append_records, empty_register, members_of, register_digest
+from common.recovery import load_recovery_policy
 from common.runtree.store import RunTree
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, read_sealed_toml
 from common.stage import (
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
+    DEFAULT_SERVING_RECIPES_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_FATAL,
     StageContext,
@@ -61,6 +63,7 @@ from common.stage import (
     require_triage_modes,
     run_sealed_config_digests,
     run_stage,
+    stage_parser,
 )
 from operations.operator.surface import OperatorSurface
 from operations.submit import gate, submit
@@ -68,7 +71,6 @@ from operations.triage import instrument, producer
 from operations.triage.instrument import load_config as instrument_config
 from operations.triage.instrument import producer_recipe
 
-POLICY = load_format_policy()
 PDF_SETTINGS = door.render_config.load_pdf_render_settings(
     minimum_dpi=door.pdf_render.MIN_RENDER_DPI
 )
@@ -91,23 +93,31 @@ def test_an_unreadable_corpus_register_refusal_names_what_it_promises(tmp_path):
         door._read_corpus_register(str(tmp_path / "missing-register.json"))
 
 
-def _sealed_binding_digests() -> dict[str, str]:
-    """The configuration digests every `_real_bindings` caller has to supply.
+_LEDGER = {
+    "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
+    "self_hash": "b" * 64,
+}
 
-    Read exactly as the door reads them, from one read each, so a test never seals
-    a name under bytes nothing parsed. Kept in one helper because the argument list
-    is the shape the fixture path's `run_config_bindings` has to match, so one map
-    cannot grow an entry the other lacks.
+
+def _real_bindings(models=None, *, triage_document_digests=None, **arg_overrides):
+    """The Door's real-route bindings over the default configs and a one-file ledger.
+
+    ``arg_overrides`` replace the Door's command-line values (config paths and run
+    knobs), which is how a real submission selects them.
     """
-    return {
-        "pdf_render_config_sha256": door.render_config.load_pdf_render_binding(
-            minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-        ).config_sha256,
-        "data_handling_config_sha256": gate.load_policy_binding().config_sha256,
-        "designator_geometry_config_sha256": read_sealed_toml(
-            DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH, "Designator geometry configuration"
-        )[1],
-    }
+    args = stage_parser(door.DESCRIPTION).parse_args(["--run-root", "unused", "--run-id", "unused"])
+    for name, value in arg_overrides.items():
+        setattr(args, name, value)
+    binding = door._load_pdf_render_binding(args)
+    return door._real_bindings(
+        models or _fixture_models(),
+        args,
+        _LEDGER,
+        binding.settings,
+        pdf_render_config_sha256=binding.config_sha256,
+        data_handling_config_sha256=gate.load_policy_binding().config_sha256,
+        triage_document_digests=triage_document_digests,
+    )
 
 
 RECIPES = {"door": "fake-door-v0", "exemplar": "fake-exemplar-v0"}
@@ -328,9 +338,9 @@ def test_the_raster_body_cache_holds_one_source_at_a_time(tmp_path):
         handed_out.append(weakref.ref(body.sentinel))
         return body
 
-    assert process_sources(
-        context, tree, sources, read_bytes, policy=POLICY, pdf_settings=PDF_SETTINGS
-    ) == len(pages)
+    assert process_sources(context, tree, sources, read_bytes, pdf_settings=PDF_SETTINGS) == len(
+        pages
+    )
 
     assert reads == sorted(pages), f"a source was re-read or skipped: {reads}"
     assert max(live_at_each_read) <= 1, (
@@ -348,7 +358,6 @@ def test_correct_bytes_admit_even_when_the_filename_extension_is_wrong(tmp_path)
         tree,
         [source],
         reader({source.declared_path: data}),
-        policy=POLICY,
         pdf_settings=PDF_SETTINGS,
     )
     context.finish(DOOR)
@@ -379,9 +388,9 @@ def test_the_real_door_seals_bmp_webp_avif_and_a_generic_decoder_fallback(tmp_pa
     ]
     tree, context = open_door(tmp_path, sources)
 
-    assert process_sources(
-        context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-    ) == len(sources)
+    assert process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS) == len(
+        sources
+    )
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -412,7 +421,6 @@ def test_every_source_gets_a_named_record_even_when_nothing_admits(tmp_path):
             tree,
             sources,
             reader({"not-an-image.png": b"plain text"}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 0
@@ -464,7 +472,6 @@ def test_jpeg_trailing_bytes_are_admitted_not_called_corruption(tmp_path):
             tree,
             [source],
             reader({source.declared_path: data}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 1
@@ -488,7 +495,6 @@ def test_an_oversized_decoder_alarm_does_not_abort_later_source_accounting(tmp_p
             tree,
             sources,
             reader({"oversized.tif": huge, "ordinary.png": ordinary}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 1
@@ -510,7 +516,6 @@ def test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs(tmp_path):
             for path, data in files.items()
         ],
         reader(files),
-        POLICY,
     )
     assert [(source.declared_path, source.container_page_index) for source in sources] == [
         ("iphone-scan.pdf", 0),
@@ -520,12 +525,7 @@ def test_pdf_and_multipage_tiff_fan_out_and_seal_lossless_page_blobs(tmp_path):
     ]
     tree, context = open_door(tmp_path, sources)
 
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 4
-    )
+    assert process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS) == 4
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -561,7 +561,6 @@ def test_source_expansion_refuses_paths_that_alias_on_default_apfs():
         expand_sources(
             rows,
             lambda _path: pytest.fail("colliding paths must refuse before a source is read"),
-            POLICY,
         )
 
 
@@ -575,7 +574,7 @@ def test_a_pdf_close_failure_after_a_good_render_still_admits_the_page(monkeypat
         1, "register.pdf", digest_bytes(data), container_page_index=0, declared_size=len(data)
     )
 
-    assert door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS).outcome == "admitted"
+    assert door.decide(data, source, pdf_settings=PDF_SETTINGS).outcome == "admitted"
 
 
 def test_container_pages_bind_membership_to_container_and_index_not_the_shared_file_hash(
@@ -586,7 +585,6 @@ def test_container_pages_bind_membership_to_container_and_index_not_the_shared_f
     sources = expand_sources(
         [{"relative_path": "scan.pdf", "sha256": digest_bytes(pdf), "bytes": len(pdf)}],
         reader({"scan.pdf": pdf}),
-        POLICY,
     )
     assert len(sources) == 2
     page_zero, page_one = sources
@@ -645,17 +643,11 @@ def test_a_directoryless_classic_tiff_keeps_its_ordinal_and_is_named_corrupt(tmp
             for path, data in files.items()
         ],
         reader(files),
-        POLICY,
     )
     assert [source.declared_path for source in sources] == ["corrupt-no-ifd.tif", "good.png"]
     tree, context = open_door(tmp_path, sources)
 
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 1
-    )
+    assert process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS) == 1
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -677,19 +669,13 @@ def test_a_pdf_with_a_bounded_transport_preamble_still_routes_and_admits(tmp_pat
             for path, bytes_ in files.items()
         ],
         reader(files),
-        POLICY,
     )
     assert [(source.declared_path, source.container_page_index) for source in sources] == [
         ("transfer-wrapped-scan.pdf", 0)
     ]
     tree, context = open_door(tmp_path, sources)
 
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 1
-    )
+    assert process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS) == 1
     context.finish(DOOR)
     assert admissions(tree)[1]["outcome"] == "admitted"
 
@@ -703,7 +689,6 @@ def test_every_decoder_reported_animation_frame_fans_out_once(tmp_path):
             for path in files
         ],
         reader(files),
-        POLICY,
     )
     assert [(source.declared_path, source.container_page_index) for source in sources] == [
         ("archive-animation.gif", 0),
@@ -711,12 +696,7 @@ def test_every_decoder_reported_animation_frame_fans_out_once(tmp_path):
     ]
 
     tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 2
-    )
+    assert process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS) == 2
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -771,17 +751,11 @@ def test_a_compressed_multipage_tiff_fans_out_and_every_page_reaches_real_pixels
             for path in files
         ],
         reader(files),
-        POLICY,
     )
     assert [source.container_page_index for source in sources] == [0, 1]
 
     tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 2
-    )
+    assert process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS) == 2
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -807,19 +781,13 @@ def test_a_single_page_tiff_is_sealed_as_its_own_untouched_bytes(tmp_path):
             for path in files
         ],
         reader(files),
-        POLICY,
     )
     assert [(source.declared_path, source.container_page_index) for source in sources] == [
         ("register-page.tif", None)
     ]
 
     tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 1
-    )
+    assert process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS) == 1
     context.finish(DOOR)
 
     payload = admissions(tree)[1]["payload"]
@@ -848,7 +816,6 @@ def test_a_source_with_no_declared_digest_still_reaches_a_duplicate_report(tmp_p
             tree,
             sources,
             reader({"undeclared-a.png": data, "undeclared-b.png": data, "distinct.png": other}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 3
@@ -872,88 +839,10 @@ def test_a_source_with_no_declared_digest_still_reaches_a_duplicate_report(tmp_p
     ]
 
 
-def test_duplicate_files_are_admitted_per_ordinal_and_reported_rather_than_refused_per_file(
-    tmp_path, capsys
-):
-    """Each duplicate is admitted and reported; no *file* is refused for being one.
-
-    The run itself is refused at the close, by the test below -- this one stops
-    before `_finish_door_run` deliberately, because what it pins is the half
-    that survives that refusal: both admissions, the `duplicate_of` link, one
-    stored blob for both copies, and the complete per-filename report an
-    operator reads back. Dropping the second copy would be an automated
-    exclusion, and excluding material is the project lead's decision, not
-    the pipeline's.
-    """
-    data = png(3, 2)
-    sources = [
-        SourceEntry(1, "source-a.png", digest_bytes(data)),
-        SourceEntry(2, "source-b.png", digest_bytes(data)),
-    ]
-    tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context,
-            tree,
-            sources,
-            reader({"source-a.png": data, "source-b.png": data}),
-            policy=POLICY,
-            pdf_settings=PDF_SETTINGS,
-        )
-        == 2
-    )
-    report = door.publish_duplicate_report(context)
-    context.finish(DOOR)
-    records = admissions(tree)
-    assert {record["outcome"] for record in records.values()} == {"admitted"}
-    assert records[2]["payload"]["duplicate_of"] == {
-        "first_declared_path": "source-a.png",
-        "first_ordinal": 1,
-        "source_sha256": digest_bytes(data),
-    }
-    assert records[1]["payload"]["stored_at"] == records[2]["payload"]["stored_at"]
-    assert report is not None
-    entry = next(
-        item
-        for item in tree.build_manifest(DOOR)["artifacts"]
-        if item["kind"] == "duplicate-report"
-    )
-    duplicate = json.loads(tree.read_bytes(entry["relative_path"]).decode("utf-8"))["payload"]
-    assert duplicate["duplicate_source_count"] == 1
-    assert duplicate["duplicate_ordinal_count"] == 1
-    assert duplicate["groups"] == [
-        {
-            "source_sha256": digest_bytes(data),
-            "first_declared_path": "source-a.png",
-            "first_ordinal": 1,
-            "sources": [
-                {"declared_path": "source-a.png", "ordinals": [1]},
-                {"declared_path": "source-b.png", "ordinals": [2]},
-            ],
-        }
-    ]
-    door._announce_duplicate_report(report)
-    summary = capsys.readouterr().err
-    assert "1 duplicate source(s) detected across 1 page ordinal(s)" in summary
-    assert "source-a.png" not in summary
-    assert "source-b.png" not in summary
-
-
-def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed(tmp_path):
-    """The merged-page trap, closed where the filenames are still in hand.
-
-    Two byte-identical files derive one `page_id`, so the Exemplar seals one
-    page citing both submission rows while every stage behind it still works one
-    page per row. Left to run, that submission reads one page where two files
-    were submitted, and the only trace is a private report nobody was told to
-    open. The door refuses the whole submission instead.
-
-    What this pins is the *order*, which is the half a refusal can quietly get
-    wrong: the duplicate report is published, counted and announced first, so
-    the operator keeps the complete per-filename evidence in the tree, and only
-    then does the run stop -- before `seal_boundary` writes the door's own
-    completion. Refusing before the report would lose the evidence; refusing
-    after the seal would leave a completed door on an unreadable submission.
+def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed(tmp_path, capsys):
+    """Two byte-identical files would be one page read twice, so the Door refuses
+    the whole submission, after the duplicate report is sealed and announced (so the
+    per-filename evidence stays in the tree) and before the Door's own seal.
     """
     data = png(3, 2)
     sources = [
@@ -966,7 +855,6 @@ def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed
         tree,
         sources,
         reader({"source-a.png": data, "source-b.png": data}),
-        policy=POLICY,
         pdf_settings=PDF_SETTINGS,
     )
     assert admitted == 2
@@ -976,7 +864,9 @@ def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed
 
     message = str(refusal.value)
     assert "ordinal(s) 1 and 2 carry identical bytes" in message
-    assert "derives one page identity from more than one submitted file" in message
+    summary = capsys.readouterr().err
+    assert "1 duplicate source(s) detected across 1 page ordinal(s)" in summary
+    assert "source-a.png" not in summary and "source-b.png" not in summary
     # By ordinal, never by filename: `run_stage` prints this to stderr, and the
     # data-handling logging rule excludes a declared path from that channel.
     assert "source-a.png" not in message
@@ -1023,12 +913,9 @@ def test_two_copies_of_one_container_are_refused_naming_every_ordinal(tmp_path):
             for path, payload in files.items()
         ],
         reader(files),
-        POLICY,
     )
     tree, context = open_door(tmp_path, sources)
-    admitted = process_sources(
-        context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-    )
+    admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
     assert admitted == 4
 
     with pytest.raises(ContractError) as refusal:
@@ -1056,12 +943,9 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
             for path, payload in files.items()
         ],
         reader(files),
-        POLICY,
     )
     tree, context = open_door(tmp_path, sources)
-    admitted = process_sources(
-        context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-    )
+    admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
     assert admitted == 3
 
     assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
@@ -1095,7 +979,6 @@ def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicat
         tree,
         sources,
         reader({"broken-a.png": data, "broken-b.png": data}),
-        policy=POLICY,
         pdf_settings=PDF_SETTINGS,
     )
     assert admitted == 0
@@ -1117,8 +1000,8 @@ def test_expansion_ordinals_are_stable_by_filename_and_page_index():
         {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
         for path, data in files.items()
     ]
-    first = expand_sources(rows, reader(files), POLICY)
-    second = expand_sources(list(reversed(rows)), reader(files), POLICY)
+    first = expand_sources(rows, reader(files))
+    second = expand_sources(list(reversed(rows)), reader(files))
     assert first == second
     assert [(item.ordinal, item.declared_path, item.container_page_index) for item in first] == [
         (1, "a.pdf", 0),
@@ -1278,7 +1161,7 @@ def test_a_non_json_triage_producer_recipe_names_its_exact_parse_failure(
         # check instead, which also matches "invalid" — the guard against a triage
         # document carrying two values for one field gone with nothing reporting it.
         (
-            b'{"schema":"triage-producer-recipe.v1","schema":"other"}',
+            b'{"schema":"triage-producer-recipe.v2","schema":"other"}',
             "the triage producer recipe is not valid UTF-8 JSON",
         ),
         # The nesting case genuinely needs the width: whether the parser gives up
@@ -1353,7 +1236,6 @@ def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
             tree,
             [source],
             reader({"frame.png": data}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 0
@@ -1370,7 +1252,7 @@ def test_triage_digest_mismatch_is_a_named_door_refusal(tmp_path):
         ("clusters", "triage re-shoot cluster records"),
     ],
 )
-def test_a_malformed_triage_document_names_its_role_effect_and_remedy(
+def test_a_malformed_triage_document_is_refused_naming_which_document(
     tmp_path, empty_triage_manifest, which, expected
 ):
     manifest_path = empty_triage_manifest
@@ -1378,13 +1260,11 @@ def test_a_malformed_triage_document_names_its_role_effect_and_remedy(
     clusters_path.write_text("{}", encoding="utf-8")
     (manifest_path if which == "manifest" else clusters_path).write_bytes(b"\xffnot-json")
 
-    with pytest.raises(ContractError, match=f"{expected} is not valid UTF-8 JSON") as refused:
+    with pytest.raises(ContractError, match=f"{expected} is not valid UTF-8 JSON"):
         door.load_triage_decisions(
             manifest_path,
             clusters_path if which == "clusters" else None,
         )
-    assert "no run was created" in str(refused.value)
-    assert "export valid UTF-8 JSON and retry" in str(refused.value)
 
 
 def test_a_triage_document_is_bounded_before_json_decoding(tmp_path, monkeypatch):
@@ -1434,11 +1314,8 @@ def test_triage_split_count_refuses_before_quadratic_geometry_validation(tmp_pat
     )
     monkeypatch.setattr(door, "MAX_TRIAGE_DERIVATIVE_PAGES", 2)
 
-    with pytest.raises(ContractError, match="more than 2 derivative pages") as refused:
+    with pytest.raises(ContractError, match="more than 2 derivative pages"):
         door.load_triage_decisions(decision_path)
-
-    assert "before pairwise geometry validation" in str(refused.value)
-    assert "export one configured shard" in str(refused.value)
 
 
 def test_triage_cluster_members_are_bounded_before_set_expansion(tmp_path, monkeypatch):
@@ -1460,11 +1337,8 @@ def test_triage_cluster_members_are_bounded_before_set_expansion(tmp_path, monke
     )
     monkeypatch.setattr(door, "MAX_TRIAGE_DERIVATIVE_PAGES", 2)
 
-    with pytest.raises(ContractError, match="more than 2 member references") as refused:
+    with pytest.raises(ContractError, match="more than 2 member references"):
         door.load_triage_decisions(decision_path, clusters_path)
-
-    assert "before set expansion" in str(refused.value)
-    assert "clusters for one configured shard" in str(refused.value)
 
 
 def test_split_render_uses_the_deterministic_common_encoder(monkeypatch):
@@ -1520,23 +1394,6 @@ def test_split_render_uses_the_deterministic_common_encoder(monkeypatch):
     assert calls == [first, first]
 
 
-def test_content_aware_shards_do_not_cut_split_pairs_or_clusters():
-    split_row = {"re_shoot_cluster_id": None}
-    cluster_row = {"re_shoot_cluster_id": "opening-7"}
-    split = [
-        SourceEntry(1, "a.jpg", "a" * 64, 0, triage_row=split_row, triage_part_index=0),
-        SourceEntry(2, "a.jpg", "a" * 64, 1, triage_row=split_row, triage_part_index=1),
-        SourceEntry(3, "b.jpg", "b" * 64, 0, triage_row=cluster_row, triage_part_index=0),
-        SourceEntry(4, "c.jpg", "c" * 64, 0, triage_row=cluster_row, triage_part_index=0),
-    ]
-    shards = door.content_aware_shards(split, max_pages_per_shard=2)
-    assert [[source.ordinal for source in shard] for shard in shards] == [[1, 2], [3, 4]]
-    with pytest.raises(ContractError, match="content-aware shard refusal"):
-        door.content_aware_shards(split[:2], max_pages_per_shard=1)
-    with pytest.raises(ContractError, match="content-aware shard refusal"):
-        door.content_aware_shards(split[2:], max_pages_per_shard=1)
-
-
 def _admitted_re_shoot_pair(tmp_path, register_bytes=None):
     """Two admitted captures triage links as one re-shoot cluster, and their cluster report."""
     first, second = png(4, 3), png(4, 3, rows=(b"\x00" + b"\x63" * 4) * 3)
@@ -1578,7 +1435,6 @@ def _admitted_re_shoot_pair(tmp_path, register_bytes=None):
             {"relative_path": "b.png", "sha256": second_digest},
         ],
         reader({"a.png": first, "b.png": second}),
-        POLICY,
         triage_rows=rows,
         triage_clusters={"opening-7": cluster},
     )
@@ -1589,7 +1445,6 @@ def _admitted_re_shoot_pair(tmp_path, register_bytes=None):
             tree,
             sources,
             reader({"a.png": first, "b.png": second}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 2
@@ -1641,60 +1496,41 @@ def test_re_shoot_cluster_admits_every_member_and_records_no_canonical(tmp_path)
     assert "canonical" not in json.dumps(payload)
 
 
-def test_a_re_shoot_the_register_does_not_confirm_is_refused_before_the_seal(tmp_path):
-    """Unconfirmed, each capture would become its own act: one act exported twice, unlinked.
-
-    Refused at the Door's close after its cluster report is sealed and before its own
-    seal, and the run id stays bound to the register it was created with.
-    """
-    context, _digests = _admitted_re_shoot_pair(tmp_path)
-    with pytest.raises(ContractError, match="unconfirmed-re-shoot.*opening-7.*new run id"):
+@pytest.mark.parametrize(
+    ("pages", "confirmed"),
+    [
+        (None, False),
+        ({"opening-7": ("parish-b", _pair_digests())}, False),
+        ({"opening-7": ("parish-a", _pair_digests()[:1])}, False),
+        ({"opening-7": ("parish-a", _pair_digests())}, True),
+        # A split opening: each leaf holds a different subset of the cluster.
+        (
+            {
+                "opening-7-left": ("parish-a", _pair_digests()[:1]),
+                "opening-7-right": ("parish-a", _pair_digests()[1:]),
+            },
+            True,
+        ),
+    ],
+    ids=["no-register", "another-corpus", "a-member-unregistered", "one-page", "split-opening"],
+)
+def test_a_re_shoot_is_refused_whole_before_the_seal_confirmed_or_not(tmp_path, pages, confirmed):
+    """No stage links two captures of one leaf, so a re-shoot would be read and
+    exported once per capture. The refusal names the cluster by position and member
+    ordinals, never by its id or a filename, and marks an unconfirmed one."""
+    register = None if pages is None else _re_shoot_register(tmp_path, pages)
+    context, _digests = _admitted_re_shoot_pair(tmp_path, register_bytes=register)
+    with pytest.raises(ContractError, match="^re-shoot:") as refused:
         door._finish_door_run(context, 2)
+    message = str(refused.value)
+    assert "cluster 1 (submitted ordinal(s) 1, 2" in message
+    assert ("not confirmed" in message) is not confirmed
+    assert "opening-7" not in message
+    assert "a.png" not in message and "b.png" not in message
+    assert "omit --triage-clusters" in message
     kinds = {entry["kind"] for entry in context.tree.build_manifest(DOOR)["artifacts"]}
     assert "re-shoot-cluster-report" in kinds
     assert "stage-seal" not in kinds
-    with pytest.raises(IncompatibleReuse):
-        _admitted_re_shoot_pair(
-            tmp_path,
-            register_bytes=_re_shoot_register(
-                tmp_path, {"opening-7": ("parish-a", _pair_digests())}
-            ),
-        )
-
-
-@pytest.mark.parametrize(
-    "pages",
-    [
-        {"opening-7": ("parish-b", _pair_digests())},
-        {"opening-7": ("parish-a", _pair_digests()[:1])},
-    ],
-    ids=["another-corpus", "a-member-unregistered"],
-)
-def test_a_re_shoot_is_confirmed_only_when_its_corpus_registers_every_member(tmp_path, pages):
-    context, _digests = _admitted_re_shoot_pair(
-        tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
-    )
-    with pytest.raises(ContractError, match="unconfirmed-re-shoot"):
-        door.require_confirmed_re_shoots(context, door.publish_cluster_report(context))
-
-
-@pytest.mark.parametrize(
-    "pages",
-    [
-        {"opening-7": ("parish-a", _pair_digests())},
-        # A split opening: each leaf holds a different subset of the cluster.
-        {
-            "opening-7-left": ("parish-a", _pair_digests()[:1]),
-            "opening-7-right": ("parish-a", _pair_digests()[1:]),
-        },
-    ],
-    ids=["one-page", "pages-with-different-members"],
-)
-def test_a_re_shoot_the_register_confirms_is_admitted(tmp_path, pages):
-    context, _digests = _admitted_re_shoot_pair(
-        tmp_path, register_bytes=_re_shoot_register(tmp_path, pages)
-    )
-    door.require_confirmed_re_shoots(context, door.publish_cluster_report(context))
 
 
 @pytest.mark.parametrize("bad_bytes", [True, False, -1, "5", 5.0])
@@ -1705,41 +1541,18 @@ def test_a_row_with_no_non_negative_byte_count_is_a_contract_error(bad_bytes):
     """
     rows = [{"relative_path": "a.png", "sha256": "0" * 64, "bytes": bad_bytes}]
     with pytest.raises(ContractError, match="no non-negative byte count"):
-        expand_sources(rows, reader({}), POLICY)
+        expand_sources(rows, reader({}))
 
 
 def test_real_run_bindings_change_with_a_renderer_recipe_before_a_page_is_written(monkeypatch):
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
+    baseline = _real_bindings()
     settings = door.render_config.load_pdf_render_settings(
         minimum_dpi=door.pdf_render.MIN_RENDER_DPI
     )
-    baseline = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        **_sealed_binding_digests(),
-    )
     altered_pdf_recipe = dict(door.pdf_render.renderer_recipe(settings), dpi=301)
     monkeypatch.setattr(door.pdf_render, "renderer_recipe", lambda _settings: altered_pdf_recipe)
-    changed = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        **_sealed_binding_digests(),
-    )
 
-    assert baseline["config_digest"] != changed["config_digest"]
+    assert baseline["config_digest"] != _real_bindings()["config_digest"]
 
 
 def test_real_run_bindings_refuse_a_configured_witness_without_an_adapter():
@@ -1748,161 +1561,60 @@ def test_real_run_bindings_refuse_a_configured_witness_without_an_adapter():
     chairs["attestator_1"] = replace(
         chairs["attestator_1"], witness_adapter=None, witness_scope=None
     )
-    models = replace(models, chairs=chairs)
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-    )
 
-    with pytest.raises(
-        ContractError, match="chair 'attestator_1' has no witness_adapter"
-    ) as caught:
-        door._real_bindings(
-            models,
-            ledger,
-            POLICY,
-            settings,
-            door.load_recovery_policy(),
-            door.load_hard_failure_policy(),
-            **_sealed_binding_digests(),
-        )
-
-    message = str(caught.value)
-    assert "no native boundary to run" in message
-    assert "Add witness_adapter and witness_scope" in message
+    with pytest.raises(ContractError, match="chair 'attestator_1' has no witness_adapter"):
+        _real_bindings(replace(models, chairs=chairs))
 
 
 def test_a_real_door_run_names_and_binds_its_non_fake_implementation_revision(monkeypatch):
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-    )
-    baseline = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        **_sealed_binding_digests(),
-    )
+    baseline = _real_bindings()
     assert baseline["adapter_recipes"]["door"] == door.REAL_DOOR_ADAPTER_REVISION
     assert baseline["adapter_recipes"]["door"] != "fake-door-v0"
 
     monkeypatch.setattr(door, "REAL_DOOR_ADAPTER_REVISION", "exemplar-door-test-change")
-    changed = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        **_sealed_binding_digests(),
+    assert baseline["config_digest"] != _real_bindings()["config_digest"]
+
+
+def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_written(tmp_path):
+    """The run-level cap is run-bound configuration, exactly as recovery is: a
+    changed policy is a different run, not a reinterpretation of failures on disk."""
+    default = Path(
+        stage_parser("p").parse_args(["--run-root", "u", "--run-id", "u"]).hard_failure_config
     )
-    assert baseline["config_digest"] != changed["config_digest"]
-
-
-def test_a_real_door_run_binds_the_hard_failure_policy_before_any_page_is_written():
-    """The run-level cap is run-bound configuration, exactly as recovery is.
-
-    A closed list of what counts as a hard failure decides whether a run may keep
-    invoking stages. Editing that list mid-run and reinterpreting failures already
-    on disk is the same class of mistake as editing the recovery budget mid-run,
-    so it is sealed into `config_digest` and a changed policy is a different run.
-    """
-
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    edited = tmp_path / "hard_failure.toml"
+    edited.write_bytes(
+        default.read_bytes().replace(
+            b'[[kind]]\nstage = "door"\noutcome = "refused"\nreason = "corrupt"\n', b"", 1
+        )
     )
-    recovery = door.load_recovery_policy()
-    baseline = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        recovery,
-        door.load_hard_failure_policy(),
-        **_sealed_binding_digests(),
-    )
-    changed = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        recovery,
-        {
-            "config_sha256": "d" * 64,
-            "threshold": 2,
-            "kinds": [("perlector", "failed")],
-            "reason_kinds": [],
-        },
-        **_sealed_binding_digests(),
-    )
+    assert edited.read_bytes() != default.read_bytes()
+
+    baseline = _real_bindings()
+    changed = _real_bindings(hard_failure_config=str(edited))
 
     assert baseline["config_digest"] != changed["config_digest"]
+    assert (
+        baseline["sealed_config_digests"]["hard-failure"]
+        != changed["sealed_config_digests"]["hard-failure"]
+    )
 
 
 def test_the_real_path_binds_the_serving_catalogue_it_was_handed(tmp_path):
-    """A real run authority must say which serving catalogue governed it.
-
-    The fixture path binds the catalogue's bytes into `config_digest`; the real
-    path did not, so two real submissions selecting different
-    `--serving-recipes-config` files produced the same digest. `RunTree.create`
-    saw no change, the same run id was reusable across them, and nothing in the
-    authority could afterwards say which catalogue the run had been served from.
-    """
-
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-    )
-    recovery = door.load_recovery_policy()
-    common = (
-        models,
-        ledger,
-        POLICY,
-        settings,
-        recovery,
-        door.load_hard_failure_policy(),
-    )
-    baseline = door._real_bindings(*common, **_sealed_binding_digests())
-
+    """Two real submissions served from different catalogues are different runs."""
     other = tmp_path / "serving_recipes_other.toml"
     other.write_bytes(
-        Path(door.DEFAULT_SERVING_RECIPES_CONFIG_PATH)
+        Path(DEFAULT_SERVING_RECIPES_CONFIG_PATH)
         .read_bytes()
         .replace(b"offline walking-skeleton", b"a different catalogue", 1)
     )
-    changed = door._real_bindings(
-        *common, serving_recipes_config_path=other, **_sealed_binding_digests()
-    )
+    baseline = _real_bindings()
+    changed = _real_bindings(serving_recipes_config=str(other))
 
     assert baseline["config_digest"] != changed["config_digest"]
     assert (
         baseline["sealed_config_digests"]["serving-recipes"]
-        != (changed["sealed_config_digests"]["serving-recipes"])
+        != changed["sealed_config_digests"]["serving-recipes"]
     )
-    # Named for a point of use, exactly as the fixture path names it.
-    assert "pod-placement" in baseline["sealed_config_digests"]
 
 
 def _approved_submission(tmp_path, files: dict[str, bytes]):
@@ -2034,7 +1746,7 @@ def test_real_door_refuses_invalid_canary_ingress(tmp_path, monkeypatch, case, m
     [
         ("canary-manifest", "canary filename ledger cannot live inside"),
         ("real-manifest", "submission filename ledger cannot live inside"),
-        ("run-root", "run root cannot live inside"),
+        ("run-root", "run tree .* and the canary folder overlap"),
     ],
 )
 def test_real_door_refuses_canary_and_real_folder_cross_containment(
@@ -2267,12 +1979,7 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
     proved over the real Door's own refusal.** The shared constructor asks for
     the door's completion seal on both ingress routes before anything is
     written, so an Exemplar started directly over this same refused door still
-    refuses by name here. `test_exemplar_seal.py::
-    test_a_real_ingress_exemplar_refuses_to_open_over_a_door_that_did_not_complete`
-    pins the same check over a hand-built refused door, and
-    `test_exemplar_seal.py::
-    test_a_merged_page_is_refused_by_name_at_the_first_stage_that_would_read_it_twice`
-    covers the merged page itself.
+    refuses by name here.
     """
     data = png(4, 3)
     approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
@@ -2315,7 +2022,7 @@ def test_a_real_submission_holding_one_scan_twice_exits_fatal_before_it_complete
     assert "predecessor door has no stage-seal" in sealed.stderr
     manifest = tree.build_manifest(EXEMPLAR)
     assert [item for item in manifest["artifacts"] if item["kind"] == "page"] == [], (
-        "the exemplar must refuse before sealing the merged page the door refused"
+        "the exemplar must refuse before sealing a page over a door that refused"
     )
 
 
@@ -2889,7 +2596,7 @@ def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventor
     _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
         tmp_path, {"FS-1.png": png()}
     )
-    with pytest.raises(ContractError, match="run root cannot live inside the submitted folder"):
+    with pytest.raises(ContractError, match="run tree .* and the submitted folder overlap"):
         _run_real_door(
             monkeypatch,
             run_root=source / "runs",
@@ -2899,6 +2606,40 @@ def test_a_real_run_root_inside_its_submission_folder_is_refused_before_inventor
             run_id="contained-run-root",
         )
     assert not (source / "runs").exists()
+
+
+def test_a_run_tree_that_is_the_submitted_folder_is_refused_before_anything_is_written(
+    tmp_path, monkeypatch
+):
+    """`--run-root` outside the folder is not enough: the tree is run root plus run
+    id, which here is the submitted folder itself."""
+    _approved, source, _policy, policy_path, ledger_path, _ledger = _approved_submission(
+        tmp_path, {"FS-1.png": png()}
+    )
+    before = sorted(path.name for path in source.iterdir())
+    with pytest.raises(ContractError, match="run tree .* and the submitted folder overlap"):
+        _run_real_door(
+            monkeypatch,
+            run_root=source.parent,
+            source=source,
+            policy_path=policy_path,
+            ledger_path=ledger_path,
+            run_id=source.name,
+        )
+    assert sorted(path.name for path in source.iterdir()) == before
+
+
+def test_containment_is_decided_by_filesystem_identity_not_path_spelling(tmp_path):
+    """Two spellings of one directory (a case-insensitive volume's `Sub` and `sub`,
+    here a link) must not let a run root land inside the submitted folder."""
+    submitted = tmp_path / "sub"
+    submitted.mkdir()
+    alias = tmp_path / "sub-alias"
+    alias.symlink_to(submitted, target_is_directory=True)
+
+    with pytest.raises(ContractError, match="cannot live inside the submitted folder"):
+        door._refuse_inside_submission(alias / "run", submitted, "run root")
+    door._refuse_inside_submission(tmp_path / "elsewhere" / "run", submitted, "run root")
 
 
 def test_a_real_submission_requires_the_local_filename_ledger(tmp_path, monkeypatch):
@@ -2940,17 +2681,11 @@ def test_two_byte_identical_pages_inside_one_container_are_both_kept(tmp_path):
             for path in files
         ],
         reader(files),
-        POLICY,
     )
     assert [source.container_page_index for source in sources] == [0, 1]
 
     tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 2
-    )
+    assert process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS) == 2
     context.finish(DOOR)
 
     records = admissions(tree)
@@ -2959,87 +2694,6 @@ def test_two_byte_identical_pages_inside_one_container_are_both_kept(tmp_path):
     # content-addressed, so both admissions reference one stored blob. Two
     # ordinals, two admissions, one blob — and no duplicate refusal anywhere.
     assert records[1]["payload"]["sha256"] == records[2]["payload"]["sha256"]
-
-
-def test_a_second_copy_of_one_container_keeps_all_pages_and_flags_the_source_duplicate(tmp_path):
-    """The same two rules meeting from the other side.
-
-    Pages of one file are never duplicates of each other; two copies of one file
-    under different names are. A two-page PDF submitted twice produces four slots:
-    four admitted pages. The second filename is a duplicate fact, not a refusal;
-    neither rule may quietly become the other.
-    """
-    data = two_page_pdf()
-    files = {"scan-1.pdf": data, "scan-2.pdf": data}
-    sources = expand_sources(
-        [
-            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
-            for path, payload in files.items()
-        ],
-        reader(files),
-        POLICY,
-    )
-    assert len(sources) == 4
-
-    tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 4
-    )
-    report = door.publish_duplicate_report(context)
-    context.finish(DOOR)
-
-    records = admissions(tree)
-    assert [records[ordinal]["outcome"] for ordinal in sorted(records)] == ["admitted"] * 4
-    for ordinal in (3, 4):
-        assert records[ordinal]["payload"]["declared_path"] == "scan-2.pdf"
-        assert records[ordinal]["payload"]["duplicate_of"]["first_declared_path"] == "scan-1.pdf"
-    assert records[1]["payload"]["stored_at"] == records[3]["payload"]["stored_at"]
-    assert records[2]["payload"]["stored_at"] == records[4]["payload"]["stored_at"]
-    assert report is not None
-
-
-def test_two_identical_broken_sources_are_each_told_the_truth_about_themselves(tmp_path):
-    """A refused source is never the "first admission" a later duplicate names.
-
-    The duplicate reason says "identical content already admitted as source-N". If a
-    second copy of a corrupt file were given that reason, the record would assert an
-    admission that never happened, and the census would read "one
-    corrupt file, one duplicate" when the truth is two corrupt files, each needing
-    the same fix.
-
-    **What actually protects this is the order of the two checks**, not the line that
-    registers the digest — both were broken in turn to find out, and only reordering
-    the duplicate check above the refusal check changed this test's outcome. Refusing
-    a source on its own merits before ever consulting `seen_sources` is the property
-    being asserted here.
-    """
-    data = b"not an image at all"
-    sources = [
-        SourceEntry(1, "broken-a.png", digest_bytes(data)),
-        SourceEntry(2, "broken-b.png", digest_bytes(data)),
-    ]
-    tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context,
-            tree,
-            sources,
-            reader({"broken-a.png": data, "broken-b.png": data}),
-            policy=POLICY,
-            pdf_settings=PDF_SETTINGS,
-        )
-        == 0
-    )
-    context.finish(DOOR)
-
-    records = admissions(tree)
-    for ordinal in (1, 2):
-        assert (
-            reason_code(records[ordinal]["payload"]["reason"]) is RefusalReason.UNRECOGNIZED_FORMAT
-        )
 
 
 def test_an_oversized_source_is_named_too_large_without_ever_being_read(tmp_path):
@@ -3057,12 +2711,7 @@ def test_an_oversized_source_is_named_too_large_without_ever_being_read(tmp_path
     source = SourceEntry(1, "enormous.tif", "0" * 64, None, MAX_SOURCE_BYTES + 1, None)
     tree, context = open_door(tmp_path, [source])
 
-    assert (
-        process_sources(
-            context, tree, [source], refuse_to_read, policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 0
-    )
+    assert process_sources(context, tree, [source], refuse_to_read, pdf_settings=PDF_SETTINGS) == 0
     context.finish(DOOR)
 
     payload = admissions(tree)[1]["payload"]
@@ -3099,7 +2748,6 @@ def test_a_stream_backed_pdf_is_exempt_from_the_raster_bytes_cap(tmp_path, monke
             tree,
             [source],
             unexpected_reader,
-            policy=POLICY,
             open_source=open_source,
             pdf_settings=PDF_SETTINGS,
         )
@@ -3119,7 +2767,7 @@ def test_a_page_container_declared_without_a_page_index_is_refused_not_guessed_a
     data = two_page_pdf()
     source = SourceEntry(1, "iphone-scan.pdf", digest_bytes(data))
 
-    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+    decision = door.decide(data, source, pdf_settings=PDF_SETTINGS)
 
     assert decision.outcome == "refused"
     assert reason_code(decision.reason) is RefusalReason.UNSUPPORTED_VARIANT
@@ -3137,7 +2785,7 @@ def test_a_page_index_on_a_one_frame_image_names_door_bookkeeping_disagreement(t
     source = SourceEntry(1, "register-page.png", digest_bytes(data), container_page_index=0)
 
     with pytest.raises(ContractError, match="pipeline bookkeeping disagreement"):
-        door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+        door.decide(data, source, pdf_settings=PDF_SETTINGS)
 
 
 def test_a_container_page_whose_bytes_changed_in_transfer_is_a_digest_alarm(tmp_path):
@@ -3151,7 +2799,7 @@ def test_a_container_page_whose_bytes_changed_in_transfer_is_a_digest_alarm(tmp_
     data = two_page_pdf()
     source = SourceEntry(1, "iphone-scan.pdf", "0" * 64, container_page_index=0)
 
-    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+    decision = door.decide(data, source, pdf_settings=PDF_SETTINGS)
 
     assert decision.outcome == "refused"
     assert reason_code(decision.reason) is RefusalReason.DIGEST_MISMATCH
@@ -3174,7 +2822,6 @@ def test_a_filename_ledger_byte_count_mismatch_has_its_own_named_alarm(tmp_path)
             tree,
             [source],
             reader({source.declared_path: data}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 0
@@ -3223,7 +2870,6 @@ def test_the_loud_failure_names_the_reasons_rather_than_counting_anonymously(tmp
             tree,
             sources,
             reader({"one.png": broken}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 0
@@ -3251,7 +2897,6 @@ def test_a_wholly_refused_door_does_not_publish_a_completion_seal(tmp_path):
         tree,
         [source],
         reader({"one.png": broken}),
-        policy=POLICY,
         pdf_settings=PDF_SETTINGS,
     )
 
@@ -3282,19 +2927,13 @@ def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(t
             for path in files
         ],
         reader(files),
-        POLICY,
     )
     assert [(source.ordinal, source.declared_path) for source in sources] == [
         (1, "damaged-scan.pdf")
     ]
 
     tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 0
-    )
+    assert process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS) == 0
     context.finish(DOOR)
 
     payload = admissions(tree)[1]["payload"]
@@ -3302,134 +2941,36 @@ def test_a_container_that_cannot_be_counted_still_occupies_exactly_one_ordinal(t
     assert reason_code(payload["reason"]) is RefusalReason.CORRUPT
 
 
-def test_real_bindings_seal_designator_geometry_alongside_the_shard_knob(monkeypatch):
-    """`_real_bindings`'s `sealed_config_digests` names each point-of-use
-    configuration exactly as `run_config_bindings` (the fixture path) does, not
-    only `corpus-frame-shard`.
+def test_real_bindings_seal_every_name_later_stages_recheck_plus_the_door_only_names():
+    """Every later stage recomputes `real_run_bindings` at open and refuses any name
+    the Door did not seal, so the Door's names must be a superset of it, equal on
+    every shared name, plus the names only the Door can know."""
+    from common.chairs.registry import ChairRegistry
+    from common.stage import real_run_bindings
 
-    A config whose bytes are folded into the overall `config_digest` but whose
-    NAMED point-of-use-recheck entry is missing makes a real run reaching
-    `context.require_sealed_config(...)` refuse every time with "this context
-    sealed no digest for the ... configuration". The fixture and real paths must
-    expose the same `sealed_config_digests` shape.
-    """
+    args = stage_parser("p").parse_args(["--run-root", "u", "--run-id", "u"])
+    recomputed = real_run_bindings(ChairRegistry.from_toml(args.models_config).config, args)[
+        "sealed_config_digests"
+    ]
+    sealed = _real_bindings()["sealed_config_digests"]
 
-    models = _fixture_models()
-
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
+    assert {name: sealed[name] for name in recomputed} == recomputed
+    assert set(sealed) - set(recomputed) == {"data-handling"}
+    assert sealed["data-handling"] == gate.load_policy_binding().config_sha256
+    assert (
+        _real_bindings(witness_context="blinded")["sealed_config_digests"]["run-policy"]
+        != (sealed["run-policy"])
     )
-    supplied = _sealed_binding_digests()
-    geometry_digest = supplied["designator_geometry_config_sha256"]
-    recovery = door.load_recovery_policy()
-    bindings = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        recovery,
-        door.load_hard_failure_policy(),
-        **supplied,
-    )
-    sealed = bindings["sealed_config_digests"]
-    assert sealed.get("designator-geometry") == geometry_digest, (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'designator-geometry' entry bound to the exact digest passed in; the Designator's "
-        "point-of-use recheck (pipeline/2_designator/run.py) requires this name on every "
-        "run, so a real run without it refuses unconditionally"
-    )
-    assert "corpus-frame-shard" in sealed, (
-        "the pre-existing corpus-frame-shard entry must survive, not be replaced"
-    )
-    # The sealing family: the door renders with the PDF policy it parsed, the
-    # storage-root gate runs under the data-handling policy it loaded, and the
-    # recovery budget is sealed so a page re-ask spends the run's own budget. A
-    # real run whose door sealed the PDF or data-handling digest would refuse at
-    # the point of use with "sealed no digest".
-    assert sealed.get("pdf-render") == supplied["pdf_render_config_sha256"], (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'pdf-render' entry bound to the digest of the bytes the settings were parsed "
-        "from; without it the door cannot prove what it rendered under"
-    )
-    assert sealed.get("recovery") == recovery["config_sha256"], (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'recovery' entry; the budget is sealed so a page re-ask spends the run's own "
-        "budget"
-    )
-    assert sealed.get("data-handling") == supplied["data_handling_config_sha256"], (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'data-handling' entry naming the caller-selected policy that gated admission"
-    )
-    triage_modes = ROOT / "config" / "triage_modes.toml"
-    assert sealed.get("triage-modes") == read_sealed_toml(triage_modes, "triage modes")[1], (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'triage-modes' entry for the mode vocabulary a real triage manifest uses"
-    )
-    require_triage_modes(sealed, triage_modes)
-    # The three real-only names. On the fixture path these facts sit inside
-    # `config_digest`, which every later stage recomputes whole; the real digest
-    # cannot be recomputed downstream, so `common.stage._open_real_context`'s
-    # name-by-name recheck is the only thing that catches a resumed real run
-    # under a moved roster, format projection or witness regime.
-    assert sealed.get("models") == models.models_digest, (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'models' entry bound to the roster digest; without it a real run resumed under a "
-        "moved chair revision publishes stage-3 Testimonia naming one model and stage-4 "
-        "dossiers naming another"
-    )
-    formats_digest, _formats = door.bind_armarium_formats(door.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH)
-    assert sealed.get("armarium-formats") == formats_digest, (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing an "
-        "'armarium-formats' entry bound to the format projection the Armarium exports under"
-    )
-    expected_policy = door.real_run_policy_digest(
-        witness_context="named",
-        witness_context_declaration_sha256=read_sealed_toml(
-            door.DEFAULT_WITNESS_CONTEXT_CONFIG_PATH, "witness context"
-        )[1],
-    )
-    assert sealed.get("run-policy") == expected_policy, (
-        f"_real_bindings()'s sealed_config_digests is {sorted(sealed)}, missing a "
-        "'run-policy' entry over the run-level reading knobs; without it "
-        "`--witness-context blinded` on a resumed real run reaches the Perlector unchecked"
-    )
-    blinded = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        settings,
-        recovery,
-        door.load_hard_failure_policy(),
-        witness_context="blinded",
-        **supplied,
-    )
-    assert blinded["sealed_config_digests"]["run-policy"] != expected_policy, (
-        "a moved witness regime must move the run-policy name, or the recheck cannot see it"
-    )
-    # Named only, never folded into the real `config_digest`: a run in flight
-    # keeps its identity across this build.
-    assert blinded["config_digest"] != bindings["config_digest"], (
-        "the witness regime was already inside the real config_digest and must stay there"
-    )
-    unchanged = door._real_bindings(
-        models, ledger, POLICY, settings, recovery, door.load_hard_failure_policy(), **supplied
-    )
-    assert unchanged["config_digest"] == bindings["config_digest"]
 
 
 def test_a_rewritten_geometry_policy_is_refused_by_name_by_require_sealed_config(tmp_path):
     """The sealed geometry name must be able to fail, and to say which fault it is.
 
-    A name in `sealed_config_digests` earns its place by having a point of use
-    that requires it; a name nothing can refuse against "would read as a closed
-    window that nothing actually shuts" (`common/stage.py`). So this drives the
-    Door's own real-path map into the comparison `require_sealed_config` makes,
-    and proves both refusals separately: a file rewritten after the door bound
-    it, and an authority that never sealed the name at all. They need different
+    A sealed name is worth having only if its point of use can refuse against it.
+    This drives the Door's own real-path map into the comparison
+    `require_sealed_config` makes, and proves both refusals separately: a file
+    rewritten after the door bound it, and an authority that never sealed the
+    name at all. They need different
     operator actions — restore the policy, versus create the run again on a
     build that seals it — so they must not collapse into one message.
 
@@ -3440,26 +2981,15 @@ def test_a_rewritten_geometry_policy_is_refused_by_name_by_require_sealed_config
 
     models = _fixture_models()
 
-    ledger = {
-        "files": [{"relative_path": "scan.pdf", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    supplied = _sealed_binding_digests()
-    bindings = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        door.render_config.load_pdf_render_settings(minimum_dpi=door.pdf_render.MIN_RENDER_DPI),
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        **supplied,
-    )
+    bindings = _real_bindings(models)
     # Read back the way a later stage reads it: out of a run authority, not off
     # the bindings dict, so the name has to survive being recorded and re-read.
     sealed = run_sealed_config_digests(
         {"sealed_config_digests": bindings["sealed_config_digests"], SEAL_METHOD_FIELD: SEAL_METHOD}
     )
-    bound = supplied["designator_geometry_config_sha256"]
+    bound = read_sealed_toml(
+        DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH, "Designator geometry configuration"
+    )[1]
 
     # The run as sealed: the bytes the Designator re-reads are the bound bytes.
     require_sealed_config(sealed, "designator-geometry", bound)
@@ -3560,12 +3090,10 @@ def test_real_submission_rechecks_triage_modes_before_expanding_triage_geometry(
     ],
 )
 def test_each_door_path_enforces_the_shard_limit_at_run_creation(submission, denominator):
-    """F-new-1's helper tests must also pin both production call sites.
+    """Both Door routes call the shard limit check on their own page denominator.
 
-    Sonnet's four tests invoked ``require_corpus_frame_shard`` directly; deleting
-    both calls from the Door left all four green. This AST assertion binds the
-    already behavior-tested helper to each ingress denominator without needing a
-    1,001-page fixture.
+    The check itself is tested directly; this binds it to each route without
+    needing a 1,001-page fixture.
     """
     tree = ast.parse(dedent(inspect.getsource(submission)))
     calls = [
@@ -3618,7 +3146,7 @@ def test_a_real_admission_names_the_data_handling_policy_that_governed_it(tmp_pa
         run["sealed_config_digests"]["pdf-render"]
         == read_sealed_toml(ROOT / "config" / "pdf_render.toml", "pdf render")[1]
     )
-    assert run["sealed_config_digests"]["recovery"] == door.load_recovery_policy()["config_sha256"]
+    assert run["sealed_config_digests"]["recovery"] == load_recovery_policy()["config_sha256"]
 
 
 def test_reusing_a_run_id_under_a_changed_data_handling_policy_is_refused(tmp_path, monkeypatch):
@@ -3755,7 +3283,6 @@ def test_a_master_this_encoder_would_convert_is_a_named_page_refusal(tmp_path):
     sources = door.expand_sources(
         [{"relative_path": "frame.tif", "sha256": digest}],
         reader({"frame.tif": master}),
-        POLICY,
         triage_rows={digest: row},
     )
     tree, context = open_door(tmp_path, sources)
@@ -3765,7 +3292,6 @@ def test_a_master_this_encoder_would_convert_is_a_named_page_refusal(tmp_path):
             tree,
             sources,
             reader({"frame.tif": master}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 0
@@ -3833,25 +3359,8 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
 
     models = _fixture_models()
 
-    ledger = {
-        "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    settings = door.render_config.load_pdf_render_settings(
-        minimum_dpi=door.pdf_render.MIN_RENDER_DPI
-    )
-
     def bindings(triage_digests):
-        return door._real_bindings(
-            models,
-            ledger,
-            POLICY,
-            settings,
-            door.load_recovery_policy(),
-            door.load_hard_failure_policy(),
-            triage_document_digests=triage_digests,
-            **_sealed_binding_digests(),
-        )
+        return _real_bindings(models, triage_document_digests=triage_digests)
 
     first = bindings({"triage-decision-manifest": "c" * 64})
     again = bindings({"triage-decision-manifest": "c" * 64})
@@ -3918,46 +3427,8 @@ def test_a_re_run_triage_manifest_is_a_different_run_wearing_an_old_id(tmp_path)
         )
 
 
-def test_content_aware_shards_impose_no_shard_ceiling_of_their_own():
-    """The sealed page cap is the policy; the shard count is its consequence.
-
-    An implicit count ceiling would refuse a valid larger corpus independently of
-    the sealed page cap. A caller with an external ceiling must pass it explicitly.
-    """
-    sources = [
-        SourceEntry(index, f"{index:03d}.jpg", f"{index:03d}".zfill(64)) for index in range(1, 9)
-    ]
-
-    assert len(door.content_aware_shards(sources, max_pages_per_shard=2)) == 4
-    with pytest.raises(ContractError, match="shard count is exhausted"):
-        door.content_aware_shards(sources, max_pages_per_shard=2, max_shards=3)
-
-
-@pytest.mark.parametrize(
-    ("max_pages", "max_shards"),
-    [(True, None), (1.5, None), ("2", None), (2, True), (2, 1.5), (2, "3")],
-)
-def test_content_aware_shard_limits_are_positive_integer_counts(max_pages, max_shards):
-    sources = [SourceEntry(1, "one.jpg", "a" * 64)]
-
-    with pytest.raises(ContractError, match="non-positive or non-integer") as refused:
-        door.content_aware_shards(
-            sources,
-            max_pages_per_shard=max_pages,
-            max_shards=max_shards,
-        )
-    assert "no shard plan was returned" in str(refused.value)
-    assert "pass positive integer limits" in str(refused.value)
-
-
 def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(tmp_path):
-    """The seam a *production* run can actually place is the operator's folder cut.
-
-    Nothing in the tree partitions a corpus into shards; `content_aware_shards`
-    only plans seams for its caller, and a split pair cannot straddle a folder cut
-    because both halves come from one file. A cluster can, so source expansion must
-    refuse an incomplete cluster independently of whether the planner was used.
-    """
+    """A cluster with a member outside the submitted folder is refused at expansion."""
     first, second = png(4, 3), png(4, 3, rows=(b"\x00" + b"\x63" * 4) * 3)
     first_digest, second_digest = digest_bytes(first), digest_bytes(second)
 
@@ -3991,16 +3462,35 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
         "member_frame_sha256": [first_digest, second_digest],
         "split_count": 1,
     }
-    with pytest.raises(ContractError, match="would cross this submitted shard") as crossing:
+    with pytest.raises(ContractError, match="not in this submission") as crossing:
         door.expand_sources(
             [{"relative_path": "a.png", "sha256": first_digest}],
             reader({"a.png": first}),
-            POLICY,
             triage_rows=rows,
             triage_clusters={"opening-7": cluster},
         )
-    assert "no source expansion was returned" in str(crossing.value)
-    assert "submit every cluster member in the same shard" in str(crossing.value)
+    assert door.RE_SHOOT_REMEDY in str(crossing.value)
+    # The remedy followed literally: one capture, rows naming no cluster, no records.
+    unlinked = door.triage_manifest.make_row(
+        **{
+            key: value
+            for key, value in rows[first_digest].items()
+            if key not in {"manifest_row_sha256", "re_shoot_cluster_id"}
+        },
+        re_shoot_cluster_id=None,
+    )
+    door.triage_manifest.validate_manifest(
+        {
+            "schema": door.triage_manifest.MANIFEST_SCHEMA,
+            "corpus_id": "parish-a",
+            "records": [unlinked],
+        }
+    )
+    assert door.expand_sources(
+        [{"relative_path": "a.png", "sha256": first_digest}],
+        reader({"a.png": first}),
+        triage_rows={first_digest: unlinked},
+    )
 
     with pytest.raises(ContractError, match="no supplied cluster record") as unresolved:
         door.expand_sources(
@@ -4009,7 +3499,6 @@ def test_a_re_shoot_cluster_that_would_straddle_the_submitted_shard_is_refused(t
                 {"relative_path": "b.png", "sha256": second_digest},
             ],
             reader({"a.png": first, "b.png": second}),
-            POLICY,
             triage_rows=rows,
             triage_clusters={},
         )
@@ -4150,7 +3639,6 @@ def test_synthetic_63_64_65_plus_66_closes_instrument_confirmation_register_and_
         manifest_path=tmp_path / "manifest.json",
         clusters_path=tmp_path / "clusters.json",
         authority_path=tmp_path / "confirmation.json",
-        max_pages_per_shard=3,
     )
     assert len(produced.manifest["records"]) == 4
     assert set(produced.rows_by_digest) == set(digests_by_name.values())
@@ -4169,12 +3657,10 @@ def test_synthetic_63_64_65_plus_66_closes_instrument_confirmation_register_and_
     sources = door.expand_sources(
         [{"relative_path": item.path, "sha256": digests_by_name[item.path]} for item in frames],
         reader({item.path: item.data for item in frames}),
-        POLICY,
         triage_rows=produced.rows_by_digest,
         triage_clusters=produced.clusters,
     )
-    shards = door.content_aware_shards(sources, max_pages_per_shard=3)
-    assert [[source.ordinal for source in shard] for shard in shards] == [[1, 2, 3], [4]]
+    assert [source.ordinal for source in sources] == [1, 2, 3, 4]
 
 
 def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_out():
@@ -4215,7 +3701,6 @@ def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_ou
         evidence_manifest=evidence_manifest,
         evidence_records=evidence,
         transcribed_rows_by_path=proposals,
-        max_pages_per_shard=10,
     )
     rows = produced.rows_by_digest
     assert len(produced.clusters) == 1
@@ -4233,55 +3718,11 @@ def test_a_taped_insert_proposal_survives_produce_validation_and_the_door_fan_ou
             for item, digest in zip(frames, digests, strict=True)
         ],
         reader({item.path: item.data for item in frames}),
-        POLICY,
         triage_rows=rows,
         triage_clusters=produced.clusters,
     )
     assert [source.triage_part_index for source in sources] == [0, 1, 2, 3, 4] * 2
     assert {source.ordinal for source in sources} == set(range(1, 11))
-
-    # The cluster spans every one of those ten ordinals, so no seam inside it is
-    # legal: one shard holds it or the submission is refused.
-    assert len(door.content_aware_shards(sources, max_pages_per_shard=10)) == 1
-    with pytest.raises(ContractError, match="content-aware shard refusal"):
-        door.content_aware_shards(sources, max_pages_per_shard=5)
-
-
-def test_the_producer_measures_a_cluster_span_in_door_ordinals_not_in_frames():
-    """Two taped frames are ten Door ordinals, and a five-page cap cannot hold them.
-
-    A span counted in frames would have called this cluster two pages and passed it
-    to a Door that then has no legal seam anywhere inside it — the whole submission
-    refused, at the stage that can no longer explain why.
-    """
-    frames = _taped_frames()
-    proposals = {
-        item.path: door.triage_manifest.make_row(
-            corpus_id="parish-a",
-            source_frame_sha256=digest_bytes(item.data),
-            frame=dict(_TAPED_FRAME),
-            split=_taped_split(),
-            re_shoot_cluster_id=None,
-            confidence=0,
-            mode="manual",
-            actor={"kind": "human", "identity": "operator", "revision": None},
-            human_override=True,
-        )
-        for item in frames
-    }
-    confirmation, recipe, evidence_manifest, evidence = _taped_confirmation(frames)
-    with pytest.raises(producer.ProducerRefusal, match="cluster-span-over-cap"):
-        producer.produce(
-            frames,
-            corpus_id="parish-a",
-            mode="manual",
-            confirmation=confirmation,
-            instrument_recipe=recipe,
-            evidence_manifest=evidence_manifest,
-            evidence_records=evidence,
-            transcribed_rows_by_path=proposals,
-            max_pages_per_shard=5,
-        )
 
 
 def test_a_submitted_frame_with_no_triage_row_is_refused_and_a_row_outside_the_shard_is_not():
@@ -4324,73 +3765,18 @@ def test_a_submitted_frame_with_no_triage_row_is_refused_and_a_row_outside_the_s
         door.expand_sources(
             [{"relative_path": "a.png", "sha256": submitted_digest}],
             reader({"a.png": submitted}),
-            POLICY,
             triage_rows={absent_digest: row(absent_digest, 4, 3)},
         )
 
     sources = door.expand_sources(
         [{"relative_path": "a.png", "sha256": submitted_digest}],
         reader({"a.png": submitted}),
-        POLICY,
         triage_rows={
             submitted_digest: row(submitted_digest, 4, 3),
             absent_digest: row(absent_digest, 4, 3),
         },
     )
     assert [source.declared_sha256 for source in sources] == [submitted_digest]
-
-
-def test_a_legal_seam_between_byte_identical_split_files_is_not_mistaken_for_a_pair():
-    """A pair is one declared path's parts, not every adjacent copy of its digest."""
-    row = {"re_shoot_cluster_id": None}
-    digest = "a" * 64
-    sources = [
-        SourceEntry(1, "copy-a.jpg", digest, 0, triage_row=row, triage_part_index=0),
-        SourceEntry(2, "copy-a.jpg", digest, 1, triage_row=row, triage_part_index=1),
-        SourceEntry(3, "copy-b.jpg", digest, 0, triage_row=row, triage_part_index=0),
-        SourceEntry(4, "copy-b.jpg", digest, 1, triage_row=row, triage_part_index=1),
-    ]
-
-    shards = door.content_aware_shards(sources, max_pages_per_shard=2)
-
-    assert [[source.ordinal for source in shard] for shard in shards] == [[1, 2], [3, 4]]
-
-
-def test_nested_cluster_spans_remain_whole_without_inventing_a_winner():
-    rows = {
-        "outer": {"re_shoot_cluster_id": "outer"},
-        "inner": {"re_shoot_cluster_id": "inner"},
-        "none": {"re_shoot_cluster_id": None},
-    }
-    cluster_by_ordinal = {
-        1: "none",
-        2: "outer",
-        3: "inner",
-        4: "none",
-        5: "none",
-        6: "inner",
-        7: "outer",
-        8: "none",
-    }
-    sources = [
-        SourceEntry(
-            ordinal,
-            f"{ordinal}.jpg",
-            f"{ordinal:064x}",
-            0,
-            triage_row=rows[cluster_by_ordinal[ordinal]],
-            triage_part_index=0,
-        )
-        for ordinal in range(1, 9)
-    ]
-
-    shards = door.content_aware_shards(sources, max_pages_per_shard=6)
-
-    assert [[source.ordinal for source in shard] for shard in shards] == [
-        [1],
-        [2, 3, 4, 5, 6, 7],
-        [8],
-    ]
 
 
 def test_unicode_and_separator_like_relative_paths_have_exact_stable_ordinals():
@@ -4405,8 +3791,8 @@ def test_unicode_and_separator_like_relative_paths_have_exact_stable_ordinals():
         for path, data in reversed(list(files.items()))
     ]
 
-    first = expand_sources(rows, reader(files), POLICY)
-    second = expand_sources(list(reversed(rows)), reader(files), POLICY)
+    first = expand_sources(rows, reader(files))
+    second = expand_sources(list(reversed(rows)), reader(files))
 
     assert first == second
     assert [source.declared_path for source in first] == [
@@ -4448,32 +3834,15 @@ def _single_part_triage_row(
     )
 
 
-def test_a_missing_triage_row_names_the_loss_it_prevents_and_the_remedy():
-    submitted = png(4, 3)
-
-    with pytest.raises(ContractError, match="no row for a submitted source frame") as refused:
-        expand_sources(
-            [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
-            reader({"submitted.png": submitted}),
-            POLICY,
-            triage_rows={},
-        )
-    assert "disappear from the post-split census" in str(refused.value)
-    assert "one row for every submitted frame digest" in str(refused.value)
-
-
 def test_cluster_records_without_a_decision_manifest_are_not_ignored():
     submitted = png(4, 3)
 
-    with pytest.raises(ContractError, match="without a decision manifest") as refused:
+    with pytest.raises(ContractError, match="without a decision manifest"):
         expand_sources(
             [{"relative_path": "submitted.png", "sha256": digest_bytes(submitted)}],
             reader({"submitted.png": submitted}),
-            POLICY,
             triage_clusters={},
         )
-    assert "no ordinals were assigned" in str(refused.value)
-    assert "supply the matching triage decision manifest" in str(refused.value)
 
 
 def _triage_decision(master: bytes, row: dict):
@@ -4485,7 +3854,7 @@ def _triage_decision(master: bytes, row: dict):
         triage_row=row,
         triage_part_index=0,
     )
-    return door.decide(master, source, POLICY, pdf_settings=PDF_SETTINGS)
+    return door.decide(master, source, pdf_settings=PDF_SETTINGS)
 
 
 @pytest.mark.parametrize("declared_frame", [(5, 4), (7, 4), (6, 3), (6, 5)])
@@ -4554,17 +3923,11 @@ def test_cluster_report_keeps_refused_members_and_parts_visible(tmp_path):
     sources = expand_sources(
         [{"relative_path": path, "sha256": digest_bytes(data)} for path, data in files.items()],
         reader(files),
-        POLICY,
         triage_rows=rows,
         triage_clusters={cluster_id: cluster},
     )
     tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context, tree, sources, reader(files), policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 1
-    )
+    assert process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS) == 1
 
     report = door.publish_cluster_report(context)
     assert report is not None
@@ -4611,7 +3974,6 @@ def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
     sources = expand_sources(
         [{"relative_path": "broken.img", "sha256": digest, "bytes": len(master)}],
         reader({"broken.img": master}),
-        POLICY,
         triage_rows={digest: row},
     )
     assert [(source.ordinal, source.triage_part_index) for source in sources] == [(1, 0), (2, 1)]
@@ -4623,7 +3985,6 @@ def test_an_undecodable_split_frame_keeps_every_declared_page_ordinal(tmp_path):
             tree,
             sources,
             reader({"broken.img": master}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 0
@@ -4644,19 +4005,8 @@ def test_the_door_seals_the_same_triage_modes_file_its_point_of_use_check_reads(
 
     models = _fixture_models()
 
-    ledger = {
-        "files": [{"relative_path": "spread.jpg", "sha256": "a" * 64, "bytes": 12}],
-        "self_hash": "b" * 64,
-    }
-    bindings = door._real_bindings(
-        models,
-        ledger,
-        POLICY,
-        door.render_config.load_pdf_render_settings(minimum_dpi=door.pdf_render.MIN_RENDER_DPI),
-        door.load_recovery_policy(),
-        door.load_hard_failure_policy(),
-        triage_document_digests={"triage-decision-manifest": "c" * 64},
-        **_sealed_binding_digests(),
+    bindings = _real_bindings(
+        models, triage_document_digests={"triage-decision-manifest": "c" * 64}
     )
     require_triage_modes(bindings["sealed_config_digests"])
     edited = tmp_path / "triage_modes.toml"
@@ -4860,7 +4210,6 @@ def test_a_lying_ledger_cannot_seal_two_different_rasters_into_one_membership(tm
         (source,) = expand_sources(
             [{"relative_path": "page.png", "sha256": lie, "bytes": len(data)}],
             reader({"page.png": data}),
-            POLICY,
         )
         assert source.declared_sha256 == lie, "the declaration is retained as evidence"
         assert source.computed_sha256 == digest_bytes(data)
@@ -4878,7 +4227,6 @@ def test_a_source_with_no_declaration_still_makes_an_honest_membership_claim(tmp
     (source,) = expand_sources(
         [{"relative_path": "undeclared.png", "sha256": None}],
         reader({"undeclared.png": data}),
-        POLICY,
     )
     assert source.declared_sha256 is None
     assert door._membership_sha256(source) == digest_bytes(data)
@@ -4912,7 +4260,6 @@ def test_a_source_too_large_to_read_binds_no_digest_it_never_took(tmp_path):
     (source,) = expand_sources(
         [{"relative_path": "huge.png", "sha256": declared, "bytes": MAX_SOURCE_BYTES + 1}],
         reader({"huge.png": png(6, 4)}),
-        POLICY,
     )
     assert source.computed_sha256 is None
     assert door._membership_sha256(source) == declared
@@ -4938,7 +4285,6 @@ def test_streamed_pdf_membership_binds_inspected_bytes_not_a_shared_ledger_lie(t
         (source,) = expand_sources(
             [{"relative_path": name, "sha256": lie, "bytes": (folder / name).stat().st_size}],
             unexpected_reader,
-            POLICY,
             open_source=open_source,
         )
         expanded.append(source)
@@ -4972,7 +4318,7 @@ def test_a_failed_close_on_one_streamed_pdf_leaves_the_next_pdf_its_own(tmp_path
         {"relative_path": name, "sha256": digest_bytes(data), "bytes": len(data)}
         for name, data in files.items()
     ]
-    sources = expand_sources(rows, reader(files), POLICY, open_source=open_source)
+    sources = expand_sources(rows, reader(files), open_source=open_source)
     monkeypatch.setattr(door.pdf_render.pdfium.PdfDocument, "close", first_close_fails)
     tree, context = open_door(tmp_path, sources)
 
@@ -4982,7 +4328,6 @@ def test_a_failed_close_on_one_streamed_pdf_leaves_the_next_pdf_its_own(tmp_path
             tree,
             sources,
             reader({}),
-            policy=POLICY,
             open_source=open_source,
             pdf_settings=PDF_SETTINGS,
         )
@@ -5029,7 +4374,6 @@ def test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed(t
             }
         ],
         unexpected_reader,
-        POLICY,
         open_source=open_source,
     )
     assert source.computed_sha256 == digest_bytes(sealed)
@@ -5053,7 +4397,6 @@ def test_streamed_pdf_admission_refuses_bytes_replaced_after_membership_sealed(t
             tree,
             [source],
             unexpected_reader,
-            policy=POLICY,
             open_source=open_source,
             pdf_settings=PDF_SETTINGS,
         )
@@ -5087,7 +4430,6 @@ def test_admission_refuses_bytes_that_differ_from_sealed_membership(tmp_path):
             tree,
             [source],
             reader({"page.png": after}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 0
@@ -5109,7 +4451,7 @@ def test_a_rendered_pdf_page_is_not_held_to_the_submitted_file_limit(monkeypatch
     source = SourceEntry(1, "reel.pdf", digest_bytes(data), container_page_index=0)
     monkeypatch.setattr(door.admission, "MAX_SOURCE_BYTES", 1)
 
-    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+    decision = door.decide(data, source, pdf_settings=PDF_SETTINGS)
 
     assert decision.outcome == "admitted"
 
@@ -5129,7 +4471,7 @@ def test_a_fanned_out_raster_page_is_not_held_to_the_submitted_file_limit(monkey
     source = SourceEntry(1, "scan.tif", digest_bytes(data), container_page_index=1)
     monkeypatch.setattr(door.admission, "MAX_SOURCE_BYTES", 1)
 
-    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+    decision = door.decide(data, source, pdf_settings=PDF_SETTINGS)
 
     assert decision.outcome == "admitted"
 
@@ -5153,7 +4495,7 @@ def test_a_rendered_page_past_its_byte_bound_is_too_large_not_corrupt(monkeypatc
     source = SourceEntry(1, "reel.pdf", digest_bytes(data), container_page_index=0)
     monkeypatch.setattr(door.admission, "MAX_RENDERED_PAGE_BYTES", 1)
 
-    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+    decision = door.decide(data, source, pdf_settings=PDF_SETTINGS)
 
     assert decision.outcome == "refused"
     assert reason_code(decision.reason) is RefusalReason.TOO_LARGE
@@ -5164,7 +4506,7 @@ def test_a_multi_frame_raster_reaching_decide_without_a_page_index_is_not_sealed
     data = multipage_tiff()
     source = SourceEntry(1, "scan.tif", digest_bytes(data))
 
-    decision = door.decide(data, source, POLICY, pdf_settings=PDF_SETTINGS)
+    decision = door.decide(data, source, pdf_settings=PDF_SETTINGS)
 
     assert decision.outcome == "refused"
     assert reason_code(decision.reason) is RefusalReason.UNSUPPORTED_VARIANT
@@ -5196,16 +4538,11 @@ def test_a_source_expansion_could_not_read_is_refused_unreadable_not_re_read(tmp
         return data
 
     files = [{"relative_path": "scan.tif", "sha256": digest_bytes(data), "bytes": len(data)}]
-    sources = expand_sources(files, flaky_reader, POLICY)
+    sources = expand_sources(files, flaky_reader)
     assert [(source.ordinal, source.container_page_index) for source in sources] == [(1, None)]
 
     tree, context = open_door(tmp_path, sources)
-    assert (
-        process_sources(
-            context, tree, sources, flaky_reader, policy=POLICY, pdf_settings=PDF_SETTINGS
-        )
-        == 0
-    )
+    assert process_sources(context, tree, sources, flaky_reader, pdf_settings=PDF_SETTINGS) == 0
     context.finish(DOOR)
     reason = admissions(tree)[1]["payload"]["reason"]
     assert reason_code(reason) is RefusalReason.UNREADABLE
@@ -5243,7 +4580,7 @@ def test_a_pdf_whose_pages_could_not_be_counted_is_refused_not_admitted_as_one_p
         return door.inventory.open_submission_source(folder, relative_path)
 
     files = [{"relative_path": "reel.pdf", "sha256": digest_bytes(data), "bytes": len(data)}]
-    sources = expand_sources(files, unexpected_reader, POLICY, open_source=open_source)
+    sources = expand_sources(files, unexpected_reader, open_source=open_source)
     assert [source.container_page_index for source in sources] == [0]
 
     tree, context = open_door(tmp_path, sources)
@@ -5253,7 +4590,6 @@ def test_a_pdf_whose_pages_could_not_be_counted_is_refused_not_admitted_as_one_p
             tree,
             sources,
             unexpected_reader,
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
             open_source=open_source,
         )
@@ -5278,7 +4614,6 @@ def test_a_source_grown_past_the_read_bound_does_not_report_a_capped_size(tmp_pa
             tree,
             [source],
             reader({"grown.png": data[:9]}),
-            policy=POLICY,
             pdf_settings=PDF_SETTINGS,
         )
         == 0

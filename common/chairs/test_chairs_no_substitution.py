@@ -10,8 +10,8 @@ Seven doors lead to a refusal, and each is a refusal and never a substitution:
      neighbouring revision
   3. a cache holding a different revision than the pin (a pin is a constant the
      artifact must MATCH, never a value the artifact supplies)
-  4. an adapter that will not fetch — never the bare base under the adapter's
-     chair name
+  4. a chair declared as an adapter of another — refused when the roster is
+     read (`test_chairs_resolution.py`), so no base can answer in its place
   5. a serving recipe that will not start — never a second route under the same
      role name
   6. a chair configured `absent`, which stays in the roster as an explicit
@@ -34,7 +34,6 @@ import json
 import pytest
 
 from common.chairs.errors import (
-    AdapterFetchRefusal,
     CacheRevisionRefusal,
     ChairRefusal,
     DigestMismatchRefusal,
@@ -68,8 +67,8 @@ class Traced(ChairRegistry):
     would look identical. This is what makes the difference visible.
 
     **A subclass, not a wrapper.** It overrides `resolve`, `ensure` and `receipt`
-    so the registry's own internal calls — `_require_current_identity`, and
-    `_cache_descriptor` resolving an adapter's configured base — are logged too.
+    so the registry's own internal calls, such as `_require_current_identity`, are
+    logged too.
     Python binds `self.resolve` on the instance, so the log sits inside the
     registry rather than in front of it, and a substitution introduced inside
     `ensure()` or `receipt()` shows up in it. A delegating wrapper would see only
@@ -218,140 +217,6 @@ def test_a_cache_with_no_readable_descriptor_at_all_is_refused(world):
 
     with pytest.raises(CacheRevisionRefusal, match="descriptor"):
         traced.ensure(identity)
-
-
-# --- 4. An adapter that will not fetch ------------------------------------------------
-
-
-@pytest.fixture
-def adapter_world(tmp_path):
-    """An adapter chair, its configured base, and a bystander witness."""
-    write_snapshot(tmp_path / "remote", dict(FILES))
-    pin = pin_snapshot(tmp_path / "remote", tmp_path / "manifests" / "chair.json")
-    chairs = {
-        "attestator_1": hf_chair(
-            "attestator_1", pin, manifest="manifests/chair.json", adapter_of="base"
-        ),
-        "base": hf_chair("base", pin, manifest="manifests/chair.json", revision="b" * 40),
-        BYSTANDER: hf_chair(BYSTANDER, pin, manifest="manifests/chair.json"),
-    }
-    fetcher = RecordingFetcher(dict(FILES))
-    return traced_for(config_of(tmp_path, chairs, witness_floor=2), tmp_path, fetcher), fetcher
-
-
-def test_an_adapter_that_will_not_fetch_is_never_served_as_its_bare_base(adapter_world):
-    """The failure mode this refusal exists for: the base fetches perfectly well,
-    and serving it under the adapter's chair name would look like success."""
-    traced, fetcher = adapter_world
-    fetcher.fail = RuntimeError("adapter weights would not download")
-    adapter = traced.resolve("attestator_1")
-
-    with pytest.raises(AdapterFetchRefusal) as caught:
-        traced.ensure(adapter)
-
-    assert caught.value.chair == "attestator_1"
-    assert fetcher.roles == ["attestator_1"], "the base's weights were never fetched instead"
-    assert traced.roles("ensure") == {"attestator_1"}
-    assert traced.roles("receipt") == set()
-
-
-def test_filling_a_base_keeps_its_adapter_and_foreign_dirs_and_evicts_work_dirs(
-    adapter_world, tmp_path
-):
-    traced, _fetcher = adapter_world
-    adapter = traced.resolve("attestator_1")
-    base = traced.resolve("base")
-    traced.ensure(adapter)
-    cache = tmp_path / "cache"
-    (cache / ".base.candidate-abandoned").mkdir()
-    orphaned_backup = cache / ".base.prior-4242"
-    orphaned_backup.mkdir()
-    (orphaned_backup / "weights").write_bytes(b"a promote that died mid-swap")
-    foreign = cache / "no-longer-configured"
-    foreign.mkdir()
-    (foreign / "user-data").write_text("keep", encoding="utf-8")
-
-    traced.ensure(base)
-
-    assert (cache / "attestator_1" / CACHE_DESCRIPTOR).is_file()
-    assert (cache / "base" / CACHE_DESCRIPTOR).is_file()
-    assert not (cache / ".base.candidate-abandoned").exists()
-    assert not orphaned_backup.exists()
-    assert (foreign / "user-data").read_text(encoding="utf-8") == "keep"
-
-
-def test_an_adapter_cache_is_bound_to_its_base_pin_and_refuses_when_the_base_moves(
-    adapter_world, tmp_path
-):
-    """An adapter's own pin is not enough. Its cache is only compatible with the
-    base it was fetched against, so repinning the base must invalidate it — the
-    alternative is an old adapter quietly riding a model it never saw.
-
-    Resolving the named base to write that binding is the one place another
-    role's *configuration* is read. It is read and nothing else: never fetched,
-    never verified, never served, never offered as a substitute.
-    """
-    traced, fetcher = adapter_world
-    adapter = traced.resolve("attestator_1")
-    traced.ensure(adapter)
-    fetched_once = list(fetcher.calls)
-
-    base = traced.resolve("base")
-    repinned = ChairRegistry(
-        config_of(
-            tmp_path,
-            {
-                "attestator_1": hf_chair(
-                    "attestator_1",
-                    adapter.digest_manifest,
-                    manifest="manifests/chair.json",
-                    adapter_of="base",
-                ),
-                "base": hf_chair(
-                    "base", base.digest_manifest, manifest="manifests/chair.json", revision="c" * 40
-                ),
-                BYSTANDER: hf_chair(
-                    BYSTANDER, base.digest_manifest, manifest="manifests/chair.json"
-                ),
-            },
-            witness_floor=2,
-        ),
-        manifest_root=tmp_path,
-        cache_root=traced.cache_root,
-        fetcher=fetcher,
-    )
-
-    with pytest.raises(CacheRevisionRefusal) as caught:
-        repinned.ensure(repinned.resolve("attestator_1"))
-
-    assert caught.value.chair == "attestator_1"
-    assert fetcher.calls == fetched_once, "nothing was fetched for the base or anyone else"
-
-
-def test_an_adapter_whose_base_became_absent_is_refused(adapter_world, tmp_path):
-    traced, fetcher = adapter_world
-    adapter = traced.resolve("attestator_1")
-    traced.ensure(adapter)
-
-    # Built directly rather than through the parser, which refuses this pairing
-    # outright: the question here is what `ensure` does if it ever sees one.
-    from common.chairs.models import AbsentChair, ModelsConfig
-
-    hobbled = ModelsConfig(
-        witness_floor=2,
-        chairs={
-            "attestator_1": adapter,
-            "base": AbsentChair("base", "withdrawn between runs"),
-            BYSTANDER: traced.resolve(BYSTANDER),
-        },
-        source_path=tmp_path / "models.toml",
-    )
-    registry = ChairRegistry(
-        hobbled, manifest_root=tmp_path, cache_root=traced.cache_root, fetcher=fetcher
-    )
-
-    with pytest.raises(CacheRevisionRefusal, match="explicitly absent"):
-        registry.ensure(registry.resolve("attestator_1"))
 
 
 def test_a_hidden_role_is_refused_before_it_names_a_cache_directory(world, tmp_path):
@@ -543,3 +408,29 @@ def test_a_refusal_carries_the_concrete_difference_and_not_only_the_chair(world)
     difference = caught.value.difference
     assert "weights.bin" in difference
     assert difference.strip() not in ("", "attestator_1")
+
+
+def test_filling_a_chair_keeps_foreign_dirs_and_evicts_its_abandoned_work_dirs(tmp_path):
+    write_snapshot(tmp_path / "remote", dict(FILES))
+    pin = pin_snapshot(tmp_path / "remote", tmp_path / "manifests" / "chair.json")
+    chairs = {
+        "attestator_1": hf_chair("attestator_1", pin, manifest="manifests/chair.json"),
+        "base": hf_chair("base", pin, manifest="manifests/chair.json", revision="b" * 40),
+    }
+    traced = traced_for(config_of(tmp_path, chairs), tmp_path, RecordingFetcher(dict(FILES)))
+    traced.ensure(traced.resolve("attestator_1"))
+    cache = tmp_path / "cache"
+    (cache / ".base.candidate-abandoned").mkdir()
+    orphaned_backup = cache / ".base.prior-4242"
+    orphaned_backup.mkdir()
+    (orphaned_backup / "weights").write_bytes(b"a promote that died mid-swap")
+    foreign = cache / "no-longer-configured"
+    foreign.mkdir()
+    (foreign / "user-data").write_text("keep", encoding="utf-8")
+
+    traced.ensure(traced.resolve("base"))
+
+    assert (cache / "base" / CACHE_DESCRIPTOR).is_file()
+    assert not (cache / ".base.candidate-abandoned").exists()
+    assert not orphaned_backup.exists()
+    assert (foreign / "user-data").read_text(encoding="utf-8") == "keep"
