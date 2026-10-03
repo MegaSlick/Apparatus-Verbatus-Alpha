@@ -1,6 +1,6 @@
 """Fake-first lifecycle management for one configured vLLM chair at a time."""
 
-from .assembly import assemble_serving_preflight_callback, assemble_serving_smoke_reader
+from .assembly import assemble_serving_smoke_reader
 from .config import (
     CONFIG_INPUTS_SCHEMA,
     SCHEMA,
@@ -19,7 +19,6 @@ from .config import (
     verify_recipes_cover_chairs,
 )
 from .manager import (
-    AdapterCalibration,
     ReceiptPublication,
     ServiceHandle,
     ServingManager,
@@ -31,7 +30,6 @@ from .smoke import VisionSmokeCall
 __all__ = [
     "SCHEMA",
     "CONFIG_INPUTS_SCHEMA",
-    "AdapterCalibration",
     "FixtureProfile",
     "InProcessProfile",
     "ProbeSpec",
@@ -46,7 +44,6 @@ __all__ = [
     "ServingSmokeReader",
     "VisionSmokeCall",
     "StageContextReceiptPublisher",
-    "assemble_serving_preflight_callback",
     "assemble_serving_smoke_reader",
     "chair_preflight_identity_digest",
     "load_serving_recipes",

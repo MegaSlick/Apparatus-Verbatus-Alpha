@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import stat
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
@@ -41,21 +41,17 @@ from operations.pod.preflight import (
 )
 
 from .config import ServingProfile, thawed_json
-from .errors import AdapterActivityError, ServiceStopError, ServingConfigurationError
-from .manager import AdapterCalibration, ServiceHandle, ServingManager
+from .errors import ServiceStopError, ServingConfigurationError
+from .manager import ServiceHandle, ServingManager
 
 SmokeCall = Callable[[ServiceHandle, ChairIdentity, Path, PlacementTier], SmokeResult]
-CalibrationFor = Callable[[ChairIdentity, Path], AdapterCalibration | None]
 
 
 def prepare_log_root(log_root: str | Path) -> Path:
     """Create and verify the exact log filesystem a launch will write into.
 
-    Lives here so both production seams give the same guarantee:
-    ``assemble_serving_preflight_callback`` calls it when its callback runs,
-    and :meth:`ServingSmokeReader.read` calls it before each start — so
-    neither seam can write a run's logs through a symlinked or
-    group-readable root. Construction stays effect-free on both seams either way.
+    :meth:`ServingSmokeReader.read` calls it before each start, so a smoke can
+    never write a run's logs through a symlinked or group-readable root.
     """
 
     prepared = Path(log_root)
@@ -97,45 +93,6 @@ def prepare_log_root(log_root: str | Path) -> Path:
     return prepared
 
 
-def assert_resized_pixels_within_trained_geometry(
-    *,
-    chair: str,
-    resized_width: int,
-    resized_height: int,
-    trained_min_pixels: int,
-    trained_max_pixels: int,
-) -> None:
-    """Refuse a post-resize image outside a chair's own declared trained geometry.
-
-    Checked against the dimensions actually sent -- after
-    ``common/request_capacity.py::smart_resize`` (or a chair's own carried
-    resize port) has run -- never against the source image.  A resize
-    algorithm that silently under- or over-shoots a vendor's own declared
-    training range (Model card "Parameters", ``processor_config.json``) reads
-    a page at the wrong scale with no error anywhere else -- the same
-    silent-drop failure mode as an unrecognised ``mm_processor_kwargs``,
-    the worst-rated kind of failure.
-    """
-
-    if resized_width <= 0 or resized_height <= 0:
-        raise ServingConfigurationError(
-            f"chair {chair!r} resized dimensions must be positive, got "
-            f"{resized_width}x{resized_height}"
-        )
-    if trained_min_pixels <= 0 or trained_max_pixels < trained_min_pixels:
-        raise ServingConfigurationError(
-            f"chair {chair!r} declared trained pixel geometry "
-            f"[{trained_min_pixels}, {trained_max_pixels}] is malformed"
-        )
-    pixels = resized_width * resized_height
-    if not (trained_min_pixels <= pixels <= trained_max_pixels):
-        raise ServingConfigurationError(
-            f"chair {chair!r} post-resize image is {resized_width}x{resized_height} = {pixels} "
-            f"pixels, outside its declared trained geometry "
-            f"[{trained_min_pixels}, {trained_max_pixels}]"
-        )
-
-
 def assert_generation_config_key_coverage(
     *,
     chair: str,
@@ -173,185 +130,22 @@ def assert_generation_config_key_coverage(
         )
 
 
-@dataclass(frozen=True, slots=True)
-class UsageReconciliation:
-    """One comparison between an engine's own reported usage and the laptop's count.
-
-    ``observed_image_tokens`` is the engine's own per-modality breakdown
-    (``usage.prompt_tokens_details.multimodal_tokens["image"]``), gated behind
-    ``--enable-prompt-tokens-details`` and present only when the request
-    carried multimodal input. When present, ``localized_to`` compares the
-    image and text halves against their own expected counts independently, so
-    a mixed real request can still be localized exactly. Without it, a
-    mismatch can only be localized when one side expects zero tokens; a mixed
-    request with no breakdown is reported honestly as ``"unlocalized"`` rather
-    than guessed at from one scalar.
-    """
-
-    chair: str
-    observed_prompt_tokens: int
-    expected_image_tokens: int
-    expected_text_tokens: int
-    tolerance: int
-    observed_image_tokens: int | None = None
-
-    @property
-    def expected_prompt_tokens(self) -> int:
-        return self.expected_image_tokens + self.expected_text_tokens
-
-    @property
-    def discrepancy(self) -> int:
-        return self.observed_prompt_tokens - self.expected_prompt_tokens
-
-    @property
-    def within_tolerance(self) -> bool:
-        return abs(self.discrepancy) <= self.tolerance
-
-    @property
-    def localized_to(self) -> str | None:
-        if self.within_tolerance:
-            return None
-        if self.observed_image_tokens is not None:
-            image_discrepancy = self.observed_image_tokens - self.expected_image_tokens
-            text_discrepancy = self.discrepancy - image_discrepancy
-            image_off = abs(image_discrepancy) > self.tolerance
-            text_off = abs(text_discrepancy) > self.tolerance
-            if image_off and not text_off:
-                return "image"
-            if text_off and not image_off:
-                return "text"
-            return "unlocalized"
-        if self.expected_image_tokens == 0 and self.expected_text_tokens == 0:
-            # Neither half carries an expected token at all -- nothing to
-            # localize a mismatch to, honestly reported the same as a mixed
-            # request rather than defaulting to a guess.
-            return "unlocalized"
-        if self.expected_text_tokens == 0:
-            return "image"
-        if self.expected_image_tokens == 0:
-            return "text"
-        return "unlocalized"
-
-    def to_finding(self) -> dict[str, object] | None:
-        """A named finding for a mismatch beyond tolerance, or ``None`` in tolerance."""
-
-        if self.within_tolerance:
-            return None
-        return {
-            "kind": "usage-capacity-mismatch",
-            "chair": self.chair,
-            "observed_prompt_tokens": self.observed_prompt_tokens,
-            "observed_image_tokens": self.observed_image_tokens,
-            "expected_prompt_tokens": self.expected_prompt_tokens,
-            "expected_image_tokens": self.expected_image_tokens,
-            "expected_text_tokens": self.expected_text_tokens,
-            "discrepancy": self.discrepancy,
-            "tolerance": self.tolerance,
-            "localized_to": self.localized_to,
-        }
-
-
-def _observed_image_tokens(usage: Mapping[str, object]) -> int | None:
-    """Read the engine's own image-token count from ``prompt_tokens_details``.
-
-    ``None`` whenever the shape is not exactly the
-    ``prompt_tokens_details.multimodal_tokens.image`` int vLLM 0.30.0 adds to
-    the OpenAI usage block
-    when ``--enable-prompt-tokens-details`` is set and the request carried
-    multimodal input -- a build or a text-only request that omits it is not
-    an error here, only a missing precision the caller falls back without.
-    """
-
-    details = usage.get("prompt_tokens_details")
-    if not isinstance(details, Mapping):
-        return None
-    multimodal_tokens = details.get("multimodal_tokens")
-    if not isinstance(multimodal_tokens, Mapping):
-        return None
-    value = multimodal_tokens.get("image")
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
-        return value
-    return None
-
-
-def reconcile_usage_against_capacity(
-    *,
-    chair: str,
-    usage: Mapping[str, object] | None,
-    expected_image_tokens: int,
-    expected_text_tokens: int,
-    tolerance: int,
-) -> UsageReconciliation:
-    """Compare a live engine's own reported ``prompt_tokens`` against the laptop's count.
-
-    ``usage.prompt_tokens`` is present on every real response regardless of
-    launch flags; ``--enable-prompt-tokens-details`` instead gates
-    ``usage.prompt_tokens_details``, read here when present to localize a
-    mismatch precisely (see :class:`UsageReconciliation`). This is a
-    reconciliation, not a gate: a mismatch is returned as a named finding
-    rather than raised, since what it means (a dropped `mm_processor_kwargs`,
-    a stale token-cost table, an engine rounding change) is exactly what
-    honest measurement keeps out of a hard-coded verdict.
-    """
-
-    if expected_image_tokens < 0 or expected_text_tokens < 0:
-        raise ServingConfigurationError(
-            f"chair {chair!r} expected token counts must be non-negative"
-        )
-    if tolerance < 0:
-        raise ServingConfigurationError(f"chair {chair!r} usage tolerance must be non-negative")
-    observed: int | None = None
-    observed_image: int | None = None
-    if isinstance(usage, Mapping):
-        candidate = usage.get("prompt_tokens")
-        if isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0:
-            observed = candidate
-        observed_image = _observed_image_tokens(usage)
-    if observed is None:
-        raise ServingConfigurationError(
-            f"chair {chair!r} response usage has no non-negative integer prompt_tokens to "
-            "reconcile; the response carried no usage object, or its prompt_tokens was not "
-            "a non-negative integer. A real vLLM response carries prompt_tokens regardless "
-            "of launch flags (--enable-prompt-tokens-details gates a different field, "
-            "usage.prompt_tokens_details.multimodal_tokens), so this names a response that "
-            "did not come from one"
-        )
-    return UsageReconciliation(
-        chair=chair,
-        observed_prompt_tokens=observed,
-        expected_image_tokens=expected_image_tokens,
-        expected_text_tokens=expected_text_tokens,
-        tolerance=tolerance,
-        observed_image_tokens=observed_image,
-    )
-
-
 class ServingSmokeReader:
-    """One lifecycle-backed implementation of the pod ``SmokeReader`` protocol.
-
-    An adapted chair receives its calibration only from the explicit
-    ``calibration_for`` seam.  Returning ``None`` is safe for an unadapted
-    chair; for an adapter it makes :class:`ServingManager` refuse the start
-    before a smoke result can be made.
-    """
+    """One lifecycle-backed implementation of the pod ``SmokeReader`` protocol."""
 
     def __init__(
         self,
         manager: ServingManager,
         smoke_call: SmokeCall,
         *,
-        calibration_for: CalibrationFor | None = None,
         placement_table: PlacementTable | None = None,
         gpu_profile: GpuProfile | None = None,
     ) -> None:
         self.manager = manager
         self.smoke_call = smoke_call
-        self.calibration_for = calibration_for
         self.placement_table = placement_table
         # `operations.pod.preflight.SmokeReader.read` does not carry the measured
         # profile, so it travels bound to the reader instead of per call.
-        # `assemble_serving_preflight_callback` sets this the moment its own
-        # probe measures one, right before `PreflightRunner.run`.
         self.gpu_profile = gpu_profile
 
     def read(
@@ -394,20 +188,10 @@ class ServingSmokeReader:
                 )
             self._assert_profile_within_placement(serving_profile, placement)
         fixture_sha256 = _fixture_digest(fixture)
-        calibration = self.calibration_for(identity, fixture) if self.calibration_for else None
-        self._verify_local_calibration_fixture(calibration, fixture)
-        # The same log-root guarantee the callback seam gives: refuse a
-        # symlinked root and force it owner-only before anything can write a
-        # launch log through it. Idempotent, so once per read is cheap.
-        # (`manager.start`, called next, is what actually refuses a
-        # discoverable env-override file -- the one door every real launch
-        # passes through, not only this smoke lifecycle.)
+        # Refuse a symlinked log root and force it owner-only before anything
+        # can write a launch log through it. Idempotent, so once per read is cheap.
         prepare_log_root(self.manager.log_root)
-        handle = self.manager.start(
-            identity,
-            placement.identifier,
-            adapter_calibration=calibration,
-        )
+        handle = self.manager.start(identity, placement.identifier)
         primary_error: BaseException | None = None
         try:
             fixture_requests_before_smoke = handle.fixture_requests_completed
@@ -420,7 +204,6 @@ class ServingSmokeReader:
             if (
                 handle.fixture_requests_completed <= fixture_requests_before_smoke
                 or handle.last_fixture_request_sha256 != fixture_sha256
-                or not handle.last_request_was_fixture
             ):
                 raise ServingConfigurationError(
                     "golden-page smoke returned without a final completed fixture-bound request "
@@ -449,25 +232,6 @@ class ServingSmokeReader:
                     "golden-page smoke failed and owned serving shutdown was not verified: "
                     f"smoke={primary_error}; stop={stop_error}"
                 ) from primary_error
-
-    @staticmethod
-    def _verify_local_calibration_fixture(
-        calibration: AdapterCalibration | None, fixture: Path
-    ) -> None:
-        """Bind a vision adapter probe to the local bytes preflight actually names."""
-
-        if calibration is None or not calibration.requires_image:
-            return
-        try:
-            observed = hashlib.sha256(fixture.read_bytes()).hexdigest()
-        except OSError as error:
-            raise AdapterActivityError(
-                f"cannot read local adapter calibration fixture {fixture}: {error}"
-            ) from error
-        if observed != calibration.fixture_sha256:
-            raise AdapterActivityError(
-                "adapter calibration data URI does not match the local golden-page fixture bytes"
-            )
 
     @staticmethod
     def _assert_profile_within_placement(profile: ServingProfile, placement: PlacementTier) -> None:
@@ -513,7 +277,6 @@ def _with_service_evidence(
         "supplied_fixture_sha256",
         "smoke_fixture_response_sha256",
         "smoke_fixture_output_sha256",
-        "smoke_service_request_count",
         "smoke_fixture_request_count",
     }
     collision = sorted(reserved & set(receipt))
@@ -538,7 +301,6 @@ def _with_service_evidence(
             "supplied_fixture_sha256": fixture_sha256,
             "smoke_fixture_response_sha256": handle.last_fixture_response_sha256,
             "smoke_fixture_output_sha256": handle.last_fixture_output_sha256,
-            "smoke_service_request_count": handle.requests_completed,
             "smoke_fixture_request_count": handle.fixture_requests_completed,
         }
     )

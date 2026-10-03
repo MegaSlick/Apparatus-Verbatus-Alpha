@@ -24,6 +24,7 @@ from common.contracts.identities import attempt_id as derived_attempt_id
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_SCHEMA,
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+    SERVING_LAUNCH_AUDIT_SCHEMA,
 )
 from common.contracts.stages import PERLECTOR
 from common.image_sniff import PNG_SIGNATURE
@@ -48,7 +49,7 @@ _SENT_FIELDS: Final = frozenset(
 )
 
 # Blobs the serving manager keeps in a stage's own store beside the chair's calls.
-_SERVING_BLOB_SCHEMAS: Final = frozenset({"serving-launch-audit.v1", "serving-evidence.v1"})
+_SERVING_BLOB_SCHEMAS: Final = frozenset({SERVING_LAUNCH_AUDIT_SCHEMA, "serving-evidence.v1"})
 
 
 def start_chair(run) -> None:

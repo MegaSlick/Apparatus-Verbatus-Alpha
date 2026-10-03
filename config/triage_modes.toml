@@ -1,5 +1,5 @@
-# Pipeline-wide triage vocabulary. Unit 1's driver joins these three names;
-# this declaration does not create a second mode vocabulary.
+# The review thresholds of the three triage modes. The mode names themselves are
+# `common.contracts.stages.TRIAGE_MODES`; this file must name exactly those.
 #
 # Thresholds are closed ordinals (0 = lowest, 4 = highest). All modes currently
 # route every frame for review: no threshold has been calibrated on a real sample.

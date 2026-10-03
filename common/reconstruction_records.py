@@ -36,6 +36,7 @@ from itertools import pairwise
 from typing import Any, Final
 
 from common import page_path
+from common.chair_wire import chat_template_kwargs_for
 from common.chairs.models import ChairIdentity
 from common.contracts.canonical import digest_bytes, text_sha256
 from common.contracts.errors import ContractError, FatalAccounting
@@ -560,7 +561,7 @@ def _live_request_is_this_prompt(context, payload: Mapping[str, Any], text: str,
     try:
         body = reader.request_bytes(
             {
-                "chat_template_kwargs": {"enable_thinking": False},
+                "chat_template_kwargs": chat_template_kwargs_for(RECONSTRUCTOR_CHAIR),
                 "max_tokens": payload["capacity"]["max_tokens"],
                 "messages": [{"role": "user", "content": text}],
             },

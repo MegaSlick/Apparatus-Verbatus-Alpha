@@ -69,8 +69,10 @@ from common.contracts.outcomes import (
 )
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_SCHEMA,
+    RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS,
     SERVING_CONFIG_INPUTS_FIELDS,
     SERVING_CONFIG_INPUTS_SCHEMA,
+    SERVING_LAUNCH_AUDIT_SCHEMA,
 )
 from common.contracts.stages import (
     ARMARIUM,
@@ -726,7 +728,12 @@ class StageContext:
             ) from error
         if canonical != payload or not isinstance(audit, dict):
             raise SchemaRefusal("serving launch audit is not a canonical JSON object")
-        if audit.get("schema") != "serving-launch-audit.v1":
+        if audit.get("schema") in RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS:
+            raise SchemaRefusal(
+                f"serving launch audit was written as {audit['schema']}, which this build no "
+                "longer reads; re-run"
+            )
+        if audit.get("schema") != SERVING_LAUNCH_AUDIT_SCHEMA:
             raise SchemaRefusal("serving launch audit has the wrong or missing schema")
         if not isinstance(audit.get("chair"), str) or not audit["chair"].strip():
             raise SchemaRefusal("serving launch audit has no non-blank chair")

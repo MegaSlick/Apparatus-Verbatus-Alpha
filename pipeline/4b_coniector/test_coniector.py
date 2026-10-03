@@ -259,6 +259,8 @@ def test_a_resumed_stage_republishes_the_same_records(unconsecutive, tmp_path):
 
 
 class _Client:
+    identity = SimpleNamespace(role="reconstructor")
+
     def __init__(self, reply=None, error=None):
         self.requests, self.reply, self.error = [], reply, error
 
@@ -628,8 +630,6 @@ def _vllm_row(identity, tier: str) -> dict:
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
-        "enable_tower_connector_lora": False,
-        "max_lora_rank": 16,
         "generation_config": "vllm",
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,

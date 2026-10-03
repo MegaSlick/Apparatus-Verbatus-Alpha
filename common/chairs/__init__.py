@@ -3,7 +3,6 @@
 from .config import load_models_toml, parse_models_config
 from .errors import (
     ALL_REFUSAL_TYPES,
-    AdapterFetchRefusal,
     CacheRevisionRefusal,
     ChairRefusal,
     ConfigurationRefusal,
@@ -62,7 +61,6 @@ __all__ = [
     "ALL_REFUSAL_TYPES",
     "CACHE_DESCRIPTOR",
     "AbsentChair",
-    "AdapterFetchRefusal",
     "CacheRevisionRefusal",
     "ConfigurationRefusal",
     "DAI_PROMPT_CITATION",

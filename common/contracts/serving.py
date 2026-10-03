@@ -15,7 +15,12 @@ SERVING_CONFIG_INPUTS_FIELDS: Final = frozenset(
 
 # `sampling_effective` carries the values the pinned engine samples under for the
 # sampling fields `generation_sent` carries (`common.decoding`).
-CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v3"
+# The serving manager's operational record of one launch, kept beside its receipt.
+SERVING_LAUNCH_AUDIT_SCHEMA: Final = "serving-launch-audit.v2"
+# Audits written before the adapter fields left the record; refused by name.
+RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS: Final = frozenset({"serving-launch-audit.v1"})
+
+CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v4"
 CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
     {
         "schema",
@@ -43,6 +48,9 @@ CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
         # The request-capacity record checked before the request was built, or
         # null (readiness probe, smoke path).
         "capacity",
+        # The engine's reported token counts beside the capacity record's, with
+        # named disagreements, or null when either side is missing.
+        "usage_reconciliation",
     }
 )
 
@@ -57,28 +65,33 @@ CALLER_GENERATION_FIELDS: Final = frozenset(
 
 # Chandra native route only. The intent reference tells equal wire bodies at
 # retry ordinals 5..7 apart after a crash, so recovery never guesses.
-CHANDRA_NATIVE_CALL_RECORD_SCHEMA: Final = "chandra-native-call-record.v2"
+CHANDRA_NATIVE_CALL_RECORD_SCHEMA: Final = "chandra-native-call-record.v3"
 CHANDRA_NATIVE_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset(
     {"native_attempt_intent_ref"}
 )
-CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chandra-native-transport-failure.v2"
+CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chandra-native-transport-failure.v3"
 CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS: Final = (
     CHANDRA_NATIVE_CALL_RECORD_FIELDS | frozenset({"transport_problem"})
 )
 
-CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chair-transport-failure.v2"
+CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chair-transport-failure.v3"
 CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset(
     {"transport_problem"}
 )
 # Call-record schemas written before every call carried its engine-effective
-# sampling. A reader refuses one by name rather than as an unknown record.
+# sampling, or its usage reconciliation. A reader refuses one by name rather
+# than as an unknown record.
 RETIRED_CALL_RECORD_SCHEMAS: Final = frozenset(
     {
         "chair-call-record.v1",
         "chair-call-record.v2",
+        "chair-call-record.v3",
         "chair-transport-failure.v1",
+        "chair-transport-failure.v2",
         "chandra-native-call-record.v1",
+        "chandra-native-call-record.v2",
         "chandra-native-transport-failure.v1",
+        "chandra-native-transport-failure.v2",
     }
 )
 CHAIR_TRANSPORT_PROBLEM_SCHEMA: Final = "chair-transport-problem.v1"
