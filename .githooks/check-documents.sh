@@ -50,8 +50,11 @@ elif ! tracked=$(git -c core.quotepath=off ls-files); then
 elif ! printf '%s\n' "$tracked" | awk -v table="$separation" '
   BEGIN {
     row = "^[|] `[^`]+` [|] (PRODUCT|HARNESS|HISTORY|PRIVATE|AMBIGUOUS) [|]"
-    while ((getline line < table) > 0)
+    while ((status = (getline line < table)) > 0) {
       if (line ~ row) { split(line, part, "`"); entry[part[2]] = 1 }
+      else if (line ~ /^[|] `/) { print "separation row has no known class: " line > "/dev/stderr"; bad = 1 }
+    }
+    if (status < 0) { print "could not read " table > "/dev/stderr"; bad = 1 }
   }
   $0 == "" { next }
   {

@@ -267,12 +267,13 @@ def test_separation_check_refuses_a_row_with_no_tracked_path(tmp_path):
 
 
 def test_separation_check_refuses_a_row_without_a_known_class(tmp_path):
+    # The folder row covers the file, so only the bad class itself can fail the check.
     repo = make_document_repo(tmp_path / "repo")
-    write_separation(repo, ("LICENSE", "MAYBE"))
-    track(repo, "LICENSE")
+    write_separation(repo, ("lib/", "PRODUCT"), ("lib/a.py", "MAYBE"))
+    track(repo, "lib/a.py")
     result = run_hook(repo, "check-documents.sh")
     assert result.returncode == 1
-    assert "unclassified path: LICENSE" in result.stderr
+    assert "separation row has no known class: | `lib/a.py` | MAYBE |" in result.stderr
 
 
 def test_separation_check_reports_a_missing_inventory(tmp_path):
