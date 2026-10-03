@@ -512,6 +512,50 @@ def test_a_healthy_lease_inside_one_heartbeat_of_its_deadline_is_watched_to_expi
     assert persisted is not None and persisted.phase == "closed-verified"
 
 
+@pytest.mark.parametrize(
+    ("start_at", "last_heartbeat"),
+    [(3000, 2990), (3700, 3500)],
+    ids=["before-deadline", "after-deadline"],
+)
+def test_a_restart_that_lost_its_identity_waits_out_the_old_heartbeat_then_closes(
+    tmp_path: Path, start_at: int, last_heartbeat: int
+) -> None:
+    """A fresh token reads the dead owner's recent heartbeat as foreign; it must
+    wait for that heartbeat to go stale, claim the orphan and close it verified."""
+
+    clock, provider, store, record, lease = _late_start(
+        tmp_path, start_at=start_at, last_heartbeat=last_heartbeat
+    )
+    supervise.identity_path(tmp_path, LEASE_ID).unlink()
+    messages: list[str] = []
+
+    def notifier(message: str) -> NotifyOutcome:
+        messages.append(message)
+        return NotifyOutcome(True, True, "sent")
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(heartbeat_timeout=900),
+        notifier=notifier,
+        now=clock.now,
+        sleeper=clock.sleep,
+        pid=1000,
+    )
+
+    assert result.state == "orphan-reconciled"
+    assert exit_code == 0
+    assert result.close_report is not None and result.close_report.verified
+    assert provider.terminate_calls == [record.pod_id]
+    assert clock.seconds >= last_heartbeat + 900
+    persisted = store.load()
+    assert persisted is not None and persisted.phase == "closed-verified"
+    assert len(messages) == 1 and "closed verified" in messages[0]
+
+
 def test_a_competing_supervisor_is_refused_even_when_the_lease_is_overdue(
     tmp_path: Path,
 ) -> None:
@@ -621,6 +665,11 @@ def test_run_supervisor_breaks_rather_than_spins_once_a_foreign_owners_deadline_
 
     tick_count = 0
     sleeps: list[float] = []
+    messages: list[str] = []
+
+    def notifier(message: str) -> NotifyOutcome:
+        messages.append(message)
+        return NotifyOutcome(True, True, "sent")
 
     def counting_sleeper(seconds: float) -> None:
         nonlocal tick_count
@@ -637,6 +686,7 @@ def test_run_supervisor_breaks_rather_than_spins_once_a_foreign_owners_deadline_
         provider=provider,
         shutdown=shutdown(provider, clock),
         policy=policy(heartbeat_timeout=1, lifetime=3600),
+        notifier=notifier,
         now=clock.now,
         sleeper=counting_sleeper,
         pid=1000,
@@ -646,6 +696,7 @@ def test_run_supervisor_breaks_rather_than_spins_once_a_foreign_owners_deadline_
     assert exit_code == 3, "go and look: another owner's heartbeat stayed fresh past our deadline"
     assert provider.terminate_calls == []
     assert all(seconds > 0 for seconds in sleeps), sleeps
+    assert len(messages) == 1 and "go and look" in messages[0]
 
 
 def test_main_smoke_reports_no_lease_as_exit_code_two(tmp_path: Path, monkeypatch) -> None:
@@ -778,6 +829,40 @@ def test_main_writes_a_crashed_final_record_and_exits_three_on_an_unexpected_err
     assert payload["exit_code"] == 3
     assert payload["state"] == "crashed"
     assert "ModuleNotFoundError" in payload["detail"]
+
+
+def test_a_crash_with_notify_on_sends_a_go_and_look_notification(
+    tmp_path: Path, monkeypatch
+) -> None:
+    spend_path = tmp_path / "spend.toml"
+    spend_path.write_text(configured_spend_toml(), encoding="utf-8")
+    messages: list[str] = []
+
+    def notifier(message: str) -> NotifyOutcome:
+        messages.append(message)
+        return NotifyOutcome(True, True, "sent")
+
+    def _boom(reference: str):
+        raise ModuleNotFoundError(f"no such module: {reference}")
+
+    monkeypatch.setattr(supervise, "shell_notifier", lambda: notifier)
+    monkeypatch.setattr(supervise, "_load_provider", _boom)
+
+    exit_code = supervise.main(
+        [
+            "--provider-factory",
+            "no_such_module_at_all:factory",
+            "--leases",
+            str(tmp_path / "leases"),
+            "--lease",
+            LEASE_ID,
+            "--spend",
+            str(spend_path),
+            "--notify",
+        ]
+    )
+    assert exit_code == 3
+    assert len(messages) == 1 and "go and look" in messages[0]
 
 
 def test_a_final_record_write_failure_on_the_crash_path_is_named_not_swallowed(
