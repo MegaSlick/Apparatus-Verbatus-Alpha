@@ -658,7 +658,8 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
                 mismatches.append(
                     "its run policy (sealed "
                     f"{sealed['run-policy']}, this launch {policy}); pass the "
-                    "--mechanics-qualification the run started with"
+                    "--mechanics-qualification the run started with, or the run was sealed by "
+                    "an older version of this code; start a new run"
                 )
     except (ContractError, OSError) as error:
         # `read_run` already turns an unreadable or non-JSON run.json into a
