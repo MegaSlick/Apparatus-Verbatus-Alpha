@@ -17,22 +17,26 @@ from pathlib import Path
 
 import pytest
 
+from common.chairs.config import load_models_toml
+from common.chairs.models import AbsentChair
 from common.contracts.stages import PERLECTOR
 from operations.notify.client import NotifyOutcome
 
-from . import finish_estimate
 from .finish_estimate import (
     ESTIMATE_SCHEMA,
     NOTICE_ATTEMPTS,
     PAGE_RECORDS,
     Budget,
+    Deadline,
     DeadlineWatch,
     FinishEstimator,
+    GuardDeadline,
+    PodDeadline,
     RunTreeProgress,
     StageProgress,
     deadline_at_risk_message,
 )
-from .notify_hooks import _unsafe_reason
+from .notify_hooks import NO_GUARD_TOPIC, _unsafe_reason
 from .spend import load_spend_policy
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,22 +65,30 @@ def test_the_shipped_policy_carries_the_default_budget() -> None:
 # --- the estimate --------------------------------------------------------------------
 
 
-def test_no_estimate_until_pages_have_been_seen_to_finish() -> None:
+def test_no_estimate_until_enough_pages_and_time_have_passed() -> None:
     """The first sight of a stage is its anchor: pages done before it, and the model load
-    before the first page, never count as this stage's pace."""
+    before the first page, never count as this stage's pace. A pace needs five pages and
+    ten minutes, and a clock that steps back never yields a negative one."""
     estimator = FinishEstimator()
 
     first = estimator.update(StageProgress(PERLECTOR, done=30, total=100), T0)
-    still = estimator.update(StageProgress(PERLECTOR, done=31, total=100), T0 + timedelta(hours=1))
+    few = estimator.update(StageProgress(PERLECTOR, done=33, total=100), T0 + timedelta(hours=1))
+    quick = estimator.update(
+        StageProgress(PERLECTOR, done=40, total=100), T0 + timedelta(seconds=300)
+    )
+    stepped = estimator.update(
+        StageProgress(PERLECTOR, done=40, total=100), T0 - timedelta(seconds=60)
+    )
     paced = estimator.update(
-        StageProgress(PERLECTOR, done=34, total=100), T0 + timedelta(seconds=400)
+        StageProgress(PERLECTOR, done=40, total=100), T0 + timedelta(seconds=1000)
     )
 
-    assert first is not None and first.finishes_at is None and first.reason
-    assert still is not None and still.finishes_at is None and still.reason
+    for early in (first, few, quick, stepped):
+        assert early is not None and early.finishes_at is None and early.reason
+    assert stepped is not None and (stepped.seconds_per_page or 0) >= 0
     assert paced is not None
     assert paced.seconds_per_page == 100.0
-    assert paced.finishes_at == T0 + timedelta(seconds=400 + 66 * 100)
+    assert paced.finishes_at == T0 + timedelta(seconds=1000 + 60 * 100)
     assert estimator.update(None, T0) is None
 
 
@@ -101,6 +113,8 @@ def test_an_estimate_never_invents_a_total(total: int | None, done: int, finishe
 
 
 # --- the run tree, read the way a real orchestrator writes it -------------------------
+
+FIXTURE_CHAIRS = load_models_toml(ROOT / "config" / "models.toml").chairs
 
 
 @pytest.fixture(scope="module")
@@ -127,7 +141,7 @@ def fixture_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 def test_every_page_counted_stage_is_read_from_its_real_records(fixture_run: Path) -> None:
-    progress = RunTreeProgress(fixture_run)
+    progress = RunTreeProgress(fixture_run, FIXTURE_CHAIRS)
 
     for stage in PAGE_RECORDS:
         counted = progress.count(stage)
@@ -137,6 +151,15 @@ def test_every_page_counted_stage_is_read_from_its_real_records(fixture_run: Pat
     assert progress.sample() is None, "every page-counted stage is sealed"
 
 
+def test_only_page_witnesses_count_toward_the_attestatores_total(fixture_run: Path) -> None:
+    absent = {**FIXTURE_CHAIRS, "attestator_3": AbsentChair("attestator_3", "not rented")}
+
+    assert RunTreeProgress(fixture_run, absent).count("attestatores").total == 4
+    assert RunTreeProgress(fixture_run, None).count("attestatores").total is None
+    unknown = {name: chair for name, chair in FIXTURE_CHAIRS.items() if name != "attestator_2"}
+    assert RunTreeProgress(fixture_run, unknown).count("attestatores").total is None
+
+
 def test_the_stage_in_progress_is_the_first_unsealed_one(fixture_run: Path, tmp_path: Path) -> None:
     run = tmp_path / "estimate"
     shutil.copytree(fixture_run, run)
@@ -144,7 +167,70 @@ def test_the_stage_in_progress_is_the_first_unsealed_one(fixture_run: Path, tmp_
     shutil.rmtree(perlector / "stage-seal")
     next(iter(sorted((perlector / "page-accounting").iterdir()))).unlink()
 
-    assert RunTreeProgress(run).sample() == StageProgress(PERLECTOR, done=1, total=2)
+    assert RunTreeProgress(run, FIXTURE_CHAIRS).sample() == StageProgress(
+        PERLECTOR, done=1, total=2
+    )
+
+
+# --- the deadline that ends the pod --------------------------------------------------
+
+NOW = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
+VALID = int((NOW + timedelta(hours=4)).timestamp())
+
+
+def _guard(tmp_path: Path) -> tuple[GuardDeadline, Path]:
+    directory = tmp_path / ".pod_guard"
+    directory.mkdir(exist_ok=True)
+    return GuardDeadline(tmp_path, "pod123", now=lambda: NOW), directory / "deadline-pod123"
+
+
+def test_the_guard_deadline_is_read_as_the_guard_reads_it(tmp_path: Path) -> None:
+    """Only epoch seconds no more than a week out; anything else is ignored and the last
+    valid deadline stands, as `pod_guard.sh` does."""
+    guard, path = _guard(tmp_path)
+    path.write_text("soon\n", encoding="ascii")
+    assert guard.read() is None
+
+    path.write_text(f"{VALID}\n", encoding="ascii")
+    assert guard.read() == datetime.fromtimestamp(VALID, UTC)
+
+    too_far = int((NOW + timedelta(days=8)).timestamp())
+    for value in (f"{too_far}\n", f"{VALID}0\n", "\n", f" {VALID}\n"):
+        path.write_text(value, encoding="ascii")
+        assert guard.read() == datetime.fromtimestamp(VALID, UTC), value
+    path.unlink()
+    assert guard.read() == datetime.fromtimestamp(VALID, UTC)
+    assert str(too_far) in guard.ignored and "" in guard.ignored
+
+    later = VALID + 3600
+    path.write_text(f"{later}\n", encoding="ascii")
+    assert guard.read() == datetime.fromtimestamp(later, UTC)
+
+
+def test_once_a_guard_deadline_is_seen_the_bootstrap_deadline_never_replaces_it(
+    tmp_path: Path,
+) -> None:
+    guard, path = _guard(tmp_path)
+    bootstrap = NOW + timedelta(hours=1)
+    deadline = PodDeadline(guard=guard, bootstrap=bootstrap, pod_timer=False)
+    assert deadline() == Deadline(bootstrap, deadline().source, extendable=False)
+
+    path.write_text(f"{VALID}\n", encoding="ascii")
+    seen = deadline()
+    assert seen.at == datetime.fromtimestamp(VALID, UTC) and seen.extendable
+    path.write_text("garbage\n", encoding="ascii")
+    assert deadline() == seen
+    assert deadline.ignored == ["garbage"]
+
+
+def test_under_the_pod_timer_the_deadline_cannot_be_extended_by_hand(tmp_path: Path) -> None:
+    guard, path = _guard(tmp_path)
+    path.write_text(f"{VALID}\n", encoding="ascii")
+    timer = NOW + timedelta(hours=2)
+
+    deadline = PodDeadline(guard=guard, bootstrap=timer, pod_timer=True)()
+
+    assert deadline.at == timer and not deadline.extendable
 
 
 # --- the deadline-at-risk notice -----------------------------------------------------
@@ -155,7 +241,7 @@ class Ticks:
 
     def __init__(self, deadline: datetime) -> None:
         self.now = T0
-        self.progress = StageProgress(PERLECTOR, done=10, total=100)
+        self.progress: StageProgress | None = StageProgress(PERLECTOR, done=10, total=100)
         self.deadline = deadline
         self.sent: list[str] = []
         self.outcome = NotifyOutcome(True, True, "delivered")
@@ -164,16 +250,21 @@ class Ticks:
         self.sent.append(message)
         return self.outcome
 
+    def sample(self) -> StageProgress | None:
+        if self.progress is None:
+            raise RuntimeError("unreadable tree")
+        return self.progress
+
     def watch(self, path: Path, *, send: bool = True) -> DeadlineWatch:
         return DeadlineWatch(
             run_id="run-1",
             pod_id="pod123",
             path=path,
-            sample=lambda: self.progress,
+            sample=self.sample,
             budget=BUDGET,
             budget_problem=None,
             hourly_usd=Decimal("2.00"),
-            deadline=lambda: (self.deadline, "the pod guard's deadline"),
+            deadline=lambda: Deadline(self.deadline, "the pod guard's deadline", extendable=True),
             send=self.send if send else None,
             now=lambda: self.now,
         )
@@ -183,26 +274,31 @@ class Ticks:
         self.progress = StageProgress(PERLECTOR, done=done, total=100)
 
 
-def test_the_notice_goes_once_per_crossing_of_a_deadline(tmp_path: Path) -> None:
-    run = Ticks(deadline=T0 + timedelta(hours=3))
+def test_the_notice_goes_once_for_each_deadline_it_crosses(tmp_path: Path) -> None:
+    run = Ticks(deadline=T0 + timedelta(hours=2))
     path = tmp_path / "pod-run-report-estimate.json"
     watch = run.watch(path)
 
     watch.tick()  # first sight: no pace yet
-    run.at(10, 12)  # 300 s a page: 88 pages left is over seven hours
+    run.at(10, 15)  # 120 s a page: 85 pages left ends at 12:00, past 11:00
     watch.tick()
-    run.at(20, 14)
-    watch.tick()
-    assert len(run.sent) == 1
-
-    run.deadline = T0 + timedelta(hours=10)  # the lead extended by hand
-    run.at(30, 16)
+    run.at(20, 20)
     watch.tick()
     assert len(run.sent) == 1
 
-    run.at(180, 17)  # the pace collapses: past the new deadline too
+    run.deadline = T0 + timedelta(hours=6)  # the lead extended by hand
+    run.at(30, 25)
     watch.tick()
-    run.at(181, 17)
+    assert len(run.sent) == 1
+
+    run.at(180, 26)  # the pace collapses: past the new deadline too
+    watch.tick()
+    run.at(181, 26)
+    watch.tick()
+    assert len(run.sent) == 2
+
+    run.deadline = T0 + timedelta(hours=2)  # a value already notified comes back
+    run.at(182, 26)
     watch.tick()
     assert len(run.sent) == 2
 
@@ -211,41 +307,46 @@ def test_the_notice_goes_once_per_crossing_of_a_deadline(tmp_path: Path) -> None
     assert record["estimate"]["stage"] == PERLECTOR
     assert record["at_risk"] is True
     assert [notice["deadline"] for notice in record["notices"]] == [
-        "2026-10-03T12:00:00Z",
-        "2026-10-03T19:00:00Z",
+        "2026-10-03T11:00:00Z",
+        "2026-10-03T15:00:00Z",
     ]
     assert all(notice["delivered"] for notice in record["notices"])
 
 
+@pytest.mark.parametrize(
+    "outcome",
+    [NotifyOutcome(True, False, "notify.sh exited 1"), NotifyOutcome(False, False, NO_GUARD_TOPIC)],
+    ids=["not-delivered", "no-guard-topic-yet"],
+)
 def test_a_notice_that_did_not_arrive_is_recorded_and_retried_a_bounded_number_of_times(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], outcome: NotifyOutcome
 ) -> None:
     run = Ticks(deadline=T0 + timedelta(hours=1))
-    run.outcome = NotifyOutcome(True, False, "notify.sh exited 1")
+    run.outcome = outcome
     path = tmp_path / "estimate.json"
     watch = run.watch(path)
 
     watch.tick()
-    for minute in range(1, 8):
-        run.at(minute * 10, 10 + 2 * minute)
+    for step in range(1, 8):
+        run.at(step * 10, 10 + 5 * step)
         watch.tick()
 
     assert len(run.sent) == NOTICE_ATTEMPTS
     notices = json.loads(path.read_text(encoding="utf-8"))["notices"]
     assert [notice["delivered"] for notice in notices] == [False] * NOTICE_ATTEMPTS
-    assert all("notify.sh exited 1" in notice["outcome"] for notice in notices)
-    assert "NOT DELIVERED" in capsys.readouterr().err
+    assert all(outcome.detail in notice["outcome"] for notice in notices)
+    assert outcome.line() in capsys.readouterr().err
     assert watch.summary()["notices"] == notices
 
 
-def test_a_notice_with_nowhere_to_go_is_recorded_once(tmp_path: Path) -> None:
+def test_a_notice_with_notifications_off_is_recorded_once(tmp_path: Path) -> None:
     run = Ticks(deadline=T0 + timedelta(hours=1))
     path = tmp_path / "estimate.json"
     watch = run.watch(path, send=False)
 
     watch.tick()
-    for minute in range(1, 5):
-        run.at(minute * 10, 10 + 2 * minute)
+    for step in range(1, 5):
+        run.at(step * 10, 10 + 5 * step)
         watch.tick()
 
     [notice] = json.loads(path.read_text(encoding="utf-8"))["notices"]
@@ -261,7 +362,7 @@ def test_an_estimate_that_cannot_be_written_is_said_and_kept_in_the_summary(
     watch = run.watch(blocker / "estimate.json")
 
     watch.tick()
-    run.at(10, 12)
+    run.at(10, 15)
     watch.tick()
 
     assert run.sent, "a failed write never stops the notice"
@@ -269,68 +370,91 @@ def test_an_estimate_that_cannot_be_written_is_said_and_kept_in_the_summary(
     assert watch.summary()["write_failures"] == 2
 
 
-def test_the_notice_names_both_maximums_the_finish_the_cost_and_the_manual_route() -> None:
+def test_a_tick_that_fails_is_written_to_the_estimate_file_and_never_raised(
+    tmp_path: Path,
+) -> None:
+    run = Ticks(deadline=T0 + timedelta(hours=1))
+    run.progress = None
+    path = tmp_path / "estimate.json"
+    watch = run.watch(path)
+
+    watch.tick()
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["schema"] == ESTIMATE_SCHEMA
+    assert "unreadable tree" in record["last_tick_failure"]
+    assert watch.summary()["tick_failures"] == 1
+
+
+def _estimate():  # type: ignore[no-untyped-def]
     estimator = FinishEstimator()
     estimator.update(StageProgress(PERLECTOR, done=10, total=100), T0)
     estimate = estimator.update(
-        StageProgress(PERLECTOR, done=12, total=100), T0 + timedelta(minutes=10)
+        StageProgress(PERLECTOR, done=15, total=100), T0 + timedelta(minutes=10)
     )
     assert estimate is not None and estimate.finishes_at is not None
+    return estimate
 
+
+def test_the_notice_names_both_maximums_the_finish_the_cost_and_one_command_to_extend() -> None:
     message = deadline_at_risk_message(
         run_id="run-1",
         pod_id="pod123",
-        estimate=estimate,
-        deadline=T0 + timedelta(hours=3),
-        launch_deadline=T0 + timedelta(hours=3),
+        estimate=_estimate(),
+        deadline=Deadline(T0 + timedelta(hours=2), "the pod guard's deadline", extendable=True),
         budget=BUDGET,
         budget_problem=None,
         hourly_usd=Decimal("2.00"),
+        now=T0 + timedelta(minutes=10),
     )
 
     assert "soft max 4 h / $2.00" in message
     assert "hard max 6 h / $3.00" in message
-    assert "2026-10-03 16:30 UTC" in message  # 09:10 and 88 pages at 300 s
-    # 16:30 plus 20 minutes to bring results home, past a 12:00 deadline: 4 h 50 min.
-    assert "4.8 h" in message and "$9.67" in message
-    assert "fits under the hard max: no" in message
-    assert "/workspace/private/.pod_guard" in message and "deadline-pod123" in message
+    assert "fits" not in message, "the pod's creation time is not known here"
+    assert "2026-10-03 12:00 UTC (in about 2.8 h)" in message  # 09:10 and 85 pages at 120 s
+    assert "2026-10-03 11:00 UTC (in about 1.8 h)" in message
+    # 12:00 plus 20 minutes to bring results home, past an 11:00 deadline: 80 minutes.
+    assert "1.3 h" in message and "$2.67" in message
+    suggested = int((T0 + timedelta(hours=3, minutes=20)).timestamp())
+    assert (
+        f"G=/workspace/private/.pod_guard; echo {suggested} > $G/deadline.new && "
+        "mv $G/deadline.new $G/deadline-pod123" in message
+    )
     assert "\n" not in message
     assert _unsafe_reason(message) is None
 
 
-def test_a_missing_budget_or_price_is_named_not_guessed() -> None:
-    estimator = FinishEstimator()
-    estimator.update(StageProgress(PERLECTOR, done=10, total=100), T0)
-    estimate = estimator.update(
-        StageProgress(PERLECTOR, done=12, total=100), T0 + timedelta(minutes=10)
+def test_a_pod_timer_deadline_offers_no_hand_route() -> None:
+    message = deadline_at_risk_message(
+        run_id="run-1",
+        pod_id="pod123",
+        estimate=_estimate(),
+        deadline=Deadline(
+            T0 + timedelta(hours=2), "the pod timer's hard deadline", extendable=False
+        ),
+        budget=BUDGET,
+        budget_problem=None,
+        hourly_usd=Decimal("2.00"),
+        now=T0 + timedelta(minutes=10),
     )
-    assert estimate is not None
 
+    assert "cannot be extended by hand" in message
+    assert "mv " not in message and "deadline.new" not in message
+    assert _unsafe_reason(message) is None
+
+
+def test_a_missing_budget_or_price_is_named_not_guessed() -> None:
     message = deadline_at_risk_message(
         run_id="run-1",
         pod_id=None,
-        estimate=estimate,
-        deadline=T0 + timedelta(hours=3),
-        launch_deadline=T0 + timedelta(hours=3),
+        estimate=_estimate(),
+        deadline=Deadline(T0 + timedelta(hours=2), "the bootstrap's", extendable=False),
         budget=None,
         budget_problem="spend policy is unconfigured",
         hourly_usd=None,
+        now=T0 + timedelta(minutes=10),
     )
 
     assert "soft and hard max unknown (spend policy is unconfigured)" in message
     assert "cost unknown (no --hourly-usd)" in message
     assert _unsafe_reason(message) is None
-
-
-def test_the_guard_deadline_is_read_only_as_epoch_seconds(tmp_path: Path) -> None:
-    guard = tmp_path / ".pod_guard"
-    guard.mkdir()
-    (guard / "deadline-pod123").write_text("1790000000\n", encoding="ascii")
-    (guard / "deadline-pod456").write_text("soon\n", encoding="ascii")
-
-    assert finish_estimate.guard_deadline(tmp_path, "pod123") == datetime.fromtimestamp(
-        1_790_000_000, UTC
-    )
-    assert finish_estimate.guard_deadline(tmp_path, "pod456") is None
-    assert finish_estimate.guard_deadline(tmp_path, None) is None

@@ -394,19 +394,27 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
 - `-hold.json` — the hold line after a finished run.
 - `-estimate.json` — the current stage's finish estimate, rewritten each liveness tick
   (`finish_estimate.py`): pages done of pages total for the first page-counted stage
-  (Door to Perlector) with no seal, and its pace since `pod_run` first saw it. It is that
-  stage's finish only, never the run's; the stages after it are not counted. When that
-  finish plus 20 minutes to bring results home passes the deadline that ends the pod (the
-  guard's `deadline-<pod id>`, read each tick; with none, the bootstrap's hard deadline;
-  under the pod timer, the earlier of the two), it records a `deadline-at-risk` notice and,
-  with `--notify`, sends it as a `decision`. The notice names the spend policy's soft and
-  hard maximums, the finish, the extra time and its cost at `--hourly-usd` (the price the
-  pod was rented at; "unknown" without it), whether that fits under the hard maximum
-  (taking the first deadline read as the soft maximum), and the manual extension route.
-  It is sent once per deadline: a deadline the lead moves re-arms it. A send that did not
-  arrive is recorded and retried on later ticks, three attempts in all. Nothing here moves
-  the deadline. The run report's `deadline_watch` keeps every notice and any failure to
-  write the estimate or to compute it.
+  (Door to Perlector) with no seal, and its pace since `pod_run` first saw it, once at
+  least five pages and ten minutes have passed. The Attestatores total counts only the
+  roster's page witnesses. It is that stage's finish only, never the run's; the stages
+  after it are not counted. When that finish plus 20 minutes to bring results home passes
+  the deadline that ends the pod, it records a `deadline-at-risk` notice and, with
+  `--notify`, sends it as a `decision`. That deadline is the guard's `deadline-<pod id>`,
+  read each tick the way the guard reads it (a value that is not epoch seconds within a
+  week is ignored, recorded, and the last valid one stands); with none ever read, the
+  bootstrap's hard deadline; under the pod timer, the timer's hard deadline, which no
+  file moves. The notice names the spend policy's soft and hard maximums (the pod's
+  creation time is not known here, so it states them rather than an instant), the finish
+  and deadline with how far off they are, the extra time and its cost at the hourly price
+  (`--hourly-usd`, or a pod-timer launch's `VERBATUS_POD_HOURLY_USD` plus
+  `VERBATUS_VOLUME_ONGOING_HOURLY_USD`; "unknown" without either), and, for a guard
+  deadline, one command that moves it to the projected end. Under the pod timer it says
+  the deadline cannot be extended by hand. It is sent once for each deadline value; a new
+  value the lead writes re-arms it. A send that did not arrive (or found no guard topic
+  yet) is recorded and retried on later ticks, three attempts in all. Nothing here moves
+  the deadline. The run report's `deadline_watch` keeps every notice, every ignored
+  deadline file value, and any failure to write or compute the estimate; a failed tick
+  is also written to the estimate file.
 
 These are best-effort, so a lost stopwatch never abandons or holds a completed run. The
 report audits them at close (`records_at_close`, `records_missing`); a missing transcript
@@ -708,6 +716,7 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   --submission-manifest $V/submission-manifest.json \
   --mechanics-qualification \
   --no-hold \
+  --notify \
   --hourly-usd <the card's price per hour plus the volume's> \
   -- \
   --volume-mount-path $V \
@@ -724,8 +733,9 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
 ```
 
 - **`--hourly-usd`** names the price the pod was rented at, so the deadline-at-risk notice
-  can say what running past the deadline costs; add `--notify`, with the guard's ping
-  armed, to have that notice reach the phone (`-estimate.json` above).
+  can say what running past the deadline costs; `--notify` sends that notice (and the
+  systemic alarm) to the phone once the guard's ping is armed (`-estimate.json` above).
+  Drop `--notify` if no phone should be paged.
 - **No selection: the full auto run.** It stops at a held Recensor, before Archetypus
   and Armarium, as `--models big` does; a first proof run should reach the Armarium.
 - **`--store-root`** names the model store on the volume. If the weights were

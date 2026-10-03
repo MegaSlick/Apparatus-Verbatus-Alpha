@@ -1494,50 +1494,85 @@ def release_pod_guard(
     return {**record, "released": True, "deadline": stamp}
 
 
+# What a pod-timer launch seals into the pod's environment as its quoted rates.
+HOURLY_RATE_ENVIRONMENT = ("VERBATUS_POD_HOURLY_USD", "VERBATUS_VOLUME_ONGOING_HOURLY_USD")
+
+
+def _hourly_price(
+    plan: RunPlan, rates: Mapping[str, str | None]
+) -> tuple[Decimal | None, str | None]:
+    """The pod and volume price per hour, and where it came from: ``--hourly-usd``, else a
+    pod-timer launch's sealed rates, else none."""
+
+    if plan.hourly_usd is not None:
+        return plan.hourly_usd, "--hourly-usd"
+    values = [rates.get(name) for name in HOURLY_RATE_ENVIRONMENT]
+    if any(value is None for value in values):
+        return None, None
+    try:
+        total = sum((Decimal(value) for value in values if value is not None), Decimal(0))
+    except InvalidOperation:
+        return None, f"unusable {' and '.join(HOURLY_RATE_ENVIRONMENT)}"
+    if not total.is_finite() or total <= 0:
+        return None, f"unusable {' and '.join(HOURLY_RATE_ENVIRONMENT)}"
+    return total, " plus ".join(HOURLY_RATE_ENVIRONMENT)
+
+
 def _deadline_watch(
     plan: RunPlan,
     *,
     pod_id: str | None,
     hard_deadline: datetime,
     launch_token: str | None,
+    rates: Mapping[str, str | None],
     notify: bool,
     notify_runner: RunnerFactory,
     now: Callable[[], datetime],
 ) -> finish_estimate.DeadlineWatch:
     """The finish estimate and deadline-at-risk notice for this run.
 
-    The deadline is this pod's guard deadline, which is what ends the pod and
-    moves when the lead extends it by hand; with none readable, the bootstrap's
-    hard deadline. Under the pod timer its hard deadline also ends the pod, so
-    the earlier of the two counts. The budget is the spend policy at the
-    checked-out commit.
+    Under the pod timer (a launch token) its hard deadline ends the pod; otherwise
+    this pod's guard deadline does (`finish_estimate.PodDeadline`). The budget is
+    the spend policy at the checked-out commit, and the page witnesses come from
+    the run's models configuration.
     """
 
     volume = plan.bootstrap.volume_mount_path
-
-    def deadline() -> tuple[datetime, str]:
-        guard = finish_estimate.guard_deadline(volume, pod_id)
-        if guard is None:
-            return hard_deadline, "the bootstrap's hard deadline (no guard deadline for this pod)"
-        if launch_token and hard_deadline < guard:
-            return hard_deadline, "the pod timer's hard deadline"
-        return guard, "the pod guard's deadline"
+    known_pod = pod_id if _is_pod_id(pod_id) else None
+    deadline = finish_estimate.PodDeadline(
+        guard=None
+        if known_pod is None
+        else finish_estimate.GuardDeadline(volume, known_pod, now=now),
+        bootstrap=hard_deadline,
+        pod_timer=launch_token is not None,
+    )
 
     def send(message: str) -> NotifyOutcome:
         return notify_deadline_at_risk_from_guard(
             message=message, volume_mount=volume, runner_factory=notify_runner
         )
 
+    try:
+        chairs = load_models_toml(plan.models_config).chairs
+    except Exception as error:  # noqa: BLE001 -- the Attestatores total is then unknown
+        print(
+            f"pod_run {plan.run_id}: the roster could not be read for the finish estimate: {error}",
+            file=sys.stderr,
+        )
+        chairs = None
     budget, budget_problem = finish_estimate.load_budget(plan.repository / "config" / "spend.toml")
+    hourly_usd, hourly_source = _hourly_price(plan, rates)
     return finish_estimate.DeadlineWatch(
         run_id=plan.run_id,
-        pod_id=pod_id if _is_pod_id(pod_id) else None,
+        pod_id=known_pod,
         path=plan.estimate_path,
-        sample=finish_estimate.RunTreeProgress(plan.run_root / plan.run_id).sample,
+        sample=finish_estimate.RunTreeProgress(plan.run_root / plan.run_id, chairs).sample,
         budget=budget,
         budget_problem=budget_problem,
-        hourly_usd=plan.hourly_usd,
+        hourly_usd=hourly_usd,
+        hourly_source=hourly_source,
         deadline=deadline,
+        ignored=lambda: deadline.ignored,
         send=send if notify else None,
         now=now,
     )
@@ -1778,6 +1813,7 @@ def main(
     # is credential-shaped and would be gone afterwards.
     launch_token = environment.get("VERBATUS_LAUNCH_TOKEN") or None
     shell_pod_id = environment.get(POD_ID_ENVIRONMENT) or None
+    rates = {name: environment.get(name) for name in HOURLY_RATE_ENVIRONMENT}
     # Only the container's first process names this pod (see PID1_ENVIRON).
     pod_id = container_pod_id()
     try:
@@ -1950,11 +1986,11 @@ def main(
         pod_id=pod_id,
         hard_deadline=hard_deadline,
         launch_token=launch_token,
+        rates=rates,
         notify=args.notify,
         notify_runner=notify_runner,
         now=now,
     )
-    estimate_failures: list[str] = []
 
     def liveness(pid: int, alive: bool) -> None:
         # Only a run that is visibly working holds the pod: a hung child stops touching
@@ -1966,11 +2002,7 @@ def main(
         try:
             deadline_watch.tick()
         except Exception as error:  # noqa: BLE001 -- an estimate never stops a running stage
-            estimate_failures.append(f"{type(error).__name__}: {error}")
-            print(
-                f"pod_run {plan.run_id}: the finish estimate failed this tick: {error}",
-                file=sys.stderr,
-            )
+            deadline_watch.note_failure(error)
         if progress.advancing():
             stall_noticed = False
             keepalive()
@@ -2142,11 +2174,7 @@ def main(
         "records_missing": records_missing,
         "held_to_hard_deadline": holding,
         "hold_detail": hold_detail,
-        "deadline_watch": {
-            **deadline_watch.summary(),
-            "tick_failures": len(estimate_failures),
-            "last_tick_failure": estimate_failures[-1] if estimate_failures else None,
-        },
+        "deadline_watch": deadline_watch.summary(),
         "finished_at": _stamp(now()),
     }
     if stop_problem is not None:

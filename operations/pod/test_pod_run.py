@@ -1425,7 +1425,7 @@ def test_a_run_with_no_systemic_alarm_sends_no_decision(tmp_path: Path) -> None:
 
 @dataclass
 class PacedRunner(RecordedRunner):
-    """An orchestrator whose Perlector finishes two pages of a hundred every ten minutes."""
+    """An orchestrator whose Perlector finishes five pages of a hundred every ten minutes."""
 
     clock: Clock = field(default_factory=Clock)
 
@@ -1445,7 +1445,7 @@ class PacedRunner(RecordedRunner):
                     json.dumps({"subject_id": f"pg_{page}", "outcome": "read"}), "utf-8"
                 )
             liveness(pid, alive)
-            pages += 2
+            pages += 5
             self.clock.sleep(600)
 
         return super().__call__(
@@ -1458,8 +1458,26 @@ class PacedRunner(RecordedRunner):
         )
 
 
+@pytest.mark.parametrize(
+    ("flags", "rates", "hourly", "source"),
+    [
+        (("--hourly-usd", "1.99"), {}, "1.99", "--hourly-usd"),
+        (
+            (),
+            {"VERBATUS_POD_HOURLY_USD": "1.99", "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.06"},
+            "2.05",
+            "VERBATUS_POD_HOURLY_USD plus VERBATUS_VOLUME_ONGOING_HOURLY_USD",
+        ),
+    ],
+    ids=["flag", "pod-timer-rates"],
+)
 def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: tuple[str, ...],
+    rates: dict[str, str],
+    hourly: str,
+    source: str,
 ) -> None:
     ws = _prepared(tmp_path)
     (ws.repository / "config" / "spend.toml").write_bytes(
@@ -1472,8 +1490,8 @@ def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
     notify = NotifyRecorder()
 
     code = main(
-        _run_argv(ws, extra=("--notify", "--hourly-usd", "1.99")),
-        environ=_environ(clock, lifetime=4.0),
+        _run_argv(ws, extra=("--notify", *flags)),
+        environ=_environ(clock, lifetime=4.0, extra=rates),
         now=clock.now,
         sleeper=clock.sleep,
         actions_factory=lambda plan: PreflightedActions(),
@@ -1491,7 +1509,8 @@ def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
     assert estimate["estimate"]["stage"] == "perlector"
     [notice] = report["deadline_watch"]["notices"]
     assert notice["delivered"] is True
-    assert report["plan"]["hourly_usd"] == "1.99"
+    assert (estimate["hourly_usd"], estimate["hourly_usd_source"]) == (hourly, source)
+    assert "mv $G/deadline.new $G/deadline-pod123" in call[3]
 
 
 def test_a_finish_estimate_that_fails_never_stops_the_run_and_is_reported(

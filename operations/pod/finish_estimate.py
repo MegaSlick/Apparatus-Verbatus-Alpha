@@ -14,15 +14,17 @@ the deadline is a run that certainly will. Stages that are not counted in pages
 **Deadline at risk.** When the stage's finish, plus time to bring results home,
 passes the deadline that actually ends the pod, one ``decision`` notice names
 the soft and hard maximums, the finish, the extra time and its cost, and the
-manual extension route. It is sent once per deadline: a deadline moved by hand
-re-arms it. A send that did not arrive is recorded and tried again on later
-ticks, a bounded number of times. Nothing here moves the deadline; extending is
-the lead's own act over SSH.
+manual extension route. It is sent once for each deadline value it crosses: a
+deadline moved by hand to a new value re-arms it. A send that did not arrive is
+recorded and tried again on later ticks, a bounded number of times. Nothing here
+moves the deadline; extending is the lead's own act over SSH, and under the pod
+timer there is no hand route at all.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -31,6 +33,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Final
 
+from common.chairs.models import ChairIdentity
 from common.contracts.stages import (
     ATTESTATORES,
     DESIGNATOR,
@@ -49,8 +52,14 @@ from .spend import SpendPolicy, load_spend_policy
 ESTIMATE_SCHEMA: Final = "pod-run-estimate.v1"
 RESULTS_HOME_MARGIN_SECONDS: Final = 20 * 60
 """Time after the run to bring results home before the deadline (the design's margin)."""
-MIN_PAGES_FOR_RATE: Final = 2
-"""Pages that must finish after the first sight of a stage before it has a pace."""
+MIN_PAGES_FOR_RATE: Final = 5
+MIN_SECONDS_FOR_RATE: Final = 10 * 60
+"""Pages and time a stage must show after its first sight before it has a pace.
+
+Ticks fall every 15 seconds and pages finish in bursts, so a pace from two pages
+can be off several times over; a notice it raised would use up the one notice
+for that deadline. Five pages over ten minutes smooths that and still warns
+hours ahead on a multi-hour stage."""
 NOTICE_ATTEMPTS: Final = 3
 """Sends tried for one crossing when the notification command reports it did not arrive."""
 
@@ -92,8 +101,12 @@ class RunTreeProgress:
     is not kept and is tried again next tick.
     """
 
-    def __init__(self, run_directory: Path) -> None:
+    def __init__(self, run_directory: Path, chairs: Mapping[str, object] | None) -> None:
+        """``chairs`` is the run's models configuration, which says which witnesses read
+        whole pages; None leaves the Attestatores total unknown."""
+
         self._root = Path(run_directory)
+        self._chairs = chairs
         self._seen: dict[Path, tuple[str, str | None] | None] = {}
         self._run: dict[str, Any] | None = None
 
@@ -138,11 +151,31 @@ class RunTreeProgress:
         else:
             pages = sum(outcome == "sealed" for _, outcome in set(self._records(EXEMPLAR, "page")))
         if PAGE_RECORDS[stage].per_witness:
-            witnesses = None if run is None else run.get("witness_chairs")
-            if not isinstance(witnesses, list) or not witnesses:
+            witnesses = self._page_witnesses(run)
+            if witnesses is None:
                 return None
-            pages *= len(witnesses)
+            pages *= witnesses
         return pages
+
+    def _page_witnesses(self, run: dict[str, Any] | None) -> int | None:
+        """How many of the sealed roster's witnesses read whole pages, as the Attestatores
+        decide it (``common.page_path.declared_page_witness_chairs``); None when the roster
+        and the configuration do not say."""
+
+        roster = None if run is None else run.get("witness_chairs")
+        if (
+            self._chairs is None
+            or not isinstance(roster, list)
+            or any(type(chair) is not str for chair in roster)
+            or len(roster) != len(set(roster))
+            or set(roster) - set(self._chairs)
+        ):
+            return None
+        return sum(
+            isinstance(self._chairs[chair], ChairIdentity)
+            and self._chairs[chair].witness_scope == "page"
+            for chair in roster
+        )
 
     def count(self, stage: str) -> StageProgress:
         units = {unit for unit, _ in self._records(stage, PAGE_RECORDS[stage].kind)}
@@ -216,7 +249,8 @@ class FinishEstimator:
         if progress.done < base:
             since, base = self._anchors[progress.stage] = (now, progress.done)
         observed = progress.done - base
-        elapsed = (now - since).total_seconds()
+        # A clock that steps back never makes a negative pace.
+        elapsed = max(0.0, (now - since).total_seconds())
         pace = elapsed / observed if observed > 0 else None
         finishes_at = None
         reason = None
@@ -228,10 +262,10 @@ class FinishEstimator:
             )
         elif progress.done == progress.total:
             finishes_at = now
-        elif observed < MIN_PAGES_FOR_RATE or pace is None:
+        elif observed < MIN_PAGES_FOR_RATE or elapsed < MIN_SECONDS_FOR_RATE or pace is None:
             reason = (
-                f"{observed} page(s) finished since this stage was first seen; a pace needs "
-                f"{MIN_PAGES_FOR_RATE}"
+                f"{observed} page(s) in {elapsed:.0f} s since this stage was first seen; a "
+                f"pace needs {MIN_PAGES_FOR_RATE} pages and {MIN_SECONDS_FOR_RATE} s"
             )
         else:
             finishes_at = now + timedelta(seconds=pace * (progress.total - progress.done))
@@ -291,21 +325,84 @@ def load_budget(path: Path) -> tuple[Budget | None, str | None]:
         return None, str(refusal)
 
 
-def guard_deadline(volume_mount: Path, pod_id: str | None) -> datetime | None:
-    """This pod's guard deadline, from its file on the volume; None when there is none."""
+GUARD_HORIZON_SECONDS: Final = 7 * 86_400
+"""The guard ignores a deadline further out than this (`pod_guard.sh`, `sane_deadline`)."""
 
-    if not pod_id or not (pod_id.isascii() and pod_id.isalnum()):
-        return None
-    try:
-        text = (Path(volume_mount) / POD_GUARD_DIRECTORY / f"deadline-{pod_id}").read_text(
-            encoding="ascii"
-        )
-    except (OSError, UnicodeDecodeError):
-        return None
-    text = text.strip()
-    if not text.isdigit() or len(text) > 12:
-        return None
-    return datetime.fromtimestamp(int(text), UTC)
+
+class GuardDeadline:
+    """This pod's guard deadline, read the way ``pod_guard.sh`` reads it.
+
+    The file's text, less trailing newlines, must be epoch seconds no more than
+    a week ahead. Anything else (empty, unreadable, a typo) is ignored and the
+    last valid deadline stands, as it does for the guard. Before any valid read
+    there is none.
+    """
+
+    def __init__(self, volume_mount: Path, pod_id: str, *, now: Callable[[], datetime]) -> None:
+        self._path = Path(volume_mount) / POD_GUARD_DIRECTORY / f"deadline-{pod_id}"
+        self._now = now
+        self._valid: datetime | None = None
+        self._last_text: str | None = None
+        self.ignored: list[str] = []
+
+    def read(self) -> datetime | None:
+        try:
+            text = self._path.read_text(encoding="ascii").rstrip("\n")
+        except (OSError, UnicodeDecodeError):
+            text = ""
+        if text == self._last_text:
+            return self._valid
+        self._last_text = text
+        horizon = self._now().timestamp() + GUARD_HORIZON_SECONDS
+        if text.isascii() and text.isdigit() and int(text) <= horizon:
+            self._valid = datetime.fromtimestamp(int(text), UTC)
+        elif self._valid is not None and text not in self.ignored:
+            # Ignored in favour of the deadline already in force, as the guard logs it.
+            self.ignored.append(text)
+        return self._valid
+
+
+@dataclass(frozen=True, slots=True)
+class Deadline:
+    """The deadline that ends the pod, where it came from, and whether the lead can move
+    it by hand."""
+
+    at: datetime
+    source: str
+    extendable: bool
+
+
+class PodDeadline:
+    """The deadline that ends this pod, for ``DeadlineWatch``.
+
+    Under the pod timer, its hard deadline (or an earlier guard deadline) ends
+    the pod and no file the lead edits moves it. Otherwise the guard's deadline
+    does, and once one has been read it is never replaced by the bootstrap's;
+    with none ever read, the bootstrap's hard deadline is the only one known.
+    """
+
+    def __init__(
+        self, *, guard: GuardDeadline | None, bootstrap: datetime, pod_timer: bool
+    ) -> None:
+        self._guard = guard
+        self._bootstrap = bootstrap
+        self._pod_timer = pod_timer
+
+    @property
+    def ignored(self) -> list[str]:
+        return [] if self._guard is None else list(self._guard.ignored)
+
+    def __call__(self) -> Deadline:
+        guard = None if self._guard is None else self._guard.read()
+        if self._pod_timer:
+            if guard is not None and guard < self._bootstrap:
+                return Deadline(guard, "the pod guard's deadline, under the pod timer", False)
+            return Deadline(self._bootstrap, "the pod timer's hard deadline", False)
+        if guard is None:
+            return Deadline(
+                self._bootstrap, "the bootstrap's hard deadline (no guard deadline read)", False
+            )
+        return Deadline(guard, "the pod guard's deadline", True)
 
 
 def _stamp(value: datetime) -> str:
@@ -329,25 +426,15 @@ def _cost(seconds: float, hourly_usd: Decimal) -> Decimal:
     return hourly_usd * Decimal(str(seconds)) / Decimal(3600)
 
 
-def fits_under_hard_max(
-    *,
-    projected: datetime,
-    launch_deadline: datetime,
-    budget: Budget,
-    hourly_usd: Decimal | None,
-) -> bool | None:
-    """Whether running to ``projected`` stays within the hard maximum; None when unknown.
+def _relative(value: datetime, now: datetime) -> str:
+    seconds = (value - now).total_seconds()
+    span = abs(seconds)
+    amount = f"{_hours(span)} h" if span >= 3600 else f"{int(span // 60)} min"
+    return f"in about {amount}" if seconds >= 0 else f"about {amount} ago"
 
-    The deadline ``pod_run`` first read is taken as the soft maximum, where the
-    guard is armed; the hard maximum allows that much more time and cost on top.
-    """
 
-    extension = max(0.0, (projected - launch_deadline).total_seconds())
-    if extension > budget.hard_max_seconds - budget.soft_max_seconds:
-        return False
-    if hourly_usd is None:
-        return None
-    return _cost(extension, hourly_usd) <= budget.hard_max_cost_usd - budget.soft_max_cost_usd
+def _when(value: datetime, now: datetime) -> str:
+    return f"{_minute(value)} ({_relative(value, now)})"
 
 
 def deadline_at_risk_message(
@@ -355,59 +442,67 @@ def deadline_at_risk_message(
     run_id: str,
     pod_id: str | None,
     estimate: StageEstimate,
-    deadline: datetime,
-    launch_deadline: datetime,
+    deadline: Deadline,
     budget: Budget | None,
     budget_problem: str | None,
     hourly_usd: Decimal | None,
+    now: datetime,
 ) -> str:
     """One line for the phone: what is at risk, what it would cost, and how to extend."""
 
     if estimate.finishes_at is None:
         raise ValueError("only a stage with a finish time can be at risk")
     projected = estimate.finishes_at + timedelta(seconds=RESULTS_HOME_MARGIN_SECONDS)
-    extra = max(0.0, (projected - deadline).total_seconds())
+    extra = max(0.0, (projected - deadline.at).total_seconds())
     cost = (
         "cost unknown (no --hourly-usd)"
         if hourly_usd is None
         else f"about ${_cents(_cost(extra, hourly_usd))} more at ${hourly_usd}/h"
     )
-    if budget is None:
-        limits = f"soft and hard max unknown ({budget_problem})"
-    else:
-        fits = fits_under_hard_max(
-            projected=projected,
-            launch_deadline=launch_deadline,
-            budget=budget,
-            hourly_usd=hourly_usd,
+    # The pod's creation time is not known here, so the hard maximum is stated, not
+    # turned into an instant; the lead judges the extension against it.
+    limits = (
+        f"soft and hard max unknown ({budget_problem})"
+        if budget is None
+        else (
+            f"Budget from creation: soft max {_hours(budget.soft_max_seconds)} h / "
+            f"${budget.soft_max_cost_usd}, hard max {_hours(budget.hard_max_seconds)} h / "
+            f"${budget.hard_max_cost_usd}"
         )
-        limits = (
-            f"soft max {_hours(budget.soft_max_seconds)} h / ${budget.soft_max_cost_usd}, "
-            f"hard max {_hours(budget.hard_max_seconds)} h / ${budget.hard_max_cost_usd}; "
-            f"fits under the hard max: {'unknown' if fits is None else 'yes' if fits else 'no'}"
-        )
-    # The one mount path the bootstrap accepts, so the route names it as the lead sees it.
-    guard = f"{POD_VOLUME_MOUNT_PATH}/{POD_GUARD_DIRECTORY}"
-    route = (
-        f"To extend (the lead only, over SSH): write the new deadline in epoch seconds to a "
-        f"temporary file in {guard} and mv it over deadline-{pod_id}"
-        if pod_id
-        else "No pod id: extend by the route in operations/pod/README.md"
     )
+    if not deadline.extendable:
+        route = (
+            f"This deadline ({deadline.source}) cannot be extended by hand; moving the "
+            "guard's deadline file does not change it"
+        )
+    elif not pod_id:
+        route = "No pod id is known here: extend by the route in operations/pod/README.md"
+    else:
+        suggested = math.ceil(projected.timestamp() / 60) * 60
+        # The one mount path the bootstrap accepts, so the route names it as the lead sees it.
+        guard = f"{POD_VOLUME_MOUNT_PATH}/{POD_GUARD_DIRECTORY}"
+        route = (
+            "To extend to the projected end (the lead only, over SSH; checked against no "
+            f"budget): G={guard}; echo {suggested} > $G/deadline.new && mv $G/deadline.new "
+            f"$G/deadline-{pod_id}"
+        )
+        if suggested > now.timestamp() + GUARD_HORIZON_SECONDS:
+            route += " (more than a week out: the guard would ignore it)"
     return (
         f"run {run_id}: deadline at risk. Stage {estimate.stage} alone ends about "
-        f"{_minute(estimate.finishes_at)} ({estimate.done}/{estimate.total} pages); with "
+        f"{_when(estimate.finishes_at, now)} ({estimate.done}/{estimate.total} pages); with "
         f"{RESULTS_HOME_MARGIN_SECONDS // 60} min to bring results home that passes the "
-        f"deadline {_minute(deadline)} by {_hours(extra)} h, {cost}. {limits}. {route}."
+        f"deadline {_when(deadline.at, now)} by {_hours(extra)} h, {cost}. {limits}. {route}."
     )
 
 
 class DeadlineWatch:
     """One estimate per tick, written beside the run report, and the notice it may raise.
 
-    ``send`` is None when notifications are off; the notice is then recorded as
-    not sent. ``deadline`` returns the deadline that ends the pod and where it
-    came from; the first one read is taken as the soft maximum.
+    ``send`` is None when notifications are off; the notice is then recorded once
+    as not sent. ``deadline`` returns the deadline that ends the pod. A tick
+    never raises: a failure is said on stderr, written to the estimate file and
+    kept in ``summary``.
     """
 
     def __init__(
@@ -420,9 +515,11 @@ class DeadlineWatch:
         budget: Budget | None,
         budget_problem: str | None,
         hourly_usd: Decimal | None,
-        deadline: Callable[[], tuple[datetime, str]],
+        deadline: Callable[[], Deadline],
         send: Callable[[str], NotifyOutcome] | None,
         now: Callable[[], datetime],
+        hourly_source: str | None = None,
+        ignored: Callable[[], list[str]] = list,
     ) -> None:
         self._run_id = run_id
         self._pod_id = pod_id
@@ -431,51 +528,65 @@ class DeadlineWatch:
         self._budget = budget
         self._budget_problem = budget_problem
         self._hourly_usd = hourly_usd
+        self._hourly_source = hourly_source
         self._deadline = deadline
         self._send = send
         self._now = now
+        self._ignored = ignored
         self._estimator = FinishEstimator()
-        self._launch_deadline: datetime | None = None
-        self._crossed: datetime | None = None
-        self._attempts = 0
-        self._settled = False
+        self._attempts: dict[datetime, int] = {}
+        self._settled: set[datetime] = set()
         self._notices: list[dict[str, object]] = []
         self._write_failures = 0
         self._last_write_failure: str | None = None
+        self._tick_failures = 0
+        self._last_tick_failure: str | None = None
 
-    def tick(self) -> dict[str, object]:
+    def tick(self) -> None:
         now = self._now()
+        try:
+            record = self._tick(now)
+        except Exception as error:  # noqa: BLE001 -- an estimate never stops a running stage
+            self.note_failure(error)
+            record = {"schema": ESTIMATE_SCHEMA, "run_id": self._run_id}
+        self._write({**record, "updated_at": _stamp(now), **self.summary()})
+
+    def note_failure(self, error: BaseException) -> None:
+        self._tick_failures += 1
+        self._last_tick_failure = f"{type(error).__name__}: {error}"
+        print(
+            f"pod_run {self._run_id}: the finish estimate failed this tick: {error}",
+            file=sys.stderr,
+        )
+
+    def _tick(self, now: datetime) -> dict[str, object]:
         estimate = self._estimator.update(self._sample(), now)
-        deadline, source = self._deadline()
-        if self._launch_deadline is None:
-            self._launch_deadline = deadline
-        launch = self._launch_deadline
+        deadline = self._deadline()
         projected = (
             None
             if estimate is None or estimate.finishes_at is None
             else estimate.finishes_at + timedelta(seconds=RESULTS_HOME_MARGIN_SECONDS)
         )
-        at_risk = projected is not None and projected > deadline
-        if at_risk and estimate is not None:
-            if self._crossed != deadline:
-                self._crossed, self._attempts, self._settled = deadline, 0, False
-            if not self._settled:
-                self._notify(now, estimate, deadline, launch)
-        record: dict[str, object] = {
+        at_risk = projected is not None and projected > deadline.at
+        if at_risk and estimate is not None and deadline.at not in self._settled:
+            self._notify(now, estimate, deadline)
+        return {
             "schema": ESTIMATE_SCHEMA,
             "run_id": self._run_id,
-            "updated_at": _stamp(now),
             "estimate": None if estimate is None else estimate.to_record(),
             "results_home_margin_seconds": RESULTS_HOME_MARGIN_SECONDS,
             "projected_with_margin": None if projected is None else _stamp(projected),
-            "deadline": _stamp(deadline),
-            "deadline_source": source,
+            "deadline": _stamp(deadline.at),
+            "deadline_source": deadline.source,
+            "deadline_extendable_by_hand": deadline.extendable,
             "at_risk": at_risk,
             "budget": None if self._budget is None else self._budget.to_record(),
             "budget_problem": self._budget_problem,
             "hourly_usd": None if self._hourly_usd is None else str(self._hourly_usd),
-            **self.summary(),
+            "hourly_usd_source": self._hourly_source,
         }
+
+    def _write(self, record: dict[str, object]) -> None:
         try:
             atomic_write(self._path, canonical_json(record))
         except OSError as error:
@@ -485,20 +596,17 @@ class DeadlineWatch:
                 f"pod_run {self._run_id}: the finish estimate could not be written: {error}",
                 file=sys.stderr,
             )
-        return record
 
-    def _notify(
-        self, now: datetime, estimate: StageEstimate, deadline: datetime, launch: datetime
-    ) -> None:
+    def _notify(self, now: datetime, estimate: StageEstimate, deadline: Deadline) -> None:
         message = deadline_at_risk_message(
             run_id=self._run_id,
             pod_id=self._pod_id,
             estimate=estimate,
             deadline=deadline,
-            launch_deadline=launch,
             budget=self._budget,
             budget_problem=self._budget_problem,
             hourly_usd=self._hourly_usd,
+            now=now,
         )
         if self._send is None:
             outcome = NotifyOutcome(False, False, "no --notify")
@@ -507,18 +615,19 @@ class DeadlineWatch:
                 outcome = self._send(message)
             except Exception as error:  # noqa: BLE001 -- recorded and retried like a failed send
                 outcome = NotifyOutcome(True, False, f"{type(error).__name__}: {error}")
-        self._attempts += 1
-        # Retried only when a send was made and did not arrive; one that could
-        # not be attempted would fail the same way again.
-        self._settled = (
-            outcome.delivered or not outcome.attempted or self._attempts >= NOTICE_ATTEMPTS
-        )
+        attempt = self._attempts.get(deadline.at, 0) + 1
+        self._attempts[deadline.at] = attempt
+        # Anything short of delivery is tried again on a later tick (a guard topic may
+        # be armed after the run starts), up to the bound; notifications switched off
+        # are recorded once.
+        if outcome.delivered or self._send is None or attempt >= NOTICE_ATTEMPTS:
+            self._settled.add(deadline.at)
         self._notices.append(
             {
                 "type": "deadline-at-risk",
                 "at": _stamp(now),
-                "deadline": _stamp(deadline),
-                "attempt": self._attempts,
+                "deadline": _stamp(deadline.at),
+                "attempt": attempt,
                 "attempted": outcome.attempted,
                 "delivered": outcome.delivered,
                 "outcome": outcome.line(),
@@ -528,10 +637,14 @@ class DeadlineWatch:
         print(f"pod_run {self._run_id}: deadline at risk. {outcome.line()}", file=sys.stderr)
 
     def summary(self) -> dict[str, object]:
-        """What the run report keeps: every notice and whether the estimate reached the volume."""
+        """What the run report keeps: every notice, every ignored deadline file value, and
+        whether the estimate was computed and reached the volume."""
 
         return {
             "notices": list(self._notices),
+            "ignored_deadline_file_values": self._ignored(),
             "write_failures": self._write_failures,
             "last_write_failure": self._last_write_failure,
+            "tick_failures": self._tick_failures,
+            "last_tick_failure": self._last_tick_failure,
         }
