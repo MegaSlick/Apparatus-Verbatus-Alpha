@@ -37,15 +37,6 @@ PADDING_SCHEMA = "gold-padding-rectangles.v2"
 MEASUREMENT_SCHEMA = "gold-instrument-membership.v1"
 TRANSCRIPTION_SCHEMA = "gold-transcription.v1"
 ADJUDICATION_SCHEMA = "gold-adjudication.v1"
-_DIMENSIONLESS_SCHEMAS = frozenset(
-    {
-        "gold-page-sample.v1",
-        "gold-sampling-draw.v1",
-        "gold-manual-pick.v1",
-        "gold-page-layout.v1",
-        "gold-padding-rectangles.v1",
-    }
-)
 # The one spelling of "I cannot read this", reserved so an unreadable span is
 # counted rather than guessed at, and never quietly dropped from a transcription.
 ILLEGIBLE = "[ILLEGIBLE]"
@@ -72,14 +63,24 @@ def _refuse(condition: bool, message: str) -> None:
         raise SchemaRefusal(message)
 
 
-def _refuse_dimensionless_schema(schema: Any) -> None:
-    _refuse(
-        isinstance(schema, str) and schema in _DIMENSIONLESS_SCHEMAS,
-        f"gold schema {schema!r} predates required page dimensions. This reader cannot "
-        "prove that its rectangles lie on their pages. Preserve the v1 bytes unchanged "
-        "and use their historical reader or an explicit, provenance-preserving migration; "
-        "do not edit the record in place",
-    )
+# The dimension-bearing schemas' first versions carried no page size, so this
+# reader cannot prove their rectangles lie on their pages.
+_V1_WITHOUT_PAGE_SIZE = frozenset(
+    label.removesuffix(".v2") + ".v1"
+    for label in (SAMPLE_SCHEMA, DRAW_SCHEMA, MANUAL_PICK_SCHEMA, LAYOUT_SCHEMA, PADDING_SCHEMA)
+)
+
+
+def _unrecognized(message: str, schema: Any) -> str:
+    """A schema refusal, naming the remedy when the record is a v1 one."""
+    if isinstance(schema, str) and schema in _V1_WITHOUT_PAGE_SIZE:
+        return (
+            f"{message}: {schema!r} is a v1 record, which carries no page size, so this "
+            "reader cannot prove its rectangles lie on its page. Preserve the v1 bytes "
+            "unchanged and use their historical reader or an explicit, provenance-"
+            "preserving migration; do not edit the record in place"
+        )
+    return message
 
 
 def _sha(value: Any, field: str) -> str:
@@ -579,8 +580,10 @@ def validate_sampling_draw(record: Any, run_path: str | Path | None = None) -> d
         or set(record) != {"schema", "frame", "catalog", "plan", "members", "self_hash"},
         "sampling draw has the wrong closed schema",
     )
-    _refuse_dimensionless_schema(record["schema"])
-    _refuse(record["schema"] != DRAW_SCHEMA, "sampling draw schema is not recognized")
+    _refuse(
+        record["schema"] != DRAW_SCHEMA,
+        _unrecognized("sampling draw schema is not recognized", record["schema"]),
+    )
     frame = record["frame"]
     _refuse(
         not isinstance(frame, dict) or set(frame) != {"frame_digest", "page_digest", "seed"},
@@ -722,8 +725,10 @@ def ingest_manual_pick(run_path: str | Path, pick: Any) -> dict[str, Any]:
         not isinstance(pick, dict) or set(pick) != {"schema", "selection_basis", "page", "set"},
         "manual pick has the wrong closed schema",
     )
-    _refuse_dimensionless_schema(pick["schema"])
-    _refuse(pick["schema"] != MANUAL_PICK_SCHEMA, "manual pick schema is not recognized")
+    _refuse(
+        pick["schema"] != MANUAL_PICK_SCHEMA,
+        _unrecognized("manual pick schema is not recognized", pick["schema"]),
+    )
     page = _page_row(pick["page"], "manual pick page", _CATALOG_REMEDY)
     _refuse(
         not isinstance(pick["selection_basis"], str) or not pick["selection_basis"].strip(),
@@ -1131,8 +1136,10 @@ def _validate_page_bound_record(
         not isinstance(record, dict) or set(record) != {"schema", "sample", *extra, "self_hash"},
         "gold record has the wrong closed schema",
     )
-    _refuse_dimensionless_schema(record["schema"])
-    _refuse(record["schema"] != schema, "gold record schema is not recognized")
+    _refuse(
+        record["schema"] != schema,
+        _unrecognized("gold record schema is not recognized", record["schema"]),
+    )
     validate_sample(record["sample"], run_path)
     _refuse(not verify_self_hash(record), "gold record fails its self-hash")
     return record
@@ -1156,8 +1163,10 @@ def validate_sample(record: Any, run_path: str | Path | None = None) -> dict[str
         },
         "sample has the wrong closed schema",
     )
-    _refuse_dimensionless_schema(record["schema"])
-    _refuse(record["schema"] != SAMPLE_SCHEMA, "sample schema is not recognized")
+    _refuse(
+        record["schema"] != SAMPLE_SCHEMA,
+        _unrecognized("sample schema is not recognized", record["schema"]),
+    )
     _method_facts(record["method"], record["claimed_set"], record["sampling"])
     _refuse(
         not isinstance(record["selection_basis"], str) or not record["selection_basis"].strip(),
@@ -1293,7 +1302,6 @@ def validate_measurement(record: Any) -> dict[str, Any]:
 def validate_record(record: Any, run_path: str | Path | None = None) -> dict[str, Any]:
     """Dispatch on the closed schema label; unknown record versions must refuse."""
     schema = record.get("schema") if isinstance(record, dict) else None
-    _refuse_dimensionless_schema(schema)
     if schema == SAMPLE_SCHEMA:
         return validate_sample(record, run_path)
     if schema == DRAW_SCHEMA:
@@ -1308,7 +1316,7 @@ def validate_record(record: Any, run_path: str | Path | None = None) -> dict[str
         return validate_transcription(record)
     if schema == ADJUDICATION_SCHEMA:
         return validate_adjudication(record)
-    raise SchemaRefusal(f"{schema!r} is not a gold record schema")
+    raise SchemaRefusal(_unrecognized(f"{schema!r} is not a gold record schema", schema))
 
 
 def _register_frame(frames: dict[str, dict[str, str]], frame: dict[str, str]) -> None:

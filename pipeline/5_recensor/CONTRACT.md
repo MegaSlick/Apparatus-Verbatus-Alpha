@@ -37,8 +37,9 @@ refused. DAI's page on which its own record detector found
 no record below its stated cap is `genuinely-empty` with empty text, bound to the
 detector's census (Attestatores CONTRACT, "A page the detector found nothing on"): it
 counts toward the floor, and the validation above re-derives the census it rests on.
-On a page whose reading establishes acts, the page accounting's rule (i) holds every
-unit (`no-detector-record-on-act-page`), so no unit there is accepted on DAI's
+On a page with no detector record, DAI's witness is therefore the detector's look, not
+a reading of the page's text. On a page whose reading establishes acts,
+the page accounting's rule (i) holds every unit (`no-detector-record-on-act-page`), so no unit there is accepted on DAI's
 silence. A DAI page whose detector's run facts state no cap, or whose records enclosed
 no crop, is `not-run` and does not count.
 
@@ -72,15 +73,29 @@ accounting's rules (d), (e) and (f) pass. A page of `other` entries also needs r
 (i) to pass, so no detector record lies in an `other` region; with no record detector
 (`not-applicable`) or none measured it stays held. A blank page needs rule (i) to pass
 or not apply, no detected Surya line, and every witness that read the page to have
-retained blank text, with at least one such witness; DAI's page on which its detector
-found nothing is such a witness. Blankness is measured from each witness's retained
-text (`payload`), never its `content_health`; a witness whose retained payload is not
+retained blank text. DAI's census counts as a blank witness, but at least one blank
+witness must be one that read the page's text, so a page no witness read as blank text
+stays held. Blankness is measured from each
+witness's retained text (`payload`), never its `content_health`; a witness whose retained payload is not
 text cannot confirm a blank. The floor and residual ink must hold as for any unit, and
 nothing else may hold the row. A confirmed blank is `confirmed-blank`; a confirmed
 `other` entry is `accepted`. Either names the released code and why in `release`;
 `confirmation` records the rule statuses, the line count, each witness's measured
 blankness and every failure. An unconfirmed one stays held with its code and the
 failures in `reason`.
+
+**What a run with no record detector cannot see.** Where one act ends and the next
+begins is measured only by the record detector: page accounting rule (i) holds two
+records inside one reading region (`merged-detection`) and a record inside only an
+`other` region (`record-read-as-other`). With no record detector in the sealed roster,
+rule (i) does not apply, and nothing else on the page measures act boundaries: a
+witness's units are layout blocks or lines, and one act routinely spans several of them
+(a margin name and its body, say), so counting them against entries would hold
+ordinary pages. On such a run a reading that merges two acts into one entry, citing and
+transcribing both, or reads an act as an `other` entry on a page that keeps another
+act, is held by nothing here. No text is lost: every cited id and its text stays in an
+entry the export delivers, the merged acts as one act and the relabelled one in the
+other layer, but the run's act count is the reading's word alone.
 
 The closed `kind="review"` payload (`common/page_review.py`'s `PAGE_REVIEW_FIELDS`,
 plus the `attempt_ordinal` every review carries; that module also holds the link
@@ -139,9 +154,8 @@ with a one-sided break exits held, and the receipt names it. A continuation flag
 `continuation-off-page-edge`. A flag on an `other` entry joins nothing and holds
 nothing; its review records it in `notes`.
 
-**No recovery request.** The stage publishes no `recovery-request`, and one on disk is
-refused. A page's one re-ask is stage 4's own (`pipeline/4_perlector/CONTRACT.md`,
-"The re-ask"): every review of a unit on the page carries `recoveries_used`, the
+**No recovery request.** The stage asks for no reading again. A page's one re-ask is
+stage 4's own (`pipeline/4_perlector/CONTRACT.md`, "The re-ask"): every review of a unit on the page carries `recoveries_used`, the
 page's re-asks from its `page_readings` row (1 when it names a `reask_ref`, else 0),
 and the receipt measures it again with the rest of the review.
 
@@ -250,44 +264,53 @@ Refused, before anything is published:
 
 ## The partition receipt
 
-`page_review.write_reading_receipt` rebuilds `recensor-partition-receipt.v5` from
-disk (a v4 receipt, whose `page_reading_refs` is `[{page_ordinal, reading_ref}]`, is
-still read): the units re-derived through `reading_denominator` (`expected_unit_count`
-of them), `pages` keyed by page ordinal in page order,
+After every review is published, the stage rebuilds `recensor-partition-receipt.v6`
+(under `run-health/`) from disk:
 
 ```
-pages: [{page_ordinal, reading_ref, reask_ref | null, accounting_ref,
-         reask: {named, cleared, set_aside, held, unread, duplicate} | null}]
+{schema, run_id, config_digest, scope: "reading-acts-and-configured-witnesses",
+ pages: [{page_ordinal, reading_ref, reask_ref | null, accounting_ref,
+          reask: {named, cleared, set_aside, held, unread, duplicate} | null}],
+ expected_unit_count,
+ continuation_links: [{subject_id, link_ref, outcome}],
+ page_holds: [{page_ordinal, hold_codes}],
+ items: [{act_id, act_key, page_disposition, review_ref, review_outcome,
+          partition_class, coverage, release_reason}],
+ by_partition_class, recensor_status: "complete" | "partial", reasons, self_hash}
 ```
 
-binding each page's first reading, its re-ask and its last accounting, with `reask`
-what the re-ask did (`common.page_reask.reask_outcome`): the named ids, split into
-those a re-ask entry rule (j) does not hold accounts for (`cleared`), those the re-ask
-set aside (`set_aside`), those only a re-ask entry rule (j) holds accounts for
-(`held`) and those still unread (`unread`), and the entry numbers rule (j) holds as
-duplicates (`duplicate`); each item's `page_disposition`, review and coverage recomputed from
-the Testimonia, and its `release_reason`: the review's `release.reason` for a unit its
-page reading held and this stage released, the review's `reason` for one an operator
-decision completed, `null` otherwise. A held unit so released
-is resolved and adds no receipt reason, so a run whose only held page is a blank page
-the review confirmed can be `complete`; a held unit with no completed review keeps the
-receipt `partial`. Each review's outcome is recomputed too: every row hold code is
-kept or named in a release, a release names exactly the row's releasable codes on a
-confirmed page, the witness-floor and continuation codes are what disk derives, and
-the unit is held exactly when a code remains (for a review a decision concerns, these
-checks run on the machine's review it was derived from). Then the whole review is
-measured again as it was published (`page_review.plan_reviews`, with the run's
-decisions applied): its coverage, residual ink, confirmation, release, codes, reason,
-outcome, inputs and `approval_ref` must be exactly what disk gives, and so must the
-`review-decisions` record, and the Testimonia counted for the floor must be ones the
-page accounting measured, so no release rests on a stale confirmation and no residual-ink hold is
-lost. Every `continuation-link` is matched one to one against the breaks the answers
-flag; a missing, stray or different link is refused. `continuation_links` names each
-(`subject_id`, `link_ref`, `outcome`), and a held one is a receipt reason, so the
-receipt is `partial` while any page break is unresolved. A review whose subject is
-outside `reading_acts`, or any recovery request, is refused. A receipt written as
-`recensor-partition-receipt.v1`, `.v2` or `.v3` counts the Designator's proposal acts,
-which a run does not have, and is refused by name.
+- **The units** are re-derived through `reading_denominator`; `expected_unit_count`
+  counts them, every sealed page has at least one and no unit names another page.
+- **`pages`** binds, in page order, each page's first reading, its re-ask and its last
+  accounting, with `reask` what the re-ask did (`common.page_reask.reask_outcome`): the
+  named ids, split into those a re-ask entry rule (j) does not hold accounts for
+  (`cleared`), those the re-ask set aside (`set_aside`), those only a re-ask entry rule
+  (j) holds accounts for (`held`) and those still unread (`unread`), and the entry
+  numbers rule (j) holds as duplicates (`duplicate`).
+- **Every review is measured again** as it was published, with the run's decisions
+  applied: its coverage, residual ink, confirmation, release, codes, reason, outcome,
+  inputs and `approval_ref` must be exactly what disk gives, and so must the
+  `review-decisions` record; the Testimonia counted for the floor must be ones the page
+  accounting measured. So no release rests on a stale confirmation and no hold is lost.
+  A review whose subject is outside `reading_acts`, other than a review of a reading an
+  operator re-read superseded, is refused.
+- **`release_reason`** is the review's `release.reason` for a unit its page reading held
+  and this stage released, the review's `reason` for one an operator decision completed,
+  `null` otherwise.
+- **Every `continuation-link`** is matched one to one against the breaks the answers
+  flag; a missing, stray or different link is refused.
+- **`page_holds`** is the `review-decisions` record's `page_holds`, empty for a run that
+  stores no decision. A held canary page stays in it and keeps the receipt `partial`: a
+  canary is a known-answer page, so a held canary is a real signal about the run. The
+  systemic alarm's held share still leaves canary pages out, since they are controls,
+  not pages of the register (`common/page_review.py::held_pages_after_review`).
+
+`reasons` names every held unit that is not released, every under-witnessed or
+unresolved unit, every held page break and every held page, and the receipt is
+`complete` only when there is none. A held unit its review released is resolved, so a run
+whose only held page is a blank page the review confirmed can be `complete`; a page whose
+every unit an operator excluded, but which decisions still hold, keeps it `partial`. A
+receipt of any other schema is refused.
 
 ## Stage-completion seal
 

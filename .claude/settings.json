@@ -1,52 +1,45 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "env": {
-    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
-    "PONYTAIL_SUBAGENT_MATCHER": "^(general-purpose|claude|plan)$"
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1"
   },
   "permissions": {
     "deny": [
-      "Bash(git*push*origin main)",
-      "Bash(git*push*origin main *)",
-      "Bash(git*push*:main)",
-      "Bash(git*push*:main *)",
-      "Bash(git*push*refs/heads/main)",
-      "Bash(git*push*refs/heads/main *)",
-      "Bash(git*merge*--no-verify*)",
       "Bash(git*push*--force*)",
       "Bash(git*push* -f*)",
-      "Bash(git*push*--mirror*)",
-      "Bash(git*push*--delete*)",
       "Bash(git*commit*--no-verify*)",
       "Bash(git*commit* -n*)",
+      "Bash(git*merge*--no-verify*)",
+      "Bash(git*filter-branch*)",
+      "Bash(git*filter-repo*)",
       "Bash(git*-c core.hooksPath*)",
       "Bash(git config core.hooksPath *)",
       "Bash(git config --unset core.hooksPath*)",
-      "Bash(git*filter-branch*)",
-      "Bash(git*filter-repo*)"
+      "Bash(*curl*scantailor*)",
+      "Bash(*curl*ScanTailor*)",
+      "Bash(*curl*4lex4*)",
+      "Bash(*wget*scantailor*)",
+      "Bash(*wget*ScanTailor*)",
+      "Bash(*wget*4lex4*)",
+      "Bash(*git*clone*scantailor*)",
+      "Bash(*git*clone*ScanTailor*)",
+      "Bash(*git*clone*4lex4*)",
+      "Bash(*git*fetch*scantailor*)",
+      "Bash(*git*fetch*ScanTailor*)",
+      "Bash(*git*fetch*4lex4*)"
     ],
     "ask": [
-      "Bash(runpodctl send*)",
-      "Bash(runpodctl receive*)",
-      "Bash(runpodctl ssh*)",
-      "Bash(runpodctl config*)",
-      "Bash(runpodctl update*)"
+      "Bash(runpodctl create*)",
+      "Bash(runpodctl pod create*)",
+      "Bash(runpodctl start*)",
+      "Bash(runpodctl pod start*)",
+      "Bash(runpodctl resume*)",
+      "Bash(runpodctl pod resume*)",
+      "Bash(*operations.pod.cli*)",
+      "Bash(*operations/pod/cli.py*)"
     ]
   },
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"$CLAUDE_PROJECT_DIR/operations/notify/notify.sh\" start \"An Apparatus Verbatus session has opened.\"",
-            "async": true,
-            "timeout": 15
-          }
-        ]
-      }
-    ],
     "SessionEnd": [
       {
         "hooks": [

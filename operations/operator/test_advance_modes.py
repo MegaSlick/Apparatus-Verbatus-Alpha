@@ -17,7 +17,6 @@ from common.stage import ALWAYS_HELD_BOUNDARIES, EXIT_HELD, RUN_MODES, held_adva
 from operations.operator.errors import ErrorCode, OperatorError
 
 from . import advance, cli, review
-from .conftest import requires_host_boundary
 
 ROOT = Path(__file__).resolve().parents[2]
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
@@ -217,7 +216,6 @@ def test_auto_mode_shows_boundary_state_then_refuses_an_advance_record(
             run_id,
             "designator",
             reason="operator reviewed the completed run",
-            workspace=ROOT,
             mode="auto",
         )
 
@@ -227,7 +225,6 @@ def test_auto_mode_shows_boundary_state_then_refuses_an_advance_record(
     assert "designator: seal" in rendered
 
 
-@requires_host_boundary
 def test_semi_mode_confirmation_binds_the_displayed_last_boundary(
     orchestrated_run,
     tmp_path: Path,
@@ -242,7 +239,6 @@ def test_semi_mode_confirmation_binds_the_displayed_last_boundary(
         run_id,
         "perlector",
         reason="operator reviewed the range endpoint",
-        workspace=ROOT,
         mode="semi",
         from_stage="designator",
         to_stage="perlector",
@@ -258,7 +254,6 @@ def test_semi_mode_confirmation_binds_the_displayed_last_boundary(
     assert "Advance record:" in rendered
 
 
-@requires_host_boundary
 def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
     orchestrated_run,
     tmp_path: Path,
@@ -273,7 +268,6 @@ def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
         run_id,
         "designator",
         reason="operator reviewed the manual boundary",
-        workspace=ROOT,
         mode="manual",
     )
 
@@ -284,7 +278,6 @@ def test_manual_mode_confirmation_binds_the_named_boundary_end_to_end(
     assert "Advance record:" in rendered
 
 
-@requires_host_boundary
 def test_a_supplied_surface_records_the_advance_for_status(
     orchestrated_run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -300,7 +293,6 @@ def test_a_supplied_surface_records_the_advance_for_status(
         run_id,
         "designator",
         reason="operator reviewed the manual boundary",
-        workspace=ROOT,
         surface=surface,
         mode="manual",
     )
@@ -325,7 +317,6 @@ def test_semi_mode_refuses_an_intermediate_boundary_end_to_end(
             run_id,
             "designator",
             reason="operator reviewed the intermediate boundary",
-            workspace=ROOT,
             mode="semi",
             from_stage="designator",
             to_stage="perlector",
@@ -374,7 +365,6 @@ def test_a_boundary_resealed_between_presentation_and_confirmation_is_refused(
             run_id,
             "armarium",
             reason="operator reviewed the boundary that then moved",
-            workspace=ROOT,
             mode="manual",
         )
 
@@ -393,11 +383,10 @@ def test_a_boundary_resealed_between_presentation_and_confirmation_is_refused(
     assert after == before
 
 
-@requires_host_boundary
 def test_typed_grant_binds_the_exact_reason_written_to_the_receipt(
     orchestrated_run, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The worker may not record decision text the operator never confirmed."""
+    """The advance may not record decision text the operator never confirmed."""
 
     run_root, run_id = _run(orchestrated_run, tmp_path)
     reason = 'reviewed "census"\nwith the page image'
@@ -414,7 +403,6 @@ def test_typed_grant_binds_the_exact_reason_written_to_the_receipt(
         run_id,
         "armarium",
         reason=reason,
-        workspace=ROOT,
         mode="manual",
     )
 
@@ -446,7 +434,6 @@ def test_auto_mode_never_solicits_a_typed_confirmation(
             run_id,
             "designator",
             reason="operator reviewed the completed run",
-            workspace=ROOT,
             mode="auto",
         )
 
@@ -454,7 +441,6 @@ def test_auto_mode_never_solicits_a_typed_confirmation(
     assert "auto mode" in (refusal.value.detail or "").lower()
 
 
-@requires_host_boundary
 def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
     orchestrated_run,
     tmp_path: Path,
@@ -471,14 +457,13 @@ def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
         run_id,
         "attestatores",
         reason="operator reviewed the held witness boundary",
-        workspace=ROOT,
         mode="auto",
     )
 
     rendered = capsys.readouterr().out
     assert (
-        "This declared selection can require a person-held advance at: armarium, attestatores."
-        in rendered
+        "This declared selection can require a person-held advance at: "
+        f"{', '.join(sorted(ALWAYS_HELD_BOUNDARIES))}." in rendered
     )
     # The surface never emits the word "waits", so asserting its absence could
     # not fail. Assert the line it does emit for the declared mode instead.
@@ -486,7 +471,6 @@ def test_auto_mode_can_advance_the_boundary_that_may_hold_in_every_mode(
     assert "Advance record:" in rendered
 
 
-@requires_host_boundary
 def test_auto_mode_can_advance_the_armarium_boundary_that_may_hold_in_every_mode(
     orchestrated_run,
     tmp_path: Path,
@@ -503,14 +487,13 @@ def test_auto_mode_can_advance_the_armarium_boundary_that_may_hold_in_every_mode
         run_id,
         "armarium",
         reason="operator reviewed the terminal boundary",
-        workspace=ROOT,
         mode="auto",
     )
 
     rendered = capsys.readouterr().out
     assert (
-        "This declared selection can require a person-held advance at: armarium, attestatores."
-        in rendered
+        "This declared selection can require a person-held advance at: "
+        f"{', '.join(sorted(ALWAYS_HELD_BOUNDARIES))}." in rendered
     )
     assert "Advance record:" in rendered
 
@@ -528,7 +511,6 @@ def test_an_unvalidated_mode_selection_states_no_boundary_before_it_refuses(
             run_id,
             "perlector",
             reason="operator forgot the range",
-            workspace=ROOT,
             mode="semi",
         )
 
@@ -602,7 +584,6 @@ def test_unreadable_boundary_evidence_is_refused_not_reported_as_unsealed(
             run_id,
             "armarium",
             reason="operator must see the damaged earlier boundary",
-            workspace=ROOT,
             mode="manual",
         )
 
@@ -636,7 +617,6 @@ def test_missing_earlier_seal_in_a_later_sealed_chain_is_refused_as_lost_evidenc
             run_id,
             "armarium",
             reason="operator must see the broken seal chain",
-            workspace=ROOT,
             mode="manual",
         )
 
@@ -647,7 +627,6 @@ def test_missing_earlier_seal_in_a_later_sealed_chain_is_refused_as_lost_evidenc
     assert "designator: no stored completion seal" not in capsys.readouterr().out
 
 
-@requires_host_boundary
 def test_the_advance_presentation_never_phrases_a_recommendation(
     orchestrated_run,
     tmp_path: Path,
@@ -664,7 +643,6 @@ def test_the_advance_presentation_never_phrases_a_recommendation(
         run_id,
         "designator",
         reason="operator reviewed the boundary",
-        workspace=ROOT,
         mode="manual",
     )
 
@@ -758,7 +736,6 @@ def test_a_range_given_to_a_rangeless_mode_is_refused_not_ignored(mode: str, exp
         )
 
 
-@requires_host_boundary
 def test_the_declared_mode_is_presented_as_a_declaration_not_a_read_fact(
     orchestrated_run,
     tmp_path: Path,
@@ -779,7 +756,6 @@ def test_the_declared_mode_is_presented_as_a_declaration_not_a_read_fact(
         run_id,
         "designator",
         reason="operator reviewed the boundary",
-        workspace=ROOT,
         mode="manual",
     )
 

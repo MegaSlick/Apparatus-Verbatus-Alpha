@@ -1,9 +1,8 @@
-"""Spec 10, test 6: `index.json` reconciles 1:1 with the acts the Recensor
-accepted; a missing or duplicate row is FATAL.
+"""`index.json` reconciles 1:1 with the acts the Recensor accepted; a missing or
+duplicate row is FATAL.
 
 `index.json` is a rebuildable summary derived from the immutable per-act
-records — spec 01's artifact/manifest split, never the only evidence — exactly
-as `manifest.json` is. End-to-end tests exercise the real CLI; direct tests call
+records, never the only evidence, exactly as `manifest.json` is. End-to-end tests exercise the real CLI; direct tests call
 `build_index` and `validate_index` themselves, because a single invocation of the
 stage cannot actually produce a divergence for the consumer check to catch, and
 "nothing can go wrong here today" is not the same claim as "this refuses it".
@@ -205,9 +204,8 @@ def test_validate_index_refuses_an_index_whose_self_hash_was_not_recomputed(esta
 
 # --- The rest of `validate_index`'s refusals, each exercised ------------------
 #
-# CONTRACT.md offers `validate_index` to any consumer wanting to prove the
-# accounting before relying on it, so these refusals are load-bearing for
-# someone other than this stage. Each case reseals a well-formed index around
+# The stage reads its index back through `validate_index` before finishing, so
+# each refusal is load-bearing. Each case reseals a well-formed index around
 # one defect, because a refusal no test can kill is a claim nobody has measured.
 
 

@@ -2,8 +2,8 @@
 
 This is deliberately a sibling of the ingest surface.  It reads the producer's
 immutable documents, renders only paths to the already-made review proxies, and
-has two narrow mutable documents: an append-only queue journal and the existing
-Unit 6B confirmation-file shape.  It does not read masters or make a finding
+has two narrow mutable documents: an append-only queue journal and the
+cluster-confirmation file.  It does not read masters or make a finding
 from the instrument's verdict.
 """
 

@@ -1,39 +1,20 @@
-"""Every numbered stage after the Exemplar communicates only through common/ and
-the files its own CONTRACT.md declares. `pipeline/README.md`'s own rule: "the
-repository rule is that stages communicate only through the files declared in
-their CONTRACT.md. Boundary tests must accompany the first implementation of each
-stage." Only `pipeline/1_exemplar/test_import_boundaries.py` existed, and it
-guards a narrower thing (which of 1_exemplar's own sibling modules are
-door-private) rather than "does any stage reach into a different stage's
-directory at all" -- so pipeline/2_designator through pipeline/7_armarium, and
-the orchestrator that invokes all of them, had no boundary test of their own.
+"""No pipeline stage imports another stage's modules.
 
-Static, for the same reason `common/chairs/test_chairs_import_boundary.py` is:
-the numbered directories already make `import 4_perlector` invalid Python,
-"a useful deterrent... but not a complete boundary: dynamic imports and path
-manipulation can still cross it." This walks `ast.Import`/`ast.ImportFrom`
-nodes and literal `import_module("...")` / `__import__("...")` calls, so it sees a deferred import
-inside a function exactly like a top-level one. It does NOT decide a nonliteral
-dynamic module name, an aliased loader, or an `importlib.util.spec_from_file_location(...)` call.
-Tests load a stage's modules that way on purpose, through the root conftest's
-`load_stage` (e.g. `pipeline/4_perlector/test_region_boundary.py` loading
-Attestatores) -- a deliberate, visible, single-purpose load, not the accidental
-bare `import` this test exists to catch.
+Each numbered stage, and the orchestrator, may import its own files, `common/`,
+the standard library and declared dependencies; stages exchange only the files
+their CONTRACT.md declares. The numbered directory names already make
+`import 4_perlector` invalid Python, but a bare import of a uniquely named
+sibling module, or a dotted `pipeline.` import, could still cross.
 
-**What this does not catch.** Every stage's entry file is named `run.py`, so
-"does a bare `import run` reach this stage's own file or some other stage's" is
-a question sys.path order answers at runtime, not something an AST walk over
-one file can determine. This test still catches every OTHER cross-stage name
-collision (a stage importing another stage's uniquely-named sibling module, the
-same class of gap `pipeline/1_exemplar/test_import_boundaries.py` closed for
-`pdf_render`/`image_formats`), and it is worth having even with that one gap
-named rather than silently assumed shut.
+The walk reads `import` and `from` statements and literal `import_module(...)`
+and `__import__(...)` calls anywhere in a file, deferred imports included. It
+does not resolve a computed module name or a `spec_from_file_location` load;
+tests load stage modules that way on purpose, through the root conftest's
+`load_stage`. Every stage's entry file is `run.py`, so which `run` a bare
+`import run` binds depends on `sys.path` at runtime and is not checked here.
 
-The population is `git ls-files`, not a filesystem walk, for the reason
-`pipeline/1_exemplar/test_import_boundaries.py` already gives: `workbench/` is
-gitignored and absent in a container, present and full of unparseable drafts on
-the machine this project actually runs on, and git's own idea of what belongs to
-this repository is the only population that means the same thing in both places.
+The population is `git ls-files`, so ignored local folders such as `workbench/`
+do not change what is checked.
 """
 
 import ast
@@ -45,9 +26,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 PIPELINE = ROOT / "pipeline"
 
-# Every directory pipeline/README.md's rule binds: the numbered stages, the
-# Coniector's side branch among them, plus the orchestrator, which is stage-neutral but held to the identical
-# "imports only common/ and its own files" rule.
+# The numbered stages, the Coniector's side branch among them, and the
+# orchestrator, which is held to the same rule.
 STAGE_DIRECTORIES = (
     "1_exemplar",
     "1_ink_map",
@@ -95,11 +75,7 @@ def _stage_of(path: str) -> str | None:
 
 
 def _own_module_names(stage: str) -> set[str]:
-    """Bare module names a file may legitimately import from its own stage
-    directory — every `.py` file's stem, siblings included (e.g. 1_exemplar's
-    `admission`, `door`, `image_formats`, `pdf_render`, `render_config`,
-    `synthetic_sources`), so a same-stage import is never mistaken for a
-    boundary crossing."""
+    """The bare module names a stage's own `.py` files provide."""
     return {path.stem for path in (PIPELINE / stage).glob("*.py")}
 
 
@@ -107,11 +83,7 @@ def _imports_in(path: Path) -> list[tuple[str, str]]:
     """`(root_module, full_module)` for every statically knowable import.
 
     A relative `from . import x` is reported under the name it binds, and
-    `from .pkg import x` under `pkg`. No pipeline directory is a package — there
-    is no `__init__.py` anywhere under `pipeline/` — so a relative import there
-    is a runtime error rather than a boundary crossing, and this reports none
-    today. It is here so the guard fails closed rather than resting on that: a
-    node kind silently skipped is how a guard grows a gap it never announced.
+    `from .pkg import x` under `pkg`, so no import node kind is skipped.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: list[tuple[str, str]] = []
@@ -207,8 +179,7 @@ def _literal_fromlist(node: ast.Call) -> list[str] | None:
 
 
 def test_the_population_covers_every_stage_directory():
-    """The guard on the guard: a population missing a stage would let a
-    violation inside it pass unnoticed."""
+    """A population missing a stage would let a violation inside it pass."""
     files = repository_python_files()
     covered = {stage for path in files if (stage := _stage_of(path)) is not None}
     assert covered == set(STAGE_DIRECTORIES), (
@@ -217,12 +188,8 @@ def test_the_population_covers_every_stage_directory():
 
 
 def test_no_stage_imports_another_stages_uniquely_named_module():
-    """A stage may import its own sibling files and anything in `common/`,
-    stdlib, or a declared third-party dependency. It may not import a bare
-    module name that only exists as a `.py` file inside a *different* stage's
-    directory — the cross-stage collision `pipeline/1_exemplar/`'s door-private
-    check already guards for two of its own siblings, extended here to every
-    stage and every uniquely-named module rather than a hand-picked pair."""
+    """A stage may not import a bare module name that exists as a `.py` file
+    only inside a different stage's directory."""
     files = repository_python_files()
     modules_by_stage = {stage: _own_module_names(stage) for stage in STAGE_DIRECTORIES}
 
@@ -238,9 +205,7 @@ def test_no_stage_imports_another_stages_uniquely_named_module():
             for other_stage, other_modules in modules_by_stage.items():
                 if other_stage == stage or root in own:
                     continue
-                # "run" collides by construction (every stage has one) and is
-                # documented above as this check's one known gap; every other
-                # name is unique to the stage that defines it.
+                # Every stage has a run.py, so "run" cannot be attributed.
                 if root != "run" and root in other_modules:
                     violations.append(
                         f"{path} imports {full!r}, which is owned by pipeline/{other_stage}/"
@@ -253,10 +218,7 @@ def test_no_stage_imports_another_stages_uniquely_named_module():
 
 
 def test_no_stage_imports_pipeline_by_its_dotted_path():
-    """`import 4_perlector` is already invalid Python (the deterrent
-    pipeline/README.md names), but nothing stopped `import pipeline.something`
-    or `from pipeline.something import x` outright — checked directly rather
-    than assumed impossible from the numbering alone."""
+    """No stage imports `pipeline.something` by its dotted path."""
     files = repository_python_files()
     violations = [
         f"{path} imports {full!r}"

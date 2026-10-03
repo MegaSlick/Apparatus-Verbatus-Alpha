@@ -1,20 +1,20 @@
 # Attestator 3
 
-A numbered chair, not a model. The model and pinned revision for this chair are
-declared in `config/models.toml`.
-
-The chair path stays stable when its assigned model changes. The configuration, not
-this directory, encodes the assignment.
+This chair holds Churro (`stanford-oval/churro-3B`), adapter `churro.v1`. The pinned revision is declared in
+`config/models-real.toml`, so repinning that vendor's model is a configuration
+change. Moving the vendor to another chair is a code change: its answer bound,
+decoding rule and request shape are keyed by this chair or its adapter
+(`pipeline/3_attestatores/live_witness.py`, `common/request_capacity.py`,
+`common/decoding.py`).
 
 ## What the current occupant answers, and in whose words it is asked
 
 Its adapter is `churro.v1` (`pipeline/3_attestatores/churro.py`), page-scoped: one
 call per page, one page Testimonium per (page, chair).
 
-The chair runs the vendor's own system, under the ruling of 2026-09-06: the
-vendor's preprocessing, prompt bytes, message shape, generation values and
-output grammar are adopted verbatim and pinned by digest, and the vendor's
-harness is not.
+The chair runs the vendor's own system: the vendor's preprocessing, prompt
+bytes, message shape, generation values and output grammar are adopted verbatim
+and pinned by digest, and the vendor's harness is not.
 
 * **Asked** with one of two vendor-attested system strings and an image-only
   user turn — the registry's answer for `stanford-oval/churro-3B` at tag
@@ -44,13 +44,9 @@ target, is one continuous text string per page in reading order. So the only
 observation is a `bounds_source="presented"` echo, which routing and coverage
 exclude, and the adapter declares no float-to-pixel rule at all.
 
-Unit 12 asked this chair for block rectangles instead, in a modified carry of a
-prompt the model was never trained on, so that a geometry-blind page witness
-would have boxes to attach acts by. That question, its wire contract
-(`common/churro_response.py`) and its coordinate channel are retired: the
-attestation is the vendor's again, and attachment is solved where it belongs —
-the Perlector admits the existing `anchor-line` basis for a page witness whose
-alignment for an act is `aligned` with a located span.
+Attachment of this chair's text to acts is the Perlector's: it admits the
+`anchor-line` basis for a page witness whose alignment for an act is `aligned`
+with a located span.
 
 Two things that are not this chair's own:
 

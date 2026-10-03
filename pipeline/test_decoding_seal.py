@@ -1,4 +1,4 @@
-"""Unit 2: a run's decoding posture is sealed at creation and named if it moves.
+"""A run's decoding policy is sealed at creation and named if it moves.
 
 `config/decoding.toml` is every reading chair's sampling values, the
 Perlector's whole-page output cap and Chandra's native recipe. It joins the sealing family: its
@@ -14,8 +14,6 @@ without being told which policy moved.
 from __future__ import annotations
 
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -23,37 +21,18 @@ import pytest
 from common.decoding import DEFAULT_DECODING_CONFIG_PATH, load_decoding_policy
 from common.runtree.store import RunTree
 from common.sealed_config import read_sealed_toml
-from conftest import programs_through, tree_snapshot
-
-ROOT = Path(__file__).resolve().parents[1]
-FIXTURE_ROOT = ROOT / "proof"
+from conftest import run_stage, run_through, tree_snapshot
 
 CONSUMING_STAGES = ("pipeline/3_attestatores/run.py", "pipeline/4_perlector/run.py")
 
 
-def invoke_stage(run_root: Path, program: str, **extra) -> subprocess.CompletedProcess:
-    command = [
-        sys.executable,
-        str(ROOT / program),
-        "--run-root",
-        str(run_root),
-        "--run-id",
-        "decoding",
-        "--scenario",
-        "happy",
-        "--fixture-root",
-        str(FIXTURE_ROOT),
-    ]
-    for key, value in extra.items():
-        command.extend((f"--{key.replace('_', '-')}", str(value)))
-    return subprocess.run(command, cwd=ROOT, capture_output=True, text=True)
+def invoke_stage(run_root: Path, program: str, **extra):
+    return run_stage(run_root, "decoding", "happy", program, **extra)
 
 
 def _through_designator(tmp_path: Path) -> tuple[Path, RunTree]:
     run_root = tmp_path / "runs"
-    for program in programs_through("designator"):
-        result = invoke_stage(run_root, program)
-        assert result.returncode == 0, f"{program}: {result.stderr}"
+    run_through(run_root, "decoding", "happy", "designator")
     return run_root, RunTree(run_root, "decoding")
 
 
@@ -117,17 +96,9 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, change:
     # different operator problems, and the message has to say which one it is.
     assert what in refused.stderr, refused.stderr
     assert "No run or stage artifact was written" in refused.stderr, refused.stderr
-    # The run root must be *absent*, not merely empty. The earlier form of this
-    # assertion allowed either, and the permissive half made it unable to fail:
-    # `tree_snapshot` described what was under a root and nothing about the root
-    # itself, so a Door that created `runs/` and then refused produced the same
-    # empty mapping as a Door that created nothing -- and the assertion passed on
-    # the state it was written to catch. An existing run root is a run id claimed
-    # under a policy this build already rejected, and the retry the message
-    # invites then collides with it.
-    # `Path.exists()` follows symlinks, so a dangling `runs` link would pass it
-    # while the refusal had still left an artefact; `os.path.lexists` sees the
-    # link itself.
+    # The run root must not exist at all: an empty one is a run id claimed under
+    # a rejected policy, and the retry the message invites would collide with
+    # it. `lexists`, so a dangling link counts.
     assert not os.path.lexists(run_root), tree_snapshot(run_root)
 
 
@@ -160,13 +131,9 @@ def test_a_stage_refuses_a_run_resumed_under_a_different_decoding_policy(tmp_pat
     assert tree_snapshot(run_root) == before, "the refusal wrote to the run tree it disowned"
 
 
-@pytest.mark.parametrize("program", CONSUMING_STAGES)
-def test_a_stage_reading_the_run_s_own_decoding_policy_proceeds(tmp_path, program):
-    """The other half of the same check: the sealed bytes are not merely refused
-    at every value. A stage handed the file the run was created under runs."""
+def test_a_stage_reading_the_run_s_own_decoding_policy_proceeds(tmp_path):
+    """Each consuming stage handed the file the run was created under runs."""
     run_root, _tree = _through_designator(tmp_path)
     for stage in CONSUMING_STAGES:
         result = invoke_stage(run_root, stage, decoding_config=DEFAULT_DECODING_CONFIG_PATH)
         assert result.returncode == 0, f"{stage}: {result.stderr}"
-        if stage == program:
-            break

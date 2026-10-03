@@ -105,8 +105,6 @@ def _minimal_vllm_profile(*, chair: str, generation_config: str) -> dict[str, ob
         "enable_prefix_caching": False,
         "enforce_eager": False,
         "trust_remote_code": False,
-        "enable_tower_connector_lora": False,
-        "max_lora_rank": 16,
         "generation_config": generation_config,
         "preflight_state": "unproven",
         "startup_timeout_seconds": 3,

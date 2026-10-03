@@ -15,7 +15,7 @@ from common.contracts.envelope import build_envelope
 from common.contracts.identities import act_id, artifact_id, attempt_id, page_id
 from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.runtree.store import RunTree
-from operations.spike_perlector.models import OutputStatus
+from operations.corpus.scoring import OutputStatus
 
 from . import CorpusRefusal
 from .compare import (
@@ -631,10 +631,7 @@ def test_compare_page_refuses_too_many_reference_acts_for_one_page():
 
 def test_compare_page_scores_a_page_at_the_corpus_measured_maximum():
     """30 reference acts, 30 matching pipeline acts -- this corpus's own measured
-    maximum (`plan.py`'s `records_per_page_distribution` over the sealed row
-    snapshot). The old `MAX_ACTS_PER_PAGE = 20` bitmask DP refused this page
-    outright; the exact maximum-weight matching scores it, matching every act.
-    """
+    maximum records per page -- are scored, every act matched."""
     count = 30
 
     def bounds(index: int) -> dict:

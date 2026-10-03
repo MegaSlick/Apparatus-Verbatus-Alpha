@@ -964,8 +964,8 @@ def test_a_real_reasked_run_is_read_with_its_reask_as_the_receipt_binds_it(tmp_p
     """`reask-recovers` under the committed re-ask budget: page 1's first reading
     reads a1 alone and the re-ask recovers a2. The loader reads the re-ask's real
     records -- attempt 2, its combined accounting, its recovered region -- and the
-    page it re-asked is the one the Recensor's v5 receipt binds a re-ask to."""
-    from common.recensor_receipt import RECENSOR_PARTITION_RECEIPT_SCHEMA_V5
+    page it re-asked is the one the Recensor's receipt binds a re-ask to."""
+    from common.recensor_receipt import RECENSOR_PARTITION_RECEIPT_SCHEMA
     from common.runtree.store import RunTree
 
     from .compare import ReadOnlyRunTree
@@ -985,7 +985,7 @@ def test_a_real_reasked_run_is_read_with_its_reask_as_the_receipt_binds_it(tmp_p
     assert [region["kind"] for region in recovered] == ["act"]
 
     receipt = tree.read_recensor_partition_receipt()
-    assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA_V5
+    assert receipt["schema"] == RECENSOR_PARTITION_RECEIPT_SCHEMA
     bound = [row["page_ordinal"] for row in receipt["pages"] if row["reask_ref"] is not None]
     assert bound == [page["feed"]["page_ordinal"]]
 

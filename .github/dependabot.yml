@@ -1,7 +1,5 @@
-# Weekly pull requests for outdated dependencies. Pins in this repository are exact on
-# purpose, so each update is reviewed and CI-tested like any other change; updates to the
-# GPU serving stack (vllm, transformers) still need a serving qualification on a pod
-# before they merge.
+# Weekly pull requests for outdated dependencies. Pins here are exact, so each update is
+# reviewed and tested like any other change.
 version: 2
 updates:
   - package-ecosystem: "uv"
@@ -10,6 +8,11 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
     groups:
+      # The GPU serving stack (the `pod` dependency group). CI never installs it, so an
+      # update here needs a qualification run on a GPU pod before it merges. Grouped
+      # rather than ignored, so security updates for these packages still arrive.
+      pod-serving-stack:
+        patterns: ["vllm", "transformers", "torch", "ultralytics", "qwen-vl-utils"]
       python-minor-and-patch:
         update-types: ["minor", "patch"]
   - package-ecosystem: "github-actions"

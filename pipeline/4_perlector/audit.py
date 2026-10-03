@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from common.contracts.errors import ContractError
-from common.perlector_audit import LEGACY_SCHEMA, RETIRED_SCHEMAS, SCHEMA
+from common.perlector_audit import SCHEMA
 from common.sealed_config import read_sealed_toml
 
 _CONFIG_FIELDS: Final = frozenset(
@@ -22,26 +22,14 @@ _CONFIG_FIELDS: Final = frozenset(
 def load(path: str | Path) -> tuple[dict[str, Any], str]:
     policy, digest = read_sealed_toml(path, "Perlector audit declaration")
     if (
-        isinstance(policy, dict)
-        and isinstance(policy.get("schema"), str)
-        and policy["schema"] in RETIRED_SCHEMAS
-    ):
-        raise ContractError(
-            f"the Perlector audit declaration names {policy['schema']!r}, a retired schema that "
-            "could not record whether a delivered re-proof completed; declare "
-            f"{SCHEMA!r}. A run sealed under the old declaration is re-read under the current one"
-        )
-    if isinstance(policy, dict) and policy.get("schema") == LEGACY_SCHEMA:
-        raise ContractError(
-            f"the Perlector audit declaration was sealed under {LEGACY_SCHEMA}, which this "
-            f"build no longer reads; re-run under {SCHEMA}"
-        )
-    if (
         not isinstance(policy, dict)
         or set(policy) != _CONFIG_FIELDS
         or policy.get("schema") != SCHEMA
     ):
-        raise ContractError("the Perlector audit declaration is not its closed schema")
+        found = policy.get("schema") if isinstance(policy, dict) else None
+        raise ContractError(
+            f"the Perlector audit declaration (schema {found!r}) is not its closed schema {SCHEMA}"
+        )
     numeric = ("default_round_cap", "absolute_round_cap", "round_cap")
     if any(
         not isinstance(policy.get(key), int) or isinstance(policy[key], bool) for key in numeric

@@ -2,9 +2,12 @@
 
 Every model the pipeline ever calls sits in a **chair**: a named role, resolved
 through pinned configuration (`config/models.toml`) to an exact artifact, fetched
-and verified by digest, served behind a receipt. Swapping a model is a
-configuration change plus at most a serving recipe — nothing here names a model
-in code.
+and verified by digest, served behind a receipt. Repinning a chair's model to
+another revision of the same vendor is a configuration change. Putting another
+vendor's model in a chair is not: the facts each vendor needs (its witness
+adapter, answer bound, decoding rule, wire flags and model-store layout) are
+keyed by chair or adapter in code, and `model_store.py` names the vendor
+artifacts it stores.
 
 | File | What it settles |
 |---|---|
@@ -16,24 +19,21 @@ in code.
 | `receipts.py` | what a serving receipt must carry before it is one |
 | `filesystem.py` | the bounded control-file read and the APFS name key (case and Unicode normalization folded) the other modules share |
 | `errors.py` | the closed refusal taxonomy: every refusal the package raises, each naming the chair |
-| `protocol.py` | the caller-visible shape, and the contract exerciser that names the clause a broken implementation breaks |
+| `protocol.py` | the caller-visible shape, and the contract exerciser the tests run against each implementation |
 
 ## Four things worth knowing before you change anything here
 
 **Nothing here substitutes.** Every refusal names the chair and the concrete
-difference, and stops. No code path fetches or receipts a chair other than the one
-asked for. Another chair is *resolved* only where `_cache_descriptor` and
-`receipt` read an adapter's configured `adapter_of` base — a configuration lookup,
-so that an old adapter cache or receipt cannot pass as compatible with a repinned
-base. It never
-fetches, serves, ranks or substitutes that base. A registry that fell back from one
-chair to a close-enough one would be a picker wearing an ops hat,
-and the closed taxonomy (every `raise` in the package is checked against it) plus
-`test_chairs_no_substitution.py` are what keep one out. That test drives each of the seven ways a chair can
-fail to be served through the *real* registry
-and asserts, on a call log kept *inside* the registry rather than in front of it,
-that no other configured chair was resolved, fetched or receipted while each refusal
-was handled.
+difference, and stops. No code path resolves, fetches or receipts a chair other
+than the one asked for. A chair declared as an adapter of another (`adapter_of`)
+is refused when the roster is parsed, so no base can ever answer in its place.
+A registry that fell back from one chair to a close-enough one would be a picker
+wearing an ops hat, and the closed taxonomy (every `raise` in the package is
+checked against it) plus `test_chairs_no_substitution.py` are what keep one out.
+That test drives each way a chair can fail to be served through the *real*
+registry and asserts, on a call log kept *inside* the registry rather than in
+front of it, that no other configured chair was resolved, fetched or receipted
+while each refusal was handled.
 
 **A pin is a constant the artifact must match.** Never a value the artifact
 supplies. A cache that holds a different revision than the pin is

@@ -88,14 +88,34 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     sources = _submitted_sources(context.run)
     admissions = _checked_admissions(tree, context.run, sources)
 
-    sealed = submission_sealed = 0
     sealed_digests = context.run.get("sealed_config_digests")
     canary_ledger = (
         sealed_digests.get("canary-ledger") if isinstance(sealed_digests, dict) else None
     )
+    # Identity binds the admitted bytes' immutable origin, never the manifest
+    # ordinal or path, so inserting a row cannot rename a page. Every identity is
+    # derived, and two pages claiming one identity refused, before the first page is
+    # published.
+    identities: dict[int, str] = {}
+    ordinal_by_page: dict[str, int] = {}
+    for ordinal, admission, _admission_ref, _blob_ref in admissions:
+        if admission["outcome"] == "refused":
+            continue
+        identity = page_id(_page_origin(admission["payload"]), {"operation": "whole"})
+        if identity in ordinal_by_page:
+            # The Door refuses byte-identical submissions before its seal, so only a
+            # tree no Door closed can reach this; every later stage works one page
+            # per submitted row.
+            raise ContractError(
+                f"submitted ordinals {ordinal_by_page[identity]} and {ordinal} derive one "
+                "page identity; one page per submitted row is the contract, so nothing was "
+                "sealed"
+            )
+        ordinal_by_page[identity] = ordinal
+        identities[ordinal] = identity
+
     page_refs: list[dict[str, str]] = []
     census: list[dict[str, Any]] = []
-    admitted_by_page: dict[str, list[tuple[int, dict, dict[str, str], dict[str, str]]]] = {}
     for ordinal, admission, admission_ref, blob_ref in admissions:
         if admission["outcome"] == "refused":
             # The refusal is carried forward as this stage's own outcome so every
@@ -120,48 +140,33 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
             continue
 
         payload = admission["payload"]
-        # Identity binds the admitted bytes' immutable origin, never the manifest
-        # ordinal or path: inserting a row cannot rename a page, and two rows with
-        # the same origin must seal as one page citing both submissions.
-        identity = page_id(_page_origin(payload), {"operation": "whole"})
-        admitted_by_page.setdefault(identity, []).append(
-            (ordinal, admission, admission_ref, blob_ref)
-        )
-
-    for identity, members in admitted_by_page.items():
-        ordinal, admission, _admission_ref, blob_ref = members[0]
-        submission_rows = [sources[member_ordinal] for member_ordinal, *_rest in members]
-        inputs = [
-            member_admission_ref for _ordinal, _admission, member_admission_ref, _blob in members
-        ]
-        inputs.append(blob_ref)
+        identity = identities[ordinal]
         result = context.publish(
             kind="page",
             subject_id=identity,
             outcome="sealed",
-            inputs=inputs,
-            payload=_page_payload(admission["payload"], ordinal, sources[ordinal], submission_rows),
+            inputs=[admission_ref, blob_ref],
+            payload=_page_payload(payload, ordinal, sources[ordinal]),
         )
         page_refs.append(context.input_ref(result.relative_path))
-        for member_ordinal, member_admission, _member_ref, _member_blob in members:
-            census.append(
-                _census_row(
-                    sources[member_ordinal],
-                    ordinal=member_ordinal,
-                    page_identity=identity,
-                    outcome="sealed",
-                    source_sha256=member_admission["payload"]["sha256"],
-                )
+        census.append(
+            _census_row(
+                sources[ordinal],
+                ordinal=ordinal,
+                page_identity=identity,
+                outcome="sealed",
+                source_sha256=payload["sha256"],
             )
-        sealed += 1
-        if canary_ledger is None or any(
-            row.get("ledger_sha256") != canary_ledger for row in submission_rows
-        ):
-            submission_sealed += 1
+        )
 
-    if sealed == 0:
+    # Refused sources are published above as this stage's own refused pages, so the
+    # record of what failed survives; the stage itself is never sealed below.
+    if not identities:
         raise ContractError("every admitted source failed to seal")
-    if submission_sealed == 0:
+    if all(
+        canary_ledger is not None and sources[ordinal].get("ledger_sha256") == canary_ledger
+        for ordinal in identities
+    ):
         # Canary pages are controls sealed beside the submission, never a
         # substitute for it.
         raise ContractError(
@@ -186,12 +191,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     return EXIT_COMPLETE
 
 
-def _page_payload(
-    payload: dict[str, Any],
-    ordinal: int,
-    source: dict[str, Any],
-    submission_rows: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
+def _page_payload(payload: dict[str, Any], ordinal: int, source: dict[str, Any]) -> dict[str, Any]:
     """What a sealed page records, including a complete container render contract."""
     sealed: dict[str, Any] = {
         "ordinal": ordinal,
@@ -214,24 +214,7 @@ def _page_payload(
             # that reduction inside a nested renderer recipe: the sealed Exemplar
             # page says so plainly.
             sealed["render_resolution"] = resolution
-    members = submission_rows or [{**source, "ordinal": ordinal}]
-    sealed["submission_rows"] = [
-        _submission_row(item) for item in sorted(members, key=lambda item: item["ordinal"])
-    ]
     return sealed
-
-
-def _submission_row(source: dict[str, Any]) -> dict[str, Any]:
-    """One submitted-row citation; ordinal is row accounting, not page identity."""
-    fields = (
-        "ordinal",
-        "relative_path",
-        "sha256",
-        "bytes",
-        "ledger_sha256",
-        "container_page_index",
-    )
-    return {field: source[field] for field in fields if source.get(field) is not None}
 
 
 def _page_origin(payload: dict[str, Any]) -> dict[str, Any]:
@@ -621,9 +604,16 @@ def _verify_admitted_blob(
         raise ContractError(
             "a derivative page does not input exactly its pixels and untouched master"
         )
-    blob = read_verified(tree.read_bytes, input_ref, "an admitted blob", ContractError)
+    # Read for its digest check: the blob on disk must be the bytes the Door admitted.
+    read_verified(tree.read_bytes, input_ref, "an admitted blob", ContractError)
     if is_derivative:
-        verify_triage_derivative(rendered_from["render_contract"], parent_bytes, parent, blob)
+        verify_triage_derivative(
+            rendered_from["render_contract"],
+            parent_bytes,
+            parent_ref["sha256"],
+            parent,
+            sealed_digest,
+        )
     return {"relative_path": stored_at, "sha256": sealed_digest}
 
 

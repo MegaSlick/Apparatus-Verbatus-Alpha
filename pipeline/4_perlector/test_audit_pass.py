@@ -11,7 +11,7 @@ import audit
 import pytest
 
 from common.contracts.errors import ContractError
-from common.perlector_audit import LEGACY_SCHEMA, RETIRED_SCHEMAS, SCHEMA
+from common.perlector_audit import SCHEMA
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -43,15 +43,11 @@ def test_an_audit_round_cap_above_one_is_refused_because_no_second_round_exists(
         audit.load(approved)
 
 
-def test_a_legacy_v2_declaration_is_refused_by_name(tmp_path):
-    with pytest.raises(ContractError, match="sealed under perlector-audit.v2"):
-        audit.load(_declaration(tmp_path, schema=LEGACY_SCHEMA))
-
-
-def test_a_retired_v1_declaration_is_refused_by_name(tmp_path):
-    [retired] = RETIRED_SCHEMAS
-    with pytest.raises(ContractError, match="a retired schema"):
-        audit.load(_declaration(tmp_path, schema=retired))
+def test_a_declaration_of_another_schema_is_refused(tmp_path):
+    with pytest.raises(
+        ContractError, match=r"schema 'perlector-audit.v2'\) is not its closed schema"
+    ):
+        audit.load(_declaration(tmp_path, schema="perlector-audit.v2"))
 
 
 def test_a_raised_cap_needs_the_project_leads_reference(tmp_path):

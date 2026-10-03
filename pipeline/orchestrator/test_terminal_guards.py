@@ -88,7 +88,7 @@ class _RecordingContext:
         self.witness_chairs: list[str] = []
         self.witness_floor = 0
         self.armarium_formats = ArmariumFormats(
-            ("text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"),
+            ("text-bundle", "acts-database", "jsonl", "review-items"),
             False,
         )
         self.blobs: dict[str, bytes] = {}
@@ -221,6 +221,7 @@ class _RecordingContext:
             read_artifact=read_artifact,
             # This run stores no operator review decision.
             review_decision_records=lambda: [],
+            read_run=lambda: self.run,
         )
 
     def publish(self, **record) -> None:

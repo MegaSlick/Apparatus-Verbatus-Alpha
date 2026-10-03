@@ -325,46 +325,19 @@ def check_algebra_is_total() -> None:
 TEXT_STATUSES: Final = frozenset({"established", "partial", "no_readable_text"})
 
 
-def derive_text_status(text: Any, annotations: Any) -> str:
-    """established | partial | no_readable_text, from the text and its gaps alone.
+def derive_record_text_status(text: Any, uncertainty: Any) -> str:
+    """established | partial | no_readable_text, from a record's text and its gaps.
 
-    A gap anywhere means some ink is known and unread, whether `text` is otherwise
-    empty or full: `partial`. No gap and no text is the only remaining case, and
-    the only one that may be called `no_readable_text` — a positive finding that
-    owes its own evidence (`pipeline/6_archetypus/run.py::validate_text_status`).
-
-    "We could not read it" must never quietly become "there was nothing to read".
+    A gap in the canonical `uncertainty` layer means some ink is known and unread,
+    whether `text` is otherwise empty or full: `partial`. No gap and no text is
+    the only remaining case, `no_readable_text`; no stage establishes or delivers
+    one. Gaps are read before the empty-text case, so a whole-act gap over empty
+    text is `partial`: "we could not read it" never becomes "there was nothing to
+    read". The text is type-checked on every path, so no status is returned over
+    a text nobody checked.
     """
     if not isinstance(text, str):
         raise SchemaRefusal("a text status requires exactly one string text field")
-    if not isinstance(annotations, (list, tuple)):
-        raise SchemaRefusal("a text status cannot be derived from a non-list annotation layer")
-    for index, note in enumerate(annotations):
-        if not isinstance(note, Mapping) or "kind" not in note:
-            raise SchemaRefusal(
-                f"annotation {index} carries no kind, so whether it records unread ink "
-                "cannot be decided; an unreadable damage layer is refused, never skipped"
-            )
-    if any(note["kind"] == "illegible" for note in annotations):
-        return "partial"
-    if text.strip() == "":
-        return "no_readable_text"
-    return "established"
-
-
-def derive_record_text_status(text: Any, annotations: Any, uncertainty: Any) -> str:
-    """The same three words over *both* damage layers a sealed record carries.
-
-    A record carries the canonical `uncertainty` layer (`gaps`, the shape every
-    Perlectio actually produces) and the older `annotations` layer (`illegible`
-    notes, which nothing upstream populates yet). Either one recording unread ink
-    makes the record `partial`, and neither can hide damage the other saw, so the
-    two travelling together is honest even where they are not identical: this
-    union is the one status both of them answer to.
-
-    Gaps are read before the empty-text case: a gap over empty text is ink
-    present and unread, `partial`, never `no_readable_text`.
-    """
     if not isinstance(uncertainty, Mapping) or not isinstance(
         uncertainty.get("gaps"), (list, tuple)
     ):
@@ -372,10 +345,10 @@ def derive_record_text_status(text: Any, annotations: Any, uncertainty: Any) -> 
             "a record text status requires the canonical uncertainty layer's own gap list"
         )
     if uncertainty["gaps"]:
-        # Still type-checks the text, so a malformed record cannot slip through here.
-        derive_text_status(text, annotations)
         return "partial"
-    return derive_text_status(text, annotations)
+    if text.strip() == "":
+        return "no_readable_text"
+    return "established"
 
 
 # --- Witness coverage: outcomes aggregate into counts, never into text ----------
@@ -570,8 +543,8 @@ def systemic_reason(held_pages: Sequence[int], pages: int, limit: str) -> str:
 def _systemic_review_reason(review: Mapping[str, Any]) -> str:
     """The systemic reason of a `run_aggregate` `systemic_review` record, refused when malformed.
 
-    The pages are the alarm's own count of the run's reviewed pages, so a held
-    canary page outside the export's census is named as the alarm named it.
+    The pages are the alarm's own count of the run's reviewed pages; canary pages
+    are not among them, so the reason names only pages of the register.
     """
     if not isinstance(review, Mapping) or set(review) != SYSTEMIC_REVIEW_FIELDS:
         raise FatalAccounting(
@@ -633,6 +606,28 @@ def _clearance_reasons(
             f"{codes}; a person's decision, not a machine check"
         )
     return [named[key] for key in sorted(named)]
+
+
+# The sentences that state one fact each. The Armarium's terminal ledger names
+# the same facts with the same functions, so one fact is one string on both sides.
+
+
+def unresolved_act_reason(act: str, category: str) -> str:
+    """An act that did not reach a completed category."""
+    return f"act {act} is {category}"
+
+
+def edge_hold_reason(ordinal: int) -> str:
+    """A sealed page held for ink at its edge no reading region claims."""
+    return (
+        f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
+        "reading region on the page claims, so its coverage is not reconciled"
+    )
+
+
+def unsealed_page_reason(ordinal: int, outcome: str, reason: str | None) -> str:
+    """A submitted page the Exemplar did not seal, with its recorded reason."""
+    return f"page {ordinal} was {outcome}: {reason or 'no reason was recorded'}"
 
 
 def run_aggregate(
@@ -751,11 +746,7 @@ def run_aggregate(
 
     # A set: a repeated ordinal is one held page.
     for ordinal in sorted(set(edge_hold_pages or ())):
-        reasons.append(
-            f"page {ordinal} carries unreleased unclaimed-edge-ink: ink at its edge that no "
-            "reading region on the page claims, so "
-            "its coverage is not reconciled"
-        )
+        reasons.append(edge_hold_reason(ordinal))
 
     for join in continuation_joins or ():
         crossing = (
@@ -797,7 +788,7 @@ def run_aggregate(
             raise FatalAccounting(f"act {act} carries {category!r}, not a category")
         by_category[category.value] = by_category.get(category.value, 0) + 1
         if VOCABULARIES[ARMARIUM][category.value] is not OutcomeClass.COMPLETED:
-            reasons.append(f"act {act} is {category.value}")
+            reasons.append(unresolved_act_reason(act, category.value))
         # After the category check, so a malformed category is what gets named.
         if category is not ArmariumCategory.DELIVERED:
             if act in text_status:
@@ -848,8 +839,9 @@ def run_aggregate(
         classify(EXEMPLAR, outcome)
         by_page_outcome[outcome] = by_page_outcome.get(outcome, 0) + 1
         if outcome != "sealed":
-            reason = page_census[ordinal].get("reason") or "no reason was recorded"
-            reasons.append(f"page {ordinal} was {outcome}: {reason}")
+            reasons.append(
+                unsealed_page_reason(ordinal, outcome, page_census[ordinal].get("reason"))
+            )
         elif pages_with_acts is not None and ordinal in pages_with_acts:
             held = set((other_categories_by_page or {}).get(ordinal) or ()) - {
                 ArmariumCategory.DELIVERED.value

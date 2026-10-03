@@ -20,7 +20,7 @@ import pytest
 from operations.pod.transfer import ChecksummedTransfer
 
 from .errors import ERRORS, ErrorCode, OperatorError
-from .test_surface import _manifest, _spend_policy, _surface
+from .test_surface import _manifest, _surface
 from .volume_s3 import (
     FETCH_CHUNK_BYTES,
     MAX_LISTED_KEYS,
@@ -588,7 +588,6 @@ def test_a_rehearsal_with_no_volume_named_still_uses_the_local_fixture(tmp_path:
     messages: list[str] = []
     surface = _surface(tmp_path, output=messages)
     source, manifest = _manifest(tmp_path)
-    _spend_policy(tmp_path)
 
     surface.upload(source, sealed_manifest=manifest)
 

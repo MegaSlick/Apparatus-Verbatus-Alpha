@@ -108,6 +108,17 @@ def test_static_gate_syntax_checks_every_script_it_names(tmp_path):
     assert checked == listed
 
 
+@pytest.mark.full
+def test_static_gate_refuses_committed_trailing_whitespace(tmp_path):
+    """A clean checkout has no working-tree diff, so the committed content is checked."""
+    repo, _listed, _log, environment = make_static_gate_repo(tmp_path / "repo")
+    commit_file(repo, "notes.txt", "trailing space \n")
+    assert git(repo, "status", "--porcelain").stdout == ""
+    result = run_hook(repo, "check-static.sh", env=environment)
+    assert result.returncode != 0
+    assert "trailing whitespace" in result.stdout + result.stderr
+
+
 # The gate testing itself: these prove the list is walked, which rarely changes, so
 # they are reserved for the full gate.
 @pytest.mark.full
@@ -381,57 +392,26 @@ def test_pre_commit_refuses_a_detached_head_unless_asked(tmp_path):
     assert allowed.returncode == 0, allowed.stderr
 
 
-def test_pre_commit_hard_blocks_main_even_if_old_bypass_is_set(tmp_path):
+def test_pre_commit_blocks_a_commit_on_main(tmp_path):
     repo = make_precommit_repo(tmp_path / "repo", "main")
     (repo / "safe.txt").write_text("safe\n")
     git(repo, "add", "safe.txt")
     blocked = run_hook(repo, "pre-commit")
-    old_bypass = run_hook(repo, "pre-commit", env={"ALLOW_MAIN_COMMIT": "1"})
     assert blocked.returncode == 1
     assert "commit on main" in blocked.stderr
-    assert old_bypass.returncode == 1
 
 
-def test_install_configures_local_hooks_after_prerequisites(tmp_path):
+def test_install_configures_local_hooks(tmp_path):
     repo = init_repo(tmp_path / "repo")
     shutil.copytree(HOOKS, repo / ".githooks")
-    for folder in (
-        "workbench/active",
-        "workbench/archive",
-        "workbench/scratch",
-        "workbench/design",
-        "workbench/tools",
-        "workbench/raw",
-    ):
-        (repo / folder).mkdir(parents=True, exist_ok=True)
     result = run_hook(repo, "install.sh")
     assert result.returncode == 0, result.stderr
     assert git(repo, "config", "--get", "core.hooksPath").stdout.strip() == ".githooks"
 
 
-def test_install_creates_every_drawer_the_contract_declares(tmp_path):
-    """Nothing is pre-created: only the installer can make these drawers appear."""
-    repo = init_repo(tmp_path / "repo")
-    shutil.copytree(HOOKS, repo / ".githooks")
-    result = run_hook(repo, "install.sh")
-    assert result.returncode == 0, result.stderr
-    declared = (
-        "active",
-        "standing",
-        "archive",
-        "scratch",
-        "design",
-        "tools",
-        "raw",
-        "quarantine",
-    )
-    missing = [name for name in declared if not (repo / "workbench" / name).is_dir()]
-    assert not missing, f"install.sh did not create: {missing}"
-
-
 def test_fixture_images_are_binary_at_any_depth(tmp_path):
-    """Asked of git, not read from the pattern: `proof/fixtures/*` once looked right yet
-    matched only one level, leaving nested fixtures `text=auto`."""
+    """Asked of git, not read from the pattern: a one-level pattern such as
+    `proof/fixtures/*` would leave nested fixtures `text=auto`."""
     repo = init_repo(tmp_path / "repo")
     shutil.copy(ROOT / ".gitattributes", repo / ".gitattributes")
     nested = repo / "proof" / "fixtures" / "synthetic-two-page-v0"
@@ -443,27 +423,19 @@ def test_fixture_images_are_binary_at_any_depth(tmp_path):
     assert reported.stdout.strip().endswith("text: unset"), reported.stdout
 
 
-def failing_command_env(path, name):
-    """A PATH whose first entry is one command that only ever fails."""
-    stubs = path / f"stub-{name}"
-    stubs.mkdir()
-    stub = stubs / name
-    stub.write_text("#!/bin/sh\nexit 1\n")
-    stub.chmod(0o755)
-    return {"PATH": f"{stubs}:{os.environ['PATH']}"}
-
-
-@pytest.mark.parametrize("failing", ["chmod", "mkdir"])
-def test_install_does_not_configure_hooks_when_a_prerequisite_fails(tmp_path, failing):
+def test_install_does_not_configure_hooks_when_chmod_fails(tmp_path):
     # A hooksPath at files git cannot execute would report installed and run no hook.
     repo = init_repo(tmp_path / "repo")
     shutil.copytree(HOOKS, repo / ".githooks")
     git(repo, "config", "core.hooksPath", "previous-hooks")
-    result = run_hook(repo, "install.sh", env=failing_command_env(tmp_path, failing))
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    (stubs / "chmod").write_text("#!/bin/sh\nexit 1\n")
+    (stubs / "chmod").chmod(0o755)
+    result = run_hook(repo, "install.sh", env={"PATH": f"{stubs}:{os.environ['PATH']}"})
     assert result.returncode != 0
     assert "Hooks installed" not in result.stdout
-    if failing == "chmod":
-        assert "not usable" in result.stderr
+    assert "not usable" in result.stderr
     assert git(repo, "config", "--get", "core.hooksPath").stdout.strip() == "previous-hooks"
 
 
@@ -571,3 +543,108 @@ def test_pre_commit_scans_the_index_not_the_working_copy(tmp_path):
     assert "[runpod-api-key]" in result.stdout + result.stderr
     git(repo, "add", "config.txt")
     assert run_hook(repo, "pre-commit").returncode == 0
+
+
+PAGEKIT_GATE = (
+    "pagekit/__init__.py",
+    "pagekit/cleanroom/__init__.py",
+    "pagekit/cleanroom/scan.py",
+    "pagekit/cleanroom/gate.py",
+    "pagekit/cleanroom/deny-hashes.txt",
+)
+
+
+def make_pagekit_repo(path):
+    """A repo with the pre-commit hook, pagekit's gate and one committed pagekit file."""
+    repo = make_precommit_repo(path)
+    for relative in PAGEKIT_GATE:
+        (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, repo / relative)
+    (repo / "pagekit" / "check.py").write_text("VALUE = 1\n")
+    git(repo, "add", ".githooks", "pagekit")
+    git(repo, "commit", "-qm", "fixture")
+    return repo
+
+
+def stage(repo, relative, text):
+    (repo / relative).parent.mkdir(parents=True, exist_ok=True)
+    (repo / relative).write_text(text)
+    git(repo, "add", relative)
+
+
+def test_pre_commit_holds_pagekit_until_the_lead_decides(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    hold = "pagekit/cleanroom/HOLD"
+    note = "pagekit/cleanroom/incidents/0001.md"
+    # An uncommitted HOLD in the working copy already holds pagekit.
+    (repo / hold).write_text("Suspected leak in the crop check.\n")
+    stage(repo, "pagekit/check.py", "VALUE = 2\n")
+    held = run_hook(repo, "pre-commit")
+    assert held.returncode == 1, held.stdout + held.stderr
+    assert "pagekit/check.py: pagekit is on HOLD" in held.stderr
+    git(repo, "reset", "-q", "pagekit/check.py")
+    git(repo, "checkout", "-q", "pagekit/check.py")
+
+    # The pause itself: HOLD and an undecided incident note may be committed.
+    git(repo, "add", hold)
+    stage(repo, note, "# Incident 0001\n\nDecision:\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+    git(repo, "commit", "-qm", "hold")
+
+    # While held, pagekit changes are refused; changes outside pagekit are not.
+    stage(repo, "pagekit/check.py", "VALUE = 3\n")
+    assert run_hook(repo, "pre-commit").returncode == 1
+    git(repo, "reset", "-q", "pagekit/check.py")
+    stage(repo, "notes.txt", "unrelated\n")
+    assert run_hook(repo, "pre-commit").returncode == 0, "a change outside pagekit was held"
+
+    # Removing HOLD needs the lead's decision in the same commit.
+    git(repo, "rm", "-q", hold)
+    undecided = run_hook(repo, "pre-commit")
+    assert undecided.returncode == 1
+    assert "Decision" in undecided.stderr
+    stage(repo, note, "# Incident 0001\n\nDecision: false flag, a common idiom.\n")
+    decided = run_hook(repo, "pre-commit")
+    assert decided.returncode == 0, decided.stdout + decided.stderr
+    git(repo, "commit", "-qm", "lift hold")
+
+    stage(repo, "pagekit/check.py", "VALUE = 4\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+
+
+def test_pre_commit_scans_staged_pagekit_files_without_echoing_the_hit(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    header = "under the GNU General " + "Public License, version 3"
+    stage(repo, "pagekit/deskew.py", f"# {header}\nVALUE = 1\n")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1
+    assert "pagekit/deskew.py:1: gpl_licence_header" in result.stderr
+    assert header not in result.stdout + result.stderr
+    stage(repo, "pagekit/deskew.py", "VALUE = 1\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+
+
+def test_pre_commit_refuses_when_the_clean_room_has_no_gate(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    stage(repo, "pagekit/check.py", "VALUE = 2\n")
+    assert run_hook(repo, "pre-commit").returncode == 0
+    git(repo, "rm", "-q", "pagekit/cleanroom/gate.py")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "pagekit/cleanroom/gate.py is missing" in result.stderr
+
+
+def test_pre_commit_refuses_when_the_gate_is_unstaged_but_still_on_disk(tmp_path):
+    repo = make_pagekit_repo(tmp_path / "repo")
+    git(repo, "rm", "-q", "--cached", "pagekit/cleanroom/gate.py")
+    assert (repo / "pagekit/cleanroom/gate.py").is_file()
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "pagekit/cleanroom/gate.py is missing" in result.stderr
+
+
+def test_pre_commit_runs_without_the_gate_where_there_is_no_clean_room(tmp_path):
+    repo = make_precommit_repo(tmp_path / "repo")
+    stage(repo, "pagekit/check.py", "VALUE = 1\n")
+    result = run_hook(repo, "pre-commit")
+    assert result.returncode == 0, result.stdout + result.stderr

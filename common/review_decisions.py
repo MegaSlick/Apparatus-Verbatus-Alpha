@@ -97,7 +97,7 @@ from common.contracts.approval import (
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_plain_int
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
-from common.page_path import NO_AUTOPSIA
+from common.page_path import NO_AUTOPSIA, SUPERSEDED_ACT_NOT_READ
 from common.stage import (
     NO_ACT_ON_PAGE_HOLD,
     PAGE_BLANK_CLASS,
@@ -134,8 +134,9 @@ RECENSOR_PAGE_CODES: Final = frozenset(
 )
 ROW_PAGE_CODES: Final = frozenset({PAGE_UNREAD_HOLD, PAGE_BLANK_HOLD, NO_ACT_ON_PAGE_HOLD})
 # Holds stage 4 puts on every entry of a page for a fact about the whole page:
-# read without its image, the page may hold acts no entry lists.
-PAGE_WIDE_ENTRY_CODES: Final = frozenset({NO_AUTOPSIA})
+# read without its image, the page may hold acts no entry lists; read again by an
+# operator re-read that does not read each act it replaces as one of its own.
+PAGE_WIDE_ENTRY_CODES: Final = frozenset({NO_AUTOPSIA, SUPERSEDED_ACT_NOT_READ})
 
 CURRENT: Final = "current"
 STALE: Final = "stale"
