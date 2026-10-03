@@ -1110,6 +1110,17 @@ def test_the_advance_verb_records_a_confirmed_advance(
     assert account_operator_state_snapshot() == account_state
 
 
+def test_the_state_folder_redirect_outlives_the_tests_own_monkeypatch(
+    monkeypatch, operator_state_home
+):
+    """The redirect is not the test's patch: undoing that keeps the temporary folder,
+    and the test's patches are undone before the module fixtures that ran after it."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(operator_state_home / "elsewhere"))
+    monkeypatch.undo()
+
+    assert os.environ["XDG_STATE_HOME"] == str(operator_state_home)
+
+
 def test_a_confirmed_digest_changed_before_the_append_is_refused_without_a_record(
     orchestrated_run, tmp_path
 ):

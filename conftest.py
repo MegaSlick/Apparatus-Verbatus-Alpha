@@ -15,6 +15,7 @@ import sys
 import tempfile
 import textwrap
 import tomllib
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from unittest import mock
@@ -75,15 +76,20 @@ def account_operator_state_snapshot() -> dict[str, tuple[int, int] | None]:
 
 
 @pytest.fixture(autouse=True)
-def operator_state_home(tmp_path_factory: pytest.TempPathFactory, monkeypatch) -> Path:
+def operator_state_home(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Path]:
     """A fresh XDG_STATE_HOME outside the checkout for every test and its subprocesses.
 
     The operator CLI otherwise keeps receipts in the account's real state folder, so
     a test that names no state folder would add synthetic records to real history.
+    Its own patch, not the test's `monkeypatch`: sharing that would let a test's
+    `monkeypatch.undo()` drop the redirect, and would undo the test's patches only
+    after module fixtures set up later had restored theirs, leaving their patched
+    values behind for later tests.
     """
     state_home = tmp_path_factory.mktemp("xdg-state")
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
-    return state_home
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv("XDG_STATE_HOME", str(state_home))
+        yield state_home
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
