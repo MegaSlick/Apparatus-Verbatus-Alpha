@@ -1785,6 +1785,31 @@ def test_a_journal_bound_under_the_raw_byte_receipt_is_refused_by_schema(
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
 
 
+def test_a_journal_bound_under_an_earlier_receipt_schema_is_told_to_start_anew(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws, plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
+    first = bootstrap_main.run_bootstrap(
+        plan, now=lambda: START, actions_factory=lambda selected: _configuration_actions(plan)
+    )
+    assert isinstance(first, BootstrapReport) and first.green
+
+    journal = json.loads(ws.journal.read_text(encoding="utf-8"))
+    journal["receipts"]["configuration"]["schema"] = "pod-bootstrap-configuration.v2"
+    ws.journal.write_text(json.dumps(journal), encoding="utf-8")
+    resumed_actions = _configuration_actions(plan)
+    resumed = bootstrap_main.run_bootstrap(
+        plan, now=lambda: START, actions_factory=lambda selected: resumed_actions
+    )
+
+    assert (
+        isinstance(resumed, BootstrapReport) and resumed.failure_step is BootstrapStep.CONFIGURATION
+    )
+    assert "'pod-bootstrap-configuration.v2'" in (resumed.detail or "")
+    assert f"move {ws.journal} aside" in (resumed.remediation or "")
+    assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
+
+
 def test_a_failed_configuration_may_repair_its_selection_before_first_completion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

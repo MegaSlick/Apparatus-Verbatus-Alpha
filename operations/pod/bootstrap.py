@@ -796,6 +796,15 @@ class Bootstrapper:
                 f"Start a new journal: move {self.journal.path} aside and rerun boot. A "
                 "completed configuration receipt is never rewritten.",
             )
+        if isinstance(recorded, dict) and recorded.get("schema") != CONFIGURATION_RECEIPT_SCHEMA:
+            return BootstrapStepFailure(
+                BootstrapStep.CONFIGURATION,
+                f"this journal's configuration receipt is {recorded.get('schema')!r}, not "
+                f"{CONFIGURATION_RECEIPT_SCHEMA!r}, so it cannot be compared with the current "
+                "selection",
+                f"Start a new journal: move {self.journal.path} aside and rerun boot. A "
+                "completed configuration receipt is never rewritten.",
+            )
         current_problem = _configuration_receipt_problem(current)
         recorded_problem = _configuration_receipt_problem(recorded)
         if current_problem is not None or recorded_problem is not None:
