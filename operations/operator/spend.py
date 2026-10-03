@@ -58,6 +58,12 @@ def show(policy_path: str | Path) -> list[str]:
         f"(policy SHA-256 {policy_digest})",
         f"- Hard lifetime ceiling: {policy.hard_lifetime_seconds} seconds "
         f"(policy SHA-256 {policy_digest})",
+        f"- Soft maximum: {policy.soft_max_seconds} seconds and ${policy.soft_max_cost_usd}, "
+        "whichever comes first; the guard's deadline sits here "
+        f"(policy SHA-256 {policy_digest})",
+        f"- Hard maximum: {policy.hard_max_seconds} seconds and ${policy.hard_max_cost_usd}; "
+        "an extension by the lead may not pass it "
+        f"(policy SHA-256 {policy_digest})",
     ]
 
 

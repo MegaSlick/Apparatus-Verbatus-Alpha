@@ -159,7 +159,8 @@ deadline, an observed `account_balance_floor_usd` hard reserve and a higher
 fixed values in time from creation and in metered cost, whichever is reached first. The
 guard's deadline sits at the soft maximum, so the loader refuses a soft value above its
 hard one and a `hard_lifetime_seconds` or `max_estimated_metered_cost_usd` above the soft
-maximum. Past the soft maximum `pod_run` sends one `deadline-at-risk` notice; going on is
+maximum. `pod_run` sends one `deadline-at-risk` notice ahead of time, when a stage's
+projected finish passes the deadline that ends the pod; going on past the soft maximum is
 an extension only the lead makes, and the hard maximum bounds it. A paid action reads the available
 balance through the provider's explicitly configured source and refuses when that source
 is unavailable or the action would breach the reserve. The `$50.00` floor is a policy
