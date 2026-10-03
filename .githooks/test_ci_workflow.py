@@ -336,16 +336,82 @@ def test_the_gate_takes_the_required_uv_version_from_pyproject(tmp_path):
     assert "could not reconcile" in accepted.stderr
 
 
-def test_the_gate_refuses_a_uv_found_through_a_relative_path_entry(tmp_path):
+# macOS /bin/sh is bash in POSIX mode, whose `command -v` makes a relative PATH match
+# absolute; dash prints it as found. The gate must refuse the same way under both.
+GATE_SHELLS = [
+    pytest.param(["sh"], id="sh"),
+    pytest.param(["bash", "--posix"], id="bash-posix"),
+]
+
+
+def run_gate_with(shell, repo, env):
+    command = [shutil.which(shell[0]), *shell[1:], ".githooks/check-all.sh"]
+    return subprocess.run(command, cwd=repo, env=env, capture_output=True, text=True, timeout=60)
+
+
+def recording_uv(directory, marker):
+    """A uv under `directory` that records every call, version checks included."""
+    directory.mkdir(parents=True, exist_ok=True)
+    uv = directory / "uv"
+    uv.write_text(f'#!/bin/sh\necho "$*" >> {marker}\nexit 1\n')
+    uv.chmod(0o755)
+
+
+@pytest.mark.parametrize("shell", GATE_SHELLS)
+@pytest.mark.parametrize(
+    ("entry", "directory"),
+    [("fake-bin", "fake-bin"), ("", "."), (".", "."), ("./fake-bin", "fake-bin")],
+    ids=["relative", "empty", "dot", "dot-relative"],
+)
+def test_the_gate_refuses_a_uv_found_through_a_relative_path_entry(
+    tmp_path, shell, entry, directory
+):
     repo = gate_repo(tmp_path)
     frozen_venv(repo)
-    stub_uv(repo)
-    environment = {**os.environ, "PATH": f"fake-bin{os.pathsep}{os.environ['PATH']}"}
+    marker = tmp_path / "uv-ran"
+    recording_uv(repo / directory, marker)
+    environment = {**os.environ, "PATH": f"{entry}{os.pathsep}{os.environ['PATH']}"}
 
-    result = run_gate(repo, env=environment)
+    result = run_gate_with(shell, repo, environment)
+
+    assert result.returncode == 1, result.stderr
+    assert "from the PATH entry" in result.stderr
+    assert not marker.exists(), "the checkout's uv ran before the gate refused it"
+
+
+@pytest.mark.parametrize("shell", GATE_SHELLS)
+def test_the_gate_refuses_a_trailing_empty_path_entry_that_selects_uv(tmp_path, shell):
+    repo = gate_repo(tmp_path)
+    frozen_venv(repo)
+    marker = tmp_path / "uv-ran"
+    recording_uv(repo, marker)
+    environment = {**os.environ, "PATH": f"/usr/bin{os.pathsep}/bin{os.pathsep}"}
+
+    result = run_gate_with(shell, repo, environment)
+
+    assert result.returncode == 1, result.stderr
+    assert "from the PATH entry" in result.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("shell", GATE_SHELLS)
+def test_the_gate_runs_a_uv_from_an_absolute_path_entry_after_a_relative_one(tmp_path, shell):
+    """A relative entry that holds no uv does not matter; the selected uv does."""
+    repo = gate_repo(tmp_path)
+    frozen_venv(repo)
+    marker = tmp_path / "uv-ran"
+    recording_uv(tmp_path / "trusted", marker)
+    environment = {
+        **os.environ,
+        "PATH": os.pathsep.join(["empty-dir", str(tmp_path / "trusted"), os.environ["PATH"]]),
+    }
+
+    result = run_gate_with(shell, repo, environment)
 
     assert result.returncode == 1
-    assert "relative path 'fake-bin/uv'" in result.stderr
+    assert "from the PATH entry" not in result.stderr
+    assert marker.read_text().splitlines() == ["--version"]
+    assert "requires uv" in result.stderr
 
 
 def full_gate_repo(tmp_path, *, audit_status=0, topic="verbatus-test-sink"):
