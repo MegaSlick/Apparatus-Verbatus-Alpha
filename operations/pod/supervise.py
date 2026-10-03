@@ -1053,7 +1053,7 @@ def run_supervisor(
             f"lease already reached terminal phase {lease.phase!r}; no provider call was made",
             lease=lease,
         )
-        return result, _exit_code(result, observed_active_lease=False)
+        return _finish(result, lease_id, notifier, observed_active_lease=False)
     # A lease at or past its hard deadline is closed on the first tick; one
     # inside a heartbeat of it is watched to the deadline, then closed.
     heartbeat_timeout = timedelta(seconds=policy.laptop_heartbeat_timeout_seconds)
@@ -1114,6 +1114,18 @@ def run_supervisor(
                 max((result.lease.hard_deadline - now()).total_seconds(), 0.0),
             )
         sleeper(max(sleep_for, _MIN_TICK_SECONDS))
+    return _finish(result, lease_id, notifier, observed_active_lease=observed_active_lease)
+
+
+def _finish(
+    result: SuperviseResult, lease_id: str, notifier: Notifier, *, observed_active_lease: bool
+) -> tuple[SuperviseResult, int]:
+    """Pair a run's result with its exit code, notifying on every exit 3.
+
+    An unverified close was already notified when the tick produced it, so it
+    is not notified twice.
+    """
+
     exit_code = _exit_code(result, observed_active_lease=observed_active_lease)
     unverified_close_reported = result.close_report is not None and not result.close_report.verified
     if exit_code == 3 and not unverified_close_reported:
