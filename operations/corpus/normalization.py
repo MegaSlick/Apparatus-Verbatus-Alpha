@@ -65,9 +65,9 @@ _PRESENTATION_MAP: dict[str, str] = {
 }
 
 # The one text bound in this instrument, for every field that can reach a
-# quadratic comparison: scoring.py's Levenshtein.editops is worse-than-linear in
-# the product of its two input lengths, and adjudication.py's SequenceMatcher is
-# quadratic outright on repetitive input. One act's diplomatic transcription --
+# quadratic comparison: scoring.py's Levenshtein.editops and
+# reconstruction_evaluate.py's Levenshtein.distance are worse-than-linear in the
+# product of their two input lengths. One act's diplomatic transcription --
 # an entry, or at most a short letter or essay (GLOSSARY's "act") -- is never
 # near this length; text this long is a mis-pasted file, not a reading.
 MAX_TEXT_LENGTH = 20_000
@@ -224,6 +224,22 @@ def normalize_text(text: str, profile: NormalizationProfile) -> str:
     normalized = unicodedata.normalize("NFC", normalized)
     check_text_bounds(normalized, "normalized text")
     return normalized
+
+
+def within_text_bounds(text: str, profile: NormalizationProfile) -> bool:
+    """Whether a string is within the text bounds as given and once normalized.
+
+    For a model's reading, which a caller records as unmeasured rather than
+    refusing the whole measurement over it.
+    """
+
+    if not isinstance(text, str):
+        raise MeasurementRefusal("only Unicode strings can be normalized")
+    try:
+        normalize_text(text, profile)
+    except MeasurementRefusal:
+        return False
+    return True
 
 
 def character_units(text: str, profile: NormalizationProfile) -> tuple[str, ...]:

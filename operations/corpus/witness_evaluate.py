@@ -47,13 +47,13 @@ from .compare import (
     load_pipeline_reading_acts,
 )
 from .local_admission import validate_local_admission_ledger
-from .normalization import GRAPHEMIC_V1
+from .normalization import GRAPHEMIC_V1, within_text_bounds
 from .reference import validate_reference_page
-from .scoring import OutputStatus, score_response
+from .scoring import TEXT_OUT_OF_BOUNDS, OutputStatus, hypothesis_for_status, score_response
 
 DESCRIPTION = "Read-only per-witness RecordGold scoring over sealed page Testimonia."
 
-SCHEMA = "recordgold-witness-evaluation.v2"
+SCHEMA = "recordgold-witness-evaluation.v3"
 CHAIRS = ("attestator_1", "attestator_2", "attestator_3")
 
 WITNESS_EVALUATION_REFUSAL_REASONS = frozenset(
@@ -113,12 +113,27 @@ def _score_row(
     text: str | None,
     reason: str | None,
 ) -> dict[str, Any]:
-    score = score_response(reference["text"], status=status, text=text, profile=GRAPHEMIC_V1)
-    return {
+    row = {
         "record_ids": list(reference["record_ids"]),
         "chair": chair,
         "status": status.value,
         "reason": reason,
+        "unmeasured": None,
+    }
+    # A reading beyond the scoring bounds is named and carries no rate; the
+    # chair's other rows are still scored.
+    if not within_text_bounds(hypothesis_for_status(status, text), GRAPHEMIC_V1):
+        return {
+            **row,
+            "unmeasured": TEXT_OUT_OF_BOUNDS,
+            "cer": None,
+            "cer_units": None,
+            "wer": None,
+            "wer_units": None,
+        }
+    score = score_response(reference["text"], status=status, text=text, profile=GRAPHEMIC_V1)
+    return {
+        **row,
         "cer": score.cer.edits.errors,
         "cer_units": score.cer.reference_units,
         "wer": score.wer.edits.errors,
@@ -134,16 +149,18 @@ def _totals(
     totals: dict[str, dict[str, Any]] = {}
     for chair in chairs:
         chair_rows = [row for row in rows if row["chair"] == chair]
+        measured = [row for row in chair_rows if row["unmeasured"] is None]
         statuses = Counter(row["status"] for row in chair_rows)
         totals[chair] = {
             "references": len(chair_rows),
             "scoreable": statuses[OutputStatus.COMPLETE.value]
             + statuses[OutputStatus.TRUNCATED.value],
             "statuses": {status.value: statuses[status.value] for status in OutputStatus},
-            "cer_errors": sum(row["cer"] for row in chair_rows),
-            "cer_units": sum(row["cer_units"] for row in chair_rows),
-            "wer_errors": sum(row["wer"] for row in chair_rows),
-            "wer_units": sum(row["wer_units"] for row in chair_rows),
+            "unmeasured": len(chair_rows) - len(measured),
+            "cer_errors": sum(row["cer"] for row in measured),
+            "cer_units": sum(row["cer_units"] for row in measured),
+            "wer_errors": sum(row["wer"] for row in measured),
+            "wer_units": sum(row["wer_units"] for row in measured),
         }
         if missing_proposals is not None:
             totals[chair]["missing_proposals"] = missing_proposals
@@ -539,7 +556,7 @@ def evaluate_run(
 
 # --- page path: the witnesses the page feed showed ------------------------------------
 
-PAGE_SCHEMA = "recordgold-witness-evaluation.page.v1"
+PAGE_SCHEMA = "recordgold-witness-evaluation.page.v2"
 PAGE_FEED = "page-feed"
 PAGE_TESTIMONIUM = "page-testimonium"
 
@@ -765,12 +782,17 @@ def evaluate_page_feed_run(
             for row in rows
             if row["chair"] == name
             and row["status"] in {OutputStatus.COMPLETE.value, OutputStatus.TRUNCATED.value}
+            and row["unmeasured"] is None
         ]
         total["scoreable_cer_errors"] = sum(row["cer"] for row in scoreable_rows)
         total["scoreable_cer_units"] = sum(row["cer_units"] for row in scoreable_rows)
         total["reasons"] = dict(
             sorted(
-                Counter(row["reason"] or "scored" for row in rows if row["chair"] == name).items()
+                Counter(
+                    row["unmeasured"] or row["reason"] or "scored"
+                    for row in rows
+                    if row["chair"] == name
+                ).items()
             )
         )
     body = {

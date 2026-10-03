@@ -11,6 +11,7 @@ from common.contracts.canonical import canonical_bytes, verify_self_hash
 from common.runtree.store import RunTree
 
 from . import CorpusRefusal
+from .normalization import MAX_TEXT_LENGTH
 from .reconstruction_evaluate import evaluate_run, main, reconstruction_report
 from .test_evaluate import ROOT, _fixture_reference_for_page_one, _orchestrate
 
@@ -84,6 +85,22 @@ def test_a_reconstruction_is_scored_beside_its_diplomatic_where_the_reference_ha
     assert row["score"]["diplomatic"]["cer_errors"] > 0
     assert report["reference"]["reconstruction"] == row["score"]["reconstruction"]
     assert report["reference"]["diplomatic"] == row["score"]["diplomatic"]
+
+
+def test_a_reconstruction_beyond_the_scoring_bounds_is_named_unmeasured_and_the_rest_scored():
+    references = {
+        "act_h": {"record_id": "r-head", "text": HEAD_TEXT},
+        "act_t": {"record_id": "r-tail", "text": TAIL_TEXT},
+    }
+
+    report = _report([_row(text="a" * (MAX_TEXT_LENGTH + 1)), _row(("act_t",))], references)
+
+    runaway, scored = report["rows"]
+    assert runaway["unmeasured"] == "text-out-of-bounds"
+    assert runaway["score"] is None and runaway["departed_characters"] is None
+    assert scored["unmeasured"] is None and scored["score"] is not None
+    assert report["reconstructions"]["unmeasured"] == 1
+    assert report["reference"]["reconstruction"] == scored["score"]["reconstruction"]
 
 
 def test_a_join_with_one_act_in_the_reference_is_counted_and_not_scored():

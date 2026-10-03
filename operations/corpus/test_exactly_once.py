@@ -20,6 +20,7 @@ from common.page_path import ACT_REGION_SCHEMA, PAGE_READING_SCHEMA
 from common.residual_ink import INK_RUNS_SCHEMA
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD
 
+from . import exactly_once
 from .exactly_once import (
     MAX_GOLD_CER_BP,
     Refusal,
@@ -233,6 +234,7 @@ def test_every_record_read_once_passes_the_gate():
         "required_bp": 9_500,
         "uncaught_failures": 0,
         "unchecked_pages": 0,
+        "unmeasured_records": 0,
         "passed": True,
     }
     assert result["records"]["by_act_regions"] == {"1": 3}
@@ -249,12 +251,22 @@ def test_every_record_read_once_passes_the_gate():
     assert result["pages"]["finish_length_bp"] == 0
 
 
-def test_a_reading_beyond_the_scoring_bounds_is_refused_not_measured():
+def test_a_reading_beyond_the_scoring_bounds_is_an_unmeasured_failure_the_gate_cannot_pass(
+    monkeypatch,
+):
     acts = one_act_each()
     acts[0]["text"] = "a" * (MAX_TEXT_LENGTH + 1)
+    # With no share required, only the unmeasured record can hold the gate shut.
+    monkeypatch.setattr(exactly_once, "GATE_EXACTLY_ONCE_BP", 0)
 
-    with pytest.raises(Refusal, match="^text-out-of-bounds:"):
-        report([page(acts)])
+    result = report([page(acts)])
+
+    rows = {row["record_id"]: row for row in result["rows"]}
+    assert rows["rec-0"]["text"] == "text-out-of-bounds"
+    assert rows["rec-0"]["outcome"] == "unmeasured"
+    assert [rows[f"rec-{k}"]["outcome"] for k in (1, 2)] == ["exactly-once", "exactly-once"]
+    assert result["gate"]["unmeasured_records"] == 1
+    assert result["gate"]["passed"] is False
 
 
 def test_two_entries_read_as_one_act_are_merged_and_caught_by_merged_detection():
@@ -1021,7 +1033,7 @@ def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_
         "split": "val",
         "rows_not_scored": 0,
     }
-    assert written["schema"] == "exactly-once-report.v3"
+    assert written["schema"] == "exactly-once-report.v4"
     assert written["run"]["run_id"] == "r"
     assert is_sha256(written["run"]["export_sha256"])
     with pytest.raises(Refusal, match="^output-exists:"):
