@@ -64,7 +64,14 @@ from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256, verify_self_hash
+from common.contracts.canonical import (
+    canonical_bytes,
+    digest_bytes,
+    is_plain_int,
+    is_sha256,
+    verify_self_hash,
+)
+from common.contracts.errors import ContractError
 from common.contracts.stages import PERLECTOR
 from common.page_accounting import (
     DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
@@ -89,13 +96,16 @@ from common.page_path import (
     PERLECTIO_SCHEMA,
 )
 from common.runtree.store import RunTree
-from common.stage import run_sealed_config_digests
+from common.stage import run_sealed_config_digests, verify_final_seal
 
 from . import CorpusRefusal
 from .cache import write_new_file
 from .compare import ReadOnlyRunTree, load_exemplar_page_shas
+from .local_admission import load_local_admission_ledger, validate_local_admission_ledger
+from .normalization import GRAPHEMIC_V1, within_text_bounds
+from .scoring import TEXT_OUT_OF_BOUNDS
 
-SCHEMA: Final = "exactly-once-report.v2"
+SCHEMA: Final = "exactly-once-report.v4"
 GATE_EXACTLY_ONCE_BP: Final = 9_500
 # A gold record's text is read when its character error rate against the best
 # holding act's reading is at most this (basis points): stricter than the
@@ -117,6 +127,9 @@ LOST: Final = "lost"
 MERGED: Final = "merged"
 DUPLICATED: Final = "duplicated"
 FAILURES: Final = frozenset({LOST, MERGED})
+# A record whose holding act's reading is beyond the scoring profile's text
+# bounds: not measured, never exactly-once, and the gate cannot pass with one.
+UNMEASURED: Final = "unmeasured"
 # A page is read once and may be re-asked once; each reading has its own accounting.
 FIRST_READING: Final = 1
 REASK_READING: Final = 2
@@ -127,10 +140,12 @@ EXACTLY_ONCE_REFUSAL_REASONS: Final = frozenset(
     {
         "malformed-record",
         "missing-file",
+        "no-export",
         "not-page-read",
         "output-exists",
         "output-in-run-tree",
         "policy-mismatch",
+        "reference-mismatch",
     }
 )
 
@@ -142,24 +157,54 @@ class Refusal(CorpusRefusal):
 # --- inputs ----------------------------------------------------------------------------
 
 
-def gold_records(
-    gold_rows: Sequence[Mapping[str, Any]], ledger_rows: Sequence[Mapping[str, Any]]
-) -> list[dict[str, Any]]:
-    """Admitted RecordGold records as `{record_id, page_sha256, box_px, text}`.
+def gold_records(gold_body: bytes, ledger: Mapping[str, Any]) -> tuple[list[dict[str, Any]], int]:
+    """Admitted RecordGold records as `{record_id, page_sha256, box_px, text}`,
+    and the number of gold rows not scored.
 
-    The admission ledger gives each admitted record its page digest and its box
-    in the stored page's frame (`bbox = [x, y, w, h]`), kept as the page
-    records' own `bounds` `{x, y, w, h}`; `gold.jsonl` gives its text. A ledger
-    record with no gold row is refused by name.
+    `gold_body` is the bytes of the set's `gold.jsonl` and `ledger` its
+    admission ledger. The ledger is validated and the gold bytes must be the
+    exact file its receipt sealed. The file is read as admission reads it:
+    blank lines skipped, and a row with no string `record_id` or `text` left
+    out, as admission refused it. Each admitted record's text is the gold row
+    whose text digests to the `text_sha256` the ledger's reference page holds
+    for it, so where admission kept one of two rows naming a record, the copy
+    it kept is the one scored. The ledger gives each admitted record its page
+    digest and its box in the stored page's frame (`bbox = [x, y, w, h]`), kept
+    as the page records' own `bounds` `{x, y, w, h}`. A ledger record with no
+    gold row, or gold rows none of which matches its text digest, is refused by
+    name.
     """
-    texts: dict[str, str] = {}
-    for row in gold_rows:
+    ledger = validate_local_admission_ledger(ledger)
+    sealed = ledger["receipt"]["digests"]["gold.jsonl"]
+    if digest_bytes(gold_body) != sealed:
+        raise Refusal(
+            f"reference-mismatch: the gold file digests to {digest_bytes(gold_body)}, the "
+            f"admission ledger sealed gold.jsonl as {sealed}"
+        )
+    candidates: dict[str, list[str]] = {}
+    rows = _jsonl_rows(gold_body, "gold.jsonl")
+    for row in rows:
         record_id, text = row.get("record_id"), row.get("text")
-        if not isinstance(record_id, str) or not isinstance(text, str):
-            raise Refusal("malformed-record: a gold row carries no record_id or text")
-        texts[record_id] = text
+        if isinstance(record_id, str) and isinstance(text, str):
+            candidates.setdefault(record_id, []).append(text)
+    admitted_sha256 = {
+        act["record_id"]: act["text_sha256"]
+        for page in ledger["reference_pages"]
+        for act in page["acts"]
+    }
+    texts: dict[str, str] = {}
+    for record_id, sha256 in admitted_sha256.items():
+        given = candidates.get(record_id, [])
+        matching = [text for text in given if digest_bytes(text.encode("utf-8")) == sha256]
+        if given and not matching:
+            raise Refusal(
+                f"reference-mismatch: no gold row for {record_id!r} matches its admitted text "
+                "digest"
+            )
+        if matching:
+            texts[record_id] = matching[0]
     records = []
-    for row in ledger_rows:
+    for row in ledger["rows"]:
         if row.get("decision") != "admitted":
             continue
         record_id, page_sha256, bbox = row["record_id"], row["page_sha256"], row["bbox"]
@@ -188,7 +233,7 @@ def gold_records(
                 "text": texts[record_id],
             }
         )
-    return sorted(records, key=lambda record: record["record_id"])
+    return sorted(records, key=lambda record: record["record_id"]), len(rows) - len(records)
 
 
 def _read_ref_json(tree: RunTree | ReadOnlyRunTree, ref: Any) -> dict[str, Any]:
@@ -586,9 +631,16 @@ def _score_records(
             for region in page["act_regions"]
             if region["kind"] == "act" and is_inside(box, region["region_boxes_px"], policy)
         ]
+        # Gold texts are bounded where the admission ledger validates its
+        # reference pages; a reading is bounded here, before it is compared.
         text = (
             "no-region"
             if not holding
+            else TEXT_OUT_OF_BOUNDS
+            if not all(
+                within_text_bounds(readings.get(region["n"], ""), GRAPHEMIC_V1)
+                for region in holding
+            )
             else "read"
             if any(_read_in(record, others, readings.get(region["n"], "")) for region in holding)
             else "not-read"
@@ -599,7 +651,9 @@ def _score_records(
             for other in others
         )
         outcome = (
-            LOST
+            UNMEASURED
+            if text == TEXT_OUT_OF_BOUNDS
+            else LOST
             if text != "read"
             else MERGED
             if merged
@@ -738,7 +792,7 @@ def exactly_once_report(
     sealed_page_sha256s: Collection[str],
     seconds_per_page: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
-    """The `exactly-once-report.v2` body for page records against gold records.
+    """The `exactly-once-report.v4` body for page records against gold records.
 
     `pages` as `load_page_records` returns them; `gold` as `gold_records`
     returns them; `sealed_policy_sha256` the page-accounting digest the run
@@ -862,6 +916,7 @@ def exactly_once_report(
 
     seconds = sorted((seconds_per_page or {}).values())
     exactly_bp = _share(exactly, len(rows))
+    unmeasured = outcomes[UNMEASURED]
     run_shas = {page["page_sha256"] for page in pages}
     return {
         "schema": SCHEMA,
@@ -872,10 +927,12 @@ def exactly_once_report(
             "required_bp": GATE_EXACTLY_ONCE_BP,
             "uncaught_failures": len(uncaught),
             "unchecked_pages": len(unchecked_pages),
+            "unmeasured_records": unmeasured,
             "passed": exactly_bp is not None
             and exactly_bp >= GATE_EXACTLY_ONCE_BP
             and not uncaught
-            and not unchecked_pages,
+            and not unchecked_pages
+            and not unmeasured,
         },
         "scope": {
             "sealed_pages": len(sealed),
@@ -996,7 +1053,8 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"gate: {'PASS' if gate['passed'] else 'FAIL'}  exactly once "
         f"{records['exactly_once']}/{records['total']} ({gate['exactly_once_bp']} bp, "
         f"need {gate['required_bp']}); uncaught failures {gate['uncaught_failures']}; "
-        f"unchecked pages {gate['unchecked_pages']}",
+        f"unchecked pages {gate['unchecked_pages']}; unmeasured records "
+        f"{gate['unmeasured_records']}",
         f"outcomes: {records['by_outcome']}; act regions per record: "
         f"{records['by_act_regions']}; text: {records['by_text']}",
         f"failures caught (located) by rule: {records['failures_caught_by_rule']}; "
@@ -1021,14 +1079,24 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
 # --- command line ----------------------------------------------------------------------
 
 
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+def _jsonl_rows(body: bytes, what: str) -> list[dict[str, Any]]:
+    try:
+        rows = [json.loads(line) for line in body.decode("utf-8").splitlines() if line.strip()]
+    except ValueError as error:
+        raise Refusal(f"malformed-record: {what} is not UTF-8 JSON lines: {error}") from error
+    if not all(isinstance(row, dict) for row in rows):
+        raise Refusal(f"malformed-record: a line of {what} is not a JSON object")
+    return rows
+
+
+def _read_bytes(path: Path) -> bytes:
     if not path.is_file():
         raise Refusal(f"missing-file: {path} is not a file")
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    return path.read_bytes()
 
 
-def selected_page_sha256s(path: Path, ledger_self_hash: str) -> set[str]:
-    """The page digests a `proof_pages` selection chose from this ledger."""
+def selected_page_sha256s(path: Path, ledger_self_hash: str) -> tuple[set[str], str]:
+    """The page digests a `proof_pages` selection chose from this ledger, and its self-hash."""
     if not path.is_file():
         raise Refusal(f"missing-file: {path} is not a file")
     selection = json.loads(path.read_bytes())
@@ -1037,13 +1105,11 @@ def selected_page_sha256s(path: Path, ledger_self_hash: str) -> set[str]:
             "malformed-record: the selection does not hash to itself or was drawn from another "
             "ledger"
         )
-    return {page["page_sha256"] for page in selection["pages"]}
+    return {page["page_sha256"] for page in selection["pages"]}, selection["self_hash"]
 
 
 def main(argv: list[str] | None = None) -> int:
     import argparse
-
-    from .local_admission import load_local_admission_ledger
 
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--run-root", type=Path, required=True, help="the runs directory")
@@ -1072,14 +1138,17 @@ def main(argv: list[str] | None = None) -> int:
         raise Refusal("output-in-run-tree: the report must be written outside the run tree")
     policy = load_page_accounting_policy(args.page_accounting_config)
     ledger = load_local_admission_ledger(args.ledger)
-    gold = gold_records(_read_jsonl(args.gold), ledger["rows"])
+    gold, rows_not_scored = gold_records(_read_bytes(args.gold), ledger)
     tree = ReadOnlyRunTree(run_tree)
+    try:
+        export_record = verify_final_seal(tree)
+    except ContractError as error:
+        raise Refusal(f"no-export: the run has no verified Armarium export ({error})") from error
     pages = load_page_records(tree)
-    scope = (
-        selected_page_sha256s(args.selection, ledger["self_hash"])
-        if args.selection
-        else set(load_exemplar_page_shas(tree).values())
-    )
+    if args.selection:
+        scope, selection_self_hash = selected_page_sha256s(args.selection, ledger["self_hash"])
+    else:
+        scope, selection_self_hash = set(load_exemplar_page_shas(tree).values()), None
     seconds = (
         json.loads(args.seconds_per_page.read_text(encoding="utf-8"))
         if args.seconds_per_page
@@ -1093,8 +1162,18 @@ def main(argv: list[str] | None = None) -> int:
         sealed_page_sha256s=scope,
         seconds_per_page=seconds,
     )
-    report["ledger_self_hash"] = ledger["self_hash"]
+    report["reference"] = {
+        "ledger_self_hash": ledger["self_hash"],
+        "gold_jsonl_sha256": ledger["receipt"]["digests"]["gold.jsonl"],
+        "split": ledger["split"],
+        "rows_not_scored": rows_not_scored,
+    }
+    report["run"] = {
+        "run_id": run_tree.run_id,
+        "export_sha256": digest_bytes(canonical_bytes(export_record)),
+    }
     report["scope"]["basis"] = "selection" if args.selection else "sealed"
+    report["scope"]["selection_self_hash"] = selection_self_hash
     body = (json.dumps(report, indent=2, sort_keys=True) + "\n").encode("utf-8")
     if not write_new_file(args.out, body):
         raise Refusal(f"output-exists: {args.out}")

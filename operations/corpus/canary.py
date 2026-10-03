@@ -29,7 +29,7 @@ from operations.submit.submit import build_manifest, walk_folder
 
 from .compare import compare_page_geometry, load_exemplar_page_shas, load_pipeline_reading_acts
 from .local_admission import admit_local_set
-from .normalization import GRAPHEMIC_V1
+from .normalization import GRAPHEMIC_V1, within_text_bounds
 from .reference import validate_reference_page
 from .scoring import OutputStatus, score_response
 from .witness_evaluate import CHAIRS, page_witness_index, sealed_page_bindings, witness_reading
@@ -252,6 +252,9 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 if page is None:
                     continue
                 reference_text = "\n".join(act["text"] for act in page["acts"])
+                if not within_text_bounds(reference_text, GRAPHEMIC_V1):
+                    fail(chair, "canary-reference-text-out-of-bounds")
+                    continue
                 testimonium = witnessed.get(ordinal, {}).get(chair)
                 if testimonium is None:
                     fail(
@@ -301,14 +304,19 @@ def _check_run(tree: RunTree, canary_root: str | Path) -> dict[str, Any]:
                 fail(PERLECTOR, "no-canary-reading")
                 continue
             texts = [row.get("payload", {}).get("text") for row in rows]
-            if (
+            reference_text = "\n".join(act["text"] for act in page["acts"])
+            if not within_text_bounds(reference_text, GRAPHEMIC_V1):
+                fail(PERLECTOR, "canary-reference-text-out-of-bounds")
+            elif (
                 any(row.get("outcome") not in read_outcomes for row in rows)
                 or not all(isinstance(text, str) and text.strip() for text in texts)
                 or _repeated("\n".join(texts))
             ):
                 fail(PERLECTOR, "canary-reading-empty-truncated-or-repeated")
+            elif not within_text_bounds("\n".join(texts), GRAPHEMIC_V1):
+                fail(PERLECTOR, "canary-reading-text-out-of-bounds")
             elif not _shared(
-                "\n".join(act["text"] for act in page["acts"]),
+                reference_text,
                 "\n".join(texts),
                 OutputStatus.COMPLETE,
             ):
