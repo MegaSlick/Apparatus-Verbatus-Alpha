@@ -1,36 +1,22 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "env": {
-    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1",
-    "PONYTAIL_SUBAGENT_MATCHER": "^(general-purpose|claude|plan)$"
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "1"
   },
   "permissions": {
     "deny": [
-      "Bash(git*push*origin main)",
-      "Bash(git*push*origin main *)",
-      "Bash(git*push*:main)",
-      "Bash(git*push*:main *)",
-      "Bash(git*push*refs/heads/main)",
-      "Bash(git*push*refs/heads/main *)",
-      "Bash(git*merge*--no-verify*)",
       "Bash(git*push*--force*)",
       "Bash(git*push* -f*)",
-      "Bash(git*push*--mirror*)",
-      "Bash(git*push*--delete*)",
       "Bash(git*commit*--no-verify*)",
       "Bash(git*commit* -n*)",
+      "Bash(git*merge*--no-verify*)",
+      "Bash(git*filter-branch*)",
+      "Bash(git*filter-repo*)",
       "Bash(git*-c core.hooksPath*)",
       "Bash(git config core.hooksPath *)",
-      "Bash(git config --unset core.hooksPath*)",
-      "Bash(git*filter-branch*)",
-      "Bash(git*filter-repo*)"
+      "Bash(git config --unset core.hooksPath*)"
     ],
     "ask": [
-      "Bash(runpodctl send*)",
-      "Bash(runpodctl receive*)",
-      "Bash(runpodctl ssh*)",
-      "Bash(runpodctl config*)",
-      "Bash(runpodctl update*)",
       "Bash(runpodctl create*)",
       "Bash(runpodctl pod create*)",
       "Bash(runpodctl start*)",
