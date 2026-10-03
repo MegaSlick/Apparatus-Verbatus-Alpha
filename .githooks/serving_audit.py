@@ -45,6 +45,10 @@ REVIEWED_ADVISORIES: dict[tuple[str, str], dict[str, str]] = {
 }
 
 
+# A hung advisory lookup fails the gate rather than stalling it.
+AUDIT_TIMEOUT_SECONDS = 600
+
+
 class InventoryError(Exception):
     pass
 
@@ -150,8 +154,20 @@ def audit(layers: list[list[tuple[str, str]]], directory: Path) -> int:
                 )
                 ignored += ["--ignore-vuln", advisory]
         command = [sys.executable, "-m", "pip_audit", "--strict", "--no-deps", "--disable-pip"]
-        result = subprocess.run([*command, *ignored, "--requirement", str(requirements)])
-        status = status or result.returncode
+        try:
+            result = subprocess.run(
+                [*command, *ignored, "--requirement", str(requirements)],
+                timeout=AUDIT_TIMEOUT_SECONDS,
+            )
+            returncode = result.returncode
+        except subprocess.TimeoutExpired:
+            print(
+                f"serving_audit: pip-audit of {requirements.name} did not finish in "
+                f"{AUDIT_TIMEOUT_SECONDS} s, so the advisory lookup is incomplete",
+                file=sys.stderr,
+            )
+            returncode = 1
+        status = status or returncode
     return status
 
 

@@ -20,7 +20,7 @@ PYPROJECT = {
 def audited(monkeypatch, tmp_path, export):
     commands = []
 
-    def record(command):
+    def record(command, **_):
         commands.append(command)
         return subprocess.CompletedProcess(command, 0)
 
@@ -79,3 +79,33 @@ def test_a_wildcard_python_version_is_evaluated_on_its_minor():
     assert serving_audit.serving_inventory(export, PYPROJECT) == [
         [("numpy", "1.0"), ("served", "2.0")]
     ]
+
+
+TWO_LAYERS = [[("numpy", "1.0"), ("served", "2.0")], [("numpy", "2.0")]]
+
+
+def test_a_failed_earlier_layer_fails_the_audit_though_a_later_one_passes(monkeypatch, tmp_path):
+    statuses = iter([1, 0])
+    monkeypatch.setattr(
+        serving_audit.subprocess,
+        "run",
+        lambda command, **_: subprocess.CompletedProcess(command, next(statuses)),
+    )
+
+    assert serving_audit.audit(TWO_LAYERS, tmp_path) == 1
+
+
+def test_an_audit_that_does_not_finish_in_time_fails(monkeypatch, tmp_path, capsys):
+    timeouts = []
+
+    def hang_first(command, **options):
+        timeouts.append(options.get("timeout"))
+        if len(timeouts) == 1:
+            raise subprocess.TimeoutExpired(command, options["timeout"])
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(serving_audit.subprocess, "run", hang_first)
+
+    assert serving_audit.audit(TWO_LAYERS, tmp_path) == 1
+    assert timeouts == [serving_audit.AUDIT_TIMEOUT_SECONDS] * 2
+    assert "did not finish" in capsys.readouterr().err
