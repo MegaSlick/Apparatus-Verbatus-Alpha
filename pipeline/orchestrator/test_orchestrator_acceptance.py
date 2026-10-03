@@ -19,8 +19,6 @@ import sys
 from argparse import Namespace
 from copy import deepcopy
 from io import BytesIO
-from itertools import combinations, product
-from math import comb
 from pathlib import Path
 from zipfile import ZIP_STORED, BadZipFile, ZipFile
 
@@ -67,6 +65,7 @@ from conftest import (
     is_immutable_evidence,
     load_stage,
     programs_through,
+    rewitness_stage_boundary,
 )
 from conftest import file_digest_snapshot as snapshot
 from operations.operator import surface, volume_s3
@@ -104,8 +103,8 @@ FIXTURE = "synthetic-two-page-v0"
 # the reconstructor's receipt.
 HAPPY_SNAPSHOT_FILES = 141
 REVIEW_SNAPSHOT_FILES = 132
-HAPPY_RUN_TREE_DIGEST = "26906c305ba287bc848106f0cc7292265a0c9e03eaa62f1c15f4c59522ad0c79"
-REVIEW_RUN_TREE_DIGEST = "0ff932be8dd6f2c93967eb3f32ab47a5718a349b203aa1d53cd7b010606102ef"
+HAPPY_RUN_TREE_DIGEST = "e8406eac0886007d0a91bcf33983144215e76fe42ff3d3dbf7e29ac67d8f5b59"
+REVIEW_RUN_TREE_DIGEST = "6e9fe2794ba6e9f8345206c1c37604e9c78cf19ed384e043fd9c90c07158974b"
 
 
 def orchestrate_to_export(
@@ -1152,110 +1151,53 @@ def _semantic_stage_seal_inventory_replacements(
         if record.get("kind") == "stage-seal":
             seals.append(row)
 
-    def matching_artifacts(stage: str, payload: dict) -> list[tuple[Path, bytes, dict]] | None:
-        census = payload.get("census")
-        if not isinstance(census, list):
-            return None
-        by_kind_outcome: dict[tuple[str, str], list[tuple[Path, bytes, dict]]] = {}
-        for row in records_by_stage[stage]:
-            if row[2]["kind"] in {"stage-seal", "decode-environment"}:
-                continue
-            key = (row[2]["kind"], row[2]["outcome"])
-            by_kind_outcome.setdefault(key, []).append(row)
-        choice_specs = []
-        possible = 1
-        for row in census:
-            if not isinstance(row, dict):
-                return None
-            key = (row.get("kind"), row.get("outcome"))
-            count = row.get("count")
-            if (
-                not isinstance(key[0], str)
-                or not isinstance(key[1], str)
-                or not isinstance(count, int)
-            ):
-                return None
-            source = by_kind_outcome.get(key, [])
-            if count < 1 or len(source) < count:
-                return None
-            possible *= comb(len(source), count)
-            if possible > 8192:
-                return None
-            choice_specs.append((source, count))
-        matches = []
-        for groups in product(*(combinations(source, count) for source, count in choice_specs)):
-            selected = [item for group in groups for item in group]
-            entries = [
-                {
-                    "artifact_id": record["artifact_id"],
-                    "kind": record["kind"],
-                    "subject_id": record["subject_id"],
-                    "outcome": record["outcome"],
-                    "relative_path": str(path.relative_to(path.parents[3])),
-                    "sha256": digest_bytes(data),
-                }
-                for path, data, record in selected
-            ]
-            entries.sort(key=lambda entry: entry["artifact_id"])
-            if digest_of(entries) == payload.get("artifact_inventory"):
-                matches.append(selected)
-                if len(matches) > 1:
-                    return None
-        return matches[0] if matches else None
+    def inventory_entry(path: Path, data: bytes, record: dict) -> dict[str, str]:
+        return {
+            "artifact_id": record["artifact_id"],
+            "kind": record["kind"],
+            "subject_id": record["subject_id"],
+            "outcome": record["outcome"],
+            "relative_path": str(path.relative_to(path.parents[3])),
+            "sha256": digest_bytes(data),
+        }
 
-    def matching_blobs(stage: str, payload: dict) -> list[dict[str, str]] | None:
-        stage_root = WRITING_DIRECTORIES[stage]
-        prefix = f"{stage_root}/blobs/sha256/"
-        candidates = []
-        for path, data in files:
-            relative = str(path.relative_to(path.parents[3]))
-            if relative.startswith(prefix) and "/" not in relative[len(prefix) :]:
-                candidates.append({"name": path.name, "sha256_of_content": digest_bytes(data)})
-        matches = []
-        probes = 0
-        for count in range(len(candidates) + 1):
-            for chosen in combinations(candidates, count):
-                probes += 1
-                if probes > 8192:
-                    return None
-                selected = sorted(chosen, key=lambda row: row["name"])
-                if digest_of(selected) == payload.get("blob_inventory"):
-                    matches.append(selected)
-                    if len(matches) > 1:
-                        return None
-        return matches[0] if matches else None
-
-    for _, _, seal in seals:
+    # A seal witnesses the stage's whole artifact and blob inventory when it was
+    # written. Rebuild exactly that from the tree and let the seal's own digests
+    # confirm it; a tree that has grown since cannot be reduced and is refused.
+    for seal_path, _, seal in seals:
         payload = seal.get("payload")
         stage = payload.get("stage") if isinstance(payload, dict) else None
         if stage not in records_by_stage:
             continue
-        selected_artifacts = matching_artifacts(stage, payload)
-        blobs = matching_blobs(stage, payload)
-        if selected_artifacts is None or blobs is None:
-            continue
-        artifacts = [
-            {
-                "artifact_id": record["artifact_id"],
-                "kind": record["kind"],
-                "subject_id": record["subject_id"],
-                "outcome": record["outcome"],
-                "relative_path": str(path.relative_to(path.parents[3])),
-                "sha256": digest_bytes(data),
-            }
-            for path, data, record in selected_artifacts
-        ]
-        artifacts.sort(key=lambda entry: entry["artifact_id"])
+        sealed = sorted(
+            (
+                row
+                for row in records_by_stage[stage]
+                if row[2]["kind"] not in {"stage-seal", "decode-environment"}
+            ),
+            key=lambda row: row[2]["artifact_id"],
+        )
+        artifacts = [inventory_entry(*row) for row in sealed]
+        prefix = f"{WRITING_DIRECTORIES[stage]}/blobs/sha256/"
+        blobs = sorted(
+            (
+                {"name": path.name, "sha256_of_content": digest_bytes(data)}
+                for path, data in files
+                if str(path.relative_to(path.parents[3])).startswith(prefix)
+                and "/" not in str(path.relative_to(path.parents[3]))[len(prefix) :]
+            ),
+            key=lambda row: row["name"],
+        )
         if payload.get("artifact_inventory") != digest_of(artifacts) or payload.get(
             "blob_inventory"
         ) != digest_of(blobs):
-            continue
+            raise AssertionError(
+                f"{stage} stage seal {seal_path.name}: the stage's artifacts and blobs no "
+                "longer match the inventory it sealed, so the semantic snapshot cannot "
+                "reduce it"
+            )
         semantic_artifacts = _replace_semantic_digests(artifacts, replacements)
-        for entry, (_, data, _) in zip(
-            semantic_artifacts,
-            sorted(selected_artifacts, key=lambda row: row[2]["artifact_id"]),
-            strict=True,
-        ):
+        for entry, (_, data, _) in zip(semantic_artifacts, sealed, strict=True):
             entry["sha256"] = replacements.get(digest_bytes(data), digest_bytes(data))
         semantic_blobs = _replace_semantic_digests(blobs, replacements)
         replacements[payload["artifact_inventory"]] = digest_of(semantic_artifacts)
@@ -1625,6 +1567,90 @@ def happy_run(tmp_path_factory):
     # Partial by design: an act may cross the page break, and code never joins it.
     assert result.returncode == 3, result.stderr
     return root, RunTree(root, "r")
+
+
+# --- Semantic snapshot: stage seals reduce whatever their inventory size --------
+
+_AFTER_ATTESTATORES = ("4_perlector", "4b_coniector", "5_recensor", "6_archetypus", "7_armarium")
+
+
+def _through_attestatores(happy_run, destination: Path, change=None) -> Path:
+    """The happy tree up to the Attestatores, optionally changed and honestly resealed.
+
+    Later stages name the Attestatores seal's bytes, so they are dropped rather
+    than rewitnessed; the Attestatores seal is the one under test.
+    """
+    source, _ = happy_run
+    shutil.copytree(source, destination)
+    for name in _AFTER_ATTESTATORES:
+        shutil.rmtree(destination / "r" / name)
+    if change is not None:
+        tree = RunTree(destination, "r")
+        change(tree)
+        rewitness_stage_boundary(tree, ATTESTATORES)
+    return destination
+
+
+def _only_artifact(tree: RunTree, kind: str) -> Path:
+    (path,) = (tree.root / "3_attestatores" / "artifacts" / kind).iterdir()
+    return path
+
+
+def _rewrite_record(path: Path, edit) -> None:
+    record = json.loads(path.read_bytes())
+    edit(record)
+    record["self_hash"] = self_hash(record)
+    path.write_bytes(canonical_bytes(record))
+
+
+def _other_platform(tree: RunTree) -> None:
+    def edit(record):
+        record["payload"]["platform"] = "Darwin"
+        record["payload"]["machine"] = "arm64"
+
+    _rewrite_record(_only_artifact(tree, "decode-environment"), edit)
+
+
+def _changed_text(tree: RunTree) -> None:
+    def edit(record):
+        record["payload"]["payload"] = record["payload"]["payload"].replace("alpha", "alpha!")
+
+    directory = tree.root / "3_attestatores" / "artifacts" / "page-testimonium"
+    _rewrite_record(sorted(directory.iterdir())[0], edit)
+
+
+def _added_blob(tree: RunTree) -> None:
+    tree.put_blob(ATTESTATORES, b"one more retained response")
+
+
+def _attestatores_blobs(root: Path) -> list[Path]:
+    return sorted((root / "r" / "3_attestatores" / "blobs" / "sha256").iterdir())
+
+
+def test_a_platform_only_change_leaves_the_semantic_digest_unchanged(happy_run, tmp_path):
+    """The Attestatores seal's blob inventory is too large to find by trying subsets."""
+    original = _through_attestatores(happy_run, tmp_path / "original")
+    moved = _through_attestatores(happy_run, tmp_path / "moved", _other_platform)
+
+    assert len(_attestatores_blobs(original)) > 13
+    assert snapshot(original) != snapshot(moved)
+    assert semantic_snapshot_digest(moved) == semantic_snapshot_digest(original)
+
+
+@pytest.mark.parametrize("change", [_added_blob, _changed_text], ids=["blob", "text"])
+def test_a_content_change_under_a_stage_seal_moves_the_semantic_digest(happy_run, tmp_path, change):
+    original = _through_attestatores(happy_run, tmp_path / "original")
+    changed = _through_attestatores(happy_run, tmp_path / "changed", change)
+
+    assert semantic_snapshot_digest(changed) != semantic_snapshot_digest(original)
+
+
+def test_a_seal_whose_inventory_cannot_be_rebuilt_is_refused(happy_run, tmp_path):
+    root = _through_attestatores(happy_run, tmp_path / "unsealed")
+    _added_blob(RunTree(root, "r"))
+
+    with pytest.raises(AssertionError, match="attestatores stage seal"):
+        semantic_snapshot_digest(root)
 
 
 # --- 1. The happy path runs offline, and every reference resolves --------------
