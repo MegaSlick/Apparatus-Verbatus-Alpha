@@ -18,7 +18,7 @@ GOOD = {
             "cites": ["A2", "B3", "L10-L17"],
             "text": "Le vingt [[mai|may]] [[?]]",
             "continues_from_previous_page": True,
-            "continues_to_next_page": True,
+            "continues_to_next_page": False,
         },
         {
             "n": 2,
@@ -26,7 +26,7 @@ GOOD = {
             "cites": [],
             "text": "12",
             "continues_from_previous_page": False,
-            "continues_to_next_page": False,
+            "continues_to_next_page": True,
         },
     ],
     "set_aside": [{"id": "C9", "reason": "empty unit"}],
@@ -92,6 +92,10 @@ def test_a_code_fenced_answer_is_malformed_and_named(opening):
         (_with(lambda a: a["acts"][0].update(cites=["A1", 2])), "cites-invalid"),
         (_with(lambda a: a["acts"][0].update(text=None)), "text-invalid"),
         (_with(lambda a: a["acts"][0].update(continues_to_next_page="no")), "flag-invalid"),
+        (
+            _with(lambda a: a["acts"][1].update(continues_from_previous_page=True)),
+            "continuation-not-at-edge",
+        ),
         (_with(lambda a: a["set_aside"].append({"id": "A1"})), "set-aside-invalid"),
         (_with(lambda a: a["set_aside"].append({"id": 4, "reason": "x"})), "set-aside-invalid"),
     ],
@@ -126,8 +130,8 @@ def test_one_act_may_carry_both_continuation_flags():
 
 
 def test_every_problem_in_an_answer_is_reported_not_only_the_first():
-    raw = _with(lambda a: (a["acts"][0].update(text=3), a["acts"][1].update(kind="entry")))
-    assert _codes(page_answer.parse_page_answer(raw)[2]) == ["text-invalid", "kind-unknown"]
+    raw = _with(lambda a: (a["acts"][0].update(kind="entry"), a["acts"][1].update(text=3)))
+    assert _codes(page_answer.parse_page_answer(raw)[2]) == ["kind-unknown", "text-invalid"]
 
 
 def test_a_reply_that_is_not_text_is_malformed():
@@ -179,7 +183,7 @@ def test_a_deeply_nested_value_is_named_by_its_type_not_quoted(field):
 
 def test_a_non_string_kind_is_malformed_not_a_crash():
     for kind in (["act"], {"act": 1}):
-        raw = _with(lambda a, kind=kind: a["acts"][1].update(kind=kind))
+        raw = _with(lambda a, kind=kind: a["acts"][0].update(kind=kind))
         state, answer, problems = page_answer.parse_page_answer(raw)
         assert (state, answer, _codes(problems)) == ("malformed", None, ["kind-unknown"])
 
@@ -292,34 +296,45 @@ START, END, BOTH = ("act", True, False), ("act", False, True), ("act", True, Tru
         _page(OTHER, START),
         _page(OTHER, BOTH, OTHER),
         _page(OTHER, START, OTHER, ACT, OTHER, END, OTHER),
+        _page(("other", True, False), ACT),
+        _page(ACT, ("other", False, True)),
+        _page(("other", True, True)),
     ],
-    ids=["page-number-last", "heading-first", "both-around-one-act", "notes-between-acts"],
+    ids=[
+        "page-number-last",
+        "heading-first",
+        "both-around-one-act",
+        "notes-between-acts",
+        "first-entry-other",
+        "last-entry-other",
+        "no-act-page-first-and-last",
+    ],
 )
-def test_a_continuation_flag_on_the_first_or_last_act_is_read_whatever_surrounds_it(raw):
+def test_a_flag_on_the_page_s_first_or_last_act_or_entry_is_read(raw):
+    """The act edge is what a break joins; a flag on a first or last `other` entry is
+    read too, and joins nothing (the Recensor notes it)."""
     assert page_answer.parse_page_answer(raw)[::2] == ("parsed", [])
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        _page(("other", True, False), ACT),
-        _page(ACT, ("other", False, True)),
-        _page(("other", True, False)),
-        _page(("other", False, True), OTHER),
         _page(ACT, START),
         _page(END, ACT),
         _page(OTHER, END, OTHER, ACT),
+        _page(ACT, ("other", True, False), ACT),
+        _page(ACT, ("other", False, True), ACT),
+        _page(("other", False, True), OTHER),
     ],
     ids=[
-        "heading-flagged",
-        "page-number-flagged",
-        "no-act-start",
-        "no-act-end",
         "start-on-second-act",
         "end-on-first-of-two",
         "end-before-last-act",
+        "start-on-middle-other",
+        "end-on-middle-other",
+        "no-act-page-end-on-first-of-two",
     ],
 )
-def test_a_continuation_flag_off_the_page_s_act_edge_is_refused(raw):
+def test_a_flag_anywhere_else_is_refused(raw):
     state, _answer, problems = page_answer.parse_page_answer(raw)
     assert (state, _codes(problems)) == ("malformed", ["continuation-not-at-edge"])

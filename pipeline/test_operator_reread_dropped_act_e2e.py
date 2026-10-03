@@ -41,7 +41,7 @@ def _without_act_two(how: str) -> str:
     """Page 1's answer with its second act dropped in the way `how` names."""
     answer = json.loads(PAGE_ANSWERS[1])
     if how == "other":
-        answer["acts"][1].update(kind="other", continues_to_next_page=False)
+        answer["acts"][1]["kind"] = "other"
         return json.dumps(answer)
     first, dropped = answer["acts"]
     answer["acts"] = [first]

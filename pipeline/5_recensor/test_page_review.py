@@ -373,7 +373,10 @@ def test_a_page_of_other_entries_dai_saw_nothing_on_is_confirmed_holding_no_act(
     assert confirmation["failures"] == []
     [dai] = [w for w in confirmation["witnesses"] if w["chair"] == "attestator_2"]
     assert dai == {"chair": "attestator_2", "outcome": "genuinely-empty", "blank": True}
-    assert payload["notes"] == []
+    # The `other` entry's own continuation flag is a note, never a side of a break.
+    assert payload["notes"] == [
+        {"code": page_review.CONTINUATION_ON_OTHER, "flags": ["continues_from_previous_page"]}
+    ]
     # Page 1's last act says it runs on and page 2 has no act: the break stays held.
     [link] = tree.records("5_recensor", "continuation-link")
     assert link["outcome"] == "held-for-review"

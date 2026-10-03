@@ -177,7 +177,11 @@ PAGE_ANSWERS = (
         "scenario": "page-no-act",
         "page_ordinal": 2,
         "answer": {
-            "acts": [_page_entry(1, "a2", ["A1", "C1", "L1", "L2", "L3"], kind="other")],
+            "acts": [
+                _page_entry(
+                    1, "a2", ["A1", "C1", "L1", "L2", "L3"], from_previous=True, kind="other"
+                )
+            ],
             "set_aside": [],
         },
     },
@@ -363,9 +367,7 @@ PAGE_ANSWER_VARIANTS = {
         "page-review",
         {
             1: lambda answer: _with_entry(answer, 2, continues_to_next_page=False),
-            2: lambda answer: _with_entry(
-                answer, 1, kind="other", continues_from_previous_page=False
-            ),
+            2: lambda answer: _with_entry(answer, 1, kind="other"),
         },
     ),
     "page-unbroken": ("happy", _unbroken()),
