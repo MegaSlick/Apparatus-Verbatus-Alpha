@@ -1,9 +1,7 @@
 import pytest
 
-from operations.spike_perlector.errors import MeasurementRefusal
-from operations.spike_perlector.models import OutputStatus
-from operations.spike_perlector.normalization import GRAPHEMIC_V1
-from operations.spike_perlector.scoring import score_response, score_text
+from operations.corpus.normalization import GRAPHEMIC_V1, MeasurementRefusal
+from operations.corpus.scoring import OutputStatus, score_response, score_text
 
 
 @pytest.mark.parametrize(

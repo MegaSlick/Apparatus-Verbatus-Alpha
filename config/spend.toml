@@ -1,7 +1,6 @@
 # Pod-plus-attached-volume money ceilings. config/README.md describes the keys and
 # operations/pod/spend.py refuses any that are missing, unknown or inconsistent.
-# This file being configured is not permission to launch: every boot is asked for
-# separately in the session that runs it.
+# This file being configured is not permission to launch (AGENTS.md, "Who decides").
 schema = "pod-spend.v3"
 state = "configured"
 currency = "USD"

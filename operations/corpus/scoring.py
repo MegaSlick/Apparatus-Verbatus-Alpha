@@ -2,15 +2,32 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Sequence
 
 from rapidfuzz.distance import Levenshtein
 
-from .encoding import sha256_bytes
-from .errors import MeasurementRefusal
-from .models import OutputStatus
-from .normalization import NormalizationProfile, character_units, normalize_text, word_units
+from .normalization import (
+    MeasurementRefusal,
+    NormalizationProfile,
+    character_units,
+    normalize_text,
+    word_units,
+)
+
+
+class OutputStatus(StrEnum):
+    """What a reader returned for one act; every state is scored, none is dropped."""
+
+    COMPLETE = "complete"
+    TRUNCATED = "truncated"
+    NO_READABLE_TEXT = "no_readable_text"
+    REFUSED = "refused"
+    MISSING = "missing"
+    UNAVAILABLE = "unavailable"
+    MALFORMED = "malformed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,8 +151,12 @@ def score_text(
     return ActScore(
         cer=_score_units(character_units(reference, profile), character_units(hypothesis, profile)),
         wer=_score_units(word_units(reference, profile), word_units(hypothesis, profile)),
-        normalized_reference_sha256=sha256_bytes(normalized_reference.encode("utf-8")),
-        normalized_hypothesis_sha256=sha256_bytes(normalized_hypothesis.encode("utf-8")),
+        normalized_reference_sha256=hashlib.sha256(
+            normalized_reference.encode("utf-8")
+        ).hexdigest(),
+        normalized_hypothesis_sha256=hashlib.sha256(
+            normalized_hypothesis.encode("utf-8")
+        ).hexdigest(),
     )
 
 

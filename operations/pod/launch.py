@@ -329,7 +329,7 @@ def _bind_nested_report_path(bootstrap_command_json: str, launch_token: str) -> 
 
 
 SPEND_ALERT_DEBOUNCE_SECONDS: Final = 900
-"""Matches notify.sh's own ``start`` suppression window (operations/notify/notify.sh).
+"""Fifteen minutes between two pages for the same spend alert.
 
 notify.sh deliberately never suppresses a ``milestone`` itself -- a rate limit there
 could swallow a real result (operations/notify/README.md). A hovering balance is not

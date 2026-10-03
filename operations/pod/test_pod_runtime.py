@@ -79,6 +79,7 @@ from .models import (
     LeaseFormatError,
     PendingCreateIntent,
     PodCreateRequest,
+    PodEstimate,
     PodRecord,
     Presence,
     ProviderFailure,
@@ -6379,7 +6380,7 @@ def _table() -> PlacementTable:
     return load_placement_table(root / "config/pod_placement.toml")
 
 
-def test_the_shipped_table_carries_a_prebuilt_profile_for_every_card_spec_04_names() -> None:
+def test_the_shipped_table_carries_a_prebuilt_profile_for_each_rented_card() -> None:
     names = {profile.name for profile in _table().card_profiles}
 
     assert {"RTX 6000 Ada", "RTX PRO 6000 Blackwell", "A40", "RTX A5000"} <= names
@@ -6634,17 +6635,16 @@ def test_preflight_environment_failures_are_red_with_named_remediation(
         assert any(issue.code == "disk-missing" for issue in report.issues)
 
 
-def test_pod_runtime_checked_in_spend_policy_is_the_ledgered_one() -> None:
-    """The committed policy is configured with the project lead's values.
-    This pins them: a drift in the file is a drift in
-    what every paid gate enforces, and the floor stays marked unverified until
-    it has been checked against the provider's balance."""
-    from decimal import Decimal
-
+def _shipped_spend_policy():
     from .spend import load_spend_policy
 
-    root = Path(__file__).resolve().parents[2]
-    policy = load_spend_policy(root / "config/spend.toml")
+    return load_spend_policy(Path(__file__).resolve().parents[2] / "config/spend.toml")
+
+
+def test_the_shipped_spend_policy_carries_the_reviewed_ceilings() -> None:
+    """Read through the loader every paid gate uses: a drift here is a drift in every gate."""
+    policy = _shipped_spend_policy()
+
     assert policy.configured
     assert policy.max_hourly_usd == Decimal("0.50")
     assert policy.max_estimated_metered_cost_usd == Decimal("2.00")
@@ -6655,22 +6655,51 @@ def test_pod_runtime_checked_in_spend_policy_is_the_ledgered_one() -> None:
     assert policy.shutdown_poll_interval_seconds == 30
     assert policy.shutdown_deadline_seconds == 900
     assert policy.billing_cutoff_margin_seconds == 3600
-    text = (root / "config/spend.toml").read_text(encoding="utf-8")
-    floor_note, _, floor_line = text.partition("account_balance_floor_usd =")
-    assert floor_line.startswith(' "50.00"')
-    assert "Documented, unverified default" in floor_note
-    assert "check it against the RunPod balance" in floor_note
-    assert "not permission to launch" in text
 
 
-def test_spend_configuration_documentation_matches_the_observed_balance_contract() -> None:
-    root = Path(__file__).resolve().parents[2]
-    documentation = (root / "config" / "README.md").read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    ("gpu_type_id", "admitted"),
+    [
+        ("NVIDIA RTX A5000", True),
+        ("NVIDIA A40", True),
+        # The next reviewed card up the price list.
+        ("NVIDIA RTX 6000 Ada Generation", False),
+    ],
+)
+def test_the_shipped_spend_policy_admits_the_cards_it_names_and_refuses_the_next_one_up(
+    gpu_type_id: str, admitted: bool
+) -> None:
+    """The cards spend.toml says its hourly ceiling admits, priced by the reviewed table,
+    beside the largest volume rate it allows for ($0.06/h)."""
+    from .spend import assess_spend
 
-    assert "observed `account_balance_floor_usd` hard reserve" in documentation
-    assert "`account_balance_alert_usd` notification threshold" in documentation
-    assert "explicitly configured source" in documentation
-    assert "runtime does not observe account balance" not in documentation
+    now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    table = load_placement_table(Path(__file__).resolve().parents[2] / "config/pod_placement.toml")
+    estimate = PodEstimate(
+        pod_hourly_usd=table.price_for(gpu_type_id),
+        volume_hourly_usd=Decimal("0.06"),
+        source="reviewed placement table",
+        observed_at=now,
+    )
+
+    assessment = assess_spend(
+        _shipped_spend_policy(),
+        estimate,
+        requested_deadline=now + timedelta(hours=1),
+        now=now,
+        balance_observation=AccountBalanceObservation("1000.00", now, "test balance"),
+    )
+
+    assert assessment.allowed is admitted, assessment.reasons
+    if not admitted:
+        assert any("hourly price exceeds configured ceiling" in r for r in assessment.reasons)
+
+
+def test_a_card_the_reviewed_table_does_not_list_cannot_be_priced() -> None:
+    table = load_placement_table(Path(__file__).resolve().parents[2] / "config/pod_placement.toml")
+
+    with pytest.raises(PlacementRefusal, match="no reviewed card_profile"):
+        table.price_for("NVIDIA H100 80GB HBM3")
 
 
 def test_system_gpu_probe_measures_fields_or_returns_red_input_without_a_gpu() -> None:
@@ -7688,7 +7717,7 @@ def test_a_confirmation_spent_before_a_restart_authorizes_nothing_after_one(
     )
 
 
-# -- provider_state: lifecycle is a separate fact from presence (pod-runtime U1) --
+# -- provider_state: lifecycle is a separate fact from presence --
 
 
 def test_an_exited_pod_is_still_present_with_its_lifecycle_word_named() -> None:

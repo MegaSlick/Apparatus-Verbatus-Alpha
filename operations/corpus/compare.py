@@ -13,9 +13,9 @@ what it read; this only pairs a pipeline act with a reference box after the
 fact), and it drops nothing on either side: every unmatched reference act is
 reported as a MISS and every unmatched pipeline act is reported, not scored.
 
-`plan.py`'s own `records_per_page_distribution`, measured over the sealed row
-snapshot, is what `MAX_ACTS_PER_PAGE` is set against (1,165 pages, mean 6.59
-records/page, maximum 30; see `_best_assignment`).
+`MAX_ACTS_PER_PAGE` is set against the records per page measured over the sealed
+row snapshot (1,165 pages, mean 6.59 records/page, maximum 30; see
+`_best_assignment`).
 
 **IoU assignment.** For one page, every pipeline act's bounds -- the Perlector's
 act-regions, each the rectangle a page reading established its act over
@@ -35,9 +35,8 @@ this corpus actually has, not only a small one; `MAX_ACTS_PER_PAGE` is a sanity
 bound well above the corpus's own measured maximum (see below), refusing an
 absurd input rather than silently degrading to an approximation.
 
-**Scoring.** A matched pair's CER/WER comes from the sealed instruments this
-package does not reimplement: `operations.spike_perlector.normalization`'s
-`graphemic-v1` profile and `operations.spike_perlector.scoring.score_response`.
+**Scoring.** A matched pair's CER/WER comes from `normalization.py`'s
+`graphemic-v1` profile and `scoring.score_response`.
 This module supplies the reference text (carried on the reference act) and each matched
 pipeline act's hypothesis text, obtained from
 a caller-supplied mapping rather than an assumed Perlector artifact shape:
@@ -58,12 +57,11 @@ from common.contracts.canonical import is_sha256, self_hash, verify_self_hash
 from common.contracts.identities import is_well_formed
 from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.runtree.store import RunTree
-from operations.spike_perlector.models import OutputStatus
-from operations.spike_perlector.normalization import GRAPHEMIC_V1, NormalizationProfile
-from operations.spike_perlector.scoring import score_response
 
 from . import CorpusRefusal
+from .normalization import GRAPHEMIC_V1, NormalizationProfile
 from .reference import validate_reference_page
+from .scoring import OutputStatus, score_response
 
 SCHEMA = "reference-comparison.v2"
 
@@ -76,8 +74,7 @@ PREDECLARED_IOU_THRESHOLD = Fraction(1, 2)
 
 # A sanity bound on the assignment's size, not a state-space limit -- the matcher
 # is polynomial (O(size**3)). Set well above this corpus's own measured maximum:
-# `plan.py`'s `records_per_page_distribution`, over the sealed row snapshot,
-# reports 1,165 pages at a mean of 6.59 records/page and a maximum of 30. A page
+# the sealed row snapshot holds 1,165 pages at a mean of 6.59 records/page and a maximum of 30. A page
 # whose reference or
 # eligible-pipeline count exceeds this cap is refused by name rather than
 # scored, on the working assumption that a page this crowded is malformed

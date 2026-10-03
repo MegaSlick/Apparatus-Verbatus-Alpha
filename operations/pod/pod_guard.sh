@@ -10,10 +10,12 @@
 # /workspace/private/.pod_guard, on the network volume at the pod's mount path). To extend
 # the deadline, write the new epoch second to a temporary file and move it over
 # deadline-<pod id>. Touching keepalive-<pod id> counts as work at that moment: the idle
-# limit then runs from the touch. The guard touches heartbeat-<pod id> on every tick, so
-# a reader can tell a live guard from a deadline file nobody watches; a released-<pod id>
-# file (pod_run --no-hold writes the run and its outcome there) is quoted in the delete
-# notice, so a finished run's notice differs from one whose time ran out mid-run.
+# limit then runs from the touch; pod_run touches it while the run's transcript or run
+# tree grows, never for CPU time alone. The guard touches heartbeat-<pod id> on every
+# tick, so a reader can tell a live guard from a deadline file nobody watches; a
+# released-<pod id> file (pod_run --no-hold writes the run and its outcome there) is
+# quoted in the delete notice, so a finished run's notice differs from one whose time ran
+# out mid-run.
 set -u
 
 max_hours=${1:?usage: pod_guard.sh <max_hours> [idle_minutes]}
@@ -161,13 +163,55 @@ net_busy() {
   [ $((now - before)) -ge $((interval * busy_net_kbps * 1024)) ]
 }
 
+# An unreadable CPU counter never causes a deletion. One unreadable tick after a good
+# reading is no evidence either way (exit 2: idle time neither reset nor added), and the
+# next good reading is compared over every tick since the last one. A counter unreadable
+# since arming, or for a second tick running, counts as busy and is read again every
+# tick. Each episode is logged; the phone hears of one, and of its recovery, at most
+# once an hour, so a flapping counter cannot flood it. The deadline still ends the pod.
+cpu_unread=0
+cpu_span=1
+cpu_held=""
+cpu_noticed_at=""
+cpu_pair_open=""
 cpu_busy() {
   now=$(cpu_usec)
-  is_epoch "$now" || return 1
+  if ! is_epoch "$now"; then
+    cpu_unread=$((cpu_unread + 1))
+    if [ "$cpu_unread" -eq 1 ] && is_epoch "$cpu_before"; then
+      cpu_span=$((cpu_span + 1))
+      return 2
+    fi
+    cpu_before=""
+    if [ -z "$cpu_held" ]; then
+      cpu_held=yes
+      held_until=$(date -u -d "@$deadline" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || held_until="epoch $deadline"
+      held="CPU idle detection unavailable on $pod; held until its deadline $held_until."
+      say "$held"
+      clock=$(date +%s)
+      if ! is_epoch "$cpu_noticed_at" || [ $((clock - cpu_noticed_at)) -ge 3600 ]; then
+        cpu_noticed_at=$clock
+        cpu_pair_open=yes
+        notify "$held"
+      fi
+    fi
+    return 0
+  fi
+  cpu_unread=0
+  if [ -n "$cpu_held" ]; then
+    cpu_held=""
+    say "CPU idle detection restored on $pod; idle counting resumes"
+    if [ -n "$cpu_pair_open" ]; then
+      cpu_pair_open=""
+      notify "CPU idle detection restored on $pod; idle counting resumes."
+    fi
+  fi
+  span=$cpu_span
+  cpu_span=1
   before=$cpu_before
   cpu_before=$now
-  is_epoch "$before" || return 1
-  [ $((now - before)) -ge $((interval * 10000 * busy_cpu_percent)) ]
+  is_epoch "$before" || return 2
+  [ $((now - before)) -ge $((span * interval * 10000 * busy_cpu_percent)) ]
 }
 
 # Seconds since the keep-alive file was last touched; fails when there is none.
@@ -199,6 +243,8 @@ while :; do
   net=$?
   if [ "$cpu" -eq 0 ] || [ "$net" -eq 0 ] || gpu_busy; then
     idle_for=0
+  elif [ "$cpu" -eq 2 ]; then
+    say "no CPU reading to compare this tick; idle time unchanged at ${idle_for}s"
   else
     idle_for=$((idle_for + interval))
     # Idle time counts from the later of the last busy sample and the last keep-alive touch.
