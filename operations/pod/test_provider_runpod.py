@@ -1855,7 +1855,7 @@ class V1World:
                     self.pods[str(self.post["id"])] = self.post
                 raise ProviderFailure(self.post_failure)
             assert self.post is not None, "this world accepts no create"
-            self.pods[str(self.post["id"])] = self.post
+            self.pods[str(self.post.get("id"))] = self.post
             return json_response(self.post, 201)
         pod_id = path.split("?", 1)[0].rsplit("/", 1)[-1]
         if method == "DELETE":
@@ -2082,3 +2082,61 @@ def test_a_recovery_lookup_that_finds_nothing_keeps_the_lease_under_review(
     lease = store.load()
     assert lease.phase == "pending-create" and lease.pending_create is not None
     assert world.posts() == 0 and world.deleted() == []
+
+
+class TickingClock(SharedClock):
+    """Each reading is a second later, so the pre-POST stamp precedes the close."""
+
+    def now(self) -> datetime:
+        self.seconds += 1
+        return super().now()
+
+
+UNREADABLE_RECORDS = {
+    "no-rate": (_without("costPerHr"), "costPerHr"),
+    "no-volume": (_without("networkVolume"), "no attached network volume"),
+    "unknown-status": (pod_payload(desiredStatus="MIGRATING"), "desiredStatus"),
+}
+
+
+@pytest.mark.parametrize("shape", sorted(UNREADABLE_RECORDS))
+def test_a_created_pod_whose_record_cannot_be_read_is_still_bound_and_closed(
+    tmp_path: Path, shape: str
+) -> None:
+    """The 201 names the pod, so its id is bound from the sealed request and the pod is closed."""
+
+    payload, reason = UNREADABLE_RECORDS[shape]
+    clock = TickingClock(NOW)
+    world = V1World(post=payload)
+    pod_runtime = launch_runtime(world_provider(world, clock), clock, tmp_path, NeverArms())
+    create_request = launch_request()
+    preview = pod_runtime.preview_create(create_request)
+    assert preview.preview is not None
+
+    result = pod_runtime.create(create_request, confirmation=preview.preview.confirmation_phrase)
+
+    assert result.state is LaunchState.REFUSED_RUNTIME_CONTRACT, result.detail
+    assert reason in result.detail
+    assert world.deleted() == ["/pods/pod-1"]
+    assert result.close_report is not None and result.close_report.verified
+    lease = LeaseStore(tmp_path / f"{TOKEN}.json").load()
+    assert lease is not None and lease.pod_id == "pod-1"
+    assert lease.phase == "closed-verified"
+
+
+def test_a_created_answer_with_no_usable_id_stays_a_pending_create(tmp_path: Path) -> None:
+    clock = SharedClock(NOW)
+    world = V1World(post=_without("id"))
+    pod_runtime = launch_runtime(world_provider(world, clock), clock, tmp_path, NeverArms())
+    create_request = launch_request()
+    preview = pod_runtime.preview_create(create_request)
+    assert preview.preview is not None
+
+    result = pod_runtime.create(create_request, confirmation=preview.preview.confirmation_phrase)
+
+    assert result.state is LaunchState.PROVIDER_FAILURE
+    assert "RunPod pod id is missing" in result.detail
+    lease = LeaseStore(tmp_path / f"{TOKEN}.json").load()
+    assert lease is not None and lease.phase == "pending-create"
+    assert lease.pod_id is None and lease.pending_create is not None
+    assert world.deleted() == []
