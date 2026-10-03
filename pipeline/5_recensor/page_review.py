@@ -86,6 +86,7 @@ from common.page_testimonia import (
     PAGE_TESTIMONIUM_KIND,
     current_page_testimonia,
     declared_page_witness_chairs,
+    is_detector_blank_testimony,
     require_page_roster,
 )
 from common.recensor_receipt import build_recensor_reading_receipt
@@ -126,17 +127,6 @@ ASSESSMENT_MALFORMED: Final = "uncertainty-assessment-malformed"
 CONTINUATION_OFF_EDGE: Final = "continuation-off-page-edge"
 # A continuation flag on an `other` entry: recorded as a note, never a hold.
 CONTINUATION_ON_OTHER: Final = "continuation-flag-on-other"
-OWN_CODES: Final = frozenset(
-    {
-        UNDER_WITNESSED,
-        UNRESOLVED_WITNESS,
-        RESIDUAL_INK,
-        RESIDUAL_INK_NOT_MEASURABLE,
-        RESIDUAL_INK_NOT_MEASURED,
-        ASSESSMENT_MALFORMED,
-        CONTINUATION_OFF_EDGE,
-    }
-)
 
 # The page accounting rules a page said to hold no act must pass. A blank page
 # has no entry for a detector record to be read as, so without a record
@@ -276,7 +266,9 @@ def page_coverage_of(ordinal: int, findings: dict[int, dict]) -> dict[str, Any]:
 # --- a page that holds no act -------------------------------------------------------
 
 
-def confirmation(accounting: dict, records: list[dict], *, blank: bool) -> dict[str, Any]:
+def confirmation(
+    accounting: dict, records: list[dict], *, blank: bool, census: frozenset[str]
+) -> dict[str, Any]:
     """Whether a page the reading says holds no act is confirmed so, and why not.
 
     Every detected line, every witness's text and the page's ink must be
@@ -285,7 +277,9 @@ def confirmation(accounting: dict, records: list[dict], *, blank: bool) -> dict[
     detector record lies in an `other` region; without a record detector it
     stays held. A blank page needs rule (i) to pass or not apply, no detected
     line at all, and every witness that read the page to have retained blank
-    text, with at least one such witness.
+    text, with at least one such witness that is not a census: `census` names
+    the chairs whose page record is their record detector's look rather than
+    a reading of the page's text.
     """
     rules = accounting.get("rules", {})
     allowed = BLANK_RULES if blank else {rule: {PASS} for rule in NO_ACT_RULES}
@@ -311,6 +305,10 @@ def confirmation(accounting: dict, records: list[dict], *, blank: bool) -> dict[
         reading = [w for w in witnesses if w["outcome"] in WITNESS_READING_OUTCOMES]
         if not reading:
             failures.append("no witness read the page")
+        elif all(w["chair"] in census for w in reading):
+            failures.append(
+                "only a record detector's census found the page blank; no witness read its text"
+            )
         failures.extend(
             f"witness {w['chair']} read the page and its retained text is not blank"
             for w in reading
@@ -395,7 +393,7 @@ def page_reasks(page: dict) -> int:
 
 
 def page_receipt_row(context, page: dict) -> dict[str, Any]:
-    """A page as the v5 receipt binds it: its readings, last accounting and what its re-ask did."""
+    """A page as the receipt binds it: its readings, last accounting and what its re-ask did."""
     reask = None
     if page["reask_ref"] is not None:
         reading = context.tree.read_artifact_reference(
@@ -822,7 +820,7 @@ def plan_reviews(
 
     Every fact is measured from disk: the page witnesses, the residual ink,
     each unit's page accounting and uncertainty assessment, and whether a page
-    said to hold no act is confirmed so. The Recensor publishes these; its v5
+    said to hold no act is confirmed so. The Recensor publishes these; its
     receipt measures them again and requires the reviews on disk to be them.
     """
     pages = denominator["pages"]
@@ -842,7 +840,14 @@ def plan_reviews(
         confirmed = None
         if PAGE_BLANK_HOLD in act["hold_codes"] or NO_ACT_ON_PAGE_HOLD in act["hold_codes"]:
             confirmed = confirmation(
-                accounting["payload"], records, blank=act["class"] == PAGE_BLANK_CLASS
+                accounting["payload"],
+                records,
+                blank=act["class"] == PAGE_BLANK_CLASS,
+                census=frozenset(
+                    record["payload"]["chair"]
+                    for record in records
+                    if is_detector_blank_testimony(context, record)
+                ),
             )
         outcome, payload = review_of(
             act,
@@ -964,61 +969,6 @@ def _require_accounted_testimonia(
 # --- the receipt -------------------------------------------------------------------------
 
 
-def require_derived_outcome(act: dict, review: dict, coverage: dict, off_edge: list[str]) -> None:
-    """A unit's review outcome follows from its row's holds, its release and its own codes.
-
-    Each row hold code is either kept or named in a release, and a release
-    names exactly the row's codes, only codes this stage may release, on a
-    confirmed page. The coverage and continuation codes are recomputed; a
-    unit is held exactly when any code remains.
-    """
-    act_id = act["act_id"]
-    payload = review["payload"]
-    hold = payload.get("hold_codes")
-    release = payload.get("release")
-    confirmed = payload.get("confirmation")
-    row = set(act["hold_codes"])
-    if not isinstance(hold, list) or not set(hold) <= row | OWN_CODES:
-        raise FatalAccounting(
-            f"Recensor review of {act_id} holds on codes neither its row nor this stage names"
-        )
-    released: set[str] = set()
-    if release is not None:
-        if (
-            not isinstance(release, dict)
-            or release.get("hold_codes") != sorted(row)
-            or not row
-            or not row <= RELEASABLE_HOLDS
-            or not isinstance(confirmed, dict)
-            or confirmed.get("confirmed") is not True
-        ):
-            raise FatalAccounting(
-                f"Recensor review of {act_id} releases hold codes other than its row's "
-                "releasable ones on a confirmed page"
-            )
-        released = row
-    if not (row - released) <= set(hold):
-        raise FatalAccounting(
-            f"Recensor review of {act_id} drops row hold code(s) "
-            f"{sorted(row - released - set(hold))} without naming a release"
-        )
-    expected_own = {code for code, _sentence in coverage_findings(coverage, act["page_ordinal"])}
-    if off_edge:
-        expected_own.add(CONTINUATION_OFF_EDGE)
-    recomputed = {UNDER_WITNESSED, UNRESOLVED_WITNESS, CONTINUATION_OFF_EDGE}
-    if set(hold) & recomputed != expected_own:
-        raise FatalAccounting(
-            f"Recensor review of {act_id} names witness-floor or continuation holds "
-            f"{sorted(set(hold) & recomputed)}, but disk derives {sorted(expected_own)}"
-        )
-    expected = HELD if hold else CONFIRMED_BLANK if act["class"] == PAGE_BLANK_CLASS else ACCEPTED
-    if review["outcome"] != expected:
-        raise FatalAccounting(
-            f"Recensor review of {act_id} is {review['outcome']!r}, but its hold codes and "
-            f"release derive {expected!r}"
-        )
-
-
 def release_reason(act: dict, review: dict) -> str | None:
     """Why a unit its page reading held is completed at review, or None for any other unit.
 
@@ -1073,15 +1023,15 @@ def current_links(context, expected: list[tuple[str, dict]], by_id, pages) -> li
 def write_reading_receipt(
     context, *, page_coverage_findings: Callable[..., dict[int, dict]]
 ) -> None:
-    """Rebuild the v5 partition receipt from disk: pages, units, reviews, coverage, page breaks.
+    """Rebuild the partition receipt from disk: pages, units, reviews, coverage, page breaks.
 
     The units are re-derived through `reading_denominator` and every review is
     measured again (`plan_reviews`): its coverage, residual ink, confirmation,
     release, codes, outcome and inputs must be exactly what disk gives, the
     Testimonia counted for the floor must be the ones the page accounting
     measured, every continuation-link is matched against the breaks the
-    answers flag, and a Recensor review or recovery request of anything outside
-    `reading_acts` is refused.
+    answers flag, and a Recensor review of anything outside `reading_acts` is
+    refused.
     """
     for stage in (ATTESTATORES, PERLECTOR, RECENSOR):
         if not context.tree.manifest_agrees_with_disk(stage):
@@ -1101,16 +1051,10 @@ def write_reading_receipt(
             "the Recensor's review-decisions record is not what the run's operator review "
             "decisions give against the reviews disk measures"
         )
-    machine = {act["act_id"]: (outcome, payload) for act, outcome, payload, _inputs in planned}
     by_id = {act["act_id"]: act for act in acts}
     reviews: dict[str, list[dict]] = {act_id: [] for act_id in by_id}
     superseded: dict[str, list[dict]] = {}
     for entry in context.tree.build_manifest(RECENSOR)["artifacts"]:
-        if entry["kind"] == "recovery-request":
-            raise FatalAccounting(
-                f"Recensor recovery request {entry['artifact_id']} exists in a page-read run, "
-                "which asks for no recovery"
-            )
         if entry["kind"] != "review":
             continue
         record = context.tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
@@ -1127,7 +1071,6 @@ def write_reading_receipt(
                 f"Recensor review {records[0]['artifact_id']} names unit {subject!r}, which is "
                 "outside this page-read run's reading_acts"
             )
-    off_edge = continuation_off_edge(acts)
     items = []
     for act, outcome, expected, inputs, approval_ref in sorted(
         decided, key=lambda plan: plan[0]["act_id"]
@@ -1149,13 +1092,6 @@ def write_reading_receipt(
                 f"Recensor review of {act_id} does not retain the unit key and witness coverage "
                 "recomputed from disk"
             )
-        if REVIEW_FIELD in payload:
-            # A decided review derives from the machine's, which `decide_reviews` recomputes.
-            machine_outcome, machine_payload = machine[act_id]
-            derived = {"outcome": machine_outcome, "payload": machine_payload}
-        else:
-            derived = review
-        require_derived_outcome(act, derived, coverage, off_edge.get(act_id, []))
         sealed = {name: value for name, value in payload.items() if name != "attempt_ordinal"}
         differing = sorted(
             name for name in set(sealed) | set(expected) if sealed.get(name) != expected.get(name)
@@ -1192,5 +1128,6 @@ def write_reading_receipt(
         pages=[page_receipt_row(context, pages[ordinal]) for ordinal in sorted(pages)],
         items=items,
         continuation_links=links,
+        page_holds=[] if decisions is None else decisions["page_holds"],
     )
     context.tree.write_recensor_partition_receipt(receipt)

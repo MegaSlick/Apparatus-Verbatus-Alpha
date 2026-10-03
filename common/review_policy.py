@@ -2,8 +2,10 @@
 
 `[review] max_held_page_share` is the share of a run's pages that may stay
 held after the Recensor before the run itself is treated as having a
-systemic problem. The Door seals the file as `review`; the orchestrator
-reads it where it stops at a held Recensor and checks it against that seal.
+systemic problem, and `min_systemic_held_pages` how many pages must be held
+before any share is: one hard page on a short run is not a problem with the
+run. The Door seals the file as `review`; the orchestrator reads it where it
+stops at a held Recensor and checks it against that seal.
 """
 
 from __future__ import annotations
@@ -20,20 +22,28 @@ from common.sealed_config import read_sealed_toml
 DEFAULT_REVIEW_CONFIG_PATH: Final = Path(__file__).resolve().parents[1] / "config" / "review.toml"
 SEALED_CONFIG_NAME: Final = "review"
 _SHARE: Final = re.compile(r"([1-9][0-9]{0,8})/([1-9][0-9]{0,8})")
+_FIELDS: Final = frozenset({"max_held_page_share", "min_systemic_held_pages"})
 
 
 def load_review_policy(path: str | Path = DEFAULT_REVIEW_CONFIG_PATH) -> dict[str, Any]:
-    """Read the policy, validate its one share, and return its resolved record."""
+    """Read the policy, validate its share and minimum, and return its resolved record."""
     config, digest = read_sealed_toml(path, "review configuration", {"review"})
     review = config.get("review")
-    if not isinstance(review, dict) or set(review) != {"max_held_page_share"}:
+    if not isinstance(review, dict) or set(review) != _FIELDS:
         raise ContractError(
-            "the review configuration has no [review] table holding exactly max_held_page_share"
+            "the review configuration has no [review] table holding exactly "
+            + " and ".join(sorted(_FIELDS))
         )
-    text = review["max_held_page_share"]
+    text, minimum = review["max_held_page_share"], review["min_systemic_held_pages"]
+    if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum < 1:
+        raise ContractError(
+            f"the review configuration's min_systemic_held_pages {minimum!r} is not a whole "
+            "number of pages of at least 1"
+        )
     return {
         "config_sha256": digest,
         "max_held_page_share": text,
+        "min_systemic_held_pages": minimum,
         "share": parse_share(text, "the review configuration's max_held_page_share"),
     }
 
@@ -47,10 +57,14 @@ def parse_share(text: Any, subject: str) -> Fraction:
 
 
 def systemic(held_pages: int, pages: int, policy: dict[str, Any]) -> bool:
-    """Whether `held_pages` of `pages` is more than the sealed share: a problem with the run."""
+    """Whether `held_pages` of `pages` is a problem with the run: at least the sealed
+    minimum of held pages, and more than the sealed share."""
     if pages <= 0 or not 0 <= held_pages <= pages:
         raise ContractError(f"{held_pages} held of {pages} pages is not a share of a run")
-    return Fraction(held_pages, pages) > policy["share"]
+    return (
+        held_pages >= policy["min_systemic_held_pages"]
+        and Fraction(held_pages, pages) > policy["share"]
+    )
 
 
 def alarm_line(run_id: str, held_pages: list[int], pages: int, policy: dict[str, Any]) -> str:
