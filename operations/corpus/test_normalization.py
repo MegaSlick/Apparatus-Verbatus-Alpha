@@ -44,8 +44,8 @@ def test_the_profile_record_names_the_two_pass_rule_the_code_actually_applies():
 # whitespace class, a text bound or the record's shape changes a digest, and
 # this test makes that change a reviewed edit rather than a silent one.
 PINNED_PROFILE_DIGESTS = {
-    "graphemic-v1": "4fc470678289338900c4fa897b8c5b4f3acc1ca3fd429ef6ccffaeae352cc58c",
-    "allographic-v1": "534d2771d5fbbc1d6eaed6d96e5c51e56fbd5a19b3a3cfecf1c9fc2aca5773b9",
+    "graphemic-v1": "7373a14893ed6d65d52b3d11b049c2e6668751a3f0b5e7eee7befaef2214ce1e",
+    "allographic-v1": "e0e4453963f5c9a718e66854c9bd51c7ff1877c1fe7459c536b0ace13f7a99ef",
 }
 
 
@@ -68,7 +68,10 @@ def test_the_profile_digest_binds_the_actual_definitions_not_their_labels():
     assert ["U+2000", "U+200A"] in record["whitespace"]["code_point_ranges"]
     assert record["text_bounds"] == {
         "max_text_length": MAX_TEXT_LENGTH,
+        "length_unit": "code-points",
         "max_combining_run": MAX_COMBINING_RUN,
+        "combining_mark": f"Grapheme_Cluster_Break-Extend-or-ZWJ-uniseg-{version('uniseg')}",
+        "applies_to": "text-as-given-then-normalized-text",
     }
 
 

@@ -49,11 +49,17 @@ from .compare import (
     load_exemplar_page_shas,
     load_pipeline_reading_acts,
 )
-from .evaluate import _established_text_hashes, hypotheses_from_export, load_reference_pages
-from .normalization import GRAPHEMIC_V1
-from .scoring import OutputStatus, score_response
+from .evaluate import (
+    _established_text_hashes,
+    hypotheses_from_export,
+    load_reference_ledger,
+    load_reference_pages,
+)
+from .local_admission import validate_local_admission_ledger
+from .normalization import GRAPHEMIC_V1, character_units, within_text_bounds, word_units
+from .scoring import REFERENCE_TEXT_OUT_OF_BOUNDS, TEXT_OUT_OF_BOUNDS, OutputStatus, score_response
 
-SCHEMA = "recordgold-reconstruction-evaluation.v2"
+SCHEMA = "recordgold-reconstruction-evaluation.v3"
 # The Armarium's member for the Coniector's rows (`pipeline/7_armarium/coniector_layer.py`).
 CONIECTOR_MEMBER = "coniector.jsonl"
 
@@ -65,6 +71,8 @@ RECONSTRUCTION_EVALUATION_REFUSAL_REASONS = frozenset(
         "no-export",
         "output-exists",
         "output-in-run-tree",
+        "reference-ledger-invalid",
+        "reference-page-not-in-ledger",
     }
 )
 
@@ -113,6 +121,18 @@ def _score(reference: str, text: str) -> dict[str, int]:
         "cer_units": scored.cer.reference_units,
         "wer_errors": scored.wer.edits.errors,
         "wer_units": scored.wer.reference_units,
+    }
+
+
+def _wholly_deleted(reference: str) -> dict[str, int]:
+    """A reference's units charged as errors, for a text that could not be measured."""
+    cer_units = len(character_units(reference, GRAPHEMIC_V1))
+    wer_units = len(word_units(reference, GRAPHEMIC_V1))
+    return {
+        "cer_errors": cer_units,
+        "cer_units": cer_units,
+        "wer_errors": wer_units,
+        "wer_units": wer_units,
     }
 
 
@@ -179,15 +199,32 @@ def reconstruction_report(
         references = [references_by_act.get(act_id) for act_id in act_ids]
         paired = sum(reference is not None for reference in references)
         sides = "all" if paired == len(act_ids) else "some" if paired else "none"
+        # A reconstruction or literal beyond the scoring bounds is named and not
+        # compared with the other. Where the reference has every act, a side
+        # within the bounds is scored and a side beyond them carries no score
+        # and is charged in the totals as wholly deleted. A joined reference
+        # beyond the bounds is named and charged to neither side.
+        within = {
+            "reconstruction": not made or within_text_bounds(text, GRAPHEMIC_V1),
+            "diplomatic": not made or within_text_bounds(diplomatic, GRAPHEMIC_V1),
+        }
+        readable = all(within.values())
+        unmeasured = None if readable else TEXT_OUT_OF_BOUNDS
         score = None
         if made and sides == "all":
             reference_text = "\n".join(reference["text"] for reference in references)
-            score = {
-                "reconstruction": _score(reference_text, text),
-                "diplomatic": _score(reference_text, diplomatic),
-            }
-            _add(reconstruction_score, score["reconstruction"])
-            _add(diplomatic_score, score["diplomatic"])
+            if not within_text_bounds(reference_text, GRAPHEMIC_V1):
+                unmeasured = REFERENCE_TEXT_OUT_OF_BOUNDS
+            else:
+                score = {
+                    side: _score(reference_text, hypothesis) if within[side] else None
+                    for side, hypothesis in (("reconstruction", text), ("diplomatic", diplomatic))
+                }
+                for side, total in (
+                    ("reconstruction", reconstruction_score),
+                    ("diplomatic", diplomatic_score),
+                ):
+                    _add(total, score[side] or _wholly_deleted(reference_text))
         if made:
             sides_count[sides] += 1
         out_rows.append(
@@ -199,18 +236,22 @@ def reconstruction_report(
                 "made": made,
                 "not_made": sorted(reason["code"] for reason in row["not_made"]),
                 "departures": len(row["departures"]),
-                "departed_characters": Levenshtein.distance(text, diplomatic) if made else None,
+                "departed_characters": (
+                    Levenshtein.distance(text, diplomatic) if made and readable else None
+                ),
                 "flags": sorted(flag["code"] for flag in row["flags"]),
                 "reference_record_ids": [
                     reference["record_id"] if reference else None for reference in references
                 ],
                 "reference_sides": sides,
                 "score": score,
+                "unmeasured": unmeasured,
             }
         )
     by_status = Counter(join.get("status") for join in joins)
     by_reason = Counter(join.get("not_reconstructed_reason") for join in joins)
     made_rows = [row for row in out_rows if row["made"]]
+    compared_rows = [row for row in made_rows if row["departed_characters"] is not None]
     return {
         "schema": SCHEMA,
         "joins": {
@@ -226,9 +267,10 @@ def reconstruction_report(
             "by_maker": dict(sorted(by_maker.items())),
             "made": len(made_rows),
             "not_made_by_code": dict(sorted(not_made.items())),
+            "unmeasured": sum(1 for row in made_rows if row["unmeasured"] is not None),
             "departures": sum(row["departures"] for row in made_rows),
-            "departing": sum(1 for row in made_rows if row["departed_characters"]),
-            "departed_characters": sum(row["departed_characters"] for row in made_rows),
+            "departing": sum(1 for row in compared_rows if row["departed_characters"]),
+            "departed_characters": sum(row["departed_characters"] for row in compared_rows),
             "flags_by_code": dict(sorted(flags.items())),
         },
         "reference": {
@@ -240,8 +282,41 @@ def reconstruction_report(
     }
 
 
-def evaluate_run(tree: RunTree, reference_pages: list[dict[str, Any]]) -> dict[str, Any]:
-    """One self-hashed reconstruction report for a sealed run against reference pages."""
+def _check_in_ledger(
+    reference_pages: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any]
+) -> str:
+    """The ledger's digest, once each reference page is one it admitted, byte for byte."""
+    try:
+        ledger = validate_local_admission_ledger(dict(ledger))
+    except CorpusRefusal as error:
+        raise Refusal(f"reference-ledger-invalid: {error}") from error
+    admitted = {canonical_bytes(page) for page in ledger["reference_pages"]}
+    for page in reference_pages:
+        if canonical_bytes(dict(page)) not in admitted:
+            raise Refusal(
+                f"reference-page-not-in-ledger: the reference page for {page['page']['sha256']} "
+                "is not one the named admission ledger carries"
+            )
+    return digest_bytes(canonical_bytes(dict(ledger)))
+
+
+def evaluate_run(
+    tree: RunTree,
+    reference_pages: list[dict[str, Any]],
+    *,
+    reference_ledger: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One self-hashed reconstruction report for a sealed run against reference pages.
+
+    With `reference_ledger`, a `recordgold-local-admission.v1` body, every
+    reference page must be one the ledger carries, and the report names the
+    ledger's digest; without it the report says the pages were not verified.
+    """
+    reference_ledger_sha256 = (
+        _check_in_ledger(reference_pages, reference_ledger)
+        if reference_ledger is not None
+        else None
+    )
     read_only = ReadOnlyRunTree(tree)
     try:
         export_record = verify_final_seal(read_only)
@@ -283,6 +358,8 @@ def evaluate_run(tree: RunTree, reference_pages: list[dict[str, Any]]) -> dict[s
     body = {
         "run_id": tree.run_id,
         "export_sha256": digest_bytes(canonical_bytes(export_record)),
+        "reference_ledger_sha256": reference_ledger_sha256,
+        "reference_ledger_verified": reference_ledger is not None,
         **reconstruction_report(
             joins=joins,
             shown=shown,
@@ -305,6 +382,7 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"{made['departures']} departure(s), {made['departed_characters']} character(s)",
         f"against reference ({reference['made_by_sides']}): reconstruction "
         f"{reference['reconstruction']}; diplomatic {reference['diplomatic']}",
+        "reference ledger " + ("verified" if report["reference_ledger_verified"] else "not given"),
     ]
 
 
@@ -313,13 +391,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--reference-pages", type=Path, required=True)
+    parser.add_argument(
+        "--reference-ledger",
+        type=Path,
+        help="the admission ledger the pages came from; every reference page must be one it carries",
+    )
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
     tree = RunTree(args.run_root, args.run_id)
     output = args.out.resolve()
     if output.is_relative_to(tree.root.resolve()):
         raise Refusal("output-in-run-tree: the report must be written outside the run tree")
-    report = evaluate_run(tree, load_reference_pages(args.reference_pages))
+    try:
+        ledger = load_reference_ledger(args.reference_ledger) if args.reference_ledger else None
+    except CorpusRefusal as error:
+        raise Refusal(f"reference-ledger-invalid: {error}") from error
+    report = evaluate_run(tree, load_reference_pages(args.reference_pages), reference_ledger=ledger)
     if not write_new_file(args.out, canonical_bytes(report)):
         raise Refusal(f"output-exists: {args.out}")
     for line in summary_lines(report):
