@@ -7,10 +7,9 @@ done are in CONTRIBUTING.md and AGENTS.md.
 
 ## The idea
 
-Several vision models act as witnesses: each reads an act (one register entry) and
-reports what it saw. One reader, the Perlector, then reads the ink itself, uses the
-witnesses only as clues, and establishes the text. No step chooses a winner among the
-witnesses.
+Several vision models act as witnesses: each reads the page and reports what it saw.
+One reader, the Perlector, then reads the ink itself, uses the witnesses only as clues,
+and establishes the text. No step chooses a winner among the witnesses.
 
 ## What we are aiming for
 
