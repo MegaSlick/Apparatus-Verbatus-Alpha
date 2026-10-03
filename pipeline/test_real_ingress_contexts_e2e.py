@@ -30,21 +30,17 @@ for _directory in (PIPELINE, ATTESTATORES_DIR):
 #
 # `test_attestatores_real_ingress` owns the real-submission builder and its
 # `RUN_ID`. `test_live_reading_seam_e2e` owns the catalogue writer that makes
-# every chair live at every tier and the tree snapshotter, so a change in how a
-# fake chair is stood up is made once for both seams.
+# every chair live at every tier, so a change in how a fake chair is stood up
+# is made once for both seams.
 from test_attestatores_real_ingress import (  # noqa: E402
     RUN_ID,
     _real_submission,
 )
-from test_live_reading_seam_e2e import (  # noqa: E402
-    snapshot,
-    write_live_catalogue,
-)
+from test_live_reading_seam_e2e import write_live_catalogue  # noqa: E402
 
 from common.chairs.registry import ChairRegistry  # noqa: E402
-from common.stage import (  # noqa: E402
-    EXIT_FATAL,
-)
+from common.stage import EXIT_FATAL  # noqa: E402
+from conftest import tree_snapshot  # noqa: E402
 
 MODELS_CONFIG = ROOT / "config" / "models.toml"
 DESIGNATOR_CLI = PIPELINE / "2_designator" / "run.py"
@@ -99,10 +95,10 @@ def test_the_designator_refuses_fixture_detectors_on_a_real_submission_and_write
     run_root = _real_submission(
         tmp_path, "--serving-recipes-config", str(catalogue), "--models-config", str(MODELS_CONFIG)
     )
-    before = snapshot(run_root)
+    before = tree_snapshot(run_root)
 
     result = invoke_stage(DESIGNATOR_CLI, run_root, catalogue)
 
     assert result.returncode == EXIT_FATAL, result.stderr
     assert "a fixture row answers only a synthetic run" in result.stderr
-    assert snapshot(run_root) == before, "a refused Designator writes nothing"
+    assert tree_snapshot(run_root) == before, "a refused Designator writes nothing"

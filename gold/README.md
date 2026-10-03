@@ -99,7 +99,7 @@ and these records are immutable: an ambiguity admitted now could never be
 re-recorded out of the hours that produced it.
 
 `adjudicate --first T1.json --second T2.json --output A.json [--adjudicator NAME
---text-file F.txt]` reconciles them.  If the two readings are identical there is
+--text-file F.txt] [--run RUN.json]` reconciles them.  If the two readings are identical there is
 nothing to reconcile: the outcome is `agreed`, no adjudicator is recorded, and
 naming one is refused.  If they differ, the adjudicator and their own reading of
 the ink are required — **the adjudicator does not choose the better
@@ -114,7 +114,7 @@ A name shaped like a pipeline identity is refused wherever a person is named:
 gold is what the pipeline is measured against, so gold made of its output would
 make the measurement circular.
 
-**RecordGold truth cannot be filed here as gold.**  `operations/corpus/` fetches a
+**RecordGold truth cannot be filed here as gold.**  `operations/corpus/` admits a
 third-party expert-annotated corpus and gives it its own `reference.py` record
 family — one unnamed expert reading, no adjudication, `provenance:
 "third-party-expert-annotation"` — because it cannot satisfy this module's
@@ -130,12 +130,8 @@ requirement exists to make impossible.  A reference record and a gold record
 may describe the same page; they are never the same kind of record, and
 neither directory is the right home for the other's.
 
-Whether RecordGold stands in for, or beside, the Quebec gold corpus for the
-honestly-measured acceptance claim is a separate question, and it is the project
-lead's, not this module's; `operations/corpus/README.md` sets out who chooses the
-acceptance corpus and why RecordGold is built so that choice needs no migration.  If
-RecordGold is ruled in for that claim, the route is a named substitution
-recorded where the acceptance corpus is chosen, never a forged entry through
+Choosing the acceptance corpus is not this module's job. If RecordGold is used for
+it, that is recorded where the acceptance corpus is chosen, never entered through
 this module's custody chain.
 
 ## Custody
@@ -153,10 +149,13 @@ checked for internal self-consistency, not that it names a real run).
 instrument membership names its sample only by digest, so `validate --run` refuses
 it; `validate-corpus --run` resolves it through its corpus instead.
 
-The dimension-bearing sample, draw, manual-pick, layout, and padding schemas are
-version 2. Version 1 did not carry a page size and therefore cannot honestly mean
-"this rectangle lies on its page" under the new reader. Existing v1 bytes remain
-immutable evidence; this tool refuses rather than silently reinterpret them.
+Sample, draw, manual-pick, layout, and padding records carry the page size, and
+every record is read only under the exact schema version it names. Their v1
+versions carried no page size, so this reader cannot prove that a v1 rectangle
+lies on its page and refuses the record, naming the remedy: keep the v1 bytes
+unchanged as immutable evidence, and read them with their historical reader or
+carry them over by an explicit, provenance-preserving migration. Never edit a v1
+record in place.
 
 `--run` proves the page facts the run actually carries, which are its ordinal and
 sha256.  A page's `stratum`, `width`, and `height` are not among them: the run's
