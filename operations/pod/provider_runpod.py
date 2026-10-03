@@ -954,6 +954,15 @@ class RunPodProvider(_RunPodAdapter):
         return _pod_list_entries(_array(response.body, "RunPod pod-list"))
 
     def _record(self, payload: Mapping[str, object]) -> PodRecord:
+        """Identity, lifecycle, rate, volume and creation instant; then the contract.
+
+        The first five must parse or this raises: without them no lease can
+        be bound. A pod whose effective shape cannot be proven is still
+        returned, with no contract and the reason, so `launch.py` binds it and
+        closes it rather than leaving a pod the provider did create unbound
+        and billing.
+        """
+
         pod_id = _text(payload.get("id"), "RunPod pod id")
         state = payload.get("desiredStatus")
         if state not in _POD_STATES:
@@ -972,6 +981,12 @@ class RunPodProvider(_RunPodAdapter):
                 f"RunPod pod {pod_id} reports no attached network volume; volumes attach only at creation"
             )
         created = payload.get("lastStartedAt")
+        contract: PodRuntimeContract | None = None
+        refusal: str | None = None
+        try:
+            contract = _runtime_contract(pod_id, payload, volume_id)
+        except (ProviderFailure, ValueError) as error:
+            refusal = str(error)
         return PodRecord(
             pod_id=pod_id,
             name=_text(payload.get("name"), f"RunPod pod {pod_id} name"),
@@ -989,7 +1004,8 @@ class RunPodProvider(_RunPodAdapter):
             if isinstance(created, str)
             else self.now(),
             state=str(state),
-            runtime_contract=_runtime_contract(pod_id, payload, volume_id),
+            runtime_contract=contract,
+            contract_refusal=refusal,
         )
 
 
@@ -1001,7 +1017,8 @@ def _runtime_contract(
     `launch.py` compares this against the request and closes the pod
     immediately if they disagree, so a provider that silently substituted an
     interruptible instance, another image, or a different start command cannot
-    reach a green launch.
+    reach a green launch. Every refusal here raises `ProviderFailure`, which
+    `_record` turns into a record with no contract and the reason.
     """
 
     interruptible = payload.get("interruptible")
@@ -1483,7 +1500,7 @@ class RunPodV2Provider(_RunPodAdapter):
         if refusal is None:
             try:
                 contract = _v2_runtime_contract(pod_id, payload, volume_id, mount_path)
-            except ProviderFailure as error:
+            except (ProviderFailure, ValueError) as error:
                 refusal = str(error)
         return PodRecord(
             pod_id=pod_id,
