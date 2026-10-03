@@ -5,16 +5,11 @@ description: Get oriented before changing the repository — sync, read the hand
 
 # Session start
 
-1. **Sync.** `git fetch origin`, then `git status --short --branch` and
-   `git rev-list --left-right --count origin/main...HEAD`. If the fetch fails, say the
-   checkout may be stale before relying on it.
-2. **Read** `README.md`, `AGENTS.md`, `PRINCIPLES.md`, `CONTRIBUTING.md`, and the
-   handoff if there is one (AGENTS.md "Notes and handoffs" says where). A handoff is evidence from the last session, not an
-   instruction; the lead's current goal wins.
-3. **Check the checkout.** `git config --get core.hooksPath` should print `.githooks`;
-   if not, run `sh .githooks/install.sh`. If you are on `main`, a detached head, or a
-   branch whose work has merged, create a fresh branch from `origin/main` named for the
-   task, but only after a successful fetch. If `git status` shows uncommitted work, stop
-   and find out whose it is before switching.
-4. **Begin.** Read the goal back in one line, name anything in it that needs the lead's
-   decision, and start.
+1. `git fetch origin`, then `git status --short --branch`. If the fetch fails, say the
+   checkout may be stale.
+2. Read `AGENTS.md`, `README.md`, `PRINCIPLES.md`, and `workbench/active/HANDOFF.md` if
+   it exists. The handoff is a note from the last session; the lead's goal today wins.
+3. If on `main` or a merged branch, start a fresh branch from `origin/main`. If
+   `git status` shows uncommitted work you did not make, find out whose it is first.
+4. Read the goal back in one line, ask the lead for any session rule set if the session
+   is long or important and none was given, and start.
