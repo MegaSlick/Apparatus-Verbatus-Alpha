@@ -4998,12 +4998,10 @@ def _fixture_configuration_receipt() -> dict[str, object]:
             name: {"path": f"/fixture/{name}.toml", "sha256": "0" * 64}
             for name in (
                 "models_config",
-                "witness_context_config",
                 "serving_recipes_config",
                 "placement_config",
             )
         },
-        "witness_context_validation": {},
     }
 
 

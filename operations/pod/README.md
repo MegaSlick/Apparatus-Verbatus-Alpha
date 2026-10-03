@@ -223,14 +223,13 @@ correct immediate close.
   `python -m operations.serving.qualify` renders review candidates for the measured tier;
   it never edits the catalogue.
 - **Configuration is one selection.** `--serving-recipes-config` defaults to the
-  fixture-only `config/serving_recipes.toml`. A real launch names `config/models-real.toml`,
-  `config/serving_recipes_real.toml` and `config/witness_context-real.toml` together. The
-  journaled `CONFIGURATION` step, after checkout and before anything is synced, fetched or
-  served, matches each role's shipped witness declaration to its source and binds the four
-  config paths and seals into its receipt. A resume with a changed selection fails there
-  (restore it or start a new journal); a journal whose receipt is
-  `pod-bootstrap-configuration.v1` bound raw file bytes and is refused by schema. A custom roster needs an operator-authored
-  declaration. The placement table is always the checkout's own `config/pod_placement.toml`,
+  fixture-only `config/serving_recipes.toml`. A real launch names `config/models-real.toml`
+  and `config/serving_recipes_real.toml` together. The journaled `CONFIGURATION` step,
+  after checkout and before anything is synced, fetched or served, parses the roster, the
+  catalogue and the placement table and binds the three config paths and seals into its
+  receipt. A resume with a changed selection fails there (restore it or start a new
+  journal); a journal whose receipt is an earlier `pod-bootstrap-configuration` version is
+  refused by schema. The placement table is always the checkout's own `config/pod_placement.toml`,
   the one the stages seal; `CONFIGURATION` refuses any other resolved path, a symlink out
   included.
 - **CUDA compatibility.** Before the uv install, `CUDA_COMPAT` records `nvidia-smi`'s
@@ -267,7 +266,7 @@ python -m operations.pod.pod_run <run flags> -- <bootstrap_main argv>
 The argv after `--` goes through `bootstrap_main`'s own `prepare`/`run_bootstrap`, so every
 bootstrap refusal, probe, scrub and deadline applies. After a green journal it runs
 `pipeline/orchestrator/run.py` with the pod's interpreter: run root `<volume>/runs` (or
-`--run-root`, inside the volume), submission inside the volume, the config trio the
+`--run-root`, inside the volume), submission inside the volume, the config pair the
 bootstrap checked and measured, and `--data-gate-policy` inside the repository. Its
 `pod-run-report.v1` at the launch-bound `--report-path` moves through `bootstrapping`,
 `running`, then `complete`, `held`, `halted`, `failed`, `bootstrap-red` or `refused`.
@@ -728,7 +727,6 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   --store-root $V/model-store \
   --models-config $R/config/models-real.toml \
   --serving-recipes-config $R/config/serving_recipes_real.toml \
-  --witness-context-config $R/config/witness_context-real.toml \
   > $V/pod-run-$RUN.out 2>&1 < /dev/null &
 ```
 

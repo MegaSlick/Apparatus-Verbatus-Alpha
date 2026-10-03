@@ -548,23 +548,14 @@ def build_parser() -> PlainParser:
         "--models-config",
         type=Path,
         help="the chair roster to seal into this run (config/models-real.toml for the real "
-        "chairs); always supplied with --serving-recipes-config and "
-        "--witness-context-config",
+        "chairs); always supplied with --serving-recipes-config",
     )
     run.add_argument(
         "--serving-recipes-config",
         type=Path,
         help="the serving catalogue the roster's chairs are served under "
         "(config/serving_recipes_real.toml with the real roster); always supplied with "
-        "--models-config and --witness-context-config",
-    )
-    run.add_argument(
-        "--witness-context-config",
-        type=Path,
-        help="the factual witness-context declaration the Perlector is told about this "
-        "roster's chairs (config/witness_context-real.toml with the real roster; the "
-        "default describes every chair as a synthetic fixture); always supplied with "
-        "--models-config and --serving-recipes-config",
+        "--models-config",
     )
 
     fetch_run = verbs.add_parser(
@@ -863,7 +854,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 data_gate_policy=args.data_gate_policy,
                 models_config=args.models_config,
                 serving_recipes_config=args.serving_recipes_config,
-                witness_context_config=args.witness_context_config,
                 from_stage=args.from_stage,
                 to_stage=args.to_stage,
             )

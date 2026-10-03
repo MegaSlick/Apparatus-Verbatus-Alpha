@@ -10,7 +10,7 @@ from types import MappingProxyType
 import pytest
 
 from common.chairs import AbsentChair, ChairIdentity, ChairRegistry, build_receipt
-from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.errors import SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.runtree.store import RunTree
 from common.stage import (
@@ -23,22 +23,6 @@ from common.stage import (
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS_CONFIG = ROOT / "config" / "models.toml"
-
-
-def test_run_config_bindings_refuses_a_witness_context_missing_a_configured_chair(tmp_path):
-    """`run_config_bindings` refuses an incomplete `witness_context.toml` at run
-    creation, before any stage runs, so a config typo does not cost a pod run."""
-    registry = ChairRegistry.from_toml(MODELS_CONFIG)
-    incomplete = tmp_path / "witness_context.toml"
-    incomplete.write_text('[attestator_1]\ntraining_domain = "only one witness declared"\n')
-
-    with pytest.raises(ContractError, match="has no declared entry"):
-        run_config_bindings(
-            registry.config,
-            {"fixture": "none"},
-            "test",
-            witness_context_config_path=incomplete,
-        )
 
 
 def _context(tmp_path, models_config=MODELS_CONFIG) -> tuple[StageContext, ChairIdentity]:

@@ -67,12 +67,10 @@ def _fixture_configuration_receipt() -> dict[str, object]:
             name: {"path": f"/fixture/{name}.toml", "sha256": "0" * 64}
             for name in (
                 "models_config",
-                "witness_context_config",
                 "serving_recipes_config",
                 "placement_config",
             )
         },
-        "witness_context_validation": {},
     }
 
 
@@ -823,7 +821,6 @@ def test_dry_run_runs_no_action(tmp_path: Path, capsys: pytest.CaptureFixture[st
     assert not ws.journal.exists()
     assert not ws.report_path.exists()
     assert not ws.models_config.exists()
-    assert not (ws.repository / "config" / "witness_context.toml").exists()
     plan_record = json.loads(capsys.readouterr().out)
     assert plan_record["dry_run"] is True
     assert Path(plan_record["repository"]) == ws.repository.resolve()
@@ -991,7 +988,7 @@ def test_a_roster_other_than_the_fixture_one_must_name_its_own_catalogue(
     assert "fixture-only catalogue" in err
 
 
-def test_the_real_roster_is_accepted_when_its_catalogue_and_context_are_named(
+def test_the_real_roster_is_accepted_when_its_catalogue_is_named(
     tmp_path: Path,
 ) -> None:
     """Naming every part is the way through; the pairing rule refuses none."""
@@ -1001,102 +998,25 @@ def test_the_real_roster_is_accepted_when_its_catalogue_and_context_are_named(
     ws = _workspace(tmp_path)
     ws.models_config = ws.repository / "config" / "models-real.toml"
     catalogue = ws.repository / "config" / "serving_recipes_real.toml"
-    witness_context = ws.repository / "config" / "witness_context-real.toml"
     clock = Clock()
-    argv = _argv(
-        ws,
-        extra=(
-            "--serving-recipes-config",
-            str(catalogue),
-            "--witness-context-config",
-            str(witness_context),
-        ),
-    )
+    argv = _argv(ws, extra=("--serving-recipes-config", str(catalogue)))
 
     plan = resolve_plan(build_parser().parse_args(argv), _environ(clock))
 
     assert plan.models_config == ws.models_config.resolve()
     assert plan.serving_recipes_config == catalogue.resolve()
-    assert plan.witness_context_config == witness_context.resolve()
 
 
 def test_relative_configuration_paths_are_resolved_inside_the_repository(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     clock = Clock()
-    argv = _argv(
-        ws,
-        extra=(
-            "--serving-recipes-config",
-            "config/serving_recipes.toml",
-            "--witness-context-config",
-            "config/witness_context.toml",
-        ),
-    )
+    argv = _argv(ws, extra=("--serving-recipes-config", "config/serving_recipes.toml"))
     argv[argv.index("--models-config") + 1] = "config/models.toml"
 
     plan = resolve_plan(build_parser().parse_args(argv), _environ(clock))
 
     assert plan.models_config == ws.models_config.resolve()
     assert plan.serving_recipes_config == (ws.repository / "config/serving_recipes.toml").resolve()
-    assert plan.witness_context_config == (ws.repository / "config/witness_context.toml").resolve()
-
-
-def test_the_real_roster_default_context_is_refused_after_the_pinned_checkout(
-    tmp_path: Path,
-) -> None:
-    """The declaration is parsed only after the pinned files exist."""
-
-    ws = _workspace(tmp_path)
-    ws.models_config = ws.repository / "config" / "models-real.toml"
-    catalogue = ws.repository / "config" / "serving_recipes_real.toml"
-    clock = Clock()
-    plan = resolve_plan(
-        build_parser().parse_args(_argv(ws, extra=("--serving-recipes-config", str(catalogue)))),
-        _environ(clock),
-    )
-    assert (
-        plan.witness_context_config == (ws.repository / "config" / "witness_context.toml").resolve()
-    )
-    assert not plan.models_config.exists()
-
-    source_config = Path(__file__).resolve().parents[2] / "config"
-    shutil.copytree(source_config, ws.repository / "config")
-    validate = bootstrap_main._build_configuration_validation(plan)
-
-    with pytest.raises(BootstrapStepFailure) as refusal:
-        validate()
-
-    assert refusal.value.step is BootstrapStep.CONFIGURATION
-    assert "shipped-fixture identity projection" in refusal.value.detail
-    assert "before any environment or model work" in refusal.value.remediation
-
-
-def test_an_explicit_malformed_context_is_refused_by_configuration_after_checkout(
-    tmp_path: Path,
-) -> None:
-    ws = _workspace(tmp_path)
-    selected_context = ws.repository / "config" / "operator-context.toml"
-    clock = Clock()
-    plan = resolve_plan(
-        build_parser().parse_args(
-            _argv(
-                ws,
-                extra=("--witness-context-config", str(selected_context)),
-            )
-        ),
-        _environ(clock),
-    )
-    assert not selected_context.exists()
-
-    source_config = Path(__file__).resolve().parents[2] / "config"
-    shutil.copytree(source_config, ws.repository / "config")
-    selected_context.write_text('attestator_1 = "not a table"\n', encoding="utf-8")
-
-    with pytest.raises(BootstrapStepFailure) as refusal:
-        bootstrap_main._build_configuration_validation(plan)()
-
-    assert refusal.value.step is BootstrapStep.CONFIGURATION
-    assert "not the closed, non-blank training_domain record" in refusal.value.detail
 
 
 # --- the chair cache is built lazily, only when CHAIR_CACHE actually runs ---
@@ -1284,7 +1204,6 @@ def test_build_actions_does_not_read_models_config_before_configuration_runs(
         store_root=ws.store_root,
         models_config=ws.models_config,
         serving_recipes_config=ws.repository / "config" / "serving_recipes.toml",
-        witness_context_config=ws.repository / "config" / "witness_context.toml",
         cache_root=ws.volume / "chair-cache",
         fixture=ws.repository / "proof" / "fixtures" / "synthetic-two-page-v0" / "page-1.png",
         submission_manifest=ws.volume / "submission" / "manifest.json",
@@ -1593,11 +1512,10 @@ def test_configuration_receipt_binds_every_selected_path_and_seal(
 
     receipt = bootstrap_main._build_configuration_validation(plan)()
 
-    assert receipt["schema"] == "pod-bootstrap-configuration.v2"
+    assert receipt["schema"] == "pod-bootstrap-configuration.v3"
     bindings = receipt["bindings"]
     for name, selected in (
         ("models_config", plan.models_config),
-        ("witness_context_config", plan.witness_context_config),
         ("serving_recipes_config", plan.serving_recipes_config),
         ("placement_config", bootstrap_main.DEFAULT_POD_PLACEMENT_CONFIG_PATH),
     ):
@@ -1700,9 +1618,9 @@ def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(
     )
     assert isinstance(first, BootstrapReport) and first.failure_step is BootstrapStep.UV_ENVIRONMENT
 
-    alternate = ws.repository / "config" / "alternate-context.toml"
-    alternate.write_bytes(original.witness_context_config.read_bytes())  # type: ignore[union-attr]
-    changed = replace(original, witness_context_config=alternate)
+    alternate = ws.repository / "config" / "alternate-models.toml"
+    alternate.write_bytes(original.models_config.read_bytes())  # type: ignore[union-attr]
+    changed = replace(original, models_config=alternate)
     resumed_actions = _configuration_actions(changed)
     resumed = bootstrap_main.run_bootstrap(
         changed,
@@ -1715,9 +1633,9 @@ def test_a_partial_journal_refuses_a_changed_configuration_path_before_uv(
     )
     assert resumed_actions.calls == [BootstrapStep.CONFIGURATION]
     journal = json.loads(ws.journal.read_text(encoding="utf-8"))
-    assert journal["receipts"]["configuration"]["bindings"]["witness_context_config"][
-        "path"
-    ] == str(original.witness_context_config)
+    assert journal["receipts"]["configuration"]["bindings"]["models_config"]["path"] == str(
+        original.models_config
+    )
     assert journal["failure"]["step"] == "configuration"
 
 
@@ -1872,9 +1790,9 @@ def test_a_failed_configuration_may_repair_its_selection_before_first_completion
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ws, repaired_plan = _checked_out_configuration_plan(tmp_path, monkeypatch)
-    bad_context = ws.repository / "config" / "bad-context.toml"
-    bad_context.write_text('attestator_1 = "not a table"\n', encoding="utf-8")
-    bad_plan = replace(repaired_plan, witness_context_config=bad_context)
+    bad_roster = ws.repository / "config" / "bad-models.toml"
+    bad_roster.write_text('attestator_1 = "not a table"\n', encoding="utf-8")
+    bad_plan = replace(repaired_plan, models_config=bad_roster)
     first_actions = _configuration_actions(bad_plan)
     first = bootstrap_main.run_bootstrap(
         bad_plan,
@@ -1898,9 +1816,9 @@ def test_a_failed_configuration_may_repair_its_selection_before_first_completion
     assert repaired_actions.calls[0] is BootstrapStep.CONFIGURATION
     assert BootstrapStep.UV_ENVIRONMENT in repaired_actions.calls
     repaired_journal = json.loads(ws.journal.read_text(encoding="utf-8"))
-    assert repaired_journal["receipts"]["configuration"]["bindings"]["witness_context_config"][
+    assert repaired_journal["receipts"]["configuration"]["bindings"]["models_config"][
         "path"
-    ] == str(repaired_plan.witness_context_config)
+    ] == str(repaired_plan.models_config)
 
 
 def _toml_value(value: object) -> str:

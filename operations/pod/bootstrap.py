@@ -30,16 +30,16 @@ from .models import require_utc, utc_now
 
 BOOTSTRAP_SCHEMA = "pod-bootstrap.v4"
 """v4 inserts CUDA compatibility before the costly environment and serving steps."""
-CONFIGURATION_RECEIPT_SCHEMA = "pod-bootstrap-configuration.v2"
+CONFIGURATION_RECEIPT_SCHEMA = "pod-bootstrap-configuration.v3"
 _RAW_BYTE_RECEIPT_SCHEMA = "pod-bootstrap-configuration.v1"
 """The checked-out selections re-read before any completed bootstrap is reused.
 
 v2 binds each file's seal (`common/sealed_config.py`) where v1 bound raw bytes, so
-a v1 journal is refused by schema rather than as a changed configuration.
+a v1 journal is refused by schema rather than as a changed configuration. v3 binds
+the roster, catalogue and placement table only.
 """
 _CONFIGURATION_BINDINGS = {
     "models_config",
-    "witness_context_config",
     "serving_recipes_config",
     "placement_config",
 }
@@ -483,7 +483,7 @@ class BootstrapActions(Protocol):
         """Materialize and verify exactly this commit."""
 
     def validate_configuration(self) -> dict[str, object]:
-        """Validate the checked-out roster and declaration before paid setup."""
+        """Validate the checked-out roster and catalogue before paid setup."""
 
     def configure_cuda_compat(self) -> dict[str, object]:
         """Detect the card and driver, then enable forward compatibility if needed."""
@@ -757,7 +757,7 @@ class Bootstrapper:
         """Re-read the cheap binding before skipping completed or green work."""
 
         remediation = (
-            "Restore the roster, declaration, serving catalogue, and placement selection "
+            "Restore the roster, serving catalogue, and placement selection "
             "recorded by this journal, or preserve the journal and start a new one for the "
             "new selection. A completed configuration receipt is never rewritten."
         )
@@ -848,12 +848,12 @@ def _configuration_receipt_problem(receipt: object) -> str | None:
 
     if not isinstance(receipt, dict):
         return "receipt is not an object"
-    required = {"schema", "bindings", "witness_context_validation"}
+    required = {"schema", "bindings"}
     if set(receipt) != required or receipt.get("schema") != CONFIGURATION_RECEIPT_SCHEMA:
         return f"receipt must be a closed {CONFIGURATION_RECEIPT_SCHEMA!r} object"
     bindings = receipt.get("bindings")
     if not isinstance(bindings, dict) or set(bindings) != _CONFIGURATION_BINDINGS:
-        return "receipt does not name all four selected configuration sources"
+        return "receipt does not name all three selected configuration sources"
     for name in sorted(_CONFIGURATION_BINDINGS):
         binding = bindings[name]
         if not isinstance(binding, dict) or set(binding) != {"path", "sha256"}:
@@ -864,8 +864,6 @@ def _configuration_receipt_problem(receipt: object) -> str | None:
             return f"{name!r} path is not a non-blank string"
         if not is_sha256(digest):
             return f"{name!r} sha256 is not a lowercase digest"
-    if not isinstance(receipt.get("witness_context_validation"), dict):
-        return "witness_context_validation is not an object"
     return None
 
 

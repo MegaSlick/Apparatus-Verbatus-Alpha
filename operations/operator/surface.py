@@ -44,7 +44,11 @@ from common.runtree.store import (
     SERVING_LOGS_DIR,
     RunTree,
 )
-from common.stage import load_fixture
+from common.stage import (
+    REAL_CONFIGURATION_FLAGS,
+    load_fixture,
+    partial_real_configuration_refusal,
+)
 from operations.pod.pod_run import DEFAULT_RUNS_DIRECTORY
 from operations.pod.transfer import (
     ChecksummedTransfer,
@@ -95,7 +99,6 @@ _RESUMED_BINDINGS: Final = frozenset(
         "--data-gate-policy",
         "--models-config",
         "--serving-recipes-config",
-        "--witness-context-config",
     }
 )
 
@@ -715,7 +718,6 @@ class OperatorSurface:
         data_gate_policy: str | Path | None = None,
         models_config: str | Path | None = None,
         serving_recipes_config: str | Path | None = None,
-        witness_context_config: str | Path | None = None,
         from_stage: str | None = None,
         to_stage: str | None = None,
     ) -> RunOutcome:
@@ -747,7 +749,6 @@ class OperatorSurface:
             data_gate_policy = recorded.get("--data-gate-policy")
             models_config = recorded.get("--models-config")
             serving_recipes_config = recorded.get("--serving-recipes-config")
-            witness_context_config = recorded.get("--witness-context-config")
         if submission_folder is None:
             for flag, value in (
                 ("--submission-manifest", submission_manifest),
@@ -761,7 +762,6 @@ class OperatorSurface:
         roster_argv = _roster_argv(
             models_config=models_config,
             serving_recipes_config=serving_recipes_config,
-            witness_context_config=witness_context_config,
         )
 
         run_root = self.state_root / "runs"
@@ -856,7 +856,6 @@ class OperatorSurface:
             "configuration": {
                 "models_config": _config_binding(models_config),
                 "serving_recipes_config": _config_binding(serving_recipes_config),
-                "witness_context_config": _config_binding(witness_context_config),
                 "submission_manifest": _config_binding(submission_manifest),
                 "data_gate_policy": _config_binding(data_gate_policy),
             },
@@ -2440,35 +2439,31 @@ def _roster_argv(
     *,
     models_config: str | Path | None,
     serving_recipes_config: str | Path | None,
-    witness_context_config: str | Path | None,
 ) -> list[str]:
-    """The real-roster trio, forwarded together; a partial selection is refused.
+    """The real configuration, forwarded whole; a partial selection is refused.
 
-    The shipped witness context calls every chair a synthetic fixture, and the
-    Perlector is told that as fact; a real roster needs its own. The Door also
-    refuses this, but refusing here names the console's own flags.
+    The orchestrator refuses this too, but refusing here names the console's own
+    flags before anything starts.
     """
 
-    selected = (models_config, serving_recipes_config, witness_context_config)
-    if any(value is None for value in selected) and any(value is not None for value in selected):
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND,
-            detail=(
-                "--models-config, --serving-recipes-config and --witness-context-config "
-                "select one roster together (the chairs, the catalogue they are served "
-                "under, and the factual witness context the Perlector is told about them); "
-                "supply all three or none"
-            ),
+    selected = dict(
+        zip(
+            REAL_CONFIGURATION_FLAGS,
+            (models_config, serving_recipes_config),
+            strict=True,
         )
+    )
+    refusal = partial_real_configuration_refusal(
+        flag for flag, value in selected.items() if value is not None
+    )
+    if refusal is not None:
+        raise OperatorError(ErrorCode.INVALID_COMMAND, detail=refusal)
     if models_config is None:
         return []
     return [
-        "--models-config",
-        str(Path(models_config).absolute()),
-        "--serving-recipes-config",
-        str(Path(serving_recipes_config).absolute()),  # type: ignore[arg-type]
-        "--witness-context-config",
-        str(Path(witness_context_config).absolute()),  # type: ignore[arg-type]
+        argument
+        for flag, value in selected.items()
+        for argument in (flag, str(Path(value).absolute()))  # type: ignore[arg-type]
     ]
 
 

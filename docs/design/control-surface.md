@@ -196,7 +196,7 @@ partial.
   stage. `--preview` shows what would be written (exit 5).
 - **`preflight`** checks a submission locally before any pod is rented: every file
   decodes, size and resolution, the pagekit crop check, the data gate. `--for-pod` adds
-  the configuration trio, the spend policy, the storage keys (a read of the volume) and
+  the configuration pair, the spend policy, the storage keys (a read of the volume) and
   the guard's commit being on `main`. Exit 3 when pages are flagged. While the pagekit
   thresholds are uncalibrated, "no flags" is reported as "nothing found", never as "the
   crops are right".

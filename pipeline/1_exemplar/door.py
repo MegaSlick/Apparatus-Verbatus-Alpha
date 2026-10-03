@@ -97,7 +97,6 @@ from common.stage import (  # noqa: E402
     run_stage,
     scenario_for,
     stage_parser,
-    validate_witness_context_bindings,
 )
 from operations.submit import gate, inventory  # noqa: E402
 from operations.submit import submit as submission_ledger  # noqa: E402
@@ -1605,7 +1604,6 @@ def fixture_submission(args, registry) -> int:
         hard_failure_config_path=args.hard_failure_config,
         review_config_path=args.review_config,
         witness_context=args.witness_context,
-        witness_context_config_path=args.witness_context_config,
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         serving_recipes_config_path=args.serving_recipes_config,
@@ -1962,11 +1960,6 @@ def _real_bindings(
     corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
         DEFAULT_CORPUS_FRAME_CONFIG_PATH
     )
-    witness_context_declaration_sha256 = validate_witness_context_bindings(
-        models,
-        witness_context=args.witness_context,
-        witness_context_config_path=args.witness_context_config,
-    )
     config_digest = digest_of(
         {
             "submission": [
@@ -2002,7 +1995,6 @@ def _real_bindings(
             "decoding_config_sha256": sealed["decoding"],
             "models": models.to_record(),
             "witness_context_regime": args.witness_context,
-            "witness_context_declaration_sha256": witness_context_declaration_sha256,
             "perlector_protocol_config_sha256": sealed["perlector-protocol"],
             "perlector_audit_config_sha256": sealed["perlector-audit"],
             "serving_config_inputs": base["serving_config_inputs"],
