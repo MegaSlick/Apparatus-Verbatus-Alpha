@@ -971,5 +971,6 @@ def test_a_reply_another_record_binds_answers_no_send():
     del blobs["call"]
     assert live_calls.unrecorded_replies(context([])) == ([], True)
     # A blob of any other schema is no call record, so it too may be an unattributed reply.
+    # The raw bytes are bound here, so only the unknown-schema blob can count.
     blobs["call"] = json.dumps({**call, "schema": "chair-call-record.v2"}).encode()
-    assert live_calls.unrecorded_replies(context([])) == ([], True)
+    assert live_calls.unrecorded_replies(context(["4_perlector/blobs/raw"])) == ([], True)
