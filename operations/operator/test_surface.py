@@ -3154,7 +3154,7 @@ def test_run_refuses_part_of_a_roster_before_any_child_starts(
         surface.run(run_id="part-roster", **{supplied: tmp_path / "part.toml"})
 
     assert refusal.value.code is ErrorCode.INVALID_COMMAND
-    assert "supply all three or none" in str(refusal.value.detail)
+    assert "supply all of them or none" in str(refusal.value.detail)
     assert not observed
 
 

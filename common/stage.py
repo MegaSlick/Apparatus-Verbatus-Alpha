@@ -149,6 +149,28 @@ DEFAULT_TRIAGE_MODES_CONFIG_PATH = _CONFIG_DIR / "triage_modes.toml"
 # the Perlectio schema cannot disagree about the closed set.
 WITNESS_CONTEXT_REGIMES: Final = ("named", "blinded")
 
+# The files that select the model configuration, given together or not at all:
+# a missing one would otherwise fall back to its fixture default.
+REAL_CONFIGURATION_FLAGS: Final = (
+    "--models-config",
+    "--serving-recipes-config",
+    "--witness-context-config",
+)
+
+
+def partial_real_configuration_refusal(given: Iterable[str]) -> str | None:
+    """Why a selection naming only some of `REAL_CONFIGURATION_FLAGS` is refused, or None."""
+    supplied = set(given)
+    missing = [flag for flag in REAL_CONFIGURATION_FLAGS if flag not in supplied]
+    if not supplied or not missing:
+        return None
+    return (
+        f"{', '.join(REAL_CONFIGURATION_FLAGS)} select one model configuration together "
+        f"(the chairs, the catalogue they are served under, and their witness context); "
+        f"supply all of them or none. Missing: {', '.join(missing)}"
+    )
+
+
 # A constant, never argv: the real `config_digest` binds no scenario, so an argv
 # value would be a run-shaping fact nothing checks.
 REAL_SCENARIO: Final = "real-submission"

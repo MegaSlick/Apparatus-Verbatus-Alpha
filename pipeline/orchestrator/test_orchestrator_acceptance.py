@@ -431,6 +431,22 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
     )
 
 
+def test_a_partial_real_configuration_is_refused_before_anything_is_written(tmp_path):
+    """The real model configuration is one selection; a partial one is refused up front.
+
+    Otherwise the missing files fall back to their fixture defaults and the run
+    gets as far as a stage before a configuration check notices the mismatch.
+    """
+
+    run_root = tmp_path / "runs"
+    result = orchestrate(run_root, "r", "happy", models_config=ROOT / "config" / "models-real.toml")
+
+    assert result.returncode == 2
+    assert "supply all of them or none" in result.stderr
+    assert "--serving-recipes-config" in result.stderr
+    assert not run_root.exists()
+
+
 def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
     """No stage after the Door receives a second path to source material."""
 
@@ -2224,7 +2240,14 @@ def test_an_explicitly_absent_witness_counts_against_the_floor_on_every_page(
     is delivered as fully witnessed.
     """
     root = tmp_path / "runs"
-    result = orchestrate_to_export(root, "r", "happy", models_config=absent_third_chair_config)
+    result = orchestrate_to_export(
+        root,
+        "r",
+        "happy",
+        models_config=absent_third_chair_config,
+        serving_recipes_config=DEFAULT_SERVING_RECIPES_CONFIG_PATH,
+        witness_context_config=ROOT / "config" / "witness_context.toml",
+    )
     assert result.returncode == 3, result.stderr
     tree = RunTree(root, "r")
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]

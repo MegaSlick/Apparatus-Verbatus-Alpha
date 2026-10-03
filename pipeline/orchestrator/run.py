@@ -85,6 +85,7 @@ from common.stage import (  # noqa: E402
     boundary_advanced,
     current_stage_seal,
     load_fixture,
+    partial_real_configuration_refusal,
     require_sealed_config,
     run_sealed_config_digests,
     scenario_for,
@@ -272,6 +273,15 @@ class GpuSampler:
             "max": self._max,
             "busy_fraction_over_95": self._busy / self._count,
         }, None
+
+
+class _RealConfigurationFlag(argparse.Action):
+    """Store the value and record that this real-configuration flag was given."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        given = getattr(namespace, "real_configuration_given", ())
+        namespace.real_configuration_given = (*given, self.option_strings[0])
 
 
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
@@ -656,6 +666,7 @@ def main() -> int:
     parser.add_argument(
         "--models-config",
         default="config/models.toml",
+        action=_RealConfigurationFlag,
         help="the sealed model-chair roster and recipes for this run",
     )
     parser.add_argument("--cache-root", default=None)
@@ -679,6 +690,7 @@ def main() -> int:
     parser.add_argument(
         "--serving-recipes-config",
         default=str(DEFAULT_SERVING_RECIPES_CONFIG_PATH),
+        action=_RealConfigurationFlag,
         help="the sealed serving-profile catalogue for this run; the default is the "
         "fixture-only catalogue",
     )
@@ -776,6 +788,7 @@ def main() -> int:
     parser.add_argument(
         "--witness-context-config",
         default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
+        action=_RealConfigurationFlag,
         help="the Perlector-owned factual witness-context declaration this run seals",
     )
     selection = parser.add_mutually_exclusive_group()
@@ -809,6 +822,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    refusal = partial_real_configuration_refusal(getattr(args, "real_configuration_given", ()))
+    if refusal is not None:
+        raise ContractError(refusal)
     require_coherent_ingress_options(args)
     resolve_caller_paths(args)
     # Proved up front, not lazily from `_record_stage_timing`: a manual or semi

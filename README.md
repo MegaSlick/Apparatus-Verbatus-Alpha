@@ -79,8 +79,7 @@ for review or partial, which includes an act refused inside an otherwise finishe
 which is three files given together: `--models-config config/models-real.toml`,
 `--serving-recipes-config config/serving_recipes_real.toml` and
 `--witness-context-config config/witness_context-real.toml`. Always give all three: the
-operator's `run` refuses a partial set, but the orchestrator called directly fills any
-missing one with its fixture default, which configuration checks may refuse only later.
+operator's `run` and the orchestrator both refuse a partial set before anything starts.
 [operations/operator/README.md](operations/operator/README.md) describes a run, and the
 RunPod tooling is in `operations/pod/`. Input can be most raster images, multi-page TIFF, HEIC
 or PDF. Output is a sealed ZIP bundle with a manifest, and it can include a text bundle,
