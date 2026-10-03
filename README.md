@@ -43,8 +43,9 @@ page images → Exemplar → Ink map → Designator → Attestatores → Perlect
 | Perlector | `Qwen/Qwen3.8-27B` |
 | Coniector | `Qwen/Qwen3.8-27B` (the Perlector's model, text only) |
 
-Models are bound to roles in `config/models-real.toml` and can be swapped without code
-changes.
+Models are bound to roles in `config/models-real.toml`. Moving a role to another
+revision of the same model is a configuration change; a model that answers in a
+different format also needs its own adapter (`common/witness_adapters.py`).
 
 ## Getting started
 
@@ -67,11 +68,21 @@ and export — not reading:
   --scenario happy --run-id demo --run-root /tmp/verbatus-demo
 ```
 
-Each stage writes its sealed output under the run root, ending in `7_armarium/`.
+Each stage writes its sealed output under the run root, ending in `7_armarium/`. This
+scenario ends with `run demo: partial` and exit code 3, by design: the synthetic act
+that crosses from page 1 to page 2 is flagged, not silently joined, so the export says it
+is partial. Exit codes: 0 complete; 2 the run failed or was refused before it could finish; 3 held
+for review or partial, which includes an act refused inside an otherwise finished run;
+4 halted.
 
-**Real pages** need the real roster (`--models-config config/models-real.toml`) and a
-Linux GPU machine running vLLM; the RunPod
-tooling is in `operations/pod/`. Input can be most raster images, multi-page TIFF, HEIC
+**Real pages** need a Linux GPU machine running vLLM and the real model configuration,
+which is three files given together: `--models-config config/models-real.toml`,
+`--serving-recipes-config config/serving_recipes_real.toml` and
+`--witness-context-config config/witness_context-real.toml`. Always give all three: the
+operator's `run` refuses a partial set, but the orchestrator called directly fills any
+missing one with its fixture default, which configuration checks may refuse only later.
+[operations/operator/README.md](operations/operator/README.md) describes a run, and the
+RunPod tooling is in `operations/pod/`. Input can be most raster images, multi-page TIFF, HEIC
 or PDF. Output is a sealed ZIP bundle with a manifest, and it can include a text bundle,
 a searchable SQLite database, JSONL, and the items held for human review
 (`config/formats.toml`).
@@ -107,5 +118,14 @@ reviewed it (`Reviewed-by`).
 
 ## Licence
 
-Apache License 2.0; see [LICENSE](LICENSE). Copyright 2026 Tyrel Somerville, project
-lead.
+The code is under the Apache License 2.0; see [LICENSE](LICENSE). Copyright 2026 Tyrel
+Somerville, project lead.
+
+The models are not part of this repository. They are fetched at a pinned revision when a
+run starts, each under its own terms, recorded beside each model in
+`config/models-real.toml`. They differ: Churro's weights are for research only;
+Chandra's bar commercial use above a revenue threshold and competing use; the DAI reader
+declares no licence; the record detector's weights are AGPL-3.0; Surya's layout weights
+are OpenRAIL; the Qwen reader is Apache-2.0.
+The record detector runs through `ultralytics`, which is AGPL-3.0; it is installed
+only on the GPU machine, never in this repository's own environment.

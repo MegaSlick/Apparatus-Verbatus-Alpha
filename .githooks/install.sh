@@ -27,14 +27,6 @@ if ! chmod +x .githooks/pre-commit .githooks/pre-merge-commit \
   exit 1
 fi
 
-# Git does not preserve empty directories. Recreate the local working areas a
-# fresh clone needs; their tracked README files explain what belongs in each.
-mkdir -p workbench/active workbench/standing workbench/archive \
-         workbench/scratch workbench/design workbench/tools workbench/raw \
-         workbench/quarantine
-
-# Configure Git only after every filesystem prerequisite succeeds. If either
-# chmod or mkdir fails, a previously working hooksPath must stay in place.
 git config core.hooksPath .githooks
 
 echo "Hooks installed for this clone."
