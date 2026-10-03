@@ -93,6 +93,10 @@ def configured_policy(**overrides: object) -> SpendPolicy:
         "shutdown_poll_interval_seconds": 1,
         "shutdown_deadline_seconds": 8,
         "billing_cutoff_margin_seconds": 3600,
+        "soft_max_seconds": 86_400,
+        "hard_max_seconds": 86_400,
+        "soft_max_cost_usd": Decimal("1000.00"),
+        "hard_max_cost_usd": Decimal("1000.00"),
     }
     values.update(overrides)
     return SpendPolicy(**values)  # type: ignore[arg-type]
@@ -103,7 +107,7 @@ def configured_spend_toml(
 ) -> str:
     return "\n".join(
         (
-            'schema = "pod-spend.v3"',
+            'schema = "pod-spend.v4"',
             'state = "configured"',
             'currency = "USD"',
             'max_hourly_usd = "1.00"',
@@ -115,6 +119,10 @@ def configured_spend_toml(
             "shutdown_poll_interval_seconds = 1",
             f"shutdown_deadline_seconds = {shutdown_deadline_seconds}",
             "billing_cutoff_margin_seconds = 3600",
+            "soft_max_seconds = 86400",
+            "hard_max_seconds = 86400",
+            'soft_max_cost_usd = "1000.00"',
+            'hard_max_cost_usd = "1000.00"',
             "",
         )
     )

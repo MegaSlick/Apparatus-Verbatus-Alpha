@@ -16,7 +16,7 @@ def _policy(path: Path) -> Path:
     path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v3"',
+                'schema = "pod-spend.v4"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',
@@ -28,6 +28,10 @@ def _policy(path: Path) -> Path:
                 "shutdown_poll_interval_seconds = 1",
                 "shutdown_deadline_seconds = 5",
                 "billing_cutoff_margin_seconds = 0",
+                "soft_max_seconds = 14400",
+                "hard_max_seconds = 21600",
+                'soft_max_cost_usd = "2.00"',
+                'hard_max_cost_usd = "3.00"',
                 "",
             )
         ),
@@ -51,7 +55,7 @@ def test_spend_show_reads_the_policy_without_writing(tmp_path: Path) -> None:
 
 def test_spend_refuses_to_display_unconfigured_policy_as_configured(tmp_path: Path) -> None:
     policy = tmp_path / "spend.toml"
-    policy.write_text('schema = "pod-spend.v3"\nstate = "unconfigured"\n', encoding="utf-8")
+    policy.write_text('schema = "pod-spend.v4"\nstate = "unconfigured"\n', encoding="utf-8")
 
     with pytest.raises(OperatorError) as raised:
         spend_module.show(policy)
@@ -153,7 +157,7 @@ def test_a_policy_that_is_not_utf_8_refuses_by_name(tmp_path: Path) -> None:
     """The byte-oriented loader decodes UTF-8 itself and refuses bad bytes by name."""
 
     source = tmp_path / "spend.toml"
-    source.write_bytes(b'schema = "pod-spend.v3"\nstate = "\xff\xfe"\n')
+    source.write_bytes(b'schema = "pod-spend.v4"\nstate = "\xff\xfe"\n')
 
     with pytest.raises(OperatorError) as excinfo:
         spend_module.show(source)
