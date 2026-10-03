@@ -12,7 +12,7 @@ from common.chairs.models import ChairIdentity, is_sha256
 from common.chairs.receipts import validate_receipt
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.contracts.errors import ContractError
-from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA
+from common.contracts.serving import SERVING_CONFIG_INPUTS_SCHEMA, SERVING_LAUNCH_AUDIT_SCHEMA
 from common.sealed_config import parse_sealed_toml
 from operations.pod.durable import exclusive_write
 
@@ -39,10 +39,11 @@ the one tier that was measured.  Normal serving remains unable to launch an
 unproven row.
 """
 
-SCHEMA = "serving-qualification-candidates.v1"
+SCHEMA = "serving-qualification-candidates.v2"
 QUALIFICATION_PURPOSE = "preflight-qualification"
-# Catalogue row kinds a stage runs itself; preflight records each chair's placement
-# under the same name.
+# Catalogue row kinds a stage runs itself, never served; preflight places each
+# chair under its row's kind. An `unsupported` row placed at a tier makes the
+# preflight red, so a report qualify accepts never holds one.
 UNSERVED_KINDS = frozenset({"subprocess", "in-process"})
 
 
@@ -123,29 +124,19 @@ def qualification_candidates(
         for role, identity in models.chairs.items()
         if isinstance(identity, ChairIdentity)
     }
-    adapters = sorted(
-        role for role, identity in identities.items() if identity.adapter_of is not None
-    )
-    if adapters:
-        raise QualificationRefusal(
-            "adapter qualification is unsupported: an adapter proof must bind its resolved "
-            "base checkpoint as well as the adapter; no candidates were emitted for "
-            + ", ".join(adapters)
-        )
-    # A chair its stage runs as a subprocess (Surya) or in-process (the record
-    # detector) is never served: preflight checks its weights (and runs a
-    # subprocess chair's own runner once on the golden page), so it has a cache
-    # receipt and a placement in that state but no smoke receipt, and no row of
-    # its is ever proven here.
-    profiles = {
-        role: _profile_at_tier(recipes, identity, tier) for role, identity in identities.items()
-    }
+    # Qualification is per chair: it covers exactly the chairs this preflight
+    # placed, which is the whole roster or the narrowed selection an operator
+    # asked for. A chair its stage runs itself has a placement in its row's kind
+    # and no smoke receipt, and is never a candidate.
+    placements = _rows_by_chair(preflight.get("placements"), "placements")
+    selected = _placed_chairs(placements, models.chairs, identities)
+    profiles = {role: _profile_at_tier(recipes, identities[role], tier) for role in selected}
     unserved_states = {
         role: profile.kind for role, profile in profiles.items() if profile.kind in UNSERVED_KINDS
     }
-    served = {
-        role: identity for role, identity in identities.items() if role not in unserved_states
-    }
+    served = {role: identities[role] for role in selected if role not in unserved_states}
+    if not served:
+        raise QualificationRefusal("preflight placed no chair that is served at this tier")
     smoke_rows = preflight.get("smoke_receipts")
     if not isinstance(smoke_rows, list):
         raise QualificationRefusal("preflight smoke receipts are not a list")
@@ -158,11 +149,15 @@ def qualification_candidates(
         by_chair.setdefault(chair, []).append(smoke)
     if set(by_chair) != set(served):
         raise QualificationRefusal(
-            "smoke receipts do not cover exactly the configured served chairs: "
+            "smoke receipts do not cover exactly the placed served chairs: "
             f"expected={sorted(served)}, observed={sorted(by_chair)}"
         )
-    _verify_cache_receipts(preflight.get("cache_receipts"), identities)
-    _verify_placements(preflight.get("placements"), identities, tier, unserved_states)
+    _verify_cache_receipts(
+        preflight.get("cache_receipts"), {role: identities[role] for role in selected}
+    )
+    _verify_placements(
+        placements, {role: identities[role] for role in selected}, tier, unserved_states
+    )
     _verify_subprocess_receipts(
         preflight.get("subprocess_receipts"),
         {
@@ -246,8 +241,21 @@ def qualification_candidates(
             "dtype": environment.get("dtype"),
             "golden_page_sha256": golden_page_sha256,
         },
+        "preflight_chairs": sorted(selected),
         "candidates": candidates,
     }
+
+
+def _placed_chairs(
+    placed: Mapping[str, object],
+    roster: Mapping[str, object],
+    identities: Mapping[str, ChairIdentity],
+) -> list[str]:
+    """The configured chairs the preflight placed, in roster order."""
+    strangers = sorted(set(placed) - set(roster))
+    if strangers:
+        raise QualificationRefusal(f"placements name chairs outside the roster: {strangers}")
+    return [role for role in identities if role in placed]
 
 
 def _bootstrap_record(report: Mapping[str, object]) -> Mapping[str, object]:
@@ -371,10 +379,11 @@ def _verify_smoke(
             raise QualificationRefusal(
                 f"chair {identity.role!r} page-read evidence disagrees at {field}"
             )
-    for field in ("smoke_service_request_count", "smoke_fixture_request_count"):
-        value = smoke.get(field)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            raise QualificationRefusal(f"chair {identity.role!r} has no valid {field}")
+    count = smoke.get("smoke_fixture_request_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} has no valid smoke_fixture_request_count"
+        )
 
     receipt_ref = _object(smoke.get("receipt_reference"), "service receipt reference")
     audit_ref = _object(smoke.get("serving_launch_audit_reference"), "launch audit reference")
@@ -413,7 +422,7 @@ def _verify_smoke(
     served_engine = " ".join((validated_receipt["engine"], validated_receipt["engine_version"]))
     if smoke["served_engine"] != served_engine:
         raise QualificationRefusal(f"chair {identity.role!r} served-engine claim changed")
-    if audit_artifact.get("schema") != "serving-launch-audit.v1":
+    if audit_artifact.get("schema") != SERVING_LAUNCH_AUDIT_SCHEMA:
         raise QualificationRefusal(f"chair {identity.role!r} launch audit has the wrong schema")
     if audit_artifact.get("chair") != identity.role:
         raise QualificationRefusal(f"chair {identity.role!r} launch audit names another chair")
@@ -421,7 +430,7 @@ def _verify_smoke(
         raise QualificationRefusal(f"chair {identity.role!r} was not launched for qualification")
     if audit_artifact.get("configuration_inputs") != config_inputs:
         raise QualificationRefusal(f"chair {identity.role!r} launch used different configuration")
-    if audit_artifact.get("primary_identity") != expected_identity:
+    if audit_artifact.get("chair_identity") != expected_identity:
         raise QualificationRefusal(f"chair {identity.role!r} launch used a different identity")
     profile = _object(audit_artifact.get("profile"), "launch audit profile")
     if (
@@ -480,7 +489,7 @@ def _verified_artifact_bytes(root: Path, reference: Mapping[str, object], label:
 def _verify_cache_receipts(raw_receipts: object, identities: Mapping[str, ChairIdentity]) -> None:
     receipts = _rows_by_chair(raw_receipts, "cache receipts")
     if set(receipts) != set(identities):
-        raise QualificationRefusal("cache receipts do not cover exactly the configured chairs")
+        raise QualificationRefusal("cache receipts do not cover exactly the placed chairs")
     for role, rows in receipts.items():
         if len(rows) != 1 or rows[0].get("manifest_digest") != identities[role].digest_manifest:
             raise QualificationRefusal(f"chair {role!r} cache receipt does not match its manifest")
@@ -522,15 +531,14 @@ def _verify_measured_packages(role: str, measured: object, required: object) -> 
 
 
 def _verify_placements(
-    raw_placements: object,
+    placements: Mapping[str, list[Mapping[str, object]]],
     identities: Mapping[str, ChairIdentity],
     tier: str,
     unserved_states: Mapping[str, str],
 ) -> None:
-    placements = _rows_by_chair(raw_placements, "placements", selected=set(identities))
-    if set(placements) != set(identities):
-        raise QualificationRefusal("placements do not cover exactly the configured chairs")
-    for role, rows in placements.items():
+    """Each placed chair has exactly one placement, of its recipe, on the measured tier."""
+    for role in identities:
+        rows = placements[role]
         if (
             len(rows) != 1
             or rows[0].get("configured_serving_recipe") != identities[role].serving_recipe
@@ -540,9 +548,7 @@ def _verify_placements(
             raise QualificationRefusal(f"chair {role!r} was not planned on the measured tier")
 
 
-def _rows_by_chair(
-    value: object, label: str, *, selected: set[str] | None = None
-) -> dict[str, list[Mapping[str, object]]]:
+def _rows_by_chair(value: object, label: str) -> dict[str, list[Mapping[str, object]]]:
     if not isinstance(value, list):
         raise QualificationRefusal(f"{label} are not a list")
     rows: dict[str, list[Mapping[str, object]]] = {}
@@ -551,8 +557,7 @@ def _rows_by_chair(
         chair = row.get("chair")
         if not isinstance(chair, str) or not chair:
             raise QualificationRefusal(f"{label[:-1]} does not name a chair")
-        if selected is None or chair in selected:
-            rows.setdefault(chair, []).append(row)
+        rows.setdefault(chair, []).append(row)
     return rows
 
 

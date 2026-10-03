@@ -236,6 +236,31 @@ def test_a_detector_score_enters_its_record_and_proposal_rounded_half_to_even(
     assert record["payload"]["raw_proposal"]["score_bp"] == 2
 
 
+def test_a_page_the_detector_cannot_be_shown_is_refused_naming_the_page(tmp_path, monkeypatch):
+    """A refusal from the detector (a page with no 8-bit rendering, say) reaches the
+    stage as its own named refusal, not an unhandled serving error."""
+    import dataclasses
+
+    from operations.serving.errors import ServingConfigurationError
+
+    designator = load_stage("2_designator")
+    context = _prepared_context(
+        designator, tmp_path / "runs", _configured(tmp_path), "unshowable page test"
+    )
+    real_secondary = designator.secondary_provenance
+
+    def unshowable(_png, ordinal):
+        raise ServingConfigurationError("the record detector cannot be shown this page as RGB")
+
+    def refusing(context, *, real):
+        record, detector = real_secondary(context, real=real)
+        return record, dataclasses.replace(detector, _detect=unshowable)
+
+    monkeypatch.setattr(designator, "secondary_provenance", refusing)
+    with pytest.raises(ContractError, match=r"could not read page 1 \(.*cannot be shown"):
+        designator.publish_page_evidence(context, real=False)
+
+
 def test_a_retried_fixture_pass_reuses_the_in_process_detector_s_sealed_receipt(
     tmp_path, monkeypatch
 ):

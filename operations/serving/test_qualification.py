@@ -56,16 +56,34 @@ def _qualification_fixture(
     ws, _ = _serving_workspace(tmp_path, preflight_state="unproven")
     if adjust_workspace is not None:
         adjust_workspace(ws)
-    evidence_root = ws.volume / "preflight" / "qualification"
-    recipes_config = ws.repository / "config" / "serving_recipes.toml"
-    recipes_bytes = recipes_config.read_bytes()
-    placement_bytes = ws.placement_config.read_bytes()
+    paths = {
+        "report": ws.volume / "bootstrap-report.json",
+        "evidence": ws.volume / "preflight" / "qualification",
+        "models": ws.models_config,
+        "recipes": ws.repository / "config" / "serving_recipes.toml",
+        "placement": ws.placement_config,
+    }
+    return paths, _write_report(paths, PROVEN_TIER, answer=answer)
+
+
+def _write_report(
+    paths: dict[str, Path],
+    tier: str,
+    *,
+    answer: str | None = None,
+    roles: set[str] | None = None,
+) -> dict[str, object]:
+    """Write a green bootstrap report for a preflight that placed `roles` (all by default)."""
+
+    evidence_root = paths["evidence"]
+    recipes_bytes = paths["recipes"].read_bytes()
+    placement_bytes = paths["placement"].read_bytes()
     config_inputs = {
         "schema": "serving-config-inputs.v2",
         "serving_recipes_sha256": parse_sealed_toml(recipes_bytes, "recipes")[1],
         "pod_placement_sha256": parse_sealed_toml(placement_bytes, "placement")[1],
     }
-    models = load_models_toml(ws.models_config)
+    models = load_models_toml(paths["models"])
     profile_rows = tomllib.loads(recipes_bytes.decode("utf-8"))["profiles"]
     witness_bytes = PAGE_WITNESS.encode("ascii")
     witness_ref = _write_bytes_artifact(evidence_root, "page-witnesses", witness_bytes)
@@ -80,11 +98,10 @@ def _qualification_fixture(
     for role, identity in sorted(models.chairs.items()):
         if not isinstance(identity, ChairIdentity):
             continue
-        kind = next(
-            row["kind"]
-            for row in profile_rows
-            if row["chair"] == role and row["tier"] == PROVEN_TIER
-        )
+        if roles is not None and role not in roles:
+            continue
+        row = next(row for row in profile_rows if row["chair"] == role and row["tier"] == tier)
+        kind = row["kind"]
         if kind in ("subprocess", "in-process"):
             # A chair its stage runs itself is never served: preflight verifies
             # its weights and places it (and runs a subprocess chair's own
@@ -100,7 +117,7 @@ def _qualification_fixture(
                 {
                     "chair": role,
                     "configured_serving_recipe": identity.serving_recipe,
-                    "tier": PROVEN_TIER,
+                    "tier": tier,
                     "state": kind,
                 }
             )
@@ -109,20 +126,15 @@ def _qualification_fixture(
                 subprocess_receipts.append(
                     {
                         "chair": role,
-                        "environment": next(
-                            row["environment"]
-                            for row in profile_rows
-                            if row["chair"] == role and row["tier"] == PROVEN_TIER
-                        ),
-                        "versions": {"surya_ocr": "0.22.1", "torch": "2.14.0"},
+                        "environment": row["environment"],
+                        "versions": {
+                            package.replace("-", "_"): pin
+                            for package, pin in row["required_packages"].items()
+                        },
                     }
                 )
             continue
-        served_model_id = next(
-            row["served_model_id"]
-            for row in profile_rows
-            if row["chair"] == role and row["tier"] == PROVEN_TIER
-        )
+        served_model_id = row["served_model_id"]
         response_bytes = canonical_bytes(
             {"model": served_model_id, "choices": [{"message": {"content": answer}}]}
         )
@@ -138,7 +150,7 @@ def _qualification_fixture(
             {
                 "chair": role,
                 "configured_serving_recipe": identity.serving_recipe,
-                "tier": PROVEN_TIER,
+                "tier": tier,
                 "state": "planned",
             }
         )
@@ -163,14 +175,14 @@ def _qualification_fixture(
         }
         receipt_ref = _write_artifact(evidence_root, "receipts", service_receipt)
         audit = {
-            "schema": "serving-launch-audit.v1",
+            "schema": "serving-launch-audit.v2",
             "chair": role,
             "launch_purpose": "preflight-qualification",
             "configuration_inputs": config_inputs,
-            "primary_identity": identity.to_record(),
+            "chair_identity": identity.to_record(),
             "profile": {
                 "recipe": identity.serving_recipe,
-                "tier": PROVEN_TIER,
+                "tier": tier,
                 "preflight_state": "unproven",
                 "served_model_id": served_model_id,
             },
@@ -200,7 +212,6 @@ def _qualification_fixture(
                 "page_witness_matches": True,
                 "page_witness_edit_distance": 0,
                 "page_witness_reference": witness_ref,
-                "smoke_service_request_count": 1,
                 "smoke_fixture_request_count": 1,
                 "service_receipt": service_receipt,
                 "receipt_reference": receipt_ref,
@@ -213,7 +224,7 @@ def _qualification_fixture(
         "color": "green",
         "issues": [],
         "assembly_proven": True,
-        "placement_tier": PROVEN_TIER,
+        "placement_tier": tier,
         "golden_page_sha256": HASH,
         "serving_config_inputs": config_inputs,
         "environment": {
@@ -242,16 +253,8 @@ def _qualification_fixture(
             "remediation": None,
         },
     }
-    report = ws.volume / "bootstrap-report.json"
-    report.write_text(json.dumps(wrapper), encoding="utf-8")
-    paths = {
-        "report": report,
-        "evidence": evidence_root,
-        "models": ws.models_config,
-        "recipes": recipes_config,
-        "placement": ws.placement_config,
-    }
-    return paths, wrapper
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    return wrapper
 
 
 def _qualify(paths: dict[str, Path]) -> dict[str, object]:
@@ -269,7 +272,7 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
 
     record = _qualify(paths)
 
-    assert record["schema"] == "serving-qualification-candidates.v1"
+    assert record["schema"] == "serving-qualification-candidates.v2"
     candidates = record["candidates"]
     assert isinstance(candidates, list) and len(candidates) == 5
     assert {item["tier"] for item in candidates} == {PROVEN_TIER}
@@ -297,6 +300,81 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
         sum(getattr(profile, "preflight_state", None) == "proven" for profile in parsed.profiles)
         == 5
     )
+
+
+REAL_CONFIG = Path(__file__).resolve().parents[2] / "config"
+
+
+def _real_catalogue_paths(tmp_path: Path) -> dict[str, Path]:
+    return {
+        "report": tmp_path / "bootstrap-report.json",
+        "evidence": tmp_path / "evidence",
+        "models": REAL_CONFIG / "models-real.toml",
+        "recipes": REAL_CONFIG / "serving_recipes_real.toml",
+        "placement": REAL_CONFIG / "pod_placement.toml",
+    }
+
+
+def _real_rows_at(tier: str) -> dict[str, str]:
+    raw = tomllib.loads((REAL_CONFIG / "serving_recipes_real.toml").read_text(encoding="utf-8"))
+    return {row["chair"]: row["kind"] for row in raw["profiles"] if row["tier"] == tier}
+
+
+@pytest.mark.parametrize("tier", ["generic-24gb", "generic-48gb", "generic-80gb-plus"])
+def test_the_real_catalogue_qualifies_every_chair_a_green_preflight_served_at_each_tier(
+    tmp_path: Path, tier: str
+) -> None:
+    # A green preflight at a small tier leaves out the chairs that tier cannot
+    # serve; what it did smoke must still yield one candidate per served chair.
+    kinds = _real_rows_at(tier)
+    placed = {chair for chair, kind in kinds.items() if kind != "unsupported"}
+    paths = _real_catalogue_paths(tmp_path)
+    _write_report(paths, tier, roles=placed)
+
+    record = _qualify(paths)
+
+    assert record["preflight_chairs"] == sorted(placed)
+    assert {item["chair"] for item in record["candidates"]} == {
+        chair for chair, kind in kinds.items() if kind == "vllm"
+    }
+    assert {item["tier"] for item in record["candidates"]} == {tier}
+
+
+def test_a_narrowed_preflight_qualifies_only_the_chairs_it_smoked(tmp_path: Path) -> None:
+    paths = _real_catalogue_paths(tmp_path)
+    _write_report(paths, "generic-24gb", roles={"attestator_1"})
+
+    record = _qualify(paths)
+
+    assert [item["chair"] for item in record["candidates"]] == ["attestator_1"]
+
+
+def test_an_unsupported_chair_placed_in_a_report_claiming_green_is_refused(
+    tmp_path: Path,
+) -> None:
+    # Preflight reports such a placement red; a report that claims green anyway
+    # names a served chair with no smoke, and nothing is emitted.
+    paths = _real_catalogue_paths(tmp_path)
+    wrapper = _write_report(paths, "generic-24gb", roles={"attestator_1"})
+    preflight = wrapper["bootstrap"]["receipts"]["preflight"]
+    preflight["placements"].append(
+        {
+            "chair": "perlector",
+            "configured_serving_recipe": "unproven-real-perlector",
+            "tier": "generic-24gb",
+            "state": "unservable-at-tier",
+        }
+    )
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="do not cover exactly"):
+        _qualify(paths)
+
+
+def test_qualification_refuses_a_preflight_that_served_nothing(tmp_path: Path) -> None:
+    paths = _real_catalogue_paths(tmp_path)
+    _write_report(paths, "generic-24gb", roles={"designator_surya"})
+    with pytest.raises(QualificationRefusal, match="no chair that is served"):
+        _qualify(paths)
 
 
 def test_a_parsed_catalogue_keeps_one_profile_per_row_in_file_order() -> None:
@@ -439,7 +517,7 @@ def test_qualification_refuses_record_without_producer_wrapper(tmp_path: Path) -
         _qualify(paths)
 
 
-def test_qualification_cannot_stamp_an_adapter_without_binding_its_base(tmp_path: Path) -> None:
+def test_qualification_refuses_a_roster_that_declares_an_adapter_chair(tmp_path: Path) -> None:
     paths, _ = _qualification_fixture(tmp_path)
     models = paths["models"].read_text(encoding="utf-8")
     models = models.replace(
@@ -448,9 +526,8 @@ def test_qualification_cannot_stamp_an_adapter_without_binding_its_base(tmp_path
         1,
     )
     paths["models"].write_text(models, encoding="utf-8")
-    assert load_models_toml(paths["models"]).chairs["attestator_1"].adapter_of is not None
 
-    with pytest.raises(QualificationRefusal, match="adapter qualification is unsupported"):
+    with pytest.raises(QualificationRefusal, match="adapter_of is not supported"):
         _qualify(paths)
 
 
@@ -795,7 +872,6 @@ def _audit_profile_changed(root: Path, smoke: dict) -> None:
             "malformed utilization samples",
         ),
         (_smoke_field("supplied_fixture_sha256", "f" * 64), "smoked a different golden page"),
-        (_smoke_field("smoke_service_request_count", 0), "no valid smoke_service_request_count"),
         (_smoke_field("smoke_fixture_request_count", True), "no valid smoke_fixture_request_count"),
         (_embedded("service_receipt"), "service receipt artifact disagrees"),
         (_embedded("serving_launch_audit"), "launch audit artifact disagrees"),
@@ -805,7 +881,7 @@ def _audit_profile_changed(root: Path, smoke: dict) -> None:
         (_audit_changed("schema", "serving-launch-audit.v0"), "launch audit has the wrong schema"),
         (_audit_changed("chair", "someone-else"), "launch audit names another chair"),
         (_audit_changed("configuration_inputs", {}), "launch used different configuration"),
-        (_audit_changed("primary_identity", {}), "launch used a different identity"),
+        (_audit_changed("chair_identity", {}), "launch used a different identity"),
         (_audit_profile_changed, "launch audit names another profile"),
     ],
 )

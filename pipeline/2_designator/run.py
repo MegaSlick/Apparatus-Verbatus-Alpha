@@ -405,7 +405,12 @@ def _publish_detector_records(
         page_id = page_record["subject_id"]
         page_bytes = _read_checked_page_bytes(context, page_record)
         width, height = dimensions(page_bytes)
-        detections = detector.detect(page_bytes, page_ordinal=ordinal)
+        try:
+            detections = detector.detect(page_bytes, page_ordinal=ordinal)
+        except ServingError as error:
+            raise ContractError(
+                f"the record detector could not read page {ordinal} ({page_id}): {error}"
+            ) from error
         raw_ref = context.retain(
             json.dumps(
                 {

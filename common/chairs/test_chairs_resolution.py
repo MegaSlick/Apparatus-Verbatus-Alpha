@@ -112,8 +112,7 @@ def test_a_chair_with_no_recognizable_state_is_refused(tmp_path):
 
 
 def test_a_blank_field_is_refused_rather_than_read_as_an_omission(tmp_path):
-    """The schema has no blank-string sentinels: `adapter_of = ""` is gone, and
-    a blanked required field is a malformed pin rather than a quiet default."""
+    """A blanked required field is a malformed pin rather than a quiet default."""
     with pytest.raises(ConfigurationRefusal, match="non-blank"):
         config_of(tmp_path, {"attestator_1": hf_chair("attestator_1", DIGEST, serving_recipe="  ")})
 
@@ -165,38 +164,17 @@ def test_a_local_repository_chair_needs_a_configured_model_root(tmp_path):
         config_of(tmp_path, {"perlector": local_chair("perlector", DIGEST)})
 
 
-# --- adapter_of names a base that exists -------------------------------------------
+# --- No chair is an adapter of another ---------------------------------------------
 
 
-def test_adapter_of_naming_a_base_outside_the_roster_is_refused(tmp_path):
-    chairs = {"attestator_1": hf_chair("attestator_1", DIGEST, adapter_of="no_such_base")}
-    with pytest.raises(ConfigurationRefusal, match="adapter_of"):
-        config_of(tmp_path, chairs)
-
-
-def test_adapter_of_naming_an_explicitly_absent_base_is_refused(tmp_path):
-    """An adapter whose base is declared absent has nothing to ride on, and the
-    one thing that must never happen is the bare base answering in its place."""
+@pytest.mark.parametrize("base", ["base", "no_such_base", "attestator_1"])
+def test_a_chair_declared_as_an_adapter_is_refused_when_the_roster_is_read(tmp_path, base):
     chairs = {
-        "attestator_1": hf_chair("attestator_1", DIGEST, adapter_of="base"),
-        "base": absent_chair(),
-    }
-    with pytest.raises(ConfigurationRefusal, match="absent"):
-        config_of(tmp_path, chairs)
-
-
-def test_adapter_of_naming_itself_is_refused(tmp_path):
-    chairs = {"attestator_1": hf_chair("attestator_1", DIGEST, adapter_of="attestator_1")}
-    with pytest.raises(ConfigurationRefusal, match="itself"):
-        config_of(tmp_path, chairs)
-
-
-def test_adapter_of_naming_a_real_sibling_chair_resolves(tmp_path):
-    chairs = {
-        "attestator_1": hf_chair("attestator_1", DIGEST, adapter_of="base"),
+        "attestator_1": hf_chair("attestator_1", DIGEST, adapter_of=base),
         "base": hf_chair("base", DIGEST),
     }
-    assert config_of(tmp_path, chairs).chairs["attestator_1"].adapter_of == "base"
+    with pytest.raises(ConfigurationRefusal, match="adapter_of is not supported"):
+        config_of(tmp_path, chairs)
 
 
 # --- A role the schema has never seen ----------------------------------------------

@@ -129,8 +129,6 @@ def _live_row(identity, *, max_num_seqs: int = 1) -> dict[str, Any]:
         "enable_prefix_caching": True,
         "enforce_eager": False,
         "trust_remote_code": False,
-        "enable_tower_connector_lora": False,
-        "max_lora_rank": 64,
         "generation_config": "vllm",
         "preflight_state": "proven",
         "startup_timeout_seconds": 3,
@@ -514,7 +512,7 @@ def test_two_digests_for_one_input_path_are_refused():
         distinct_refs([first, second])
 
 
-def _engine_call_world(tree, *, seed: int, schema: str = "chair-call-record.v3"):
+def _engine_call_world(tree, *, seed: int, schema: str = perlector.CHAIR_CALL_RECORD_SCHEMA):
     """A retained Perlector call record at its sealed row, and a context that reads it.
 
     The serving receipt's seed is 7.
@@ -791,7 +789,7 @@ def test_one_retained_response_named_by_both_halves_of_a_page_record_is_one_inpu
     overshoot finding is *required* by the shared contract to be traceable
     through `raw_response_refs` while the capture still names it
     (`common/native_witness.py`). The producer names it once
-    (`pipeline/3_attestatores/run.py::_named_once`), and the envelope refuses a
+    (`pipeline/3_attestatores/retained.py::named_once`), and the envelope refuses a
     repeated path outright, so no publishable record could ever have carried
     two entries. Concatenating the two fields here without de-duplication
     therefore built an expectation nothing could satisfy: a correct record,
