@@ -160,7 +160,7 @@ def test_an_unlive_row_is_refused_by_name_on_a_real_submission():
     chair = SimpleNamespace(role="perlector")
 
     with pytest.raises(ContractError) as refusal:
-        PERLECTOR_RUN.refuse_unlive_real_reading(context, chair, "fixture")
+        stage_module.refuse_unlive_real_reading(context, chair, "fixture")
     message = str(refusal.value)
     assert "cannot read a real submission from declared fixture answers" in message
     assert "'perlector'" in message
@@ -211,9 +211,9 @@ def test_an_absent_chair_or_a_live_row_on_a_real_run_is_not_refused():
     context = _real_context(PERLECTOR)
     absent = AbsentChair(role="perlector", reason="test-only absence")
 
-    assert PERLECTOR_RUN.refuse_unlive_real_reading(context, absent, "fixture") is None
+    assert stage_module.refuse_unlive_real_reading(context, absent, "fixture") is None
     assert (
-        PERLECTOR_RUN.refuse_unlive_real_reading(context, SimpleNamespace(role="p"), "live") is None
+        stage_module.refuse_unlive_real_reading(context, SimpleNamespace(role="p"), "live") is None
     )
 
 
@@ -221,15 +221,15 @@ def test_the_fixture_route_is_not_refused():
     context = _fixture_context(PERLECTOR, {"act": [], "page": [], "scenario": []}, "happy")
 
     assert (
-        PERLECTOR_RUN.refuse_unlive_real_reading(context, SimpleNamespace(role="p"), "fixture")
+        stage_module.refuse_unlive_real_reading(context, SimpleNamespace(role="p"), "fixture")
         is None
     )
 
 
 def test_the_real_route_reads_the_ingress_record_the_constructor_read():
     """The same reading `common.stage` makes: absent is synthetic, present must parse."""
-    assert PERLECTOR_RUN.real_ingress(_real_context(PERLECTOR)) is True
-    assert PERLECTOR_RUN.real_ingress(_fixture_context(PERLECTOR, {}, "happy")) is False
+    assert stage_module.is_real_ingress(_real_context(PERLECTOR).run) is True
+    assert stage_module.is_real_ingress(_fixture_context(PERLECTOR, {}, "happy").run) is False
 
 
 # --- the programs, over a real submission ------------------------------------------

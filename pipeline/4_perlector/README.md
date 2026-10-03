@@ -2,7 +2,7 @@
 
 Reads the ink and establishes the text.
 
-Reads the ink itself, using the testimonia as clues that sharpen its own reading and never as options to choose between. Where it produces several readings it reconciles them itself, against the image. It reads through to the end — truncation is a failure, not an output.
+Reads the ink itself, using the testimonia as clues that sharpen its own reading and never as options to choose between. A reading cut off before the end is held, never delivered as complete.
 
 Each sealed Exemplar page is read whole, in one call (`page_run.py`): the reader is
 shown the page image and every witness's page broken into that witness's own units,

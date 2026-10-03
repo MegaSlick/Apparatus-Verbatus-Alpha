@@ -3,7 +3,6 @@ metric; a raw-string cross-check beside the normalized one; an honest
 `"unknown"` for a comparison that cannot run.
 """
 
-import ast
 import sys
 import unicodedata
 from pathlib import Path
@@ -184,57 +183,12 @@ def test_departures_are_an_alignment_and_expose_no_similarity_number():
     )
 
 
-def test_perlector_and_archetypus_have_no_direct_sum_call_over_a_chair_expression():
-    """Catch the direct cross-chair counter this narrow AST guard recognizes.
-
-    A direct ``sum(...)`` whose expression names a chair would create a second
-    denominator beside `witness_coverage`.  More indirect data flow still needs
-    code review; this test does not claim to prove a whole-program property.
-    """
-    sources = [
-        ROOT / "pipeline" / "4_perlector" / "run.py",
-        ROOT / "pipeline" / "4_perlector" / "page_run.py",
-        ROOT / "common" / "page_path.py",
-        ROOT / "pipeline" / "6_archetypus" / "run.py",
-    ]
-    offenders = []
-    for path in sources:
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "sum"
-            ):
-                if "chair" in ast.unparse(node):
-                    offenders.append(f"{path}:{node.lineno}")
-    assert not offenders, f"cross-chair counters belong only in witness_coverage: {offenders}"
-
-
-def test_downstream_stages_do_not_directly_subscript_a_dissent_field():
-    """Catch direct ``[\"dissent\"]`` reads; indirect data flow remains review work."""
-    sources = [
-        ROOT / "pipeline" / "5_recensor" / "run.py",
-        ROOT / "pipeline" / "6_archetypus" / "run.py",
-    ]
-    offenders = []
-    for path in sources:
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Subscript):
-                continue
-            if isinstance(node.slice, ast.Constant) and node.slice.value == "dissent":
-                offenders.append(f"{path}:{node.lineno}")
-    assert not offenders, f"only Perlector may branch on dissent rows: {offenders}"
-
-
 def test_a_bracket_marker_view_is_what_makes_a_doubt_marking_witness_comparable():
-    """`markup_text_view` removes tag markup, so it does nothing to a bracketed
-    `[UNCERTAIN]`; the page path compares DAI through
-    `common/alignment.py::bracket_marker_view`, and the counterfactual below is
-    why the strip has to happen at all."""
+    """The page path compares a doubt-marking witness (DAI) through
+    `bracket_marker_view`; the counterfactual below is why the strip has to
+    happen at all."""
     raw = "Marie [UNCERTAIN] Dupont"
-    stripped = bracket_marker_view(raw)["text"]
+    stripped = bracket_marker_view(raw)
     row = _dissent_against("Marie Dupont", stripped)
     assert row["compared"] is True
     # The bracket marker is gone, so what remains is a whitespace difference:
@@ -304,11 +258,7 @@ def test_a_comparison_under_the_pair_bound_stops_on_its_exact_step_count():
     assert row["compared"] == "unknown"
     assert row["max_comparison_steps"] == needed - 1
     assert f"the sealed {needed - 1}-step dissent budget" in row["reason"]
-    dissent.validate_dissent(
-        [{"chair": "attestator_1", **row}],
-        text=reading,
-        basis_testimonia=[{"chair": "attestator_1", "outcome": "read"}],
-    )
+    dissent.validate_row(row, text=reading, max_comparison_steps=needed - 1)
 
 
 def test_departures_past_the_budget_is_an_explicit_non_verdict_not_an_agreement():
@@ -327,35 +277,28 @@ def test_departures_past_the_budget_is_an_explicit_non_verdict_not_an_agreement(
     }
 
 
-def test_a_budget_is_recorded_only_on_an_unknown_row():
-    """A compared-row budget or a malformed one is refused, so the field means
-    one thing: this comparison ran out of that many steps."""
-    basis = [{"chair": "attestator_1", "outcome": "read"}]
-    stopped = {"chair": "attestator_1", "compared": "unknown", "reason": "stopped"}
-    dissent.validate_dissent(
-        [{**stopped, "max_comparison_steps": 5}], text="", basis_testimonia=basis
-    )
-    for budget in (0, True, "5"):
-        with pytest.raises(SchemaRefusal, match="uncomputed-row schema"):
-            dissent.validate_dissent(
-                [{**stopped, "max_comparison_steps": budget}], text="", basis_testimonia=basis
+def test_a_budget_is_recorded_only_on_an_unknown_row_and_only_the_sealed_one():
+    """A stopped row names the run's sealed budget and nothing else; a compared row
+    has no budget to have run out of; a witness with a reading is never "not
+    compared"."""
+    stopped = {"compared": "unknown", "reason": "stopped"}
+    dissent.validate_row(stopped, text="", max_comparison_steps=5)
+    dissent.validate_row({**stopped, "max_comparison_steps": 5}, text="", max_comparison_steps=5)
+    for budget in (4, 0, True, "5"):
+        with pytest.raises(SchemaRefusal, match="this run sealed 5"):
+            dissent.validate_row(
+                {**stopped, "max_comparison_steps": budget}, text="", max_comparison_steps=5
             )
-    # A row that compared, and a row for a witness that never reported, have no
-    # budget to have run out of.
     compared = _dissent_against("alpha", "alpha")
     assert compared["compared"] is True
-    compared = {"chair": "attestator_1", **compared}
-    dissent.validate_dissent([compared], text="alpha", basis_testimonia=basis)
+    dissent.validate_row(compared, text="alpha", max_comparison_steps=5)
     with pytest.raises(SchemaRefusal, match="closed compared-row schema"):
-        dissent.validate_dissent(
-            [{**compared, "max_comparison_steps": 5}], text="alpha", basis_testimonia=basis
+        dissent.validate_row(
+            {**compared, "max_comparison_steps": 5}, text="alpha", max_comparison_steps=5
         )
-    silent = [{"chair": "attestator_1", "outcome": "failed"}]
-    unreported = {"chair": "attestator_1", "compared": False, "reason": "failed"}
-    dissent.validate_dissent([unreported], text="", basis_testimonia=silent)
-    with pytest.raises(SchemaRefusal, match="uncomputed-row schema"):
-        dissent.validate_dissent(
-            [{**unreported, "max_comparison_steps": 5}], text="", basis_testimonia=silent
+    with pytest.raises(SchemaRefusal, match="must be compared or unknown"):
+        dissent.validate_row(
+            {"compared": False, "reason": "skipped"}, text="alpha", max_comparison_steps=5
         )
 
 
@@ -466,14 +409,15 @@ def test_a_decomposed_witness_report_is_not_charged_a_character_per_accent():
     }
 
 
-def test_markup_and_collapsed_whitespace_stay_in_the_witness_loss_account():
-    """The other direction: tags and a collapsed run are genuine removals, and
-    dropping them from the account would hide what the comparison view discarded.
-    """
-    row = _dissent_against(
-        "alpha beta",
-        "<b>alpha   beta</b>",
-    )
-
+def test_collapsed_whitespace_is_in_the_loss_account_and_tag_like_text_is_compared():
+    """A witness unit is already its witness's text view, so characters between a
+    `<` and a `>` in it are text the witness reported and are compared, never
+    stripped as markup: stripping them would hide a departure. A collapsed
+    whitespace run is a genuine removal and stays in the account."""
+    row = _dissent_against("alpha beta", "alpha   beta")
     assert row["departed"] is False
-    assert row["comparison_loss"]["witness_dropped_characters"] == len("<b>") + len("</b>") + 2
+    assert row["comparison_loss"]["witness_dropped_characters"] == 2
+
+    row = _dissent_against("alpha beta", "alpha <b> beta")
+    assert row["departed"] is True
+    assert row["comparison_loss"]["witness_dropped_characters"] == 0

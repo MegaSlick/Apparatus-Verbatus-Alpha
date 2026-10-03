@@ -1018,7 +1018,7 @@ def _three_witness_feed() -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
 
 def test_page_path_dissent_goes_through_the_dissent_validator():
-    """A page-path row is a dissent row (`dissent.validate_dissent`) under a witness letter, with
+    """A page-path row is a dissent row (`dissent.validate_row`) under a witness letter, with
     the witness head and cited units beside it, so it is refused on the same
     terms: a lost or relabelled witness, misstated units, a comparison claimed
     for a witness with nothing to compare, a compared row carrying a budget,
@@ -1877,9 +1877,9 @@ def test_a_retained_page_reading_or_perlectio_from_other_inputs_is_not_adopted()
     ):
         with pytest.raises(ContractError, match="retained page reading .* not adopted"):
             page_run._check_adopted(state, page, request, {**reading, **changed})
-    retired = {"payload": {**reading["payload"], "schema": "perlector-page-reading.v1"}}
-    with pytest.raises(ContractError, match="perlector-page-reading.v1, a retired shape"):
-        page_run._check_adopted(state, page, request, retired)
+    old = {"payload": {**reading["payload"], "schema": "perlector-page-reading.v0"}}
+    with pytest.raises(ContractError, match="schema 'perlector-page-reading.v0'"):
+        page_run._check_adopted(state, page, request, old)
     asked = {"payload": {**reading["payload"], "reask": {"named": []}}}
     with pytest.raises(FatalAccounting, match="names another re-ask"):
         page_run._check_adopted(state, page, request, asked)
@@ -2005,11 +2005,11 @@ def test_with_the_perlector_chair_absent_every_page_is_fed_and_accounted_not_rea
     assert _records(root, "act-region") == []
 
 
-def test_the_deadline_count_takes_every_operator_re_read_the_window_may_send():
+def test_the_deadline_count_takes_every_operator_re_read_the_window_may_send(monkeypatch):
     """The live deadline count takes every operator re-read request of a page."""
     sends = []
-    hooks = SimpleNamespace(sent_records=lambda *args: sends.append(args) or [])
-    state = SimpleNamespace(context=SimpleNamespace(), hooks=hooks, live=True)
+    monkeypatch.setattr(page_run.live_calls, "sent_records", lambda *args: sends.append(args) or [])
+    state = SimpleNamespace(context=SimpleNamespace(), live=True)
     page = SimpleNamespace(
         page_id="pg_0000000000000001",
         ordinal=1,
@@ -2021,3 +2021,72 @@ def test_the_deadline_count_takes_every_operator_re_read_the_window_may_send():
     )
     assert page_run._left_to_send(state, [page], page_run._reread_requests) == 2
     assert [args[3] for args in sends] == [3, 4]
+
+
+def _entries(*acts: tuple[str, list[str]]) -> list[dict]:
+    return [{"act": {"kind": kind}, "cited_ids": ids} for kind, ids in acts]
+
+
+@pytest.mark.parametrize(
+    ("reread", "kept"),
+    [
+        # The same acts, read again with other or more ids: kept.
+        ((("act", ["A1"]), ("act", ["A2", "L3"])), True),
+        ((("act", ["A1"]), ("act", ["A2"]), ("other", ["S1"])), True),
+        ((("act", ["A1"]), ("act", ["A2"]), ("act", [])), True),
+        # Merged into one entry, whatever its text: not kept.
+        ((("act", ["A1", "A2"]),), False),
+        # Read as something other than an act: not kept.
+        ((("act", ["A1"]), ("other", ["A2"])), False),
+        # Left out, or split across two entries: not kept.
+        ((("act", ["A1"]),), False),
+        ((("act", ["A1"]), ("act", ["A2"]), ("act", ["A2"])), False),
+        # Two acts kept, but one entry also reads the other's ink: not kept.
+        ((("act", ["A1", "A2"]), ("act", ["A2"])), False),
+    ],
+)
+def test_a_re_read_keeps_each_act_it_replaces_as_one_act_of_its_own(reread, kept):
+    """The rule reads only cited ids and kinds, so it holds the same with or without a
+    record detector."""
+    replaced = _entries(("act", ["A1"]), ("act", ["A2"]))
+    assert page_path.superseded_acts_kept(replaced, _entries(*reread)) is kept
+
+
+def test_an_act_whose_ids_another_act_also_cites_is_followed_by_the_count():
+    """A replaced reading whose second act also cited the first act's ids: a re-read
+    that reads the two apart keeps both; one that merges them does not."""
+    replaced = _entries(("act", ["A1"]), ("act", ["A1", "A2"]))
+    assert page_path.superseded_acts_kept(replaced, _entries(("act", ["A1"]), ("act", ["A2"])))
+    assert not page_path.superseded_acts_kept(replaced, _entries(("act", ["A1", "A2"])))
+
+
+@pytest.mark.parametrize(
+    ("replaced", "reread"),
+    [
+        # B has no id of its own; a new act Y stands where B was.
+        (
+            (("act", ["1", "2"]), ("act", ["2"])),
+            (("act", ["1", "2"]), ("act", ["9"])),
+        ),
+        # A cites nothing; a new act Z stands where A was.
+        ((("act", []), ("act", ["5"])), (("act", ["5"]), ("act", ["7"]))),
+        # An act entry citing nothing makes up the count for B, or for an A citing nothing.
+        ((("act", ["1", "2"]), ("act", ["2"])), (("act", ["1", "2"]), ("act", []))),
+        ((("act", []), ("act", ["5"])), (("act", ["5"]), ("act", []))),
+        # B has no id of its own and is read as `other`; a new act Z makes the count.
+        (
+            (("act", ["1", "2"]), ("act", ["2"])),
+            (("act", ["1", "2"]), ("other", ["2"]), ("act", ["9"])),
+        ),
+    ],
+)
+def test_an_act_with_no_id_of_its_own_cannot_be_replaced_by_a_new_act(replaced, reread):
+    assert not page_path.superseded_acts_kept(_entries(*replaced), _entries(*reread))
+
+
+def test_only_a_re_read_that_kept_its_acts_becomes_the_next_ones_baseline():
+    kept = [{"reading_holds": []}]
+    dropped = [{"reading_holds": [page_path.SUPERSEDED_ACT_NOT_READ]}]
+    assert page_path.keeps_counted(kept)
+    assert not page_path.keeps_counted(dropped)
+    assert not page_path.keeps_counted([])

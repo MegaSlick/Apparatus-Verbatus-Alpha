@@ -72,6 +72,7 @@ from common.stage import (  # noqa: E402
     fixture_serving_details,
     open_stage_context,
     reading_acts,
+    refuse_unlive_real_reading,
     run_stage,
     stage_parser,
 )
@@ -378,8 +379,10 @@ def _publish_call(
 def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     """Plan, ask each call once, publish each reconstruction, then seal.
 
-    Both parameters are test seams. A live chair this pass started is stopped
-    in `finally`, before the seal.
+    Both parameters are test seams. A real submission whose reconstructor row is
+    not live is refused before the plan is published, since only a live chair can
+    answer it. A live chair this pass started is stopped in `finally`, before the
+    seal.
     """
     args = stage_parser(DESCRIPTION).parse_args()
     context = open_stage_context(
@@ -391,13 +394,12 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     context.require_sealed_config("decoding", decoding_sha256)
     plan_entries, shown = diplomatic_entries(context, reading_acts(context))
     plan = plan_payload(policy, plan_entries)
-    replanned = _publish_plan(context, plan)
     chair = None
+    if plan["calls"]:
+        chair = _Chair(context, decoding, decoding_sha256, serving_factory or stage_chair_client)
+        refuse_unlive_real_reading(context, chair.identity, chair.serving_mode, stage="Coniector")
+    replanned = _publish_plan(context, plan)
     try:
-        if plan["calls"]:
-            chair = _Chair(
-                context, decoding, decoding_sha256, serving_factory or stage_chair_client
-            )
         max_tokens = reconstructor_max_tokens(decoding)
         for call in plan["calls"]:
             record = _publish_call(context, chair, call, shown, policy, max_tokens, replanned)
