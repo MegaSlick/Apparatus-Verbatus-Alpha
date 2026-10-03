@@ -1,8 +1,14 @@
-"""Deterministic, offline co-visibility candidate evidence (Unit 6A).
+"""Deterministic, offline co-visibility candidate evidence for re-shoot triage.
 
 The instrument reads masters but never writes them, uses no model, and never emits a
 cluster link.  Its only conclusion is a recorded candidate verdict for a pair the
-two-tier selector considered.  Confirmation and manifest writing belong to Unit 6B.
+two-tier selector considered.  Confirmation and manifest writing belong to
+`operations.triage.producer`.
+
+None of the tuning values in `instrument.toml` has been measured against real
+material: the shipped triage modes send every frame to review, so no value here
+authorizes a link or an apply on its own. Evidence records say so in their
+threshold snapshot (`measurement_status`).
 """
 
 from __future__ import annotations
@@ -19,9 +25,14 @@ from PIL import Image
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, is_sha256
 from common.contracts.errors import ContractError
 from common.corpus_register import refuse_capture_preference
-from common.imaging import MAX_PIXELS, encode_image_deterministic, imaging_library_versions
+from common.imaging import (
+    DETERMINISTIC_ENCODER,
+    MAX_PIXELS,
+    encode_image_deterministic,
+    imaging_library_versions,
+)
 
-RECIPE_SCHEMA: Final = "triage-producer-recipe.v1"
+RECIPE_SCHEMA: Final = "triage-producer-recipe.v2"
 EVIDENCE_SCHEMA: Final = "cluster-candidate-evidence.v1"
 EVIDENCE_MANIFEST_SCHEMA: Final = "cluster-candidate-evidence-manifest.v1"
 DEFAULT_CONFIG_PATH: Final = Path(__file__).with_name("instrument.toml")
@@ -57,7 +68,6 @@ _RECIPE_FIELDS: Final = {
     "candidate_selection_recipe",
     "imaging_library_versions",
     "determinism",
-    "measurement_status",
 }
 JPEG_REMEASURE_FAILURE: Final = (
     "JPEG proxy digest is recorded with imaging library versions; if those versions change, "
@@ -343,22 +353,14 @@ def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> InstrumentConfig:
         raise InstrumentRefusal(
             f"triage instrument configuration at {path} is not valid TOML"
         ) from error
-    if set(record) != {"instrument", "thresholds", "measurement_status"}:
+    if set(record) != {"instrument", "thresholds"}:
         raise InstrumentRefusal("triage instrument configuration has the wrong closed schema")
     instrument = record["instrument"]
     thresholds = record["thresholds"]
-    statuses = record["measurement_status"]
     if not isinstance(instrument, dict) or set(instrument) != _INSTRUMENT_FIELDS:
         raise InstrumentRefusal("triage instrument dimensions have the wrong closed schema")
     if not isinstance(thresholds, dict) or set(thresholds) != _THRESHOLD_FIELDS:
         raise InstrumentRefusal("triage instrument thresholds have the wrong closed schema")
-    expected_statuses = _INSTRUMENT_FIELDS | _THRESHOLD_FIELDS
-    if not isinstance(statuses, dict) or set(statuses) != expected_statuses:
-        raise InstrumentRefusal(
-            "triage instrument measurement statuses have the wrong closed schema"
-        )
-    if any(statuses[name] != _STATUS for name in expected_statuses):
-        raise InstrumentRefusal("every triage instrument tuning value must be declared UNMEASURED")
     values = {
         name: _plain_positive_int(value, name)
         for source in (instrument, thresholds)
@@ -506,7 +508,7 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
             "integer_factor_rule": PROXY_INTEGER_FACTOR_RULE,
             "signature_max_edge": config.signature_max_edge,
             "review_max_edge": config.review_max_edge,
-            "encoder": "common.imaging.encode_image_deterministic-v1",
+            "encoder": DETERMINISTIC_ENCODER,
         },
         "signature_recipe": {
             "grid_columns": config.grid_columns,
@@ -551,9 +553,6 @@ def producer_recipe(config: InstrumentConfig) -> dict[str, Any]:
             "cross_version_claim": "NOT_CLAIMED",
             "jpeg_remeasure_failure": JPEG_REMEASURE_FAILURE,
         },
-        "measurement_status": {
-            name: _STATUS for name in sorted(_INSTRUMENT_FIELDS | _THRESHOLD_FIELDS)
-        },
     }
     refuse_capture_preference(record)
     return record
@@ -577,10 +576,7 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         "encoder",
     }:
         raise InstrumentRefusal("triage producer recipe proxy recipe has the wrong closed schema")
-    if (
-        proxy["colour_mode"] != "L"
-        or proxy["encoder"] != "common.imaging.encode_image_deterministic-v1"
-    ):
+    if proxy["colour_mode"] != "L" or proxy["encoder"] != DETERMINISTIC_ENCODER:
         raise InstrumentRefusal("triage producer recipe proxy recipe changes the declared encoder")
     if proxy["reduction"] != PROXY_REDUCTION:
         raise InstrumentRefusal(
@@ -761,14 +757,6 @@ def validate_producer_recipe(record: Any) -> dict[str, Any]:
         raise InstrumentRefusal(
             "triage producer recipe determinism claim has the wrong closed schema"
         )
-    statuses = record["measurement_status"]
-    expected_statuses = _INSTRUMENT_FIELDS | _THRESHOLD_FIELDS
-    if (
-        not isinstance(statuses, dict)
-        or set(statuses) != expected_statuses
-        or any(value != _STATUS for value in statuses.values())
-    ):
-        raise InstrumentRefusal("triage producer recipe must declare every tuning value UNMEASURED")
     refuse_capture_preference(record)
     return record
 

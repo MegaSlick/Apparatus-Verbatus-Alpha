@@ -16,10 +16,8 @@ cent of audited ink on 44 real pages, so counting it flagged every page. It is
 derived here at the page's own derived margin and taken out of `total_ink_pixels` and
 `outside_ink_pixels`; `page_ink_pixels` and `page_spanning_ink_pixels` keep the
 whole-page figure. It is cut at the derived margin rather than at this module's
-looser contrast, which merges writing touching it into the component and hides
-missed ink;
-`test_writing_touching_a_faint_page_spanning_line_is_still_counted_outside_coverage`
-pins that.
+looser contrast, which would merge writing touching it into the component and
+hide missed ink.
 
 A page whose background the shared inference refuses raises
 `common.background.BackgroundInferenceRefusal`; the caller records it rather
@@ -496,8 +494,7 @@ def _residual_counts(
             covered_mask[y * width + x0 : y * width + x1] = span
 
     # Rows and masks hold only 0 or 1 bytes, so integer `ink & ~covered` is the
-    # per-pixel predicate (pinned by
-    # `test_the_fast_counts_agree_with_a_straightforward_implementation`).
+    # per-pixel predicate.
     ink_table = basis["ink_table"]
     spanning_mask = basis["spanning_mask"]
     page_ink = 0
