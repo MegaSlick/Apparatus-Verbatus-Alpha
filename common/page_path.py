@@ -1,18 +1,24 @@
 """The Perlector's page path: what its records derive, for the stage that writes them and every reader.
 
-Stage 4 (`pipeline/4_perlector/page_run.py`)
-reads each sealed page whole and publishes, per page, a `page-feed`, a
-`page-reading`, a `page-accounting` and, for each entry of a read answer, one
-`act-region` and one `perlectio.v3`. Everything those records hold that is
-derived rather than given is derived here, once:
+Stage 4 (`pipeline/4_perlector/page_run.py`) reads each sealed page whole and
+publishes, per page, a `page-feed`, a `page-reading` and a `page-accounting`
+and, for each entry of a read answer, one `act-region` and one `perlectio.v3`.
+Everything those records hold that is derived rather than given is derived
+here, once, in this order:
 
-- `answer_problems`: what holds a parsed answer whole against its feed;
+- record kinds, schemas and attempt ids;
+- why a page is not asked, and the fixture's declared answers;
+- an operator re-read's record and its checks;
+- the request: its text, images, digest and capacity, first reading and re-ask;
+- the reply: `read_reply` and `answer_problems`;
 - `entry_plans`: each entry's identity, region, text, doubt marks, truncation
-  and holds, for a page's first reading and for its re-ask
-  (`common/page_reask.py`), whose answer may cite only the ids it names;
+  and holds, for a first reading, a re-ask (`common/page_reask.py`) and an
+  operator re-read;
+- the feed and its witness roster (`page_feed_of`);
+- the Perlectio: page dissent and `expected_perlectio`;
 - `accounting_inputs`: every input the page accounting
-  (`common/page_accounting.py`) measures the reading against -- the feed,
-  every sealed witness of the page shown or hidden, the Designator's Surya and
+  (`common/page_accounting.py`) measures a reading against -- the feed, every
+  sealed witness of the page shown or hidden, the Designator's Surya and
   detector records, the Ink Map's runs and the entries' truncations -- and the
   records it read them from.
 
@@ -66,8 +72,6 @@ PAGE_ACCOUNTING_KIND: Final = "page-accounting"
 ACT_REGION_KIND: Final = "act-region"
 PERLECTIO_KIND: Final = "perlectio"
 PAGE_READING_SCHEMA: Final = "perlector-page-reading.v2"
-# A page reading of a retired shape is refused by its name, never read as the current one.
-RETIRED_PAGE_READING_SCHEMAS: Final = frozenset({"perlector-page-reading.v1"})
 ACT_REGION_SCHEMA: Final = "perlector-act-region.v2"
 PERLECTIO_SCHEMA: Final = "perlectio.v3"
 # Every field a sealed Perlectio holds: what `expected_perlectio` names, and the
@@ -149,6 +153,9 @@ READING_INCOMPLETE: Final = "reading-incomplete"
 DOUBT_MARKS_MALFORMED: Final = "doubt-marks-malformed"
 ENTRY_NO_READABLE_TEXT: Final = "entry-no-readable-text"
 NO_AUTOPSIA: Final = "no-autopsia"
+# Held on every entry of an operator re-read that does not read each act of the
+# reading it replaces as one act of its own (`superseded_acts_kept`).
+SUPERSEDED_ACT_NOT_READ: Final = "superseded-act-not-read"
 
 # The act classes an entry mints: placed on the page, or citing no placing id
 # (`page_accounting.placement_boxes`).
@@ -229,7 +236,7 @@ def refs_by_path(references: list[dict[str, str]]) -> list[dict[str, str]]:
     return sorted(references, key=lambda reference: reference["relative_path"])
 
 
-# --- the reply ------------------------------------------------------------------
+# --- pages not asked, and the fixture's declared answers --------------------------
 
 
 def not_run_problems(
@@ -715,6 +722,7 @@ def entry_plans(
     attempt: int = page_edges.FIRST_READING,
     named: list[str] | None = None,
     first_count: int = 0,
+    superseded: list[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Each entry of a read answer as it is published, from the answer, feed and sealed policies.
 
@@ -736,7 +744,15 @@ def entry_plans(
     reading's (`doubt-marks-malformed`, `reading-incomplete`,
     `entry-no-readable-text`). The page accounting reads the truncations from
     here, before any act record exists.
+
+    An operator re-read is given `superseded`, the entry plans the page counted
+    before it. When it does not read each of their acts as one act of its own
+    (`superseded_acts_kept`), every one of its entries holds
+    `superseded-act-not-read`: an act may not leave the count inside a re-read by
+    being dropped, merged into another or read as something else.
     """
+    if (superseded is not None) != is_operator_reread(attempt):
+        raise ContractError("only an operator re-read is planned against the reading it replaces")
     page_pixels = feed["page_size"]["w"] * feed["page_size"]["h"]
     if (attempt == page_edges.REASK_READING) != (named is not None):
         raise ContractError("a re-ask's entries are planned with its named ids, and only its")
@@ -793,7 +809,61 @@ def entry_plans(
                 "autopsia": autopsia,
             }
         )
+    if superseded is not None and not superseded_acts_kept(superseded, plans):
+        for plan in plans:
+            plan["reading_holds"].append(SUPERSEDED_ACT_NOT_READ)
     return plans
+
+
+def superseded_acts_kept(
+    superseded: list[Mapping[str, Any]], plans: list[Mapping[str, Any]]
+) -> bool:
+    """Whether a re-read reads every act of the reading it replaces as one act of its own.
+
+    The rule follows acts by the ids they cite, and only by them. An `act` entry
+    of `superseded` is followed by its own ids, those no other superseded act
+    cites: all of them must be cited by exactly one `act` entry of the re-read,
+    and that entry may cite no other superseded act's own ids. The re-read must
+    name at least as many acts citing an id as the reading it replaces names acts. An act with no id of
+    its own (none at all, or only ids another act shares) cannot be followed; while
+    there is one, the re-read's acts may cite no id the superseded acts did not,
+    so a new act cannot stand in for it. A merge, a split, a relabel as anything
+    but an act, an act left out or set aside, and a moved boundary each fail.
+
+    What it cannot see: text. An act read again over the same ids with other
+    words, or two acts whose texts are swapped between their entries, keeps.
+    """
+    acts = [entry for entry in superseded if entry["act"]["kind"] == "act"]
+    # An act entry citing nothing reads no ink, so it cannot stand for a replaced act.
+    readings = [
+        set(plan["cited_ids"])
+        for plan in plans
+        if plan["act"]["kind"] == "act" and plan["cited_ids"]
+    ]
+    if len(readings) < len(acts):
+        return False
+    owners: dict[str, int] = {}
+    for entry in acts:
+        for cited in set(entry["cited_ids"]):
+            owners[cited] = owners.get(cited, 0) + 1
+    own = [{cited for cited in entry["cited_ids"] if owners[cited] == 1} for entry in acts]
+    if any(not ids for ids in own) and not set().union(*readings) <= set(owners):
+        return False
+    for index, ids in enumerate(own):
+        if not ids:
+            continue
+        others = set().union(*(other for at, other in enumerate(own) if at != index))
+        covering = [cited for cited in readings if cited & ids]
+        if len(covering) != 1 or not ids <= covering[0] or covering[0] & others:
+            return False
+    return True
+
+
+def keeps_counted(plans: list[Mapping[str, Any]]) -> bool:
+    """Whether an operator re-read's plans become what the page's next re-read is planned
+    against: it read something and kept every act it replaced. A re-read that dropped
+    one never does, so a later re-read cannot launder the drop."""
+    return bool(plans) and SUPERSEDED_ACT_NOT_READ not in plans[0]["reading_holds"]
 
 
 def reask_act_plans(
@@ -1043,7 +1113,7 @@ def _comparison_text(text: str, capabilities: Any) -> str:
     witness's doubt, not a reading the Perlector departed from.
     """
     if isinstance(capabilities, Mapping) and capabilities.get("can_express_uncertainty") is True:
-        return bracket_marker_view(text)["text"]
+        return bracket_marker_view(text)
     return text
 
 
@@ -1104,8 +1174,8 @@ def validate_page_dissent(
 
     One row per shown witness, in the feed's order. A witness with no reading or
     no unit this entry cites was not compared, and says so; every other row is
-    a dissent row (`dissent.validate_dissent`) under the witness's letter, the
-    run's sealed budget included.
+    a dissent row (`dissent.validate_row`) under the witness's letter, the run's
+    sealed budget included.
     """
     if not isinstance(rows, list) or len(rows) != len(feed["witnesses"]):
         raise SchemaRefusal("a page-path dissent record does not have one row per shown witness")
@@ -1135,12 +1205,7 @@ def validate_page_dissent(
                 )
             continue
         try:
-            dissent.validate_dissent(
-                [{"chair": row["letter"], **rest}],
-                text=text,
-                basis_testimonia=[{"chair": row["letter"], "outcome": READ_OUTCOME}],
-                max_comparison_steps=max_comparison_steps,
-            )
+            dissent.validate_row(rest, text=text, max_comparison_steps=max_comparison_steps)
         except SchemaRefusal as error:
             raise SchemaRefusal(f"page dissent[{index}]: {error}") from error
 

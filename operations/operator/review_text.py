@@ -1,7 +1,6 @@
 """Render a review projection as plain language a person can read on a terminal.
 
-Runs in the parent, over the JSON the confined console child hands back, and
-turns it into the lines the operator actually reads: which stages ran, which
+Runs over the projection `review.ReadOnlyRun` builds, and turns it into the lines the operator actually reads: which stages ran, which
 pages and crops exist, where each act stands, what is held and why, and the
 one supported next action.
 
@@ -61,10 +60,9 @@ def _object(parent: dict[str, Any], field: str, label: str | None = None) -> dic
     """One object-valued projection field, proved to be an object before it is used.
 
     Without this, a string or number in an object field would raise
-    `AttributeError` out of the renderer and reach the catch-all as an
-    unclassified problem, not the `CONSOLE_PROJECTION_UNREADABLE` refusal
-    this tool's own pipe deserves. `None` is treated as an empty object,
-    which is how a projection says a field has nothing in it.
+    `AttributeError` out of the renderer instead of naming the field. `None`
+    is treated as an empty object, which is how a projection says a field has
+    nothing in it.
     """
     value = parent.get(field)
     if value is None:

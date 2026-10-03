@@ -88,6 +88,8 @@ from .lease import PodLease
 from .models import (
     BILLING_BUCKET_WIDTH,
     BILLING_CUTOFF_MARGIN_ENV,
+    POD_ID_ENVIRONMENT,
+    REQUESTED_GPU_COUNT,
     AbsenceObservation,
     AccountBalanceObservation,
     BillingState,
@@ -128,8 +130,6 @@ pod through the same route -- and the same credential scope -- the launch used.
 A timer that guessed a default could be the one controller that cannot
 terminate its own pod at the hard deadline."""
 
-POD_ID_ENVIRONMENT: Final = "RUNPOD_POD_ID"
-"""The variable RunPod sets in every pod to that pod's own id."""
 
 V2_ON_DEMAND_BASIS: Final[str | None] = None
 """The documented basis on which a v2 pod is on-demand, or ``None`` while there is none.
@@ -1035,15 +1035,6 @@ def _runtime_contract(
         billing_cutoff_margin_seconds=_billing_cutoff_margin_from_environment(pod_id, payload),
         template=template if isinstance(template, str) and template else None,
     )
-
-
-REQUESTED_GPU_COUNT: Final = 1
-"""The one GPU count this build ever requests.
-
-`operations.pod.preflight.SystemGpuProbe.profile` reads it back as
-`expected_gpu_count`, checking the on-pod measurement against the request
-that provisioned the pod rather than leaving them independent.
-"""
 
 
 def _create_payload(request: PodCreateRequest, route: str = "v1") -> dict[str, object]:

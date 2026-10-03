@@ -143,8 +143,6 @@ FEED_TABLE: Final = "feed"
 PAGE_IMAGE_SETTINGS: Final = frozenset({"legible", "full", "off"})
 WITNESS_UNIT_SETTINGS: Final = frozenset({"own", "flat"})
 ALL_WITNESSES: Final = "all"
-# Crops: off is the only setting this build applies.
-CROP_SETTINGS: Final = frozenset({"off"})
 # "boxes" adds a second image: a copy of the page render with every shown boxed
 # candidate outlined and labelled with its id (`page_overlay.py`).
 PAGE_OVERLAY_SETTINGS: Final = frozenset({"off", "boxes"})
@@ -156,7 +154,6 @@ _FEED_FIELDS: Final = frozenset(
         "witness_coordinates",
         "surya_lines",
         "surya_blocks",
-        "crops",
         "page_overlay",
     }
 )
@@ -223,11 +220,6 @@ def validate_feed_table(table: Any) -> dict[str, Any]:
         raise ContractError(
             f"{where} witness_units {table['witness_units']!r} is not one of "
             f"{sorted(WITNESS_UNIT_SETTINGS)}"
-        )
-    if table["crops"] not in CROP_SETTINGS:
-        raise ContractError(
-            f"{where} crops {table['crops']!r} is not accepted; only {sorted(CROP_SETTINGS)} "
-            "is applied by this build"
         )
     if table["page_overlay"] not in PAGE_OVERLAY_SETTINGS:
         raise ContractError(
@@ -808,10 +800,3 @@ def request_image_sizes(feed: dict[str, Any]) -> list[tuple[int, int]]:
     if feed["overlay"] is not None:
         sizes.append((feed["overlay"]["dimensions"]["w"], feed["overlay"]["dimensions"]["h"]))
     return sizes
-
-
-def verify_feed_digest(feed: dict[str, Any]) -> None:
-    """Refuse a feed whose recorded digest is not the digest of its other fields."""
-    body = {key: value for key, value in feed.items() if key != "feed_digest"}
-    if feed.get("feed_digest") != digest_of(body):
-        raise SchemaRefusal("a page feed's feed_digest is not the digest of its contents")

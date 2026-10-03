@@ -3,14 +3,17 @@
 # Door seals it into every run as `review`, and the orchestrator and the Armarium
 # check the seal where they use it.
 #
-# More than 1 in 50 of a run's pages held means the run has a systemic problem.
-# Such a run stops before export, as any hold does, and its report and the
-# operator's notification say the share points to a problem with the run rather
-# than a few hard pages. A person's advance may pass it; the export then carries
-# the same line as a reason. At or below 1/50 the holds are a person's to decide
-# one by one.
+# More than 1 in 50 of a run's pages held, and at least two of them, means the
+# run has a systemic problem. Such a run stops before export, as any hold does,
+# and its report and the operator's notification say the share points to a
+# problem with the run rather than a few hard pages. A person's advance may pass
+# it; the export then carries the same line as a reason. Otherwise the holds are
+# a person's to decide one by one: on a short run one held page is already more
+# than 1 in 50, and one hard page is not a problem with the run.
 #
 # `max_held_page_share`: a fraction "N/D" with 0 < N <= D, compared exactly.
+# `min_systemic_held_pages`: a whole number of held pages, at least 1.
 
 [review]
 max_held_page_share = "1/50"
+min_systemic_held_pages = 2

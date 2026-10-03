@@ -141,7 +141,8 @@ from common.chairs.models import ChairIdentity, is_witness_role
 from common.contracts.errors import ContractError
 from common.contracts.identities import validate_run_id
 from common.contracts.stages import SEAL_PREDECESSORS
-from common.runtree.store import RunTree
+from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH, load_reconstruction_policy
+from common.runtree.store import SERVING_LOGS_DIR, RunTree
 from common.sealed_config import read_sealed_toml
 from common.stage import (
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
@@ -157,6 +158,7 @@ from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
 from operations.pod.notify_hooks import (
     RunnerFactory,
     environment_runner,
+    notify_stall_from_guard,
     notify_systemic_from_guard,
 )
 from operations.serving.config import ServingConfigInputs
@@ -181,8 +183,7 @@ from .bootstrap_main import (
     refuse_credential_looking_argv,
 )
 from .durable import atomic_write, canonical_json
-from .models import POD_GUARD_DIRECTORY, run_report_paths, utc_now
-from .provider_runpod import POD_ID_ENVIRONMENT
+from .models import POD_GUARD_DIRECTORY, POD_ID_ENVIRONMENT, run_report_paths, utc_now
 from .run_exits import (
     EXIT_BOOTSTRAP_RED,
     EXIT_COMPLETE,
@@ -588,6 +589,20 @@ class RunPlan:
                 f"--models-config {self.models_config} cannot name selected chairs: {error}",
                 report_path=self.report_path,
             ) from error
+        if "coniector" in selected:
+            # The orchestrator reads the checkout's own reconstruction setting.
+            reconstruction = self.repository / DEFAULT_RECONSTRUCTION_CONFIG_PATH.relative_to(
+                DEFAULT_RECONSTRUCTION_CONFIG_PATH.parents[1]
+            )
+            try:
+                mode = load_reconstruction_policy(reconstruction).mode
+            except ContractError as error:
+                raise RunRefusal(
+                    f"{reconstruction} cannot say whether the Coniector asks its chair: {error}",
+                    report_path=self.report_path,
+                ) from error
+            if mode == "on":
+                roles.add("reconstructor")
         if "attestatores" in selected:
             roles.update(role for role in configured if is_witness_role(role))
         if configured_only:
@@ -1233,6 +1248,114 @@ def _guard_heartbeat_age(volume: Path, pod_id: str, instant: float) -> int | Non
     return max(0, int(instant - beat))
 
 
+# How long a live orchestrator may show no progress (no new transcript output, nothing
+# written in its run tree outside the serving logs) before pod_run stops holding the pod
+# and leaves the guard's idle check to decide. UNMEASURED: no stage's longest quiet stretch
+# has been measured yet.
+RUN_STALL_SECONDS = 15 * 60
+
+
+def run_tree_mark(root: Path) -> int | None:
+    """The newest modification time, in nanoseconds, of anything under `root` that a
+    stage wrote; None when `root` cannot be read.
+
+    Directories count, so a published name or a replaced manifest moves the mark even
+    when the file's own time is older. The serving-logs directories do not: an engine
+    that sits idle still writes its log, and that is not the stage advancing.
+    """
+
+    newest: int | None = None
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            newest = max(newest or 0, directory.lstat().st_mtime_ns)
+            with os.scandir(directory) as entries:
+                listed = list(entries)
+        except OSError:
+            if directory == root:
+                return None
+            continue
+        for entry in listed:
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name != SERVING_LOGS_DIR:
+                        pending.append(Path(entry.path))
+                    continue
+                newest = max(newest, entry.stat(follow_symlinks=False).st_mtime_ns)
+            except OSError:
+                continue
+    return newest
+
+
+class RunProgress:
+    """Whether a live orchestrator is still doing something, judged once per liveness tick.
+
+    Progress is a change the stages own: output added to the transcript, or something
+    written in the run tree outside the serving logs. CPU time is not progress: an idle
+    model server in the orchestrator's process tree uses some on every tick. A run that
+    shows no change for `stall_seconds` is stalled until one comes; `last_progress`
+    names the last moment it showed one.
+    """
+
+    def __init__(
+        self,
+        *,
+        sample: Callable[[], tuple[int | None, int | None]],
+        now: Callable[[], datetime],
+        stall_seconds: float = RUN_STALL_SECONDS,
+    ) -> None:
+        self._sample = sample
+        self._now = now
+        self._stall_seconds = stall_seconds
+        self._last: tuple[int | None, int | None] | None = None
+        self.last_progress: datetime | None = None
+
+    def advancing(self) -> bool:
+        current = self._sample()
+        instant = self._now()
+        previous, self._last = self._last, current
+        if current != previous or self.last_progress is None:
+            self.last_progress = instant
+            return True
+        return (instant - self.last_progress).total_seconds() < self._stall_seconds
+
+
+def _file_size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
+
+
+def _guard_keepalive(volume: Path, pod_id: str | None) -> Callable[[], None]:
+    """Touch this pod's guard keep-alive file, so a running orchestrator counts as work.
+
+    The guard reads its resource counters as a backstop; a run in progress is
+    work whatever they read. Only the first process's pod id is used: a shell's
+    could name another pod on the shared volume and keep it alive. Nothing is
+    touched when no guard armed its directory here. Best effort: a failed touch
+    says so and never stops the run, and the deadline still ends the pod.
+    """
+
+    guard = volume / POD_GUARD_DIRECTORY
+    if not _is_pod_id(pod_id) or not guard.is_dir():
+        return lambda: None
+    path = guard / f"keepalive-{pod_id}"
+
+    def touch() -> None:
+        try:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+            try:
+                os.utime(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError as error:
+            print(f"pod_run could not touch the guard keep-alive: {error}", file=sys.stderr)
+
+    return touch
+
+
 def _require_live_guard_for_release(
     volume: Path,
     first_process_pod_id: str | None,
@@ -1605,10 +1728,9 @@ def main(
                 report_path=plan.report_path,
                 now=now,
             )
-        if plan.stage is not None or plan.from_stage is not None:
-            bootstrap_plan = replace(
-                bootstrap_plan, preflight_roles=tuple(sorted(plan.required_chairs()))
-            )
+        bootstrap_plan = replace(
+            bootstrap_plan, preflight_roles=tuple(sorted(plan.required_chairs()))
+        )
         plan = replace(plan, bootstrap=bootstrap_plan)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
         _require_selection_predecessor(plan)
@@ -1734,7 +1856,44 @@ def main(
         "timing_journal_path": str(plan.timing_journal_path),
     }
     _write_run_report(plan, {**running, "state": "running", "exit_code": None})
-    liveness = _liveness_journal(plan, base, now=now)
+    journal = _liveness_journal(plan, base, now=now)
+    keepalive = _guard_keepalive(plan.bootstrap.volume_mount_path, pod_id)
+    progress = RunProgress(
+        sample=lambda: (
+            _file_size(plan.transcript_path),
+            run_tree_mark(plan.run_root / plan.run_id),
+        ),
+        now=now,
+    )
+    stall_noticed = False
+
+    def liveness(pid: int, alive: bool) -> None:
+        # Only a run that is visibly working holds the pod: a hung child stops touching
+        # the keep-alive after the stall window, and the guard's idle check decides.
+        nonlocal stall_noticed
+        journal(pid, alive)
+        if not alive:
+            return
+        if progress.advancing():
+            stall_noticed = False
+            keepalive()
+            return
+        if not stall_noticed and _is_pod_id(pod_id) and progress.last_progress is not None:
+            stall_noticed = True
+            # Minutes, spaced: the credential check reads a compact ISO stamp as a token.
+            since = progress.last_progress.strftime("%Y-%m-%d %H:%M UTC")
+            outcome = notify_stall_from_guard(
+                pod_id=pod_id,
+                since=since,
+                volume_mount=plan.bootstrap.volume_mount_path,
+                runner_factory=notify_runner,
+            )
+            print(
+                f"pod_run {plan.run_id}: no progress since {since}; the guard's idle check "
+                f"now decides. {outcome.line()}",
+                file=sys.stderr,
+            )
+
     try:
         completed = runner(
             command,

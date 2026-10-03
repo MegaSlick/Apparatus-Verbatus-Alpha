@@ -22,6 +22,23 @@ _EMPTY = {
 }
 
 
+def test_a_gap_may_not_hold_the_characters_a_witness_reported() -> None:
+    """A gap is where sight failed. Filling it with a witness's word, however well the
+    witnesses agree, is refused for its width alone, with every other rule met."""
+    text = "the child of Jean, baptised"
+    evidence = {
+        "chair": "attestator_1",
+        "testimonium_id": "testimonium-0001",
+        "reference": {"relative_path": "3_attestatores/artifacts/t.json", "sha256": "a" * 64},
+        "variant": "Jean",
+    }
+    start = text.index("Jean")
+    gap = {"position": "internal", "start": start, "end": start, "witness_evidence": [evidence]}
+    validate({**_EMPTY, "gaps": [gap]}, text)
+    with pytest.raises(SchemaRefusal, match="not a zero-width canonical gap"):
+        validate({**_EMPTY, "gaps": [{**gap, "end": start + len("Jean")}]}, text)
+
+
 def test_whitespace_only_text_accepts_a_whole_act_gap() -> None:
     layer = {
         "uncertain_spans": [],

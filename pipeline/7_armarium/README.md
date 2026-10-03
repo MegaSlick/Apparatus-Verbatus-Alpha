@@ -1,35 +1,19 @@
 # Armarium
 
-Writes the pipeline's sealed product bundle. It projects established Archetypus
-readings, their provenance, and their links to exact regions of ink; it does not
-establish, repair, choose, or rewrite text. The pipeline ends here.
+Writes the pipeline's product bundle. It projects established Archetypus readings,
+their provenance and their links to exact regions of ink into the formats the run
+sealed; it does not establish, repair, choose or rewrite text. The pipeline ends here.
 
-The producer derives its disclosure from retained-run evidence before sealing. The
-standalone clean verifier checks the package's canonical schema, closure, and internal
-consistency only; a self-hash does not authenticate the run-derived facts. The publisher
-also binds the exact ZIP to the immutable export artifact and run authority. Authenticity
-beyond that retained-run immutability contract needs an external trust root.
+`run.py` accounts for every counted reading in one of five categories, builds the
+bundle, verifies it and seals it into the run tree. A partial run exits held and says so
+in its manifest, its readable text and its acts database; the JSONL files are rows
+only and are read with the manifest. `bundle.py` publishes the sealed bundle to a destination outside
+the run tree, verifying it again on the way out. Nothing else takes a product out of
+this stage.
 
-The bundle's first member is `EXPORT_MANIFEST.json`. Its companion formats are
-the run-sealed choices in `config/formats.toml`; the default includes a readable
-text bundle, SQLite/FTS database, JSONL hand-off, review items, and the separate
-salvage tier. Every delivered act carries the Archetypus's own established-text
-status and transcription annotation layer, so an act the pipeline knows is
-damaged is visibly partial in the products and in the run's own verdict. The
-separate *semantic* annotation layer has no code; its build waits on the project
-lead's ARCHITECTURE approval, and every export states it as not produced.
-
-Every bundle also carries `claims.not_measured`: the instruments this build does
-not fully measure, each with what this run actually recorded for it — the reader's
-doubt assessment, uncalibrated geometry and truncation thresholds, the page
-accounting's starting thresholds, the audit pass no reading runs, and each delivered
-act whose dissent comparison with a witness stopped on its bound. The block is
-required by the export schema and derived from the run's own records, so a bundle
-can neither omit its caveats nor report the same ones whatever happened.
-
-`run.py` seals the bundle into the run tree; `bundle.py` publishes it to a
-destination outside, verifying it again on the way out. Nothing else takes a
-product out of this stage.
+Verification proves a bundle is internally consistent and closed; a self-hash does not
+authenticate the run-derived facts, and authenticity beyond the retained run tree needs
+an external trust root.
 
 Read [CONTRACT.md](CONTRACT.md) for what this stage writes and where. That document
 is the interface — no other stage reads this one's code.

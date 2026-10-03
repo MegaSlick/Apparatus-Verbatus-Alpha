@@ -10,12 +10,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from armarium_export import verify_export_bundle, verify_projection_identity
+from armarium_export import verify_delivered_bundle, verify_export_bundle
 
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import artifact_id
-from common.contracts.stages import ARCHETYPUS, ARMARIUM, RECENSOR
+from common.contracts.stages import ARCHETYPUS, ARMARIUM
 from common.runtree.store import RunTree
 from conftest import load_stage
 from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
@@ -86,7 +86,7 @@ def test_run_bound_pixel_embedding_packages_page_and_crop_bytes(tmp_path):
     formats = tmp_path / "formats.toml"
     formats.write_text(
         'schema = "armarium-formats.v1"\n'
-        'formats = ["text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"]\n'
+        'formats = ["text-bundle", "acts-database", "jsonl", "review-items"]\n'
         "embed_pixels = true\n",
         encoding="utf-8",
     )
@@ -99,21 +99,6 @@ def test_run_bound_pixel_embedding_packages_page_and_crop_bytes(tmp_path):
     manifest = verify_export_bundle(tree.read_bytes(reference["relative_path"]), tmp_path / "clean")
     assert manifest["formats"]["embed_pixels"] is True
     assert manifest["claims"]["pixels"]["resolution_claim"].startswith("embedded pixels")
-
-
-def test_happy_run_marks_absent_salvage_inventory_as_not_produced(tmp_path):
-    root = tmp_path / "runs"
-    result = _orchestrate(root, "happy-no-salvage")
-    assert result.returncode == 0, result.stderr
-
-    tree = RunTree(root, "happy-no-salvage")
-    assert not any(
-        entry["kind"] == "salvage-inventory" for entry in tree.build_manifest(RECENSOR)["artifacts"]
-    )
-    reference = _export(tree)["payload"]["bundle"]["reference"]
-    manifest = verify_export_bundle(tree.read_bytes(reference["relative_path"]), tmp_path / "clean")
-    assert manifest["claims"]["salvage"]["status"] == ("not-produced-no-sealed-salvage-inventory")
-    assert manifest["claims"]["salvage"]["count"] is None
 
 
 @pytest.mark.parametrize(
@@ -181,7 +166,7 @@ def test_provenance_less_established_reading_becomes_a_visible_refusal(
     row = next(item for item in rows if item["act_id"] == refused_act_id)
     assert row["category"] == "refused-with-reason"
     assert row["canonical_clean_text"] is None
-    assert verify_projection_identity(
+    assert verify_delivered_bundle(
         tree.read_bytes(reference["relative_path"]), tmp_path / f"id-{missing_field}"
     )
 
@@ -246,6 +231,7 @@ def _page_record_case():
 
 def _sealed_page_record(armarium, row, reading_payload, region, **changes):
     payload = {
+        "schema": "archetypus-record.v2",
         "act_id": row["act_id"],
         "act_key": row["act_key"],
         "page_id": row["page_id"],
@@ -254,7 +240,6 @@ def _sealed_page_record(armarium, row, reading_payload, region, **changes):
         "text": reading_payload["text"],
         "regions": [region],
         "provenance": reading_payload["provenance"],
-        "annotations": [],
         "uncertainty": armarium.from_page_perlectio(reading_payload),
         "text_status": "established",
         "recensor_ref": {"relative_path": "5_recensor/artifacts/review/v.json", "sha256": "b" * 64},

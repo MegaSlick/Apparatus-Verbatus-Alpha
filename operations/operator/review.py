@@ -36,73 +36,25 @@ from common.stage import latest_attempt
 
 from .advance import ADVANCE_SUBJECT_PREFIX, verify_sealed_boundary
 from .errors import ErrorCode, OperatorError
+from .records import sha256_file
+from .surface import resume_command as resume_from_command
 
 MAX_REVIEW_ITEM_BYTES = 16 * 1024 * 1024
 REVIEW_PAGE_SIZE = 500
-# The retained queue page gets the same byte allowance as projected images.
+# The most one retained page of the review queue may hold.
 MAX_REVIEW_PAGE_BYTES = 256 * 1024 * 1024
 _REVIEW_ITEMS_MEMBER = "review-items.jsonl"
 
-# Every sealed page and crop is read whole, in one pass, to verify its digest,
-# so an unbounded run met no limit here, only the memory of the machine. The
-# number is the largest that still passes through this pipe with room for the
-# JSON copy on both sides; a console that streamed one image at a time as
-# fetched would need no such limit.
-MAX_PROJECTED_IMAGE_BYTES = 256 * 1024 * 1024
 
+def _image_digest(tree: RunTree, relative_path: str, what: str) -> str:
+    """The SHA-256 of one sealed image, streamed from a regular file, never a FIFO or link."""
 
-class _ImageBudget:
-    """One running allowance over every image the projection embeds."""
-
-    __slots__ = ("_limit", "_spent")
-
-    def __init__(self, limit: int = MAX_PROJECTED_IMAGE_BYTES) -> None:
-        self._limit = limit
-        self._spent = 0
-
-    def spend(self, count: int, what: str) -> None:
-        self._spent += count
-        if self._spent > self._limit:
-            raise OperatorError(
-                ErrorCode.CONSOLE_TREE_UNREADABLE,
-                detail=(
-                    f"this run's page and crop images pass "
-                    f"{self._limit} bytes at {what}, "
-                    "which is more than the console can project in one read-only view; the "
-                    "run tree is intact and unchanged, and a narrower selection can be "
-                    "reviewed while this limit stands"
-                ),
-            )
-
-
-def _budgeted_image_bytes(
-    tree: RunTree, relative_path: str, budget: _ImageBudget, what: str
-) -> bytes:
-    """Charge an image's on-disk size against the budget before reading it.
-
-    `RunTree.read_bytes` loads the whole file before checking its length, so a
-    file larger than the allowance would already be fully resident by the time
-    the limit could refuse it. The size on disk is charged first and the read
-    is bounded by that charge, so a file that grew between the two spends
-    nothing it was not allowed.
-    """
-
-    path = tree.resolve(relative_path)
     try:
-        size = path.stat().st_size
+        return sha256_file(tree.resolve(relative_path))
     except OSError as error:
         raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE, detail=f"{what} could not be measured: {error}"
+            ErrorCode.CONSOLE_TREE_UNREADABLE, detail=f"{what} could not be read: {error}"
         ) from error
-    budget.spend(size, what)
-    with path.open("rb") as handle:
-        data = handle.read(size + 1)
-    if len(data) != size:
-        raise OperatorError(
-            ErrorCode.CONSOLE_TREE_UNREADABLE,
-            detail=f"{what} changed size while the console was reading it",
-        )
-    return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,15 +178,12 @@ class ReadOnlyRun:
                     }
                 )
             progress = _progress(boundaries, stage_records)
-            # One allowance shared by pages and crops, since both are verified
-            # in the same pass.
-            budget = _ImageBudget()
             acts_denominator_note = None
             armarium_state = next(row["state"] for row in progress if row["stage"] == ARMARIUM)
             export_rows = _export_rows(stage_records)
             if export_rows:
                 payload, export_ref = _armarium_payload(tree, stage_records)
-                pages = tuple(_image_row(tree, row, export_ref, budget) for row in payload["pages"])
+                pages = tuple(_image_row(tree, row, export_ref) for row in payload["pages"])
                 # The Armarium attaches `source_regions` to every delivered act
                 # and never to a non-delivered one: missing means damaged on a
                 # delivered row, and means the record as written otherwise.
@@ -243,7 +192,6 @@ class ReadOnlyRun:
                         tree,
                         row,
                         export_ref,
-                        budget,
                         stage_records=stage_records,
                     )
                     for row in payload["delivered"]
@@ -252,7 +200,6 @@ class ReadOnlyRun:
                         tree,
                         row,
                         export_ref,
-                        budget,
                         requires_crops=False,
                         stage_records=stage_records,
                     )
@@ -263,7 +210,6 @@ class ReadOnlyRun:
                         tree,
                         row,
                         export_ref,
-                        budget,
                         requires_crops=not isinstance(row, dict)
                         or row.get("category") == "delivered",
                         stage_records=stage_records,
@@ -281,9 +227,9 @@ class ReadOnlyRun:
                 # already sealed (pages, crops, latest reading, holding
                 # review), each row naming its own record. None of this is a
                 # delivered result, and `export` says so.
-                pages = _sealed_pages(tree, stage_records, budget)
-                acts = _progressive_acts(tree, stage_records, budget, "act")
-                other_readings = _progressive_acts(tree, stage_records, budget, "other")
+                pages = _sealed_pages(tree, stage_records)
+                acts = _progressive_acts(tree, stage_records, "act")
+                other_readings = _progressive_acts(tree, stage_records, "other")
                 acts_denominator_note = _pre_export_acts_note(stage_records, acts + other_readings)
                 review_items = None
                 review_items_total = None
@@ -428,7 +374,6 @@ def _verified_export_blob_digest(
     expected_digest: Any,
     description: str,
     export_ref: dict[str, str],
-    budget: _ImageBudget,
     record_label: str = "the Armarium export record",
 ) -> str:
     """Verify a claimed image path and digest without repairing a mismatch.
@@ -458,8 +403,7 @@ def _verified_export_blob_digest(
                 f"{expected_path}"
             ),
         )
-    data = _budgeted_image_bytes(tree, path, budget, description)
-    actual_digest = digest_bytes(data)
+    actual_digest = _image_digest(tree, path, description)
     if actual_digest != expected_digest:
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -693,9 +637,7 @@ def _progress(
     return tuple(rows)
 
 
-def _sealed_pages(
-    tree: RunTree, stage_records: list[dict[str, Any]], budget: _ImageBudget
-) -> tuple[dict[str, Any], ...]:
+def _sealed_pages(tree: RunTree, stage_records: list[dict[str, Any]]) -> tuple[dict[str, Any], ...]:
     """Every page the Exemplar accounted for, sealed or refused, from its own record.
 
     Produces the same row shape as the export path, so one renderer reads
@@ -723,7 +665,6 @@ def _sealed_pages(
             expected_digest=payload.get("source_sha256"),
             description=f"page {payload.get('ordinal')!r}",
             export_ref=row["record_ref"],
-            budget=budget,
             record_label="the Exemplar page record",
         )
         rows.append({**projected, "image_path": payload["image_path"], "image_sha256": digest})
@@ -740,7 +681,7 @@ def _reading_region(stage_records: list[dict[str, Any]], act_id: str) -> dict[st
 
 
 def _progressive_crops(
-    tree: RunTree, stage_records: list[dict[str, Any]], act_id: str, budget: _ImageBudget
+    tree: RunTree, stage_records: list[dict[str, Any]], act_id: str
 ) -> list[dict[str, Any]]:
     """The crop the Perlector cut for one act, verified; none for an unplaced entry."""
     row = _reading_region(stage_records, act_id)
@@ -756,7 +697,6 @@ def _progressive_crops(
         expected_digest=payload.get("image_sha256"),
         description=f"act {act_id!r} region {payload.get('region_id')!r}",
         export_ref=row["record_ref"],
-        budget=budget,
         record_label="the Perlector act-region record",
     )
     return [
@@ -972,7 +912,6 @@ def _pre_export_acts_note(
 def _progressive_acts(
     tree: RunTree,
     stage_records: list[dict[str, Any]],
-    budget: _ImageBudget,
     kind: str,
 ) -> tuple[dict[str, Any], ...]:
     """Every entry of one `kind` the Perlector read, from its sealed `act-region`
@@ -1000,7 +939,7 @@ def _progressive_acts(
             "page_ordinal": payload.get("page_ordinal"),
         }
         summary = _act_summary(stage_records, act)
-        crops = _progressive_crops(tree, stage_records, act["act_id"], budget)
+        crops = _progressive_crops(tree, stage_records, act["act_id"])
         acts.append(
             {
                 "act_id": act["act_id"],
@@ -1207,9 +1146,10 @@ def _next_action(
             summary = (
                 f"{census} The run stopped at a held Recensor, before the Archetypus: nothing "
                 "is established or exported until the holds below are decided. Record review "
-                "decisions about them in this run, then resume it from the Recensor (the "
-                f"orchestrator's `--from recensor --to armarium`, or {resume_command}"
-                f"{resume_where}); the Recensor applies every decision and the run continues "
+                "decisions about them in this run, then resume it from the Recensor ("
+                f"{resume_from_command(run_id, RECENSOR)} for a run this tool started, or "
+                "`pod_run --from recensor --to armarium` on its pod); the Recensor applies "
+                "every decision and the run continues "
                 "once nothing is held. To export with holds remaining, `advance` the Recensor "
                 "boundary first; the export then names every hold."
             )
@@ -1268,9 +1208,7 @@ def _image_row(
     tree: RunTree,
     row: Any,
     export_ref: dict[str, str],
-    budget: _ImageBudget | None = None,
 ) -> dict[str, Any]:
-    budget = _ImageBudget() if budget is None else budget
     if not isinstance(row, dict):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -1295,7 +1233,6 @@ def _image_row(
         expected_digest=row.get("image_sha256"),
         description=f"page {row.get('ordinal')!r}",
         export_ref=export_ref,
-        budget=budget,
     )
     return {
         **projected,
@@ -1308,7 +1245,6 @@ def _act_row(
     tree: RunTree,
     row: Any,
     export_ref: dict[str, str],
-    budget: _ImageBudget | None = None,
     *,
     requires_crops: bool = True,
     stage_records: list[dict[str, Any]] | None = None,
@@ -1321,7 +1257,6 @@ def _act_row(
     here from the sealed Perlector and Attestatores records instead, the same
     ones the pre-export path reads.
     """
-    budget = _ImageBudget() if budget is None else budget
     if not isinstance(row, dict):
         raise OperatorError(
             ErrorCode.CONSOLE_TREE_UNREADABLE,
@@ -1364,7 +1299,6 @@ def _act_row(
             expected_digest=region.get("image_sha256"),
             description=(f"act {row.get('act_id')!r} source region {region.get('region_id')!r}"),
             export_ref=export_ref,
-            budget=budget,
         )
         crops.append(
             {
@@ -1377,7 +1311,7 @@ def _act_row(
     act_id = row.get("act_id")
     crops_note = None
     if not crops and not requires_crops and isinstance(act_id, str) and stage_records is not None:
-        crops = _progressive_crops(tree, stage_records, act_id, budget)
+        crops = _progressive_crops(tree, stage_records, act_id)
         crops_note = (
             "this export row records no crops; the crop below is read from the sealed "
             "Perlector act-region record"

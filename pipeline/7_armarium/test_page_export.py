@@ -192,7 +192,7 @@ def _unit_types(manifest: dict) -> dict:
 def test_a_page_read_run_exports_its_acts_and_other_readings_complete(complete):
     manifest, members = complete["manifest"], complete["members"]
     claims = manifest["claims"]
-    assert manifest["schema"] == "armarium-export-manifest.v11"
+    assert manifest["schema"] == "armarium-export-manifest.v12"
     assert claims["status"] == "complete" and manifest["aggregate"]["status"] == "complete"
     partition = claims["act_partition"]
     assert partition["denominator"] == "page-read reading acts"
@@ -210,6 +210,11 @@ def test_a_page_read_run_exports_its_acts_and_other_readings_complete(complete):
     assert sorted(_jsonl(members, "other.jsonl")) == ["p1:1"]
     text = _text_bundle(members)
     assert "## OTHER p1:1 (not an act)" in text and "## p1:1 " not in text
+    assert text.split("\n")[1:3] == [
+        "run-status: complete",
+        "folder-readings: 3 delivered, 0 not delivered",
+    ]
+    assert "## NOT DELIVERED" not in text
     export = complete["export"]["payload"]
     assert export["expected_acts"] == 2
     assert [item["act_key"] for item in export["other_readings"]] == ["p1:1"]
@@ -634,6 +639,31 @@ def test_a_held_other_reading_keeps_the_run_partial(tmp_path):
     assert _unit(bundle["manifest"], f"other:{claims['other_readings']['act_ids'][0]}")[
         "category"
     ] == ("held-for-review")
+    # The held reading reaches the review queue under its own kind, and the
+    # partial reasons name it by key, so a person sees it wherever they look.
+    [other] = _jsonl(bundle["members"], "other.jsonl").values()
+    review = _jsonl(bundle["members"], "review-items.jsonl")
+    assert (review[other["act_key"]]["kind"], review[other["act_key"]]["category"]) == (
+        "other",
+        "held-for-review",
+    )
+    assert [
+        reason
+        for reason in claims["partial_reasons"]
+        if reason.startswith(f"other {other['act_key']} is held-for-review: ")
+    ]
+    assert f"## NOT DELIVERED {other['act_key']} ({other['act_id']})\nnot-delivered: other " in (
+        _text_bundle(bundle["members"])
+    )
+
+    def drop_other(members: dict) -> None:
+        rows = members["review-items.jsonl"].decode("utf-8").splitlines(keepends=True)
+        members["review-items.jsonl"] = "".join(
+            row for row in rows if json.loads(row)["kind"] != "other"
+        ).encode("utf-8")
+
+    with pytest.raises(SchemaRefusal, match="held and refused readings"):
+        verify_export_bundle(_tampered(bundle, drop_other), tmp_path / "dropped")
 
 
 def test_a_confirmed_no_act_page_is_delivered_while_its_one_sided_break_holds_the_run(
@@ -801,15 +831,15 @@ def test_a_blinded_run_exports_each_witness_by_chair_and_by_the_label_its_reader
 def test_page_rows_carry_the_page_read_lectio_kind_under_their_own_ids(complete):
     members = complete["members"]
     for row in _jsonl(members, "acts.jsonl").values():
-        assert row["schema"] == "armarium-act.v5"
+        assert row["schema"] == "armarium-act.v6"
         assert row["uncertainty"]["lectio_kind"] == "page-read"
         assert row["uncertainty"]["self_revisions"] is None
         assert row["reading"] == "first reading"
     with sqlite3.connect(complete["clean"] / "acts.sqlite") as connection:
         assert connection.execute(
             "SELECT value FROM export_metadata WHERE key = 'schema'"
-        ).fetchone() == ("armarium-acts-sqlite.v5",)
-        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
+        ).fetchone() == ("armarium-acts-sqlite.v6",)
+        assert connection.execute("PRAGMA user_version").fetchone() == (6,)
         assert set(connection.execute("SELECT reading FROM acts")) == {("first reading",)}
 
 
