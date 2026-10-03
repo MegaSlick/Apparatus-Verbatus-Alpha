@@ -1,8 +1,6 @@
-"""Explicit no-network adapter for the operator rehearsal.
+"""The local folder `verbatus upload` sends to when no network volume is named.
 
-It is an application fake, not a pretend provider integration.  Every value it
-returns is labelled fixture-only by the caller, and it contains no credential,
-HTTP client, or S3 client.
+It holds no credential, HTTP client or S3 client.
 """
 
 from __future__ import annotations
@@ -16,59 +14,17 @@ import tempfile
 from pathlib import Path
 from typing import BinaryIO
 
-from operations.pod.fake_provider import FakeProvider
-from operations.pod.models import PodCreateRequest, PodRecord
 from operations.pod.transfer import RemoteObject, TransferTarget
 
 from .records import BLOCK_BYTES
 
 
-class OperatorFakeProvider(FakeProvider):
-    """`operations.pod.fake_provider.FakeProvider`, plus rehearsal-only affordances.
-
-    The pod package's own fake carries only what its own test suite needs.
-    The operator surface additionally needs to reopen a local fake state for a
-    later `close` rehearsal in a fresh process (`seed_existing`), and to reset
-    a hardening drill's injected failure before its retry (`clear_failures`).
-    Neither belongs in `operations/pod/fake_provider.py` itself: that module
-    is the reviewed, merged pod runtime's own fixture, taken as-is, and these
-    two methods exist only for this surface's own tests and rehearsals.
-    """
-
-    def seed_existing(self, record: PodRecord, request: PodCreateRequest) -> None:
-        """Install an already-recorded fixture pod without simulating a provider action.
-
-        Used only to reopen a local fake state for a later `close` rehearsal.
-        In particular, it must not call `create`: rehydration before a close
-        confirmation cannot look like a paid action.
-        """
-
-        if record.pod_id in self.pods:
-            raise ValueError(f"fixture pod already exists: {record.pod_id!r}")
-        if record.name != request.name or record.volume_id != request.volume_id:
-            raise ValueError("fixture pod does not match its recorded request")
-        self.pods[record.pod_id] = record
-        self._requests_by_pod[record.pod_id] = request
-        self._present[record.pod_id] = True
-        if record.pod_id.startswith("fake-pod-"):
-            suffix = record.pod_id.removeprefix("fake-pod-")
-            if suffix.isdigit():
-                self._next_id = max(self._next_id, int(suffix) + 1)
-
-    def clear_failures(self, verb: str) -> None:
-        """Discard a still-queued synthetic drill failure before its recovery retry."""
-
-        self._failures[verb].clear()
-
-
 class LocalFixtureObjectStore(TransferTarget):
-    """A file-backed implementation of the transfer seam for offline rehearsals.
+    """A file-backed implementation of the transfer seam: a local folder as the volume.
 
     This is the default target of `verbatus upload`, not test scaffolding, so
     it moves real submitted material. Nothing here holds a whole file in
-    memory: a submission is sized by what a person photographed, and reading
-    one whole was the difference between 21 MiB resident and 533 MiB for a
-    single 512 MiB page set.
+    memory: a submission is sized by what a person photographed.
     """
 
     def __init__(self, root: str | Path, *, fail_once_for: str | None = None) -> None:

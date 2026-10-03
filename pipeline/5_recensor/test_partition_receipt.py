@@ -7,8 +7,6 @@ import pytest
 from common.contracts.canonical import self_hash
 from common.contracts.errors import SchemaRefusal
 from common.recensor_receipt import (
-    RETIRED_RECENSOR_PARTITION_RECEIPT_SCHEMAS,
-    _validate_coverage,
     build_recensor_reading_receipt,
     validate_recensor_partition_receipt,
 )
@@ -130,10 +128,8 @@ def test_a_negative_coverage_count_is_refused():
 
 
 def test_duplicate_act_identities_are_refused():
-    """Spec 09 test 1: 'duplicate identities are errors.' The receipt itself
-    refuses it (via the strictly-sorted check, since a repeat is never `>` the
-    one before it) rather than relying on every future caller to never
-    construct one."""
+    """The receipt itself refuses a repeated identity (a repeat is never `>` the
+    one before it), rather than relying on every caller never to construct one."""
     item = _item_with_coverage(_valid_coverage())
     with pytest.raises(SchemaRefusal, match="strictly sorted"):
         _build([item, dict(item, act_key="p1:2")])
@@ -168,7 +164,7 @@ def test_unsorted_items_are_refused_on_direct_validation():
 def test_every_recensor_terminal_set_combination_builds_a_matching_receipt_item(
     review_outcome, expected_class
 ):
-    """Spec 09 test 1: 'table-driven -- every terminal-set combination.'"""
+    """Every Recensor terminal outcome builds an item of the class it derives."""
     item = dict(
         _item_with_coverage(_valid_coverage()),
         review_outcome=review_outcome,
@@ -213,26 +209,12 @@ def test_a_partial_receipt_may_not_claim_to_be_complete():
         validate_recensor_partition_receipt(forged)
 
 
-@pytest.mark.parametrize("schema", sorted(RETIRED_RECENSOR_PARTITION_RECEIPT_SCHEMAS))
-def test_a_receipt_over_proposal_acts_is_refused_by_its_schema_name(schema):
-    with pytest.raises(SchemaRefusal, match=f"written as {schema}"):
-        validate_recensor_partition_receipt({"schema": schema})
-
-
-# --- Audit-and-repair regression (F-O3) -----------------------------------------
-#
-# `witness_coverage` counts a chair toward the floor only when its outcome IS a
-# reading, but the validator once rederived the same number from the
-# ATTESTATORES COMPLETED class -- which is wider, because it also holds
-# `excluded`, an approval-bound exclusion that never looked at the ink.
-
-
 def test_an_approval_bound_exclusion_does_not_make_the_receipt_refuse_its_own_writer():
-    """The floor arithmetic and its rederivation must count the same chairs.
+    """The floor counts readings, not the completed class.
 
-    An `excluded` chair is COMPLETED class but is not a reading, so two reads
-    against a floor of three are under-witnessed although three chairs are
-    completed-class.
+    An `excluded` chair is completed-class but never looked at the ink, so two
+    reads against a floor of three are under-witnessed although three chairs
+    are completed-class.
     """
     coverage = {
         "configured": 3,
@@ -244,7 +226,7 @@ def test_an_approval_bound_exclusion_does_not_make_the_receipt_refuse_its_own_wr
         "health_unrecorded": 0,
         "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0},
     }
-    _validate_coverage(coverage)
+    assert _build_with_coverage(coverage)["items"][0]["coverage"] == coverage
 
 
 def test_the_reading_outcome_set_has_exactly_one_definition():

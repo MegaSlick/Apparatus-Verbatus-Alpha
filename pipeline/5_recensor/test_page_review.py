@@ -27,6 +27,7 @@ from common.contracts.stages import EXEMPLAR, PERLECTOR, RECENSOR
 from common.page_review import (
     CONTINUATION_LINK_FIELDS,
     continuation_links,
+    held_pages_after_review,
     page_breaks,
     reviewed_rows,
     run_page_breaks,
@@ -187,10 +188,9 @@ def test_a_happy_page_tree_accepts_every_unit_with_its_evidence(happy, tmp_path)
         }
         assert payload["uncertainty_assessment"]["state"] is not None
         assert row["perlectio_ref"] in review["inputs"]
-    assert not (tree.root / RUN_ID / "5_recensor" / "artifacts" / "recovery-request").exists()
 
     receipt = tree.receipt()
-    assert receipt["schema"] == "recensor-partition-receipt.v5"
+    assert receipt["schema"] == "recensor-partition-receipt.v6"
     assert receipt["recensor_status"] == "complete" and receipt["reasons"] == []
     assert [
         (page["page_ordinal"], page["reask_ref"], page["reask"]) for page in receipt["pages"]
@@ -384,6 +384,24 @@ def test_a_page_of_other_entries_dai_saw_nothing_on_is_confirmed_holding_no_act(
     assert tree.receipt()["recensor_status"] == "partial"
 
 
+def test_the_detectors_census_is_named_to_the_confirmation(no_act, tmp_path, monkeypatch):
+    # Page 2's DAI record is its detector's look, so the confirmation knows it as a census.
+    tree = no_act.copy(tmp_path)
+    seen = {}
+    real = page_review.confirmation
+
+    def spy(accounting, records, *, blank, census):
+        seen[records[0]["subject_id"]] = census
+        return real(accounting, records, blank=blank, census=census)
+
+    monkeypatch.setattr(page_review, "confirmation", spy)
+    context = tree.context()
+    page_review.plan_reviews(
+        context, reading_denominator(context), RECENSOR_RUN.page_coverage_findings
+    )
+    assert list(seen.values()) == [frozenset({"attestator_2"})]
+
+
 # --- refusals ---------------------------------------------------------------------------
 
 
@@ -459,16 +477,6 @@ def _stray_link(context, reviews) -> None:
 @pytest.mark.parametrize(
     ("forge", "refusal"),
     [
-        (
-            lambda tree, context, reviews: context.publish(
-                kind="recovery-request",
-                subject_id=reviews["p1:1"]["subject_id"],
-                outcome="held-for-review",
-                attempt=page_review.attempt_id(reviews["p1:1"]["subject_id"], "recover", 1),
-                payload={},
-            ),
-            "asks for no recovery",
-        ),
         (lambda tree, context, reviews: _drop(tree, "review"), "has no Recensor review"),
         (
             lambda tree, context, reviews: _later_review(
@@ -482,13 +490,13 @@ def _stray_link(context, reviews) -> None:
             lambda tree, context, reviews: _later_review(
                 context, reviews["p1:1"], outcome="held-for-review"
             ),
-            "derive 'accepted'",
+            "its outcome differ",
         ),
         (
             lambda tree, context, reviews: _later_review(
                 context, reviews["p1:1"], hold_codes=["under-witnessed"], outcome="held-for-review"
             ),
-            "but disk derives",
+            "its outcome, hold_codes",
         ),
         (
             lambda tree, context, reviews: _later_review(
@@ -502,7 +510,6 @@ def _stray_link(context, reviews) -> None:
         (lambda tree, context, reviews: _stray_link(context, reviews), "no answer of this run"),
     ],
     ids=[
-        "recovery-request",
         "missing-review",
         "coverage",
         "outcome",
@@ -544,7 +551,7 @@ def test_the_receipt_refuses_an_accepted_review_of_a_held_row_with_no_release(re
     held = tree.reviews()["p2:1"]
     _later_review(context, held, outcome="accepted", hold_codes=[])
     context.finish()
-    with pytest.raises(FatalAccounting, match="without naming a release"):
+    with pytest.raises(FatalAccounting, match="its outcome, hold_codes"):
         _write_receipt(context)
 
 
@@ -637,10 +644,12 @@ def test_blankness_is_measured_from_the_retained_text_not_the_health_report():
     assert page_review.retained_text_blank(_testimonium("a", text={"records": []})) is None
 
 
+# `b` is a record reader whose page record is its detector's census: it found no record.
 BLANK_WITNESSES = [
     _testimonium("a", text="", blank=True),
     _testimonium("b", "genuinely-empty", text=""),
 ]
+CENSUS = frozenset({"b"})
 
 
 def _without(rule: str, status: str) -> dict:
@@ -648,12 +657,12 @@ def _without(rule: str, status: str) -> dict:
 
 
 def test_a_blank_page_meeting_every_condition_is_confirmed_and_released():
-    confirmed = page_review.confirmation(PASSING, BLANK_WITNESSES, blank=True)
+    confirmed = page_review.confirmation(PASSING, BLANK_WITNESSES, blank=True, census=CENSUS)
     assert confirmed["confirmed"] is True and confirmed["failures"] == []
     # With no record detector, rule (i) does not apply to a blank page.
-    assert page_review.confirmation(_without("i", "not-applicable"), BLANK_WITNESSES, blank=True)[
-        "confirmed"
-    ]
+    assert page_review.confirmation(
+        _without("i", "not-applicable"), BLANK_WITNESSES, blank=True, census=CENSUS
+    )["confirmed"]
     outcome, payload = page_review.review_of(
         _row(act_key="p1:blank", n=None, **{"class": "page-blank"}, hold_codes=[PAGE_BLANK_HOLD]),
         coverage=_coverage(*BLANK_WITNESSES),
@@ -693,11 +702,16 @@ def test_a_blank_page_meeting_every_condition_is_confirmed_and_released():
             [_testimonium("a", "failed", text=None), _testimonium("b", "not-run", text=None)],
             "no witness read the page",
         ),
+        (
+            PASSING,
+            [_testimonium("a", "failed", text=None), BLANK_WITNESSES[1]],
+            "only a record detector's census found the page blank",
+        ),
     ],
-    ids=["d", "e", "f", "i", "lines", "witness-text", "text-unmeasurable", "no-reader"],
+    ids=["d", "e", "f", "i", "lines", "witness-text", "text-unmeasurable", "no-reader", "census"],
 )
 def test_a_blank_page_failing_one_condition_is_held_naming_it(accounting, records, failure):
-    refused = page_review.confirmation(accounting, records, blank=True)
+    refused = page_review.confirmation(accounting, records, blank=True, census=CENSUS)
     assert refused["confirmed"] is False
     assert len(refused["failures"]) == 1 and failure in refused["failures"][0]
 
@@ -705,7 +719,7 @@ def test_a_blank_page_failing_one_condition_is_held_naming_it(accounting, record
 def test_a_confirmed_blank_page_still_holds_on_the_floor_or_residual_ink():
     witnesses = [_testimonium("a", text="")]
     row = _row(n=None, **{"class": "page-blank"}, hold_codes=[PAGE_BLANK_HOLD])
-    confirmed = page_review.confirmation(PASSING, witnesses, blank=True)
+    confirmed = page_review.confirmation(PASSING, witnesses, blank=True, census=frozenset())
     for coverage, page_coverage, code in (
         (_coverage(*witnesses, floor=2), CLEAN, "under-witnessed"),
         (_coverage(*witnesses, floor=1), {**CLEAN, "flagged_pages": [1]}, "residual-ink"),
@@ -724,7 +738,7 @@ def test_a_confirmed_blank_page_still_holds_on_the_floor_or_residual_ink():
 def test_a_page_of_only_other_readings_is_confirmed_as_holding_no_act():
     row = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD], disposition="held")
     witnesses = [_testimonium("a"), _testimonium("b")]
-    confirmed = page_review.confirmation(PASSING, witnesses, blank=False)
+    confirmed = page_review.confirmation(PASSING, witnesses, blank=False, census=frozenset())
     assert confirmed["confirmed"] is True
     outcome, payload = page_review.review_of(
         row,
@@ -744,7 +758,9 @@ def test_a_page_of_only_other_readings_is_confirmed_as_holding_no_act():
 def test_a_page_of_only_other_readings_stays_held_on_any_rule_not_passing(rule, status):
     row = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD], disposition="held")
     witnesses = [_testimonium("a"), _testimonium("b")]
-    unconfirmed = page_review.confirmation(_without(rule, status), witnesses, blank=False)
+    unconfirmed = page_review.confirmation(
+        _without(rule, status), witnesses, blank=False, census=frozenset()
+    )
     assert unconfirmed["failures"] == [f"page accounting rule ({rule}) is {status}, not pass"]
     outcome, payload = page_review.review_of(
         row,
@@ -789,7 +805,7 @@ def test_a_held_row_is_never_released_by_this_stage():
         hold_codes=[PAGE_BLANK_HOLD, "unread-ink"], disposition="held", **{"class": "page-blank"}
     )
     witnesses = [_testimonium("a", text="")]
-    confirmed = page_review.confirmation(PASSING, witnesses, blank=True)
+    confirmed = page_review.confirmation(PASSING, witnesses, blank=True, census=frozenset())
     outcome, payload = page_review.review_of(
         row,
         coverage=_coverage(*witnesses, floor=1),
@@ -881,51 +897,7 @@ def test_the_floor_counts_only_the_testimonia_the_page_accounting_measured():
         page_review._require_accounted_testimonia(context, _row(), {"inputs": measured}, records)
 
 
-# --- the outcome the receipt recomputes ------------------------------------------------------
-
-
-def _review(outcome: str, **payload) -> dict[str, Any]:
-    base = {"hold_codes": [], "release": None, "confirmation": None}
-    return {"outcome": outcome, "payload": {**base, **payload}}
-
-
 FLOORED = _coverage(_testimonium("a", truncated=False), floor=1)
-
-
-def test_the_receipt_derives_each_outcome_from_the_row_and_the_release():
-    derive = page_review.require_derived_outcome
-    derive(_row(), _review("accepted"), FLOORED, [])
-    held_row = _row(hold_codes=["unread-ink"])
-    derive(held_row, _review("held-for-review", hold_codes=["unread-ink"]), FLOORED, [])
-    with pytest.raises(FatalAccounting, match="without naming a release"):
-        derive(held_row, _review("accepted"), FLOORED, [])
-    no_act = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD])
-    release = {"hold_codes": [NO_ACT_ON_PAGE_HOLD], "reason": "confirmed"}
-    derive(
-        no_act, _review("accepted", release=release, confirmation={"confirmed": True}), FLOORED, []
-    )
-    with pytest.raises(FatalAccounting, match="releases hold codes"):
-        derive(
-            no_act,
-            _review("accepted", release=release, confirmation={"confirmed": False}),
-            FLOORED,
-            [],
-        )
-    with pytest.raises(FatalAccounting, match="releases hold codes"):
-        derive(
-            held_row,
-            _review(
-                "accepted", release={"hold_codes": ["unread-ink"]}, confirmation={"confirmed": True}
-            ),
-            FLOORED,
-            [],
-        )
-    with pytest.raises(FatalAccounting, match="derive 'held-for-review'"):
-        derive(held_row, _review("accepted", hold_codes=["unread-ink"]), FLOORED, [])
-    with pytest.raises(FatalAccounting, match="neither its row nor this stage names"):
-        derive(_row(), _review("held-for-review", hold_codes=["made-up"]), FLOORED, [])
-    with pytest.raises(FatalAccounting, match="but disk derives"):
-        derive(_row(), _review("accepted"), FLOORED, ["continues_to_next_page"])
 
 
 # --- continuation --------------------------------------------------------------------------
@@ -1054,6 +1026,17 @@ def test_the_recensor_run_links_no_canary_page(happy, tmp_path, monkeypatch):
     [receipt_link] = tree.receipt()["continuation_links"]
     assert receipt_link["subject_id"] == "page-break:1:2"
     assert receipt_link["link_ref"] == verified["ref"]
+
+
+def test_the_systemic_alarm_counts_no_canary_page(review, tmp_path, monkeypatch):
+    """`page-review` holds page 2 of its two; sealed as a canary, page 2 is neither
+    held nor counted, as the Armarium leaves canary pages out of its page holds."""
+    tree = review.copy(tmp_path)
+    assert tree.recensor().returncode == 3
+    run_tree = RunTree(tree.root, RUN_ID)
+    assert held_pages_after_review(run_tree) == ([2], 2)
+    monkeypatch.setattr("common.page_review.canary_ordinals", lambda _run: {2})
+    assert held_pages_after_review(run_tree) == ([], 1)
 
 
 def test_a_link_joins_act_entries_past_a_catchword_and_notes_the_catchword_flag():
@@ -1193,7 +1176,7 @@ def test_a_re_asked_page_keeps_its_first_readings_edges_and_counts_its_recovered
     assert link["outcome"] == "accepted"
 
     receipt = tree.receipt()
-    assert receipt["schema"] == "recensor-partition-receipt.v5"
+    assert receipt["schema"] == "recensor-partition-receipt.v6"
     first, second = receipt["pages"]
     assert first["reask_ref"] == page_readings(context)[1]["reask_ref"] is not None
     assert first["accounting_ref"] == rows["p1:2"]["accounting_ref"]

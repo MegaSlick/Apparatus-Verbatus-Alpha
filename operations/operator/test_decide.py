@@ -124,7 +124,8 @@ def test_a_page_rerun_request_is_recorded_and_says_how_the_page_is_read_again(
     assert "needs the project lead's permission" in out
     # The next step resumes from the Perlector, which reads the page; from the
     # Recensor it would never be read again.
-    assert "Next: resume the run from the perlector (`--from perlector --to armarium`)" in out
+    assert "Next: resume the run from the perlector, which reads the page again" in out
+    assert f"`verbatus run --run-id {RUN_ID} --from perlector --to armarium`" in out
     assert "Next: resume the run from the recensor" not in out
     assert run_stage(root, RUN_ID, SCENARIO, RECENSOR, **options).returncode == 3
     [request] = _decisions_record(root)["requests"]

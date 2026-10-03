@@ -255,7 +255,7 @@ def publish_review(
 
 
 def review_a_page_read_run(context, denominator: dict) -> int:
-    """The page path (`page_review.py`): every counted unit reviewed, then the v5 receipt."""
+    """The page path (`page_review.py`): every counted unit reviewed, then the receipt."""
     held = page_review.review_pages(
         context,
         denominator,

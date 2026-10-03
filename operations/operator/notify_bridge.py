@@ -1,7 +1,7 @@
 """The two notification event classes this surface is allowed to send.
 
-`run`/`export` completion and a spend-threshold crossing are both a
-`milestone`; a decision-needed hold is a `decision`. `start` and `done`
+`run`/`export` completion is a `milestone`; a decision-needed hold is a
+`decision`. `start` and `done`
 belong to a working session's own hooks, never a shipped tool's to send, so
 the allowed event set here stays exactly two, enforced in code.
 
