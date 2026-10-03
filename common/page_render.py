@@ -15,7 +15,12 @@ from PIL import Image
 
 from common.contracts.errors import SchemaRefusal
 from common.exemplar_boundary import read_sealed_page
-from common.imaging import crop_png, dimensions, encode_grayscale_png_deterministic
+from common.imaging import (
+    crop_png,
+    dimensions,
+    encode_grayscale_png_deterministic,
+    lanczos_source,
+)
 
 
 def render_size(size: tuple[int, int], maximum_edge: int) -> tuple[int, int]:
@@ -52,7 +57,7 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
             rendered = image.copy()
             resampler = "identity"
         else:
-            rendered = image.resize(target, resample=Image.Resampling.LANCZOS)
+            rendered = lanczos_source(image).resize(target, resample=Image.Resampling.LANCZOS)
             resampler = "pillow-lanczos"
         # The project's own deterministic encoder, never Pillow's: Pillow's
         # wheels bundle their own zlib, so `rendered.save(...)` produces

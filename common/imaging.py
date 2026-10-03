@@ -714,6 +714,22 @@ def crop_png(png_bytes: bytes, bounds: Bounds) -> bytes:
 # carried from `src/PIL/Image.py:2404-2405` under Pillow's MIT-CMU licence:
 # https://github.com/python-pillow/Pillow/blob/12.3.0/src/PIL/Image.py#L2404-L2405
 # https://github.com/python-pillow/Pillow/blob/12.3.0/LICENSE
+def lanczos_source(image: Image.Image) -> Image.Image:
+    """`image` in a mode Pillow really resamples with LANCZOS rather than NEAREST.
+
+    Bilevel becomes grayscale; a palette becomes RGB, or RGBA when it carries
+    transparency. Every other mode is returned as it is.
+    """
+    if image.mode == "1":
+        return image.convert("L")
+    if image.mode == "P":
+        # A palette's transparency can live either in image metadata or
+        # its palette; RGB promotion would discard those samples.
+        keeps_alpha = "transparency" in image.info or "A" in getattr(image.palette, "mode", "RGB")
+        return image.convert("RGBA" if keeps_alpha else "RGB")
+    return image
+
+
 def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
     """Resize an image with Pillow LANCZOS and deterministic PNG framing.
 
@@ -742,18 +758,11 @@ def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
         with Image.open(BytesIO(png_bytes)) as image:
             _refuse_past_pixel_bound(image.width, image.height)
             image.load()
-            source = image
-            resizing = (image.width, image.height) != (width, height)
-            if resizing and image.mode == "1":
-                source = image.convert("L")
-            elif resizing and image.mode == "P":
-                # A palette's transparency can live either in image metadata or
-                # its palette; RGB promotion would discard those samples.
-                keeps_alpha = "transparency" in image.info or "A" in getattr(
-                    image.palette, "mode", "RGB"
-                )
-                source = image.convert("RGBA" if keeps_alpha else "RGB")
-            resized = source.resize((width, height), resample=Image.Resampling.LANCZOS)
+            if (image.width, image.height) == (width, height):
+                return encode_image_deterministic(image)
+            resized = lanczos_source(image).resize(
+                (width, height), resample=Image.Resampling.LANCZOS
+            )
             return encode_image_deterministic(resized)
     except _DECODE_FAILURES as error:
         raise ValueError(f"image bytes are not decodable for resize ({error})") from error
