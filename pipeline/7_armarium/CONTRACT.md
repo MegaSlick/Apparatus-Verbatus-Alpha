@@ -398,8 +398,9 @@ rows against the sealed comparison budgets). `count` is how many did not measure
 its digest against the export record, verifies it again with
 `armarium_export.verify_delivered_bundle` (the same checks, plus the cross-format
 comparison of every literal), compares the package's aggregate, run binding, manifest
-self-hash and status with the export record and `run.json`, and publishes
-`armarium-export.zip` and the verified extraction (`bundle/`) by atomic rename. An
+self-hash and status with the export record and `run.json`, requires the Armarium's
+completion seal (`common.stage.verify_final_seal`) to verify and to witness that same
+export record, and publishes `armarium-export.zip` and the verified extraction (`bundle/`) by atomic rename. An
 existing destination is refused, and nothing is written unless everything verifies.
 
 Verification refuses an unsafe ZIP (a member that is compressed, a link, outside the

@@ -1708,9 +1708,9 @@ def test_run_refuses_a_complete_aggregate_with_no_act_partition(
     import operations.operator.surface as surface_module
 
     monkeypatch.setattr(
-        surface_module.RunTree,
-        "read_artifact",
-        lambda self, stage, kind, identity: {
+        surface_module,
+        "verify_final_seal",
+        lambda _tree: {
             "payload": {
                 "aggregate": {"status": "complete", "reasons": []},
                 "pages": [{"ordinal": 1}],
@@ -1748,11 +1748,7 @@ def test_the_export_reader_refuses_non_list_members_before_any_receipt(
 
     payload = {"aggregate": {}, "pages": [], "delivered": [], "non_delivered": []}
     payload[member] = "not a list"
-    monkeypatch.setattr(
-        surface_module.RunTree,
-        "read_artifact",
-        lambda self, stage, kind, identity: {"payload": payload},
-    )
+    monkeypatch.setattr(surface_module, "verify_final_seal", lambda _tree: {"payload": payload})
     with pytest.raises(ValueError, match=f"{member} is not a list"):
         surface._armarium_export(tmp_path, "r1")
 
@@ -1768,11 +1764,7 @@ def test_the_export_reader_refuses_a_member_missing_entirely(
 
     payload = {"aggregate": {}, "pages": [], "delivered": [], "non_delivered": []}
     del payload[member]
-    monkeypatch.setattr(
-        surface_module.RunTree,
-        "read_artifact",
-        lambda self, stage, kind, identity: {"payload": payload},
-    )
+    monkeypatch.setattr(surface_module, "verify_final_seal", lambda _tree: {"payload": payload})
     with pytest.raises(ValueError, match=f"missing {member}"):
         surface._armarium_export(tmp_path, "r1")
 
@@ -2132,6 +2124,25 @@ def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_
     assert first_receipt["sha256"] == hashlib.sha256(b"first export bytes").hexdigest()
     assert first_receipt["sha256"] == sha256_file(first_bundle)
     assert second_receipt["sha256"] == sha256_file(second_bundle)
+
+
+def test_export_refuses_a_run_whose_armarium_completion_seal_is_gone(tmp_path: Path) -> None:
+    """An export record under an unsealed Armarium is not a completed export to copy out."""
+
+    surface = _surface(tmp_path)
+    outcome = surface.run(run_id="unsealed-export-run", scenario="page-unbroken")
+    assert outcome.state == "complete"
+    armarium = outcome.run_root / outcome.run_id / "7_armarium"
+    (seal,) = (armarium / "artifacts" / "stage-seal").glob("*.json")
+    seal.unlink()
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id="unsealed-export-run")
+
+    assert refusal.value.code is ErrorCode.EXPORT_MISSING
+    assert "stage-seal" in str(refusal.value.detail)
+    exports = surface.state_root / "exports"
+    assert not exports.exists() or list(exports.iterdir()) == []
 
 
 def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(

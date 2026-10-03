@@ -44,7 +44,7 @@ from common.runtree.store import (
     SERVING_LOGS_DIR,
     RunTree,
 )
-from common.stage import load_fixture
+from common.stage import load_fixture, verify_final_seal
 from operations.pod.pod_run import DEFAULT_RUNS_DIRECTORY
 from operations.pod.transfer import (
     ChecksummedTransfer,
@@ -1713,10 +1713,9 @@ class OperatorSurface:
             self.present(line)
 
     def _armarium_export(self, run_root: Path, run_id: str) -> dict[str, Any]:
-        tree = RunTree(run_root, run_id)
-        record = tree.read_artifact(
-            ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
-        )
+        # The export record the Armarium's completion seal witnessed: a record
+        # under an unsealed or altered boundary is not a completed export.
+        record = verify_final_seal(RunTree(run_root, run_id))
         payload = record.get("payload")
         if not isinstance(payload, dict) or not isinstance(payload.get("aggregate"), dict):
             raise ValueError("Armarium export record has no usable aggregate")

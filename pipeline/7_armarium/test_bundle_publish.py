@@ -116,6 +116,68 @@ def test_the_sealed_bundle_is_published_and_verifies_outside_the_run_tree(tmp_pa
         path.relative_to(extracted).as_posix() for path in extracted.rglob("*") if path.is_file()
     } == names
     assert digest_bytes(archive.read_bytes()) in result.stdout
+    # Byte-identical to the blob the sealed export artifact names, not a re-encoding.
+    tree = RunTree(happy_run, "r")
+    export = tree.read_artifact(ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None))
+    sealed = tree.read_bytes(export["payload"]["bundle"]["reference"]["relative_path"])
+    assert archive.read_bytes() == sealed
+
+
+def _remove_final_seal(seal: Path) -> None:
+    seal.unlink()
+
+
+def _rewrite_final_seal(seal: Path) -> None:
+    # A well-formed record that no longer witnesses this run: only the seal changes.
+    record = json.loads(seal.read_text(encoding="utf-8"))
+    record["payload"]["config_digest"] = "0" * 64
+    record["self_hash"] = self_hash(record)
+    seal.write_bytes(canonical_bytes(record))
+
+
+@pytest.mark.parametrize("damage", (_remove_final_seal, _rewrite_final_seal))
+def test_a_run_whose_final_seal_does_not_verify_is_never_published(tmp_path, happy_run, damage):
+    """Only the Armarium's completion seal is damaged; the export and its blob are intact."""
+    root = tmp_path / "runs"
+    shutil.copytree(happy_run / "r", root / "r")
+    seals = list((root / "r" / "7_armarium" / "artifacts" / "stage-seal").glob("*.json"))
+    assert len(seals) == 1
+    damage(seals[0])
+    destination_parent = tmp_path / "deliveries"
+    destination_parent.mkdir()
+    (destination_parent / "earlier.txt").write_bytes(b"left alone")
+
+    out = destination_parent / "delivery"
+    result = _publish(root, "r", out)
+
+    assert result.returncode != 0, result.stdout
+    assert "armarium" in result.stderr and "stage-seal" in result.stderr
+    assert "published" not in result.stdout
+    assert sorted(path.name for path in destination_parent.iterdir()) == ["earlier.txt"]
+    assert (destination_parent / "earlier.txt").read_bytes() == b"left alone"
+
+
+def test_a_seal_that_witnessed_a_different_export_record_is_not_publication_authority(
+    tmp_path, happy_run, monkeypatch
+):
+    """The seal must vouch for the export record the published bytes were read under."""
+    import bundle as bundle_module
+
+    tree = RunTree(happy_run, "r")
+    real_verify = bundle_module.verify_final_seal
+
+    def witnessed_another_record(run_tree):
+        record = real_verify(run_tree)
+        return {**record, "payload": {**record["payload"], "scenario": "another"}}
+
+    monkeypatch.setattr(bundle_module, "verify_final_seal", witnessed_another_record)
+
+    out = tmp_path / "delivery"
+    with pytest.raises(ContractError, match="not the one the Armarium's completion seal witnessed"):
+        bundle_module.publish(tree, out)
+
+    assert not out.exists()
+    assert not list(tmp_path.glob(".delivery.publishing-*"))
 
 
 def test_publication_reports_which_checks_the_clean_pass_actually_made(tmp_path, happy_run):
