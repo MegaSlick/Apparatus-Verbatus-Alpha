@@ -6,7 +6,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -126,9 +125,8 @@ def test_waiting_event_fails_when_delivery_is_not_confirmed(notify_repo, status,
 
 
 @pytest.mark.full
-@pytest.mark.parametrize("event", ["start", "milestone", "decision", "done"])
+@pytest.mark.parametrize("event", ["milestone", "decision", "done"])
 def test_every_event_reports_a_failed_delivery_honestly(notify_repo, event):
-    """A session survives a lost ping through the async hook, not a false exit 0."""
     script, env = notify_repo
     env["FAKE_STATUS"] = "503"
     result = run(script, env, event)
@@ -155,7 +153,13 @@ def test_missing_topic_is_explicit(notify_repo):
 
 @pytest.mark.parametrize(
     ("event", "message"),
-    [("other", "hello"), ("done", ""), ("done", "one\ntwo"), ("done", "one\rtwo")],
+    [
+        ("other", "hello"),
+        ("start", "hello"),
+        ("done", ""),
+        ("done", "one\ntwo"),
+        ("done", "one\rtwo"),
+    ],
 )
 @pytest.mark.full
 def test_invalid_interface_never_contacts_server(notify_repo, event, message):
@@ -334,122 +338,6 @@ def test_no_ambient_notification_variable_changes_the_run(monkeypatch, request, 
     assert "ambient" + "_value" not in Path(env["FAKE_ARGS"]).read_text(encoding="utf-8")
 
 
-# The start stamp: suppression is the one path that can lose a notification, so every
-# ambiguous stamp below must resolve to SENT.
-
-STAMP = "private/.notify-start-stamp"
-
-
-def repo_root(script: Path) -> Path:
-    """The tree notify.sh resolves as its root — the fixture's tmp_path, not this clone."""
-    return script.parents[2]
-
-
-def stamp_path(script: Path) -> Path:
-    return repo_root(script) / STAMP
-
-
-def seed_stamp(script: Path, *, seconds_ago: int) -> Path:
-    """Write a stamp as the script does, aged by the recorded epoch second: never by
-    sleeping, and never by shortening the shipped window."""
-    path = stamp_path(script)
-    written = int(time.time()) - seconds_ago
-    path.write_text(f"{written}\n", encoding="utf-8")
-    return path
-
-
-def curl_ran(env: dict[str, str]) -> bool:
-    return Path(env["FAKE_ARGS"]).exists()
-
-
-@pytest.mark.parametrize("event", ["milestone", "decision", "done"])
-def test_a_fresh_stamp_never_suppresses_a_deliberate_event(notify_repo, event):
-    # A rate limit here could swallow a real result or a decision a session waits on.
-    script, env = notify_repo
-    seed_stamp(script, seconds_ago=1)
-    result = run(script, env, event)
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), f"{event} was suppressed by a start stamp"
-
-
-@pytest.mark.hostile_local
-def test_a_symlinked_stamp_is_not_trusted_and_is_not_written_through(notify_repo):
-    # Read, a link to a busy file suppresses every start; written, any link redirects
-    # the write out of private/.
-    script, env = notify_repo
-    target = repo_root(script) / "busy-file"
-    target.write_text("", encoding="utf-8")
-    stamp_path(script).symlink_to(target)
-
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), "a symlinked stamp swallowed the ping"
-    assert "symlink" in result.stderr
-    assert target.read_text(encoding="utf-8") == "", "the stamp write followed the symlink out"
-
-
-@pytest.mark.hostile_local
-def test_a_fifo_at_the_stamp_path_does_not_suppress_a_start(notify_repo):
-    # A blocking read from a hook is a session that never starts, and nothing says why.
-    script, env = notify_repo
-    os.mkfifo(stamp_path(script))
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), "a FIFO at the stamp path swallowed the ping"
-    assert "not a regular file" in result.stderr
-
-
-def test_a_fresh_stamp_suppresses_a_start(notify_repo):
-    script, env = notify_repo
-    seed_stamp(script, seconds_ago=1)
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert not curl_ran(env), "a start inside the window was sent again"
-    assert "suppressed" in result.stderr
-
-
-@pytest.mark.parametrize("seconds_ago", [900, 3600])
-def test_a_stamp_at_or_past_the_window_lets_a_start_through(notify_repo, seconds_ago):
-    script, env = notify_repo
-    seed_stamp(script, seconds_ago=seconds_ago)
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), f"a stamp {seconds_ago}s old suppressed the start"
-    rewritten = int(stamp_path(script).read_text(encoding="utf-8"))
-    assert time.time() - rewritten < 60
-
-
-def test_a_future_dated_stamp_does_not_suppress_a_start(notify_repo):
-    script, env = notify_repo
-    seed_stamp(script, seconds_ago=-3600)
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), "a future-dated stamp swallowed the ping"
-    assert "dated in the future" in result.stderr
-
-
-@pytest.mark.parametrize("content", ["", "\n", "yesterday\n", "12ab\n", "-5\n"])
-def test_an_unreadable_stamp_does_not_suppress_a_start(notify_repo, content):
-    script, env = notify_repo
-    stamp_path(script).write_text(content, encoding="utf-8")
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    assert curl_ran(env), f"a stamp holding {content!r} swallowed the ping"
-    assert "no readable timestamp" in result.stderr
-
-
-def test_the_stamp_never_carries_the_topic(notify_repo):
-    # The one file this script writes, beside the config: where the topic would leak.
-    script, env = notify_repo
-    env["NTFY_TOPIC"] = "stamp_leak_topic"
-    result = run(script, env, "start")
-    assert result.returncode == 0, result.stderr
-    written = stamp_path(script).read_text(encoding="utf-8")
-    assert written.strip().isdigit()
-    for text in (written, result.stdout, result.stderr):
-        assert "stamp_leak_topic" not in text
-
-
 def _through(script: Path, env: dict[str, str]):
     def runner(argv):
         return subprocess.run(
@@ -479,7 +367,7 @@ def test_the_client_reads_each_outcome_of_the_real_script(
     assert outcome.attempted
     assert (outcome.delivered, outcome.suppressed) == (delivered, suppressed)
     assert outcome.detail.startswith(detail)
-    assert curl_ran(env) is not suppressed
+    assert Path(env["FAKE_ARGS"]).exists() is not suppressed
 
 
 @pytest.mark.parametrize("stdout", ["", "\n", "some unrelated chatter\n"])

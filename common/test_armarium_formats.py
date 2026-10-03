@@ -75,7 +75,7 @@ def test_format_configuration_changes_the_sealed_run_binding(tmp_path):
     changed = tmp_path / "formats.toml"
     changed.write_text(
         'schema = "armarium-formats.v1"\n'
-        'formats = ["text-bundle", "acts-database", "jsonl", "review-items", "salvage-tier"]\n'
+        'formats = ["text-bundle", "acts-database", "jsonl", "review-items"]\n'
         "embed_pixels = true\n",
         encoding="utf-8",
     )

@@ -163,7 +163,7 @@ from .bootstrap import (
     verify_image_contract,
 )
 from .durable import atomic_write, canonical_json, exclusive_write
-from .models import POD_VOLUME_MOUNT_PATH, require_utc, utc_now
+from .models import POD_VOLUME_MOUNT_PATH, REQUESTED_GPU_COUNT, require_utc, utc_now
 from .preflight import (
     PlacementRefusal,
     PreflightRunner,
@@ -173,7 +173,6 @@ from .preflight import (
     check_subprocess_environment,
     load_placement_table,
 )
-from .provider_runpod import REQUESTED_GPU_COUNT
 from .run_exits import EXIT_BOOTSTRAP_RED, EXIT_REFUSED
 from .transfer import ChecksummedTransfer, TransferReport
 

@@ -1,62 +1,36 @@
-# Planning estimates only.  This file selects no GPU class and does not authorize
-# a pod.  Its fractions and caps must be benchmarked on the card actually rented.
-# Unit 17 binds these tier bytes into each run alongside the separately selected
-# serving-recipes catalogue: one authorized boot consumes one stage's selected
-# tier, then closes by default.  It is never authority to carry a pod into the
-# next stage or to create another one.
+# Planning estimates only. This file selects no GPU class and does not authorize a
+# pod; its fractions and caps must be benchmarked on the card actually rented.
+# Each run seals this file beside the serving-recipes catalogue.
 #
-# Serving is SEQUENTIAL — one model at a time, as much of the card as stays
-# stable, next model after.  Every tier below is
-# `residency = "single"`; what a tier changes is how much of the card that one
-# model gets, never how many models run at once.  A retired three-tier
-# co-residency table (strictly_sequential / two_coresident_one_swapped /
-# all_coresident) once lived here and must not be reintroduced.
+# Serving is SEQUENTIAL: one model at a time, with as much of the card as stays
+# stable. Every tier is `residency = "single"`; a tier changes how much of the
+# card that one model gets, never how many models run at once.
 #
-# `card_profile` rows are the prebuilt profiles spec 04 asks for, for the cards
-# actually rented.  An unknown card falls back to computed placement from the
-# generic tiers.  The hourly_usd figures are the spec's own verified Secure
-# on-demand prices (2026-07-30, re-checked by the lane-A build on 2026-08-05);
-# the gpu_type_id strings come from RunPod's published documentation and have
-# never been sent to the API, so confirm the exact accepted string in the console
-# before the first live launch.  Nothing here chooses a card: that is the
-# project lead's call at this gate, and `config/spend.toml` refuses every
-# paid path until it has been configured.
+# `card_profile` rows are prebuilt profiles for the cards actually rented. An
+# unknown card falls back to computed placement from the generic tiers. The
+# hourly_usd figures are RunPod Secure on-demand prices checked 2026-08-05; the
+# gpu_type_id strings come from RunPod's documentation, so confirm the exact
+# accepted string in the console before a live launch. Nothing here chooses a
+# card: that is the project lead's call.
 #
-# UNITS, because two of these are easy to read wrong and one already was.
-# `context_cap` is tokens.  `batch_size` is concurrent sequences.
-# `engine_memory_fraction` is a fraction of the card.  **`pixel_cap` is a
-# LONGEST-EDGE cap in pixels**, not a pixel count — 3,584 (every tier: the
-# per-tier ladder is retired) is a side length; as a total count it would
-# describe roughly 60x60 images, where it actually admits 3,584² = 12,845,056
-# pixels, exactly DAI's vendor `max_pixels`. A serving profile's `max_pixels` in
-# `config/serving_recipes.toml` is the other thing:
-# a total pixel count, passed straight to vLLM's `--mm-processor-kwargs`,
-# where the old pipeline's proven values were 3136 (56x56) and 2359296
-# (1536x1536).  The two must never be compared directly; the sound relation is
-# that a longest edge of L admits at most L*L pixels.
+# UNITS. `context_cap` is tokens. `batch_size` is concurrent sequences.
+# `engine_memory_fraction` is a fraction of the card. **`pixel_cap` is a
+# LONGEST-EDGE cap in pixels**, not a pixel count: 3,584 admits 3,584² =
+# 12,845,056 pixels, exactly DAI's vendor `max_pixels`. A serving profile's
+# `max_pixels` in `config/serving_recipes.toml` is a total pixel count, passed
+# straight to vLLM's `--mm-processor-kwargs`. The two must never be compared
+# directly; a longest edge of L admits at most L*L pixels.
 #
 # `context_cap` is the ceiling `operations/serving/preflight.py` holds every
-# serving row at that tier to -- an upper bound each row's own `max_model_len`
-# must not exceed, never a per-request token budget in itself: what a request
-# actually spends is bounded by its own row, not by this tier-wide cap. They
-# were 2,048 / 4,096 / 8,192, then raised to 16,384 everywhere, then raised
-# again, to admit each witness chair's own trained geometry rather than a
-# generic per-tier budget: `config/serving_recipes_real.toml` carries the
-# per-chair arithmetic and the reasoning. `context_cap = 32,768` at the two
-# smaller tiers and 65,536 at `generic-80gb-plus`, where the Perlector's
-# whole-page reading needs about 58,000 tokens. It admits Chandra's two
-# 18,000-token rows, Churro's 32,768-token row
-# (its complete 25,000-token vendor answer bound plus a 300-dpi A4 page's
-# ~5,100 image tokens; the model's KV cache is small enough that memory allows
-# it at every tier), and at `generic-80gb-plus` the Perlector's whole-page
-# reading.
-# `pixel_cap = 3,584` at every tier
-# (3,584² = 12,845,056 = DAI's vendor `max_pixels`, the largest any row now asks
-# for) retires the per-tier pixel ladder along with it: a chair's
-# geometry no longer changes with the card class it happens to be planned for,
-# which was its own reproducibility hazard (a CER measured on one tier did not
-# transfer to another).  A cap is a ceiling, not a plan: what a card can hold
-# at these contexts is unmeasured, and stays unmeasured until a pod runs.
+# serving row at that tier to: an upper bound on each row's own `max_model_len`,
+# not a per-request budget. It is 32,768 at the two smaller tiers and 65,536 at
+# `generic-80gb-plus`, where the Perlector's whole-page reading needs about 58,000
+# tokens; `config/serving_recipes_real.toml` carries each chair's arithmetic.
+# `pixel_cap = 3,584` at every tier, so a chair's geometry does not change with the
+# card class it is planned for.
+# A cap is a ceiling, not a plan: what a card can hold at these contexts stays
+# unmeasured until a pod runs.
+
 schema = "pod-placement.v1"
 
 [dtype_floor]
@@ -75,11 +49,8 @@ residency = "single"
 detector_device = "cpu"
 
 [tiers.recipe]
-# 0.58 has no derivation anywhere in this tree or the old pipeline, which
-# never served below 0.85 on a comparable card; under `residency = "single"`
-# it was a co-residency leftover that only ever subtracted pixels.  0.90 is
-# what DAI needs to be servable on this card class at all (18.7 GiB of 24,
-# 0.78 minimum, 0.90 matches the old `serve_dai.sh`).
+# 0.90 is what DAI needs to be servable on this card class at all (18.7 GiB of
+# 24; 0.78 is the minimum).
 engine_memory_fraction = "0.90"
 context_cap = 32768
 pixel_cap = 3584
@@ -100,9 +71,7 @@ batch_size = 2
 
 # The id names the card class this tier is planned for, not its literal
 # numeric floor: a measured 64-79 GiB card lands here too, below the "80gb"
-# the name suggests, because 64 GiB is the old pipeline's own next measured
-# boundary and no card in that 64-79 GiB gap is among the rented classes
-# below. Placement itself only ever reads min_vram_gib/max_vram_gib_exclusive
+# the name suggests; no rented card falls in that gap. Placement itself only ever reads min_vram_gib/max_vram_gib_exclusive
 # (`PlacementTable.choose`, operations/pod/preflight.py) -- the id is a label,
 # read by a human, not a bound checked by code.
 [[tiers]]
@@ -117,7 +86,7 @@ context_cap = 65536
 pixel_cap = 3584
 batch_size = 4
 
-# The cards spec 04 names by name.  `tier` must be one of the ids above; a
+# The rented cards.  `tier` must be one of the ids above; a
 # profile whose vram_gib does not fall inside its own tier's band is refused at
 # load, so a drifted row cannot quietly plan for the wrong card.
 

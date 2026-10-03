@@ -24,6 +24,15 @@ from common.stage import _stage_seal_payload, latest_attempt
 
 ROOT = Path(__file__).resolve().parent
 
+# The notification topic every test process and its subprocesses see; notify.sh
+# never posts to it.
+NOTIFY_TEST_SINK_TOPIC = "verbatus-test-sink"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Put the session on the sink topic before collection, so no test can page the lead."""
+    os.environ["NTFY_TOPIC"] = NOTIFY_TEST_SINK_TOPIC
+
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     if "CI" in os.environ:
@@ -174,15 +183,6 @@ def advance_held_recensor(root: Path, run_id: str) -> None:
     )
 
 
-def stage_artifacts(tree, stage: str, kind: str, subject: str | None = None) -> list[dict]:
-    """Read artifacts of one kind, optionally scoped to a subject."""
-    return [
-        tree.read_artifact(stage, kind, entry["artifact_id"])
-        for entry in tree.build_manifest(stage)["artifacts"]
-        if entry["kind"] == kind and (subject is None or entry["subject_id"] == subject)
-    ]
-
-
 def file_bytes_snapshot(root: Path) -> dict[str, bytes]:
     """Read the bytes of every regular file under a test run root."""
     return {
@@ -210,7 +210,7 @@ def file_identities(root: Path) -> dict[str, tuple[int, int]]:
     }
 
 
-DERIVED_INVENTORY_SUFFIXES = (
+_DERIVED_INVENTORY_SUFFIXES = (
     "/manifest.json",
     "/manifest-door.json",
     "/index.json",
@@ -220,7 +220,7 @@ DERIVED_INVENTORY_SUFFIXES = (
 
 def is_immutable_evidence(path: str) -> bool:
     """Exclude inventories and current receipts that a resume may republish."""
-    return not path.endswith(DERIVED_INVENTORY_SUFFIXES)
+    return not path.endswith(_DERIVED_INVENTORY_SUFFIXES)
 
 
 def tree_snapshot(root: Path) -> dict[str, str]:
@@ -468,17 +468,6 @@ reason = "fixture test removes this witness without replacing it"
         "the splice changed which chairs the roster declares"
     )
     return path
-
-
-# Keep test subprocesses on a sink topic during collection and execution.
-NOTIFY_TEST_SINK_TOPIC = "verbatus-test-sink"
-
-
-@pytest.fixture(scope="session", autouse=True)
-def _notification_sink() -> None:
-    """No test session may page his phone, whatever a caller forgot to inject."""
-
-    os.environ["NTFY_TOPIC"] = NOTIFY_TEST_SINK_TOPIC
 
 
 def reask_recovery_config(directory: Path, page_level_reread: int) -> Path:

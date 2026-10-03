@@ -1,13 +1,14 @@
-"""The predeclared, versioned text normalization used before CER/WER.
+"""The named, versioned text normalization applied before CER/WER.
 
-Raw human and model text is deliberately not changed in evidence.  This module only
-derives a comparison form, using one named profile for every candidate and every
-Testimonium.  It is not the old pipeline's search fold: case, accents, spelling,
-and punctuation remain significant.
+Evidence keeps its raw text; this module only derives a comparison form, the same
+profile for the reference and for every reading scored against it. Case, accents,
+spelling and punctuation remain significant.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -15,8 +16,14 @@ from importlib.metadata import version as _installed_version
 
 from uniseg.graphemecluster import grapheme_clusters
 
-from .encoding import canonical_json_bytes, sha256_bytes
-from .errors import MeasurementRefusal
+
+class MeasurementRefusal(ValueError):
+    """A text cannot be normalized or scored as asked.
+
+    Not a `CorpusRefusal`: the modules that score refuse a text this would refuse
+    first, by name and by record.
+    """
+
 
 # Read once, from the environment actually running, not asserted as a literal:
 # a profile digest naming a uniseg version nobody checks could seal a version
@@ -82,12 +89,10 @@ MAX_COMBINING_RUN = 30
 
 @dataclass(frozen=True, slots=True)
 class NormalizationProfile:
-    """A deliberately small, named normalization policy.
+    """A small, named normalization policy.
 
-    The strict allographic profile remains a closed comparison definition, while
-    ``graphemic-v1`` is the one predeclared real-run profile.  A run records the
-    exact profile digest; it cannot silently change long-s treatment after results
-    appear.
+    ``graphemic-v1`` folds the long s into ``s``; ``allographic-v1`` keeps it. A
+    record carries the profile digest, so a change to any rule changes the digest.
     """
 
     profile_id: str
@@ -151,47 +156,19 @@ class NormalizationProfile:
 
     @property
     def digest(self) -> str:
-        return sha256_bytes(canonical_json_bytes(self.record()))
+        encoded = json.dumps(
+            self.record(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
 
 
 GRAPHEMIC_V1 = NormalizationProfile("graphemic-v1", map_long_s=True)
 ALLOGRAPHIC_V1 = NormalizationProfile("allographic-v1", map_long_s=False)
 
-# The session settled the engineering choice before any result existed. Folding
-# long-s treats two glyph forms of the same letter alike while retaining the
-# historic spelling distinctions that measure the candidate against the ink.
-PREDECLARED_PROFILE = GRAPHEMIC_V1
-
 PROFILES: dict[str, NormalizationProfile] = {
     GRAPHEMIC_V1.profile_id: GRAPHEMIC_V1,
     ALLOGRAPHIC_V1.profile_id: ALLOGRAPHIC_V1,
 }
-
-
-def profile_by_id(profile_id: str) -> NormalizationProfile:
-    """Resolve a closed profile vocabulary rather than accepting mutable knobs."""
-
-    try:
-        return PROFILES[profile_id]
-    except KeyError as error:
-        raise MeasurementRefusal(f"unknown normalization profile {profile_id!r}") from error
-
-
-def require_canonical_profile(profile: NormalizationProfile) -> NormalizationProfile:
-    """Refuse a changed or non-predeclared profile at the real-run boundary."""
-
-    if not isinstance(profile, NormalizationProfile):
-        raise MeasurementRefusal("real run normalization must be a named NormalizationProfile")
-    canonical = profile_by_id(profile.profile_id)
-    if profile != canonical or profile.digest != canonical.digest:
-        raise MeasurementRefusal(
-            "real run normalization profile differs from its predeclared canonical definition"
-        )
-    if canonical is not PREDECLARED_PROFILE:
-        raise MeasurementRefusal(
-            "real run normalization differs from the predeclared graphemic-v1 profile"
-        )
-    return canonical
 
 
 def normalize_text(text: str, profile: NormalizationProfile) -> str:

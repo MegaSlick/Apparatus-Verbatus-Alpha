@@ -1,24 +1,15 @@
-"""Spec 02, test 6, second half: "with the skeleton's calling stages
-parameterized over both".
+"""The whole pipeline runs over both chair implementations.
 
-`common/chairs/test_chairs_contract_suite.py` runs the protocol itself against both
-implementations. This runs the *pipeline* against both: all nine stage programs,
-over the real fixture, once through the production `ChairRegistry` and once
-through the `DeterministicChairRegistry` the chair tests already use. One fake, in
-one place, exercised from both ends — a second copy living here would drift from
-the first and neither would be the thing the contract suite proved.
+`common/chairs/test_chairs_contract_suite.py` runs the chair protocol against
+both implementations; this runs every stage program over the fixture, once
+through the production `ChairRegistry` and once through the chair tests' own
+`DeterministicChairRegistry`. It shows the stages run against either
+implementation of the chair interface, and nothing about any model.
 
-The claim stays the size spec 02 sized it. This shows the skeleton's stages run
-against two implementations of the chair interface. It shows nothing about model
-churn, and nothing about any model at all.
-
-One departure from `test_orchestrator_acceptance.py`'s rule that load-bearing
-tests shell out: the injection seam is a `main(registry_factory=...)` keyword, so
-these stages are loaded and called in-process. The seam is deliberately not a
-command-line option — a `--registry fake` flag would be a live route to a fake
-answering under a configured chair's name, which is the one thing this whole
-framework exists to refuse. The end-to-end runs stay in the acceptance file,
-where they really are subprocesses.
+The stages are loaded and called in-process, because the injection seam is a
+`main(registry_factory=...)` keyword. It is deliberately not a command-line
+option: a `--registry fake` flag would be a live route to a fake answering under
+a configured chair's name.
 """
 
 from __future__ import annotations
@@ -81,6 +72,7 @@ def test_the_full_skeleton_runs_over_both_chair_implementations(
         assert _invoke(module, monkeypatch, arguments, registry_factory) == 0, (
             f"{name} did not complete over the {implementation} implementation"
         )
+    stage_calls = list(fake.calls)
 
     tested = fake if implementation == "deterministic" else ChairRegistry.from_toml(MODELS_CONFIG)
     identity = tested.resolve("attestator_1")
@@ -94,40 +86,14 @@ def test_the_full_skeleton_runs_over_both_chair_implementations(
         ).identity
         == identity
     )
-
-
-def test_the_deterministic_implementation_really_answered_for_every_chair_the_stages_call(
-    tmp_path, monkeypatch
-):
-    """The parameterization above would still pass if the stages quietly fell
-    back to the production registry, because both implementations agree. This is
-    the assertion that says they did not: the fake's own call log has to carry
-    every chair the skeleton calls, through all three protocol methods."""
-    fake = DeterministicChairRegistry(MODELS_CONFIG)
-    arguments = [
-        "--run-root",
-        str(tmp_path / "runs"),
-        "--run-id",
-        "traced-seats",
-        "--scenario",
-        "happy",
-        "--fixture-root",
-        str(FIXTURE_ROOT),
-        "--models-config",
-        str(MODELS_CONFIG),
-    ]
-
-    for program in stage_programs().values():
-        _invoke(
-            load_stage(Path(program).parent.name, Path(program).stem),
-            monkeypatch,
-            arguments,
-            lambda _: fake,
-        )
-
-    called = {role for _, role in fake.calls}
-    assert CHAIRS_THE_SKELETON_CALLS <= called
-    assert {method for method, _ in fake.calls} == {"resolve", "ensure", "receipt"}
+    if implementation == "deterministic":
+        # Both implementations agree, so a stage that fell back to the
+        # production registry would still pass; the fake's own call log shows
+        # it answered every chair the stages call, through all three methods.
+        # The log is read as the stages left it, before the contract check
+        # below adds calls of its own.
+        assert CHAIRS_THE_SKELETON_CALLS <= {role for _, role in stage_calls}
+        assert {method for method, _ in stage_calls} == {"resolve", "ensure", "receipt"}
 
 
 def _details(identity: ChairIdentity) -> ServingDetails:

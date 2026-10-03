@@ -16,6 +16,7 @@ from operations.corpus.compare import (
     load_pipeline_reading_acts,
 )
 from operations.corpus.reference import build_reference_page
+from operations.corpus.scoring import OutputStatus
 from operations.corpus.test_evaluate import (
     _fixture_reference_for_page_one,
     _ledger_for,
@@ -34,7 +35,6 @@ from operations.corpus.witness_evaluate import (
     witness_reading,
     write_report,
 )
-from operations.spike_perlector.models import OutputStatus
 
 
 def _health(*, truncated: bool | None, recordable: bool = True) -> dict:
