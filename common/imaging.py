@@ -23,6 +23,7 @@ import sys
 import zlib
 from collections.abc import Mapping
 from io import BytesIO
+from types import MappingProxyType
 from typing import Final, NamedTuple, TypedDict
 
 import pillow_heif
@@ -1162,6 +1163,23 @@ def _expanded_rotation_size(width: int, height: int, angle_degrees: float) -> tu
         math.ceil(max(xs)) - math.floor(min(xs)),
         math.ceil(max(ys)) - math.floor(min(ys)),
     )
+
+
+# How a sealed render record names `encode_image_deterministic`, and the recipe
+# `render_triage_derivative` applies. A sealed derivative page carries both and the
+# Exemplar boundary compares them exactly, so changing what either function does
+# means changing its name here.
+DETERMINISTIC_ENCODER: Final = "common.imaging.encode_image_deterministic-v1"
+TRIAGE_APPLY_RECIPE: Final = MappingProxyType(
+    {
+        "schema": "triage-raster-apply-v1",
+        "rotation_resample": "Pillow.Resampling.BICUBIC",
+        "rotation_fill": "Pillow-default-zero",
+        "rotation_expand": True,
+        "colour_conversion": "Pillow.Image.convert-direct-or-via-RGB",
+        "encoder": DETERMINISTIC_ENCODER,
+    }
+)
 
 
 def render_triage_derivative(

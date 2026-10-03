@@ -42,23 +42,18 @@
       "Bash(runpodctl receive*)",
       "Bash(runpodctl ssh*)",
       "Bash(runpodctl config*)",
-      "Bash(runpodctl update*)"
+      "Bash(runpodctl update*)",
+      "Bash(runpodctl create*)",
+      "Bash(runpodctl pod create*)",
+      "Bash(runpodctl start*)",
+      "Bash(runpodctl pod start*)",
+      "Bash(runpodctl resume*)",
+      "Bash(runpodctl pod resume*)",
+      "Bash(*operations.pod.cli*)",
+      "Bash(*operations/pod/cli.py*)"
     ]
   },
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "startup",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "sh \"$CLAUDE_PROJECT_DIR/operations/notify/notify.sh\" start \"An Apparatus Verbatus session has opened.\"",
-            "async": true,
-            "timeout": 15
-          }
-        ]
-      }
-    ],
     "SessionEnd": [
       {
         "hooks": [

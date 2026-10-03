@@ -26,7 +26,6 @@ EXEMPLAR_CLI = ROOT / "pipeline" / "1_exemplar" / "run.py"
 
 def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(tmp_path):
     import door
-    from admission import load_format_policy
     from synthetic_sources import two_page_pdf
 
     PDF_SETTINGS = door.render_config.load_pdf_render_settings(
@@ -35,14 +34,12 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
 
     data = two_page_pdf()
     files = {"iPhone/FS-88.pdf": data}
-    policy = load_format_policy()
     sources = door.expand_sources(
         [
             {"relative_path": path, "sha256": digest_bytes(data), "bytes": len(data)}
             for path in files
         ],
         lambda path: files[path],
-        policy,
     )
     assert [source.container_page_index for source in sources] == [0, 1]
 
@@ -98,7 +95,6 @@ def test_final_page_census_keeps_a_multipage_pdf_filename_digest_and_page_index(
             tree,
             sources,
             lambda path: files[path],
-            policy=policy,
             pdf_settings=PDF_SETTINGS,
         )
         == 2

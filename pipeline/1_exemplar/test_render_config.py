@@ -164,7 +164,6 @@ def test_exemplar_accepts_the_lossless_tiff_contract_for_high_precision_fanned_p
         door.admission.inspect_source(
             rendered,
             declared_sha256=None,
-            policy=door.admission.load_format_policy(),
         ).outcome
         == "admitted"
     )

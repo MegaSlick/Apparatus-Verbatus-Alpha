@@ -1,4 +1,4 @@
-"""Synthetic checks for Unit 6A's deterministic co-visibility instrument."""
+"""Synthetic checks for the deterministic co-visibility triage instrument."""
 
 from __future__ import annotations
 

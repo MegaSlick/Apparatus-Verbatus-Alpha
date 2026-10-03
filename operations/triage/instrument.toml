@@ -2,8 +2,8 @@
 # run authority. Its digest and complete recipe enter triage-producer-recipe.v1, which
 # the Door can bind without treating these values as run-time policy.
 #
-# Every tunable value below is UNMEASURED under GOVERNANCE 10.  The shipped modes
-# route all frames to review, so none of these values authorizes a link or an apply.
+# No value below has been measured against real material. The shipped triage modes
+# route every frame to review, so none of them authorizes a link or an apply.
 [instrument]
 signature_max_edge = 1024
 review_max_edge = 2048
@@ -24,22 +24,3 @@ submission_window = 12
 global_prefilter_agreeing_cells = 14
 global_prefilter_mean_tolerance = 20
 global_prefilter_ink_tolerance = 24
-
-[measurement_status]
-signature_max_edge = "UNMEASURED"
-review_max_edge = "UNMEASURED"
-grid_columns = "UNMEASURED"
-grid_rows = "UNMEASURED"
-global_prefilter_columns = "UNMEASURED"
-global_prefilter_rows = "UNMEASURED"
-offset_cells = "UNMEASURED"
-mean_delta = "UNMEASURED"
-mean_tolerance = "UNMEASURED"
-ink_tolerance = "UNMEASURED"
-link_agreement_per_mille = "UNMEASURED"
-blob_share_per_mille = "UNMEASURED"
-span_share_per_mille = "UNMEASURED"
-submission_window = "UNMEASURED"
-global_prefilter_agreeing_cells = "UNMEASURED"
-global_prefilter_mean_tolerance = "UNMEASURED"
-global_prefilter_ink_tolerance = "UNMEASURED"
