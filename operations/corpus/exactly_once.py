@@ -64,7 +64,14 @@ from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
-from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256, verify_self_hash
+from common.contracts.canonical import (
+    canonical_bytes,
+    digest_bytes,
+    is_plain_int,
+    is_sha256,
+    verify_self_hash,
+)
+from common.contracts.errors import ContractError
 from common.contracts.stages import PERLECTOR
 from common.page_accounting import (
     DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
@@ -89,14 +96,14 @@ from common.page_path import (
     PERLECTIO_SCHEMA,
 )
 from common.runtree.store import RunTree
-from common.stage import run_sealed_config_digests
+from common.stage import run_sealed_config_digests, verify_final_seal
 
 from . import CorpusRefusal
 from .cache import write_new_file
 from .compare import ReadOnlyRunTree, load_exemplar_page_shas
 from .local_admission import load_local_admission_ledger, validate_local_admission_ledger
 
-SCHEMA: Final = "exactly-once-report.v2"
+SCHEMA: Final = "exactly-once-report.v3"
 GATE_EXACTLY_ONCE_BP: Final = 9_500
 # A gold record's text is read when its character error rate against the best
 # holding act's reading is at most this (basis points): stricter than the
@@ -128,6 +135,7 @@ EXACTLY_ONCE_REFUSAL_REASONS: Final = frozenset(
     {
         "malformed-record",
         "missing-file",
+        "no-export",
         "not-page-read",
         "output-exists",
         "output-in-run-tree",
@@ -146,11 +154,13 @@ class Refusal(CorpusRefusal):
 
 def gold_records(gold_body: bytes, ledger: Mapping[str, Any]) -> tuple[list[dict[str, Any]], int]:
     """Admitted RecordGold records as `{record_id, page_sha256, box_px, text}`,
-    and the number of repeated gold rows left out.
+    and the number of gold rows not scored.
 
     `gold_body` is the bytes of the set's `gold.jsonl` and `ledger` its
     admission ledger. The ledger is validated and the gold bytes must be the
-    exact file its receipt sealed. Each admitted record's text is the gold row
+    exact file its receipt sealed. The file is read as admission reads it:
+    blank lines skipped, and a row with no string `record_id` or `text` left
+    out, as admission refused it. Each admitted record's text is the gold row
     whose text digests to the `text_sha256` the ledger's reference page holds
     for it, so where admission kept one of two rows naming a record, the copy
     it kept is the one scored. The ledger gives each admitted record its page
@@ -170,9 +180,8 @@ def gold_records(gold_body: bytes, ledger: Mapping[str, Any]) -> tuple[list[dict
     rows = _jsonl_rows(gold_body, "gold.jsonl")
     for row in rows:
         record_id, text = row.get("record_id"), row.get("text")
-        if not isinstance(record_id, str) or not isinstance(text, str):
-            raise Refusal("malformed-record: a gold row carries no record_id or text")
-        candidates.setdefault(record_id, []).append(text)
+        if isinstance(record_id, str) and isinstance(text, str):
+            candidates.setdefault(record_id, []).append(text)
     admitted_sha256 = {
         act["record_id"]: act["text_sha256"]
         for page in ledger["reference_pages"]
@@ -219,7 +228,7 @@ def gold_records(gold_body: bytes, ledger: Mapping[str, Any]) -> tuple[list[dict
                 "text": texts[record_id],
             }
         )
-    return sorted(records, key=lambda record: record["record_id"]), len(rows) - len(candidates)
+    return sorted(records, key=lambda record: record["record_id"]), len(rows) - len(records)
 
 
 def _read_ref_json(tree: RunTree | ReadOnlyRunTree, ref: Any) -> dict[str, Any]:
@@ -1054,7 +1063,7 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
 
 def _jsonl_rows(body: bytes, what: str) -> list[dict[str, Any]]:
     try:
-        rows = [json.loads(line) for line in body.decode("utf-8").splitlines() if line]
+        rows = [json.loads(line) for line in body.decode("utf-8").splitlines() if line.strip()]
     except ValueError as error:
         raise Refusal(f"malformed-record: {what} is not UTF-8 JSON lines: {error}") from error
     if not all(isinstance(row, dict) for row in rows):
@@ -1111,8 +1120,12 @@ def main(argv: list[str] | None = None) -> int:
         raise Refusal("output-in-run-tree: the report must be written outside the run tree")
     policy = load_page_accounting_policy(args.page_accounting_config)
     ledger = load_local_admission_ledger(args.ledger)
-    gold, duplicate_rows_skipped = gold_records(_read_bytes(args.gold), ledger)
+    gold, rows_not_scored = gold_records(_read_bytes(args.gold), ledger)
     tree = ReadOnlyRunTree(run_tree)
+    try:
+        export_record = verify_final_seal(tree)
+    except ContractError as error:
+        raise Refusal(f"no-export: the run has no verified Armarium export ({error})") from error
     pages = load_page_records(tree)
     if args.selection:
         scope, selection_self_hash = selected_page_sha256s(args.selection, ledger["self_hash"])
@@ -1135,7 +1148,11 @@ def main(argv: list[str] | None = None) -> int:
         "ledger_self_hash": ledger["self_hash"],
         "gold_jsonl_sha256": ledger["receipt"]["digests"]["gold.jsonl"],
         "split": ledger["split"],
-        "duplicate_rows_skipped": duplicate_rows_skipped,
+        "rows_not_scored": rows_not_scored,
+    }
+    report["run"] = {
+        "run_id": run_tree.run_id,
+        "export_sha256": digest_bytes(canonical_bytes(export_record)),
     }
     report["scope"]["basis"] = "selection" if args.selection else "sealed"
     report["scope"]["selection_self_hash"] = selection_self_hash

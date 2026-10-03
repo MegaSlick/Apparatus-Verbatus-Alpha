@@ -161,8 +161,9 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   each admitted record's text is the gold row matching the `text_sha256` the ledger
   holds for it (`reference-mismatch` otherwise, before any record is scored), so of two
   rows naming one record the copy admission kept is scored; `reference` names the
-  ledger, the gold digest, the split and the repeated rows skipped, and
-  `scope.selection_self_hash` the selection. The report is a new file outside the run
+  ledger, the gold digest, the split and the gold rows not scored (`rows_not_scored`),
+  `scope.selection_self_hash` the selection, and `run` the run id and the digest of its
+  verified export (`no-export` without one). The report is a new file outside the run
   tree.
 
   ```sh

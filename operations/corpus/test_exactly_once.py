@@ -8,7 +8,7 @@ import random
 
 import pytest
 
-from common.contracts.canonical import digest_bytes
+from common.contracts.canonical import digest_bytes, is_sha256
 from common.contracts.stages import PERLECTOR
 from common.page_accounting import (
     feed_candidates,
@@ -551,7 +551,7 @@ def test_gold_records_join_the_ledger_box_and_the_gold_text():
 
     assert gold_records(body, _sealed_ledger(body)) == (
         [{"record_id": "r1", "page_sha256": PAGE_SHA, "box_px": bx(10, 20, 40, 60), "text": "t"}],
-        0,
+        1,
     )
     with pytest.raises(Refusal, match="^reference-mismatch: the gold file"):
         gold_records(body.replace(b'"t"', b'"T"'), _sealed_ledger(body))
@@ -1010,8 +1010,11 @@ def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_
         "ledger_self_hash": ledger["self_hash"],
         "gold_jsonl_sha256": ledger["receipt"]["digests"]["gold.jsonl"],
         "split": "val",
-        "duplicate_rows_skipped": 0,
+        "rows_not_scored": 0,
     }
+    assert written["schema"] == "exactly-once-report.v3"
+    assert written["run"]["run_id"] == "r"
+    assert is_sha256(written["run"]["export_sha256"])
     with pytest.raises(Refusal, match="^output-exists:"):
         main([*args, "--out", str(out)])
     with pytest.raises(Refusal, match="^output-in-run-tree:"):
@@ -1232,30 +1235,41 @@ def test_a_page_a_person_had_read_again_is_judged_on_its_current_reading(monkeyp
         load_page_records(_PathTree(stray, {}))
 
 
-@pytest.mark.parametrize("repeat_text", ["une autre lecture", None])
-def test_a_record_admission_kept_once_is_scored_by_its_admitted_text(tmp_path, repeat_text):
-    """Admission seals a gold.jsonl that names a record twice, admits one copy and
-    refuses the other. The copy scored is the one whose text the ledger hashed,
-    and the other is counted as skipped."""
+@pytest.mark.parametrize(
+    ("extra", "reasons"),
+    [
+        ("repeat", ["duplicate-record-id"]),
+        ("identical-repeat", ["duplicate-record-id"]),
+        ("malformed", ["malformed-record"]),
+    ],
+)
+def test_every_record_admission_admitted_is_scored_from_its_sealed_file(tmp_path, extra, reasons):
+    """Admission seals rows it refuses beside the rows it admits: a second row naming
+    a record, a row with no record id, a blank line. Each admitted record is scored
+    from the row whose text the ledger hashed, and the rest are counted as not scored."""
     from .local_admission import admit_local_set
     from .test_local_admission import _two_page_set
 
     root = _two_page_set(tmp_path / "set")
     body = (root / "gold.jsonl").read_bytes()
     first = json.loads(body.splitlines()[0])
-    repeat = {**first, "text": repeat_text or first["text"]}
-    body += (json.dumps(repeat, ensure_ascii=False) + "\n").encode()
+    added = {
+        "repeat": {**first, "text": "une autre lecture"},
+        "identical-repeat": first,
+        "malformed": {**first, "record_id": None},
+    }[extra]
+    body += b"   \n" + (json.dumps(added, ensure_ascii=False) + "\n").encode()
     (root / "gold.jsonl").write_bytes(body)
     receipt = json.loads((root / "fetch_receipt.json").read_text())
     receipt["artifacts"]["gold_jsonl_sha256"] = digest_bytes(body)
     (root / "fetch_receipt.json").write_text(json.dumps(receipt))
     ledger = admit_local_set(root, split="val")
-    assert [row["reason"] for row in ledger["rows"] if row["decision"] == "refused"] == [
-        "duplicate-record-id"
-    ]
+    refused = [row["reason"] for row in ledger["rows"] if row["decision"] == "refused"]
+    assert refused == reasons
 
-    records, skipped = gold_records(body, ledger)
+    records, not_scored = gold_records(body, ledger)
 
-    assert skipped == 1
+    assert not_scored == 1
+    assert len(records) == ledger["summary"]["admitted"]
     [kept] = [record for record in records if record["record_id"] == first["record_id"]]
     assert kept["text"] == first["text"]
