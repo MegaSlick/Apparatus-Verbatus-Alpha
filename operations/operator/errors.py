@@ -34,6 +34,7 @@ class ErrorCode(StrEnum):
     EXPORT_FAILED = "export-failed"
     EXPORT_PARTIAL = "export-partial"
     EXPORT_UNRECONCILED = "export-unreconciled"
+    EXPORT_UNSEALED = "export-unsealed"
     STATUS_EMPTY = "status-empty"
     STATUS_UNREADABLE = "status-unreadable"
     CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
@@ -172,6 +173,14 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Open the run tree read-only with `verbatus review` and check it against the sealed "
         "source with the project lead; this is not a corrupted export, it is a record that cannot back "
         "up its own claim. Nothing was started or charged; this is safe.",
+    ),
+    ErrorCode.EXPORT_UNSEALED: ErrorCopy(
+        "The run has an Armarium export record, but its completion seal is missing or does "
+        "not verify.",
+        "A record the Armarium never sealed, or one that changed after sealing, is not a "
+        "finished export, so no bundle was made and nothing was called complete.",
+        "Open the run tree read-only with `verbatus review`, which names the seal problem, and "
+        "check it with the project lead before running the Armarium again; this is safe.",
     ),
     ErrorCode.STATUS_EMPTY: ErrorCopy(
         "There are no saved operator records to show.",
