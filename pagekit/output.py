@@ -76,6 +76,7 @@ def _page_entry(page: PagePlan, image: Image.Image, data: bytes, fill, fill_meth
             "resolution": None if page.output_dpi is None else list(page.output_dpi),
         },
         "source_resolution": page.resolution,
+        "orientation_tag": page.tag,
         "geometry": geometry,
         "steps": {step: _step_summary(page.steps[step]) for step in STEPS},
         "flags": page.flags,

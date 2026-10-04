@@ -4,8 +4,14 @@ Coordinates are continuous: pixel (i, j) covers [i, i+1) x [j, j+1), so its cent
 (i + 0.5, j + 0.5); x runs right and y runs down. Pillow's affine transform uses the
 same convention, which the tests pin.
 
-The chain for one page has five parts, applied in this order:
+The chain for one page has these parts, applied in this order:
 
+0. **orientation tag** (only when a source's tag is applied, spec 0007): the transform
+   the file's orientation tag names, exact (no resampling), giving the tagged frame. The
+   eight values of the Exif orientation tag are: 1 as stored; 2 mirrored left to right,
+   (x, y) to (W - x, y); 3 a half turn, (W - x, H - y); 4 mirrored top to bottom,
+   (x, H - y); 5 transposed, (y, x); 6 a quarter turn clockwise, (H - y, x); 7
+   transversed, (H - y, W - x); 8 a quarter turn counterclockwise, (y, W - x).
 1. **quarter turn**: q quarter turns clockwise of the W x H source. For q = 1 a point
    (x, y) goes to (H - y, x); for q = 2 to (W - x, H - y); for q = 3 to (y, W - x).
    This gives the upright frame.
@@ -21,7 +27,7 @@ The chain for one page has five parts, applied in this order:
 5. **scale**: multiplied by sx and sy, each at most 1, which are the output size over
    the margin box size.
 
-All five are affine, so the whole chain is one affine map, stored both ways in the
+All are affine, so the whole chain is one affine map, stored both ways in the
 manifest. The prepared image is made from the original source through that one map in
 a single resampling: an exact crop when there is no rotation, Pillow's bicubic
 interpolation when there is, and area averaging when the page is shrunk.
@@ -51,6 +57,26 @@ CONVENTION = (
 )
 _TRANSPOSE = {1: Image.Transpose.ROTATE_270, 2: Image.Transpose.ROTATE_180}
 _TRANSPOSE[3] = Image.Transpose.ROTATE_90
+# The orientation tag's transforms (spec 0007), as Pillow transposes and in words.
+TAG_TRANSPOSE = {
+    2: Image.Transpose.FLIP_LEFT_RIGHT,
+    3: Image.Transpose.ROTATE_180,
+    4: Image.Transpose.FLIP_TOP_BOTTOM,
+    5: Image.Transpose.TRANSPOSE,
+    6: Image.Transpose.ROTATE_270,
+    7: Image.Transpose.TRANSVERSE,
+    8: Image.Transpose.ROTATE_90,
+}
+TAG_WORDS = {
+    1: "none (as stored)",
+    2: "mirrored left to right",
+    3: "a half turn",
+    4: "mirrored top to bottom",
+    5: "transposed (mirrored across the main diagonal)",
+    6: "a quarter turn clockwise",
+    7: "transversed (mirrored across the other diagonal)",
+    8: "a quarter turn counterclockwise",
+}
 
 
 class GeometryError(ValueError):
@@ -87,6 +113,41 @@ def apply(m: Affine, points: Iterable[Sequence[float]]) -> list[Point]:
 
 def _translate(dx: float, dy: float) -> Affine:
     return (1.0, 0.0, dx, 0.0, 1.0, dy)
+
+
+def tagged_size(size: tuple[int, int], tag: int) -> tuple[int, int]:
+    """The size of the frame after the orientation tag's transform."""
+    width, height = size
+    return (height, width) if tag in (5, 6, 7, 8) else (width, height)
+
+
+def tag_affine(size: tuple[int, int], tag: int) -> Affine:
+    """Stored pixels to the tagged frame for orientation tag `tag` (1 to 8)."""
+    width, height = (float(side) for side in size)
+    maps = {
+        1: (1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        2: (-1.0, 0.0, width, 0.0, 1.0, 0.0),
+        3: (-1.0, 0.0, width, 0.0, -1.0, height),
+        4: (1.0, 0.0, 0.0, 0.0, -1.0, height),
+        5: (0.0, 1.0, 0.0, 1.0, 0.0, 0.0),
+        6: (0.0, -1.0, height, 1.0, 0.0, 0.0),
+        7: (0.0, -1.0, height, -1.0, 0.0, width),
+        8: (0.0, 1.0, 0.0, -1.0, 0.0, width),
+    }
+    if tag not in maps:
+        raise GeometryError(f"an orientation tag is 1 to 8, not {tag}")
+    return maps[tag]
+
+
+def apply_tag(image: Image.Image, tag: int) -> Image.Image:
+    """The stored image in its tagged frame: an exact transpose, no resampling."""
+    return image if tag == 1 else image.transpose(TAG_TRANSPOSE[tag])
+
+
+def upright_image(source: Image.Image, tag: int, turns: int) -> Image.Image:
+    """The stored image after its tag and `turns` quarter turns clockwise, exactly."""
+    frame = apply_tag(source, tag)
+    return frame.transpose(_TRANSPOSE[turns]) if turns else frame
 
 
 def upright_size(size: tuple[int, int], turns: int) -> tuple[int, int]:
@@ -244,6 +305,22 @@ class Chain:
     crop_box: tuple[int, int, int, int]  # in the levelled grid
     scale: tuple[float, float]
     output_size: tuple[int, int]
+    tag: int = 1  # the orientation tag applied first (spec 0007); 1 is none
+
+    @property
+    def frame_size(self) -> tuple[int, int]:
+        """The source's size after the orientation tag."""
+        return tagged_size(self.source_size, self.tag)
+
+    @property
+    def upright_size(self) -> tuple[int, int]:
+        return upright_size(self.frame_size, self.turns)
+
+    def source_to_upright(self) -> Affine:
+        """Stored source pixels to the upright frame: the tag, then the quarter turns."""
+        return _compose(
+            quarter_turn(self.frame_size, self.turns), tag_affine(self.source_size, self.tag)
+        )
 
     @classmethod
     def build(
@@ -256,14 +333,17 @@ class Chain:
         angle: float,
         crop_box: Sequence[int] | None = None,
         scale: float = 1.0,
+        tag: int = 1,
     ) -> Chain:
-        """The chain for page `page`. With no crop box, the whole levelled grid.
+        """The chain for page `page`. With no crop box, the whole levelled grid. `tag`
+        is the orientation tag applied before everything else (1: none).
 
         `scale` above 1 is refused: pagekit never upsamples.
         """
         if not 0 < scale <= 1:
             raise GeometryError(f"scale {scale} is refused: outputs are never upsampled")
-        upright = upright_size(source_size, turns)
+        tag_affine(source_size, tag)  # refuses a tag outside 1 to 8
+        upright = upright_size(tagged_size(source_size, tag), turns)
         polygon = page_polygon(upright, split, page, overlap_px)
         box = frame_box(polygon, upright)
         grid = levelled_size((box[2] - box[0], box[3] - box[1]), angle)
@@ -282,6 +362,7 @@ class Chain:
             crop_box=crop,
             scale=(output[0] / crop_width, output[1] / crop_height),
             output_size=output,
+            tag=tag,
         )
 
     def upright_to_output(self) -> Affine:
@@ -302,7 +383,7 @@ class Chain:
         return _compose(scaled, _compose(placed, _compose(turned, centred)))
 
     def source_to_output(self) -> Affine:
-        return _compose(self.upright_to_output(), quarter_turn(self.source_size, self.turns))
+        return _compose(self.upright_to_output(), self.source_to_upright())
 
     def output_to_source(self) -> Affine:
         return _invert(self.source_to_output())
@@ -318,14 +399,26 @@ class Chain:
     def to_dict(self) -> dict[str, Any]:
         """The chain as plain parameters, readable without pagekit."""
         frame = self.frame_box
+        steps: list[dict[str, Any]] = []
+        if self.tag != 1:  # only when a tag is applied, so a chain without one is unchanged
+            steps.append(
+                {
+                    "op": "orientation_tag",
+                    "tag": self.tag,
+                    "transform": TAG_WORDS[self.tag],
+                    "affine": list(tag_affine(self.source_size, self.tag)),
+                    "size_after": list(self.frame_size),
+                }
+            )
         return {
             "convention": CONVENTION,
             "source_size": list(self.source_size),
-            "steps": [
+            "steps": steps
+            + [
                 {
                     "op": "quarter_turn",
                     "turns_clockwise": self.turns,
-                    "size_after": list(upright_size(self.source_size, self.turns)),
+                    "size_after": list(self.upright_size),
                 },
                 {
                     "op": "page_polygon",
@@ -360,7 +453,9 @@ class Chain:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Chain:
         """The chain back from `to_dict`, for mapping points from a manifest."""
-        turn, polygon, rotate, crop, scale = data["steps"]
+        steps = {step["op"]: step for step in data["steps"]}
+        turn, polygon, rotate = steps["quarter_turn"], steps["page_polygon"], steps["rotate"]
+        crop, scale = steps["crop"], steps["scale"]
         return cls(
             source_size=tuple(data["source_size"]),
             turns=turn["turns_clockwise"],
@@ -371,6 +466,7 @@ class Chain:
             crop_box=tuple(crop["box"]),
             scale=tuple(scale["factor"]),
             output_size=tuple(scale["size_after"]),
+            tag=steps.get("orientation_tag", {"tag": 1})["tag"],
         )
 
 
@@ -421,7 +517,7 @@ def render(source: Image.Image, chain: Chain, fill: int | tuple[int, ...]) -> Im
         raise GeometryError("the source is not the size the chain was built for")
     shrunk = chain.scale != (1.0, 1.0)
     if chain.angle == 0:
-        upright = source.transpose(_TRANSPOSE[chain.turns]) if chain.turns else source
+        upright = upright_image(source, chain.tag, chain.turns)
         fx, fy = chain.frame_box[0], chain.frame_box[1]
         region = (
             fx + chain.crop_box[0],
@@ -489,11 +585,9 @@ def paper_colour(
     width, height = source.size
     reduce_by = max(1.0, max(width, height) / max(1, long_side))
     small_size = (max(1, round(width / reduce_by)), max(1, round(height / reduce_by)))
-    small = source.resize(small_size, Image.Resampling.BOX)
-    if chain.turns:
-        small = small.transpose(_TRANSPOSE[chain.turns])
-    sx = small.size[0] / upright_size(source.size, chain.turns)[0]
-    sy = small.size[1] / upright_size(source.size, chain.turns)[1]
+    small = upright_image(source.resize(small_size, Image.Resampling.BOX), chain.tag, chain.turns)
+    sx = small.size[0] / chain.upright_size[0]
+    sy = small.size[1] / chain.upright_size[1]
     mask = _polygon_mask(small.size, [(x * sx, y * sy) for x, y in chain.polygon])
     grey = small.convert("L") if small.mode != "L" else small
     histogram = grey.histogram(mask)

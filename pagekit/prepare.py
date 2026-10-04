@@ -40,7 +40,16 @@ from PIL import Image, UnidentifiedImageError
 
 from pagekit import __version__
 from pagekit.answer import PAGE_STEPS, SOURCE_STEPS, STEPS, Answer, AnswerError, validate_answer
-from pagekit.geometry import Chain, GeometryError, margin_box, paper_colour, render
+from pagekit.geometry import (
+    TAG_WORDS,
+    Chain,
+    GeometryError,
+    apply_tag,
+    margin_box,
+    paper_colour,
+    render,
+    tagged_size,
+)
 from pagekit.project import (
     PROJECT_SCHEMA,
     SHA256,
@@ -59,6 +68,7 @@ IMAGE_SUFFIXES = (".png", ".tif", ".tiff", ".jpg", ".jpeg")
 # Modes read: grey and colour as they are; bilevel to grey; palette to grey or colour.
 _KEPT_MODES = frozenset({"L", "RGB", "1", "P"})
 _MM_PER_INCH = 25.4
+_ORIENTATION_TAG = 0x0112  # Exif and TIFF tag 274
 
 
 @dataclass(frozen=True)
@@ -72,6 +82,7 @@ class Source:
     size: tuple[int, int]
     mode: str  # the stored mode
     file_dpi: tuple[float, float] | None
+    tag_found: int | None = None  # the file's orientation tag as read, if it has one
 
     def open(self) -> Image.Image:
         """The decoded original in L or RGB, checked against the sha256 read first."""
@@ -157,6 +168,21 @@ def _decode(data: bytes, path: Path) -> Image.Image:
         raise SourceError(path, reason) from error
 
 
+def _file_tag(image: Image.Image) -> int | None:
+    """The file's orientation tag (Exif tag 274) as a whole number, if it has one; a
+    value that is not a whole number reads as 0, which is not a valid tag."""
+    try:
+        value = image.getexif().get(_ORIENTATION_TAG)
+    except Exception:  # unreadable metadata is no tag
+        return None
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _file_dpi(image: Image.Image) -> tuple[float, float] | None:
     dpi = image.info.get("dpi")
     if not dpi or len(dpi) != 2:
@@ -176,7 +202,7 @@ def read_source(path: Path, project_folder: Path) -> Source:
         raise SourceError(path, f"the file cannot be read ({reason})") from error
     image = _decode(data, path)
     with Image.open(io.BytesIO(data)) as stored:
-        mode, dpi = stored.mode, _file_dpi(stored)
+        mode, dpi, tag = stored.mode, _file_dpi(stored), _file_tag(stored)
     return Source(
         path=path,
         relative=Path(os.path.relpath(path, project_folder)).as_posix(),
@@ -185,6 +211,7 @@ def read_source(path: Path, project_folder: Path) -> Source:
         size=image.size,
         mode=mode,
         file_dpi=dpi,
+        tag_found=tag,
     )
 
 
@@ -200,27 +227,38 @@ class StepContext:
     settings: dict[str, Any]  # every setting's value
     _image: Callable[[], Image.Image] = field(repr=False, default=None)
     cache: dict[Any, Any] = field(repr=False, default_factory=dict)  # shared per source
+    tag: int = 1  # the orientation tag applied before everything else (1: none)
 
     def image(self) -> Image.Image:
         """The decoded original source. Never change it and never write it out."""
         return self._image()
 
+    def frame(self) -> Image.Image:
+        """The source after its orientation tag (exact): what orientation and the split
+        look at."""
+        return apply_tag(self.image(), self.tag)
+
+    @property
+    def frame_size(self) -> tuple[int, int]:
+        return tagged_size(self.source.size, self.tag)
+
     def chain(self, scale: float = 1.0) -> Chain:
         """The chain to the grid this step works in, whole, scaled by `scale` (<= 1).
 
-        Orientation works on the source as stored, split on the upright frame, skew on
-        the page before levelling, and the box steps on the levelled page.
+        Orientation works on the tagged frame (the source after its orientation tag),
+        split on the upright frame, skew on the page before levelling, and the box steps
+        on the levelled page.
         """
-        size = self.source.size
+        size, tag = self.source.size, self.tag
         if self.step == "orientation":
-            return Chain.build(size, 0, {"pages": 1}, 0, 0.0, 0.0, None, scale)
+            return Chain.build(size, 0, {"pages": 1}, 0, 0.0, 0.0, None, scale, tag)
         turns = self.values["orientation"]
         if self.step == "split":
-            return Chain.build(size, turns, {"pages": 1}, 0, 0.0, 0.0, None, scale)
+            return Chain.build(size, turns, {"pages": 1}, 0, 0.0, 0.0, None, scale, tag)
         angle = 0.0 if self.step == "skew" else self.values["skew"]
         overlap = _overlap_px(self.settings, self.resolution, turns)
         return Chain.build(
-            size, turns, self.values["split"], self.page - 1, overlap, angle, None, scale
+            size, turns, self.values["split"], self.page - 1, overlap, angle, None, scale, tag
         )
 
     def working_copy(self, long_side: int) -> tuple[Image.Image, Chain]:
@@ -330,6 +368,7 @@ class PagePlan:
     flags: list[dict[str, str]]
     output_dpi: tuple[float, float] | None
     resolution: dict[str, Any]
+    tag: dict[str, Any] = field(default_factory=dict)  # the orientation tag's record
 
 
 @dataclass
@@ -403,6 +442,9 @@ class _Runner:
         self.image_loader = image_loader
         self.cache: dict[Any, Any] = {}
         self.source_dpi: float | None = None  # --dpi, for sources that carry none
+        self.tag = 1  # the orientation tag applied to the source being settled
+        # {(source, step, page): sentence} added to that step's evidence in the manifest.
+        self.notes: dict[tuple[str, str, int | None], str] = {}
         self.stale: list[dict[str, Any]] = []
         # {(source relative path, step, page): sentence} for hand-set values a confident
         # detection disagrees with.
@@ -413,6 +455,8 @@ class _Runner:
         reads = {name: self.values[name] for name in detector.settings}
         for name in detector.files:
             reads[f"file {name}"] = file_digest(name)
+        if self.tag != 1:  # only when applied, so a source with no tag reads as before
+            reads["orientation_tag"] = self.tag
         if step in PAGE_STEPS or step == "split":
             reads["overlap_mm"] = self.values["overlap_mm"]
             reads["resolution"] = None if resolution is None else list(resolution)
@@ -532,6 +576,7 @@ class _Runner:
             self.values,
             self.image_loader,
             self.cache,
+            self.tag,
         )
 
     def _compare(self, source, step, page, earlier, resolution, value) -> None:
@@ -613,10 +658,10 @@ def _resolution(source: Source, old: dict | None, override: Override | None, val
     return stored, usable, flags
 
 
-def _check_split(source: Source, split_record, turns: int) -> None:
+def _check_split(source: Source, split_record, turns: int, tag: int = 1) -> None:
     for page in range(split_record["value"]["pages"]):
         try:
-            Chain.build(source.size, turns, split_record["value"], page, 0.0, 0.0)
+            Chain.build(source.size, turns, split_record["value"], page, 0.0, 0.0, tag=tag)
         except GeometryError as error:
             raise PrepareError(
                 f"{source.relative}: the {split_record['origin']} split cannot be used: {error}"
@@ -631,6 +676,16 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
     )
     if runner.dry and old is not None and old["resolution"] != stored:
         runner._note(source, "resolution", None, "the resolution changes")
+    tag_record, tag_flags, tag_note = _orientation_tag(
+        source, old, overrides.get(("tag_trust", None)), values
+    )
+    tag = tag_record["found"] if tag_record["applied"] else 1
+    runner.tag = tag
+    if tag_note:
+        runner.notes[(source.relative, "orientation", None)] = tag_note
+    # The millimetre settings work in the tagged frame, whose axes a tag may swap.
+    usable = _tagged_dpi(usable, tag)
+    stored_frame = dict(stored, value=_tagged_dpi(stored["value"], tag))
     old_steps = old["steps"] if old else {}
     steps: dict[str, dict[str, Any]] = {}
     earlier: dict[str, Any] = {}
@@ -647,7 +702,7 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
             uncertain.add(step)
         steps[step] = entry
         earlier[step] = entry["value"]
-    _check_split(source, steps["split"], earlier["orientation"])
+    _check_split(source, steps["split"], earlier["orientation"], tag)
     count = earlier["split"]["pages"]
     old_pages = {page["page"]: page for page in (old["dropped_pages"] if old else [])}
     old_pages.update({page["page"]: page for page in (old["pages"] if old else [])})
@@ -712,27 +767,32 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         if runner.dry:
             continue
         chain, chain_flags, output_dpi = _page_chain(
-            source, number, page_earlier, usable, stored, values
+            source, number, page_earlier, usable, stored_frame, values, tag
         )
         all_steps = {}
         for step, entry in {**steps, **page_steps}.items():
             key = (source.relative, step, None if step in SOURCE_STEPS else number)
-            sentence = runner.comparisons.get(key)
+            said = [runner.comparisons.get(key), runner.notes.get(key)]
+            sentence = " ".join(part for part in said if part) or None
             # The project keeps the person's own evidence; the manifest and the review
-            # sheet also say where a confident detection disagrees.
+            # sheet also say where a confident detection disagrees, or a tag is not
+            # trusted.
             all_steps[step] = (
                 entry
                 if sentence is None
                 else {**entry, "evidence": f"{entry['evidence']} {sentence}"}
             )
         flags = [{"step": "resolution", "reason": reason} for reason in source_flags]
+        flags += [{"step": "orientation_tag", "reason": reason} for reason in tag_flags]
         flags += [{"step": "split", "reason": reason} for reason in split_flags]
         for step in STEPS:
             flags += [{"step": step, "reason": reason} for reason in all_steps[step]["flags"]]
         flags += [{"step": "margin", "reason": reason} for reason in chain_flags]
         flags += _outside_flags(chain, page_steps)
         plans.append(
-            PagePlan(source, number, output_name, chain, all_steps, flags, output_dpi, stored)
+            PagePlan(
+                source, number, output_name, chain, all_steps, flags, output_dpi, stored, tag_record
+            )
         )
     entry = {
         "path": source.relative,
@@ -741,7 +801,8 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         "size": list(source.size),
         "mode": source.mode,
         "resolution": stored,
-        "flags": source_flags + split_flags,
+        "orientation_tag": tag_record,
+        "flags": source_flags + tag_flags + split_flags,
         "steps": steps,
         "pages": pages,
         "dropped_pages": dropped_pages,
@@ -780,7 +841,51 @@ def _outside_flags(chain: Chain, steps: dict[str, dict[str, Any]]) -> list[dict[
     return flags
 
 
-def _page_chain(source, number, values, usable, stored, settings):
+def _tagged_dpi(resolution, tag: int):
+    """A resolution (x, y) of the stored pixels, in the tagged frame's axes."""
+    if resolution is None or tag not in (5, 6, 7, 8):
+        return resolution
+    swapped = (resolution[1], resolution[0])
+    return list(swapped) if isinstance(resolution, list) else swapped
+
+
+def _orientation_tag(source: Source, old, override: Override | None, values):
+    """The orientation tag's record for a source, flags, and a note for the evidence.
+
+    The tag is trusted by the trust_orientation_tag setting unless a tag_trust override
+    (this run's, or one kept in the project) says otherwise. A trusted tag of 2 to 8 is
+    applied; a value outside 1 to 8 is flagged and the source taken as stored."""
+    if override is not None:
+        trusted, origin = bool(override.value), "override"
+    elif old is not None and old.get("orientation_tag", {}).get("trust_origin") == "override":
+        trusted, origin = old["orientation_tag"]["trusted"], "override"
+    else:
+        trusted, origin = bool(values["trust_orientation_tag"]), "setting"
+    found = source.tag_found
+    flags, note, applied = [], None, 1
+    if found is not None and found not in TAG_WORDS:
+        flags.append(
+            f"The file's orientation tag has the value {found}, which is not one of the "
+            "eight the Exif standard defines (1 to 8); the source is taken as stored."
+        )
+    elif found not in (None, 1) and not trusted:
+        note = (
+            f"The file's orientation tag ({found}: {TAG_WORDS[found]}) is not trusted for "
+            "this source, so the stored pixels were used as they are."
+        )
+    elif found not in (None, 1):
+        applied = found
+    record = {
+        "found": found,
+        "trusted": trusted,
+        "trust_origin": origin,
+        "applied": applied != 1,
+        "transform": TAG_WORDS[applied],
+    }
+    return record, flags, note
+
+
+def _page_chain(source, number, values, usable, stored, settings, tag: int = 1):
     """The chain of page `number` (from 1), any margin flags, and its output dpi."""
     turns = values["orientation"]
     overlap = _overlap_px(settings, usable, turns)
@@ -808,7 +913,15 @@ def _page_chain(source, number, values, usable, stored, settings):
         scale = min(1.0, settings["max_output_dpi"] / max(upright_dpi))
     try:
         chain = Chain.build(
-            source.size, turns, values["split"], number - 1, overlap, values["skew"], box, scale
+            source.size,
+            turns,
+            values["split"],
+            number - 1,
+            overlap,
+            values["skew"],
+            box,
+            scale,
+            tag,
         )
     except GeometryError as error:
         raise PrepareError(f"{source.relative} page {number}: {error}") from error

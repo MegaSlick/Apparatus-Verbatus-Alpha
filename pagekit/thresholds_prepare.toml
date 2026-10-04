@@ -120,3 +120,10 @@ meaning = "A detected cut whose top and bottom lie within this many millimetres 
 value = 3.0
 status = "UNMEASURED"
 meaning = "A detected content box whose every side lies within this many millimetres of the hand-checked box counts as right in `measure`."
+
+# --- Spec 0007: the orientation tag, a grey main page, padding --------------------
+
+[trust_orientation_tag]
+value = 1
+status = "UNMEASURED"
+meaning = "1 applies a file's orientation tag (Exif tag 274) before everything else; 0 takes every source as stored. A tag_trust line in the overrides file sets it for one source."

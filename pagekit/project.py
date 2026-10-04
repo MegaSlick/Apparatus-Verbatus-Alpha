@@ -44,6 +44,12 @@ _SOURCE_KEYS = {
 }
 _RESOLUTION_KEYS = {"value", "origin", "file_value"}
 _PAGE_KEYS = {"page", "output", "steps"}
+# Keys added by spec 0007; a project written before it does not hold them.
+_SOURCE_OPTIONAL = frozenset({"orientation_tag"})
+_TAG_KEYS = {"found", "trusted", "trust_origin", "applied", "transform"}
+# Corrections that are not steps: for the whole source, and per page.
+SOURCE_SETTINGS = ("resolution", "tag_trust")
+PAGE_SETTINGS = ()
 _RECORD_KEYS = {
     "value",
     "origin",
@@ -93,6 +99,8 @@ def load_settings(overrides: dict[str, Any] | None = None) -> dict[str, dict[str
     for name in _POSITIVE:
         if not value[name] > 0:
             raise PrepareError(f"setting {name!r} must be more than 0")
+    if value["trust_orientation_tag"] not in (0, 1):
+        raise PrepareError("trust_orientation_tag must be 1 (trust) or 0 (do not)")
     if value["volume_min_pages"] < 3:
         raise PrepareError("volume_min_pages must be at least 3")
     if value["preview_long_side_px"] < 32:
@@ -212,13 +220,26 @@ def write_atomic(path: Path, data: bytes) -> None:
         raise
 
 
-def _closed(data: Any, keys: set[str], where: str) -> None:
+def _closed(data: Any, keys: set[str], where: str, optional: frozenset = frozenset()) -> None:
+    """`data` must hold exactly `keys`, plus any of `optional` (keys added later, which a
+    project written before them does not hold)."""
     if not isinstance(data, dict):
         raise PrepareError(f"{where} must be an object")
-    if set(data) != keys:
+    if not keys <= set(data) <= keys | optional:
         missing = sorted(keys - set(data))
         extra = sorted(set(data) - keys)
         raise PrepareError(f"{where} has missing keys {missing} and unknown keys {extra}")
+
+
+def _check_tag(data: Any, where: str) -> None:
+    _closed(data, _TAG_KEYS, where)
+    found = data["found"]
+    if found is not None and (isinstance(found, bool) or not isinstance(found, int)):
+        raise PrepareError(f"{where}: found is the tag's whole-number value or null")
+    if not isinstance(data["trusted"], bool) or not isinstance(data["applied"], bool):
+        raise PrepareError(f"{where}: trusted and applied are true or false")
+    if data["trust_origin"] not in ("setting", "override"):
+        raise PrepareError(f"{where}: trust_origin is setting or override")
 
 
 def _sentences(data: Any, where: str) -> None:
@@ -268,7 +289,9 @@ def validate_project(data: Any) -> dict[str, Any]:
         raise PrepareError("the project's sources must be a list")
     for index, source in enumerate(data["sources"]):
         where = f"project source {index + 1}"
-        _closed(source, _SOURCE_KEYS, where)
+        _closed(source, _SOURCE_KEYS, where, _SOURCE_OPTIONAL)
+        if "orientation_tag" in source:
+            _check_tag(source["orientation_tag"], f"{where} orientation_tag")
         if not isinstance(source["path"], str) or not SHA256.fullmatch(str(source["sha256"])):
             raise PrepareError(f"{where}: path and sha256 are required")
         _check_resolution(source["resolution"], f"{where} resolution")
@@ -369,26 +392,29 @@ def load_overrides(path: Path) -> list[Override]:
         source, step = entry["source"], entry["step"]
         if not isinstance(source, str) or not source:
             raise PrepareError(f"{where}: source must be a path or a sha256")
-        if step not in STEPS and step != "resolution":
+        if step not in STEPS + SOURCE_SETTINGS + PAGE_SETTINGS:
+            others = ", ".join(SOURCE_SETTINGS + PAGE_SETTINGS)
             raise PrepareError(
-                f"{where}: there is no step {step!r}; the steps are {', '.join(STEPS)} "
-                "and resolution"
+                f"{where}: there is no step {step!r}; the steps are {', '.join(STEPS)}, "
+                f"and the other corrections are {others}"
             )
         page = entry.get("page")
-        if step in PAGE_STEPS:
+        if step in PAGE_STEPS + PAGE_SETTINGS:
             if isinstance(page, bool) or not isinstance(page, int) or page < 1:
                 raise PrepareError(f"{where}: the {step} step is per page, so name a page (1, 2)")
         elif page is not None:
             raise PrepareError(f"{where}: the {step} step is for the whole source; drop 'page'")
         lock = entry.get("lock", False)
-        if not isinstance(lock, bool) or (lock and step == "resolution"):
-            raise PrepareError(f"{where}: lock must be true or false, and not for resolution")
+        if not isinstance(lock, bool) or (lock and step in SOURCE_SETTINGS):
+            raise PrepareError(
+                f"{where}: lock must be true or false, and is not for {', '.join(SOURCE_SETTINGS)}"
+            )
         evidence = entry.get("evidence", f"Set by hand in {path.name}.")
         if not isinstance(evidence, str) or not evidence.strip():
             raise PrepareError(f"{where}: evidence must be a sentence")
         value = entry["value"]
         try:
-            value = _resolution(value) if step == "resolution" else validate_value(step, value)
+            value = _setting_value(step, value)
         except AnswerError as error:
             raise PrepareError(f"{where}: {error}") from error
         key = (source, step, page)
@@ -397,6 +423,17 @@ def load_overrides(path: Path) -> list[Override]:
         seen.add(key)
         overrides.append(Override(source, step, page, value, lock, evidence, where))
     return overrides
+
+
+def _setting_value(step: str, value: Any) -> Any:
+    """An override's value in its stored form, or AnswerError."""
+    if step == "resolution":
+        return _resolution(value)
+    if step == "tag_trust":
+        if not isinstance(value, bool):
+            raise AnswerError("tag_trust is true (apply the file's orientation tag) or false")
+        return value
+    return validate_value(step, value)
 
 
 def _resolution(value: Any) -> list[float]:

@@ -156,6 +156,24 @@ page at `detector_working_dpi`, made from the original in one resampling, and th
 boxes are scaled back outward. The prepared page itself is always made from the
 original.
 
+### The orientation tag
+
+Some image files carry a tag saying how their stored pixels must be turned, or turned
+and mirrored, to show the picture upright: the orientation tag of the Exif standard
+(CIPA DC-008, Exif 2.32, 2019), which defines eight values. pagekit reads it and applies
+its transform once, exactly (no resampling), before anything else: orientation, the
+split and every later step see the corrected frame, and a person's quarter turns come
+after it. The transform is the first link of the geometry chain (an `orientation_tag`
+step, only when a tag is applied), so the point maps still lead back to the stored
+pixels. Prepared pages carry no orientation tag, so no reader turns them again.
+
+A tag outside the eight values is flagged and the source taken as stored. Whether to
+trust tags is the `trust_orientation_tag` setting (default 1, trust); for one source,
+an overrides line `{"source": ..., "step": "tag_trust", "value": false}` ignores its
+tag, the orientation evidence says so, and later runs keep it. The manifest's
+`orientation_tag` and the project's record name the value found, whether it is trusted
+and applied, and the transform.
+
 ### Defaults
 
 - Pages are written as lossless TIFF (deflate). PNG is available with `--format png`;

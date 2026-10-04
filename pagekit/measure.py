@@ -39,7 +39,7 @@ from pathlib import Path
 from statistics import median
 from typing import Any
 
-from pagekit.geometry import Chain, apply, quarter_turn, upright_size
+from pagekit.geometry import Chain, apply
 from pagekit.output import MANIFEST_NAME
 from pagekit.project import SHA256, PrepareError, load_settings
 
@@ -147,8 +147,8 @@ def _levelled_by_truth(page: dict[str, Any], box: list[int], true_skew: float) -
     left, top, right, bottom = box
     corners = [(left, top), (right, top), (right, bottom), (left, bottom)]
     output = [((x - crop[0]) * scale[0], (y - crop[1]) * scale[1]) for x, y in corners]
-    upright = apply(quarter_turn(chain.source_size, chain.turns), chain.inverse(output))
-    width, height = upright_size(chain.source_size, chain.turns)
+    upright = apply(chain.source_to_upright(), chain.inverse(output))
+    width, height = chain.upright_size
     centre_x, centre_y = width / 2, height / 2
     radians = math.radians(true_skew)
     cos, sin = math.cos(radians), math.sin(radians)
@@ -224,6 +224,8 @@ def measure(prepared: Path, gold_path: Path) -> dict[str, Any]:
             dpi = (300.0, 300.0)
             notes.append(f"{wanted}: no resolution, so millimetres assume 300 dpi")
         else:
+            if Chain.from_dict(first["geometry"]).tag in (5, 6, 7, 8):
+                resolution = (resolution[1], resolution[0])  # the tag swaps the axes
             dpi = (resolution[1], resolution[0]) if turns % 2 else tuple(resolution)
         steps = first["steps"]
         if entry.get("orientation") is not None:

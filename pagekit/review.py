@@ -29,7 +29,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from pagekit.answer import PAGE_STEPS, SOURCE_STEPS
-from pagekit.geometry import apply, quarter_turn, upright_size
+from pagekit.geometry import apply, upright_image
 
 REVIEW_NAME = "review.html"
 # Colours that stay apart for most kinds of colour blindness.
@@ -46,6 +46,7 @@ _STEP_NAMES = {
     "margin": "Margin",
     "resolution": "Resolution",
     "batch": "Compared with the batch",
+    "orientation_tag": "Orientation tag in the file",
 }
 _ORIGIN_WORDS = {
     "detected": "found by pagekit",
@@ -57,11 +58,6 @@ _TURNS = {
     1: "one quarter turn clockwise",
     2: "a half turn",
     3: "three quarter turns clockwise",
-}
-_TRANSPOSE = {
-    1: Image.Transpose.ROTATE_270,
-    2: Image.Transpose.ROTATE_180,
-    3: Image.Transpose.ROTATE_90,
 }
 
 
@@ -91,7 +87,7 @@ def _to_upright(page_plan: Any, points: list[tuple[float, float]]) -> list[tuple
     chain = page_plan.chain
     crop, scale = chain.crop_box, chain.scale
     output = [((x - crop[0]) * scale[0], (y - crop[1]) * scale[1]) for x, y in points]
-    return apply(quarter_turn(chain.source_size, chain.turns), chain.inverse(output))
+    return apply(chain.source_to_upright(), chain.inverse(output))
 
 
 def _corners(box: list[int]) -> list[tuple[float, float]]:
@@ -104,9 +100,9 @@ def source_preview(source: Image.Image, pages: list[Any], long_side: int) -> dic
     content boxes of its pages drawn on it."""
     first = pages[0]
     turns = first.steps["orientation"]["value"]
-    upright = source.transpose(_TRANSPOSE[turns]) if turns else source
+    upright = upright_image(source, first.chain.tag, turns)
     small = _reduced(upright, long_side).convert("RGB")
-    width, height = upright_size(source.size, turns)
+    width, height = first.chain.upright_size
     sx, sy = small.width / width, small.height / height
     draw = ImageDraw.Draw(small)
     line = max(2, round(max(small.size) / 200))
