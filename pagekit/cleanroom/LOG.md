@@ -444,3 +444,7 @@ record".
   sheet's correction command failed as printed.
 - **Follow-up brief:** `briefs/0029-build-prepare-review-fixes.md` (sha256
   b9d754d4a1223124750728759bbc9e53eefdf32889127eba5cd510080976a2f7), to the agent of brief 0023, after brief 0026. Saved before it was sent.
+- **Brief 0026 done:** commits 81bc930 (merge of the tone view), 9705990, 05ed98e and
+  4e11e63 on `work/pk-integrate`. Leak scan no hits in 123 files. Merged into
+  `work/pagekit-prepare` (d6d17b2); the combined suite passes. Prepared pages and tone
+  views now share one deterministic TIFF writer.
