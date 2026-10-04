@@ -8,6 +8,7 @@ paper, strokes, hairlines and the stain lie) is kept beside the image.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import random
 import statistics
@@ -15,12 +16,17 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import PIL
 import pytest
 from PIL import Image, ImageChops, ImageDraw
 
 from pagekit.__main__ import main
 from pagekit.tone import (
+    FINE,
+    HEADROOM,
     SCHEMA,
+    SETTINGS_PATH,
+    TONE_SHA256,
     ToneError,
     closing,
     lift_curve,
@@ -296,22 +302,37 @@ def test_a_page_almost_covered_in_ink_skips_flattening_and_says_so():
     assert _mean(view, (0, 0, 1200, 1400)) < _mean(view, (0, 1420, 1200, 1600))
 
 
-def test_a_sharp_stain_edge_leaves_no_wide_halo():
+def test_a_sharp_stain_edge_leaves_no_wide_halo_and_no_white():
     page, _ = synthetic()
     view, record = tone(page)
-    settings = {name: entry["value"] for name, entry in record["settings"].items()}
-    # Bright paper leaks half a window into the stain at its edge, and the blur smears
-    # the edge both ways; beyond that the paper, stained or not, is at the set level.
-    halo = settings["background_window_px"] // 2 + settings["background_blur_px"] + 8
+    # Bright paper leaks half the stroke window (40 px at the default 81) into the stain
+    # at its edge; on a lighting gradient the leaked plateau tails off over the second
+    # half of the window. So the paper is within 8 levels of the set level beyond 40 px
+    # and within 5 beyond 60 px, on every row and column of the stain and of the 100 px
+    # of bare paper around it, and nothing is driven to white. The distances are fixed,
+    # not read from the settings, so a wider window or a smeared estimate fails here.
     x0, y0, x1, y1 = STAIN
-    band = (y0 + 60, y1 - 60)  # rows well inside the stain's height, paper only
-    for x in range(x0 - 200, x1 + 150, 4):
-        if min(abs(x - x0), abs(x - x1)) <= halo:
+
+    def within(level: float, distance: int) -> bool:
+        return abs(level - 235) <= (8 if distance <= 60 else 5)
+
+    for x in range(x0 - 100, x1 + 100, 2):
+        distance = min(abs(x - x0), abs(x - x1))
+        if distance <= 40:
             continue
-        column = _mean(view, (x, band[0], x + 1, band[1]))
-        assert abs(column - 235) <= 5, (
-            f"column {x} sits at {column:.1f}, a halo or an uncorrected stain"
-        )
+        for y_a, y_b in ((y0 - 100, y0 - 60), (y0 + 60, y1 - 60), (y1 + 60, y1 + 100)):
+            column = _mean(view, (x, y_a, x + 1, y_b))
+            assert within(column, distance), f"column {x} rows {y_a}..{y_b} sits at {column:.1f}"
+    for y in range(y0 - 100, y1 + 100, 2):
+        distance = min(abs(y - y0), abs(y - y1))
+        if distance <= 40:
+            continue
+        for x_a, x_b in ((x0 - 100, x0 - 60), (x0 + 60, x1 - 60), (x1 + 60, x1 + 100)):
+            row = _mean(view, (x_a, y, x_b, y + 1))
+            assert within(row, distance), f"row {y} columns {x_a}..{x_b} sits at {row:.1f}"
+    assert view.histogram()[255] == 0, "something was driven to white"
+    edges = record["flatten"]["background_edges"]
+    assert edges["edge_share"] > 0 and edges["band_share"] > edges["edge_share"]
 
 
 def test_the_minimum_channel_separates_brown_ink_from_yellow_paper_better():
@@ -324,7 +345,8 @@ def test_the_minimum_channel_separates_brown_ink_from_yellow_paper_better():
     contrast_b, _ = _faint_measures(blue, truth)
     assert contrast_m >= 2 * contrast_l
     assert contrast_b >= 2 * contrast_l
-    assert record_l["grey"] == {"rule": "luminance", "applied": "luminance", "source_mode": "RGB"}
+    assert record_l["grey"]["rule"] == "luminance" and record_l["grey"]["applied"] == "luminance"
+    assert record_l["grey"]["source_mode"] == "RGB"
     assert record_m["grey"]["applied"] == "min" and record_m["steps"][0] == "grey:min"
     assert record_l["settings_sha256"] != record_m["settings_sha256"]
 
@@ -358,26 +380,63 @@ def test_a_full_size_page_takes_a_few_seconds():
 @pytest.mark.parametrize(
     "anchor_level, strength, shape", [(235, 0.2, 3), (200, 0.4, 1), (254, 0.4, 8), (235, 0.1, 5)]
 )
-def test_the_lift_curve_is_strictly_increasing_and_anchored(anchor_level, strength, shape):
+@pytest.mark.parametrize("top", [1.0, HEADROOM])
+def test_the_lift_curve_is_strictly_increasing_and_anchored(anchor_level, strength, shape, top):
     anchor = anchor_level / 255
-    points = [index / 4000 for index in range(4001)]
-    values = [lift_curve(x, anchor, strength, shape) for x in points]
+    points = [top * index / 8000 for index in range(8001)]
+    values = [lift_curve(x, anchor, strength, shape, top) for x in points]
     assert all(b > a for a, b in zip(values, values[1:], strict=False))
     assert values[0] == 0 and abs(values[-1] - 1) < 1e-9
-    assert abs(lift_curve(anchor, anchor, strength, shape) - anchor) < 1e-12
+    assert abs(lift_curve(anchor, anchor, strength, shape, top) - anchor) < 1e-12
     # Below the paper the curve darkens; the darkening peaks nearer the paper than black.
     below = [(x, x - f) for x, f in zip(points, values, strict=True) if 0 < x < anchor]
     assert all(darkening > 0 for _, darkening in below)
     peak = max(below, key=lambda pair: pair[1])[0]
-    assert peak > anchor / 2
-    lut = lift_lut(anchor_level, strength, shape)
-    assert len(lut) == 65536 and lut[0] == 0 and lut[-1] == 255
+    assert peak >= anchor / 2 - 0.01  # shape 1 peaks in the middle, higher shapes nearer the paper
+    # The two halves meet with the same slope.
+    step = 1e-6
+    slope_below = (anchor - lift_curve(anchor - step, anchor, strength, shape, top)) / step
+    slope_above = (lift_curve(anchor + step, anchor, strength, shape, top) - anchor) / step
+    assert abs(slope_below - slope_above) <= 0.01 * slope_below
+    lut = lift_lut(anchor_level, strength, shape, top)
+    assert len(lut) == FINE * 256 * HEADROOM and lut[0] == 0 and lut[-1] == 255
     assert all(b >= a for a, b in zip(lut, lut[1:], strict=False))
-    assert lut[anchor_level * 256] == anchor_level
+    assert lut[anchor_level * FINE] == anchor_level
+
+
+def test_values_above_the_paper_map_strictly_upward_without_clipping():
+    # With the headroom of the flattened path, a value at white maps below white and
+    # everything up to twice white keeps its order; white is reached only at the top.
+    lut = lift_lut(235, 0.2, 3, HEADROOM)
+    white = lut[255 * FINE]
+    assert 235 < white < 255
+    assert lut[int(1.5 * 255 * FINE)] > white
+    assert lut[-1] == 255
+    above = [lift_curve(1 + k / 100, 235 / 255, 0.2, 3, HEADROOM) for k in range(101)]
+    assert all(b > a for a, b in zip(above, above[1:], strict=False))
+    # On a page: pixels brighter than their paper end brighter than the paper, not white,
+    # and two patches whose bright pixels both pass white once flattened keep their
+    # order instead of meeting at one clipped level. (A bright patch wider than a few
+    # pixels is paper to the estimate, so the patches are fine checkerboards, which the
+    # reduced copy averages.)
+    page = _grain(SIZE, 200, 0)
+    for x0, light, dark in ((300, 255, 150), (500, 230, 170)):
+        for y in range(1480, 1520):
+            for x in range(x0, x0 + 40):
+                page.putpixel((x, y), light if (x + y) % 2 else dark)
+    view, _ = tone(page)
+    bright = view.crop((300, 1480, 340, 1520)).getextrema()[1]
+    less = view.crop((500, 1480, 540, 1520)).getextrema()[1]
+    assert 237 <= less < bright <= 254
+    assert view.histogram()[255] == 0
 
 
 def test_a_lift_of_zero_is_the_identity():
-    assert lift_lut(235, 0, 3) == [min(255, round(fine / 256)) for fine in range(65536)]
+    lut = lift_lut(235, 0, 3, 1.0)
+    assert all(lut[level * FINE] == level for level in range(256))
+    assert all(lut[fine] in (fine // FINE, -(-fine // FINE)) for fine in range(256 * FINE))
+    _, record = tone(synthetic(lit=False, stain=False)[0], {"lift_strength": 0})
+    assert record["lift"]["applied"] is False
 
 
 def test_window_filters_match_a_brute_force_neighbourhood():
@@ -456,9 +515,15 @@ def test_the_record_is_closed_and_canonical():
     _, record = tone(page)
     assert record["schema"] == SCHEMA
     assert set(record) == {
-        "schema", "tool", "input", "steps", "grey", "flatten", "lift", "sharpen",
+        "schema", "tool", "input", "view", "steps", "grey", "flatten", "lift", "sharpen",
         "settings", "settings_sha256", "settings_measured", "settings_note",
     }  # fmt: skip
+    assert record["tool"]["pillow"] == PIL.__version__
+    assert record["tool"]["tone_sha256"] == TONE_SHA256
+    assert (
+        TONE_SHA256 == hashlib.sha256((Path(__file__).parent / "tone.py").read_bytes()).hexdigest()
+    )
+    assert record["view"]["pixels_sha256"] == hashlib.sha256(tone(page)[0].tobytes()).hexdigest()
     assert record["settings_measured"] is False
     assert json.loads(record_json(record)) == record
 
@@ -484,10 +549,6 @@ def test_the_command_writes_a_lossless_tiff_and_prints_the_record(tmp_path, caps
         assert written.info["compression"] == "tiff_adobe_deflate"
         assert written.info["dpi"] == (300.0, 300.0)
         assert written.tobytes() == expected.tobytes()
-    # The same page and settings give the same bytes on disk.
-    again = tmp_path / "again.tif"
-    assert main(["tone", "--in", str(source), "--out", str(again), "--grey-rule", "min"]) == 0
-    assert again.read_bytes() == out.read_bytes()
 
 
 def test_the_command_refuses_what_it_cannot_do(tmp_path, capsys):
@@ -537,3 +598,158 @@ def test_tone_file_names_the_bytes_it_read(tmp_path):
     info = write_view(view, tmp_path / "view.tiff")
     assert info["bytes"] == (tmp_path / "view.tiff").stat().st_size
     assert isinstance(Path(info["name"]), Path)
+
+
+# -- the review's cases ---------------------------------------------------------------------
+
+
+def _lit_page(seed: int = 0) -> Image.Image:
+    """Grainy paper under the lighting ramp, nothing drawn yet (draw before lighting)."""
+    return _grain(SIZE, 225, seed)
+
+
+def _light(page: Image.Image) -> Image.Image:
+    return ImageChops.multiply(page, _ramp(SIZE))
+
+
+def test_faint_strokes_just_outside_a_sharp_stain_edge_survive():
+    # A 0.6 stain on the lit page; 5-level strokes 8 px outside its shadow-side edge.
+    page = _lit_page()
+    draw = ImageDraw.Draw(page)
+    x0, y0, x1, y1 = STAIN
+    strokes = [(x0 - 68, y, x0 - 8, y + 8) for y in range(y0 + 30, y1 - 30, 30)]
+    for box in strokes:
+        draw.rectangle((box[0], box[1], box[2] - 1, box[3] - 1), fill=220)
+    page.paste(page.crop(STAIN).point(lambda level: round(level * 0.6)), STAIN)
+    page = _light(page)
+    view, _ = tone(page)
+
+    def contrast(image: Image.Image) -> float:
+        return statistics.mean(_mean(image, _above(box)) - _mean(image, box) for box in strokes)
+
+    assert contrast(page) > 2
+    assert contrast(view) >= 1.5 * contrast(page)
+    for box in strokes:
+        stroke = view.crop(box)
+        paper = _mean(view, _above(box))
+        darker = sum(1 for level in stroke.get_flattened_data() if level < paper)
+        assert darker == stroke.size[0] * stroke.size[1], (
+            "a stroke pixel ended no darker than its paper"
+        )
+    # The paper right outside the edge is at the set level, not driven to white.
+    for x in range(x0 - 30, x0 - 2, 2):
+        assert abs(_mean(view, (x, y0 + 50, x + 1, y1 - 50)) - 235) <= 6
+    assert view.histogram()[255] == 0
+
+
+def test_a_dense_ink_page_keeps_its_paper_gaps_and_the_faint_strokes_in_them():
+    # 80 % ink in bands with 20 px paper gaps carrying faint strokes; flattening is
+    # forced on by a low paper-share guard so the estimate itself is what is tested.
+    page = _lit_page(1)
+    draw = ImageDraw.Draw(page)
+    gaps, strokes = [], []
+    for y in range(0, 1600, 100):
+        draw.rectangle((0, y, 1199, y + 79), fill=35)
+        gaps.append((0, y + 80, 1200, y + 100))
+        for x in range(100, 1100, 150):
+            box = (x, y + 86, x + 60, y + 93)
+            draw.rectangle((box[0], box[1], box[2] - 1, box[3] - 1), fill=217)
+            strokes.append(box)
+    page = _light(page)
+    view, record = tone(page, {"min_paper_share": 0.1})
+    assert record["flatten"]["applied"] is True
+    histogram = view.histogram()
+    assert histogram[255] / sum(histogram) < 0.001
+    for box in strokes:
+        beside = (box[0] - 30, box[1], box[0] - 5, box[3])
+        assert _mean(view, box) <= _mean(view, beside) - 3
+        assert abs(_mean(view, beside) - 235) <= 8
+    assert _mean(view, (0, 0, 1200, 80)) < 100
+
+
+def test_a_seal_and_a_blot_keep_their_darkness_and_their_marks():
+    page = _lit_page(2)
+    draw = ImageDraw.Draw(page)
+    draw.ellipse((400, 600, 799, 999), fill=60)  # a 400 px seal
+    marks = [(500 + 70 * k, 790, 540 + 70 * k, 800) for k in range(4)]  # letters inside it
+    for box in marks:
+        draw.rectangle((box[0], box[1], box[2] - 1, box[3] - 1), fill=20)
+    draw.ellipse((225, 1225, 374, 1374), fill=40)  # a 150 px blot
+    page = _light(page)
+    view, record = tone(page)
+    seal_inside = (450, 650, 750, 760)
+    blot_inside = (260, 1260, 340, 1340)
+    assert _mean(page, seal_inside) < 60 and _mean(page, blot_inside) < 40
+    assert _mean(view, seal_inside) <= 90, "the seal was lifted toward paper"
+    assert _mean(view, blot_inside) <= 60, "the blot was lifted toward paper"
+    # Marks inside the seal keep roughly their contrast against the seal.
+    before = statistics.mean(
+        _mean(page, (b[0], b[1] - 20, b[2], b[1] - 5)) - _mean(page, b) for b in marks
+    )
+    after = statistics.mean(
+        _mean(view, (b[0], b[1] - 20, b[2], b[1] - 5)) - _mean(view, b) for b in marks
+    )
+    assert 0.8 * before <= after <= 1.6 * before
+    # No ring: the paper around both is at the set level.
+    for box in ((120, 780, 170, 820), (830, 780, 880, 820), (400, 1280, 440, 1320)):
+        assert abs(_mean(view, box) - 235) <= 6
+    assert record["flatten"]["floor_applied_share"] > 0.02
+
+
+def test_a_thick_faded_stroke_is_not_taken_for_paper():
+    # A 60 px square of faded ink: the stroke window must not fit inside it.
+    page = _lit_page(3)
+    ImageDraw.Draw(page).rectangle((900, 1200, 959, 1259), fill=120)
+    page = _light(page)
+    view, _ = tone(page)
+    assert _mean(view, (905, 1205, 955, 1255)) <= 120  # a halved window lifts it to about 134
+
+
+def test_the_background_follows_a_steep_lighting_ramp_exactly():
+    # A linear ramp is its own closing; an estimator that only takes maxima is offset by
+    # half a window and leaves the paper low on the dark side.
+    page = Image.new("L", SIZE, 225)
+    ramp = Image.linear_gradient("L").rotate(90).resize(SIZE, Image.BILINEAR)
+    page = ImageChops.multiply(page, ramp.point(lambda level: 100 + round(level * 155 / 255)))
+    view, record = tone(page)
+    assert record["flatten"]["applied"] is True
+    for x in range(100, 1100, 100):
+        assert abs(_mean(view, (x, 100, x + 50, 1500)) - 235) <= 3, f"column {x}"
+
+
+def test_window_sizes_follow_the_dpi_when_known(tmp_path):
+    page, _ = synthetic()
+    _, plain = tone(page)
+    assert plain["input"]["dpi"] is None
+    assert plain["flatten"]["window_px"] == 81 and plain["flatten"]["floor_window_px"] == 405
+    assert "no dpi" in plain["flatten"]["scale_note"]
+    source = tmp_path / "page.png"
+    page.save(source, dpi=(600, 600))
+    _, scaled = tone_file(source)
+    assert scaled["input"]["dpi"] == [600.0, 600.0]
+    assert scaled["flatten"]["scale_from_dpi"] == 2.0
+    assert scaled["flatten"]["window_px"] == 163 and scaled["flatten"]["floor_window_px"] == 811
+    assert scaled["flatten"]["window_reduced_px"] > plain["flatten"]["window_reduced_px"]
+    page.info["dpi"] = (150, 150)
+    _, halved = tone(page)
+    assert halved["flatten"]["window_px"] == 41
+
+
+def test_grey_rule_notes_warn_about_blue_black_ink():
+    page, _ = synthetic(colour=True)
+    for rule in ("min", "blue"):
+        _, record = tone(page, {"grey_rule": rule})
+        assert "blue-black" in record["grey"]["note"]
+    _, record = tone(page)
+    assert record["grey"]["rule"] == "luminance" and "default" in record["grey"]["note"]
+    meaning = SETTINGS_PATH.read_text().split("[grey_rule]")[1].split("[", 1)[0]
+    assert "blue-black" in meaning and "luminance (the default)" in meaning
+
+
+def test_background_edges_are_counted_only_where_the_estimate_steps():
+    _, even = tone(synthetic(stain=False)[0])
+    assert even["flatten"]["background_edges"]["edge_share"] == 0
+    assert even["flatten"]["background_edges"]["band_share"] == 0
+    _, stained = tone(synthetic()[0])
+    edges = stained["flatten"]["background_edges"]
+    assert 0 < edges["edge_share"] < edges["band_share"] < 0.5

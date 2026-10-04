@@ -5,7 +5,7 @@
 [grey_rule]
 value = "luminance"
 status = "UNMEASURED"
-meaning = "How a colour source becomes grey: luminance, min (the darkest of the three channels), or the red, green or blue channel alone. A grey source is used as it is."
+meaning = "How a colour source becomes grey: luminance (the default), min (the darkest of the three channels), or the red, green or blue channel alone. A grey source is used as it is. min and blue separate brown iron-gall ink from yellowed paper better than luminance, but make faint blue-black ink on yellow paper lighter than the paper; measure per collection before changing the default."
 
 [paper_level]
 value = 235
@@ -17,20 +17,30 @@ value = 750
 status = "UNMEASURED"
 meaning = "Long side, in pixels, of the reduced copy on which the paper background is estimated."
 
+[reference_dpi]
+value = 300
+status = "UNMEASURED"
+meaning = "The dpi at which the window settings below are given in pixels; a page with known dpi has them scaled by dpi / reference_dpi, a page without dpi uses them as they are."
+
 [background_window_px]
 value = 81
 status = "UNMEASURED"
-meaning = "Side, in source pixels, of the square closing window that removes strokes from the background estimate; much larger than any stroke, smaller than the lighting's changes. Half of it is also how far bright paper can leak into a dark stain at a sharp edge."
+meaning = "Side, in pixels at reference_dpi, of the square closing window that removes strokes from the background estimate; much larger than any stroke, smaller than the lighting's changes. Half of it is also how far bright paper can leak into a dark stain at a sharp edge."
+
+[floor_window_px]
+value = 405
+status = "UNMEASURED"
+meaning = "Side, in pixels at reference_dpi, of the much wider closing whose level times floor_share the background estimate never goes below, so a seal or blot wider than background_window_px but narrower than this keeps its darkness."
+
+[floor_share]
+value = 0.8
+status = "UNMEASURED"
+meaning = "Share of the wide closing (floor_window_px) below which the background estimate is never taken; 0 turns this floor off."
 
 [min_background_share]
 value = 0.5
 status = "UNMEASURED"
-meaning = "The background estimate is never taken darker than this share of the page's paper level, so a solid dark area wider than the window (a blot, a seal) is not lifted to paper."
-
-[background_blur_px]
-value = 12
-status = "UNMEASURED"
-meaning = "Radius, in source pixels, of the box blur that smooths the background estimate; also the widest halo a sharp stain edge can leave."
+meaning = "The background estimate is never taken darker than this share of the page's paper level, whatever the wide closing says, so a dark area wider than floor_window_px (a scanner backdrop) is not lifted to paper."
 
 [min_paper_share]
 value = 0.25
