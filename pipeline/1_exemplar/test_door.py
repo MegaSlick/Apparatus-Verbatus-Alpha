@@ -986,11 +986,25 @@ def test_a_colour_export_that_could_never_be_sealed_is_refused_at_the_door(tmp_p
     assert "stage-seal" not in kinds
 
 
-@pytest.mark.parametrize(("embed_pixels", "limit"), [(True, 10**6), (False, 1)])
+def test_the_export_estimate_allows_for_each_page_s_text_members():
+    """acts.csv and the other text members carry each page's transcriptions again, so a
+    page whose pixels cost almost nothing still counts the per-page text allowance."""
+    allowance = armarium_formats.TEXT_MEMBER_BYTES_PER_PAGE
+    assert allowance > 0
+    assert armarium_formats.estimated_embedded_export_bytes([(0, 1, 1, 1)] * 3) == 3 * (
+        armarium_formats.CROP_PAGE_COVERAGE * 2 + allowance
+    )
+
+
+@pytest.mark.parametrize(("embed_pixels", "within"), [(True, True), (False, False)])
 def test_an_export_within_the_archive_limit_or_without_pixels_passes_the_door(
-    tmp_path, monkeypatch, embed_pixels, limit
+    tmp_path, monkeypatch, embed_pixels, within
 ):
-    _page, _tree, context, admitted = _admitted_colour_page(tmp_path, embed_pixels=embed_pixels)
+    page, _tree, context, admitted = _admitted_colour_page(tmp_path, embed_pixels=embed_pixels)
+    # At exactly the estimate with pixels; with none, any limit at all.
+    limit = (
+        armarium_formats.estimated_embedded_export_bytes([(len(page), 40, 30, 3)]) if within else 1
+    )
     monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", limit)
     assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
 

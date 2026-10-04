@@ -404,13 +404,16 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   bootstrap's hard deadline; under the pod timer, the timer's hard deadline, which no
   file moves. The notice names the spend policy's soft and hard maximums as the launch sealed them
   into the pod's environment, or, for a pod launched without them, the checkout's
-  `config/spend.toml` by its SHA-256 (the pod's creation time is not known here, so it
-  states them rather than an instant), the finish
+  `config/spend.toml` by its SHA-256, the finish
   and deadline with how far off they are, the extra time and its cost at the hourly price
   (`--hourly-usd`, or a pod-timer launch's `VERBATUS_POD_HOURLY_USD` plus
   `VERBATUS_VOLUME_ONGOING_HOURLY_USD`, the launch-time estimate before create, which the
   notice names as such; "unknown" without either), and, for a guard
-  deadline, one command that moves it to the projected end. Under the pod timer it says
+  deadline, one command that moves it to the projected end but never past the hard
+  maximum, counted from the instant the start command recorded as
+  `.pod_guard/created-<pod id>` and stated as a clock time. When the projected end passes
+  the hard maximum it says so and offers only the hard maximum; without that instant or a
+  budget it says the command is unchecked. Under the pod timer it says
   the deadline cannot be extended by hand. It is sent once for each deadline value; a new
   value the lead writes re-arms it. A send that did not arrive (or found no guard topic
   yet) is recorded and retried on later ticks, three attempts in all. Nothing here moves
@@ -558,12 +561,23 @@ survives either way. The deadline is the guarantee; the idle delete saves money 
 Arm it at creation through the pod's start command, so it runs even if SSH never comes
 up. `pod_start_command.sh` prints that command: it fetches the guard from this public
 repository at a pinned commit, starts a backstop that deletes the pod an hour after its
-deadline even if the guard never ran, and then hands over to the image's `/start.sh`:
+deadline, and in any case at the hard maximum, even if the guard never ran, and then
+hands over to the image's `/start.sh`. The hard maximum is the sealed
+`VERBATUS_HARD_MAX_SECONDS` when set, else `hard_max_seconds` in the checkout's
+`config/spend.toml`; it counts from when the command is printed, just before the create,
+so print a fresh command for every pod, on a laptop whose clock is set automatically.
+At container start the guard's window is cut to end two minutes inside the hard maximum,
+so the guard's orderly delete comes first and the backstop is the fallback. The command
+refuses `<hours>` past the hard maximum, and refuses outright when the hard maximum
+cannot be read:
 
 ```sh
-runpodctl pod create ... --volume-mount-path /workspace/private \
-  --docker-args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"
+START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&
+runpodctl pod create ... --volume-mount-path /workspace/private --docker-args "$START"
 ```
+
+The `&&` matters: the script exits 2 and prints nothing when it refuses, and an inline
+`--docker-args "$(...)"` would let the create run anyway, with no guard.
 
 (`runpodctl create pod ... --args` in runpodctl releases before `pod create`.) `<hours>` is
 the approved window and `<sha>` a commit on `main` that carries the guard. The network
@@ -661,6 +675,7 @@ serves every chair in turn.
 From a checkout at `<sha>` on the laptop:
 
 ```sh
+START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&
 runpodctl pod create \
   --name verbatus-<run id> \
   --image <RunPod Ubuntu 24.04 CUDA image> \
@@ -671,12 +686,13 @@ runpodctl pod create \
   --volume-mount-path /workspace/private \
   --container-disk-in-gb 120 \
   --ports "22/tcp" \
-  --docker-args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"
+  --docker-args "$START"
 ```
 
 `<hours>` is the approved window, at most the soft maximum in `config/spend.toml` (2 h in
 the lead's budget): the guard deletes the pod at that deadline whatever the run is doing,
-and an hour later the backstop deletes it even if the guard never started.
+and an hour later, never past the hard maximum (3 h from creation), the backstop deletes
+it even if the guard never started.
 `runpodctl pod get <pod id>` shows the SSH details.
 
 ### On the pod, over SSH

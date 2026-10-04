@@ -50,9 +50,12 @@ def test_spend_show_reads_the_policy_without_writing(tmp_path: Path) -> None:
     assert "Combined hourly ceiling: $1.00" in rendered
     assert "Hard-stop balance floor: $50.00" in rendered
     assert "Notification-only balance alert: $75.00" in rendered
-    assert "Hard lifetime ceiling: 900 seconds" in rendered
-    assert "Soft maximum: 14400 seconds and $2.00" in rendered
-    assert "Hard maximum: 21600 seconds and $3.00" in rendered
+    assert "Launch lifetime (the deadline a launch sets at creation): 900 seconds (0.25 h)" in (
+        rendered
+    )
+    assert "lifetime ceiling" not in rendered
+    assert "Soft maximum: 14400 seconds (4 h) and $2.00" in rendered
+    assert "Hard maximum: 21600 seconds (6 h) and $3.00" in rendered
 
 
 def test_spend_refuses_to_display_unconfigured_policy_as_configured(tmp_path: Path) -> None:

@@ -4,9 +4,16 @@
 Double-click [Verbatus.command](Verbatus.command) and answer one question at a time. The
 program always tells you what happened, what it means, and what to do next.
 
-If you would rather type, `python3 -m operations.operator.entry <word>` from the project
-folder, or `verbatus <word>` once the project is installed, runs the same code.
+If you would rather type, `.venv/bin/python -m operations.operator.entry <word>` from the
+project folder, or `verbatus <word>` once the project is installed, runs the same code.
 `verbatus <word> --help` lists every flag.
+
+**On a Mac:** macOS 13 (Ventura) or later, Intel or Apple silicon; the PDF library
+(pypdfium2) has no wheels for older versions. `sw_vers -productVersion; uname -m` shows
+both. git needs the Xcode Command Line Tools (`xcode-select --install`). Their `python3`
+is 3.9, too old here, so run Python only as `uv run …` or `.venv/bin/python …`, never a
+bare `python` or `python3`; `uv sync --frozen --group test --group audit` builds `.venv` on
+Python 3.12.
 
 ## Read this first: what this is today
 
@@ -53,6 +60,13 @@ any time to check on things and one that tidies up.
 Use `review` to read a run tree without changing it, `advance` only once you have decided
 to pass a sealed boundary, and `status` whenever you are unsure what this tool has done.
 
+**Exit codes.** Every word exits 0 when it did what was asked and 2 otherwise: a
+refusal, a failure, a held or halted run and a partial export all exit 2, and the
+`What happened:` line says which. `pod_run` and the orchestrator keep their own codes (3
+held, 4 halted and more; `operations/pod/run_exits.py`, listed in `LIVE_READINESS.md`
+step 7), so the same held run exits 3 on a
+pod and 2 under `verbatus run`.
+
 `run`, `ingest`, `triage` and `spend` read configuration, stage code or
 proof material from the workspace, and refuse (`not-a-checkout`) when the folder they run
 in, or the one named with `--workspace`, lacks the `pipeline/`, `config/` or `proof/` they
@@ -97,6 +111,20 @@ proxies, candidate evidence, triage documents and a final `ingest-ready.json`.
 
 Every `run` ends by printing the exact `verbatus review --run-root … --run-id …` line for
 its tree, whatever its end state; `status` prints the same line under every run.
+
+**A real submission needs its run tree under `private/`.** `run` keeps the tree under the
+state directory (`<state dir>/runs`), and the Door's data gate accepts real material only
+under an approved storage root (`config/data_handling_policy.json`: `private/` on this
+computer). With the default state directory the Door refuses at once, `the run root is
+outside every approved storage root`. Put the state directory there, before the word, and
+keep it for every later word about that run:
+
+```sh
+verbatus --state-dir private/verbatus-state run --run-id <run> \
+  --submission-folder private/<folder> --submission-manifest private/<folder>-manifest.json
+```
+
+The synthetic fixture run needs none of this.
 
 `export` names the run first (with no `--run-id` it takes the most recent and says so) and
 succeeds only when the run's recorded state is `complete`. Over a held or partial run it
@@ -306,8 +334,10 @@ call used and which arrived.
 
 `verbatus spend show` shows the policy's ceilings, hard-stop balance floor and
 notification-only alert threshold, each with the policy's SHA-256. It never fetches a
-balance or edits `config/spend.toml`. The checked-in policy is deliberately unconfigured
-and refuses rather than inventing values.
+balance or edits `config/spend.toml`. Each time limit shows hours beside its seconds.
+`Launch lifetime` is the deadline a launch sets at creation; the soft maximum is where the
+guard's deadline sits, and the hard maximum is as far as the lead may extend it. A policy
+with `state = "unconfigured"` is refused rather than shown with invented values.
 
 ## When something goes wrong
 
@@ -345,7 +375,8 @@ them home into `<local root>/evidence/`. During the run, `fetch-run` compares ra
 replaces, so copy the four files yourself (for example `scp` from the pod) into a folder
 each time; reading them over S3 from `watch` itself is the next step.
 
-It shows, in a few short lines:
+It prints `Verbatus works on this computer…` and `As of <time> (this computer's clock):`,
+then, in a few short lines:
 
 - **STALE** first, loudly, while the run is still going: the liveness copy and the
   estimate copy are each judged on their own time (`last_seen`, `updated_at`) against
@@ -367,14 +398,17 @@ It shows, in a few short lines:
   from the verified lease since the pod was created; without it, `at least` pod_run's
   `--hourly-usd` since pod_run started. A lease whose seal does not verify is named and
   not used.
-- The last notice `pod_run` recorded, and whether it was delivered; each finished stage
-  invocation's duration, with unreadable timings lines counted; the liveness age.
+- `Last notice:` the last notice `pod_run` recorded, and whether it was delivered (or
+  `none recorded`); `Stage runs:` each finished stage invocation's duration, with
+  unreadable timings lines counted; `Liveness:` whether the orchestrator was running and
+  how old that copy is.
 
 Without `--interval` it shows once. With `--interval N` it reads again every N seconds,
 prints only when a copy changed or turned stale, reads once more after a pause when a
 copy did not parse (it may have been caught mid-copy), and stops when the report says the run
 ended or after `--timeout`. Ctrl+C stops it. A missing or another run's report is refused
-(`watch-unreadable`); a missing or unreadable sibling is named as a note.
+(`watch-unreadable`, exit 2); a missing or unreadable sibling is named as a note, and the
+exit stays 0. `LIVE_READINESS.md` (step 8) shows its output on synthetic copies.
 
 Not built yet: reading the files over S3 itself, `--json`, and the design's run states and
 exit codes (`docs/design/control-surface.md`).
@@ -409,7 +443,9 @@ elsewhere and still read.
    under `submission/` and the ledger as `submission-manifest.json`; `--prefix batch-02`
    writes `batch-02/` and `batch-02-manifest.json`, and its pod request must name matching
    submission paths. Re-sending the same manifest is idempotent; a different manifest at
-   an occupied prefix is refused before any image is written.
+   an occupied prefix is refused before any image is written. That holds for the local
+   folder too: a second sealed folder (the spreads beside the pages, say) needs its own
+   prefix, `--prefix spreads`.
 2. **`run` runs on this computer, not on a pod**, so a real-roster run stops where a stage
    first needs a served chair. Use the shipped real pair together. The pod's run is
    `python -m operations.pod.pod_run`, and `fetch-run` brings its tree home.

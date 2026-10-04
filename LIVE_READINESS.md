@@ -18,16 +18,22 @@ $2.10/h for pod plus volume, a soft maximum of 2 h or $5.00 and a hard maximum o
 $7.00, whichever comes first. A pod's window is 2 h: the guard's deadline sits at the
 soft maximum. Going past it is an extension only the lead makes, and the hard maximum
 bounds it at 3 h. The hourly cap admits the RTX PRO 6000 ($1.99/h) beside a volume of up
-to $0.11/h, so 2 h costs about $4.10 and 3 h about $6.15 at a $0.06/h volume. The hand
-route below (`runpodctl` plus the pod guard) does not enforce the file, so the lead's
-approval in the session is the limit that counts, and it stays inside this budget.
+to $0.11/h, so 2 h costs about $4.10 and 3 h about $6.15 at a $0.06/h volume. On the hand
+route below (`runpodctl` plus the pod guard) the file bounds time only: the start command
+refuses a window past the hard maximum and its backstop deletes the pod at the hard
+maximum from creation. Nothing on that route checks the hourly price or the cost, so the
+lead's approval in the session is the limit that counts there, inside this budget.
 
 **The plan inside it.** Nothing has been timed on a real pod, so these are planning
-figures. Costs are $1.99/h plus the volume's hourly price (to confirm in the console).
+figures. Costs are the card's hourly price ($1.99/h; the drill's A5000 $0.27/h) plus the
+volume's hourly price (to confirm in the console). The windows run from container start,
+so the image pull before it adds a few minutes to each. The backstop deletes a pod an
+hour after its deadline and never later than 3 h from creation, so only a drill whose
+deadline was moved out could reach the 3 h cap ($0.81 + volume).
 
 | Launch | Card | Window | Most it can cost |
 |---|---|---|---|
-| Guard drill | RTX A5000 | 1 h | about $0.55 (the backstop may add an hour) |
+| Guard drill | RTX A5000 | 1 h | $0.27 + volume if the guard works; at most $0.54 + volume (2 h) if it fails, when the backstop deletes an hour after the 1 h deadline |
 | Run 1: 4 prepared pages | RTX PRO 6000 | 2 h, extendable to 3 h | about $3.98 + volume; $5.97 + volume extended |
 | Run 2: 2 original spreads | RTX PRO 6000 | 2 h, extendable to 3 h | about $3.98 + volume; $5.97 + volume extended |
 | Run 3: a slightly larger set | RTX PRO 6000 | 2 h, extendable to 3 h | about $3.98 + volume; $5.97 + volume extended |
@@ -46,6 +52,19 @@ the policy, ending with the `Soft maximum` and `Hard maximum` lines; it never re
 balance.
 
 ## 2. Set up the Mac (free)
+
+**The Mac needs macOS 13 (Ventura) or later**, Intel or Apple silicon. The PDF library
+(pypdfium2) ships wheels only for macOS 13 and later; on an older macOS the install falls
+back to an untested build from source. Check first:
+
+```sh
+sw_vers -productVersion; uname -m    # 13.0 or later; x86_64 (Intel) or arm64 (Apple silicon)
+```
+
+git needs the Xcode Command Line Tools (`xcode-select --install`; the first `git clone`
+offers them too). Their `python3` is 3.9, too old for this repository: run Python only
+as `uv run …` or `.venv/bin/python …`, never a bare `python` or `python3`. uv builds
+`.venv` on Python 3.12 (`.python-version`), downloading it if the Mac has none.
 
 In Terminal, from a fresh clone. uv must be exactly 0.12.1 (installer line: to confirm).
 
@@ -73,15 +92,17 @@ read -rs RUNPOD_S3_SECRET_KEY; export RUNPOD_S3_SECRET_KEY
 
 Linux CI runs these; only a Mac run proves them on macOS.
 
+Each command below exits 0 when it passes and non-zero when anything fails.
+
 - **F10, the uv guard.** Expected: all pass, including the `sh` and `bash-posix` cases.
-  `python -m pytest .githooks/test_ci_workflow.py -k "path_entry"`
+  `.venv/bin/python -m pytest .githooks/test_ci_workflow.py -k "path_entry"`
 - **F11, tests leave real state alone.** Expected: the `find` prints nothing.
   ```sh
   touch /tmp/before-tests && sh .githooks/check-all.sh
   find ~/.local/state ~/Library -newer /tmp/before-tests -iname '*verbatus*' 2>/dev/null
   ```
 - **F12, the golden pins.** Expected: passes, so the HAPPY and REVIEW pins are the same
-  on the Mac as on Linux. `python -m pytest pipeline/orchestrator/test_orchestrator_acceptance.py`
+  on the Mac as on Linux. `.venv/bin/python -m pytest pipeline/orchestrator/test_orchestrator_acceptance.py`
 
 ## 4. Check the pages on the Mac (free)
 
@@ -92,16 +113,40 @@ them first.
 
 ```sh
 find private/rg-pages private/rg-spreads -name .DS_Store -delete
-verbatus upload --source private/rg-pages --manifest-out private/rg-pages-manifest.json
-verbatus run --run-id local-rg-pages --submission-folder private/rg-pages \
-  --submission-manifest private/rg-pages-manifest.json
+verbatus --state-dir private/verbatus-state upload --source private/rg-pages \
+  --manifest-out private/rg-pages-manifest.json
+verbatus --state-dir private/verbatus-state upload --source private/rg-spreads \
+  --manifest-out private/rg-spreads-manifest.json --prefix spreads
+verbatus --state-dir private/verbatus-state run --run-id local-rg-pages \
+  --submission-folder private/rg-pages --submission-manifest private/rg-pages-manifest.json
+verbatus --state-dir private/verbatus-state run --run-id local-rg-spreads \
+  --submission-folder private/rg-spreads --submission-manifest private/rg-spreads-manifest.json
 ```
 
-The first line seals the folder (copied locally only). The second is **expected to stop
-at the Designator, exit 2**, naming the record detector chair `'secondary_proposer'` as a
-`'fixture' row`: the default roster has no real models. It proves the pages pass the data
-gate, Door, Exemplar and ink map on this Mac. On Linux all six images passed: 8-bit
-grey, none bilevel or 16-bit; pages 3112x4440 at 600 DPI, spreads 3864x3056 and 3672x2744.
+The two uploads seal the folders and copy them to a local folder only; each exits 0. The
+spreads need `--prefix spreads`: the local folder, like the volume, keeps one sealed
+manifest under each name, and the pages already hold the default `submission`, so
+without it the second upload is refused (exit 2, `target 'submission-manifest.json'
+exists but differs`).
+
+`--state-dir private/verbatus-state` goes before the word, on every command here. A run
+keeps its tree under the state directory, and the Door's data gate accepts real pages
+only under an approved storage root (`private/` on the Mac,
+`config/data_handling_policy.json`). Without it the tree is under
+`~/.local/state/verbatus/` and the Door refuses at once: `the run root is outside every
+approved storage root`. Give the same `--state-dir` to `status`, `review` and `export`
+for these runs, since their records are kept there.
+
+Each `run` is **expected to stop at the Designator, exit 2**, naming the record detector
+chair `'secondary_proposer'` as a `'fixture' row`: the default roster has no real models.
+It proves the pages pass the data gate, Door, Exemplar and ink map on this Mac. On Linux
+all six images passed: 8-bit grey, none bilevel or 16-bit; pages 3112x4440 at 600 DPI,
+spreads 3864x3056 and 3672x2744.
+
+`verbatus` gives only two exit codes, whatever the word: 0 when it did what was asked, and
+2 for everything else, a refusal, a failure, a held or halted run and a partial export
+alike; the `What happened:` line says which. Only `pod_run` and the orchestrator (step 7)
+tell held (3) from halted (4) by the exit code.
 
 ## 5. Send the pages to the volume and prove the way home (free of GPU time)
 
@@ -112,10 +157,12 @@ verbatus fetch-run --run-id s3-path-check --into /tmp/verbatus-s3-check \
   --network-volume DATACENTER:VOLUME_ID
 ```
 
-The upload writes `submission/` and `submission-manifest.json` on the volume. The fetch
-should refuse, naming `nothing is stored under 'runs/s3-path-check/'`: that proves the
-listing works. Any other error is fixed before renting. For the spreads later, seal
-`private/rg-spreads` the same way and upload with `--prefix spreads`.
+The upload writes `submission/` and
+`submission-manifest.json` on the volume and exits 0. The fetch should refuse with exit
+2, naming `nothing is stored under 'runs/s3-path-check/'`: that proves the listing works.
+Any other error is fixed before renting. For the spreads later, upload
+`private/rg-spreads` with `--sealed-manifest private/rg-spreads-manifest.json --prefix
+spreads`, as in step 4.
 
 Pick the commit the pod will run: `git fetch origin && git rev-parse origin/main`. Use
 the full 40 characters as `<sha>` below.
@@ -125,14 +172,23 @@ the full 40 characters as `<sha>` below.
 Proves the pod guard arms from the start command and deletes the pod by itself.
 
 ```sh
+START=$(sh operations/pod/pod_start_command.sh 1 <sha>) &&
 runpodctl pod create --name verbatus-guard-drill \
   --image <RunPod Ubuntu 24.04 CUDA image> \
   --gpu-id "NVIDIA RTX A5000" --gpu-count 1 --cloud-type SECURE \
   --data-center-ids <DATACENTER> --network-volume-id <VOLUME_ID> \
   --volume-mount-path /workspace/private --container-disk-in-gb 20 --ports "22/tcp" \
-  --docker-args "$(sh operations/pod/pod_start_command.sh 1 <sha>)"
+  --docker-args "$START"
 runpodctl pod get <pod id>          # shows the SSH details
 ```
+
+`pod_start_command.sh` exits 0 and prints the start command, or exits 2 and prints
+nothing when the hours are past the hard maximum (3 h) or the hard maximum cannot be read
+from `config/spend.toml`. The `&&` keeps a refusal from creating a pod: written inline as
+`--docker-args "$(...)"`, the create would still run, with no guard. The backstop counts
+the hard maximum from when the command is printed, so print it afresh for every pod. That
+moment is read from the laptop's clock, so keep it set automatically (System Settings,
+General, Date & Time).
 
 Over SSH, `tail /workspace/private/.pod_guard/guard.log` must show `armed for pod <id>`;
 if not, `runpodctl pod delete <pod id>` and stop. Otherwise leave it: idle, it should
@@ -150,7 +206,8 @@ sed -n 's/^NTFY_TOPIC=//p' private/ntfy.conf | tail -n 1 | tr -d "\"'" |
 
 Create the pod as in step 6, but with `--name verbatus-<run id>`,
 `--gpu-id "NVIDIA RTX PRO 6000 Blackwell Server Edition"`, `--container-disk-in-gb 120`
-and `pod_start_command.sh 2 <sha>` (the 2 h window, the soft maximum). Then, on the
+and `pod_start_command.sh 2 <sha>` (the 2 h window, the soft maximum; it refuses more
+than the 3 h hard maximum). Then, on the
 pod over SSH, the checks from `operations/pod/README.md` ("On the pod, over SSH"):
 `findmnt /workspace/private`, the guard log, `echo "$RUNPOD_POD_ID"`, the deadline file,
 then
@@ -198,6 +255,11 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   maximums, the extra time and its cost, and the command that moves the deadline. Nothing
   moves the deadline by itself; extending is the lead's call.
 - For the spreads, use `--submission-folder $V/spreads --submission-manifest $V/spreads-manifest.json`.
+- `pod_run` runs detached, so its exit code is read from its report (`exit_code`, and
+  `verbatus watch` shows it on the run line once the run ends): 0 complete, 2 refused
+  before the orchestrator ran, 3 held for review, 4 halted, 5 a red bootstrap step, 6 the
+  orchestrator failed or refused (an oversized export, step 9, is this), 7 a dry run, 8 a
+  selected range completed before the Armarium.
 - Use the same `--store-root` every time, so later pods reuse the downloaded weights.
 
 ## 8. Watch it from the Mac
@@ -215,23 +277,47 @@ while :; do
 done
 ```
 
-A healthy run reads like this (synthetic files, real output):
+`verbatus watch` exits 0 when it shows the run, and 2 when the report copy is missing or
+names another run (`watch-unreadable`). A healthy run reads like this (synthetic files,
+rendered by the real code):
 
 ```text
+Verbatus works on this computer. It will not contact a cloud provider.
+As of 2026-10-04 12:37 UTC (this computer's clock):
 Run rg-pages-1: pod_run report says running.
 Stage attestatores: 2/4 pages.
-This stage finishes about 2026-10-04 01:24 UTC (in 39 min); later stages are not counted.
-Deadline 2026-10-04 01:44 UTC (in 59 min), the pod guard's deadline; extendable by hand: yes.
+This stage finishes about 2026-10-04 13:16 UTC (in 39 min); later stages are not counted.
+Deadline 2026-10-04 13:36 UTC (in 59 min), the pod guard's deadline; extendable by hand: yes.
 Guard: watch cannot tell whether the guard is armed; it shows only the deadline pod_run read from the guard's file.
 Budget: soft max 2 h / $5.00, hard max 3 h / $7.00.
-Spend to now: at least $2.05 of soft $5.00 / hard $7.00 (1.0 h at $2.05/h since pod_run started; the pod was created earlier).
+Spend to now: at least $2.03 of soft $5.00 / hard $7.00 (59 min at $2.05/h since pod_run started; the pod was created earlier).
+Last notice: none recorded.
+Stage runs: door 0 min, exemplar 1 min, ink-map 2 min, designator 10 min.
+Liveness: orchestrator running, last seen 0 min ago (by this computer's clock).
+```
+
+The same copies 46 minutes old open with two STALE lines, one for each copy, and every
+estimate line says when it was true:
+
+```text
+Verbatus works on this computer. It will not contact a cloud provider.
+As of 2026-10-04 12:37 UTC (this computer's clock):
+STALE liveness: last written 46 min ago (limit 2 min). Copy fresh files from the volume, or check the pod.
+STALE estimate: written 46 min ago (limit 2 min); its stage, finish and deadline are as of then, not now.
+Run rg-pages-1: pod_run report says running.
+Stage attestatores: 2/4 pages (as of 2026-10-04 11:50 UTC, 46 min old).
+This stage finishes about 2026-10-04 13:16 UTC (in 39 min) (as of 2026-10-04 11:50 UTC, 46 min old); later stages are not counted.
+Deadline 2026-10-04 13:36 UTC (in 59 min) (as of 2026-10-04 11:50 UTC, 46 min old), the pod guard's deadline; extendable by hand: yes.
+...
+Liveness: orchestrator running, last seen 46 min ago (by this computer's clock).
 ```
 
 What the other lines mean:
 
-- **`STALE liveness: last written 47 min ago (limit 2 min). Copy fresh files from the
-  volume, or check the pod.`** The copies are old, or the pod has stopped writing. Every
-  line after it says the time it was true (`as of …, 47 min old`).
+- **`STALE liveness: …` and `STALE estimate: …`.** The copies are old, or the pod has
+  stopped writing. Each copy is judged on its own time, so one can be stale without the
+  other; the stage, finish and deadline lines then say the time they were true (`as of …,
+  46 min old`).
 - **`Estimated finish: unknown; the estimate is failing (12 ticks): <error>.`** The run
   may be fine, but there is no finish time; the deadline line then falls back to `the
   bootstrap's hard deadline from the report … the guard's own deadline may be earlier`.
@@ -250,10 +336,11 @@ the lead's decision: a new deadline file (`operations/pod/README.md`, "The pod g
 ## 9. If the run stops early
 
 - **Export too large** (only when `embed_pixels = true` in `config/formats.toml`): the
-  Door refuses before any reading, `… is <n> bytes, above the 201326592-byte export
+  Door refuses before any reading (`pod_run` exit 6; `verbatus run` exit 2), `… is <n> bytes, above the 201326592-byte export
   archive limit, so it could never be sealed. Nothing was dropped: …`. Start smaller
   runs, or keep `embed_pixels = false` (the shipped setting).
-- **Halted** (exit 4): more than two counted failures; see `review` (step 11).
+- **Halted** (`pod_run` exit 4; `verbatus run` exit 2): more than two counted failures;
+  see `review` (step 11).
 
 ## 10. Confirm the pod is gone
 
@@ -287,9 +374,13 @@ verbatus export --run-id <run id> --run-root <local root>
 verbatus backup --run-root <local root> --run-id <run id> --mac-directory <synced folder>
 ```
 
-A run that holds pages exits 3; `review` says why, and each decision is the lead's
-(`operations/operator/README.md`, "Recording a review decision"). `export` refuses, with
-no bundle written, a run whose Armarium export was never sealed (`export-unsealed`:
+`fetch-run`, `review` and `backup` exit 0 when they finish and 2 when they refuse. A run
+that holds pages ended with `pod_run` exit 3 (the same run under `verbatus run` on the
+Mac exits 2); `review` says why, and each decision is the lead's
+(`operations/operator/README.md`, "Recording a review decision"). `export` exits 0 only
+for a complete run; over a held run it copies what was delivered and exits 2
+(`export-partial`). It refuses, exit 2 and no bundle written, a run whose Armarium export
+was never sealed (`export-unsealed`:
 "The run has an Armarium export record, but its completion seal is missing or does not
 verify."); open it with `review` and bring it to the lead before running the Armarium
 again.
@@ -306,9 +397,10 @@ again.
 3. **A slightly larger set**, for example 8 to 12 pages from `private/` or
    `scriptorium/`. Proves timing and the hold rate at a size where held pages show a
    pattern. Keep `embed_pixels = false`. With pixels embedded the Door estimates each
-   page like these at about 33 MiB (its stored bytes plus two whole-page crops), so the
-   four pages come to 131.7 MiB, all six images to 176.2 MiB, and a seventh page of this
-   size is refused (checked on Linux).
+   page like these at about 34 MiB (its stored bytes, two whole-page crops and 1 MiB for
+   the text members), so the four pages come to 135.7 MiB, all six images to 182.2 MiB,
+   and a seventh page of this size is refused (the pixel sums checked on Linux, plus
+   1 MiB a page).
 
 ## 13. Open live checks
 

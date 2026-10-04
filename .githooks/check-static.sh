@@ -22,6 +22,7 @@ scripts=".githooks/check-all.sh
 .githooks/check-documents.sh
 .githooks/check-fast.sh
 .githooks/check-static.sh
+.githooks/find-python.sh
 .githooks/commit-msg
 .githooks/install.sh
 .githooks/pre-commit

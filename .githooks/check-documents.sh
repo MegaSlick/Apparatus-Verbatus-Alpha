@@ -36,7 +36,11 @@ for file in $documents; do
 done
 
 # Paths with control characters could split one record into two for later checks.
-python3 .githooks/check_ingress.py --paths || failed=1
+if python=$(sh .githooks/find-python.sh); then
+  "$python" .githooks/check_ingress.py --paths || failed=1
+else
+  failed=1
+fi
 
 # Every tracked path has a row in the separation inventory, and every row still matches
 # a tracked path. A row ending in `/` covers everything under it.

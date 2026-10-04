@@ -3,6 +3,7 @@
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -154,7 +155,8 @@ def commit_file(repo, name, text, message="fixture", env=None):
 def copy_hooks(repo, *names):
     target = repo / ".githooks"
     target.mkdir(exist_ok=True)
-    for name in names:
+    # Every hook finds its interpreter through this one.
+    for name in (*names, "find-python.sh"):
         shutil.copy2(HOOKS / name, target / name)
     return target
 
@@ -649,3 +651,48 @@ def test_pre_commit_runs_without_the_gate_where_there_is_no_clean_room(tmp_path)
     stage(repo, "pagekit/check.py", "VALUE = 1\n")
     result = run_hook(repo, "pre-commit")
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def old_python_first(tmp_path):
+    """A PATH whose first python3 is too old for the checks, as macOS's own 3.9 is."""
+    fake = tmp_path / "old-python"
+    fake.mkdir()
+    python3 = fake / "python3"
+    python3.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in *version_info*) exit 1 ;; esac\n'
+        "echo \"ModuleNotFoundError: No module named 'tomllib'\" >&2\n"
+        "exit 1\n"
+    )
+    python3.chmod(0o755)
+    return {"PATH": f"{fake}:{os.environ['PATH']}"}
+
+
+@pytest.mark.parametrize("hook", ["commit-msg", "pre-commit"])
+def test_a_hook_with_only_an_old_python_says_so_not_credential(tmp_path, hook):
+    repo = make_commit_message_repo(tmp_path / "repo")
+    copy_hooks(repo, "pre-commit")
+    (repo / "staged.txt").write_text("fine\n")
+    git(repo, "add", "staged.txt")
+    args = ("message.txt",) if hook == "commit-msg" else ()
+    (repo / "message.txt").write_text("add a note\n")
+    result = run_hook(repo, hook, args=args, env=old_python_first(tmp_path))
+    assert result.returncode == 1
+    assert "Python 3.11 or later" in result.stderr
+    assert "uv sync" in result.stderr
+    assert "credential" not in result.stderr
+
+
+@pytest.mark.parametrize("hook", ["commit-msg", "pre-commit"])
+def test_a_hook_prefers_the_checkout_s_venv_over_an_old_python3(tmp_path, hook):
+    repo = make_commit_message_repo(tmp_path / "repo")
+    copy_hooks(repo, "pre-commit")
+    venv = repo / ".venv" / "bin"
+    venv.mkdir(parents=True)
+    (venv / "python").symlink_to(sys.executable)
+    (repo / "staged.txt").write_text("fine\n")
+    git(repo, "add", "staged.txt")
+    args = ("message.txt",) if hook == "commit-msg" else ()
+    (repo / "message.txt").write_text("add a note\n")
+    result = run_hook(repo, hook, args=args, env=old_python_first(tmp_path))
+    assert result.returncode == 0, result.stderr

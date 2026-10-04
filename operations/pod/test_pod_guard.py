@@ -8,15 +8,23 @@ advances, so a test waits on what the guard did rather than on seconds passing.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
+
+# pod_guard.sh and the command pod_start_command.sh prints run only on the Linux pod, and
+# these tests run them under GNU date, touch and sleep. The laptop half, which a Mac runs
+# too, is test_pod_start_command.py.
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="pod_guard.sh and the printed start command run only on the Linux pod",
+)
 
 HERE = Path(__file__).parent
 GUARD = HERE / "pod_guard.sh"
@@ -169,14 +177,6 @@ def test_a_failed_gpu_query_counts_as_busy(pod):
     stub.write_text("#!/bin/sh\nexit 1\n")
     run_guard(env, "0.001")
     assert "approved time is up" in log_of(state)
-
-
-def test_the_start_command_refuses_a_malformed_hours_value(pod):
-    env, _, _ = pod
-    result = subprocess.run(
-        ["sh", str(START_COMMAND), "1.2.3", "0" * 40], env=env, capture_output=True
-    )
-    assert result.returncode == 2
 
 
 def run_guard(env, hours):
@@ -659,7 +659,7 @@ def start_command(env, hours):
 
 def test_the_start_command_arms_the_guard_and_keeps_the_container_up(pod):
     env, calls, state = pod
-    argv, env = start_command(env, "5")
+    argv, env = start_command(env, "3")
     alive = run_until(argv, env, lambda: halted(env))
     assert "armed for pod testpod" in log_of(state)
     assert "no GPU, CPU or network work" in log_of(state)
@@ -689,21 +689,53 @@ def test_the_backstop_honours_an_extended_deadline(pod):
     assert lines(calls) == []
 
 
-def test_the_guard_keeps_its_records_under_the_volume_mount_the_bootstrap_requires():
-    from operations.pod.models import POD_VOLUME_MOUNT_PATH
+def test_the_backstop_deletes_at_the_hard_maximum_even_past_an_extended_deadline(pod):
+    env, calls, state = pod
+    env["FAKE_CURL_FAIL"] = "yes"
+    env["VERBATUS_HARD_MAX_SECONDS"] = "5"
+    state.mkdir()
+    started = clock_of(env)
+    (state / "deadline-testpod").write_text(f"{started + 3600}\n")
+    argv, env = start_command(env, "0.0003")
+    run_until(argv, env, lambda: halted(env))
+    assert "pod delete testpod" in lines(calls)
+    # Five seconds from when the command was printed, plus at most one poll.
+    assert clock_of(env) <= started + 6
+    # The instant the hard maximum counts from, for the finish estimate on the pod.
+    assert (state / "created-testpod").read_text() == f"{started}\n"
 
-    expected = f"{POD_VOLUME_MOUNT_PATH}/.pod_guard"
-    env = {key: value for key, value in os.environ.items() if key != "POD_GUARD_DIR"}
+
+def test_the_backstop_wakes_at_the_hard_maximum_not_a_whole_poll_later(pod):
+    env, calls, state = pod
+    env["FAKE_CURL_FAIL"] = "yes"
+    env["VERBATUS_HARD_MAX_SECONDS"] = "5"
+    started = clock_of(env)
+    # A real five-minute poll: each sleep second moves the fake clock one second.
+    env = {**env, "POD_BACKSTOP_GRACE": "1", "POD_BACKSTOP_POLL": "300"}
     printed = subprocess.run(
-        ["sh", str(START_COMMAND), "1", "0" * 40], env=env, capture_output=True, text=True
+        ["sh", str(START_COMMAND), "0.001", "0" * 40],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
-    assert f"${{POD_GUARD_DIR:-{expected}}}; export POD_GUARD_DIR=$d;" in printed
-    assert f"dir=${{POD_GUARD_DIR:-{expected}}}" in GUARD.read_text()
-    policy = json.loads((HERE.parents[1] / "config" / "data_handling_policy.json").read_text())
-    assert POD_VOLUME_MOUNT_PATH in policy["storage_roots"]
-    from operations.pod import pod_run
+    run_until(["sh", "-c", printed], env, lambda: halted(env))
+    assert "pod delete testpod" in lines(calls)
+    assert clock_of(env) <= started + 6
 
-    assert expected == f"{POD_VOLUME_MOUNT_PATH}/{pod_run.POD_GUARD_DIRECTORY}"
+
+def test_the_guard_s_deadline_never_passes_the_hard_maximum(pod):
+    """The image pull runs between printing the command and starting the container; the
+    guard's window is cut so its orderly end comes before the backstop's cap."""
+    env, calls, state = pod
+    env["VERBATUS_HARD_MAX_SECONDS"] = "7200"
+    printed_at = clock_of(env)
+    argv, env = start_command(env, "2")
+    clock = Path(env["POD_GUARD_DIR"]).parent / "clock"
+    clock.write_text(f"{printed_at + 600}\n")
+    deadline = state / "deadline-testpod"
+    run_until(argv, env, deadline.exists)
+    assert int(deadline.read_text()) <= printed_at + 7200 - 120
 
 
 def test_a_guard_fetched_from_an_older_commit_still_uses_the_start_command_s_directory(
@@ -716,7 +748,7 @@ def test_a_guard_fetched_from_an_older_commit_still_uses_the_start_command_s_dir
     )
     env = {key: value for key, value in env.items() if key != "POD_GUARD_DIR"}
     env["FAKE_GUARD"] = str(older)
-    argv, env = start_command(env, "5")
+    argv, env = start_command(env, "3")
     argv[2] = argv[2].replace("/workspace/private/.pod_guard", str(state))
     run_until(argv, env, lambda: "pod delete testpod" in lines(calls))
     assert "armed for pod testpod" in log_of(state)

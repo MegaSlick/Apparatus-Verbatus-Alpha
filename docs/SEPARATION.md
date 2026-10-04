@@ -40,6 +40,7 @@ for a script to read.
 | `.githooks/check-static.sh` | PRODUCT | drop `session_end_pod_check.sh` from its list |
 | `.githooks/check_ingress.py` | PRODUCT | credential and path scan |
 | `.githooks/commit-msg` | PRODUCT | |
+| `.githooks/find-python.sh` | PRODUCT | the interpreter every hook runs its checks under |
 | `.githooks/install.sh` | PRODUCT | stop creating the `workbench/` folders |
 | `.githooks/pre-commit` | PRODUCT | |
 | `.githooks/pre-merge-commit` | PRODUCT | |
@@ -50,6 +51,7 @@ for a script to read.
 | `.githooks/test_serving_audit.py` | PRODUCT | |
 | `.github/` | PRODUCT | CI, Dependabot, pull request template |
 | `.gitignore` | PRODUCT | drop the harness lines |
+| `.python-version` | PRODUCT | the interpreter uv picks on a Mac; one CI tests |
 | `.graphifyignore` | HARNESS | |
 | `AGENTS.md` | HARNESS | working rules for AI sessions |
 | `ARCHITECTURE.md` | PRODUCT | |

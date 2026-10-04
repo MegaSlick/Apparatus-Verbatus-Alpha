@@ -146,6 +146,24 @@ def test_ci_installs_pyprojects_uv_and_syncs_only_a_current_lock(install_stubs):
     assert "uv sync --frozen --group test --group audit" not in log.read_text()
 
 
+def test_the_pinned_python_is_one_ci_runs_and_never_replaces_a_leg_s_own():
+    """`.python-version` picks the interpreter uv creates `.venv` with on a Mac. CI tests
+    it, and every leg that syncs names its own matrix version, or uv would build the 3.14
+    leg's environment on the pinned 3.12."""
+    pinned = (ROOT / ".python-version").read_text(encoding="ascii").strip()
+    jobs = workflow()["jobs"]
+    assert pinned in jobs["test"]["strategy"]["matrix"]["python-version"]
+    syncing = [
+        step
+        for job in jobs.values()
+        for step in job.get("steps", [])
+        if "uv sync" in step.get("run", "")
+    ]
+    assert syncing
+    for step in syncing:
+        assert step.get("env", {}).get("UV_PYTHON") == "${{ matrix.python-version }}", step
+
+
 def gate_repo(tmp_path):
     """Stop after the early environment checks instead of entering the real suite."""
 
@@ -682,3 +700,29 @@ def test_pushes_to_other_branches_get_the_same_ingress_scan_as_ci():
     ]
     assert scan["run"] == step_run("Repository ingress")
     assert "concurrency" not in document, "a cancelled run would leave a push unscanned"
+
+
+def test_the_mac_job_runs_both_chips_outside_the_required_check():
+    """Intel and Apple silicon, on the pinned Python, every subset path real, and never
+    a need of `check`, so the Linux gate alone decides a merge."""
+    jobs = workflow()["jobs"]
+    mac = jobs["mac"]
+    assert mac["strategy"]["matrix"]["runner"] == ["macos-15-intel", "macos-15"]
+    pinned = (ROOT / ".python-version").read_text(encoding="ascii").strip()
+    assert mac["strategy"]["matrix"]["python-version"] == [pinned]
+    assert "mac" not in jobs["check"]["needs"]
+    names = [step.get("name") for step in mac["steps"]]
+    assert "Static checks on the Mac" in names
+    subset = step_run("Mac test subset")
+    paths = re.findall(r"(?:^|\s)((?:\.githooks|operations|pagekit)[\w./]*)", subset)
+    assert len(paths) == 6
+    for path in paths:
+        assert (ROOT / path).exists(), path
+    # The interpreter is replaced by a recorder of its arguments, so the test sees exactly
+    # what pytest would be asked to do: run these paths, nothing narrower.
+    recorder = """sh -c 'printf "%s\\n" "$NTFY_TOPIC" "$@"' recorder"""
+    result = run_shell(subset.replace(".venv/bin/python", recorder), ROOT)
+    assert result.returncode == 0, result.stderr
+    topic, *argv = result.stdout.splitlines()
+    assert topic
+    assert argv == ["-m", "pytest", "-p", "xdist", "-n", "3", "--dist", "loadfile", *paths]
