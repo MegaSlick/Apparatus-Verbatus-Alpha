@@ -615,3 +615,13 @@ record".
 - **Brief 0034 done:** commits fc5226f and 39f511b on `work/pk-split`. Leak scan no hits.
   Merged into `work/pagekit-prepare`. The builder did not run the reviewer's generator,
   so its held-out set stays unseen; the reviewer is re-running it.
+
+## 0034 — Second held-out re-test; follow-up brief 0036
+
+- **Re-test** of fc5226f and 39f511b on the reviewer's held-out set: wrong-without-flag
+  runs 12 to 0; no regression; 7 pages right before are now flagged. Two narrower cases
+  remain: a printed account page mixing words and figure columns, and a pen stroke running
+  along the backdrop band.
+- **Follow-up brief:** `briefs/0036-build-orientation-tables-and-band-strokes.md` (sha256
+  08f0717868d3e2855ceb780c5270e3bdc27d229ca39073eeb92f3d6306d0c020), to the agent of
+  brief 0017. Saved before it was sent.
