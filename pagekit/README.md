@@ -192,19 +192,27 @@ original.
 
 Some image files carry a tag saying how their stored pixels must be turned, or turned
 and mirrored, to show the picture upright: the orientation tag of the Exif standard
-(CIPA DC-008, Exif 2.32, 2019), which defines eight values. pagekit reads it and applies
-its transform once, exactly (no resampling), before anything else: orientation, the
-split and every later step see the corrected frame, and a person's quarter turns come
-after it. The transform is the first link of the geometry chain (an `orientation_tag`
-step, only when a tag is applied), so the point maps still lead back to the stored
-pixels. Prepared pages carry no orientation tag, so no reader turns them again.
+(CIPA DC-008, Exif 2.32, 2019), which defines eight values. pagekit applies a trusted
+tag exactly once, with no resampling, before anything else: orientation, the split and
+every later step see the corrected frame, and a person's quarter turns come after it.
+Prepared pages carry no orientation tag, so no reader turns them again.
 
-**Which grid.** pagekit works on each source exactly as Pillow opens the file's bytes,
-the grid every other tool that opens the scan with Pillow sees; the manifest's
-`source_size` and the point maps refer to that grid. Pillow turns some carriers upright
-by their tag as it opens them and drops the tag (TIFF, with Pillow 12.3); others it
-leaves as stored (PNG, JPEG). pagekit reads the tag before loading and finds out, file
-by file, whether Pillow applied it: the tag is gone after loading, or, for tags 5 to 8,
+**Which grid the point maps lead back to.** pagekit works on each source exactly as
+Pillow opens the file's bytes, the grid every other tool that opens the scan with
+Pillow sees; the manifest's `source_size` and the point maps refer to that grid, not
+always to the pixels as stored in the file:
+
+- **PNG and JPEG** (Pillow leaves them as stored): the grid is the stored pixels. The
+  chain applies the tag as its first link (an `orientation_tag` step), so the point maps
+  lead back to the stored pixels.
+- **TIFF** (Pillow 12.3 turns it upright by its tag as it opens it and drops the tag):
+  the grid is the image already turned upright, not the stored pixels. The chain adds
+  no tag step, and the point maps lead back to that upright grid.
+- **A TIFF whose tag is not trusted:** pagekit undoes Pillow's turn, so the grid is the
+  stored pixels again.
+
+pagekit reads the tag before loading and finds out, file by file, whether Pillow
+applied it: the tag is gone after loading, or, for tags 5 to 8,
 the loaded size is the transposed size the file's own header gives. If Pillow applied
 it, the record says "applied on open by the image library" and the chain adds nothing;
 if not, the chain applies it once as its first link. So a tag is applied exactly once
@@ -553,7 +561,8 @@ lists them.
   through `measure`.
 - Output files of pages that no longer exist (a spread re-split into one page) are
   left in the output folder and listed under `stale_outputs`; pagekit never deletes.
-- EXIF orientation tags are ignored: sources are taken in their stored pixel grid.
+- Only the orientation tag is read from a file's metadata; colour profiles and other
+  tags are not applied.
 - Source modes handled: greyscale, colour, bilevel (written as greyscale) and palette
   (written as greyscale when every colour it uses is a grey, else as colour). Others,
   such as 16-bit greyscale or CMYK, are skipped with a reason (above).

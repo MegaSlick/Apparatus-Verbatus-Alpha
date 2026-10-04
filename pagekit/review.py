@@ -429,7 +429,7 @@ def correction_command(plan: Any) -> str:
     whether or not pagekit is installed and whatever PYTHONSAFEPATH says. It is one line
     for macOS and Linux shells (sh, bash, zsh); the Windows form is for later. It
     repeats the run's own settings (crop, format, shrinking, grey rule, padding,
-    cache)."""
+    cache) and the tone view."""
     home = Path(__file__).resolve().parent.parent
     words = [
         sys.executable,
@@ -444,6 +444,8 @@ def correction_command(plan: Any) -> str:
     if plan.project_path != plan.output_dir / "pagekit-project.json":
         words += ["--project", str(plan.project_path)]
     words += _setting_options(plan.settings)
+    if plan.tone_view:
+        words.append("--tone-view")
     return f"PYTHONPATH={shlex.quote(str(home))} " + " ".join(shlex.quote(word) for word in words)
 
 

@@ -192,3 +192,32 @@ def test_faint_brown_ink_on_yellow_paper_is_made_grey_as_before(tmp_path):
         )
     result = _grey_choice(tmp_path, Image.merge("RGB", bands))
     assert result["output_mode"]["mode"] == "grey" and not _flagged(result)
+
+
+# --- The correction command ---------------------------------------------------------------
+
+
+def test_the_correction_command_repeats_the_tone_view_and_padding(tmp_path):
+    import html
+    import os
+    import re
+    import subprocess
+
+    page = pages.page(size=(400, 560), seed=46, margin=(40, 50, 40, 50))
+    folder = tmp_path / "src"
+    folder.mkdir()
+    page.save(folder / "page.png", dpi=DPI)
+    out = tmp_path / "out"
+    main(["prepare", str(folder), "--output", str(out), "--tone-view", "--padding", "3mm"])
+    review = (out / "review.html").read_text(encoding="utf-8")
+    (command,) = re.findall(r'<pre class="command">([^<]+)</pre>', review)
+    command = html.unescape(command)
+    assert "--tone-view" in command and "--padding 3mm" in command
+    (out / "overrides.json").write_text('{"schema": "pagekit-overrides.v1", "overrides": []}')
+    before = json.loads((out / "pagekit-prepare.json").read_text())["pages"][0]
+    environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    environment["PYTHONSAFEPATH"] = "1"
+    subprocess.run(command, shell=True, cwd=tmp_path, env=environment, check=False)
+    after = json.loads((out / "pagekit-prepare.json").read_text())["pages"][0]
+    assert after["tone_view"]["sha256"] == before["tone_view"]["sha256"]
+    assert after["output"]["size"] == before["output"]["size"]
