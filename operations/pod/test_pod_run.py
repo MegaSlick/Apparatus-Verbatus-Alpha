@@ -23,6 +23,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 import tomllib
@@ -4177,3 +4178,18 @@ def test_the_run_tree_mark_moves_on_stage_writes_and_not_on_engine_logs(tmp_path
     os.link(artifact, stage / "page-2.json")
     os.utime(stage, ns=(later, later))
     assert pod_run.run_tree_mark(tmp_path) == later
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_help_prints_the_usage_of_both_halves_and_runs_nothing(flag: str) -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "operations.pod.pod_run", flag],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("usage: python -m operations.pod.pod_run")
+    assert "--run-id" in result.stdout and " -- " in result.stdout
+    assert "refused" not in result.stdout + result.stderr

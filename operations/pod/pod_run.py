@@ -134,7 +134,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Callable, Mapping, MutableMapping, Sequence, TypeGuard
+from typing import Callable, Final, Mapping, MutableMapping, Sequence, TypeGuard
 
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity, is_witness_role
@@ -792,6 +792,26 @@ def build_parser() -> bootstrap_main.RefusingParser:
     selection.add_argument("--models", choices=("small", "big"))
     parser.add_argument("--to", dest="to_stage", choices=SEQUENCE_NAMES)
     return parser
+
+
+HELP_FLAGS: Final = frozenset({"-h", "--help"})
+
+
+def usage() -> str:
+    """Both halves' flags: this module's before the first ``--``, ``bootstrap_main``'s after."""
+
+    run = build_parser()
+    run.prog = "pod_run"
+    bootstrap = bootstrap_main.build_parser()
+    bootstrap.prog = "bootstrap_main"
+    return (
+        "usage: python -m operations.pod.pod_run <run flags> -- <bootstrap_main flags>\n\n"
+        "Run flags:\n"
+        + run.format_usage()
+        + "\nBootstrap flags (a complete bootstrap_main argv):\n"
+        + bootstrap.format_usage()
+        + "\nSee the module docstring and operations/pod/README.md for what each does.\n"
+    )
 
 
 def split_argv(argv: Sequence[str]) -> tuple[list[str], list[str]]:
@@ -1821,6 +1841,10 @@ def main(
     notify_runner: RunnerFactory = environment_runner,
 ) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    run_half = raw_argv[: raw_argv.index("--")] if "--" in raw_argv else raw_argv
+    if HELP_FLAGS.intersection(run_half):
+        print(usage(), end="")
+        return 0
     environment = os.environ if environ is None else environ
     try:
         refuse_credential_looking_argv(raw_argv)
