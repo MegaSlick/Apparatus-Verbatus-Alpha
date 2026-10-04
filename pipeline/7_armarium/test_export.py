@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 from armarium_export import verify_delivered_bundle, verify_export_bundle
 
+from common import armarium_formats
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import artifact_id
@@ -143,7 +144,7 @@ def test_an_archive_above_the_page_ceiling_but_within_its_own_seals_and_publishe
     shutil.copytree(embedded_run, root, symlinks=True)
     tree = RunTree(root, "embedded")
     size = _archive_and_page_ceilings(monkeypatch, tree)
-    monkeypatch.setattr(runtree_store, "MAX_EXPORT_ARCHIVE_BYTES", size, raising=False)
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", size)
     shutil.rmtree(tree.root / "7_armarium")
 
     assert (
@@ -162,7 +163,7 @@ def test_an_archive_over_its_ceiling_is_refused_by_name_before_it_is_stored(
     shutil.copytree(embedded_run, root, symlinks=True)
     tree = RunTree(root, "embedded")
     size = _archive_and_page_ceilings(monkeypatch, tree)
-    monkeypatch.setattr(runtree_store, "MAX_EXPORT_ARCHIVE_BYTES", size - 1, raising=False)
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", size - 1)
     shutil.rmtree(tree.root / "7_armarium")
 
     assert (

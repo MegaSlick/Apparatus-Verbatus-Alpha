@@ -109,9 +109,9 @@ metadata, with `EXPORT_MANIFEST.json` first. It is deterministic for given input
 except that bytes 96-99 of `acts.sqlite` hold the writing library's SQLite version.
 
 The whole archive is bounded by its own limit, `MAX_EXPORT_ARCHIVE_BYTES`
-(`common/runtree/store.py`), not by the single-page blob ceiling: every read of it
-(input verification, the completion seal, `bundle.py`) uses that limit, and an archive
-above it is refused before it is stored. The Door refuses a run whose embedded export
+(`common/armarium_formats.py`), not by the single-page blob ceiling: every run-tree
+read of it (input verification, the completion seal, `bundle.py`) uses that limit, and
+an archive above it is refused before it is assembled or stored. The Door refuses a run whose embedded export
 is estimated above it (`pipeline/1_exemplar/CONTRACT.md`).
 
 The formats are the run's sealed selection, `config/formats.toml`

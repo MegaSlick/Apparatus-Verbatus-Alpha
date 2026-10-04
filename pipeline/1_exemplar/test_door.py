@@ -37,6 +37,7 @@ from synthetic_sources import (
 )
 
 import common.imaging as common_imaging
+from common import armarium_formats
 from common.chairs import load_models_toml
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import (
@@ -51,7 +52,6 @@ from common.contracts.identities import physical_page_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.corpus_register import append_records, empty_register, members_of, register_digest
 from common.recovery import load_recovery_policy
-from common.runtree import store as runtree_store
 from common.runtree.store import RunTree
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, read_sealed_toml
 from common.stage import (
@@ -972,10 +972,10 @@ def test_an_export_estimated_past_the_archive_limit_is_refused_at_the_door(
     )
     tree, context = open_door(tmp_path, sources)
     admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
-    # A one-frame raster is sealed as its own bytes; crops are allowed as much again.
-    estimate = 2 * sum(len(payload) for payload in files.values())
+    # A one-frame raster is sealed as its own bytes; its crops at a byte per pixel.
+    estimate = sum(len(payload) for payload in files.values()) + 2 * 40 * 30
     limit = 1 if limit_over_estimate is None else estimate + limit_over_estimate
-    monkeypatch.setattr(runtree_store, "MAX_EXPORT_ARCHIVE_BYTES", limit, raising=False)
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", limit)
 
     if refused:
         with pytest.raises(ContractError, match=f"{limit}-byte export archive limit"):

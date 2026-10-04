@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from common import armarium_formats
 from common.chairs.models import ChairIdentity, ServingDetails
 from common.chairs.receipts import build_receipt
 from common.contracts.approval import ApprovalRecordReference, build_approval_record
@@ -1966,7 +1967,7 @@ def test_the_export_archive_is_read_under_its_own_ceiling_and_a_page_blob_under_
     """
     tree = make_run(tmp_path)
     monkeypatch.setattr(runtree_store, "_MAX_TREE_READ_BYTES", 8)
-    monkeypatch.setattr(runtree_store, "MAX_EXPORT_ARCHIVE_BYTES", 16, raising=False)
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", 16)
     archive = b"z" * 12
     _, stored_archive = tree.put_blob(ARMARIUM, archive)
     _, stored_page = tree.put_blob(EXEMPLAR, archive)

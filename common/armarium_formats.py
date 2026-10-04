@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Final
 
 from common.contracts.errors import ContractError, SchemaRefusal
-from common.runtree import store as runtree_store
 from common.sealed_config import read_sealed_toml
 
 FORMAT_SCHEMA: Final = "armarium-formats.v1"
@@ -20,10 +19,17 @@ KNOWN_FORMATS: Final = frozenset({"text-bundle", "acts-database", "jsonl", "revi
 DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "formats.toml"
 )
-# An embedded export carries every exported page and the crops cut from it. The
-# crops are stored losslessly and together cover about one page, so they are
-# estimated at the page's own bytes again.
-CROP_BYTES_PER_PAGE_BYTE: Final = 1
+# The largest export archive a run may produce. The archive embeds pages and
+# crops when `embed_pixels` is true, so it may outgrow the single page-blob read
+# ceiling in `common/runtree/store.py`, which reads the Armarium's blobs under
+# this limit instead. It must stay at or below `MAX_FETCH_OBJECT_BYTES` in
+# `operations/operator/surface.py`, so an archive that seals can be fetched;
+# `operations/operator/test_surface.py` pins that. Every whole-archive read is
+# held in memory, so raising it raises peak memory at sealing and publication.
+MAX_EXPORT_ARCHIVE_BYTES: Final = 192 * 1024 * 1024
+# Crops are cut from their page and stored as lossless PNG, and together cover
+# about one page; the Door estimates them at this many bytes per page pixel.
+CROP_BYTES_PER_PIXEL: Final = 1
 
 
 @dataclass(frozen=True)
@@ -96,25 +102,27 @@ def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
     return digest, armarium_formats_from_record(raw, source=f"configuration {path}")
 
 
-def require_export_within_archive_limit(page_bytes: Iterable[int], *, embed_pixels: bool) -> None:
-    """Refuse a run whose export archive is estimated past its limit, before any reading.
+def estimated_embedded_export_bytes(pages: Iterable[tuple[int, int, int]]) -> int:
+    """An embedded export's size from its sealed pages, as `(stored bytes, width, height)`.
 
-    The Armarium refuses an oversized archive anyway, but only at the end of the
-    run; this estimate from the sealed pages lets the run be refused at its
-    start. With `embed_pixels = false` the archive holds records only, so no
-    estimate is made here.
+    Each page is carried as stored, and its crops at `CROP_BYTES_PER_PIXEL` over
+    its pixel area. The records beside them are small next to the pixels and
+    are not counted; the Armarium checks the real archive before storing it.
     """
-    if not embed_pixels:
+    return sum(stored + width * height * CROP_BYTES_PER_PIXEL for stored, width, height in pages)
+
+
+def require_within_export_archive_limit(size: int, *, what: str, embed_pixels: bool) -> None:
+    """Refuse an export archive of `size` bytes above the limit, naming `what` was measured."""
+    limit = MAX_EXPORT_ARCHIVE_BYTES
+    if size <= limit:
         return
-    sizes = list(page_bytes)
-    pages = sum(sizes)
-    estimate = pages * (1 + CROP_BYTES_PER_PAGE_BYTE)
-    limit = runtree_store.MAX_EXPORT_ARCHIVE_BYTES
-    if estimate > limit:
-        raise ContractError(
-            f"with embed_pixels = true this run's export archive is estimated at {estimate} "
-            f"bytes ({len(sizes)} exported page(s) of {pages} bytes, and their crops estimated "
-            f"at as much again), above the {limit}-byte export archive limit, so it could "
-            "never be sealed. The submission is refused whole before any reading starts, and "
-            "nothing is dropped: split it into smaller runs, or export with embed_pixels = false"
-        )
+    remedy = (
+        "split the submission into smaller runs, or export with embed_pixels = false"
+        if embed_pixels
+        else "split the submission into smaller runs"
+    )
+    raise ContractError(
+        f"{what} is {size} bytes, above the {limit}-byte export archive limit, so it could "
+        f"never be sealed. Nothing was dropped: {remedy}"
+    )

@@ -59,7 +59,11 @@ from operator_layer import (
 from operator_layer import SOURCES_FIELD as OPERATOR_SOURCES_FIELD
 from textnorm import TEXTNORM_REVISION, search_fold
 
-from common.armarium_formats import ArmariumFormats, armarium_formats_from_record
+from common.armarium_formats import (
+    ArmariumFormats,
+    armarium_formats_from_record,
+    require_within_export_archive_limit,
+)
 from common.calibration import calibrated_claim_has_sample_evidence
 from common.contracts.canonical import (
     canonical_bytes,
@@ -101,7 +105,6 @@ from common.correction import (
 from common.imaging import dimensions
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
 from common.review_policy import parse_share
-from common.runtree import store as runtree_store
 
 _atomic_replace = os.replace
 _unlink_at = os.unlink
@@ -588,8 +591,14 @@ def build_armarium_bundle(
         projection, formats, members, ledger, ink_map_rows, edge_hold_pages, other_outcomes
     )
     archive_members = {EXPORT_MANIFEST_NAME: canonical_bytes(manifest), **members}
+    # Checked on the members first, so an oversized archive is never assembled.
+    embed_pixels = formats.embed_pixels
+    members_size = sum(map(len, archive_members.values()))
+    what = "the export archive's members together"
+    require_within_export_archive_limit(members_size, what=what, embed_pixels=embed_pixels)
     data = _zip_bytes(archive_members)
-    _require_archive_within_limit(len(data), formats)
+    what = "the export archive"
+    require_within_export_archive_limit(len(data), what=what, embed_pixels=embed_pixels)
     # A package that does not survive a clean extraction must fail before it
     # becomes a run-tree blob.
     with tempfile.TemporaryDirectory(prefix="armarium-verify-") as directory:
@@ -4615,22 +4624,6 @@ def _export_manifest(
     }
     manifest["self_hash"] = self_hash(manifest)
     return manifest
-
-
-def _require_archive_within_limit(size: int, formats: ArmariumFormats) -> None:
-    """Refuse an archive no later reader of the run tree would accept, before it is stored."""
-    limit = runtree_store.MAX_EXPORT_ARCHIVE_BYTES
-    if size > limit:
-        remedy = (
-            "it embeds every page and crop (embed_pixels = true); split the submission "
-            "into smaller runs, or export with embed_pixels = false"
-            if formats.embed_pixels
-            else "it embeds no pixels; split the submission into smaller runs"
-        )
-        raise SchemaRefusal(
-            f"the export archive is {size} bytes, above the {limit}-byte export archive "
-            f"limit, so nothing was stored or published and nothing was dropped: {remedy}"
-        )
 
 
 def _zip_bytes(members: dict[str, bytes]) -> bytes:

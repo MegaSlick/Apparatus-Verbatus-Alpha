@@ -55,7 +55,10 @@ from image_formats import (  # noqa: E402
     sniff,
 )
 
-from common.armarium_formats import require_export_within_archive_limit  # noqa: E402
+from common.armarium_formats import (  # noqa: E402
+    estimated_embedded_export_bytes,
+    require_within_export_archive_limit,
+)
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts import triage as triage_manifest  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
@@ -1443,12 +1446,21 @@ def require_some_admitted(
     )
 
 
-def _exported_page_bytes(context: StageContext):
-    """The stored size of every admitted page the export will carry (canaries are not)."""
+def _exported_pages(context: StageContext) -> list[tuple[int, int, int]]:
+    """`(stored bytes, width, height)` of every admitted page the export carries.
+
+    Canaries are controls and are never exported.
+    """
     canaries = canary_ordinals(context.run)
-    for _entry, payload in _iter_admissions(context, "admitted"):
-        if payload["ordinal"] not in canaries:
-            yield context.tree.resolve(payload["stored_at"]).stat().st_size
+    return [
+        (
+            context.tree.resolve(payload["stored_at"]).stat().st_size,
+            payload["geometry"]["width"],
+            payload["geometry"]["height"],
+        )
+        for _entry, payload in _iter_admissions(context, "admitted")
+        if payload["ordinal"] not in canaries
+    ]
 
 
 def _refusal_census(refusal_report: Report) -> dict[str, int]:
@@ -1587,7 +1599,12 @@ def _finish_door_run(
     require_no_duplicate_sources(duplicate_report)
     require_no_re_shoots(context, cluster_report)
     require_some_admitted(admitted, refusal_report, canary_admitted=canary_admitted)
-    require_export_within_archive_limit(_exported_page_bytes(context), embed_pixels=embed_pixels)
+    if embed_pixels:
+        require_within_export_archive_limit(
+            estimated_embedded_export_bytes(_exported_pages(context)),
+            what="this run's export archive, estimated from its sealed pages and their crops,",
+            embed_pixels=True,
+        )
     context.seal_boundary()
     context.finish(DOOR)
     return EXIT_COMPLETE
