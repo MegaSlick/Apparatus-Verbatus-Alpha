@@ -108,9 +108,16 @@ class Page:
     colour: Image.Image | None
     dpi: tuple[float, float]
     polygon: tuple[Point, ...] | None
+    flags: tuple[str, ...] = ()
 
 
-def page_input(image: Image.Image, dpi: Any, polygon: Any = None) -> Page:
+def page_input(
+    image: Image.Image, dpi: Any, polygon: Any = None, v: dict[str, Any] | None = None
+) -> Page:
+    """The page as the detectors measure it.
+
+    With settings `v`, a resolution that implies a sheet outside the plausible size
+    range is replaced by the fallback resolution, and a flag says so."""
     if not isinstance(image, Image.Image):
         raise DetectorInputError("the page must be a Pillow image")
     if getattr(image, "n_frames", 1) != 1:
@@ -138,7 +145,19 @@ def page_input(image: Image.Image, dpi: Any, polygon: Any = None) -> Page:
             raise DetectorInputError("the polygon must be a list of (x, y) points") from error
         if len(points) < 3 or not all(math.isfinite(c) for p in points for c in p):
             raise DetectorInputError("the polygon needs at least three finite points")
-    return Page(grey, colour, (dx, dy), points)
+    flags: tuple[str, ...] = ()
+    if v is not None:
+        sides = (grey.width / dx * 25.4, grey.height / dy * 25.4)
+        low, high = v["plausible_page_min_mm"], v["plausible_page_max_mm"]
+        if not all(low <= side <= high for side in sides):
+            fallback = float(v["fallback_dpi"])
+            flags = (
+                f"The resolution {dx:g} x {dy:g} dpi implies a sheet of {sides[0]:.3g} by "
+                f"{sides[1]:.3g} mm, outside {low:g} to {high:g} mm; the page is measured as "
+                f"if it were {fallback:g} dpi.",
+            )
+            dx = dy = fallback
+    return Page(grey, colour, (dx, dy), points, flags)
 
 
 @dataclass(frozen=True)
@@ -252,10 +271,29 @@ def flatten(grey: Image.Image, smoothing_px: int) -> Image.Image:
         (max(1, math.ceil(width / cell)), max(1, math.ceil(height / cell))), Image.BOX
     )
     size = 5  # cells: about the smoothing size
-    background = small.filter(ImageFilter.MaxFilter(size)).filter(ImageFilter.MinFilter(size))
+    # The closing runs on a copy extended by repeating its edge cells, so a gradient that
+    # darkens toward the edge is not overestimated there (which reads as faint ink).
+    pad = size
+    padded = _extend(small, pad)
+    background = padded.filter(ImageFilter.MaxFilter(size)).filter(ImageFilter.MinFilter(size))
     background = background.filter(ImageFilter.GaussianBlur(1))
+    background = background.crop((pad, pad, pad + small.width, pad + small.height))
     background = background.resize((width, height), Image.BILINEAR)
     return ImageChops.subtract(grey, background, 1.0, 255)
+
+
+def _extend(image: Image.Image, pad: int) -> Image.Image:
+    """The image with `pad` pixels added on every side, each a copy of the nearest edge."""
+    width, height = image.size
+    out = Image.new(image.mode, (width + 2 * pad, height + 2 * pad))
+    out.paste(image, (pad, pad))
+    out.paste(image.crop((0, 0, 1, height)).resize((pad, height)), (0, pad))
+    out.paste(image.crop((width - 1, 0, width, height)).resize((pad, height)), (pad + width, pad))
+    top = out.crop((0, pad, width + 2 * pad, pad + 1))
+    bottom = out.crop((0, pad + height - 1, width + 2 * pad, pad + height))
+    out.paste(top.resize((width + 2 * pad, pad)), (0, 0))
+    out.paste(bottom.resize((width + 2 * pad, pad)), (0, pad + height))
+    return out
 
 
 # --- Binary morphology -----------------------------------------------------------------
@@ -467,6 +505,25 @@ def profile(marks: Image.Image, along_x: bool) -> list[float]:
     size = (width, 1) if along_x else (1, height)
     reduced = marks.convert("F").resize(size, Image.BOX)
     return [value / MARK for value in array("f", reduced.tobytes())]
+
+
+def run_count(marks: Image.Image) -> int:
+    """Number of horizontal runs of marked pixels: a cheap measure of how busy a map is."""
+    return count(ImageChops.subtract(marks, ImageChops.offset(marks, 1, 0)))
+
+
+def busy(marks: Image.Image, work: Work, v: dict[str, Any]) -> str | None:
+    """A reason when a binary map is too busy to be writing (noise, grain, a halftone),
+    measured before any component is labelled so such a page cannot take long."""
+    runs = run_count(marks)
+    area_cm2 = marks.width * marks.height * (work.mm / 10) ** 2
+    density = runs / area_cm2 * 100 / work.dpi if area_cm2 else 0.0
+    if density > v["busy_runs_per_cm2"] or runs > v["busy_max_runs"]:
+        return (
+            f"The page looks like noise: {runs} runs of dark pixels, {density:.0f} per cm\u00b2 "
+            f"at 100 dpi (more than {v['busy_runs_per_cm2']:g}), far more than writing makes."
+        )
+    return None
 
 
 def count(marks: Image.Image) -> int:

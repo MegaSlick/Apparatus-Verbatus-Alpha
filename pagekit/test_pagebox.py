@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import random
 from functools import cache
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from pagekit import _box_synthetic as synth
 from pagekit._box_common import DetectorInputError
@@ -129,3 +130,78 @@ def test_same_input_gives_the_same_answer_every_time():
 def test_unsupported_image_mode_is_refused():
     with pytest.raises(DetectorInputError):
         detect_page_box(Image.new("I;16", (100, 100)), (DPI, DPI))
+
+
+# --- Review fixes (brief 0022) ------------------------------------------------------
+
+
+def lit_page(low: int, high: int) -> Image.Image:
+    """Paper brightening from `low` at the left to `high` at the right, with writing
+    from 10 mm of each edge; cropped to the paper."""
+    size = (synth.mm(160, DPI), synth.mm(220, DPI))
+    ramp = (
+        Image.linear_gradient("L")
+        .rotate(90, expand=True)
+        .transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    )
+    ramp = ramp.resize(size).point(lambda v: low + v * (high - low) // 255)
+    ink = Image.new("L", size, 255)
+    synth.writing(
+        ImageDraw.Draw(ink),
+        random.Random(31),
+        (
+            synth.mm(10, DPI),
+            synth.mm(20, DPI),
+            size[0] - synth.mm(10, DPI),
+            size[1] - synth.mm(20, DPI),
+        ),
+        DPI,
+    )
+    return synth.noisy(ImageChops.darker(ramp, ink))
+
+
+@pytest.mark.parametrize(("low", "high"), [(185, 225), (180, 250)])
+def test_paper_brightening_across_the_page_is_not_cut_as_pale_backdrop(low, high):
+    # B2: the bright side used to be cut 33 mm (55 mm) in, through the writing.
+    image = lit_page(low, high)
+    answer = detect_page_box(image, (DPI, DPI))
+    assert answer["value"] == [0, 0, image.width, image.height]
+
+
+def test_gutter_shadow_over_writing_is_not_cut_off_silently():
+    # B2: a 40 mm shadow over writing moved the left edge 15 mm into the writing.
+    frame = Image.new("L", (paper().width + 2 * AT[0], paper().height + 2 * AT[1]), 25)
+    shade = (
+        Image.linear_gradient("L")
+        .rotate(90, expand=True)
+        .resize((synth.mm(40, DPI), paper().height))
+    )
+    light = Image.new("L", paper().size, 255)
+    light.paste(shade.point(lambda v: 40 + v * 215 // 255), (0, 0))
+    page = synth.page(seed=3, dpi=DPI, margins_mm=(8, 20, 20, 20))
+    frame.paste(ImageChops.multiply(page, light), AT)
+    writing_left = AT[0] + page.point(lambda v: 255 if v < 100 else 0).getbbox()[0]
+    answer = detect_page_box(synth.noisy(frame), (DPI, DPI))
+    assert answer["value"][0] <= writing_left
+    assert answer["flags"]
+
+
+def test_pale_backdrop_is_found_by_its_step_to_the_paper():
+    # Fails if pale-backdrop detection is turned off.
+    frame = Image.new("L", FRAME, 250)
+    frame.paste(paper(), AT)
+    answer = detect_page_box(frame, (DPI, DPI))
+    assert_close(answer["value"], expected())
+
+
+def test_tall_label_on_the_backdrop_does_not_stop_the_walk():
+    # Fails if the run that ends the walk is set to one line.
+    frame = on_backdrop(25)
+    ImageDraw.Draw(frame).rectangle((30, 300, 60, 1100), fill=240)
+    answer = detect_page_box(frame, (DPI, DPI))
+    assert_close(answer["value"], expected())
+
+
+def test_implausible_resolution_is_flagged():
+    answer = detect_page_box(on_backdrop(25), (1e6, 1e6))
+    assert any("resolution" in flag for flag in answer["flags"])

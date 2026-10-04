@@ -26,8 +26,11 @@ file, and flags rather than guesses.
    band's pixels, and the length-weighted median of the bands' angles is taken. The
    smeared-band fit itself is general knowledge.
 4. Trust (finding 0012): the best score must stand clearly above the median score
-   across the range; too little writing, a best angle at the edge of the widened range,
-   or regions of the page that lean differently are each reported with their reason.
+   across the range; the top and bottom of the inked area are faded so their edges do
+   not make every page, noise included, peak at 0 degrees. Too little writing, a page
+   that looks like noise, a best angle at the edge of the widened range, estimates that
+   disagree, or regions of the page that lean differently are each reported with their
+   reason; all but leaning regions with a dominant angle give 0.
 5. An angle below the snap setting is reported as 0, and the evidence says so.
 """
 
@@ -37,7 +40,7 @@ import math
 from array import array
 from typing import Any
 
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageMath
 
 from pagekit import _box_common as common
 from pagekit.check import otsu_threshold
@@ -80,19 +83,26 @@ def detect_skew(
     thresholds = common.load_thresholds(overrides)
     v = common.values(thresholds)
     note = common.unmeasured_note(thresholds, _READS)
-    page = common.page_input(image, dpi, polygon)
+    page = common.page_input(image, dpi, polygon, v)
+    flags: list[str] = list(page.flags)
     work = common.working_copy(page, v["skew_working_dpi"])
     writing, removed = writing_map(work, v)
     if writing is None:
-        return _too_little("The page shows no ink: its dark and light levels are too close." + note)
+        if removed.startswith("The page looks like noise"):
+            return common.answer(
+                0.0, 0.0, removed + " No rotation applied." + note, flags + [removed]
+            )
+        return _too_little(
+            "The page shows no ink: its dark and light levels are too close." + note, flags
+        )
     ink_mm2 = common.count(writing) * work.mm**2
     if ink_mm2 < v["skew_min_ink_mm2"]:
         return _too_little(
             f"Only {ink_mm2:.0f} mm² of writing after removing {removed}; at least "
-            f"{v['skew_min_ink_mm2']:g} mm² is needed for a profile." + note
+            f"{v['skew_min_ink_mm2']:g} mm² is needed for a profile." + note,
+            flags,
         )
 
-    flags: list[str] = []
     ink = writing.point(lambda level: 1 if level else 0).convert("F")
     lag = work.px(v["skew_profile_lag_mm"])
     search = profile_search(ink, v, lag, fine=sharp_writing(page, writing, v))
@@ -103,7 +113,8 @@ def detect_skew(
             0.1,
             f"The best profile angle stayed at the edge of the widened search range "
             f"(±{v['skew_widen_range_deg']:g}°); no rotation applied." + note,
-            [
+            flags
+            + [
                 f"Skew may exceed ±{v['skew_widen_range_deg']:g}°: the best "
                 "angle lies at the edge of the widened search range."
             ],
@@ -114,23 +125,24 @@ def detect_skew(
             round(max(0.0, min(0.3, (ratio - 1.0) / 2)), 3),
             f"The best profile score is only {ratio:.2f} times the median across the range "
             f"(at least {v['skew_score_margin']:g} is needed); no rotation applied." + note,
-            ["No clear skew: the profile peak does not stand above the range."],
+            flags + ["No clear skew: the profile peak does not stand above the range."],
         )
 
     second = line_fit_estimate(writing, work, v)
+    disagree = second is not None and abs(second - angle) > v["skew_disagree_deg"]
     if second is None:
         flags.append("The line-fit cross-check found no line long enough to measure.")
-    elif abs(second - angle) > v["skew_disagree_deg"]:
+    elif disagree:
         flags.append(
             f"The two skew estimates disagree: profile {angle:+.2f}°, line fit "
-            f"{second:+.2f}° (more than {v['skew_disagree_deg']:g}° apart)."
+            f"{second:+.2f}° (more than {v['skew_disagree_deg']:g}° apart); no rotation applied."
         )
 
     regions = region_estimates(ink, writing, work, v, search["reach"])
     measured = sum(weight for _, weight in regions)
     agreeing = sum(w for a, w in regions if abs(a - angle) <= v["skew_region_disagree_deg"])
     disagreeing = [a for a, _ in regions if abs(a - angle) > v["skew_region_disagree_deg"]]
-    applied = angle
+    applied = 0.0 if disagree else angle
     region_text = ""
     if disagreeing:
         share = agreeing / measured if measured else 0.0
@@ -138,7 +150,8 @@ def detect_skew(
         if share >= v["skew_dominant_share"]:
             flags.append(
                 f"Regions of the page lean differently ({listed} against {angle:+.2f}°); "
-                f"the page's angle covers {share:.0%} of the writing and is applied."
+                f"the page's angle covers {share:.0%} of the writing"
+                f"{' but the estimates disagree' if disagree else ' and is applied'}."
             )
         else:
             applied = 0.0
@@ -170,19 +183,20 @@ def detect_skew(
     return common.answer(applied, max(0.0, confidence), evidence, flags)
 
 
-def _too_little(evidence: str) -> dict:
+def _too_little(evidence: str, flags: list[str]) -> dict:
     return common.answer(
         0.0,
         0.0,
         evidence,
-        [f"No rotation applied: {TOO_LITTLE} for a skew estimate."],
+        flags + [f"No rotation applied: {TOO_LITTLE} for a skew estimate."],
     )
 
 
 def writing_map(work: common.Work, v: dict[str, Any]) -> tuple[Image.Image | None, str]:
     """The ink that is writing: bands, blobs and rules removed (finding 0010).
 
-    Returns None when the page shows no ink at all, and a plain description of what
+    Returns None when the page shows no ink at all or looks like noise (with the
+    reason in place of the description), and otherwise a plain description of what
     was removed.
     """
     histogram = work.grey.histogram(work.mask)
@@ -191,6 +205,9 @@ def writing_map(work: common.Work, v: dict[str, Any]) -> tuple[Image.Image | Non
     if dark is None or light is None or light - dark < v["blank_contrast"]:
         return None, "nothing"
     ink = common.threshold_map(work.grey, threshold, work.mask)
+    noise = common.busy(ink, work, v)
+    if noise is not None:
+        return None, noise
 
     # Wide bands and large blobs: an opening with a long, thick element in each direction
     # keeps only them; every ink component holding a survivor goes, whole.
@@ -240,9 +257,13 @@ def _score(ink: Image.Image, angle: float, lag: int) -> float:
 
     The shear moves each column up or down by a whole number of rows (nearest
     neighbour), so no ink is blurred or lost and no angle is favoured by interpolation;
-    finding 0009 allows a shear in place of a rotation. A lag of about
-    a stroke's width, rather than one row, keeps a one-row slit, such as a removed rule
-    leaves, from outscoring the gaps between lines."""
+    finding 0009 allows a shear in place of a rotation. A lag of about a stroke's width,
+    rather than one row, keeps a one-row slit, such as a removed rule leaves, from
+    outscoring the gaps between lines.
+
+    The caller tapers the top and bottom of the inked area (see `_tapered`), so the
+    ends of the area add the same at every angle.
+    """
     width, height = ink.size
     slope = math.tan(math.radians(angle))
     rise = math.ceil(width * abs(slope)) + 1
@@ -282,6 +303,7 @@ def profile_search(
     The trust ratio compares the best coarse score with the median coarse score."""
     step = v["skew_coarse_step_deg"]
     reach = v["skew_range_deg"] if reach is None else reach
+    ink = _tapered(_inked(ink), reach, lag)
     scores = [(a, _score(ink, a, lag)) for a in _angles(-reach, reach, step)]
     best, top = _best(scores)
     at_edge = abs(best) >= reach - 1e-9
@@ -293,14 +315,90 @@ def profile_search(
     ordered = sorted(score for _, score in scores)
     median = ordered[len(ordered) // 2]
     ratio = top / median if median > 0 else (math.inf if top > 0 else 1.0)
-    sharp, sharp_lag = fine if fine is not None else (ink, lag)
+    if fine is not None:
+        sharp, sharp_lag = _tapered(_inked(fine[0]), reach, fine[1]), fine[1]
+    else:
+        sharp, sharp_lag = ink, lag
     refined = [
         (a, _score(sharp, a, sharp_lag))
         for a in _angles(best - step, best + step, v["skew_refine_step_deg"])
         if abs(a) <= reach + 1e-9
     ]
-    angle, _ = _best(refined)
+    angle = _peak(refined)
     return {"angle": angle, "ratio": ratio, "at_edge": at_edge, "reach": reach}
+
+
+def _inked(ink: Image.Image) -> Image.Image:
+    """The ink map cropped to its inked area."""
+    box = ink.convert("L").getbbox()  # ink is 1.0 on 0.0, so 1 on 0 once converted
+    return ink if box is None else ink.crop(box)
+
+
+def _peak(scores: list[tuple[float, float]]) -> float:
+    """The angle of the refined scores' peak: the vertex of a least-squares parabola
+    through them, which steadies a flat, jagged top; the best single angle when the
+    parabola does not open downward or its vertex leaves the refined interval."""
+    best, _ = _best(scores)
+    if len(scores) < 5:
+        return best
+    xs = [a - best for a, _ in scores]
+    top = max(score for _, score in scores) or 1.0
+    ys = [score / top for _, score in scores]
+    # Normal equations for y = c0 + c1 x + c2 x^2.
+    sums = [sum(x**k for x in xs) for k in range(5)]
+    rhs = [sum(y * x**k for x, y in zip(xs, ys, strict=True)) for k in range(3)]
+    matrix = [[sums[i + j] for j in range(3)] for i in range(3)]
+    try:
+        c0, c1, c2 = _solve3(matrix, rhs)
+    except ZeroDivisionError:
+        return best
+    if c2 >= 0:
+        return best
+    vertex = -c1 / (2 * c2)
+    if not min(xs) <= vertex <= max(xs):
+        return best
+    return round(best + vertex, 2)
+
+
+def _solve3(m: list[list[float]], r: list[float]) -> tuple[float, float, float]:
+    """Solve a 3 by 3 linear system by Cramer's rule."""
+
+    def det(a: list[list[float]]) -> float:
+        return (
+            a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
+            - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
+            + a[0][2] * (a[1][0] * a[2][1] - a[1][1] * a[2][0])
+        )
+
+    d = det(m)
+    if abs(d) < 1e-15:
+        raise ZeroDivisionError
+    result = []
+    for column in range(3):
+        swapped = [row[:column] + [r[i]] + row[column + 1 :] for i, row in enumerate(m)]
+        result.append(det(swapped) / d)
+    return result[0], result[1], result[2]
+
+
+def _tapered(ink: Image.Image, reach: float, lag: int) -> Image.Image:
+    """The ink with its top and bottom rows faded in and out (a raised cosine).
+
+    Where the inked area starts and ends, a profile steps from empty to full. Unfaded,
+    that step is sharpest when the shear is 0 and makes any page, noise included, peak
+    at 0 degrees. The fade is as tall as the most a row can move across the area at the
+    widest angle searched, so the ends add the same at every angle."""
+    width, height = ink.size
+    fade = max(lag, math.ceil((width - 1) * math.tan(math.radians(reach))))
+    if 2 * fade >= height:
+        return ink
+    weights = array("f", [1.0] * height)
+    for i in range(fade):
+        w = 0.5 - 0.5 * math.cos(math.pi * (i + 0.5) / fade)
+        weights[i] = weights[height - 1 - i] = w
+    column = Image.frombytes("F", (1, height), weights.tobytes())
+    return ImageMath.lambda_eval(
+        lambda args: args["a"] * args["b"], a=ink, b=column.resize(ink.size, Image.NEAREST)
+    )
 
 
 def sharp_writing(

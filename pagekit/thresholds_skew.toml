@@ -4,6 +4,48 @@
 # its status changed to "MEASURED". Lengths are in millimetres on the paper, so they
 # hold at any scan resolution.
 
+# --- All three detectors ---------------------------------------------------------
+
+[plausible_page_min_mm]
+value = 20.0
+status = "UNMEASURED"
+meaning = "Shortest plausible side of the sheet, from its pixels and resolution; outside the range the resolution is flagged."
+
+[plausible_page_max_mm]
+value = 2000.0
+status = "UNMEASURED"
+meaning = "Longest plausible side of the sheet, from its pixels and resolution."
+
+[fallback_dpi]
+value = 300
+status = "UNMEASURED"
+meaning = "Resolution a page with an implausible resolution is measured as, with a flag."
+
+[busy_runs_per_cm2]
+value = 150.0
+status = "UNMEASURED"
+meaning = "Runs of dark pixels per square centimetre, counted at 100 dpi, above which the page is noise rather than writing and is not labelled further."
+
+[busy_max_runs]
+value = 400000
+status = "UNMEASURED"
+meaning = "Runs of dark pixels above which a working copy is not labelled further, whatever its size, so no page takes long."
+
+[faint_contrast]
+value = 20
+status = "UNMEASURED"
+meaning = "Grey levels below the flattened paper that a mark must reach to be kept as faint ink; marks that never reach blank_contrast are kept and flagged."
+
+[edge_mark_mm2]
+value = 2.0
+status = "UNMEASURED"
+meaning = "A component touching the paper edge and left out as debris is flagged when its ink covers at least this many square millimetres (a small cross)."
+
+[pale_step_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "A pale backdrop gives way to the paper within this distance; a slow brightening of the paper is not a backdrop."
+
 # --- Skew -------------------------------------------------------------------------
 
 [skew_working_dpi]

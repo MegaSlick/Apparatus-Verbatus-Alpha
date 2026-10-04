@@ -209,8 +209,13 @@ def test_flattening_keeps_a_faint_gutter_shadow_out_of_the_ink():
     work = common.working_copy(
         common.page_input(shaded, (DPI, DPI)), settings["content_working_dpi"]
     )
-    ink, _ = ink_map(work, (0, 0) + work.grey.size, settings)
-    assert ink.getbbox() is None
+    speck = (settings["speck_mm"] / work.mm) ** 2
+    touch = work.px(settings["debris_distance_mm"])
+    for ink in ink_map(work, (0, 0) + work.grey.size, settings):  # lenient, then strict
+        inside = [p for p in common.components(ink) if p.area >= speck and p.x0 >= touch]
+        assert not inside
+    answer = detect_content_box(shaded, (DPI, DPI))
+    assert answer["value"] is None and answer["flags"] == []
 
 
 def test_page_box_limits_the_content():
@@ -254,3 +259,121 @@ def test_same_input_gives_the_same_answer_every_time():
 def test_bad_page_box_is_refused():
     with pytest.raises(common.DetectorInputError):
         detect_content_box(text_page(), (DPI, DPI), page_box=[10, 10, 5, 50])
+
+
+# --- Review fixes (brief 0022) ------------------------------------------------------
+
+
+def faint_page(dpi: int, paper: int, main: int | None, note: int, signature: int):
+    """Writing at `main` (or none), a marginal note at `note` and a signature at
+    `signature` grey, on paper at `paper`; also the boxes of the note and signature."""
+    size = (synth.mm(150, dpi), synth.mm(200, dpi))
+    rng = random.Random(21)
+    image = Image.new("L", size, paper)
+    if main is not None:
+        synth.writing(
+            ImageDraw.Draw(image),
+            rng,
+            (synth.mm(35, dpi), synth.mm(30, dpi), synth.mm(120, dpi), synth.mm(150, dpi)),
+            dpi,
+            ink=main,
+        )
+    note_layer = Image.new("L", size, paper)
+    synth.writing(
+        ImageDraw.Draw(note_layer),
+        rng,
+        (synth.mm(5, dpi), synth.mm(60, dpi), synth.mm(30, dpi), synth.mm(85, dpi)),
+        dpi,
+        xh_mm=1.8,
+        ink=note,
+    )
+    sign_layer = Image.new("L", size, paper)
+    draw = ImageDraw.Draw(sign_layer)
+    for i in range(60):  # a flourish drawn at the signature's grey
+        t = i / 59
+        x0 = synth.mm(95, dpi) + t * synth.mm(40, dpi)
+        draw.line(
+            (x0, synth.mm(178, dpi), x0 + synth.mm(1, dpi), synth.mm(172 + 6 * (i % 2), dpi)),
+            fill=signature,
+            width=max(1, synth.mm(0.4, dpi)),
+        )
+    boxes = (
+        note_layer.point(lambda v: 255 if v < paper - 10 else 0).getbbox(),
+        sign_layer.point(lambda v: 255 if v < paper - 10 else 0).getbbox(),
+    )
+    return synth.darker(image, note_layer, sign_layer), boxes
+
+
+def test_faint_note_and_signature_beside_dark_writing_are_kept():
+    # B1: with dark main text, Otsu splits halfway to the paper and used to drop both.
+    image, boxes = faint_page(300, 228, 35, 150, 140)
+    answer = detect_content_box(synth.noisy(image), (300, 300))
+    for box in boxes:
+        assert contains(answer["value"], box), (answer["value"], box)
+
+
+def test_page_written_only_in_faint_ink_is_not_blank_and_is_flagged():
+    # B1: paper 210 and ink 180 used to come back blank at 0.9 with no flag.
+    image, boxes = faint_page(150, 210, 180, 180, 180)
+    answer = detect_content_box(synth.noisy(image, sigma=3), (150, 150))
+    assert answer["value"] is not None
+    for box in boxes:
+        assert contains(answer["value"], box), (answer["value"], box)
+    assert any("faint" in flag for flag in answer["flags"])
+
+
+def test_blank_page_with_low_contrast_structure_gets_low_confidence():
+    # B1: very faint marks, below even the lenient level, leave the page blank but doubtful.
+    image = Image.new("L", text_page().size, synth.PAPER)
+    synth.writing(
+        ImageDraw.Draw(image),
+        random.Random(4),
+        (mm(30), mm(30), mm(130), mm(180)),
+        DPI,
+        ink=synth.PAPER - 12,
+    )
+    answer = detect_content_box(image, (DPI, DPI))
+    assert answer["value"] is None
+    assert answer["confidence"] <= 0.5
+
+
+def test_writing_inside_a_dark_area_at_the_border_is_kept_or_reported():
+    # B3: a dark stain touching the border with writing running into it used to be
+    # removed whole, writing and all, and never reported.
+    image = text_page().copy()
+    stain = Image.new("L", image.size, 255)
+    ImageDraw.Draw(stain).rectangle((0, 0, mm(40), image.height), fill=110)
+    image = ImageChops.multiply(image, stain)
+    writing = ink_box(text_page())
+    answer = detect_content_box(synth.noisy(image), (DPI, DPI))
+    # The writing outside the stain is kept, up to the stain's edge...
+    assert answer["value"][0] <= mm(40) + SLACK
+    assert close(answer["value"][1:], writing[1:])
+    # ...and the writing under the stain is reported and flagged.
+    assert any("dark area" in flag for flag in answer["flags"])
+
+
+def test_small_mark_touching_the_paper_edge_is_flagged():
+    # B4: a 3.5 mm cross about 0.5 mm from the edge is debris, but must not vanish silently.
+    image = text_page().copy()
+    half = 3.5 / 2
+    synth.cross(ImageDraw.Draw(image), mm(0.5 + half), mm(100), DPI)
+    answer = detect_content_box(synth.noisy(image), (DPI, DPI))
+    assert any("touching the paper edge" in flag for flag in answer["flags"])
+
+
+def test_implausible_resolution_is_flagged_and_the_page_is_not_blank():
+    answer = detect_content_box(synth.noisy(text_page()), (1e6, 1e6))
+    assert answer["value"] is not None
+    assert any("resolution" in flag for flag in answer["flags"])
+
+
+def test_noise_page_finishes_quickly_and_is_flagged():
+    import time
+
+    noise = Image.effect_noise((mm(160), mm(220)), 90)
+    start = time.monotonic()
+    answer = detect_content_box(noise, (DPI, DPI))
+    assert time.monotonic() - start < 5
+    assert any("noise" in flag for flag in answer["flags"])
+    assert answer["value"] is not None  # when in doubt, keep everything
