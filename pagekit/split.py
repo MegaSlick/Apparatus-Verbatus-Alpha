@@ -214,7 +214,9 @@ def _valley_in(levels: list[float], lo: int, hi: int, reach: int):
 
 
 def _valley(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]):
-    """The fold shadow as a line, and its depth in grey levels (line None if too weak)."""
+    """The fold shadow as a line, its depth in grey levels (line None if too weak), and
+    the line at the shadow's steep edge when the shadow falls on one side only (else
+    None)."""
     width, _ = work.size
     r0, r1 = rows
     size = value["valley_ink_filter_px"] | 1
@@ -226,7 +228,7 @@ def _valley(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]):
     levels = _smooth([float(v) for v in profile(bright, along_x=True)], window)
     x, depth = _valley_in(levels, lo, hi, reach)
     if x is None or depth < value["valley_min_depth"]:
-        return None, max(0.0, depth)
+        return None, max(0.0, depth), None
     floor = levels[x] + depth / 2
     left = x
     while left > 0 and levels[left - 1] < floor:
@@ -235,7 +237,22 @@ def _valley(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]):
     while right < width - 1 and levels[right + 1] < floor:
         right += 1
     if right - left + 1 < value["valley_min_width_share"] * width:
-        return None, depth
+        return None, depth, None
+    # A shadow on one side of the fold only ends at the fold with a steep edge: when
+    # one flank of the valley is much steeper than the other, the fold is that edge,
+    # not the darkest column.
+    fine = _smooth([float(v) for v in profile(bright, along_x=True)], 3)
+    span = right - left + 1
+    falls = [(fine[i - 1] - fine[i], i) for i in range(max(1, left - span), min(width, x + 1))]
+    rises = [(fine[i] - fine[i - 1], i) for i in range(max(1, x + 1), min(width, right + span + 1))]
+    fall, fall_x = max(falls, default=(0.0, x))
+    rise, rise_x = max(rises, default=(0.0, x))
+    ratio = value["valley_edge_ratio"]
+    edge = None
+    if rise > 0 and rise >= ratio * max(fall, 1e-9):
+        edge = rise_x
+    elif fall > 0 and fall >= ratio * max(rise, 1e-9):
+        edge = fall_x
     height = r1 - r0
     slope = 0.0
     halves = []
@@ -248,9 +265,38 @@ def _valley(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]):
         halves.append(hx)
     if None not in halves and height >= 4:
         slope = (halves[1] - halves[0]) / (height / 2)
-        if abs(slope) > math.tan(math.radians(value["lean_max_deg"])):
+        if abs(slope) > math.tan(math.radians(value["valley_lean_max_deg"])):
             slope = 0.0
-    return _Line(float(x), r0 + height / 2, slope, depth), depth
+    line = _Line(float(x), r0 + height / 2, slope, depth)
+    edged = None if edge is None else _Line(float(edge), r0 + height / 2, slope, depth)
+    return line, depth, edged
+
+
+def _tone_step(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]) -> float | None:
+    """Where the paper's brightness steps from one level to another between the edge
+    bands (two pages of different tone meeting), at the steepest column; None when no
+    step reaches tone_step_min grey levels."""
+    width, _ = work.size
+    r0, r1 = rows
+    size = value["valley_ink_filter_px"] | 1
+    bright = work.filter(ImageFilter.MaxFilter(size)).crop((0, r0, width, r1))
+    levels = _smooth([float(v) for v in profile(bright, along_x=True)], 3)
+    reach = max(2, round(value["valley_reach_share"] * width / 2))
+    band = math.ceil(value["edge_band_share"] * width)
+    sums = [0.0]
+    for v in levels:
+        sums.append(sums[-1] + v)
+    best = None
+    for x in range(max(band, reach), min(width - band, width - reach)):
+        step = (sums[x + reach] - sums[x]) / reach - (sums[x] - sums[x - reach]) / reach
+        if best is None or abs(step) > abs(best[0]):
+            best = (step, x)
+    if best is None or abs(best[0]) < value["tone_step_min"]:
+        return None
+    _, x = best
+    span = max(1, reach // 4)
+    candidates = range(max(1, x - span), min(width, x + span + 1))
+    return float(max(candidates, key=lambda i: abs(levels[i] - levels[i - 1])))
 
 
 def _gaps(marks: list[Mark], width: int, value: dict[str, Any]):
@@ -278,11 +324,14 @@ def _gaps(marks: list[Mark], width: int, value: dict[str, Any]):
     return gaps, runs
 
 
-def _fit_gap(gap: _Gap, marks: list[Mark], value: dict[str, Any]) -> _Line:
+def _fit_gap(
+    gap: _Gap, marks: list[Mark], value: dict[str, Any], limit: list | None = None
+) -> _Line:
     """The cut through the gap's middle over the content height. In each horizontal band
     the free interval between the two sides' writing is measured; among leans in the
     allowed range, the line that keeps the widest clearance in every band is chosen
-    (the smallest lean when several do equally well)."""
+    (the smallest lean when several do equally well). When the best lean is the largest
+    allowed, the gap may lean further; its slope is then added to `limit`."""
     middle = gap.middle
     if not marks:
         return _Line(middle, 0.0, 0.0, gap.width)
@@ -313,6 +362,8 @@ def _fit_gap(gap: _Gap, marks: list[Mark], value: dict[str, Any]) -> _Line:
     clearance, slope, x_mid = best
     if clearance <= 0:
         return _Line(middle, y_mid, 0.0, gap.width)
+    if limit is not None and abs(slope) >= math.tan(math.radians(value["lean_max_deg"])) - 1e-9:
+        limit.append(slope)
     return _Line(x_mid, y_mid, slope, gap.width)
 
 
@@ -550,7 +601,8 @@ def detect_split(
     folds = [ln for ln in lines if edge_band <= ln.x_mid <= width - edge_band]
     edge_lines = [ln for ln in lines if ln not in folds]
     fold_line = min(folds, key=lambda ln: (abs(ln.x_mid - width / 2), -ln.strength), default=None)
-    valley, valley_depth = _valley(work, (r0, r1), value)
+    valley, valley_depth, valley_edge = _valley(work, (r0, r1), value)
+    tone_step = _tone_step(work, (r0, r1), value)
 
     # Content marks, with straight marks and every found line masked.
     content = mask_straight_marks(content, value["long_mark_share"])
@@ -602,6 +654,12 @@ def detect_split(
             f"a fold line at x={full_x(fold_line.x_mid)} and a shadow valley at "
             f"x={full_x(valley.x_at(fold_line.y_mid))} disagree"
         )
+    if valley and valley_edge:
+        # A one-sided shadow's steep edge is the fold, unless cutting there would cross
+        # more writing than cutting at the darkest column.
+        both = value["speck_px"] * 2
+        if len(_straddlers(marks, valley_edge, both)) <= len(_straddlers(marks, valley, both)):
+            valley = valley_edge
     fold, part = (
         (fold_line, "line") if fold_line else (valley, "valley") if valley else (None, None)
     )
@@ -648,7 +706,35 @@ def detect_split(
         cut, method = fold, "fold"
     elif balanced:
         gap = max(balanced, key=lambda g: (g.width, -abs(g.middle - width / 2)))
-        line = _fit_gap(gap, marks, value)
+        at_limit: list[float] = []
+        line = _fit_gap(gap, marks, value, at_limit)
+        if at_limit:
+            flags.append(
+                f"the gap between the pages leans {value['lean_max_deg']:g} degrees, the "
+                "most a cut may lean, or more; the cut may not follow it"
+            )
+        faint = None
+        if valley is None and valley_depth >= value["faint_shadow_depth"]:
+            faint, _, _ = _valley(
+                work, (r0, r1), {**value, "valley_min_depth": value["faint_shadow_depth"]}
+            )
+        if (
+            faint is not None
+            and gap.start - tolerance <= faint.x_at(faint.y_mid) <= gap.end + tolerance
+        ):
+            # A shadow too faint to be a fold by itself still marks where the gutter
+            # is inside the gap.
+            line = faint
+            evidence.append(
+                f"a faint shadow {valley_depth:.0f} grey levels deep inside the gap places the cut"
+            )
+        elif tone_step is not None and gap.start - tolerance <= tone_step <= gap.end + tolerance:
+            # Where the two pages' paper differs in tone, the step between them is
+            # where they meet; the gap's middle is pulled by ragged line ends.
+            line = _Line(float(tone_step), line.y_mid, 0.0, gap.width)
+            evidence.append(
+                f"a step in paper tone at x={full_x(tone_step)} inside the gap places the cut"
+            )
         reason = (
             f"a content gap {gap.width * sx:.0f} px wide at x={full_x(gap.middle)} "
             f"(balance {gap.balance:.2f}) and no fold"
@@ -739,10 +825,16 @@ def detect_split(
                     f"{' and '.join(sides)} side), the widest overhanging it by "
                     f"{widest_mm:.1f} mm"
                 )
-                if widest_mm > overlap:
+                # The overhang is measured on the working copy, so one working px of
+                # doubt is counted against it: a stroke flagged here may just fit, one
+                # passed here does fit, whole, on the page holding most of it.
+                doubt_mm = sx / resolution[0] * 25.4
+                if widest_mm + doubt_mm > overlap:
+                    beyond = "more than" if widest_mm > overlap else "too close to"
                     flags.append(
                         f"writing across the cut: a mark overhangs it by {widest_mm:.1f} mm, "
-                        f"more than the {overlap:g} mm overlap, so part of it would be lost"
+                        f"{beyond} the {overlap:g} mm overlap kept past the cut, so it may "
+                        "be whole on neither page and part of it lost"
                     )
             else:
                 evidence.append(

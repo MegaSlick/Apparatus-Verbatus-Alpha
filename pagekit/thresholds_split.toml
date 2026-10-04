@@ -255,6 +255,13 @@ status = "UNMEASURED"
 meaning = "Share of the light class surviving that erosion below which the light class is thin strokes, so the page may be a negative."
 
 # --- Page count and split -----------------------------------------------------------------
+# Checked on (not measured on a labelled collection): pagekit's own synthetic spreads
+# (pagekit/_split_testspreads.py, brief 0042): plain folds, deep and one-sided gutter
+# shadows, unequal page widths, spreads off-centre and turned up to 4.5 degrees in the
+# frame, one page blank or nearly blank, two paper tones, writing, a table, a signature
+# and a slip across the gutter, page-edge stacks and dark boards, microfilm borders,
+# faint gutters, faint ink and dense cursive, at 150, 300 and 600 dpi in all four
+# turns; single pages on a wide frame; and the lead's two real spreads, run locally.
 
 [split_long_side_px]
 value = 1000
@@ -277,7 +284,7 @@ status = "UNMEASURED"
 meaning = "Grey levels of top-hat response at or above which a pixel belongs to a thin dark structure."
 
 [lean_max_deg]
-value = 3.0
+value = 6.0
 status = "UNMEASURED"
 meaning = "Largest lean from vertical, in degrees, searched for a fold line or accepted for a cut."
 
@@ -316,6 +323,11 @@ value = 7
 status = "UNMEASURED"
 meaning = "Size in working px of the brightening filter that removes pen strokes before the column brightness profile is taken."
 
+[valley_lean_max_deg]
+value = 3.0
+status = "UNMEASURED"
+meaning = "Largest lean, in degrees, accepted for a cut found from a fold shadow; a shadow's darkest columns in the top and bottom halves are imprecise, so a steeper lean found from them is taken as none."
+
 [valley_smooth_share]
 value = 0.02
 status = "UNMEASURED"
@@ -335,6 +347,21 @@ meaning = "Grey levels by which a brightness minimum must lie below its lower sh
 value = 0.01
 status = "UNMEASURED"
 meaning = "Width of a fold shadow at half its depth, as a share of the frame width, below which it is too narrow to be a shadow."
+
+[valley_edge_ratio]
+value = 3.0
+status = "UNMEASURED"
+meaning = "When one flank of a fold shadow is at least this many times steeper than the other, the shadow falls on one side only and the fold is placed at its steep edge, not at the darkest column. Checked on pagekit's spreads with a shadow on one side (left or right), deep and light symmetric shadows and soft valleys."
+
+[faint_shadow_depth]
+value = 6
+status = "UNMEASURED"
+meaning = "Grey levels of a gutter shadow too faint to be a fold by itself (below valley_min_depth) that still places a cut found from a balanced gap, when it lies inside that gap. Checked on pagekit's spreads with faint shadows (12 to 22 grey levels drawn) and no fold line."
+
+[tone_step_min]
+value = 15
+status = "UNMEASURED"
+meaning = "Grey levels by which the paper's brightness must step between the two halves of the frame (two pages of different tone) for the step to place a cut found from a gap. Checked on pagekit's spreads of two paper tones (226 against 196) with and without a fold line."
 
 [agree_tolerance_share]
 value = 0.03
