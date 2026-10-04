@@ -716,3 +716,13 @@ record".
 - **Briefs 0043 and 0044 done:** commits ac89cf4, 29d941e, 1c95e02, fc75687, 265b47a,
   0e7c58b and 478a671 on `work/pk-integrate`. Leak scan no hits in 184 files. Merged into
   `work/pagekit-prepare`. The cache keeps previews only by default (76 kB for a test spread).
+
+## 0040 — Held-out split test; follow-up brief 0045
+
+- **Independent split test** by the reviewer on 27 kinds of frame of its own (216 runs): no
+  confident wrong cut and no page silently cut in two; a spread with a wide gutter but no
+  fold or shadow, bridged by one flourish, was silently made one page; a slanted stroke
+  across a thin fold line was not counted as crossing and was lost without a flag.
+- **Follow-up brief:** `briefs/0045-build-split-gaps-and-slanted-strokes.md` (sha256
+  10aa6fb7bb3bf97bb73683da64e7246d2f58ded4bc2b01623d4a51effe0c0794), to the agent of
+  brief 0017. Saved before it was sent.
