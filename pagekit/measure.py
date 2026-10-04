@@ -162,7 +162,10 @@ def _levelled_by_truth(page: dict[str, Any], box: list[int], true_skew: float) -
 
 class _Tally:
     def __init__(self) -> None:
-        self.counts = {step: {"right": 0, "wrong": 0, "review": 0, "by_hand": 0} for step in STEPS}
+        self.counts = {
+            step: {"right": 0, "wrong": 0, "review": 0, "by_hand": 0, "not_applied": 0}
+            for step in STEPS
+        }
         self.errors: dict[str, list[float]] = {step: [] for step in STEPS}
         self.by_item: dict[str, dict[str, float]] = {step: {} for step in STEPS}
         self.wrong: list[str] = []
@@ -254,7 +257,16 @@ def measure(prepared: Path, gold_path: Path) -> dict[str, Any]:
             if entry.get("skew") is not None and entry["skew"][index] is not None:
                 error = abs(page["steps"]["skew"]["value"] - float(entry["skew"][index]))
                 tally.add("skew", where, page["steps"]["skew"], error, tolerance["skew"])
-            if entry.get("content_box") is not None:
+            applied = page.get("applied", {}).get("content_box", True)
+            if entry.get("content_box") is not None and not applied:
+                # Cropping was off: the content box is a stand-in for the whole side,
+                # not a detection, so there is nothing to score.
+                tally.counts["content_box"]["not_applied"] += 1
+                notes.append(
+                    f"{where}: cropping was off, so the content box was not applied and "
+                    "is not scored"
+                )
+            elif entry.get("content_box") is not None:
                 true_box = entry["content_box"][index]
                 found = page["steps"]["content_box"]["value"]
                 if true_box is None or found is None:
@@ -303,6 +315,10 @@ def report_text(report: dict[str, Any]) -> str:
     lines = [f"Compared {report['sources']} source image(s) with {report['gold']}."]
     for step, entry in report["steps"].items():
         counted = entry["right"] + entry["wrong"] + entry["review"] + entry["by_hand"]
+        if entry["not_applied"]:
+            lines.append(
+                f"{_STEP_WORDS[step]}: {entry['not_applied']} not scored (cropping was off)"
+            )
         if not counted:
             continue
         text = (

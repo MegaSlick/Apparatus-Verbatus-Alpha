@@ -147,17 +147,26 @@ it).
 
 ### The stage cache
 
-`prepare` also writes a stage cache, by default the folder `pagekit-cache` beside the
-output folder (`--cache DIR` to put it elsewhere, never inside a source folder;
-`--no-cache` for none). For each source, in a folder named by its sha256: the source as
+`prepare` also writes a stage cache, by default a folder beside the output folder
+named after it (`prepared.pagekit-cache` for `prepared`), so two output folders never
+share one. `--cache DIR` puts it elsewhere (never inside a source folder or the output
+folder; a cache folder records the output folder it belongs to, and one belonging to
+another is refused); `--no-cache` writes none. For each source, in a folder named by its sha256: the source as
 opened (after any orientation tag), the upright frame with the cut drawn, and for each
-page its side of the cut and the levelled page, as full-resolution lossless TIFF and
-small PNG previews; with cropping on, the levelled page with its page box and content
-box drawn. `index.json` lists the entries, each keyed by the source's sha256 and the
+page its side of the cut and the levelled page, as small PNG previews; with cropping
+on, the levelled page with its page box and content box drawn. pagekit keeps each
+page's settings in the project file and makes the real images only once, at output,
+so by default the cache holds previews only; `--cache-full` (setting
+`stage_cache_full`) also keeps the source as opened and each page's side and levelled
+page at full resolution, as lossless TIFF. `index.json` lists the entries, each keyed by the source's sha256 and the
 inputs hash and value of the step that made it, so a re-run with nothing changed
 writes nothing and a changed step rewrites only its own entries. The review sheet links
-to each preview. The cache is for looking only: no prepared page is ever made from it,
-so it can be deleted at any time and the next run rebuilds it.
+to each preview. The index records each file's sha256: a file whose bytes no longer
+match (damaged) is rewritten, files no entry names are removed, and the folder of a
+source no longer in the batch is removed. Each run prints the cache's size, and before
+writing warns plainly when the disk has less free space than an estimate of what the
+pages and the cache may need. The cache is for looking only: no prepared page is ever
+made from it, so it can be deleted at any time and the next run rebuilds it.
 
 Options: `--project FILE` and `--overrides FILE` (below), `--report-stale`,
 `--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, `--dpi N`
@@ -192,19 +201,27 @@ original.
 
 Some image files carry a tag saying how their stored pixels must be turned, or turned
 and mirrored, to show the picture upright: the orientation tag of the Exif standard
-(CIPA DC-008, Exif 2.32, 2019), which defines eight values. pagekit reads it and applies
-its transform once, exactly (no resampling), before anything else: orientation, the
-split and every later step see the corrected frame, and a person's quarter turns come
-after it. The transform is the first link of the geometry chain (an `orientation_tag`
-step, only when a tag is applied), so the point maps still lead back to the stored
-pixels. Prepared pages carry no orientation tag, so no reader turns them again.
+(CIPA DC-008, Exif 2.32, 2019), which defines eight values. pagekit applies a trusted
+tag exactly once, with no resampling, before anything else: orientation, the split and
+every later step see the corrected frame, and a person's quarter turns come after it.
+Prepared pages carry no orientation tag, so no reader turns them again.
 
-**Which grid.** pagekit works on each source exactly as Pillow opens the file's bytes,
-the grid every other tool that opens the scan with Pillow sees; the manifest's
-`source_size` and the point maps refer to that grid. Pillow turns some carriers upright
-by their tag as it opens them and drops the tag (TIFF, with Pillow 12.3); others it
-leaves as stored (PNG, JPEG). pagekit reads the tag before loading and finds out, file
-by file, whether Pillow applied it: the tag is gone after loading, or, for tags 5 to 8,
+**Which grid the point maps lead back to.** pagekit works on each source exactly as
+Pillow opens the file's bytes, the grid every other tool that opens the scan with
+Pillow sees; the manifest's `source_size` and the point maps refer to that grid, not
+always to the pixels as stored in the file:
+
+- **PNG and JPEG** (Pillow leaves them as stored): the grid is the stored pixels. The
+  chain applies the tag as its first link (an `orientation_tag` step), so the point maps
+  lead back to the stored pixels.
+- **TIFF** (Pillow 12.3 turns it upright by its tag as it opens it and drops the tag):
+  the grid is the image already turned upright, not the stored pixels. The chain adds
+  no tag step, and the point maps lead back to that upright grid.
+- **A TIFF whose tag is not trusted:** pagekit undoes Pillow's turn, so the grid is the
+  stored pixels again.
+
+pagekit reads the tag before loading and finds out, file by file, whether Pillow
+applied it: the tag is gone after loading, or, for tags 5 to 8,
 the loaded size is the transposed size the file's own header gives. If Pillow applied
 it, the record says "applied on open by the image library" and the chain adds nothing;
 if not, the chain applies it once as its first link. So a tag is applied exactly once
@@ -241,13 +258,18 @@ exact. Otherwise the `grey_rule` setting (or `--grey-rule`) decides: `luminance`
 
 Before a colour page is made grey, pagekit measures its colour on the written page
 only (its margin box, within the page box; a coloured backdrop or a colour target
-beside the paper does not count): the chroma of each pixel (largest minus smallest
-channel) on a copy at `colour_working_dpi`, against the chroma noise of the page's own
-plain paper, taken from its most neutral part (the median plus `colour_noise_spread`
-times the median absolute deviation, so a pale wash over part of the paper does not
-raise it). Coloured pixels are opened by a square as wide as `colour_thinnest_mm`
-(at least two pixels), which drops stray specks and keeps ruling and other lines that
-wide. If marks stand clearly above the noise (`colour_chroma_margin`) over at least
+beside the paper does not count): on a copy at `colour_working_dpi`, each pixel's colour
+difference from the page's own paper colour (the median paper colour, on two opponent
+axes, red against green and yellow against blue). Moving across the paper's hue counts
+in full; along it, only colour more saturated than the paper or past neutral into the
+opposite hue counts, so an ink that only loses the paper's tint (black, faded brown on
+yellowed paper) does not, while pale blue on cream does. The noise is that difference
+over the page's own plain paper, from its most neutral part (the median plus
+`colour_noise_spread` times the median absolute deviation, so a pale wash over part of
+the paper does not raise it). Coloured pixels count by connected piece: a piece smaller
+than `colour_speck_mm2` is a speck and dropped, so dust goes and lines of any width,
+such as fine ruling, stay. If marks stand clearly above the noise
+(`colour_chroma_margin`) over at least
 `colour_min_area_mm2`, the page is flagged ("this
 page holds colour that grey would remove", naming where) and kept in colour, unless grey
 was set by hand or locked for it, in which case it is grey and the flag stays. Colour
@@ -257,12 +279,12 @@ measure; the review sheet shows the same with lines to keep the page as scanned 
 force grey.
 
 What the colour check does not detect: colour fainter than `colour_chroma_margin`
-above the paper's noise; coloured lines thinner than `colour_thinnest_mm`; a colour
-covering more than half of the paper, which reads as the paper's own tint; and
-differences between inks that are less saturated than the paper itself. Black and
-brown inks on yellowed paper are not compared with each other, so in grey they may
-merge into one level; when the difference between such inks matters, keep the page in
-source mode.
+above the paper's noise; coloured specks smaller than `colour_speck_mm2`; a colour
+covering more than half of the paper, which reads as the paper's own colour; and
+differences between inks that lie between neutral and the paper's own hue (less
+saturated than the paper, in its hue). Black and brown inks on yellowed paper are such
+inks: they are not compared with each other, so in grey they may merge into one level;
+when the difference between such inks matters, keep the page in source mode.
 
 ### Padding apart from the margin
 
@@ -548,7 +570,8 @@ lists them.
   through `measure`.
 - Output files of pages that no longer exist (a spread re-split into one page) are
   left in the output folder and listed under `stale_outputs`; pagekit never deletes.
-- EXIF orientation tags are ignored: sources are taken in their stored pixel grid.
+- Only the orientation tag is read from a file's metadata; colour profiles and other
+  tags are not applied.
 - Source modes handled: greyscale, colour, bilevel (written as greyscale) and palette
   (written as greyscale when every colour it uses is a grey, else as colour). Others,
   such as 16-bit greyscale or CMYK, are skipped with a reason (above).

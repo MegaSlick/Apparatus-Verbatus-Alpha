@@ -143,10 +143,10 @@ value = 3.0
 status = "UNMEASURED"
 meaning = "The paper's colour noise is its median chroma (largest minus smallest channel) plus this many times its median absolute deviation, scaled to a standard deviation; taken from the most neutral paper, so a pale colour over part of the page does not hide itself."
 
-[colour_thinnest_mm]
-value = 0.25
+[colour_speck_mm2]
+value = 0.05
 status = "UNMEASURED"
-meaning = "The narrowest coloured line, in millimetres, the colour check keeps; narrower specks are taken as noise."
+meaning = "A connected piece of colour smaller than this, in square millimetres, is a speck (dust, a stray pixel) and does not count; lines of any width, such as fine ruling, are larger and do."
 
 [colour_chroma_margin]
 value = 12
@@ -184,6 +184,11 @@ meaning = "1 runs the page-box and content-box detectors even when cropping is o
 value = 1
 status = "UNMEASURED"
 meaning = "1 writes the stage cache: each step's image of each source and page, for looking only; 0 writes none."
+
+[stage_cache_full]
+value = 0
+status = "UNMEASURED"
+meaning = "1 also keeps full-resolution lossless images of the source as opened and of each page's side and levelled page in the stage cache; 0 (the default) keeps small previews only. The real images are made once, at output, from the original."
 
 [stage_cache_folder]
 value = ""
