@@ -379,3 +379,118 @@ def test_one_application_whatever_pillow_does_with_a_tiff_tag(
     assert _pixels(tmp_path / "out" / page["output"]["name"]) == _pixels(
         tmp_path / "ref-out" / plain["pages"][0]["output"]["name"]
     )
+
+
+# --- Tests that catch the surviving mutations ------------------------------------------
+
+
+def test_strong_blotchy_chroma_noise_on_the_paper_is_not_colour(tmp_path):
+    """Catches: dropping or scaling down the MAD term of the paper's noise."""
+    import random
+
+    from PIL import ImageChops
+
+    grey = pages.page(size=(600, 800), seed=48, margin=(60, 80, 60, 80))
+    rng = random.Random(4)
+    small = (grey.width // 3 + 1, grey.height // 3 + 1)
+    bands = []
+    for _ in range(3):
+        noise = Image.new("L", small)
+        noise.putdata(
+            [max(0, min(255, round(128 + rng.gauss(0, 7)))) for _ in range(small[0] * small[1])]
+        )
+        noise = noise.resize((small[0] * 3, small[1] * 3), Image.NEAREST).crop((0, 0, *grey.size))
+        bands.append(ImageChops.add(grey, noise, 1.0, -128))
+    result = _grey_choice(tmp_path, Image.merge("RGB", bands))
+    assert result["output_mode"]["mode"] == "grey" and not _flagged(result)
+
+
+def test_the_batch_checks_leave_out_content_boxes_not_applied(tmp_path):
+    """Catches: the batch checks measuring content boxes with cropping off."""
+    from pagekit.volume import measure_page
+
+    folder = tmp_path / "src"
+    folder.mkdir()
+    pages.page(size=(300, 420), seed=49, margin=(30, 40, 30, 40)).save(folder / "p.png", dpi=DPI)
+    (default,) = plan([folder], tmp_path / "a").pages
+    assert set(measure_page(default)) == {"skew"}
+    (cropped,) = plan([folder], tmp_path / "b", settings_overrides={"crop": "content"}).pages
+    assert "content_width" in measure_page(cropped)
+
+
+def test_the_cache_fills_outside_the_side_with_the_pages_paper_colour(tmp_path):
+    """Catches: a wrong fill colour in the cache's side and levelled images."""
+    upright = Image.new("L", (800, 600), 180)
+    upright.paste(235, (400, 0, 800, 600))  # the right page's paper is lighter
+    folder = tmp_path / "src"
+    folder.mkdir()
+    upright.save(folder / "s.png", dpi=DPI)
+    fix = _overrides(
+        tmp_path,
+        [
+            {
+                "source": "src/s.png",
+                "step": "split",
+                "value": {"pages": 2, "cut": [[380, 0], [420, 600]]},
+            },
+            {"source": "src/s.png", "step": "skew", "page": 2, "value": 3.0},
+        ],
+    )
+    out = tmp_path / "out"
+    main(["prepare", str(folder), "--output", str(out), "--overrides", str(fix), "--cache-full"])
+    manifest = json.loads((out / "pagekit-prepare.json").read_text())
+    right = manifest["pages"][1]
+    sha = right["source"]["sha256"]
+    cache = tmp_path / "out.pagekit-cache" / sha
+    index = json.loads((cache / "index.json").read_text())
+    for stage in ("side", "levelled"):
+        entry = next(e for e in index["entries"] if e["stage"] == stage and e["page"] == 2)
+        with Image.open(cache / entry["files"]["full"]) as image:
+            # The corner left of the leaning cut is outside the page: paper colour.
+            assert (
+                image.getpixel((0, image.height - 1)) == right["geometry"]["fill"]["colour"] == 235
+            )
+
+
+def test_a_page_box_set_by_hand_turns_cropping_on_for_its_page(tmp_path):
+    """Catches: a hand-set page box not turning cropping on."""
+    folder = tmp_path / "src"
+    folder.mkdir()
+    pages.page(size=(300, 420), seed=50, margin=(30, 40, 30, 40)).save(folder / "p.png", dpi=DPI)
+    fix = _overrides(
+        tmp_path,
+        [{"source": "src/p.png", "step": "page_box", "page": 1, "value": [10, 10, 290, 400]}],
+    )
+    (page,) = plan([folder], tmp_path / "out", overrides_path=fix).pages
+    assert page.applied["crop"] == "page" and page.chain.crop_box == (10, 10, 290, 400)
+
+
+def test_the_margins_allowance_past_the_page_box_is_not_page_colour(tmp_path):
+    """Catches: the colour area not held to the page box (the margin may run past it
+    into the backdrop by the allowance)."""
+    from pagekit.test_spec0007 import _on_backdrop
+
+    folder = tmp_path / "src"
+    folder.mkdir()
+    _on_backdrop(False).save(folder / "page.png", dpi=DPI)
+    boxes = [
+        {"source": "src/page.png", "step": "page_box", "page": 1, "value": [120, 100, 480, 580]},
+        {"source": "src/page.png", "step": "content_box", "page": 1, "value": [125, 105, 475, 575]},
+    ]
+    out = tmp_path / "out"
+    main(
+        [
+            "prepare",
+            str(folder),
+            "--output",
+            str(out),
+            "--output-mode",
+            "grey",
+            "--overrides",
+            str(_overrides(tmp_path, boxes)),
+        ]
+    )
+    (page,) = json.loads((out / "pagekit-prepare.json").read_text())["pages"]
+    crop = next(step for step in page["geometry"]["steps"] if step["op"] == "crop")["box"]
+    assert crop[0] < 120 and crop[2] > 480  # the margin runs into the blue backdrop
+    assert page["output_mode"]["mode"] == "grey" and not _flagged(page)
