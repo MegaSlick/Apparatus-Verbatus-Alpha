@@ -274,3 +274,78 @@ def test_the_exemplar_re_derives_a_second_order_page_and_holds_it_to_its_recipe(
     older["derivative_page"]["apply_recipe"] = dict(TRIAGE_APPLY_RECIPE)
     with pytest.raises(ContractError, match="apply recipe"):
         verify_triage_derivative(older, master, digest_bytes(master), parent, digest_bytes(sealed))
+
+
+@pytest.mark.parametrize(
+    "post_crop_box",
+    [
+        {"x": 5000, "y": 5000, "w": 300, "h": 200},  # misses the scan: a page of fill
+        {"x": -100, "y": 0, "w": 300, "h": 200},  # a third of the canvas's width beyond it
+        {"x": 0, "y": 0, "w": 300, "h": 260},  # 60 px, three tenths of its height, beyond
+    ],
+)
+def test_a_post_crop_that_misses_or_runs_far_past_the_scan_is_refused(post_crop_box):
+    master = _png(Image.new("L", (300, 200), 230))
+    part = triage.make_part(
+        {"x": 0, "y": 0, "w": 300, "h": 200},
+        {"x": 0, "y": 0, "w": 300, "h": 200},
+        0,
+        colour_mode="keep",
+        post_crop_box=post_crop_box,
+        fill=[180],
+    )
+    with pytest.raises(ValueError, match="post-crop"):
+        render_triage_derivative(master, page_index=0, part=part)
+
+
+def test_a_post_crop_may_run_a_margins_width_past_the_scan():
+    master = _png(Image.new("L", (300, 200), 230))
+    part = triage.make_part(
+        {"x": 0, "y": 0, "w": 300, "h": 200},
+        {"x": 0, "y": 0, "w": 300, "h": 200},
+        0,
+        colour_mode="keep",
+        post_crop_box={"x": -40, "y": -30, "w": 380, "h": 260},
+        fill=[180],
+    )
+    rendered, _ = render_triage_derivative(master, page_index=0, part=part)
+    assert Image.open(BytesIO(rendered)).size == (380, 260)
+
+
+@pytest.mark.parametrize(
+    ("mode", "paper", "levels"),
+    [("1", 0, [128]), ("LA", (10, 255), [200, 128]), ("RGBA", (10, 20, 30, 255), [9, 9, 9, 0])],
+)
+def test_a_fill_the_mode_cannot_carry_as_recorded_is_refused(mode, paper, levels):
+    """A bilevel page holds only 0 or 255, and rotation premultiplies a fill whose alpha is
+    below 255, so neither would come out as the row records it."""
+    master = _png(Image.new(mode, (31, 23), paper))
+    part = triage.make_part(
+        {"x": 0, "y": 0, "w": 31, "h": 23},
+        {"x": 0, "y": 0, "w": 31, "h": 23},
+        -5_000,
+        colour_mode="keep",
+        post_crop_box={"x": -3, "y": -3, "w": 35, "h": 28},
+        fill=levels,
+    )
+    with pytest.raises(ValueError, match="fill"):
+        render_triage_derivative(master, page_index=0, part=part)
+
+
+@pytest.mark.parametrize(
+    ("mode", "paper", "levels"), [("1", 0, [255]), ("LA", (10, 255), [200, 255])]
+)
+def test_a_fill_the_mode_carries_is_every_pixel_beyond_the_crop(mode, paper, levels):
+    master = _png(Image.new(mode, (31, 23), paper))
+    part = triage.make_part(
+        {"x": 0, "y": 0, "w": 31, "h": 23},
+        {"x": 0, "y": 0, "w": 31, "h": 23},
+        -5_000,
+        colour_mode="keep",
+        post_crop_box={"x": -3, "y": -3, "w": 35, "h": 28},
+        fill=levels,
+    )
+    rendered, _ = render_triage_derivative(master, page_index=0, part=part)
+    page = Image.open(BytesIO(rendered))
+    expected = levels[0] if len(levels) == 1 else tuple(levels)
+    assert page.getpixel((0, 0)) == expected

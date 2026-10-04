@@ -58,12 +58,16 @@ row of either keeps its meaning:
   clockwise about the crop's centre onto an expanded canvas, convert. A part is exactly
   the four fields above, and the canvas beyond the scan is black.
 - `region-crop-rotate-crop`: the same, then cut `post_crop_box` from the rotated canvas,
-  with every pixel beyond the rotated scan set to `fill`. A part adds two fields:
-  `post_crop_box` (`space: "rotated"`, a half-open integer rectangle in the rotated
-  canvas's coordinates, which may reach past the canvas) and `fill`
-  (`{levels: [...]}`, one level in [0, 255] per band of the master's own mode; for a
-  palette master, the palette index). A deskewed page is then cropped tight, and its
-  margin is whatever the row records, such as the paper's level.
+  with every pixel outside the rotated crop set to `fill`. That is everything the
+  rotated crop does not cover: the canvas's corners and anything past the canvas, and so
+  also any part of the scan outside the crop. A part adds two fields: `post_crop_box`
+  (`space: "rotated"`, a half-open integer rectangle in the rotated canvas's
+  coordinates) and `fill` (`{levels: [...]}`, one level in [0, 255] per band of the
+  master's own mode; for a palette master, the palette index). The post-crop must hold
+  some of the canvas and may reach past each of its edges by at most a fifth of the
+  canvas on that axis. A bilevel master's fill is 0 or 255, and a fill with alpha is
+  opaque, so the fill comes out exactly as recorded. A deskewed page is then cropped
+  tight, and its margin is whatever the row records, such as the paper's level.
 
 Sampling, fill rules and encoding belong to the order's apply recipe,
 `common.imaging.triage_apply_recipe(operation_order)` (`triage-raster-apply-v1` or

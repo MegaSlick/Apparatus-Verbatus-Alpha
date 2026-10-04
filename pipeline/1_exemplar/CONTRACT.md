@@ -147,7 +147,8 @@ frame's dimensions against the row's `frame` (exactly; a stale row is refused ra
 than shifting coordinates), then renders each part with
 `common.imaging.render_triage_derivative`: cut the frame-space region, crop, rotate
 clockwise onto an expanded canvas, then, for a row of the second operation order, cut
-the post-crop from the canvas with everything beyond the scan set to the row's fill;
+the post-crop from the canvas with everything outside the rotated crop set to the
+row's fill;
 convert, encode deterministically.
 
 The master is never re-encoded: its bytes are stored under their own digest as the

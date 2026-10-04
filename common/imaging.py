@@ -1242,6 +1242,8 @@ _TRIAGE_RECIPES: Final = {
     SPLIT_OPERATION_ORDER: TRIAGE_APPLY_RECIPE,
     SPLIT_OPERATION_ORDER_V2: TRIAGE_APPLY_RECIPE_V2,
 }
+# A post-crop may reach past each edge of the rotated scan by this fraction of it.
+_POST_CROP_REACH_DENOMINATOR: Final = 5
 # The modes whose sample levels a row's fill can name: one level per band.
 _FILLABLE_MODES: Final = frozenset({"1", "L", "LA", "P", "RGB", "RGBA"})
 
@@ -1339,8 +1341,31 @@ def triage_point_to_frame(part: dict, point: tuple[float, float]) -> tuple[float
 
 
 def _post_crop_on_fill(rotated: Image.Image, box: dict, fill) -> Image.Image:
-    """`box` of the rotated canvas, with every pixel beyond the canvas set to `fill`."""
+    """`box` of the rotated canvas, with every pixel beyond the canvas set to `fill`.
+
+    The box must hold some of the canvas, and may reach past each of its edges by at
+    most a fifth of the canvas on that axis: room for a page's margin beyond the scan,
+    never a page made of fill.
+    """
     _refuse_past_pixel_bound(box["w"], box["h"])
+    width, height = rotated.size
+    overhang = (
+        (-box["x"], width),
+        (box["x"] + box["w"] - width, width),
+        (-box["y"], height),
+        (box["y"] + box["h"] - height, height),
+    )
+    if (
+        box["x"] >= width
+        or box["y"] >= height
+        or box["x"] + box["w"] <= 0
+        or box["y"] + box["h"] <= 0
+    ):
+        raise ValueError("the triage post-crop holds none of the rotated scan")
+    if any(beyond * _POST_CROP_REACH_DENOMINATOR > extent for beyond, extent in overhang):
+        raise ValueError(
+            "the triage post-crop runs more than a fifth of the rotated scan past its edge"
+        )
     page = rotated.crop((box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"]))
     beyond = Image.new("L", page.size, 255)
     inside = (
@@ -1433,6 +1458,15 @@ def render_triage_derivative(
                     raise ValueError(
                         f"the row's fill names {len(levels)} level(s), and a master in mode "
                         f"{source_mode!r} with bands {source_bands} needs one per band"
+                    )
+                if source_mode == "1" and levels[0] not in (0, 255):
+                    raise ValueError(
+                        "a bilevel master holds only 0 or 255, so its fill must be one of them"
+                    )
+                if source_mode in ("LA", "RGBA") and levels[-1] != 255:
+                    raise ValueError(
+                        "a fill below full opacity would be premultiplied by the rotation, "
+                        "so it would not come out as recorded; record an opaque fill"
                     )
                 fill = levels[0] if len(levels) == 1 else tuple(levels)
             rotated = cropped.rotate(
