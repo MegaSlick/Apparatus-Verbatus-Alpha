@@ -512,3 +512,16 @@ record".
   hits. Merged into `work/pagekit-prepare` (fd3041a); the suite passes under the check
   script's settings. Since the builder checked its work on the reviewer's set, that
   reviewer is re-testing on a new held-out set.
+- **Correction to the entry above:** the lead attached the two documents as files, as the
+  host had asked; the host then read them on receipt. The exposure was the host's handling,
+  not the lead's. The lead has since approved distillation by a reading-side agent.
+
+## 0029 — Unusable sources are skipped, not fatal; follow-up brief 0032
+
+- **The lead decided** that one unusable source file must not stop a batch. The host
+  changed spec 0002: such a file is skipped and named with its reason in the manifest, the
+  review sheet and the output, with exit status 1; exit status 2 stays for problems that
+  stop the whole run.
+- **Follow-up brief:** `briefs/0032-build-skip-unusable-sources.md` (sha256
+  9001e468ff317016a552d8166fdb0c7b0eb105b6f05a5b5dea4f187ee022a0c3), to the agent of
+  brief 0023. Saved before it was sent.
