@@ -644,3 +644,12 @@ record".
 - **Brief 0037 done:** commit e7c0922 on `work/pk-integrate`. Leak scan no hits. Merged into
   `work/pagekit-prepare`; the pin compares decoded pixels and regenerated its data from
   2d10a14.
+
+## 0036 — Third held-out re-test; follow-up brief 0038
+
+- **Re-test** of 7d4b148 and cdd6dd9: no regression; figure pages 10 wrong to 0; band
+  strokes 71 missed flags to 0; one handwritten account page, flagged before, is now a
+  wrong half turn because figure tiles still vote up or down.
+- **Follow-up brief:** `briefs/0038-build-orientation-figure-tiles-updown.md` (sha256
+  6ed5bf8bad155d6d373bcf6f333f22fd63dda1eab5c28467d41b916115379aea), to the agent of
+  brief 0017. Saved before it was sent.
