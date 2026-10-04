@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import random
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 PAPER = 228
 INK_LEVEL = 45
@@ -31,9 +31,11 @@ def write_block(
     ascenders: float = 0.3,
     descenders: float = 0.1,
     centred: bool = False,
+    joined: bool = True,
 ) -> None:
     """Lines of writing inside `box`, left-aligned at its left edge (or centred in it).
-    `ascenders` and `descenders` are the shares of letters carrying one."""
+    `ascenders` and `descenders` are the shares of letters carrying one; `joined`
+    links the letters of a word at the baseline."""
     rng = random.Random(seed)
     x0, y0, x1, y1 = box
     top = y0
@@ -58,7 +60,7 @@ def write_block(
                 draw.ellipse(
                     (lx, baseline - core, lx + letter - 2, baseline), outline=ink, width=stroke
                 )
-                if i:
+                if i and joined:
                     draw.line((lx - 3, baseline - 1, lx + 2, baseline - 1), fill=ink, width=stroke)
                 if roll < ascenders:
                     draw.line(
@@ -116,3 +118,106 @@ def turned(image: Image.Image, quarter_turns_clockwise: int) -> Image.Image:
     }
     step = steps[quarter_turns_clockwise % 4]
     return image.copy() if step is None else image.transpose(step)
+
+
+def cursive_page(
+    size: tuple[int, int] = (1800, 2600),
+    seed: int = 11,
+    *,
+    gutter: str = "right",
+) -> Image.Image:
+    """A dense page of cursive in the manner of an old register: close lines with long
+    ascenders and descenders that reach the neighbouring lines, looping flourishes
+    under some lines and a flourished signature, faint show-through of mirrored
+    writing from the other side, a dark gutter strip shading into the page on one side
+    and a stack of page edges beyond it."""
+    rng = random.Random(seed)
+    width, height = size
+    image = Image.new("L", size, 196)
+    # Show-through: writing from the other side, mirrored and faint.
+    back = Image.new("L", size, 255)
+    write_block(
+        ImageDraw.Draw(back),
+        (150, 170, width - 150, height - 200),
+        seed + 100,
+        pitch=44,
+        core=11,
+        rise=22,
+        letter=9,
+        ink=150,
+        ragged=(0.9, 1.0),
+        ascenders=0.3,
+        descenders=0.25,
+    )
+    image = ImageChops.darker(image, back.transpose(Image.Transpose.FLIP_LEFT_RIGHT))
+    draw = ImageDraw.Draw(image)
+    left, right = (190, width - 230) if gutter == "right" else (230, width - 190)
+    write_block(
+        draw,
+        (left, 150, right, height - 330),
+        seed,
+        pitch=40,
+        core=10,
+        rise=22,
+        letter=9,
+        stroke=3,
+        ink=40,
+        ragged=(0.93, 1.0),
+        ascenders=0.4,
+        descenders=0.35,
+    )
+    # Line-end fillers drawn out to the right margin (so the right edge is straight),
+    # and entry starts pushed into the left margin (so the left edge is not).
+    for y in range(150 + 13 + 22 + 10, height - 330 - 22, 40):
+        draw.line((right - rng.randint(20, 120), y - 3, right + 10, y - 5), fill=40, width=3)
+        if rng.random() < 0.3:
+            x = left - rng.randint(40, 140)
+            draw.ellipse((x, y - 22, x + 40, y), outline=40, width=3)
+    # Flourishes looping down from the end of some lines into the next.
+    for y in range(150 + 32, height - 380, 40):
+        if rng.random() < 0.25:
+            x = rng.randint(left + 300, right - 200)
+            draw.arc((x, y - 10, x + 220, y + 60), 0, 180, fill=40, width=3)
+    # A flourished signature.
+    sy = height - 260
+    for i in range(5):
+        draw.arc(
+            (width // 2 - 300 + 25 * i, sy - 60 + 8 * i, width // 2 + 200, sy + 80),
+            20,
+            340,
+            fill=40,
+            width=4,
+        )
+    draw.line((width // 2 - 350, sy + 70, width // 2 + 320, sy + 40), fill=40, width=4)
+    # Dark gutter strip shading into the page, and a stack of page edges beyond it.
+    strip = 120
+    for i in range(strip):
+        level = round(196 - 150 * (i / strip) ** 1.5)
+        x = width - strip + i if gutter == "right" else strip - 1 - i
+        draw.line((x, 0, x, height - 1), fill=level)
+    for i in range(10):
+        x = 20 + 9 * i if gutter == "right" else width - 20 - 9 * i
+        draw.line((x, 0, x + rng.randint(-6, 6), height - 1), fill=60, width=4)
+    return image
+
+
+def cursive_spread(seed: int = 11, *, lean: float = 0.4) -> Image.Image:
+    """Two facing cursive pages on a dark backdrop: their lines out of step and leaning
+    slightly apart, a gutter shadow between them, page-edge stacks at the outer sides,
+    and a backdrop margin that is dark but not uniformly so."""
+    width, height = 1800, 2600
+    left = cursive_page((width, height), seed, gutter="right")
+    right = cursive_page((width, height), seed + 1, gutter="left")
+    right = right.transform(right.size, Image.Transform.AFFINE, (1, 0, 0, 0, 1, -20), fillcolor=196)
+    left = left.rotate(lean, resample=Image.Resampling.BICUBIC, fillcolor=196)
+    right = right.rotate(-lean, resample=Image.Resampling.BICUBIC, fillcolor=196)
+    border = 70
+    frame = Image.new("L", (2 * width + 2 * border, height + 2 * border), 30)
+    rng = random.Random(seed)
+    draw = ImageDraw.Draw(frame)
+    for _ in range(4000):
+        x, y = rng.randrange(frame.width), rng.randrange(frame.height)
+        draw.rectangle((x, y, x + 3, y + 3), fill=120)
+    frame.paste(left, (border, border))
+    frame.paste(right, (border + width, border))
+    return frame

@@ -316,6 +316,30 @@ def _fit_gap(gap: _Gap, marks: list[Mark], value: dict[str, Any]) -> _Line:
     return _Line(x_mid, y_mid, slope, gap.width)
 
 
+def _joins_band(
+    mark: Mark,
+    band_rows: list[tuple[int, int]],
+    band_columns: list[tuple[int, int]],
+    reach: int,
+) -> bool:
+    """Whether the mark reaches within `reach` px of a removed dark band: it is then a
+    remnant of the backdrop or a shadow (such as the backdrop reaching into the top of
+    the gutter where the pages curve into the binding), not writing. The reach covers
+    a ragged band edge that the straight-mark mask has already taken away."""
+    near_rows = set()
+    for a, b in band_rows:
+        near_rows.update(range(b, b + reach + 1))
+        near_rows.update(range(a - 1 - reach, a))
+    near_columns = set()
+    for a, b in band_columns:
+        near_columns.update(range(b, b + reach + 1))
+        near_columns.update(range(a - reach, a + 1))
+    for y, start, end in mark.runs:
+        if y in near_rows or start in near_columns or end in near_columns:
+            return True
+    return False
+
+
 def _straddlers(marks: list[Mark], cut: _Line, both_px: int) -> list[tuple[str, float, bool]]:
     """For each mark crossing the cut: the side holding most of it, how far it reaches
     past the cut into the other side (working px), and whether it has at least `both_px`
@@ -564,7 +588,16 @@ def detect_split(
     if cut is not None:
         if prior_pages != 2:
             confidence *= value["prior_disagree_factor"]
-        straddling = _straddlers(marks, cut, value["speck_px"] * 2)
+        # Dark bands at the frame's edges are backdrop; a dark band inside the frame may
+        # be a gutter shadow that writing runs into, so it does not excuse a mark.
+        outer_columns = [(a, b) for a, b in band_columns if a == 0 or b == width]
+        crossing_marks = [
+            m for m in marks if not _joins_band(m, band_rows, outer_columns, value["touch_px"])
+        ]
+        joined = len(_straddlers(marks, cut, value["speck_px"] * 2)) - len(
+            _straddlers(crossing_marks, cut, value["speck_px"] * 2)
+        )
+        straddling = _straddlers(crossing_marks, cut, value["speck_px"] * 2)
         crossing = sum(1 for *_, both in straddling if both)
         if crossing > value["fold_max_crossings"]:
             reason = (
@@ -604,6 +637,12 @@ def detect_split(
                 )
         else:
             evidence.append("no ink mark crosses the cut")
+        if joined:
+            evidence.append(
+                f"{joined} dark mark{'s' if joined != 1 else ''} crossing the cut "
+                f"{'are' if joined != 1 else 'is'} joined to a dark band (backdrop or "
+                "shadow) and not counted as writing"
+            )
         result = {"pages": 2, "cut": to_full(cut), "method": method, "part": part}
         result["neighbour"] = None
         return answer(

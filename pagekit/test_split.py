@@ -442,3 +442,17 @@ def test_note_overhanging_from_the_right_is_flagged_by_its_left_reach():
     _two_pages(result, "fold")
     assert "kept mostly on the right side" in result["evidence"]
     assert len(result["flags"]) == 1 and "more than the 5 mm overlap" in result["flags"][0]
+
+
+def test_backdrop_notch_at_the_top_of_the_gutter_is_not_writing_across_the_cut():
+    """Where the two pages' top edges curve down into the binding, the dark backdrop
+    reaches into the gutter as a wedge. It joins the backdrop band, so it is backdrop,
+    not a flourish across the fold."""
+    image = _fold(spread(gutter=(900, 1100)), 1000)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 1999, 59), fill=30)
+    draw.polygon([(900, 59), (1100, 59), (1000, 140)], fill=30)
+    result = _check(image)
+    _two_pages(result, "fold")
+    assert result["flags"] == []
+    assert "joined to a dark band" in result["evidence"]
