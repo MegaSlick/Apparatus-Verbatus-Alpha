@@ -253,12 +253,16 @@ Otsu's threshold inside the page, measured on a reduced working copy.
 Pages are written losslessly, TIFF with deflate compression (the default) or PNG
 (`output_format`), as `<source stem>_p<page>.tif` (or `.png`); greyscale stays
 greyscale and colour stays colour, and the file carries its resolution (the source's,
-or the shrunk value).
+or the shrunk value; none when the source has none). TIFF files are written by
+pagekit's own writer (`pagekit/_tiff.py`, shared with the tone view), so the same
+pixels always give the same bytes.
 
 ### The manifest
 
 `OUTPUT/pagekit-prepare.json`, schema `pagekit-prepare.v1`, closed: for each page the
-source's name and sha256; the output's name, sha256, byte size, format, mode, pixel size
+source's name and sha256; the output's name, sha256, byte size, the sha256 of its
+decoded pixels (`pixels_sha256`, which holds whatever the file format), format, mode,
+pixel size
 and resolution; the source resolution and its origin; the geometry chain as plain
 parameters, with both composed affine maps (source to output and back) and the fill
 colour; every step's value with origin, confidence, evidence and flags; the flags; and

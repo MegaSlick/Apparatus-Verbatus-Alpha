@@ -64,18 +64,15 @@ import hashlib
 import io
 import json
 import math
-import struct
 import tomllib
-import zlib
 from dataclasses import dataclass
-from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
 import PIL
 from PIL import Image, ImageChops, ImageFilter, ImageMath
 
-from pagekit import __version__
+from pagekit import __version__, _tiff
 from pagekit.check import otsu_threshold
 
 SCHEMA = "pagekit-tone-view.v1"
@@ -110,7 +107,7 @@ PAPER_RATIO_FLOOR = 200
 # is a background edge (a stain rim); lighting changes by far less over one pixel.
 EDGE_STEP_LEVELS = 12
 TIFF_SUFFIXES = frozenset({".tif", ".tiff"})
-TIFF_ROWS_PER_STRIP = 256
+TIFF_ROWS_PER_STRIP = _tiff.ROWS_PER_STRIP
 TONE_SHA256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
@@ -676,75 +673,14 @@ def tone_file(
 # -- the file -----------------------------------------------------------------------
 
 
-def _rational(number: float) -> tuple[int, int]:
-    fraction = Fraction(number).limit_denominator(10000)
-    return fraction.numerator, fraction.denominator
-
-
 def tiff_bytes(view: Image.Image, dpi: list[float] | None = None) -> bytes:
     """An 8-bit grey TIFF of `view`, little-endian, strips compressed with zlib
     (compression 8, "Adobe deflate"), one directory; its bytes depend only on the
-    pixels and the dpi. Written here so no pad byte or other field is left to chance."""
+    pixels and the dpi. Written by pagekit._tiff, the writer the prepared pages share,
+    so no pad byte or other field is left to chance."""
     if view.mode != "L":
         raise ToneError(f"the view must be an 8-bit grey image, not {view.mode!r}")
-    width, height = view.size
-    raw = view.tobytes()
-    strips = [
-        zlib.compress(raw[start * width : (start + TIFF_ROWS_PER_STRIP) * width], 6)
-        for start in range(0, height, TIFF_ROWS_PER_STRIP)
-    ]
-    offsets, position = [], 8
-    for strip in strips:
-        offsets.append(position)
-        position += len(strip)
-    directory_offset = position + (position & 1)  # word-aligned, pad byte zero
-
-    def entry(tag: int, kind: int, values: list[int]) -> tuple[bytes, bytes]:
-        """The 12-byte directory entry and any data that goes after the directory."""
-        count = len(values) if kind != 5 else len(values) // 2
-        packed = struct.pack(f"<{len(values)}{'H' if kind == 3 else 'I'}", *values)
-        if len(packed) <= 4:
-            return struct.pack("<HHI", tag, kind, count) + packed.ljust(4, b"\0"), b""
-        return struct.pack("<HHI", tag, kind, count), packed + (b"\0" if len(packed) & 1 else b"")
-
-    fields = [
-        (256, 4, [width]),
-        (257, 4, [height]),
-        (258, 3, [8]),
-        (259, 3, [8]),
-        (262, 3, [1]),
-        (273, 4, offsets),
-        (277, 3, [1]),
-        (278, 4, [min(height, TIFF_ROWS_PER_STRIP)]),
-        (279, 4, [len(strip) for strip in strips]),
-    ]
-    if dpi:
-        fields += [
-            (282, 5, list(_rational(dpi[0]))),
-            (283, 5, list(_rational(dpi[1]))),
-            (284, 3, [1]),
-            (296, 3, [2]),
-        ]
-    else:
-        fields += [(284, 3, [1]), (296, 3, [1])]  # no absolute unit: readers report no dpi
-    entries, trailing = [], []
-    after_directory = directory_offset + 2 + 12 * len(fields) + 4
-    for tag, kind, values in fields:
-        head, data = entry(tag, kind, values)
-        if data:
-            head = head[:8] + struct.pack("<I", after_directory)
-            after_directory += len(data)
-            trailing.append(data)
-        entries.append(head)
-    directory = struct.pack("<H", len(fields)) + b"".join(entries) + struct.pack("<I", 0)
-    body = b"".join(strips)
-    return (
-        struct.pack("<2sHI", b"II", 42, directory_offset)
-        + body
-        + (b"\0" if position & 1 else b"")
-        + directory
-        + b"".join(trailing)
-    )
+    return _tiff.tiff_bytes(view, dpi)
 
 
 def write_view(

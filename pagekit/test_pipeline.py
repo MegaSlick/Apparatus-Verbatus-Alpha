@@ -10,6 +10,7 @@ import io
 import json
 import re
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -465,3 +466,88 @@ def test_every_thresholds_file_ships_with_the_package():
     with (here / "pyproject.toml").open("rb") as handle:
         shipped = set(tomllib.load(handle)["tool"]["setuptools"]["package-data"]["pagekit"])
     assert {path.name for path in here.glob("thresholds*.toml")} <= shipped
+
+
+def _odd_page(mode: str) -> Image.Image:
+    """A noisy page whose deflate strips (256 rows each) end on an odd byte in all."""
+    import random
+    import zlib
+
+    for seed in range(200):
+        rng = random.Random(seed)
+        width, height = 97 + seed, 300
+        bands = len(mode)
+        raw = bytes(rng.randrange(120, 136) for _ in range(width * height * bands))
+        total = sum(
+            len(zlib.compress(raw[row * width * bands : (row + 256) * width * bands], 6))
+            for row in range(0, height, 256)
+        )
+        if total & 1:
+            return Image.frombytes(mode, (width, height), raw)
+    raise AssertionError("no page gave an odd strip")
+
+
+_WRITE_IN_A_PROCESS = """
+import hashlib, sys
+from PIL import Image
+from pagekit.output import encode
+mode, width, height, path = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+image = Image.frombytes(mode, (width, height), open(path, "rb").read())
+dpi = None if sys.argv[5] == "none" else (300.0, 300.0)
+sys.stdout.write(encode(image, "tiff", dpi).hex())
+"""
+
+
+@pytest.mark.parametrize("mode", ["L", "RGB"])
+@pytest.mark.parametrize("dpi", ["300", "none"])
+def test_a_prepared_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_path, mode, dpi):
+    import subprocess
+
+    from pagekit.output import encode
+    from pagekit.tone import tiff_bytes
+
+    image = _odd_page(mode)
+    raw = tmp_path / "pixels.raw"
+    raw.write_bytes(image.tobytes())
+    root = Path(__file__).resolve().parent.parent
+    written = []
+    for _ in range(2):  # two separate processes
+        result = subprocess.run(
+            [sys.executable, "-c", _WRITE_IN_A_PROCESS, mode, *map(str, image.size), raw, dpi],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        written.append(bytes.fromhex(result.stdout))
+    assert written[0] == written[1]
+    data = written[0]
+    # The directory is word-aligned after the odd strip, and the pad byte is zero.
+    directory = int.from_bytes(data[4:8], "little")
+    assert directory % 2 == 0 and data[directory - 1] == 0
+    with Image.open(io.BytesIO(data)) as page:
+        assert page.mode == mode and page.tobytes() == image.tobytes()
+        assert page.info["compression"] == "tiff_adobe_deflate"
+        if dpi == "none":
+            assert "dpi" not in page.info
+        else:
+            assert page.info["dpi"] == (300.0, 300.0)
+    expected_dpi = None if dpi == "none" else (300.0, 300.0)
+    assert data == encode(image, "tiff", expected_dpi)
+    if mode == "L":  # the same writer as the tone view's
+        assert data == tiff_bytes(image, None if expected_dpi is None else list(expected_dpi))
+
+
+def test_each_manifest_entry_carries_the_sha256_of_its_decoded_pixels(tmp_path, monkeypatch):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    source = _written_sources(tmp_path / "src")
+    out = tmp_path / "out"
+    for fmt in ("tiff", "png"):
+        assert main(["prepare", str(source), "--output", str(out), "--format", fmt]) == 1
+        for page in json.loads((out / MANIFEST_NAME).read_text())["pages"]:
+            with Image.open(out / page["output"]["name"]) as image:
+                pixels = hashlib.sha256(image.tobytes()).hexdigest()
+                assert page["output"]["pixels_sha256"] == pixels
+                assert image.mode == page["output"]["mode"]
+                if page["source"]["name"] == "n.png":  # no resolution: none written
+                    assert "dpi" not in image.info

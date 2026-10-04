@@ -25,6 +25,7 @@ from typing import Any
 from PIL import Image
 
 from pagekit import __version__
+from pagekit._tiff import tiff_bytes
 from pagekit.answer import STEPS
 from pagekit.geometry import paper_colour, render
 from pagekit.prepare import PagePlan, Plan
@@ -37,15 +38,18 @@ MANIFEST_NAME = "pagekit-prepare.json"
 
 
 def encode(image: Image.Image, output_format: str, dpi: tuple[float, float] | None) -> bytes:
-    """The image as lossless file bytes, with its resolution when known."""
+    """The image as lossless file bytes, with its resolution when known and none when not.
+
+    TIFF is written by pagekit._tiff, not Pillow's writer, which can leave an unset pad
+    byte before the directory (so a re-run could differ) and claims 1 dpi when given
+    none."""
+    if output_format != "png":
+        return tiff_bytes(image, dpi)
     options: dict[str, Any] = {}
     if dpi is not None:
         options["dpi"] = dpi
     buffer = io.BytesIO()
-    if output_format == "png":
-        image.save(buffer, "PNG", **options)
-    else:
-        image.save(buffer, "TIFF", compression="tiff_adobe_deflate", **options)
+    image.save(buffer, "PNG", **options)
     return buffer.getvalue()
 
 
@@ -64,6 +68,7 @@ def _page_entry(page: PagePlan, image: Image.Image, data: bytes, fill, fill_meth
             "name": page.output_name,
             "sha256": hashlib.sha256(data).hexdigest(),
             "bytes": len(data),
+            "pixels_sha256": hashlib.sha256(image.tobytes()).hexdigest(),
             "format": fmt,
             "mode": image.mode,
             "size": list(image.size),
