@@ -1172,7 +1172,15 @@ def test_cli_run_carries_real_ingress_options_to_the_operator_surface(
     assert observed["data_gate_policy"] == policy
 
 
-@pytest.mark.parametrize("orphan", ["submission_manifest", "data_gate_policy"])
+@pytest.mark.parametrize(
+    "orphan",
+    [
+        "submission_manifest",
+        "data_gate_policy",
+        "triage_decision_manifest",
+        "triage_producer_recipe",
+    ],
+)
 def test_run_refuses_a_real_ingress_control_without_a_submission_folder(
     tmp_path: Path, orphan: str
 ) -> None:
@@ -1241,6 +1249,26 @@ def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(
         elsewhere / "approved" / "submission-ledger.json"
     )
     assert _argv_value(command, "--data-gate-policy") == str(elsewhere / "data-gate-policy.json")
+
+
+def test_a_triage_manifest_reaches_the_door_beside_the_real_submission(tmp_path: Path) -> None:
+    """`verbatus prepare` hands the Door its geometry through these two flags."""
+
+    surface, observed = _recording_surface(tmp_path)
+    manifest = tmp_path / "prepared" / "triage-decision-manifest.json"
+    recipe = tmp_path / "prepared" / "triage-producer-recipe.json"
+
+    with pytest.raises(OperatorError):
+        surface.run(
+            run_id="prepared-real",
+            submission_folder=tmp_path / "scans",
+            triage_decision_manifest=manifest,
+            triage_producer_recipe=recipe,
+        )
+
+    command, _cwd = observed[0]
+    assert _argv_value(command, "--triage-decision-manifest") == str(manifest)
+    assert _argv_value(command, "--triage-producer-recipe") == str(recipe)
 
 
 @pytest.mark.hostile_local

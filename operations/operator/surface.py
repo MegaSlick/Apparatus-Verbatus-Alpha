@@ -98,6 +98,8 @@ _RESUMED_BINDINGS: Final = frozenset(
         "--submission-folder",
         "--submission-manifest",
         "--data-gate-policy",
+        "--triage-decision-manifest",
+        "--triage-producer-recipe",
         "--models-config",
         "--serving-recipes-config",
     }
@@ -726,6 +728,8 @@ class OperatorSurface:
         submission_folder: str | Path | None = None,
         submission_manifest: str | Path | None = None,
         data_gate_policy: str | Path | None = None,
+        triage_decision_manifest: str | Path | None = None,
+        triage_producer_recipe: str | Path | None = None,
         models_config: str | Path | None = None,
         serving_recipes_config: str | Path | None = None,
         from_stage: str | None = None,
@@ -757,12 +761,16 @@ class OperatorSurface:
             submission_folder = recorded.get("--submission-folder")
             submission_manifest = recorded.get("--submission-manifest")
             data_gate_policy = recorded.get("--data-gate-policy")
+            triage_decision_manifest = recorded.get("--triage-decision-manifest")
+            triage_producer_recipe = recorded.get("--triage-producer-recipe")
             models_config = recorded.get("--models-config")
             serving_recipes_config = recorded.get("--serving-recipes-config")
         if submission_folder is None:
             for flag, value in (
                 ("--submission-manifest", submission_manifest),
                 ("--data-gate-policy", data_gate_policy),
+                ("--triage-decision-manifest", triage_decision_manifest),
+                ("--triage-producer-recipe", triage_producer_recipe),
             ):
                 if value is not None:
                     raise OperatorError(
@@ -829,6 +837,8 @@ class OperatorSurface:
                 submission_folder=submission_folder,
                 submission_manifest=submission_manifest,
                 data_gate_policy=data_gate_policy,
+                triage_decision_manifest=triage_decision_manifest,
+                triage_producer_recipe=triage_producer_recipe,
             ),
             *roster_argv,
         ]
@@ -868,6 +878,8 @@ class OperatorSurface:
                 "serving_recipes_config": _config_binding(serving_recipes_config),
                 "submission_manifest": _config_binding(submission_manifest),
                 "data_gate_policy": _config_binding(data_gate_policy),
+                "triage_decision_manifest": _config_binding(triage_decision_manifest),
+                "triage_producer_recipe": _config_binding(triage_producer_recipe),
             },
         }
         # Written before the child starts, so a run killed by an uncatchable
@@ -2465,6 +2477,8 @@ def _real_ingress_argv(
     submission_folder: str | Path | None,
     submission_manifest: str | Path | None,
     data_gate_policy: str | Path | None,
+    triage_decision_manifest: str | Path | None = None,
+    triage_producer_recipe: str | Path | None = None,
 ) -> list[str]:
     """Bind paths to the operator's cwd without hiding symlinks from the Door."""
     argv: list[str] = []
@@ -2472,6 +2486,8 @@ def _real_ingress_argv(
         ("--submission-folder", submission_folder),
         ("--submission-manifest", submission_manifest),
         ("--data-gate-policy", data_gate_policy),
+        ("--triage-decision-manifest", triage_decision_manifest),
+        ("--triage-producer-recipe", triage_producer_recipe),
     ):
         if value is not None:
             argv.extend((flag, str(Path(value).absolute())))
