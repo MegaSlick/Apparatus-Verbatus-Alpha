@@ -36,7 +36,8 @@ if [ ! -f "$ingress" ]; then
   echo "" >&2
   exit 1
 fi
-if ! python3 "$ingress" --staged; then
+python=$(sh "$(dirname "$0")/find-python.sh") || exit 1
+if ! "$python" "$ingress" --staged; then
   echo "" >&2
   echo "  BLOCKED: the staged repository failed its ingress check." >&2
   echo "" >&2
@@ -54,7 +55,7 @@ if [ -d pagekit/cleanroom ] && { [ ! -f pagekit/cleanroom/gate.py ] ||
   echo "" >&2
   exit 1
 fi
-if [ -f pagekit/cleanroom/gate.py ] && ! PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}" python3 -m pagekit.cleanroom.gate; then
+if [ -f pagekit/cleanroom/gate.py ] && ! PYTHONPATH="$(pwd)${PYTHONPATH:+:$PYTHONPATH}" "$python" -m pagekit.cleanroom.gate; then
   echo "" >&2
   echo "  BLOCKED: pagekit's clean-room gate refused this commit." >&2
   echo "" >&2

@@ -14,7 +14,9 @@ list_pods() {
   out=$(mktemp) || return 1
   runpodctl get pod >"$out" 2>/dev/null &
   lister=$!
-  (sleep "$limit" && kill "$lister" 2>/dev/null) &
+  # Its output goes nowhere: holding the caller's pipe, its sleep would make every listing
+  # wait the full limit.
+  (sleep "$limit" && kill "$lister" 2>/dev/null) >/dev/null 2>&1 &
   killer=$!
   wait "$lister"
   status=$?

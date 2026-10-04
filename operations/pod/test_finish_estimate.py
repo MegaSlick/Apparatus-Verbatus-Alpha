@@ -36,6 +36,7 @@ from .finish_estimate import (
     RunTreeProgress,
     StageProgress,
     deadline_at_risk_message,
+    pod_created_at,
     sealed_budget,
 )
 from .notify_hooks import NO_GUARD_TOPIC, _unsafe_reason
@@ -452,7 +453,7 @@ def test_the_notice_names_both_maximums_the_finish_the_cost_and_one_command_to_e
 
     assert "soft max 4 h / $2.00" in message
     assert "hard max 6 h / $3.00" in message
-    assert "fits" not in message, "the pod's creation time is not known here"
+    assert "this pod's creation time is unknown" in message
     assert "2026-10-03 12:00 UTC (in about 2.8 h)" in message  # 09:10 and 85 pages at 120 s
     assert "2026-10-03 11:00 UTC (in about 1.8 h)" in message
     # 12:00 plus 20 minutes to bring results home, past an 11:00 deadline: 80 minutes.
@@ -519,3 +520,89 @@ def test_a_missing_budget_or_price_is_named_not_guessed() -> None:
     assert "soft and hard max unknown (spend policy is unconfigured)" in message
     assert "cost unknown (no --hourly-usd)" in message
     assert _unsafe_reason(message) is None
+
+
+def _at_risk(created_at: datetime | None) -> str:
+    """09:10, the stage ends about 12:00 and with the margin 12:20; the deadline is 11:00
+    and the hard maximum six hours from ``created_at``."""
+    return deadline_at_risk_message(
+        run_id="run-1",
+        pod_id="pod123",
+        estimate=_estimate(),
+        deadline=Deadline(T0 + timedelta(hours=2), "the pod guard's deadline", extendable=True),
+        budget=BUDGET,
+        budget_problem=None,
+        hourly_usd=Decimal("2.00"),
+        now=T0 + timedelta(minutes=10),
+        created_at=created_at,
+    )
+
+
+def test_an_extension_within_the_hard_maximum_names_it_as_a_clock_time() -> None:
+    message = _at_risk(T0 - timedelta(hours=1))  # hard maximum 14:00
+    suggested = int((T0 + timedelta(hours=3, minutes=20)).timestamp())
+    assert "within the hard maximum 2026-10-03 14:00 UTC" in message
+    assert f"echo {suggested} > $G/deadline.new" in message
+    assert "checked against no budget" not in message
+
+
+def test_an_extension_past_the_hard_maximum_is_capped_there_and_said_plainly() -> None:
+    message = _at_risk(T0 - timedelta(hours=3))  # hard maximum 12:00, before 12:20
+    cap = int((T0 + timedelta(hours=3)).timestamp())
+    assert "passes the hard maximum 2026-10-03 12:00 UTC" in message
+    assert f"echo {cap} > $G/deadline.new" in message
+    assert str(int((T0 + timedelta(hours=3, minutes=20)).timestamp())) not in message
+    assert _unsafe_reason(message) is None
+
+
+def test_a_deadline_already_at_the_hard_maximum_offers_no_extension() -> None:
+    message = _at_risk(T0 - timedelta(hours=4))  # hard maximum 11:00, the deadline
+    assert "passes the hard maximum 2026-10-03 11:00 UTC" in message
+    assert "deadline.new" not in message
+
+
+def test_the_creation_instant_is_read_from_the_start_command_s_stamp(tmp_path: Path) -> None:
+    guard = tmp_path / ".pod_guard"
+    assert pod_created_at(tmp_path, "pod123") is None
+    guard.mkdir()
+    (guard / "created-pod123").write_text(f"{int(T0.timestamp())}\n", encoding="ascii")
+    assert pod_created_at(tmp_path, "pod123") == T0
+    (guard / "created-pod123").write_text("garbage\n", encoding="ascii")
+    assert pod_created_at(tmp_path, "pod123") is None
+
+
+@pytest.mark.parametrize("text", ["9" * 30, "99999999999999999"])
+def test_an_out_of_range_creation_stamp_is_unknown_not_a_failed_tick(
+    tmp_path: Path, text: str
+) -> None:
+    guard = tmp_path / ".pod_guard"
+    guard.mkdir()
+    (guard / "created-pod123").write_text(f"{text}\n", encoding="ascii")
+    assert pod_created_at(tmp_path, "pod123") is None
+
+
+def test_the_week_warning_judges_the_capped_extension_it_offers() -> None:
+    """A stage projected weeks out is offered only the hard maximum, which the guard
+    accepts; the warning would wrongly say it ignores that."""
+    estimator = FinishEstimator()
+    estimator.update(StageProgress(PERLECTOR, done=10, total=100_000), T0)
+    estimate = estimator.update(
+        StageProgress(PERLECTOR, done=15, total=100_000), T0 + timedelta(minutes=10)
+    )
+    assert estimate is not None and estimate.finishes_at is not None
+    now = T0 + timedelta(minutes=10)
+    assert estimate.finishes_at > now + timedelta(days=7)
+    message = deadline_at_risk_message(
+        run_id="run-1",
+        pod_id="pod123",
+        estimate=estimate,
+        deadline=Deadline(T0 + timedelta(hours=2), "the pod guard's deadline", extendable=True),
+        budget=BUDGET,
+        budget_problem=None,
+        hourly_usd=Decimal("2.00"),
+        now=now,
+        created_at=T0,
+    )
+    cap = int((T0 + timedelta(hours=6)).timestamp())
+    assert f"echo {cap} > $G/deadline.new" in message
+    assert "more than a week out" not in message

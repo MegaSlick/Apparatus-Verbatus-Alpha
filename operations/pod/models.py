@@ -844,6 +844,7 @@ class PendingCreateIntent:
             hard_deadline=self.hard_deadline,
             repository_commit=self.repository_commit,
             template=self.template,
+            # No sealed budget keys on purpose: in `matches` they would refuse every recovered pod.
             metadata={
                 "VERBATUS_LAUNCH_TOKEN": self.launch_token,
                 "VERBATUS_POD_HOURLY_USD": str(self.pod_hourly_usd),

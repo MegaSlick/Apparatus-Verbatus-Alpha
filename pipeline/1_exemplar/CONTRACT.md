@@ -128,8 +128,9 @@ whole run, before its own completion seal, when:
    archive carries every admitted page (canaries excepted) and its crops. The Door
    estimates it as each page's stored bytes plus `CROP_PAGE_COVERAGE` whole-page
    crops at the page's uncompressed crop layout (`crop_bytes_per_pixel` in
-   `common/imaging.py`; 4 bytes per pixel when the mode cannot be read), and refuses
-   an estimate above `MAX_EXPORT_ARCHIVE_BYTES` (both constants in
+   `common/imaging.py`; 4 bytes per pixel when the mode cannot be read) plus
+   `TEXT_MEMBER_BYTES_PER_PAGE` for the transcriptions the text members carry, and
+   refuses an estimate above `MAX_EXPORT_ARCHIVE_BYTES` (all three constants in
    `common/armarium_formats.py`) here rather than after the reading. The format
    choice is sealed into the run, so the remedy is a new run: over a smaller part of
    the submission, or with `embed_pixels = false`.

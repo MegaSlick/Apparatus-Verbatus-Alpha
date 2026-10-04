@@ -73,7 +73,10 @@ jobs:
         # `uv lock --check` fails when uv.lock no longer matches pyproject.toml; the
         # `--frozen` sync skips that check, so it alone would install from a stale lock.
         # The uv version is read from pyproject.toml's `[tool.uv] required-version`,
-        # the declaration check-all.sh also reads.
+        # the declaration check-all.sh also reads. UV_PYTHON keeps this leg's version:
+        # otherwise uv would build `.venv` on `.python-version`'s.
+        env:
+          UV_PYTHON: ${{ matrix.python-version }}
         run: |
           required_uv_version=$(python -c '
           import tomllib
@@ -90,6 +93,64 @@ jobs:
         # `--parallel`: four test workers, since the runner has nothing else to do.
         # The tests run are the same either way; only the wall time differs.
         run: sh .githooks/check-all.sh --ci --parallel
+
+  # The operator runs on the lead's Mac, Intel or Apple silicon, so the parts a Mac runs
+  # are tested there: the operator, pagekit, the hooks, and the shell scripts it runs or
+  # prints (the start command's laptop half, not the command it prints). The pod and
+  # serving suites, the guard's among them, need Linux and stay in `test`. Not part of the
+  # required `check`: the Linux gate alone decides a merge.
+  mac:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-15-intel is x86_64, macos-15 is arm64.
+        runner: [macos-15-intel, macos-15]
+        python-version: ['3.12']
+    steps:
+      # v6.1.0, pinned by commit like every action.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        # v6.3.0, pinned by commit like every action.
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the frozen dependency environment on the Mac
+        # The same install as the Linux legs, from the same uv pin and lock.
+        env:
+          UV_PYTHON: ${{ matrix.python-version }}
+        run: |
+          required_uv_version=$(python -c '
+          import tomllib
+          with open("pyproject.toml", "rb") as handle:
+              project = tomllib.load(handle)
+          print(project["tool"]["uv"]["required-version"].removeprefix("=="))
+          ')
+          python -m pip install "uv==$required_uv_version"
+          uv lock --check
+          uv sync --frozen --group test --group audit
+
+      - name: Static checks on the Mac
+        run: sh .githooks/check-static.sh
+
+      - name: Mac test subset
+        # The suites post only to conftest.py's test-sink topic, as check-all.sh arranges.
+        run: |
+          NTFY_TOPIC=$(sed -n 's/^NOTIFY_TEST_SINK_TOPIC = "\([A-Za-z0-9_-]\{1,64\}\)"$/\1/p' \
+            conftest.py | head -n 1)
+          test -n "$NTFY_TOPIC"
+          export NTFY_TOPIC
+          .venv/bin/python -m pytest -p xdist -n 3 --dist loadfile \
+            operations/operator pagekit \
+            operations/pod/test_pod_start_command.py operations/pod/test_session_end_pod_check.py \
+            .githooks/test_hooks.py .githooks/test_ci_workflow.py
 
   # Branch protection requires the single context `check`. The matrix publishes one
   # context per Python version, so this summary job is the required name, and it fails

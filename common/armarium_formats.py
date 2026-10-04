@@ -38,6 +38,16 @@ MAX_EXPORT_ARCHIVE_BYTES: Final = 192 * 1024 * 1024
 # an allowance rather than a proof, so the Armarium still checks the real
 # archive before storing it.
 CROP_PAGE_COVERAGE: Final = 2
+# How many bytes of text members the Door allows for each exported page. Every
+# selected format (the text bundle, acts.csv, acts.jsonl, acts.sqlite, the review
+# items) and sources.json carry the page's transcriptions again, beside the other
+# readings and any model reading under a correction. The witnesses' answers for one
+# page are bounded at about 38,000 tokens together (`DECLARED_ANSWER_BOUND_TOKENS`
+# in `common/request_capacity.py`), about 150 KiB at four bytes a token; six or so
+# copies of that, with their per-reading fields, stay under 1 MiB. Like
+# `CROP_PAGE_COVERAGE` it is an allowance rather than a proof: the Armarium still
+# checks the real archive before storing it.
+TEXT_MEMBER_BYTES_PER_PAGE: Final = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -115,15 +125,18 @@ def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
 
 
 def estimated_embedded_export_bytes(pages: Iterable[tuple[int, int, int, float]]) -> int:
-    """An upper estimate of an embedded export's pixels, from its sealed pages.
+    """An upper estimate of an embedded export's size, from its sealed pages.
 
     Each page is `(stored bytes, width, height, crop bytes per pixel)`: it is
-    carried as stored, and its crops as `CROP_PAGE_COVERAGE` whole-page crops,
-    each an uncompressed PNG of one filter byte plus the packed pixels per row.
-    The records beside them are small next to the pixels and are not counted.
+    carried as stored, its crops as `CROP_PAGE_COVERAGE` whole-page crops, each
+    an uncompressed PNG of one filter byte plus the packed pixels per row, and
+    its transcriptions in the text members as `TEXT_MEMBER_BYTES_PER_PAGE`.
+    The archive is written stored, never compressed, so members count at size.
     """
     return sum(
-        stored + CROP_PAGE_COVERAGE * height * (1 + math.ceil(width * bytes_per_pixel))
+        stored
+        + CROP_PAGE_COVERAGE * height * (1 + math.ceil(width * bytes_per_pixel))
+        + TEXT_MEMBER_BYTES_PER_PAGE
         for stored, width, height, bytes_per_pixel in pages
     )
 

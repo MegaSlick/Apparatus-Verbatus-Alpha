@@ -23,11 +23,13 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 import tomllib
 from argparse import Namespace
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1545,8 +1547,11 @@ def test_the_deadline_notice_quotes_the_budget_that_armed_the_pod(
     )
     clock = Clock()
     _first_process(tmp_path, monkeypatch, "pod123")
-    _guard_deadline(ws, int(clock.now().timestamp()) + 3600)
+    created = int(clock.now().timestamp())
+    _guard_deadline(ws, created + 3600)
     (ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic").write_text("guard-topic\n", "utf-8")
+    # The instant the start command records, from which the hard maximum counts.
+    (ws.volume / pod_run.POD_GUARD_DIRECTORY / "created-pod123").write_text(f"{created}\n")
     notify = NotifyRecorder()
 
     code = main(
@@ -1562,6 +1567,9 @@ def test_the_deadline_notice_quotes_the_budget_that_armed_the_pod(
     assert code == EXIT_COMPLETE
     [call] = notify.calls
     assert limits in call[3]
+    if sealed.keys() in (SEALED_BUDGET.keys(), set()):
+        hard_end = datetime.fromtimestamp(created + 10_800, UTC).strftime("%Y-%m-%d %H:%M UTC")
+        assert f"the hard maximum {hard_end}" in call[3]
     estimate = json.loads(Path(_report(ws)["estimate_path"]).read_text(encoding="utf-8"))
     assert source in estimate["budget_source"]
     if sealed == SEALED_BUDGET:
@@ -4170,3 +4178,21 @@ def test_the_run_tree_mark_moves_on_stage_writes_and_not_on_engine_logs(tmp_path
     os.link(artifact, stage / "page-2.json")
     os.utime(stage, ns=(later, later))
     assert pod_run.run_tree_mark(tmp_path) == later
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_help_prints_the_usage_of_both_halves_and_runs_nothing(flag: str) -> None:
+    # The pod runs this from the checkout, whose root is then on the path; the gate's
+    # PYTHONSAFEPATH keeps the working directory off it, so the root is named here.
+    result = subprocess.run(
+        [sys.executable, "-m", "operations.pod.pod_run", flag],
+        cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("usage: python -m operations.pod.pod_run")
+    assert "--run-id" in result.stdout and " -- " in result.stdout
+    assert "refused" not in result.stdout + result.stderr
