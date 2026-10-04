@@ -706,3 +706,10 @@ record".
 - **Follow-up brief:** `briefs/0043-build-trust-measure-colour-cache.md` (sha256
   293f80e0e46254a9b26d591e25194b062467cd75f94ece4d701af1896b6accc1), to the agent of
   brief 0023. Saved before it was sent.
+- **Brief 0042 done:** commits fd6031e and 944e6f7 on `work/pk-split`. Leak scan no hits.
+  Merged into `work/pagekit-prepare`. On the builder's 18 kinds of spread (456 runs), none
+  is wrong without a flag; both real spreads unchanged.
+- **The lead decided** the cache keeps thumbnails by default; full-resolution step images
+  only on request. **Follow-up brief:** `briefs/0044-build-cache-thumbnails.md` (sha256
+  c91bdde1beca189bf8599ac5f180a23e68f1d9f87ac7edc11dd567ac02c69eff), to the agent of
+  brief 0023. Saved before it was sent.
