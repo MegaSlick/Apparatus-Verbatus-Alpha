@@ -196,14 +196,73 @@ def test_scale_above_one_is_refused():
         Chain.build((600, 400), 0, {"pages": 1}, 0, 0.0, 0.0, None, 1.5)
 
 
-def test_area_outside_the_source_is_paper_colour():
-    source = _source()
-    chain = Chain.build(source.size, 0, {"pages": 1}, 0, 0.0, 0.0, (-20, -10, 620, 410))
+@pytest.mark.parametrize("turns", [0, 1, 2, 3])
+def test_area_outside_the_source_is_paper_colour(turns):
+    """Every pixel past the source's edges is fill: no black line on any side."""
+    source = Image.new("L", (600, 400), 180)
+    upright = (400, 600) if turns % 2 else (600, 400)
+    box = (-20, -10, upright[0] + 30, upright[1] + 15)
+    chain = Chain.build(source.size, turns, {"pages": 1}, 0, 0.0, 0.0, box)
     page = render(source, chain, 220)
-    assert page.size == (640, 420)
-    assert page.getpixel((0, 0)) == 220 and page.getpixel((639, 419)) == 220
+    assert page.size == (upright[0] + 50, upright[1] + 25)
+    inside = (20, 10, 20 + upright[0], 10 + upright[1])
+    assert set(page.crop(inside).tobytes()) == {180}
+    outside = Image.new("L", page.size, 220)
+    outside.paste(page.crop(inside), inside[:2])
+    assert page.tobytes() == outside.tobytes()
     rotated = render(source, Chain.build(source.size, 0, {"pages": 1}, 0, 0.0, 5.0), 220)
     assert rotated.getpixel((0, 0)) == 220  # the corner the turned frame does not cover
+    assert rotated.getpixel(tuple(n - 1 for n in rotated.size)) == 220
+
+
+def test_without_overlap_not_one_column_of_the_neighbour_comes_through():
+    source = Image.new("L", (600, 400), 220)
+    ImageDraw.Draw(source).rectangle((300, 0, 599, 399), fill=15)
+    cut = {"pages": 2, "cut": [[300.0, 0.0], [300.0, 400.0]]}
+    left = render(source, Chain.build(source.size, 0, cut, 0, 0.0, 0.0), 220)
+    right = render(source, Chain.build(source.size, 0, cut, 1, 0.0, 0.0), 220)
+    assert left.size == (300, 400) and set(left.tobytes()) == {220}
+    assert right.size == (300, 400) and set(right.tobytes()) == {15}
+
+
+def test_without_overlap_a_leaning_cut_gives_each_pixel_to_one_page():
+    """Ink on every pixel whose centre lies right of the cut: the left page shows none
+    of it and the right page all of it."""
+    (x0, y0), (x1, y1) = TWO_PAGES["cut"]
+    source = Image.new("L", (600, 400), 220)
+    source.putdata(
+        [
+            15 if (i + 0.5 - x0) * (y1 - y0) - (j + 0.5 - y0) * (x1 - x0) > 0 else 220
+            for j in range(400)
+            for i in range(600)
+        ]
+    )
+    left = render(source, Chain.build(source.size, 0, TWO_PAGES, 0, 0.0, 0.0), 220)
+    right_chain = Chain.build(source.size, 0, TWO_PAGES, 1, 0.0, 0.0)
+    right = render(source, right_chain, 99)
+    assert set(left.tobytes()) == {220}
+    assert set(right.tobytes()) == {15, 99}
+    # Every source pixel right of the cut is on the right page.
+    assert right.tobytes().count(15) == source.tobytes().count(15)
+
+
+@pytest.mark.parametrize("angle", [2.0, -3.0])
+def test_a_leaning_cut_keeps_the_wedge_out_of_a_levelled_page(angle):
+    source = Image.new("L", (600, 400), 220)
+    draw = ImageDraw.Draw(source)
+    draw.polygon([(320, 0), (600, 0), (600, 400), (350, 400)], fill=15)
+    draw.polygon([(0, 0), (280, 0), (310, 400), (0, 400)], fill=15)
+    left = render(source, Chain.build(source.size, 0, TWO_PAGES, 0, 10.0, angle), 220)
+    right = render(source, Chain.build(source.size, 0, TWO_PAGES, 1, 10.0, angle), 220)
+    # Each page shows its own ink (bicubic may undershoot at its edges), but the wedge
+    # past the cut is never shown.
+    assert min(left.tobytes()) < 100 and min(right.tobytes()) < 100
+    for page, chain_page, wedge in ((left, 0, (335.5, 10.5)), (right, 1, (291.5, 390.5))):
+        chain = Chain.build(source.size, 0, TWO_PAGES, chain_page, 10.0, angle)
+        x, y = chain.forward([wedge])[0]
+        assert 0 <= x < page.size[0] and 0 <= y < page.size[1]
+        assert source.getpixel((int(wedge[0]), int(wedge[1]))) == 15
+        assert page.getpixel((int(x), int(y))) == 220
 
 
 def test_margin_box_grows_the_content_and_holds_to_the_page_box():

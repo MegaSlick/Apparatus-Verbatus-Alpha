@@ -375,8 +375,35 @@ class Chain:
 
 
 def _polygon_mask(size: tuple[int, int], polygon: list[Point]) -> Image.Image:
+    """255 on every pixel whose centre lies inside the convex `polygon`, else 0.
+
+    In the continuous convention pixel (i, j) has its centre at (i + 0.5, j + 0.5). A
+    centre on the polygon's left or top edge is inside and one on its right or bottom
+    edge is outside, so a polygon with an edge at x = W covers columns up to W - 1 and
+    no further, and two pages sharing a cut share no pixel. Every page polygon is
+    convex (a rectangle cut by a straight line, then mapped by an affine map), so each
+    row is one span.
+    """
+    width, height = size
     mask = Image.new("L", size, 0)
-    ImageDraw.Draw(mask).polygon([(x, y) for x, y in polygon], fill=255)
+    draw = ImageDraw.Draw(mask)
+    ys = [y for _, y in polygon]
+    first = max(0, math.ceil(min(ys) - 0.5))
+    last = min(height, math.ceil(max(ys) - 0.5))
+    edges = [(polygon[index - 1], point) for index, point in enumerate(polygon)]
+    for row in range(first, last):
+        y = row + 0.5
+        crossings = [
+            x0 + (y - y0) * (x1 - x0) / (y1 - y0)
+            for (x0, y0), (x1, y1) in edges
+            if (y0 <= y < y1) or (y1 <= y < y0)
+        ]
+        if len(crossings) < 2:
+            continue
+        start = max(0, math.ceil(min(crossings) - 0.5))
+        stop = min(width, math.ceil(max(crossings) - 0.5))
+        if stop > start:
+            draw.rectangle((start, row, stop - 1, row), fill=255)
     return mask
 
 
@@ -402,7 +429,17 @@ def render(source: Image.Image, chain: Chain, fill: int | tuple[int, ...]) -> Im
             fx + chain.crop_box[2],
             fy + chain.crop_box[3],
         )
-        page = upright.crop(region)
+        # The part of the region inside the source, on a canvas of paper colour: a crop
+        # past the source's edge would otherwise bring in black.
+        page = Image.new(upright.mode, (region[2] - region[0], region[3] - region[1]), fill)
+        inside = (
+            max(region[0], 0),
+            max(region[1], 0),
+            min(region[2], upright.size[0]),
+            min(region[3], upright.size[1]),
+        )
+        if inside[2] > inside[0] and inside[3] > inside[1]:
+            page.paste(upright.crop(inside), (inside[0] - region[0], inside[1] - region[1]))
         polygon = [(x - region[0], y - region[1]) for x, y in chain.polygon]
         page = Image.composite(
             page, Image.new(page.mode, page.size, fill), _polygon_mask(page.size, polygon)
