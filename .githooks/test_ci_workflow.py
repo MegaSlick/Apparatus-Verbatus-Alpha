@@ -700,3 +700,24 @@ def test_pushes_to_other_branches_get_the_same_ingress_scan_as_ci():
     ]
     assert scan["run"] == step_run("Repository ingress")
     assert "concurrency" not in document, "a cancelled run would leave a push unscanned"
+
+
+def test_the_mac_job_runs_both_chips_outside_the_required_check():
+    """Intel and Apple silicon, on the pinned Python, every subset path real, and never
+    a need of `check`, so the Linux gate alone decides a merge."""
+    jobs = workflow()["jobs"]
+    mac = jobs["mac"]
+    assert mac["strategy"]["matrix"]["runner"] == ["macos-15-intel", "macos-15"]
+    pinned = (ROOT / ".python-version").read_text(encoding="ascii").strip()
+    assert mac["strategy"]["matrix"]["python-version"] == [pinned]
+    assert "mac" not in jobs["check"]["needs"]
+    names = [step.get("name") for step in mac["steps"]]
+    assert "Static checks on the Mac" in names
+    subset = step_run("Mac test subset")
+    paths = re.findall(r"(?:^|\s)((?:\.githooks|operations|pagekit)[\w./]*)", subset)
+    assert len(paths) == 6
+    for path in paths:
+        assert (ROOT / path).exists(), path
+    script = subset.replace(".venv/bin/python -m pytest", 'echo "$NTFY_TOPIC"; true')
+    result = run_shell(script, ROOT)
+    assert result.returncode == 0 and result.stdout.strip(), result.stderr
