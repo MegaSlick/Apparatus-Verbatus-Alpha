@@ -329,3 +329,20 @@ def test_a_row_the_door_would_refuse_is_refused_before_anything_is_written(tmp_p
     assert "What happened: The pages could not be prepared." in printed
     assert "post-crop" in printed
     assert not (tmp_path / "out dir").exists()
+
+
+def test_prepare_runs_when_the_shell_keeps_the_current_folder_off_pythons_path(
+    tmp_path, capsys, monkeypatch
+):
+    """With PYTHONSAFEPATH set, Python does not import from the folder it starts in, so
+    the worker must be told where the repository is, pagekit included."""
+    monkeypatch.setenv("PYTHONSAFEPATH", "1")
+    monkeypatch.setenv("PYTHONNOUSERSITE", "1")
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.chdir(tmp_path)
+    _scans(tmp_path / "my scans")
+
+    code, printed = _run(tmp_path, capsys)
+
+    assert code == 0, printed
+    assert (tmp_path / "out dir" / "triage-decision-manifest.json").is_file()

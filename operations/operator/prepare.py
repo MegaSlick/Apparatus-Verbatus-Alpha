@@ -83,7 +83,7 @@ def prepare(
         raise OperatorError(ErrorCode.PREPARE_REFUSED, detail=str(error)) from error
     _deny_same_user_inspection(ErrorCode.PREPARE_REFUSED)
     returncode, writing, stderr, interrupted = _run_child(
-        json.dumps(request), credential_free_environment(), printer
+        json.dumps(request), _child_environment(credential_free_environment()), printer
     )
     detail = stderr.strip() or f"the preparation process exited {returncode}"
     if returncode == 0:
@@ -93,6 +93,16 @@ def prepare(
     if returncode == REFUSED_EXIT or not writing:
         raise OperatorError(ErrorCode.PREPARE_REFUSED, detail=detail)
     raise OperatorError(ErrorCode.PREPARE_INCOMPLETE, detail=detail)
+
+
+def _child_environment(environment: dict[str, str]) -> dict[str, str]:
+    """The worker's environment, importing the repository this module belongs to.
+
+    pagekit is not an installed package, and with PYTHONSAFEPATH set Python does not
+    import from the folder it starts in, so the repository root is named explicitly.
+    It replaces any PYTHONPATH the shell set, so no other code is imported first.
+    """
+    return {**environment, "PYTHONPATH": str(_CHECKOUT)}
 
 
 def _absolute(path: Path, workspace: Path) -> Path:
