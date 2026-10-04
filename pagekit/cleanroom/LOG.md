@@ -730,3 +730,16 @@ record".
   setting that arrives in c6832c0; the head is consistent and history was not rewritten).
   Leak scan no hits. Merged into `work/pagekit-prepare`. Gaps crossed by a few marks count;
   a likely spread that no cue decides is flagged; slanted strokes across a fold are counted.
+
+## 0041 — Second held-out split test; follow-up brief 0046
+
+- **Re-test** of fed9afa and c6832c0 on the reviewer's own 216 runs: no spread wrong without
+  a flag; every flourish across the gutter flagged; the split faster. An older failure
+  remains: a single landscape sheet with two columns is cut in two from an empty band alone.
+  The host decided to flag such gap-only answers when the paper runs unbroken across the gap.
+- **Follow-up brief:** `briefs/0046-build-split-gap-only-flag.md` (sha256
+  bc019117ae2224d36daa78001f8841d80b978d60e78dd2defaa589bdef7a8f57), to the agent of
+  brief 0017. Saved before it was sent.
+- **Brief 0046 done:** commit ee314d7 on `work/pk-split`. Leak scan no hits. Merged into
+  `work/pagekit-prepare`. A two-page answer from an empty band alone, with the paper unbroken
+  across it, is flagged; no correct spread in the builder's grid gets the flag.
