@@ -15,7 +15,7 @@ id and at most 1,000 rows, at most one per submitted frame. Each row is closed:
 corpus_id               must equal the manifest's
 source_frame_sha256     digest of the submitted master's bytes
 frame                   {width, height} of the master's stored raster
-split                   {operation_order: "region-crop-rotate", parts: [...]}
+split                   {operation_order, parts: [...]}; the order is the split's version
 re_shoot_cluster_id     null, or the cluster this frame is a capture in
 confidence              integer 0-4
 mode                    manual | semi | auto  (common.contracts.stages.TRIAGE_MODES)
@@ -27,7 +27,10 @@ manifest_row_sha256     digest of every other field
 There is no winner or canonical field: triage never chooses among captures.
 
 `actor.kind` is `human`, `model`, `scantailor` or `producer`; a human's `revision` is
-null, every other actor names its resolved revision. `actor` and `human_override` are
+null, every other actor names its resolved revision. Producer rows reach the Door with their
+producer's recipe: the duplicate-detection instrument's, or pagekit's
+(`pagekit-producer-recipe.v1`), which names pagekit's revision, the operation order and
+a digest of pagekit's settings, and must match every producer row. `actor` and `human_override` are
 independent: a person correcting a tool's crop is a tool actor with `human_override`
 true.
 
@@ -38,9 +41,14 @@ need different crops, angles and colour treatment (a document taped over the pag
 its own angle, a colour insert beside a bitonal page). A frame that is not split
 declares one full-frame part.
 
-- `region` (`space: "frame"`) is a half-open integer rectangle in the master's stored
-  raster, before any EXIF orientation. The parts' regions are pairwise disjoint and
-  cover the frame exactly, so no pixel is dropped or counted twice.
+- `region` (`space: "frame"`) is a half-open integer rectangle in the master's raster
+  as the pipeline opens it: Pillow decoding the master's bytes, with no orientation
+  applied by the pipeline itself. For most formats that is the stored raster; Pillow
+  turns a TIFF by its orientation tag as it opens it, so for a tagged TIFF it is the
+  turned raster. The Door, the Exemplar and pagekit all open masters from their bytes
+  (opened by file path, Pillow can leave an uncompressed TIFF with tag 5 to 8 at its
+  stored size). The parts' regions are pairwise disjoint and cover the frame exactly,
+  so no pixel is dropped or counted twice.
 - `crop_box` (`space: "part"`) is a half-open rectangle in the part's own coordinates.
 - `rotation` is `{rotation_millidegrees in [-180000, 180000], direction: "clockwise",
   origin: "crop-centre", canvas: "expand"}`.
@@ -48,10 +56,30 @@ declares one full-frame part.
   the deterministic encoder stores losslessly; anything else needs an explicit
   conversion.
 
-A consumer applies a part in the order `operation_order` names: cut the region from the
-untouched master, crop, rotate clockwise about the crop's centre onto an expanded
-canvas, convert. Sampling, fill and encoding belong to
-`common.imaging.TRIAGE_APPLY_RECIPE`, not to this record.
+A consumer applies a part in the order `operation_order` names. There are two, and a
+row of either keeps its meaning:
+
+- `region-crop-rotate`: cut the region from the untouched master, crop, rotate
+  clockwise about the crop's centre onto an expanded canvas, convert. A part is exactly
+  the four fields above, and the canvas beyond the scan is black.
+- `region-crop-rotate-crop`: the same, then cut `post_crop_box` from the rotated canvas,
+  with every pixel outside the rotated crop set to `fill`. That is everything the
+  rotated crop does not cover: the canvas's corners and anything past the canvas, and so
+  also any part of the scan outside the crop. A part adds two fields: `post_crop_box`
+  (`space: "rotated"`, a half-open integer rectangle in the rotated canvas's
+  coordinates) and `fill` (`{levels: [...]}`, one level in [0, 255] per band of the
+  master's own mode; for a palette master, the palette index). The post-crop must hold
+  some of the canvas and may reach past each of its edges by at most a fifth of the
+  canvas on that axis. A bilevel master's fill is 0 or 255, and a fill with alpha is
+  opaque, so the fill comes out exactly as recorded. A deskewed page is then cropped
+  tight, and its margin is whatever the row records, such as the paper's level.
+
+Sampling, fill rules and encoding belong to the order's apply recipe,
+`common.imaging.triage_apply_recipe(operation_order)` (`triage-raster-apply-v1` or
+`-v2`), not to this record.
+
+Every operation is affine, so a point on a sealed page maps back to the master frame
+from the part alone: `common.imaging.triage_point_to_frame(part, point)`.
 
 ## Re-shoot clusters
 

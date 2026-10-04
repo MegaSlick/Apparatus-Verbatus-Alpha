@@ -30,6 +30,8 @@ from typing import Final, NamedTuple, TypedDict
 import pillow_heif
 from PIL import Image, UnidentifiedImageError
 
+from common.contracts.triage import SPLIT_OPERATION_ORDER, SPLIT_OPERATION_ORDER_V2
+
 pillow_heif.register_heif_opener()
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -1223,6 +1225,178 @@ TRIAGE_APPLY_RECIPE: Final = MappingProxyType(
 )
 
 
+# The second operation order: the rotated canvas is filled with the row's own levels
+# rather than zero, and cut again by the row's post-crop on a canvas of that fill.
+TRIAGE_APPLY_RECIPE_V2: Final = MappingProxyType(
+    {
+        "schema": "triage-raster-apply-v2",
+        "rotation_resample": "Pillow.Resampling.BICUBIC",
+        "rotation_fill": "row-fill-levels",
+        "rotation_expand": True,
+        "post_crop": "row-post-crop-box-on-a-canvas-of-the-row-fill",
+        "colour_conversion": "Pillow.Image.convert-direct-or-via-RGB",
+        "encoder": DETERMINISTIC_ENCODER,
+    }
+)
+_TRIAGE_RECIPES: Final = {
+    SPLIT_OPERATION_ORDER: TRIAGE_APPLY_RECIPE,
+    SPLIT_OPERATION_ORDER_V2: TRIAGE_APPLY_RECIPE_V2,
+}
+# A post-crop may reach past each edge of the rotated scan by this fraction of it.
+_POST_CROP_REACH_DENOMINATOR: Final = 5
+# The modes whose sample levels a row's fill can name: one level per band.
+_FILLABLE_MODES: Final = frozenset({"1", "L", "LA", "P", "RGB", "RGBA"})
+
+
+def triage_apply_recipe(operation_order: str) -> MappingProxyType:
+    """The apply recipe a split of this operation order is rendered under."""
+    try:
+        return _TRIAGE_RECIPES[operation_order]
+    except KeyError as error:
+        raise ValueError(f"undeclared triage operation order {operation_order!r}") from error
+
+
+def triage_operations(part: dict, operation_order: str) -> list[dict]:
+    """The operation list a sealed derivative page records for one part."""
+    operations = [
+        {"operation": "split", "region": part.get("region")},
+        {"operation": "crop", "bounds": part.get("crop_box")},
+        {"operation": "deskew", "rotation": part.get("rotation")},
+    ]
+    if operation_order == SPLIT_OPERATION_ORDER_V2:
+        operations += [
+            {"operation": "post-crop", "bounds": part.get("post_crop_box")},
+            {"operation": "fill", "fill": part.get("fill")},
+        ]
+    return [*operations, {"operation": "convert", "colour_mode": part.get("colour_mode")}]
+
+
+def triage_mode_transform(operation_order: str, source_mode: str, color_mode: str) -> str:
+    """The render record's name for what happened to a part's pixels."""
+    name = (
+        "triage-region-crop-rotate-convert"
+        if operation_order == SPLIT_OPERATION_ORDER
+        else "triage-region-crop-rotate-crop-fill-convert"
+    )
+    return name if source_mode == color_mode else f"{name}-to-{color_mode.lower()}"
+
+
+def _rotation_canvas(
+    width: int, height: int, angle_degrees: float
+) -> tuple[tuple[float, float, float, float, float, float], tuple[int, int]]:
+    """The map from `Image.rotate(angle, expand=True)`'s canvas back to its input, and
+    the canvas size, with Pillow's own arithmetic and rounding.
+
+    At 0, 90, 180 and 270 degrees Pillow copies or transposes instead of resampling,
+    so the map there is that exact transpose. The general matrix would differ from it
+    by half a pixel when the width and height differ by an odd number.
+    """
+    angle = angle_degrees % 360.0
+    if angle == 0:
+        return (1.0, 0.0, 0.0, 0.0, 1.0, 0.0), (width, height)
+    if angle == 90:
+        return (0.0, -1.0, float(width), 1.0, 0.0, 0.0), (height, width)
+    if angle == 180:
+        return (-1.0, 0.0, float(width), 0.0, -1.0, float(height)), (width, height)
+    if angle == 270:
+        return (0.0, 1.0, 0.0, -1.0, 0.0, float(height)), (height, width)
+    radians = -math.radians(angle_degrees % 360.0)
+    cos, sin = round(math.cos(radians), 15), round(math.sin(radians), 15)
+    a, b, d, e = cos, sin, -sin, cos
+    centre_x, centre_y = width / 2.0, height / 2.0
+    c = a * -centre_x + b * -centre_y + centre_x
+    f = d * -centre_x + e * -centre_y + centre_y
+    corners = [
+        (a * x + b * y + c, d * x + e * y + f)
+        for x, y in ((0, 0), (width, 0), (width, height), (0, height))
+    ]
+    new_width = math.ceil(max(x for x, _ in corners)) - math.floor(min(x for x, _ in corners))
+    new_height = math.ceil(max(y for _, y in corners)) - math.floor(min(y for _, y in corners))
+    shift_x, shift_y = -(new_width - width) / 2.0, -(new_height - height) / 2.0
+    c, f = a * shift_x + b * shift_y + c, d * shift_x + e * shift_y + f
+    return (a, b, c, d, e, f), (new_width, new_height)
+
+
+def triage_page_to_frame(part: dict) -> tuple[float, float, float, float, float, float]:
+    """The affine map from a point on a part's sealed page to the master frame.
+
+    Continuous coordinates: pixel (i, j) covers [i, i+1) x [j, j+1); the map
+    (a, b, c, d, e, f) sends (x, y) to (a x + b y + c, d x + e y + f). It reads only
+    the part: post-crop offset, the rotation's own canvas, crop and region offsets.
+    """
+    region, crop = part["region"], part["crop_box"]
+    angle = -part["rotation"]["rotation_millidegrees"] / 1000
+    (a, b, c, d, e, f), _size = _rotation_canvas(crop["w"], crop["h"], angle)
+    post = part.get("post_crop_box") or {"x": 0, "y": 0}
+    c += a * post["x"] + b * post["y"] + region["x"] + crop["x"]
+    f += d * post["x"] + e * post["y"] + region["y"] + crop["y"]
+    return (a, b, c, d, e, f)
+
+
+def triage_point_to_frame(part: dict, point: tuple[float, float]) -> tuple[float, float]:
+    """One point on a part's sealed page, in the master frame's coordinates."""
+    a, b, c, d, e, f = triage_page_to_frame(part)
+    x, y = point
+    return (a * x + b * y + c, d * x + e * y + f)
+
+
+def refuse_post_crop_outside(canvas_size: tuple[int, int], box: dict) -> None:
+    """Refuse a post-crop the Door will not render on a rotated canvas of this size.
+
+    The box must hold some of the canvas, and may reach past each of its edges by at
+    most a fifth of the canvas on that axis: room for a page's margin beyond the scan,
+    never a page made of fill.
+    """
+    width, height = canvas_size
+    if (
+        box["x"] >= width
+        or box["y"] >= height
+        or box["x"] + box["w"] <= 0
+        or box["y"] + box["h"] <= 0
+    ):
+        raise ValueError("the triage post-crop holds none of the rotated scan")
+    overhang = (
+        (-box["x"], width),
+        (box["x"] + box["w"] - width, width),
+        (-box["y"], height),
+        (box["y"] + box["h"] - height, height),
+    )
+    if any(beyond * _POST_CROP_REACH_DENOMINATOR > extent for beyond, extent in overhang):
+        raise ValueError(
+            "the triage post-crop runs more than a fifth of the rotated scan past its edge"
+        )
+
+
+def triage_rotated_canvas_size(part: dict) -> tuple[int, int]:
+    """The size of the canvas a part's crop is rotated onto, as the renderer makes it."""
+    crop = part["crop_box"]
+    angle = -part["rotation"]["rotation_millidegrees"] / 1000
+    return _rotation_canvas(crop["w"], crop["h"], angle)[1]
+
+
+def check_triage_post_crop(part: dict) -> None:
+    """The renderer's post-crop limits, checked from the part alone, before any pixel."""
+    refuse_post_crop_outside(triage_rotated_canvas_size(part), part["post_crop_box"])
+
+
+def _post_crop_on_fill(rotated: Image.Image, box: dict, fill) -> Image.Image:
+    """`box` of the rotated canvas, with every pixel beyond the canvas set to `fill`."""
+    _refuse_past_pixel_bound(box["w"], box["h"])
+    refuse_post_crop_outside(rotated.size, box)
+    page = rotated.crop((box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"]))
+    beyond = Image.new("L", page.size, 255)
+    inside = (
+        max(0, -box["x"]),
+        max(0, -box["y"]),
+        min(box["w"], rotated.width - box["x"]),
+        min(box["h"], rotated.height - box["y"]),
+    )
+    if inside[2] > inside[0] and inside[3] > inside[1]:
+        beyond.paste(0, inside)
+    page.paste(fill, (0, 0, page.width, page.height), beyond)
+    return page
+
+
 def render_triage_derivative(
     source_bytes: bytes,
     *,
@@ -1243,6 +1417,7 @@ def render_triage_derivative(
     try:
         region, crop_box, rotation = part["region"], part["crop_box"], part["rotation"]
         colour_mode = part["colour_mode"]
+        second_order = "post_crop_box" in part
         with Image.open(BytesIO(source_bytes)) as image:
             image.seek(page_index)
             # After `seek`, so the bound checks the frame actually being decoded.
@@ -1293,11 +1468,32 @@ def render_triage_derivative(
             _refuse_past_pixel_bound(
                 *_expanded_rotation_size(crop_box["w"], crop_box["h"], angle_degrees)
             )
+            fill = None
+            if second_order:
+                levels = part["fill"]["levels"]
+                if source_mode not in _FILLABLE_MODES or len(levels) != len(source_bands):
+                    raise ValueError(
+                        f"the row's fill names {len(levels)} level(s), and a master in mode "
+                        f"{source_mode!r} with bands {source_bands} needs one per band"
+                    )
+                if source_mode == "1" and levels[0] not in (0, 255):
+                    raise ValueError(
+                        "a bilevel master holds only 0 or 255, so its fill must be one of them"
+                    )
+                if source_mode in ("LA", "RGBA") and levels[-1] != 255:
+                    raise ValueError(
+                        "a fill below full opacity would be premultiplied by the rotation, "
+                        "so it would not come out as recorded; record an opaque fill"
+                    )
+                fill = levels[0] if len(levels) == 1 else tuple(levels)
             rotated = cropped.rotate(
                 angle_degrees,
                 resample=Image.Resampling.BICUBIC,
                 expand=True,
+                fillcolor=fill,
             )
+            if second_order:
+                rotated = _post_crop_on_fill(rotated, part["post_crop_box"], fill)
             if colour_mode == "keep":
                 rendered = rotated
             elif colour_mode in {"grayscale", "bitonal"}:

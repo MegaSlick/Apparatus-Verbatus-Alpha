@@ -1,0 +1,439 @@
+# Settings of the orientation detector and the page-count-and-split detector (spec 0003).
+# Every value here is a starting guess. None has been calibrated on real pages, so each
+# carries status = "UNMEASURED" until it is measured and its status changed to "MEASURED".
+# Pixel values marked "working px" are measured on the detector's reduced working copy.
+
+# --- Shared by both detectors -----------------------------------------------------------
+
+[min_ink_contrast]
+value = 48
+status = "UNMEASURED"
+meaning = "Grey levels between the dark and light classes of the working copy below which the page is treated as carrying too little ink."
+
+[min_ink_share]
+value = 0.002
+status = "UNMEASURED"
+meaning = "Share of the page area that must be kept ink (after specks and long straight marks are removed) for the page to count as written."
+
+[speck_px]
+value = 4
+status = "UNMEASURED"
+meaning = "Ink marks of fewer working px than this are specks and are ignored; below the smallest meaningful mark, such as an i-dot."
+
+[long_mark_share]
+value = 0.25
+status = "UNMEASURED"
+meaning = "A straight mark at least this share of the frame's height (or width) long is a rule, page edge or fold line, not writing, and is masked."
+
+[long_mark_max_thickness_px]
+value = 4.0
+status = "UNMEASURED"
+meaning = "Mean thickness in working px at or below which a long mark that is not axis-aligned still counts as a line and is masked."
+
+# --- Orientation ------------------------------------------------------------------------
+# Checked on (none of this is a measurement on a labelled collection):
+# - pagekit's own synthetic pages (test_orient.py): looped-letter pages, dense cursive
+#   pages and spreads with show-through and gutters, drawn small printed type (serif and
+#   sans, 150 and 300 dpi) and printed spreads, dot grids, symmetric writing;
+# - an independent reviewer's synthetic set (brief 0028 follow-up): pen hands from
+#   1.2 to 8 mm x-height at 150 to 600 dpi, rendered serif, sans and italic type from
+#   7 to 14 pt at 150 to 600 dpi, two-column print, printed and handwritten spreads,
+#   sparse pages, a form, ledgers and margin notes turned a quarter;
+# - pagekit's own figure-only pages (brief 0030 follow-up): lining figures drawn in
+#   three styles (monospaced with footed 1, proportional, rounder), five columns,
+#   right-aligned and ragged, line spacing 1.2, 1.6 and 2.4 figure heights, 150 and
+#   300 dpi, all four turns (all flagged, none decided);
+# - pagekit's own account pages (brief 0034 follow-up): a column of drawn words beside
+#   three columns of right-aligned figures, three figure styles with serif or sans
+#   words, spacing 1.3, 1.6 and 2.0, words left or between the amounts, 150 and 300
+#   dpi, all four turns; and pages with margin notes turned a quarter, 200 to 560 px
+#   wide (the tile-dissent level sits between the widest notes decided, 35%, and the
+#   blocks that must stay open, 41% and above);
+# - pagekit's own handwritten account pages (brief 0036 follow-up): handwritten words
+#   across a quarter to a half of the width beside four or six columns of handwritten
+#   figures, some with tails below the line, some joined into one mark per amount,
+#   line spacing 0.6 to 2.4, 150 and 300 dpi, all four turns; and pages of writing over
+#   rows of separate figures across the full width;
+# - the lead's two real register spreads (dense 17th and 18th century French cursive),
+#   run locally only.
+# The strip widths, core-band shares and the 1600 px working size were chosen on these;
+# a page kind outside them is unmeasured.
+
+[orient_long_side_px]
+value = 1600
+status = "UNMEASURED"
+meaning = "Long side in px of the orientation detector's working copy; enough to keep the gaps between lines of small cursive several px tall on a two-page frame."
+
+[edge_dark_share]
+value = 0.9
+status = "UNMEASURED"
+meaning = "Share of a border row or column that must be dark for it to count as backdrop or page edge and be trimmed before orientation is scored."
+
+[min_marks]
+value = 12
+status = "UNMEASURED"
+meaning = "Fewest ink marks (connected components above the speck size) orientation needs before it decides anything."
+
+[direction_margin]
+value = 1.6
+status = "UNMEASURED"
+meaning = "Ratio by which one direction's combined score must beat the other's for the line direction to be trusted; at this ratio the direction confidence is 0.5."
+
+[shape_weight]
+value = 0.0
+status = "UNMEASURED"
+meaning = "Weight of the mark-shape cue (marks wider than tall against taller than wide) next to the profile cue when choosing the line direction. 0 by default: in cursive with long ascenders and descenders that join neighbouring lines, marks are more often taller than wide, so the cue points the wrong way."
+
+[shape_ratio]
+value = 1.5
+status = "UNMEASURED"
+meaning = "A mark counts as wider than tall (or taller than wide) when one side is at least this many times the other."
+
+[line_floor_share]
+value = 0.1
+status = "UNMEASURED"
+meaning = "Rows whose ink is below this share of the busiest row separate lines of writing."
+
+[core_share]
+value = 0.5
+status = "UNMEASURED"
+meaning = "The core band of a line runs from its first to its last row at or above this share of that line's own busiest row; ink above and below it is ascender and descender mass. The middle of three estimates."
+
+[core_share_low]
+value = 0.35
+status = "UNMEASURED"
+meaning = "The lowest of the three core-band shares at which the up-down score is estimated."
+
+[core_share_high]
+value = 0.65
+status = "UNMEASURED"
+meaning = "The highest of the three core-band shares at which the up-down score is estimated."
+
+[strip_line_floor_share]
+value = 0.15
+status = "UNMEASURED"
+meaning = "Rows of a strip below this share of its busy level (90th percentile of its rows) separate lines."
+
+[line_split_share]
+value = 0.5
+status = "UNMEASURED"
+meaning = "A run of rows is split into two lines at an inner minimum below this share of the lower of the peaks on its two sides."
+
+[updown_guard_score]
+value = 1.0
+status = "UNMEASURED"
+meaning = "An up-down estimate of the opposite sign to the median, at or beyond this many standard errors, makes the answer uncertain: the vote then depends on where the core band is put."
+
+[min_lines]
+value = 8
+status = "UNMEASURED"
+meaning = "Fewest lines, separated by gaps across the whole width, the ragged-edge cue needs before it votes."
+
+[ascender_weight]
+value = 0.5
+status = "UNMEASURED"
+meaning = "Weight of the ascender-against-descender cue in each strip's vote; the baseline-sharpness cue gets the rest."
+
+[ragged_min_spread_share]
+value = 0.02
+status = "UNMEASURED"
+meaning = "Spread of line starts and ends, as a share of the text width, below which the ragged-edge cue is weakened in proportion."
+
+[updown_min_score]
+value = 2.5
+status = "UNMEASURED"
+meaning = "Up-down score (strip agreement in standard errors plus the weighted ragged-edge cue) needed to decide upright against upside down; at this score the up-down confidence is 0.5."
+
+[same_size_share]
+value = 0.85
+status = "UNMEASURED"
+meaning = "Share of marks within same_size_tolerance of the median height (or width) at or above which the page is figures or capitals only and orientation is flagged, not decided. Writing and running text on pagekit's test pages reach 0.36 to 0.62; pages of lining figures reach 1.0."
+
+[same_size_tolerance]
+value = 0.15
+status = "UNMEASURED"
+meaning = "Relative distance from the median mark height (or width) within which a mark counts as the same size."
+
+[tile_dissent_share]
+value = 0.38
+status = "UNMEASURED"
+meaning = "Share of the voting tiles of writing whose own vote is against the median line direction above which the direction is flagged, not decided. On pagekit's pages: text and cursive 0 to 0.16, margin notes turned a quarter 0.22 and 0.35 (decided right), account pages mixing words with figure columns up to 0.42 before tiles of one-size marks were left out (0.09 after)."
+
+[uniform_tile_share]
+value = 0.33
+status = "UNMEASURED"
+meaning = "Share of the tiles holding writing that are left out as one-size tiles (figures or capitals) at or above which orientation is flagged, not decided. On pagekit's pages: text, cursive and notes pages 0 to 0.01; handwritten account pages 0.07 to 0.54 (0.07 to 0.19 at 150 dpi, 0.20 to 0.54 at 300 dpi); printed account pages about 0.5."
+
+[narrow_run_share]
+value = 0.15
+status = "UNMEASURED"
+meaning = "A run of content along one axis (from the projected mark boxes) no wider than this share of the content's extent is narrow: a column of items, or a line of writing seen sideways."
+
+[mixed_narrow_share]
+value = 0.3
+status = "UNMEASURED"
+meaning = "With at least this share of the ink in narrow runs and mixed_wide_share in wide runs along one axis, the page is a block of writing beside columns of items, and only the block votes on orientation."
+
+[mixed_wide_share]
+value = 0.15
+status = "UNMEASURED"
+meaning = "Least share of the ink in wide runs for an axis to count as mixed (see mixed_narrow_share)."
+
+[max_item_columns]
+value = 12
+status = "UNMEASURED"
+meaning = "Most narrow runs an axis may have for them to count as columns of items beside a block of writing; more are lines of writing (as when a seal or lines that merge make a wide run among them). On pagekit's pages: account pages 4 to 6 columns; pages of lines 20 and more."
+
+[columns_ink_share]
+value = 0.5
+status = "UNMEASURED"
+meaning = "On a mixed axis, a share of the ink in narrow columns of items at or above which orientation is flagged, not decided. On pagekit's pages: text, print, cursive and spreads 0 (no mixed axis); notes turned a quarter 0.20 (not mixed); handwritten account pages with joined figures 0.37 to 0.63 (words across a half down to a fifth of the width); printed account pages about 0.41."
+
+[tile_min_marks]
+value = 6
+status = "UNMEASURED"
+meaning = "Fewest marks a tile must hold for the same-size test to be applied to it; a tile of mostly one size (figures in columns) then does not vote on the line direction."
+
+[orient_tile_px]
+value = 96
+status = "UNMEASURED"
+meaning = "Side in working px of the square tiles in which row and column sharpness are compared; a few lines of writing tall."
+
+[tile_min_ink]
+value = 0.03
+status = "UNMEASURED"
+meaning = "Least ink share for a tile to count as writing."
+
+[tile_max_ink]
+value = 0.35
+status = "UNMEASURED"
+meaning = "Greatest ink share for a tile to count as writing; denser tiles are gutter, page edge or dark mass."
+
+[min_tiles]
+value = 6
+status = "UNMEASURED"
+meaning = "Fewest tiles of writing for the tile median to be used; with fewer, the whole content's profiles are compared."
+
+[orient_strip_px]
+value = 48
+status = "UNMEASURED"
+meaning = "Width in working px of the vertical strips in which each line's ascender and baseline cues are measured."
+
+[orient_strip_px_wide]
+value = 64
+status = "UNMEASURED"
+meaning = "A second strip width at which the up-down score is estimated as well."
+
+[strip_min_ink]
+value = 0.03
+status = "UNMEASURED"
+meaning = "Least ink share for a strip to vote on upright against upside down."
+
+[min_strips]
+value = 10
+status = "UNMEASURED"
+meaning = "Fewest voting strips for the strip cues to count."
+
+[strip_vote_sd_floor]
+value = 0.05
+status = "UNMEASURED"
+meaning = "Smallest standard deviation assumed for the strip votes, so that a few identical votes do not count as overwhelming agreement."
+
+[ragged_score_weight]
+value = 0.0
+status = "UNMEASURED"
+meaning = "Weight of the ragged-edge cue (from -1 to 1) in the up-down score, in standard errors of strip agreement. 0 by default: registers justify their lines with line-end fillers and push entry starts into the margin, so the cue can point the wrong way."
+
+[negative_dark_share]
+value = 0.5
+status = "UNMEASURED"
+meaning = "Share of the frame in the dark class at or above which the page is tested for light writing on a dark ground."
+
+[negative_stroke_px]
+value = 5
+status = "UNMEASURED"
+meaning = "Size in working px of the square that thin light strokes do not survive (an erosion); wider than a stroke, narrower than a page."
+
+[negative_light_survival]
+value = 0.3
+status = "UNMEASURED"
+meaning = "Share of the light class surviving that erosion below which the light class is thin strokes, so the page may be a negative."
+
+# --- Page count and split -----------------------------------------------------------------
+# Checked on (not measured on a labelled collection): pagekit's own synthetic spreads
+# (pagekit/_split_testspreads.py, brief 0042): plain folds, deep and one-sided gutter
+# shadows, unequal page widths, spreads off-centre and turned up to 4.5 degrees in the
+# frame, one page blank or nearly blank, two paper tones, writing, a table, a signature
+# and a slip across the gutter, page-edge stacks and dark boards, microfilm borders,
+# faint gutters, faint ink and dense cursive, at 150, 300 and 600 dpi in all four
+# turns; single pages on a wide frame; and the lead's two real spreads, run locally.
+
+[split_long_side_px]
+value = 1000
+status = "UNMEASURED"
+meaning = "Long side in px of the split detector's working copy; enough to keep a fold line and the gutter several px wide."
+
+[dark_band_share]
+value = 0.6
+status = "UNMEASURED"
+meaning = "Share of a column (or row) that must be dark for it to count as a dark band (backdrop, book edge, shadow) rather than content."
+
+[fold_tophat_px]
+value = 7
+status = "UNMEASURED"
+meaning = "Size in working px of the square element of the black top-hat; wider than a fold line, so the line is enhanced and broad shading is not."
+
+[fold_line_contrast]
+value = 40
+status = "UNMEASURED"
+meaning = "Grey levels of top-hat response at or above which a pixel belongs to a thin dark structure."
+
+[lean_max_deg]
+value = 6.0
+status = "UNMEASURED"
+meaning = "Largest lean from vertical, in degrees, searched for a fold line or accepted for a cut."
+
+[lean_coarse_step_deg]
+value = 0.5
+status = "UNMEASURED"
+meaning = "Step in degrees of the coarse near-vertical line search over every column; the columns that stand out are searched again at lean_step_deg. Checked on pagekit's spreads with fold lines upright and turned 2.5 to 4.5 degrees, at 150 to 600 dpi."
+
+[lean_step_deg]
+value = 0.1
+status = "UNMEASURED"
+meaning = "Step in degrees of the near-vertical line search."
+
+[edge_band_share]
+value = 0.2
+status = "UNMEASURED"
+meaning = "Share of the frame width at each side in which fold and gap candidates are ignored, since lines there are page or book edges."
+
+[fold_min_excess]
+value = 0.5
+status = "UNMEASURED"
+meaning = "Share of the page height by which a near-vertical thin line's coverage must exceed the median coverage of its neighbouring columns to count as a fold."
+
+[fold_background_px]
+value = 20
+status = "UNMEASURED"
+meaning = "Working px on each side of a column over which its neighbours' coverage is taken, beyond half the top-hat element."
+
+[fold_max_crossings]
+value = 3
+status = "UNMEASURED"
+meaning = "Most marks of writing with ink on both sides of a cut that a fold may have; more means the line is a rule or crease inside a page, and the frame goes to review."
+
+[fold_mask_half_px]
+value = 3
+status = "UNMEASURED"
+meaning = "Half-width in working px of the strip along a found line whose ink is masked as the line itself, except where writing crosses it."
+
+[valley_ink_filter_px]
+value = 7
+status = "UNMEASURED"
+meaning = "Size in working px of the brightening filter that removes pen strokes before the column brightness profile is taken."
+
+[valley_lean_max_deg]
+value = 3.0
+status = "UNMEASURED"
+meaning = "Largest lean, in degrees, accepted for a cut found from a fold shadow; a shadow's darkest columns in the top and bottom halves are imprecise, so a steeper lean found from them is taken as none."
+
+[valley_smooth_share]
+value = 0.02
+status = "UNMEASURED"
+meaning = "Width of the smoothing window of the column brightness profile, as a share of the frame width."
+
+[valley_reach_share]
+value = 0.15
+status = "UNMEASURED"
+meaning = "How far on each side of a brightness minimum, as a share of the frame width, its shoulders are looked for."
+
+[valley_min_depth]
+value = 15
+status = "UNMEASURED"
+meaning = "Grey levels by which a brightness minimum must lie below its lower shoulder to count as a fold shadow."
+
+[valley_min_width_share]
+value = 0.01
+status = "UNMEASURED"
+meaning = "Width of a fold shadow at half its depth, as a share of the frame width, below which it is too narrow to be a shadow."
+
+[valley_edge_ratio]
+value = 3.0
+status = "UNMEASURED"
+meaning = "When one flank of a fold shadow is at least this many times steeper than the other, the shadow falls on one side only and the fold is placed at its steep edge, not at the darkest column. Checked on pagekit's spreads with a shadow on one side (left or right), deep and light symmetric shadows and soft valleys."
+
+[faint_shadow_depth]
+value = 6
+status = "UNMEASURED"
+meaning = "Grey levels of a gutter shadow too faint to be a fold by itself (below valley_min_depth) that still places a cut found from a balanced gap, when it lies inside that gap. Checked on pagekit's spreads with faint shadows (12 to 22 grey levels drawn) and no fold line."
+
+[tone_step_min]
+value = 15
+status = "UNMEASURED"
+meaning = "Grey levels by which the paper's brightness must step between the two halves of the frame (two pages of different tone) for the step to place a cut found from a gap. Checked on pagekit's spreads of two paper tones (226 against 196) with and without a fold line."
+
+[agree_tolerance_share]
+value = 0.03
+status = "UNMEASURED"
+meaning = "Distance, as a share of the frame width, within which two cues for the cut are taken to agree."
+
+[min_gap_share]
+value = 0.03
+status = "UNMEASURED"
+meaning = "Smallest gap between runs of content, as a share of the frame width, that counts as a separation between pages."
+
+[edge_debris_share]
+value = 0.02
+status = "UNMEASURED"
+meaning = "Runs of content at the outer edges narrower than this share of the frame width are ignored before gaps are scored."
+
+[min_balance]
+value = 0.3
+status = "UNMEASURED"
+meaning = "Smallest ratio of the lesser to the greater ink mass on the two sides of a gap for the gap to divide two pages."
+
+[gap_fit_bands]
+value = 8
+status = "UNMEASURED"
+meaning = "Number of horizontal bands over the content height in which the gap's middle is measured to fit a leaning cut."
+
+[weak_cue_share]
+value = 0.7
+status = "UNMEASURED"
+meaning = "A fold cue at or above this share of its threshold, but below the threshold, is a weak cue and sends a one-page answer to review."
+
+[spread_aspect_min]
+value = 1.0
+status = "UNMEASURED"
+meaning = "Physical width over height at or above which the frame's proportions suggest a spread; a prior only."
+
+[spread_content_share]
+value = 0.6
+status = "UNMEASURED"
+meaning = "When the proportions suggest two pages, no cue decides and the writing spans at least this share of the frame's width, the one-page answer is flagged (a spread whose gutter shows nothing). On pagekit's pages: a single page on a wide frame spans about 0.37 to 0.45; spreads 0.8 and more."
+
+[prior_disagree_factor]
+value = 0.8
+status = "UNMEASURED"
+meaning = "Factor applied to the split confidence when the evidence disagrees with the proportions prior."
+
+[neighbour_strip_share]
+value = 0.15
+status = "UNMEASURED"
+meaning = "Widest strip of a neighbouring page, as a share of the frame width, looked for at each side of a one-page frame."
+
+[touch_px]
+value = 2
+status = "UNMEASURED"
+meaning = "Writing within this many working px of the frame edge counts as cut off by it."
+
+[backdrop_min_thickness_px]
+value = 5
+status = "UNMEASURED"
+meaning = "Size in working px of the square opening that separates the thick part (backdrop, shadow, a blot) of a mark joined to a dark band; only that part is excused from writing across the cut. Thin pieces at least three times this long are a pen stroke and still count, unless they touch the band's edge along most of their length (fringe_touch_share), which makes them the band's own ragged edge; a dropped piece that crosses the cut by more than the overlap is flagged."
+
+[fringe_touch_share]
+value = 0.6
+status = "UNMEASURED"
+meaning = "Share of its length along which a thin piece left beside a dark band must touch the band's edge (within touch_px) to count as the band's own ragged edge rather than a pen stroke running just under it."

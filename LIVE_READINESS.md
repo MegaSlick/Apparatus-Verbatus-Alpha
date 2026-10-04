@@ -148,6 +148,41 @@ spreads 3864x3056 and 3672x2744.
 alike; the `What happened:` line says which. Only `pod_run` and the orchestrator (step 7)
 tell held (3) from halted (4) by the exit code.
 
+### Prepared pages from the spreads (free)
+
+To have the spreads split, levelled and cropped before any model reads them, prepare
+them first and let the Door cut each page from its original:
+
+```sh
+verbatus --state-dir private/verbatus-state prepare --scans private/rg-spreads \
+  --out private/rg-spreads-prepared
+```
+
+It prints how many pages need review and where the review sheet is
+(`private/rg-spreads-prepared/review.html`). Check each flagged page there, put
+corrections in an overrides file and run it again with `--overrides FILE` until the
+pages are right. Read `triage-notes.txt` for the pages the Door will cut differently from
+pagekit. Then seal the scans with the triage documents and check them at the Door. The
+prefix `prepared-spreads` keeps them apart from the unprepared spreads above:
+
+```sh
+P=private/rg-spreads-prepared
+verbatus --state-dir private/verbatus-state upload --source private/rg-spreads \
+  --manifest-out $P/submission-manifest.json --prefix prepared-spreads \
+  --triage-decision-manifest $P/triage-decision-manifest.json \
+  --triage-producer-recipe $P/triage-producer-recipe.json
+verbatus --state-dir private/verbatus-state run --run-id local-rg-prepared \
+  --submission-folder private/rg-spreads --submission-manifest $P/submission-manifest.json \
+  --triage-decision-manifest $P/triage-decision-manifest.json \
+  --triage-producer-recipe $P/triage-producer-recipe.json
+```
+
+The upload refuses a triage manifest without a row for every sealed scan, before
+anything is sent. The run is expected to stop at the Designator, as above, with one
+page per prepared page. Step 5 sends the same three things to the volume, and step 7
+hands the two triage documents to the pod's run. Triage sent with a submission is never
+replaced: after a later correction, upload again under a new `--prefix`.
+
 ## 5. Send the pages to the volume and prove the way home (free of GPU time)
 
 ```sh
@@ -162,7 +197,21 @@ The upload writes `submission/` and
 2, naming `nothing is stored under 'runs/s3-path-check/'`: that proves the listing works.
 Any other error is fixed before renting. For the spreads later, upload
 `private/rg-spreads` with `--sealed-manifest private/rg-spreads-manifest.json --prefix
-spreads`, as in step 4.
+spreads`, as in step 4. For the prepared spreads, send the record sealed with their
+triage documents:
+
+```sh
+P=private/rg-spreads-prepared
+verbatus --state-dir private/verbatus-state upload --source private/rg-spreads \
+  --sealed-manifest $P/submission-manifest.json --prefix prepared-spreads \
+  --network-volume DATACENTER:VOLUME_ID \
+  --triage-decision-manifest $P/triage-decision-manifest.json \
+  --triage-producer-recipe $P/triage-producer-recipe.json
+```
+
+This writes `prepared-spreads/`, `prepared-spreads-manifest.json`,
+`prepared-spreads-triage-decision-manifest.json` and
+`prepared-spreads-triage-producer-recipe.json` on the volume.
 
 Pick the commit the pod will run: `git fetch origin && git rev-parse origin/main`. Use
 the full 40 characters as `<sha>` below.
@@ -255,6 +304,13 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   maximums, the extra time and its cost, and the command that moves the deadline. Nothing
   moves the deadline by itself; extending is the lead's call.
 - For the spreads, use `--submission-folder $V/spreads --submission-manifest $V/spreads-manifest.json`.
+- For the prepared spreads, use `--submission-folder $V/prepared-spreads
+  --submission-manifest $V/prepared-spreads-manifest.json --triage-decision-manifest
+  $V/prepared-spreads-triage-decision-manifest.json --triage-producer-recipe
+  $V/prepared-spreads-triage-producer-recipe.json`. The Door then cuts each page from its
+  original spread as `prepare` decided. (A request rendered with
+  `python -m operations.pod.boot_b_request --triage` names the same two files for the
+  default `submission` prefix.)
 - `pod_run` runs detached, so its exit code is read from its report (`exit_code`, and
   `verbatus watch` shows it on the run line once the run ends): 0 complete, 2 refused
   before the orchestrator ran, 3 held for review, 4 halted, 5 a red bootstrap step, 6 the

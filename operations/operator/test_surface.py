@@ -1172,7 +1172,15 @@ def test_cli_run_carries_real_ingress_options_to_the_operator_surface(
     assert observed["data_gate_policy"] == policy
 
 
-@pytest.mark.parametrize("orphan", ["submission_manifest", "data_gate_policy"])
+@pytest.mark.parametrize(
+    "orphan",
+    [
+        "submission_manifest",
+        "data_gate_policy",
+        "triage_decision_manifest",
+        "triage_producer_recipe",
+    ],
+)
 def test_run_refuses_a_real_ingress_control_without_a_submission_folder(
     tmp_path: Path, orphan: str
 ) -> None:
@@ -1241,6 +1249,26 @@ def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(
         elsewhere / "approved" / "submission-ledger.json"
     )
     assert _argv_value(command, "--data-gate-policy") == str(elsewhere / "data-gate-policy.json")
+
+
+def test_a_triage_manifest_reaches_the_door_beside_the_real_submission(tmp_path: Path) -> None:
+    """`verbatus prepare` hands the Door its geometry through these two flags."""
+
+    surface, observed = _recording_surface(tmp_path)
+    manifest = tmp_path / "prepared" / "triage-decision-manifest.json"
+    recipe = tmp_path / "prepared" / "triage-producer-recipe.json"
+
+    with pytest.raises(OperatorError):
+        surface.run(
+            run_id="prepared-real",
+            submission_folder=tmp_path / "scans",
+            triage_decision_manifest=manifest,
+            triage_producer_recipe=recipe,
+        )
+
+    command, _cwd = observed[0]
+    assert _argv_value(command, "--triage-decision-manifest") == str(manifest)
+    assert _argv_value(command, "--triage-producer-recipe") == str(recipe)
 
 
 @pytest.mark.hostile_local
@@ -5407,3 +5435,181 @@ def test_a_resume_range_names_both_ends_ends_at_the_export_and_needs_a_known_run
         ["run", "--run-id", "r", "--from", "recensor", "--to", "armarium"]
     )
     assert (parsed.from_stage, parsed.to_stage) == ("recensor", "armarium")
+
+
+def _triage_documents(
+    tmp_path: Path, source: Path, *, skip: str | None = None, actor: dict | None = None
+):
+    """A decision manifest with one whole-frame row per sealed page, and a recipe."""
+    from common.contracts import triage as triage_contract
+
+    rows = []
+    for page in sorted(source.iterdir()):
+        if page.name == skip:
+            continue
+        part = triage_contract.make_part(
+            {"x": 0, "y": 0, "w": 10, "h": 10},
+            {"x": 0, "y": 0, "w": 10, "h": 10},
+            0,
+            colour_mode="keep",
+        )
+        rows.append(
+            triage_contract.make_row(
+                corpus_id="synthetic",
+                source_frame_sha256=hashlib.sha256(page.read_bytes()).hexdigest(),
+                frame={"width": 10, "height": 10},
+                split=triage_contract.make_split([part]),
+                re_shoot_cluster_id=None,
+                confidence=0,
+                mode="auto",
+                actor=actor or {"kind": "human", "identity": "lead", "revision": None},
+                human_override=False,
+            )
+        )
+    manifest = tmp_path / "triage-decision-manifest.json"
+    manifest.write_bytes(
+        canonical_bytes(
+            {"schema": "triage-decision-manifest-v1", "corpus_id": "synthetic", "records": rows}
+        )
+    )
+    from operations.triage.pagekit_recipe import make_recipe
+
+    recipe = tmp_path / "triage-producer-recipe.json"
+    recipe.write_bytes(
+        canonical_bytes(
+            make_recipe(revision="0.1.0", settings_sha256="b" * 64, detector_methods={})
+        )
+    )
+    return manifest, recipe
+
+
+def test_upload_carries_the_triage_documents_beside_the_scans(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(tmp_path, source)
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    surface.upload(
+        source,
+        sealed_manifest=manifest,
+        target=store,
+        triage_decision_manifest=triage,
+        triage_producer_recipe=recipe,
+    )
+
+    # Published before the submission's own manifest, which marks the upload complete.
+    assert store.puts[-3:] == [
+        "submission-triage-decision-manifest.json",
+        "submission-triage-producer-recipe.json",
+        "submission-manifest.json",
+    ]
+    volume = tmp_path / "volume"
+    assert (volume / "submission-triage-decision-manifest.json").read_bytes() == (
+        triage.read_bytes()
+    )
+    assert (volume / "submission-triage-producer-recipe.json").read_bytes() == recipe.read_bytes()
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["triage"] == {
+        "decision_manifest_sha256": hashlib.sha256(triage.read_bytes()).hexdigest(),
+        "producer_recipe_sha256": hashlib.sha256(recipe.read_bytes()).hexdigest(),
+    }
+
+
+def test_upload_refuses_a_triage_manifest_that_misses_a_sealed_scan(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(tmp_path, source, skip="page-two.bin")
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=store,
+            triage_decision_manifest=triage,
+            triage_producer_recipe=recipe,
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "has no row" in str(refusal.value.detail)
+    assert store.puts == []
+
+
+def test_upload_never_replaces_the_triage_documents_a_submission_was_sent_with(
+    tmp_path: Path,
+) -> None:
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(tmp_path, source)
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+    arguments = dict(sealed_manifest=manifest, target=store, triage_producer_recipe=recipe)
+    surface.upload(source, triage_decision_manifest=triage, **arguments)
+
+    corrected = json.loads(triage.read_text())
+    corrected["corpus_id"] = "renamed"
+    for row in corrected["records"]:
+        row["corpus_id"] = "renamed"
+        row.pop("manifest_row_sha256")
+        from common.contracts import triage as triage_contract
+
+        row.update(triage_contract.make_row(**row))
+    triage.write_bytes(canonical_bytes(corrected))
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(source, triage_decision_manifest=triage, **arguments)
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "--prefix" in str(refusal.value.detail)
+
+
+@pytest.mark.parametrize("problem", ["malformed recipe", "rows the recipe does not declare"])
+def test_upload_refuses_a_producer_recipe_the_door_would_refuse(tmp_path: Path, problem) -> None:
+    """The Door's own recipe checks run before anything is sent, so a pod is never
+    started on triage the Door would refuse."""
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(
+        tmp_path,
+        source,
+        actor={"kind": "producer", "identity": "operations.triage.producer", "revision": "r1"},
+    )
+    if problem == "malformed recipe":
+        recipe.write_bytes(b'{"schema":"pagekit-producer-recipe.v1"}')
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=store,
+            triage_decision_manifest=triage,
+            triage_producer_recipe=recipe,
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "producer recipe" in str(refusal.value.detail), refusal.value.detail
+    assert store.puts == []
+
+
+def test_upload_never_adds_triage_to_a_submission_already_marked_complete(
+    tmp_path: Path,
+) -> None:
+    """A pod may already have run the completed submission without triage."""
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(tmp_path, source)
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+    surface.upload(source, sealed_manifest=manifest, target=store)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=store,
+            triage_decision_manifest=triage,
+            triage_producer_recipe=recipe,
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "--prefix" in str(refusal.value.detail)
+    assert not (tmp_path / "volume" / "submission-triage-decision-manifest.json").exists()

@@ -714,8 +714,8 @@ def test_the_mac_job_runs_both_chips_outside_the_required_check():
     names = [step.get("name") for step in mac["steps"]]
     assert "Static checks on the Mac" in names
     subset = step_run("Mac test subset")
-    paths = re.findall(r"(?:^|\s)((?:\.githooks|operations|pagekit)[\w./]*)", subset)
-    assert len(paths) == 6
+    paths = re.findall(r"(?:^|\s)((?:\.githooks|operations|pagekit|common)[\w./]*)", subset)
+    assert len(paths) == 9
     for path in paths:
         assert (ROOT / path).exists(), path
     # The interpreter is replaced by a recorder of its arguments, so the test sees exactly

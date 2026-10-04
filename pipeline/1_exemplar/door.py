@@ -84,9 +84,10 @@ from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.image_sniff import SIGNATURE_PREFIX_BYTES  # noqa: E402
 from common.imaging import (  # noqa: E402
     MAX_CROP_BYTES_PER_PIXEL,
-    TRIAGE_APPLY_RECIPE,
     crop_bytes_per_pixel,
     stored_image_mode,
+    triage_apply_recipe,
+    triage_operations,
 )
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -385,12 +386,9 @@ def load_triage_decisions(
     if clusters_bytes is not None:
         digests["triage-re-shoot-clusters"] = digest_bytes(clusters_bytes)
     if recipe_bytes is not None:
-        from operations.triage.instrument import validate_producer_recipe
+        from operations.triage.producer_recipes import validate_recipe_document
 
-        try:
-            validate_producer_recipe(recipe_document)
-        except ContractError as error:
-            raise ContractError(f"the triage producer recipe is invalid: {error}") from error
+        validate_recipe_document(recipe_document)
         digests["triage-producer-recipe"] = digest_bytes(recipe_bytes)
     if clusters_document is not None:
         if not isinstance(clusters_document, dict):
@@ -417,6 +415,10 @@ def load_triage_decisions(
             "the triage decision manifest contains producer rows but no triage producer "
             "recipe was supplied"
         )
+    if recipe_document is not None:
+        from operations.triage.producer_recipes import refuse_rows_outside_recipe
+
+        refuse_rows_outside_recipe(recipe_document, checked["records"])
     # `validate_manifest` refuses a second row for one frame, so keying is exact.
     rows = {row["source_frame_sha256"]: row for row in checked["records"]}
     return rows, dict(clusters or {}), digests
@@ -531,6 +533,7 @@ def decide(
         backlink = triage_manifest.derivative_page_backlink(
             source.triage_row, source.triage_part_index
         )
+        order = source.triage_row["split"]["operation_order"]
         rendered_from = {
             "container_format": "triage-split-raster",
             "container_sha256": whole_digest,
@@ -544,14 +547,9 @@ def decide(
                     "parent_frame_page_index": frame_index,
                     "triage_manifest_row": source.triage_row,
                     "triage_backlink": backlink,
-                    "operation_order": source.triage_row["split"]["operation_order"],
-                    "apply_recipe": dict(TRIAGE_APPLY_RECIPE),
-                    "operations": [
-                        {"operation": "split", "region": part["region"]},
-                        {"operation": "crop", "bounds": part["crop_box"]},
-                        {"operation": "deskew", "rotation": part["rotation"]},
-                        {"operation": "convert", "colour_mode": part["colour_mode"]},
-                    ],
+                    "operation_order": order,
+                    "apply_recipe": dict(triage_apply_recipe(order)),
+                    "operations": triage_operations(part, order),
                 },
             },
         }

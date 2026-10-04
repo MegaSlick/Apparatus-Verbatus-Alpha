@@ -24,16 +24,18 @@ from common.contracts.envelope import read_verified, validate_envelope
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id, page_id, region_id
 from common.contracts.stages import DOOR, EXEMPLAR, PERLECTOR
-from common.contracts.triage import SPLIT_OPERATION_ORDER, validate_row
+from common.contracts.triage import validate_row
 from common.imaging import (
     DETERMINISTIC_ENCODER,
-    TRIAGE_APPLY_RECIPE,
     carries_only_image_chunks,
     crop_png,
     dimensions,
     image_shown,
     imaging_library_versions,
     render_triage_derivative,
+    triage_apply_recipe,
+    triage_mode_transform,
+    triage_operations,
 )
 from common.runtree.store import RunTree
 
@@ -849,8 +851,6 @@ def verify_triage_derivative(
     }
     if not isinstance(derivative, dict) or set(derivative) != required:
         raise ContractError("a sealed derivative page has no complete apply recipe")
-    if derivative["apply_recipe"] != dict(TRIAGE_APPLY_RECIPE):
-        raise ContractError("a sealed derivative page changes its recorded raster apply recipe")
     if contract.get("renderer") != "Pillow" or any(
         not isinstance(contract.get(field), str) or not contract[field]
         for field in ("renderer_version", "pillow_heif_version", "libheif_version")
@@ -868,6 +868,9 @@ def verify_triage_derivative(
         raise ContractError(
             f"a sealed derivative page carries an invalid triage manifest row ({error})"
         ) from error
+    # The row is valid, so its operation order is a declared one.
+    if derivative["apply_recipe"] != dict(triage_apply_recipe(row["split"]["operation_order"])):
+        raise ContractError("a sealed derivative page changes its recorded raster apply recipe")
     row_digest = row["manifest_row_sha256"]
     expected_backlink = {
         "corpus_id": row["corpus_id"],
@@ -887,17 +890,11 @@ def verify_triage_derivative(
         or not 0 <= part_index < len(split["parts"])
         or derivative["parent_frame_sha256"] != parent["sha256"]
         or derivative["parent_frame_page_index"] != parent["source_frame_index"]
-        or derivative["operation_order"] != SPLIT_OPERATION_ORDER
+        or derivative["operation_order"] != split["operation_order"]
     ):
         raise ContractError("a sealed derivative page does not match its triage split part")
     part = split["parts"][part_index]
-    expected_operations = [
-        {"operation": "split", "region": part.get("region")},
-        {"operation": "crop", "bounds": part.get("crop_box")},
-        {"operation": "deskew", "rotation": part.get("rotation")},
-        {"operation": "convert", "colour_mode": part.get("colour_mode")},
-    ]
-    if derivative["operations"] != expected_operations:
+    if derivative["operations"] != triage_operations(part, split["operation_order"]):
         raise ContractError(
             "a sealed derivative page's transform vocabulary does not match its manifest part"
         )
@@ -906,10 +903,8 @@ def verify_triage_derivative(
     expected_digest, geometry = _rederived(
         parent_bytes, parent_digest, parent["source_frame_index"], part
     )
-    expected_mode_transform = (
-        "triage-region-crop-rotate-convert"
-        if geometry["source_mode"] == geometry["color_mode"]
-        else f"triage-region-crop-rotate-convert-to-{geometry['color_mode'].lower()}"
+    expected_mode_transform = triage_mode_transform(
+        split["operation_order"], geometry["source_mode"], geometry["color_mode"]
     )
     expected_render_record = {
         "source_mode": geometry["source_mode"],
