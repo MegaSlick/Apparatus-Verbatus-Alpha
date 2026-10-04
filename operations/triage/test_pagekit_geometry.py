@@ -439,3 +439,45 @@ def test_a_tagged_tiff_scan_is_cut_by_the_door_as_pagekit_cut_it(tmp_path, tag):
     with Image.open(tmp_path / "out" / page.output_name) as prepared:
         assert door.size == prepared.size
         assert door.tobytes() == prepared.convert("L").tobytes()
+
+
+@pytest.mark.parametrize("compression", ["raw", "tiff_adobe_deflate", "tiff_lzw"])
+@pytest.mark.parametrize("tag", range(1, 9))
+def test_every_reader_opens_a_tagged_tiff_from_its_bytes_as_pagekit_does(
+    tmp_path, monkeypatch, compression, tag
+):
+    """The image library turns a TIFF by its tag on opening it, but opened by path an
+    uncompressed one with tag 5 to 8 can come out with its stored size. pagekit, the
+    Door's decoder and the renderer the Door and the Exemplar share all open a master
+    from its bytes, so the row's frame is the frame the Door opens and its page is
+    pagekit's, byte for byte, for every tag and compression."""
+    monkeypatch.syspath_prepend(
+        str(Path(__file__).resolve().parents[2] / "pipeline" / "1_exemplar")
+    )
+    from image_formats import decode_raster
+
+    dots = [(40, 50), (150, 40), (90, 250)]
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    image = Image.new("L", (203, 300), PAPER)
+    draw = ImageDraw.Draw(image)
+    for x, y in dots:
+        draw.rectangle((x - 5, y - 5, x + 5, y + 5), fill=INK)
+    exif = Image.Exif()
+    exif[0x0112] = tag
+    scan = folder / "scan.tif"
+    image.save(scan, dpi=(300, 300), exif=exif, compression=compression)
+    data = scan.read_bytes()
+    with Image.open(io.BytesIO(data)) as opened:
+        from_bytes = opened.size
+
+    pages, mapped = _prepare(tmp_path, scan, [])
+    (page,), (door_page,) = pages, mapped
+
+    assert page.chain.source_size == from_bytes
+    decoded = decode_raster(data, page_index=0)
+    assert (decoded.width, decoded.height) == from_bytes
+    door = _door(scan, door_page.part)
+    with Image.open(tmp_path / "out" / page.output_name) as prepared:
+        assert door.size == prepared.size
+        assert door.tobytes() == prepared.convert("L").tobytes()

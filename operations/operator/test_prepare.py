@@ -451,3 +451,33 @@ def test_a_grey_page_and_a_nominal_density_reach_the_triage_row_and_the_notes(tm
     notes = (out / "triage-notes.txt").read_text()
     assert "leaf one_p1.tif" in notes and "nominal density" in notes
     del scans
+
+
+@pytest.mark.parametrize("tag", [3, 6])
+def test_a_tiff_whose_orientation_tag_is_not_trusted_is_refused(tmp_path, capsys, tag):
+    """The image library turns a TIFF by its tag on opening it, and the Door opens it so;
+    with the tag not trusted pagekit turns it back, so its pages would not be the Door's."""
+    scans = tmp_path / "my scans"
+    scans.mkdir()
+    exif = Image.Exif()
+    exif[0x0112] = tag
+    page = Image.new("L", (600, 800), 215)
+    ImageDraw.Draw(page).rectangle((90, 120, 510, 132), fill=30)
+    page.save(scans / "tagged.tif", dpi=(300, 300), exif=exif)
+    fixes = tmp_path / "fixes.json"
+    fixes.write_text(
+        json.dumps(
+            {
+                "schema": "pagekit-overrides.v1",
+                "overrides": [
+                    {"source": "my scans/tagged.tif", "step": "tag_trust", "value": False}
+                ],
+            }
+        )
+    )
+
+    code, printed = _run(tmp_path, capsys, "--overrides", str(fixes))
+
+    assert code == 2, printed
+    assert "not trusted" in printed
+    assert not (tmp_path / "out dir").exists()

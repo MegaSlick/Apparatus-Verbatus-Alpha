@@ -294,6 +294,16 @@ def _plan(request: dict[str, Any]) -> Prepared:
     pages = []
     for source_pages in by_source.values():
         source = source_pages[0].source
+        if getattr(source, "undo_tag", None) is not None:
+            # The image library turns this file by its tag on opening it, as the Door
+            # opens it; with the tag not trusted pagekit turns it back to the stored
+            # pixels, so its pages and the Door's would differ.
+            raise MappingError(
+                f"{source.relative}: its orientation tag is not trusted, so pagekit works on "
+                "the stored pixels, but the image library turns this file by the tag on "
+                "opening it, and the Door opens it that way. Trust the tag, or save the scan "
+                "without one, and run prepare again"
+            )
         steps = [page.steps for page in source_pages]
         mapped = map_pages(
             [page.chain for page in source_pages],

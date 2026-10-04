@@ -41,9 +41,14 @@ need different crops, angles and colour treatment (a document taped over the pag
 its own angle, a colour insert beside a bitonal page). A frame that is not split
 declares one full-frame part.
 
-- `region` (`space: "frame"`) is a half-open integer rectangle in the master's stored
-  raster, before any EXIF orientation. The parts' regions are pairwise disjoint and
-  cover the frame exactly, so no pixel is dropped or counted twice.
+- `region` (`space: "frame"`) is a half-open integer rectangle in the master's raster
+  as the pipeline opens it: Pillow decoding the master's bytes, with no orientation
+  applied by the pipeline itself. For most formats that is the stored raster; Pillow
+  turns a TIFF by its orientation tag as it opens it, so for a tagged TIFF it is the
+  turned raster. The Door, the Exemplar and pagekit all open masters from their bytes
+  (opened by file path, Pillow can leave an uncompressed TIFF with tag 5 to 8 at its
+  stored size). The parts' regions are pairwise disjoint and cover the frame exactly,
+  so no pixel is dropped or counted twice.
 - `crop_box` (`space: "part"`) is a half-open rectangle in the part's own coordinates.
 - `rotation` is `{rotation_millidegrees in [-180000, 180000], direction: "clockwise",
   origin: "crop-centre", canvas: "expand"}`.
