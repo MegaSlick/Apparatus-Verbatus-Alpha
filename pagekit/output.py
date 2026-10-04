@@ -1,9 +1,12 @@
-"""Write the prepared pages, the manifest (`pagekit-prepare.v1`) and the project file.
+"""Write the prepared pages, the manifest (`pagekit-prepare.v1`), the review sheet
+(`review.html`) and the project file.
 
 Each page is made from its original source through its geometry chain in one
 resampling (pagekit.geometry.render), filled outside the paper with the page's own
-paper colour, and written losslessly: PNG, or TIFF with deflate compression. Greyscale
-stays greyscale and colour stays colour. Every file, images, manifest and project, is
+paper colour, and written losslessly: TIFF with deflate compression by default, or PNG.
+Greyscale stays greyscale and colour stays colour, and a page keeps the source's
+resolution unless shrinking is set. With the plan's tone view, the grey tone view of
+spec 0006 is also written beside each page as lossless TIFF. Every file, images, manifest and project, is
 first written in full as a temporary file beside its target; only then are they all
 moved into place, and if any move fails the earlier ones are put back. A failure at any
 point leaves the output folder and the project file as they were. Outputs of pages that
@@ -26,6 +29,8 @@ from pagekit.answer import STEPS
 from pagekit.geometry import paper_colour, render
 from pagekit.prepare import PagePlan, Plan
 from pagekit.project import canonical_json
+from pagekit.review import REVIEW_NAME, page_preview, source_preview
+from pagekit.review import build as build_review
 
 MANIFEST_SCHEMA = "pagekit-prepare.v1"
 MANIFEST_NAME = "pagekit-prepare.json"
@@ -132,22 +137,34 @@ def execute(plan: Plan) -> dict[str, Any]:
         for folder in created:
             folder.mkdir(parents=True, exist_ok=True)
         entries = []
+        previews: dict[str, Any] = {"sources": {}, "pages": []}
+        long_side = values["preview_long_side_px"]
         opened: tuple[str, Image.Image] | None = None
         for page in plan.pages:
             if opened is None or opened[0] != page.source.relative:
                 opened = (page.source.relative, page.source.open())
+                siblings = [other for other in plan.pages if other.source is page.source]
+                previews["sources"][page.source.relative] = source_preview(
+                    opened[1], siblings, long_side
+                )
             source = opened[1]
             fill, method = paper_colour(source, page.chain, values["paper_estimate_long_side_px"])
             image = render(source, page.chain, fill)
             data = encode(image, fmt, page.output_dpi)
             _stage(plan.output_dir / page.output_name, data, staged)
-            entries.append(_page_entry(page, image, data, fill, method, fmt))
+            entry = _page_entry(page, image, data, fill, method, fmt)
+            if plan.tone_view:
+                entry["tone_view"] = _tone_view(plan, page, image, staged)
+            entries.append(entry)
+            previews["pages"].append(page_preview(image, long_side * 2 // 3))
         measured = all(entry["status"] == "MEASURED" for entry in plan.settings.values())
         manifest = {
             "schema": MANIFEST_SCHEMA,
             "tool": {"name": "pagekit", "version": __version__},
             "pages": entries,
             "stale_outputs": plan.stale_outputs,
+            "batch": plan.batch,
+            "review": REVIEW_NAME,
             "thresholds": plan.settings,
             "thresholds_measured": measured,
             "thresholds_note": (
@@ -158,6 +175,8 @@ def execute(plan: Plan) -> dict[str, Any]:
             ),
         }
         _stage(plan.output_dir / MANIFEST_NAME, canonical_json(manifest).encode("utf-8"), staged)
+        review = build_review(plan, entries, previews)
+        _stage(plan.output_dir / REVIEW_NAME, review.encode("utf-8"), staged)
         _stage(plan.project_path, canonical_json(plan.project).encode("utf-8"), staged)
         _commit(staged)
     except BaseException:
@@ -168,6 +187,17 @@ def execute(plan: Plan) -> dict[str, Any]:
                 folder.rmdir()
         raise
     return manifest
+
+
+def _tone_view(plan: Plan, page: PagePlan, image: Image.Image, staged) -> dict[str, Any]:
+    """Stage the grey tone view of a prepared page beside it; its manifest entry."""
+    from pagekit.pipeline import make_tone_view
+
+    view, record = make_tone_view(image)
+    data = encode(view, "tiff", page.output_dpi)
+    name = f"{Path(page.output_name).stem}_tone.tif"
+    _stage(plan.output_dir / name, data, staged)
+    return {"name": name, "sha256": hashlib.sha256(data).hexdigest(), "record": record}
 
 
 def manifest_path(output_dir: Path) -> Path:

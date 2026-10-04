@@ -90,7 +90,31 @@ def load_settings(overrides: dict[str, Any] | None = None) -> dict[str, dict[str
         raise PrepareError("the plausible resolution range is empty")
     if value["paper_estimate_long_side_px"] < 16:
         raise PrepareError("paper_estimate_long_side_px must be at least 16")
+    for name in _POSITIVE:
+        if not value[name] > 0:
+            raise PrepareError(f"setting {name!r} must be more than 0")
+    if value["volume_min_pages"] < 3:
+        raise PrepareError("volume_min_pages must be at least 3")
+    if value["preview_long_side_px"] < 32:
+        raise PrepareError("preview_long_side_px must be at least 32")
     return settings
+
+
+# Settings of spec 0005 that must be more than zero.
+_POSITIVE = (
+    "detector_working_dpi",
+    "unknown_dpi_assumed",
+    "compare_skew_deg",
+    "compare_cut_mm",
+    "compare_box_mm",
+    "volume_outlier_distance",
+    "volume_skew_floor_deg",
+    "volume_size_floor_mm",
+    "volume_margin_floor_mm",
+    "measure_skew_tolerance_deg",
+    "measure_cut_tolerance_mm",
+    "measure_box_tolerance_mm",
+)
 
 
 def canonical_json(data: Any) -> str:
