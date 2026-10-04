@@ -689,3 +689,9 @@ record".
   ebe09a921dcddc97dc0dc3935e814fea91c60f2ba7bcb60b13b13bb34889d7da), to the agent of
   brief 0017: harden the split over a wide range of spreads, and the remaining account-page
   case. Saved before it was sent.
+- **Briefs 0039, 0040 and 0041 done:** commits ed88e7d, baa9fd5 and 6b2d7f7 on
+  `work/pk-integrate`. Leak scan no hits in 177 files. Merged into `work/pagekit-prepare`.
+  The source grid is the image as the library opens the file's bytes; the colour check
+  measures only the written page; cropping is off by default; the stage cache is written
+  beside the output. The builder reported that the library turns some uncompressed tagged
+  TIFFs differently when opened by path than from bytes.
