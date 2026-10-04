@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 from PIL import Image, ImageChops, ImageDraw
 
+from pagekit.__main__ import main
 from pagekit.tone import (
     SCHEMA,
     ToneError,
@@ -462,7 +463,67 @@ def test_the_record_is_closed_and_canonical():
     assert json.loads(record_json(record)) == record
 
 
-# -- files ----------------------------------------------------------------------------------
+# -- files and the command ---------------------------------------------------------------
+
+
+def test_the_command_writes_a_lossless_tiff_and_prints_the_record(tmp_path, capsys):
+    page, _ = synthetic(colour=True)
+    source = tmp_path / "page.png"
+    page.save(source, dpi=(300, 300))
+    out = tmp_path / "view.tif"
+    assert main(["tone", "--in", str(source), "--out", str(out), "--grey-rule", "min"]) == 0
+    record = json.loads(capsys.readouterr().out)
+    assert record["input"]["name"] == "page.png" and record["input"]["dpi"] == [300.0, 300.0]
+    assert record["grey"]["applied"] == "min"
+    assert (
+        record["output"]["name"] == "view.tif" and record["output"]["bytes"] == out.stat().st_size
+    )
+    expected, _ = tone(page, {"grey_rule": "min"})
+    with Image.open(out) as written:
+        assert written.mode == "L" and written.size == page.size
+        assert written.info["compression"] == "tiff_adobe_deflate"
+        assert written.info["dpi"] == (300.0, 300.0)
+        assert written.tobytes() == expected.tobytes()
+    # The same page and settings give the same bytes on disk.
+    again = tmp_path / "again.tif"
+    assert main(["tone", "--in", str(source), "--out", str(again), "--grey-rule", "min"]) == 0
+    assert again.read_bytes() == out.read_bytes()
+
+
+def test_the_command_refuses_what_it_cannot_do(tmp_path, capsys):
+    page, _ = synthetic()
+    source = tmp_path / "page.png"
+    page.save(source)
+    assert main(["tone", "--in", str(source), "--out", str(tmp_path / "view.png")]) == 2
+    assert ".tif" in capsys.readouterr().err
+    deep = tmp_path / "deep.png"
+    Image.new("I;16", (100, 100), 40000).save(deep)
+    assert main(["tone", "--in", str(deep), "--out", str(tmp_path / "view.tif")]) == 2
+    assert "not supported" in capsys.readouterr().err
+    broken = tmp_path / "broken.png"
+    broken.write_bytes(b"not an image")
+    assert main(["tone", "--in", str(broken), "--out", str(tmp_path / "view.tif")]) == 2
+    assert "cannot be read" in capsys.readouterr().err
+    assert (
+        main(["tone", "--in", str(tmp_path / "missing.png"), "--out", str(tmp_path / "v.tif")]) == 2
+    )
+    assert (
+        main(
+            [
+                "tone",
+                "--in",
+                str(source),
+                "--out",
+                str(tmp_path / "v.tif"),
+                "--lift-strength",
+                "0.9",
+            ]
+        )
+        == 2
+    )
+    assert "lift_strength" in capsys.readouterr().err
+
+
 def test_tone_file_names_the_bytes_it_read(tmp_path):
     page, _ = synthetic()
     source = tmp_path / "page.png"
