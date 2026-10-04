@@ -312,3 +312,23 @@ record".
 - **Sources named in the briefs:** the spec and the finding reports listed in each
   brief, published papers, pagekit's own code and Pillow. No reading-side material
   beyond the accepted findings.
+
+## 0017 — Slices of briefs 0016 and 0017 built; review of the core; follow-up brief 0019
+
+- **Brief 0016 (core) done:** commits 9db1582, 892d7db and 4973611 on `work/pk-core`. The
+  host's leak scan found no hits in 81 files. The agent reported it saw no ScanTailor
+  or other GPL source.
+- **Brief 0017 (orientation and split) done:** commits 7eb909f, 1ea95f1 and c88360f on
+  `work/pk-split`. The leak scan found no hits in 80 files. The agent reported it saw no
+  ScanTailor or other GPL source.
+- **Independent review of the core:** a fresh agent bound by the clean-room rule (it
+  read only pagekit and its spec, and saw no GPL source) found four blocking problems: a
+  black line at the right and bottom edge of default pages, partial output on exit 2, a
+  re-applied override re-stamped as fresh, and hand-set values of a dropped page lost.
+- **Follow-up brief:** `briefs/0019-build-core-review-fixes.md` (sha256
+  596b9e0ecab7d2521d58d281cad149636bf1b737e5a112620d585eda7ce34344), sent to the agent of
+  brief 0016. The same message also answered the agent's question on the margin, in
+  these words: "the margin is a setting, not a detection. Record it with origin
+  "detected" from the setting, confidence 1, evidence naming the setting, and no flag.
+  Change the README if needed, and note it as a decision against the spec's wording in
+  your commit message."
