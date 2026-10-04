@@ -276,10 +276,12 @@ maps points and polygons both ways.
 
 ### The grey tone view
 
-`--tone-view` also writes the grey tone view of spec 0006 beside each page, as
-`<page>_tone.tif`, and records it in the manifest. It needs `pagekit/tone.py`. Where
-that is not yet part of pagekit, `--tone-view` stops with a plain message and writes
-nothing; the one place it is called is `make_tone_view` in `pagekit/pipeline.py`.
+`--tone-view` also writes the grey tone view of spec 0006 (`pagekit/tone.py`) beside
+each page, as `<page>_tone.tif`, made by tone.py from the prepared page and written by
+its own deterministic TIFF writer. The manifest records each view's name, sha256 and
+the tone record with its settings. A view is never written over a prepared page or a
+source: pagekit stops first and writes nothing. The view is for the readers that need
+grey; the prepared page itself is unchanged.
 
 ### Measuring success
 
@@ -330,7 +332,6 @@ lists them.
 
 - Every setting is an unmeasured guess until a hand-checked set of real pages is run
   through `measure`.
-- The tone view needs `pagekit/tone.py`.
 - Output files of pages that no longer exist (a spread re-split into one page) are
   left in the output folder and listed under `stale_outputs`; pagekit never deletes.
 - EXIF orientation tags are ignored: sources are taken in their stored pixel grid.

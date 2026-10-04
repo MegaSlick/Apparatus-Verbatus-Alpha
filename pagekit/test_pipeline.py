@@ -4,13 +4,12 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import io
 import json
 import re
 import shutil
-import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -377,26 +376,73 @@ def test_measure_reports_right_wrong_and_review_counts_against_a_gold_file(
     assert "is not in the prepared batch" in capsys.readouterr().err
 
 
-def test_the_tone_view_hook_is_refused_without_tone_py_and_used_with_it(
-    tmp_path, monkeypatch, capsys
-):
+def _written_sources(folder: Path) -> Path:
+    """Three small pages with writing: grey, colour, and grey with no resolution."""
+    folder.mkdir(parents=True)
+    grey = pages.page(size=(400, 560), seed=7, margin=(40, 50, 40, 50))
+    grey.save(folder / "g.png", dpi=DPI)
+    colour = Image.merge("RGB", (grey, grey, grey.point(lambda level: round(level * 0.85))))
+    colour.save(folder / "c.png", dpi=DPI)
+    pages.page(size=(400, 560), seed=8, margin=(40, 50, 40, 50)).save(folder / "n.png")
+    return folder
+
+
+def test_prepare_tone_view_writes_one_deterministic_view_beside_each_page(tmp_path, monkeypatch):
+    from pagekit.tone import tiff_bytes, tone
+
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    source = _written_sources(tmp_path / "src")
+    first, second = tmp_path / "out", tmp_path / "again"
+    for out in (first, second):
+        assert main(["prepare", str(source), "--output", str(out), "--tone-view"]) == 1
+    manifest = json.loads((first / MANIFEST_NAME).read_text())
+    assert len(manifest["pages"]) == 3
+    for page in manifest["pages"]:
+        view = page["tone_view"]
+        name = page["output"]["name"]
+        assert view["name"] == name.replace(".tif", "_tone.tif")
+        assert view["name"] != name and (first / view["name"]).is_file()
+        record = view["record"]
+        assert record["schema"] == "pagekit-tone-view.v1"
+        assert record["settings"] and len(record["settings_sha256"]) == 64
+        # The bytes are tone.py's own writer's, from tone.py's own view of the page.
+        with Image.open(first / name) as prepared:
+            prepared.load()
+            image = prepared.copy()
+        if page["output"]["resolution"] is None:
+            image.info.pop("dpi", None)
+        else:
+            image.info["dpi"] = tuple(page["output"]["resolution"])
+        expected, _ = tone(image)
+        data = (first / view["name"]).read_bytes()
+        assert data == tiff_bytes(expected, page["output"]["resolution"])
+        assert view["sha256"] == hashlib.sha256(data).hexdigest()
+    names = sorted(path.name for path in first.iterdir())
+    assert names == sorted(path.name for path in second.iterdir())
+    for name in names:  # identical bytes on repeat, views included
+        assert (first / name).read_bytes() == (second / name).read_bytes(), name
+
+
+def test_a_tone_view_never_takes_the_name_of_a_prepared_page_or_a_source(tmp_path, monkeypatch):
+    from pagekit.project import PrepareError
+
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    source = _plain_sources(tmp_path / "src", 2)
+    prepared = plan([source], tmp_path / "out", tone_view=True)
+    prepared.pages[1].output_name = "p00_p1_tone.tif"  # where page 1's view would go
+    with pytest.raises(PrepareError, match="tone view"):
+        execute(prepared)
+    assert not (tmp_path / "out").exists()
+
+
+def test_tone_view_is_refused_where_tone_py_is_missing(tmp_path, monkeypatch, capsys):
     source = _plain_sources(tmp_path / "src", 1)
     out = tmp_path / "out"
     monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
-    monkeypatch.delitem(sys.modules, "pagekit.tone", raising=False)
-    monkeypatch.setattr("importlib.util.find_spec", lambda name, *a: None)
+    monkeypatch.setattr("pagekit.pipeline.tone_view_available", lambda: False)
     assert main(["prepare", str(source), "--output", str(out), "--tone-view"]) == 2
     assert "tone view is not built" in capsys.readouterr().err
     assert not out.exists()
-
-    fake = types.ModuleType("pagekit.tone")
-    fake.tone_view = lambda image: (image.convert("L"), {"rule": "test"})
-    monkeypatch.setitem(sys.modules, "pagekit.tone", fake)
-    assert main(["prepare", str(source), "--output", str(out), "--tone-view"]) == 1
-    (page,) = json.loads((out / MANIFEST_NAME).read_text())["pages"]
-    assert page["tone_view"]["name"] == "p00_p1_tone.tif"
-    assert page["tone_view"]["record"] == {"rule": "test"}
-    assert (out / "p00_p1_tone.tif").is_file()
 
 
 def test_png_and_shrinking_are_available_by_setting(tmp_path, monkeypatch):
