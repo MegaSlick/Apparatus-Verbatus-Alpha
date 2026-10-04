@@ -971,12 +971,13 @@ def _admitted_colour_page(tmp_path, *, embed_pixels: bool):
 
 def test_a_colour_export_that_could_never_be_sealed_is_refused_at_the_door(tmp_path, monkeypatch):
     """With pixels embedded the export carries the page and its crops. A colour
-    page's crop alone costs three bytes per pixel, so a limit the page and one
-    whole-page crop already pass is refused before any reading starts."""
+    page's crops cost three bytes per pixel, so a limit its crops would pass at one
+    byte per pixel is refused before any reading starts."""
     page, tree, context, admitted = _admitted_colour_page(tmp_path, embed_pixels=True)
-    limit = len(page) + 40 * 30
+    limit = armarium_formats.estimated_embedded_export_bytes([(len(page), 40, 30, 1)])
+    assert armarium_formats.estimated_embedded_export_bytes([(len(page), 40, 30, 3)]) > limit
     whole_page_crop = common_imaging.crop_png(page, {"x": 0, "y": 0, "w": 40, "h": 30})
-    assert len(page) + len(whole_page_crop) > limit
+    assert len(whole_page_crop) > 40 * 30 * 2, "a colour crop is stored at three bytes a pixel"
     monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", limit)
 
     with pytest.raises(ContractError, match=f"{limit}-byte export archive limit"):
