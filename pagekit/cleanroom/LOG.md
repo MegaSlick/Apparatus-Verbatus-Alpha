@@ -433,3 +433,14 @@ record".
   0018; `briefs/0028-build-orientation-real-pages.md` (sha256
   6562ca00a4b274ea09f216f5b8e66b06737daf2eb563ba156639991cc941b3ab), to the agent of brief
   0017. All saved before they were sent.
+
+## 0025 — Review of the prepare pipeline; follow-up brief 0029
+
+- **Independent review of 8c0a2cb** by a fresh agent bound by the clean-room rule (it saw
+  no GPL source): geometry, outward box scaling, the override round trip and per-page
+  failure flags held up; prepared TIFFs differed between processes at a pad byte; the
+  reduced-copy code was never tested above 150 dpi; settings and code changes did not
+  refresh stored content boxes; `measure` misjudged boxes on tilted pages; the review
+  sheet's correction command failed as printed.
+- **Follow-up brief:** `briefs/0029-build-prepare-review-fixes.md` (sha256
+  b9d754d4a1223124750728759bbc9e53eefdf32889127eba5cd510080976a2f7), to the agent of brief 0023, after brief 0026. Saved before it was sent.
