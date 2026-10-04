@@ -86,7 +86,7 @@ an optional corrections file. It runs pagekit (`pagekit/README.md`, "Preparing p
 over the scans and writes, in the output folder:
 
 - one lossless TIFF per page, pagekit's manifest `pagekit-prepare.json` and its project
-  file, and pagekit's review sheet `review.html` once pagekit makes one;
+  file, and pagekit's review sheet `review.html`;
 - `triage-decision-manifest.json`: the same decisions as triage rows over the
   **original** scans (actor `producer`, identity `pagekit`, revision pagekit's
   version, colour mode always `keep`), and `triage-producer-recipe.json` beside it,
@@ -112,8 +112,9 @@ the page from it, so every reading still traces to the scan.
   corrections with `--overrides FILE` (`pagekit/README.md`, "Corrections").
 - **Ctrl-C leaves the output folder as it was.** pagekit writes all its files or none,
   and the triage documents are written after it, each whole.
-- **pagekit's detectors are used as soon as pagekit connects them.** Until then each
-  step takes a neutral default, and every page is flagged for review.
+- **pagekit's own detector pipeline decides** the turn, the cut, the skew and the
+  boxes, as `python -m pagekit prepare` does. A step whose detector cannot decide on a
+  page takes a neutral default, and that page is flagged for review.
 - **The Door reads only approved storage**, `private/` in this checkout, so keep both
   folders there; it also refuses a scans folder holding a file the manifest does not
   cover, such as a `.DS_Store`. `prepare` warns about both.

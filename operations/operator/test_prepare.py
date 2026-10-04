@@ -93,6 +93,7 @@ def test_prepare_writes_pages_and_a_triage_manifest_the_door_accepts(tmp_path, c
         "leaf one_p1.tif",
         "pagekit-prepare.json",
         "pagekit-project.json",
+        "review.html",
         "spread_p1.tif",
         "spread_p2.tif",
         "triage-decision-manifest.json",
@@ -100,7 +101,8 @@ def test_prepare_writes_pages_and_a_triage_manifest_the_door_accepts(tmp_path, c
         "triage-producer-recipe.json",
     ]
     assert "Prepared 3 page(s) from 2 scan(s)" in printed
-    assert "Pages to review: 3 of 3." in printed
+    assert "Pages to review: " in printed
+    assert f"Review sheet: {out / 'review.html'}" in printed
     assert "The Door will cut 3 page(s) from the original scans, 1 as pagekit cut them" in printed
     assert "2 page(s): the frame is split along a straight line" in printed
     assert f"--triage-decision-manifest '{out / 'triage-decision-manifest.json'}'" in printed
@@ -176,15 +178,16 @@ def test_a_second_run_reuses_the_project_and_keeps_the_corrections(tmp_path, cap
     assert set(origins.values()) == {"manual", "detected"}
 
 
-def test_the_triage_geometry_follows_whatever_detectors_pagekit_connects(tmp_path, monkeypatch):
-    """Nothing here picks detectors: once pagekit connects one, its answer is the
-    Door's geometry."""
+def test_the_triage_geometry_is_what_pagekits_own_detectors_decide(tmp_path, monkeypatch):
+    """`verbatus prepare` runs pagekit's detector pipeline, the one pagekit's own
+    prepare runs, so the Door's geometry is the detected turn, cut, skew and boxes."""
     from pagekit.answer import Answer
-    from pagekit.prepare import NEUTRAL_DETECTORS, Detector
+    from pagekit.pipeline import DETECTORS
+    from pagekit.prepare import Detector
 
     scans = _scans(tmp_path / "my scans")
     monkeypatch.setitem(
-        NEUTRAL_DETECTORS,
+        DETECTORS,
         "skew",
         Detector("test.skew/1", lambda context: Answer(-2.0, 0.9, "A test answer.", ())),
     )
@@ -197,6 +200,12 @@ def test_the_triage_geometry_follows_whatever_detectors_pagekit_connects(tmp_pat
         for part in row["split"]["parts"]
     }
     assert rotations == {2_000}
+    methods = prepared.recipe["detector_methods"]
+    assert not any(
+        method.startswith("pagekit.neutral-default.")
+        for names in methods.values()
+        for method in names
+    ), methods
 
 
 def test_ctrl_c_while_writing_leaves_the_output_folder_as_it_was(tmp_path, capsys, monkeypatch):

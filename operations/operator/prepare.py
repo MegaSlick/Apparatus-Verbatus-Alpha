@@ -37,7 +37,6 @@ from .errors import ErrorCode, OperatorError, strip_control_bytes
 TRIAGE_MANIFEST_NAME: Final = "triage-decision-manifest.json"
 TRIAGE_RECIPE_NAME: Final = "triage-producer-recipe.json"
 NOTES_NAME: Final = "triage-notes.txt"
-REVIEW_SHEET_NAME: Final = "review.html"
 MAX_CORPUS_ID_CHARACTERS: Final = 256
 # The child's exit statuses.
 REFUSED_EXIT: Final = 2
@@ -249,6 +248,7 @@ def _plan(request: dict[str, Any]) -> Prepared:
     )
     from operations.triage.pagekit_recipe import make_recipe
     from pagekit import __version__ as pagekit_version
+    from pagekit.pipeline import DETECTORS
     from pagekit.prepare import plan
     from pagekit.project import PrepareError, load_settings
     from pagekit.project import digest as settings_digest
@@ -262,8 +262,10 @@ def _plan(request: dict[str, Any]) -> Prepared:
     settings: dict[str, Any] = {}
     if load_settings()["output_format"]["value"] != "tiff":
         settings["output_format"] = "tiff"
-    # pagekit's own detectors, whichever it has connected: none is chosen here.
-    planned = plan([scans], request["out"], None, overrides, settings_overrides=settings)
+    # The detector pipeline pagekit's own prepare runs: none is chosen here.
+    planned = plan(
+        [scans], request["out"], None, overrides, detectors=DETECTORS, settings_overrides=settings
+    )
     by_source: dict[str, list[Any]] = {}
     for page in planned.pages:
         by_source.setdefault(page.source.relative, []).append(page)
@@ -452,16 +454,18 @@ def summary(prepared: Prepared) -> list[str]:
     ]
     if neutral:
         lines.append(
-            f"pagekit has no detector yet for: {', '.join(neutral)}. Those steps used a "
-            "neutral default (no turn, one page, no skew, the whole page) and their pages "
-            "are flagged until a person sets the values."
+            f"On some pages pagekit's detector could not decide: {', '.join(neutral)}. "
+            "Those steps took a neutral default (no turn, one page, no skew, the whole "
+            "page), and their pages are flagged until a person sets the values."
         )
-    sheet = out / REVIEW_SHEET_NAME
+    from pagekit.review import REVIEW_NAME
+
+    sheet = out / REVIEW_NAME
     if sheet.is_file():
         lines.append(f"Review sheet: {sheet}")
     else:
         lines.append(
-            "pagekit does not make a review sheet yet. Each page's flags are in "
+            "pagekit wrote no review sheet. Each page's flags are in "
             f"{out / 'pagekit-prepare.json'}; the pages are the .tif files beside it."
         )
     exact = [page for page in pages if not page["door"].notes]
