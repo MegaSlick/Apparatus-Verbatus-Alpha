@@ -11,6 +11,7 @@ from PIL import Image, ImageChops, ImageDraw
 
 from pagekit._orient_ink import ANSWER_KEYS, TOO_LITTLE_INK, DetectorError
 from pagekit._orient_testpages import PAPER, page, spread, turned, write_block
+from pagekit._split_testspreads import KINDS, single_page_case, spread_case
 from pagekit.split import detect_split
 
 DPI = (300, 300)
@@ -570,3 +571,160 @@ def test_ragged_backdrop_edge_and_gutter_wedge_are_not_writing_across_the_cut():
     result = _check(image)
     _two_pages(result, "fold")
     assert result["flags"] == []
+
+
+# --- Split hardening over many kinds of spread (brief 0042, S1) --------------------------
+
+CUT_TOLERANCE_MM = 3.0
+
+
+def _judge(case, result) -> tuple[str, float | None]:
+    """'right' (count right, cut within tolerance, no flag), 'flagged', or 'wrong' (a
+    confident wrong count or cut). Also the cut error in mm."""
+    value = result["value"]
+    error = None
+    if value["pages"] == case.pages and case.pages == 2:
+        height = case.image.height
+        error = (
+            max(
+                abs(_x_at(value["cut"], y) - case.gutter_x(y))
+                for y in (0.1 * height, 0.5 * height, 0.9 * height)
+            )
+            * 25.4
+            / case.dpi
+        )
+    correct = value["pages"] == case.pages and (error is None or error <= CUT_TOLERANCE_MM)
+    if result["flags"]:
+        return "flagged", error
+    return ("right" if correct else "wrong"), error
+
+
+def _run_case(case) -> list[tuple[str, float | None]]:
+    out = []
+    for quarter_turns in range(4):
+        result = detect_split(
+            turned(case.image, quarter_turns),
+            turns=(4 - quarter_turns) % 4,
+            dpi=(case.dpi, case.dpi),
+            overlap_mm=3.0,
+        )
+        out.append(_judge(case, result))
+    return out
+
+
+@pytest.mark.parametrize("seed", [1, 2], ids=["usual", "hard"])
+@pytest.mark.parametrize("kind", KINDS)
+def test_spread_is_cut_right_or_flagged_in_every_turn(kind, seed):
+    """Every kind of spread, its usual and its harder variant, at 150 dpi in all four
+    turns: the right count and a cut within 3 mm of the drawn gutter, or a flag; never
+    a confident wrong cut and never one page silently."""
+    outcomes = _run_case(spread_case(kind, 150, seed))
+    assert all(outcome != "wrong" for outcome, _ in outcomes), outcomes
+
+
+@pytest.mark.parametrize(
+    "kind", ["plain", "deep_shadow", "one_side_shadow", "rotated", "microfilm"]
+)
+def test_spread_at_300_dpi_is_cut_right_or_flagged(kind):
+    outcomes = _run_case(spread_case(kind, 300, 1))
+    assert all(outcome != "wrong" for outcome, _ in outcomes), outcomes
+
+
+@pytest.mark.parametrize("kind", ["plain", "one_side_shadow"])
+def test_spread_at_600_dpi_is_cut_right_or_flagged(kind):
+    outcomes = _run_case(spread_case(kind, 600, 1))
+    assert all(outcome != "wrong" for outcome, _ in outcomes), outcomes
+
+
+def test_single_page_on_a_wide_frame_is_never_cut_silently():
+    outcomes = _run_case(single_page_case(150, 1))
+    assert all(outcome != "wrong" for outcome, _ in outcomes), outcomes
+
+
+# --- Writing across the cut: overlap and overhang (brief 0042, S2) -----------------------
+
+
+def _stroke_case(reach_mm: float, both_sides: bool = False):
+    """A spread at 300 dpi with a fold at x=1000 and a 5 px pen stroke crossing it, held
+    mostly by the left page and reaching `reach_mm` past the fold (or reaching far on
+    both sides). Returns the image and a mask of the stroke."""
+    image = _fold(spread(gutter=(880, 1120)), 1000)
+    mask = Image.new("L", image.size, 0)
+    reach = round(reach_mm * 300 / 25.4)
+    start = 1000 - (reach + 150 if both_sides else 300)
+    for target in (ImageDraw.Draw(image), ImageDraw.Draw(mask)):
+        target.line((start, 700, 1000 + reach, 700), fill=40, width=5)
+    mask = mask.point(lambda v: 255 if v else 0)
+    return image, mask
+
+
+def _whole_on_some_page(result: dict, mask: Image.Image, overlap_mm: float) -> bool:
+    from pagekit.geometry import page_polygon
+
+    overlap_px = overlap_mm * 300 / 25.4
+    for page_index in (0, 1):
+        polygon = page_polygon(mask.size, result["value"], page_index, overlap_px)
+        area = Image.new("L", mask.size, 0)
+        ImageDraw.Draw(area).polygon(polygon, fill=255)
+        if ImageChops.subtract(mask, area).getbbox() is None:
+            return True
+    return False
+
+
+@pytest.mark.parametrize("reach_mm", [1.0, 2.0, 2.5])
+def test_stroke_within_the_overlap_is_whole_on_its_page_and_not_flagged(reach_mm):
+    image, mask = _stroke_case(reach_mm)
+    result = _check(image, overlap_mm=3.0)
+    _two_pages(result, "fold")
+    assert result["flags"] == []
+    assert _whole_on_some_page(result, mask, 3.0)
+
+
+@pytest.mark.parametrize(("reach_mm", "both_sides"), [(3.5, False), (6.0, False), (8.0, True)])
+def test_stroke_beyond_the_overlap_is_flagged_as_whole_on_neither_page(reach_mm, both_sides):
+    image, mask = _stroke_case(reach_mm, both_sides)
+    result = _check(image, overlap_mm=3.0)
+    _two_pages(result, "fold")
+    assert not _whole_on_some_page(result, mask, 3.0)
+    assert len(result["flags"]) == 1
+    assert "whole on neither page" in result["flags"][0]
+    assert "more than the 3 mm overlap" in result["flags"][0]
+
+
+def test_one_sided_shadow_edge_inside_the_writing_does_not_move_the_cut():
+    """A shadow deepening toward the gutter and ending in a steep edge inside the right
+    page's writing (as a curled page can cast): the steep edge is not the fold here,
+    since cutting there would cross the writing; the cut stays in the gutter."""
+    image = spread(gutter=(920, 1080))
+    row = []
+    for x in range(2000):
+        if 800 <= x < 1000:
+            dark = 50 * (x - 800) / 200
+        elif 1000 <= x < 1110:
+            dark = 50
+        else:
+            dark = 0
+        row.append(round(255 * (1 - dark / 255)))
+    shade = Image.new("L", (2000, 1))
+    shade.putdata(row)
+    result = _check(ImageChops.multiply(image, shade.resize(image.size)))
+    cut = _two_pages(result, "fold")
+    assert 920 <= _x_at(cut, 700) <= 1080
+    assert result["flags"] == []
+
+
+@pytest.mark.parametrize("kind", ["rotated", "two_tones"])
+def test_hard_spread_at_600_dpi_is_cut_right_or_flagged(kind):
+    """A spread turned 4.5 degrees in the frame (more than a gap fit may lean), and two
+    pages of different paper tone with no fold line or shadow (the gap's middle is
+    pulled by ragged line ends; the tone step is where the pages meet)."""
+    outcomes = _run_case(spread_case(kind, 600, 2))
+    assert all(outcome != "wrong" for outcome, _ in outcomes), outcomes
+
+
+def test_faint_gutter_shadow_inside_the_gap_places_a_gap_cut_at_600_dpi():
+    """A gutter shadow too faint to count as a fold on its own, no fold line: the gap
+    decides two pages, and the faint shadow inside it places the cut, not the gap's
+    middle (pulled by ragged line ends)."""
+    outcomes = _run_case(spread_case("low_contrast_gutter", 600, 2))
+    assert all(outcome != "wrong" for outcome, _ in outcomes), outcomes

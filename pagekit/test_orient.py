@@ -28,10 +28,12 @@ from pagekit._orient_testpages import (
     printed_page,
     printed_spread,
     turned,
+    words_over_figures_page,
     write_block,
 )
 from pagekit.orient import (
     POSSIBLY_NEGATIVE,
+    UNCERTAIN_COLUMNS,
     UNCERTAIN_CORE_BAND,
     UNCERTAIN_DIRECTION,
     UNCERTAIN_FIGURE_TILES,
@@ -465,9 +467,12 @@ def test_margin_notes_turned_a_quarter_are_outvoted_and_the_page_decided(quarter
 
 @pytest.mark.parametrize("quarter_turns", [0, 1])
 def test_block_turned_a_quarter_as_large_as_the_text_leaves_the_direction_open(quarter_turns):
-    """With notes 500 px wide, 45% of the tiles vote the other way: the line direction
-    is flagged, not decided. Fails if tile_dissent_share is set at 0.45 or above."""
-    result = detect_orientation(turned(notes_page(8, notes_width=500), quarter_turns))
+    """With notes 500 px wide whose lines touch (so they form one wide block, not narrow
+    columns of items), 46% of the tiles vote the other way: the line direction is
+    flagged, not decided. Fails if tile_dissent_share is set at 0.46 or above."""
+    result = detect_orientation(
+        turned(notes_page(8, notes_width=500, notes_pitch=30), quarter_turns)
+    )
     assert result["value"] == 0
     assert result["flags"] == [UNCERTAIN_DIRECTION]
     assert "vote against the median" in result["evidence"]
@@ -511,11 +516,39 @@ def test_handwritten_account_page_is_never_turned_wrong_without_a_flag(dpi, word
 
 
 def test_page_mostly_of_one_size_figure_tiles_is_flagged_and_a_page_of_few_is_not():
-    """With words across a quarter of the width beside six figure columns, about half the
-    tiles holding writing are one-size tiles (45%): flagged. With words across half the
-    width beside four columns, about a fifth (20%): not flagged for that reason. Fails
-    if uniform_tile_share is set at 0.19 or below, or above 0.45."""
-    many = detect_orientation(hand_account_page(300, 1, words_share=0.25, columns=6))
+    """Lines of writing over rows of separate figures across the full width (wide runs,
+    so the column rule does not apply). With the figures over half the height, 52% of
+    the tiles holding writing are one-size tiles: flagged. With them over 30% of it,
+    31%: decided. Fails if uniform_tile_share is set at 0.31 or below, or above 0.52."""
+    many = detect_orientation(words_over_figures_page(1, words_share=0.5))
     assert many["flags"] == [UNCERTAIN_FIGURE_TILES]
-    few = detect_orientation(hand_account_page(300, 1, words_share=0.5, columns=4))
-    assert UNCERTAIN_FIGURE_TILES not in few["flags"]
+    few = detect_orientation(words_over_figures_page(1, words_share=0.7))
+    assert few["value"] == 0 and few["flags"] == []
+
+
+@pytest.mark.parametrize("dpi", [150, 300])
+@pytest.mark.parametrize("spacing", [0.6, 0.8, 1.0])
+@pytest.mark.parametrize("seed", [1, 2])
+def test_account_page_of_joined_figures_is_never_turned_wrong_without_a_flag(dpi, spacing, seed):
+    """Words across a fifth of the width beside six columns of handwritten amounts whose
+    figures run together: the amounts are marks of many sizes, so few tiles look like
+    one-size figures, and the columns, stacked closely, read as lines running down."""
+    image = hand_account_page(dpi, seed, words_share=0.2, columns=6, joined=True, spacing=spacing)
+    for quarter_turns in range(4):
+        result = detect_orientation(turned(image, quarter_turns))
+        assert _right_or_flagged(result, (4 - quarter_turns) % 4), (
+            quarter_turns,
+            result["evidence"],
+        )
+
+
+def test_page_mostly_of_narrow_columns_is_flagged_and_one_with_a_large_block_is_not():
+    """Joined handwritten amounts in six columns beside words across a fifth of the
+    width: about 62% of the ink is in the narrow columns, flagged. Beside words across
+    35% of the width: about 47%, not flagged for that reason (only the block of words
+    votes). Fails if columns_ink_share is set at 0.47 or below, or above 0.62."""
+    many = detect_orientation(hand_account_page(150, 2, words_share=0.2, columns=6, joined=True))
+    assert many["flags"] == [UNCERTAIN_COLUMNS]
+    few = detect_orientation(hand_account_page(150, 2, words_share=0.35, columns=6, joined=True))
+    assert UNCERTAIN_COLUMNS not in few["flags"]
+    assert "narrow columns" not in few["evidence"]

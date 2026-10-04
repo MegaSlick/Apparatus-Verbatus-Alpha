@@ -469,13 +469,14 @@ def account_page(
     return image.filter(ImageFilter.GaussianBlur(dpi / 500))
 
 
-def notes_page(seed: int = 5, *, notes_width: int = 300) -> Image.Image:
+def notes_page(seed: int = 5, *, notes_width: int = 300, notes_pitch: int = 48) -> Image.Image:
     """A page of writing (lines across) with a margin column of notes written a quarter
-    turn to it, `notes_width` px wide down the left side."""
+    turn to it, `notes_width` px wide down the left side, its lines `notes_pitch` apart
+    (closer than about 40 px, their ascenders and descenders touch)."""
     image = Image.new("L", (1240, 1754), PAPER)
     write_block(ImageDraw.Draw(image), (notes_width + 120, 120, 1180, 1650), seed)
     strip = Image.new("L", (1400, notes_width), 255)
-    write_block(ImageDraw.Draw(strip), (0, 20, 1400, notes_width - 20), seed + 9)
+    write_block(ImageDraw.Draw(strip), (0, 20, 1400, notes_width - 20), seed + 9, pitch=notes_pitch)
     canvas = Image.new("L", image.size, 255)
     canvas.paste(strip.transpose(Image.Transpose.ROTATE_90), (60, 180))
     return ImageChops.darker(image, canvas)
@@ -490,12 +491,15 @@ def hand_account_page(
     spacing: float = 1.6,
     extenders: tuple[float, float] = (0.3, 0.1),
     tails: str = "34579",
+    joined: bool = False,
 ) -> Image.Image:
     """A handwritten account page: lines of handwriting across `words_share` of the
     width beside `columns` columns of handwritten amounts. The figures lean and wobble
     a little, and the figures in `tails` have tails below the line (a lean of their own between
     upright and upside down), as in a clerk's hand. `extenders` are the shares of
-    letters in the words with an ascender and with a descender."""
+    letters in the words with an ascender and with a descender. With `joined` the
+    figures of an amount run together, joined at the foot, so an amount is one mark
+    whose width varies with its length."""
     rng = random.Random(seed)
     width, height = round(8.27 * dpi), round(11.69 * dpi)
     image = Image.new("L", (width, height), PAPER)
@@ -535,9 +539,12 @@ def hand_account_page(
                 - round(0.5 * tall)
                 - len(text) * round(0.7 * tall)
             )
+            start = x
             for digit in text:
                 lift = rng.randint(-1, 1) * max(1, round(scale))
                 x += _figure(draw, digit, x, base + lift, tall, stroke, "plain")
+                if joined:
+                    x -= max(2, round(0.18 * tall))
                 if digit in tails:
                     tail_x = x - round(0.45 * tall)
                     draw.line(
@@ -550,5 +557,29 @@ def hand_account_page(
                         fill=30,
                         width=stroke,
                     )
+            if joined:
+                draw.line((start, base, x, base), fill=30, width=stroke)
         base += pitch
     return image.filter(ImageFilter.GaussianBlur(dpi / 500))
+
+
+def words_over_figures_page(seed: int = 1, *, words_share: float = 0.5) -> Image.Image:
+    """A page at 150 dpi whose top `words_share` of the height is lines of writing and
+    whose rest is rows of separate printed figures across the full width: the figures
+    lie in wide runs (no narrow columns), so only their tiles show them as one-size."""
+    rng = random.Random(seed)
+    width, height = 1240, 1754
+    image = Image.new("L", (width, height), PAPER)
+    draw = ImageDraw.Draw(image)
+    split_y = 120 + round(words_share * (height - 240))
+    write_block(draw, (110, 120, width - 90, split_y), seed)
+    tall, stroke = 16, 2
+    base = split_y + 40
+    while base <= height - 120:
+        x = 110
+        while x < width - 200:
+            for digit in str(rng.randint(100, 99999)):
+                x += _figure(draw, digit, x, base, tall, stroke, "plain")
+            x += rng.randint(30, 60)
+        base += 44
+    return image
