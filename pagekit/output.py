@@ -163,7 +163,7 @@ def execute(plan: Plan) -> dict[str, Any]:
             if plan.tone_view:
                 entry["tone_view"] = _tone_view(plan, page, image, staged)
             entries.append(entry)
-            previews["pages"].append(page_preview(image, long_side * 2 // 3))
+            previews["pages"].append(page_preview(image, long_side // 2))
         measured = all(entry["status"] == "MEASURED" for entry in plan.settings.values())
         manifest = {
             "schema": MANIFEST_SCHEMA,

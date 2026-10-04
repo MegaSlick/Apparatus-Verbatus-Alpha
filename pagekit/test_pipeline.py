@@ -9,7 +9,6 @@ import html
 import io
 import json
 import re
-import shutil
 import sys
 from pathlib import Path
 
@@ -126,7 +125,13 @@ def test_outputs_are_lossless_tiff_in_the_source_mode_at_the_source_resolution(p
 def test_the_same_input_gives_byte_identical_outputs_manifest_and_review(prepared):
     first = _snapshot(prepared["out"])
     assert REVIEW_NAME in first and MANIFEST_NAME in first
-    assert first == _snapshot(prepared["again"])
+    again = _snapshot(prepared["again"])
+    # The review sheet's correction command names its own output folder; otherwise a
+    # second folder holds the same bytes.
+    review = first.pop(REVIEW_NAME).replace(bytes(prepared["out"]), b"OUT")
+    assert again.pop(REVIEW_NAME).replace(bytes(prepared["again"]), b"OUT") == review
+    assert first == again
+    first = _snapshot(prepared["again"])
     # A re-run on the project it wrote keeps every value and gives the same bytes.
     assert main(["prepare", str(prepared["src"]), "--output", str(prepared["again"])]) == 1
     assert _snapshot(prepared["again"]) == first
@@ -156,7 +161,7 @@ def test_the_review_sheet_is_one_offline_file_flagged_first_with_small_previews(
     assert len(previews) == len(NAMES) + 7  # one per source, one per prepared page
     for data in previews:
         with Image.open(io.BytesIO(base64.b64decode(data))) as preview:
-            assert max(preview.size) <= 480
+            assert max(preview.size) <= 320
     assert "not yet been measured" in text and "no flag is not proof" in text
     assert "too little ink" in text  # the blank page's flags, in plain words
 
@@ -183,12 +188,20 @@ def _values(project: dict) -> dict:
     return found
 
 
+def _command(text: str) -> str:
+    (command,) = re.findall(r'<pre class="command">([^<]+)</pre>', text)
+    return html.unescape(command)
+
+
 def test_an_override_line_pasted_into_an_overrides_file_changes_exactly_that_step(
-    prepared, monkeypatch
+    prepared, tmp_path
 ):
-    # A copy beside the output folder, so the project's "../src" paths still hold.
+    import os
+    import subprocess
+
+    # A folder beside the first output, prepared from the same sources.
     target = prepared["root"] / "corrected"
-    shutil.copytree(prepared["out"], target)
+    assert main(["prepare", str(prepared["src"]), "--output", str(target)]) == 1
     project = json.loads((target / PROJECT_NAME).read_text())
     before = _values(project)
     text = (target / REVIEW_NAME).read_text(encoding="utf-8")
@@ -199,8 +212,15 @@ def test_an_override_line_pasted_into_an_overrides_file_changes_exactly_that_ste
     (target / "overrides.json").write_text(
         '{"schema": "pagekit-overrides.v1", "overrides": [\n' + json.dumps(line) + "\n]}"
     )
-    monkeypatch.chdir(target)  # the command the sheet gives, run where it says
-    assert main(["prepare", "--output", ".", "--overrides", "overrides.json"]) == 1
+    # The command exactly as the sheet prints it, run by a shell in another folder, with
+    # no PYTHONPATH: pagekit is not installed here.
+    environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    result = subprocess.run(
+        _command(text), shell=True, cwd=elsewhere, env=environment, capture_output=True, text=True
+    )
+    assert result.returncode == 1, result.stderr
     after = _values(json.loads((target / PROJECT_NAME).read_text()))
     key = ("../src/a_upright.png", 1, "content_box")
     assert after.pop(key) == ([100, 100, 700, 900], "manual")
@@ -421,7 +441,10 @@ def test_prepare_tone_view_writes_one_deterministic_view_beside_each_page(tmp_pa
     names = sorted(path.name for path in first.iterdir())
     assert names == sorted(path.name for path in second.iterdir())
     for name in names:  # identical bytes on repeat, views included
-        assert (first / name).read_bytes() == (second / name).read_bytes(), name
+        one, two = (first / name).read_bytes(), (second / name).read_bytes()
+        if name == REVIEW_NAME:  # its correction command names its own folder
+            one, two = one.replace(bytes(first), b"OUT"), two.replace(bytes(second), b"OUT")
+        assert one == two, name
 
 
 def test_a_tone_view_never_takes_the_name_of_a_prepared_page_or_a_source(tmp_path, monkeypatch):
@@ -494,13 +517,17 @@ from pagekit.output import encode
 mode, width, height, path = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 image = Image.frombytes(mode, (width, height), open(path, "rb").read())
 dpi = None if sys.argv[5] == "none" else (300.0, 300.0)
-sys.stdout.write(encode(image, "tiff", dpi).hex())
+if sys.argv[6] == "tone":  # the tone view's own writer
+    from pagekit.tone import tiff_bytes
+    sys.stdout.write(tiff_bytes(image, None if dpi is None else list(dpi)).hex())
+else:
+    sys.stdout.write(encode(image, "tiff", dpi).hex())
 """
 
 
-@pytest.mark.parametrize("mode", ["L", "RGB"])
+@pytest.mark.parametrize(("mode", "writer"), [("L", "prepare"), ("RGB", "prepare"), ("L", "tone")])
 @pytest.mark.parametrize("dpi", ["300", "none"])
-def test_a_prepared_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_path, mode, dpi):
+def test_a_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_path, mode, writer, dpi):
     import subprocess
 
     from pagekit.output import encode
@@ -513,7 +540,16 @@ def test_a_prepared_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_p
     written = []
     for _ in range(2):  # two separate processes
         result = subprocess.run(
-            [sys.executable, "-c", _WRITE_IN_A_PROCESS, mode, *map(str, image.size), raw, dpi],
+            [
+                sys.executable,
+                "-c",
+                _WRITE_IN_A_PROCESS,
+                mode,
+                *map(str, image.size),
+                raw,
+                dpi,
+                writer,
+            ],
             cwd=root,
             capture_output=True,
             text=True,
@@ -593,3 +629,236 @@ def test_dpi_gives_a_resolution_to_sources_that_carry_none(tmp_path, monkeypatch
     assert main(["prepare", str(folder), "--output", str(out), "--dpi", "5"]) == 2
     assert "--dpi" in capsys.readouterr().err
     assert {path.name: path.read_bytes() for path in out.iterdir()} == before
+
+
+def _stale_after(monkeypatch, out: Path, source: Path, changed: str) -> dict:
+    """{(step, page): why} for a dry run in which file `changed` reads as edited."""
+    import pagekit.prepare as prepare_module
+
+    real = prepare_module.file_digest
+
+    def edited(name: str) -> str:
+        return "0" * 64 if name == changed else real(name)
+
+    monkeypatch.setattr(prepare_module, "file_digest", edited)
+    stale = plan([source], out, detectors=DETECTORS, dry=True).stale
+    monkeypatch.setattr(prepare_module, "file_digest", real)
+    return {(item["step"], item["page"]): item["why"] for item in stale}
+
+
+def test_a_changed_settings_file_or_detector_code_recomputes_exactly_what_reads_it(
+    tmp_path, monkeypatch
+):
+    folder = tmp_path / "src"
+    folder.mkdir()
+    pages.page(size=(400, 560), seed=9, margin=(40, 50, 40, 50)).save(folder / "p.png", dpi=DPI)
+    out = tmp_path / "out"
+    execute(plan([folder], out, detectors=DETECTORS))
+    record = json.loads((out / PROJECT_NAME).read_text())["sources"][0]
+    inputs = record["pages"][0]["steps"]["content_box"]["inputs"]["settings"]
+    here = Path(__file__).parent
+    for name in ("thresholds.toml", "thresholds_skew.toml", "content.py", "_box_common.py"):
+        digest = hashlib.sha256((here / name).read_bytes()).hexdigest()
+        assert inputs[f"file {name}"] == digest
+    assert plan([folder], out, detectors=DETECTORS, dry=True).stale == []
+
+    # The crop check's thresholds feed only the content box.
+    stale = _stale_after(monkeypatch, out, folder, "thresholds.toml")
+    assert "thresholds.toml" in stale[("content_box", 1)]
+    assert not any(step in ("orientation", "split", "skew", "page_box") for step, _ in stale)
+    # Code: the content box's own module, then the skew detector's and what follows.
+    stale = _stale_after(monkeypatch, out, folder, "content.py")
+    assert "content.py" in stale[("content_box", 1)]
+    assert ("page_box", 1) not in stale and ("skew", 1) not in stale
+    stale = _stale_after(monkeypatch, out, folder, "skew.py")
+    assert "skew.py" in stale[("skew", 1)]
+    assert ("orientation", None) not in stale and ("split", None) not in stale
+    stale = _stale_after(monkeypatch, out, folder, "thresholds_split.toml")
+    assert ("orientation", None) in stale and ("split", None) in stale
+
+
+def test_measure_scores_a_right_content_box_on_a_tilted_page_and_a_spreads_page_two(
+    prepared, tmp_path
+):
+    # The hand-checked boxes: the writing once the page is turned by its true skew about
+    # the image's centre, keeping its size, which for the tilted page is the level page
+    # it was drawn from; for the spread, the right page's writing (past the fold).
+    level = pages.page(seed=5)
+    tilted_box = list(level.point(lambda v: 255 if v < 128 else 0).getbbox())
+    spread = pages.spread(seed=4)
+    right = spread.crop((1010, 0, 2000, 1400)).point(lambda v: 255 if v < 128 else 0)
+    x0, y0, x1, y1 = right.getbbox()
+    gold = {
+        "schema": "pagekit-gold.v1",
+        "sources": [
+            {"source": "e_tilted.png", "skew": [2.0], "content_box": [tilted_box]},
+            {
+                "source": "d_spread.png",
+                "content_box": [None, [x0 + 1010, y0, x1 + 1010, y1]],
+                "skew": [0.0, 0.0],
+            },
+        ],
+    }
+    path = tmp_path / "gold.json"
+    path.write_text(json.dumps(gold))
+    report = measure(prepared["out"], path)
+    boxes_step = report["steps"]["content_box"]
+    # Page one of the spread is not blank, so it is wrong; the other two are right.
+    assert (boxes_step["right"], boxes_step["wrong"]) == (2, 1)
+    assert report["wrong_without_flag"] == ["d_spread.png page 1: content box"]
+    errors = report["errors"]["content_box"]
+    assert errors["e_tilted.png page 1"] < 1.0  # mm
+    assert errors["d_spread.png page 2"] < 1.0
+
+
+def _fake_batch(tmp_path: Path, image: Image.Image, dpi, detectors) -> Path:
+    folder = tmp_path / "src"
+    folder.mkdir(parents=True)
+    image.save(folder / "s.png", dpi=dpi)
+    out = tmp_path / "out"
+    execute(plan([folder], out, detectors=detectors))
+    return out
+
+
+def _gold_file(tmp_path: Path, entry: dict) -> Path:
+    path = tmp_path / "gold.json"
+    path.write_text(json.dumps({"schema": "pagekit-gold.v1", "sources": [entry]}))
+    return path
+
+
+def _given(step: str, value):
+    return Detector(f"test.{step}/1", lambda context: Answer(value, 0.9, "Given.", ()))
+
+
+def test_measure_wraps_orientation_errors_and_measures_the_cut_across_the_page(tmp_path):
+    # Stored sideways (1400 x 2000) at 300 x 150 dpi: upright it is 2000 x 1400 at
+    # 150 dpi across, so a cut 15 px off is 2.54 mm off.
+    image = Image.new("L", (1400, 2000), 220)
+    cut = [[1000.0, 0.0], [1000.0, 1399.0]]
+    out = _fake_batch(
+        tmp_path,
+        image,
+        (300, 150),
+        {
+            "orientation": _given("orientation", 1),
+            "split": _given("split", {"pages": 2, "cut": cut}),
+        },
+    )
+    gold = _gold_file(
+        tmp_path, {"source": "s.png", "orientation": 1, "cut": [[1015, 0], [1015, 1400]]}
+    )
+    steps = measure(out, gold)["steps"]
+    assert steps["orientation"]["right"] == 1
+    assert steps["cut"]["error_largest"] == pytest.approx(15 / 150 * 25.4, abs=0.01)
+    assert steps["cut"]["wrong"] == 1  # 2.54 mm is past the 2 mm tolerance
+    # A leaning true cut: the error is the larger gap, at the bottom.
+    gold = _gold_file(tmp_path, {"source": "s.png", "cut": [[1000, 0], [1006, 1399]]})
+    steps = measure(out, gold)["steps"]
+    assert steps["cut"]["error_largest"] == pytest.approx(6 / 150 * 25.4, abs=0.01)
+    assert steps["cut"]["right"] == 1
+    # Three quarter turns from one is two quarter turns off; from zero it is one.
+    gold = _gold_file(tmp_path, {"source": "s.png", "orientation": 3})
+    assert measure(out, gold)["steps"]["orientation"]["error_largest"] == 2
+    zero = _fake_batch(tmp_path / "zero", Image.new("L", (300, 400), 220), (150, 150), {})
+    gold = _gold_file(tmp_path / "zero", {"source": "s.png", "orientation": 3})
+    assert measure(zero, gold)["steps"]["orientation"]["error_largest"] == 1
+
+
+def test_every_unusable_source_is_named_in_one_message_and_nothing_is_written(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    folder = tmp_path / "src"
+    folder.mkdir()
+    Image.new("L", (200, 300), 220).save(folder / "good.png", dpi=DPI)
+    (folder / "broken.png").write_bytes(b"this is not an image")
+    Image.new("I;16", (200, 300), 4000).save(folder / "deep.png")
+    (folder / "empty.jpg").write_bytes(b"")
+    out = tmp_path / "out"
+    assert main(["prepare", str(folder), "--output", str(out)]) == 2
+    error = capsys.readouterr().err
+    assert error.count("pagekit:") == 1  # one message
+    for name in ("broken.png", "deep.png", "empty.jpg"):
+        assert name in error
+    assert "good.png" not in error
+    assert "BytesIO" not in error and "0x" not in error
+    assert "nothing was written" in error
+    assert not out.exists()
+
+
+def test_a_grey_palette_source_gives_a_grey_page_and_a_colour_one_a_colour_page(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    folder = tmp_path / "src"
+    folder.mkdir()
+    grey = pages.page(size=(300, 400), seed=11, margin=(30, 40, 30, 40))
+    grey.convert("P").save(folder / "grey_palette.png", dpi=DPI)  # r = g = b throughout
+    colour = Image.merge("RGB", (grey, grey, grey.point(lambda v: round(v * 0.8))))
+    colour.convert("P", palette=Image.Palette.ADAPTIVE).save(folder / "colour_palette.png", dpi=DPI)
+    with Image.open(folder / "grey_palette.png") as check:
+        assert check.mode == "P"
+    out = tmp_path / "out"
+    assert main(["prepare", str(folder), "--output", str(out)]) == 1
+    with Image.open(out / "grey_palette_p1.tif") as page:
+        assert page.mode == "L"
+    with Image.open(out / "colour_palette_p1.tif") as page:
+        assert page.mode == "RGB"
+
+
+def test_the_review_sheet_is_light_to_open_and_says_what_lock_and_the_margin_mean(prepared):
+    text = (prepared["out"] / REVIEW_NAME).read_text(encoding="utf-8")
+    images = re.findall(r"<img [^>]+>", text)
+    assert images and all('loading="lazy"' in image for image in images)
+    for data in re.findall(r'src="data:image/jpeg;base64,([^"]+)"', text):
+        with Image.open(io.BytesIO(base64.b64decode(data))) as preview:
+            assert max(preview.size) <= 320
+    # A short table at the top links to every source, flagged first.
+    table = text[: text.index("<article")]
+    links = re.findall(r'<a href="#(source-\d+)">([^<]+)</a>', table)
+    assert [name for _, name in links] == [name for name, _ in _articles(text)]
+    for anchor, _ in links:
+        assert f'id="{anchor}"' in text
+    # About 500 sources must stay well under 30 MB: under 36 KB a source on these
+    # dense synthetic pages (18 MB for 500); it was 74 KB.
+    assert len(text.encode("utf-8")) / len(NAMES) < 36_000
+    # Hand-set values are kept on every run; lock only stops the "inputs changed" flag.
+    assert "to keep it on every re-run" not in text
+    assert "kept on every run" in text and "lock" in text
+    # The margin comes from a setting, not from a detector.
+    margins = re.findall(r"<h4>Margin</h4><dl>.*?<dt>From</dt><dd>([^<]+)</dd>", text)
+    assert margins and set(margins) == {"the margin_mm setting"}
+
+
+@pytest.mark.parametrize(
+    ("page_box", "content_box", "flagged"),
+    [
+        ([-50, -40, 2000, 3000], [20, 20, 200, 300], {"page_box": "partly"}),
+        (
+            [1000, 1000, 1200, 1300],
+            [1010, 1010, 1100, 1100],
+            {"page_box": "wholly", "content_box": "wholly"},
+        ),
+        ([0, 0, 240, 320], [200, 280, 260, 340], {"content_box": "partly"}),
+        ([0, 0, 240, 320], [20, 20, 200, 300], {}),
+    ],
+)
+def test_a_hand_set_box_outside_the_levelled_page_is_flagged(
+    tmp_path, page_box, content_box, flagged
+):
+    source = _plain_sources(tmp_path / "src", 1)
+    overrides = tmp_path / "fix.json"
+    entries = [
+        {"source": "src/p00.png", "step": "page_box", "page": 1, "value": page_box},
+        {"source": "src/p00.png", "step": "content_box", "page": 1, "value": content_box},
+    ]
+    overrides.write_text(json.dumps({"schema": "pagekit-overrides.v1", "overrides": entries}))
+    (page,) = plan([source], tmp_path / "out", overrides_path=overrides).pages
+    found = {
+        flag["step"]: flag["reason"]
+        for flag in page.flags
+        if "outside the levelled page" in flag["reason"]
+    }
+    assert set(found) == set(flagged)
+    for step, extent in flagged.items():
+        assert f"lies {extent} outside the levelled page (240 by 320 pixels)" in found[step]

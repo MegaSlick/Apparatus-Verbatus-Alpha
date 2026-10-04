@@ -75,6 +75,29 @@ is not proof the crop is right.
 - No crop is proposed or corrected. Detection of page edges, content boxes, deskew and
   dewarping are later slices.
 
+## Installing and running (macOS and Linux)
+
+pagekit needs Python 3.12 or later and Pillow, nothing else. In a terminal:
+
+```sh
+python3 --version                       # 3.12 or later
+python3 -m venv ~/pagekit-env           # once: a private Python for pagekit
+~/pagekit-env/bin/python -m pip install Pillow
+```
+
+Then run it from the folder that holds the `pagekit` folder (in this repository, its
+top folder):
+
+```sh
+cd /path/to/the/folder/that/holds/pagekit
+~/pagekit-env/bin/python -m pagekit prepare ~/scans/ --output ~/prepared/
+```
+
+Inside this repository, its own environment works the same way:
+`.venv/bin/python -m pagekit ...` from the repository's top folder. "No module named
+pagekit" means the command was run from another folder; `cd` to the folder that holds
+`pagekit` first. The correction command on the review sheet does this for you.
+
 ## Preparing pages
 
 ```sh
@@ -104,7 +127,8 @@ Options: `--project FILE` and `--overrides FILE` (below), `--report-stale`,
 `--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, `--dpi N`
 for sources that carry no resolution (see Resolution), and
 `--tone-view` (below). Exit status is 0 when no page is flagged, 1 when any page needs
-review and 2 when the input cannot be used (and then nothing is written).
+review and 2 when the input cannot be used (and then nothing is written). Every source
+is checked first, and one message names every file that cannot be used and why.
 
 When pagekit is not sure of a step, it says so with a flag and the page goes to review;
 it never guesses silently. If a step fails on one page, that page gets a flag naming the
@@ -129,22 +153,23 @@ original.
 ### The review sheet
 
 `review.html` sits beside the manifest. It is one file with everything inside it: no
-internet, no scripts and no fonts from elsewhere. It lists every scan, flagged ones
-first, the most flagged first. For each scan it shows a small preview of the original
+internet, no scripts and no fonts from elsewhere. A short table at the top lists every
+scan, flagged ones first, the most flagged first, each linking to its section, in the
+same order. For each scan it shows a small preview of the original
 turned upright, with the cut (vermilion), each page box (blue) and each content box
 (green) drawn on it, and a small preview of each prepared page. For each step it gives
 the value, where it came from, the confidence, the evidence and every flag in plain
 words, and under it the exact line to copy into an overrides file to change it. The
-previews are small JPEG copies, only for looking. A note at the top says that the
+previews are small JPEG copies (the original at most `preview_long_side_px`, 320
+pixels, each page at half that), only for looking, and the browser loads them only as
+you scroll to them, so a sheet of hundreds of scans stays light. A note at the top says that the
 settings are not yet measured: until they are, a flag means "look at this page" and no
 flag is not proof that the page is right.
 
 To correct a page from the sheet: copy the line under the step, change the value, put
-it in `overrides.json` in the output folder, and run, from that folder:
-
-```sh
-python -m pagekit prepare --output . --overrides overrides.json
-```
+it in `overrides.json` in the output folder, and paste the command the sheet prints
+into a terminal. It is written with full paths and the Python that made the sheet, so
+it works from any folder, and only what depends on the change is redone.
 
 ### Pages unlike the rest of the batch
 
@@ -184,8 +209,10 @@ remaining pages are flagged about them on every run, and they come back if the p
 does. To discard them, delete that page's entry from `dropped_pages` in the project
 file.
 
-A detector's method name includes a digest of its thresholds file, so changing a
-threshold recomputes every value it decided.
+A detected value's inputs hash also covers the sha256 of every pagekit file its
+detector reads: its settings files (for the content box, the crop check's
+`thresholds.toml` too) and its own code, down to the shared helpers. Changing a
+threshold or a detector recomputes every value that detector decided, and nothing else.
 
 `--report-stale` lists the steps that would change and why, without running anything
 or writing any file (exit 1 when something is stale, 0 when nothing is).
@@ -209,7 +236,8 @@ from 1. The values: `orientation` 0 to 3 quarter turns clockwise; `split`
 `{"pages": 1}` or `{"pages": 2, "cut": [[x, y], [x, y]]}` in the upright frame's
 pixels; `skew` degrees counterclockwise, under 45; `page_box` and `content_box`
 `[left, top, right, bottom]` in the levelled page's pixels, right and bottom not
-included, and `content_box` `null` for a blank page; `margin` millimetres; `resolution`
+included, and `content_box` `null` for a blank page (a box partly or wholly outside the
+levelled page is flagged, since only filled-in paper colour lies there); `margin` millimetres; `resolution`
 `[x_dpi, y_dpi]`. An entry may add `evidence`, a sentence saying why. Values are set as
 manual, or locked with `"lock": true`, and only what depends on them is recomputed. An
 override naming a source, page or step that does not exist is refused (exit 2) and
@@ -308,8 +336,11 @@ python -m pagekit measure --prepared prepared/ --gold answers.json [--json]
 ]}
 ```
 
-`source` is the file name or sha256; every other key is optional. The cut and the
-content boxes are in the pixels of the upright image; `null` is a blank page. For each
+`source` is the file name or sha256; every other key is optional. The cut is in the
+pixels of the upright image. Each content box is drawn on the upright image after
+turning it by that page's true skew about its centre, keeping its size (as an image
+editor levels a picture); `null` is a blank page. pagekit's box is mapped into that
+same grid before the two are compared. For each
 step it reports how many were right (within the `measure_*` tolerance and not flagged),
 wrong (outside it and not flagged: the errors that matter most, listed by name) and sent
 to review (flagged), with the size of the errors. It changes no setting. Exit status 0,
@@ -345,7 +376,8 @@ lists them.
   left in the output folder and listed under `stale_outputs`; pagekit never deletes.
 - EXIF orientation tags are ignored: sources are taken in their stored pixel grid.
 - Source modes handled: greyscale, colour, bilevel (written as greyscale) and palette
-  (written as colour). Others, such as 16-bit greyscale, are refused.
+  (written as greyscale when every colour it uses is a grey, else as colour). Others,
+  such as 16-bit greyscale, are refused.
 
 ## Airlock
 
