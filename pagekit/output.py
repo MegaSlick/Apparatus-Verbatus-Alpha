@@ -28,6 +28,8 @@ from PIL import Image
 from pagekit import __version__
 from pagekit._tiff import tiff_bytes
 from pagekit.answer import STEPS
+from pagekit.cache import links as cache_links
+from pagekit.cache import write as write_cache
 from pagekit.geometry import paper_colour, render
 from pagekit.greypage import to_grey
 from pagekit.prepare import PagePlan, Plan
@@ -82,6 +84,7 @@ def _page_entry(page: PagePlan, image: Image.Image, data: bytes, fill, fill_meth
         "output_mode": page.mode,
         "density": page.density,
         "upright_resolution": page.upright_resolution,
+        "applied": page.applied,
         "geometry": geometry,
         "steps": {step: _step_summary(page.steps[step]) for step in STEPS},
         "flags": page.flags,
@@ -192,6 +195,7 @@ def execute(plan: Plan) -> dict[str, Any]:
             ),
         }
         _stage(plan.output_dir / MANIFEST_NAME, canonical_json(manifest).encode("utf-8"), staged)
+        previews["cache"] = cache_links(plan.cache_dir, plan.output_dir, plan.pages)
         review = build_review(plan, entries, previews)
         _stage(plan.output_dir / REVIEW_NAME, review.encode("utf-8"), staged)
         _stage(plan.project_path, canonical_json(plan.project).encode("utf-8"), staged)
@@ -203,6 +207,12 @@ def execute(plan: Plan) -> dict[str, Any]:
             if folder.exists() and not any(folder.iterdir()):
                 folder.rmdir()
         raise
+    if plan.cache_dir is not None:
+        # The stage cache is for looking only; failing to write it changes no output.
+        try:
+            write_cache(plan.cache_dir, plan.pages, values)
+        except Exception as error:
+            manifest["cache_note"] = f"the stage cache could not be written: {error}"
     return manifest
 
 

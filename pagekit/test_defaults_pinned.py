@@ -1,7 +1,11 @@
-"""With no orientation tag, no grey choice and no padding, prepare gives the same pages
-and manifest values as the code before spec 0007 did (pinned in
-testdata/defaults_before_0007.json, made by that code at commit 2d10a14), apart from
-fields that only record the new choices. Synthetic pages only.
+"""Two pins, synthetic pages only.
+
+1. With `--crop content`, no orientation tag, no grey choice and no padding, prepare
+   gives the same pages and manifest values as the code before spec 0007 did (pinned in
+   testdata/defaults_before_0007.json, made by that code at commit 2d10a14), apart
+   from fields that only record the new choices: cropping as before is still there.
+2. The default since spec 0008 (cropping off, each page its whole levelled side of the
+   cut) is pinned in testdata/defaults_0008.json, made by the code of spec 0008.
 
 The pin holds on every platform. The sources are written here as uncompressed TIFF,
 byte for byte the same wherever the test runs, so their sha256 is pinned. The prepared
@@ -24,6 +28,7 @@ from pagekit import _orient_testpages as pages
 from pagekit.__main__ import main
 
 PINNED = Path(__file__).with_name("testdata") / "defaults_before_0007.json"
+PINNED_0008 = Path(__file__).with_name("testdata") / "defaults_0008.json"
 # Values that name the bytes of a compressed file, which may differ between builds of
 # the compressor; the decoded pixels' sha256 stands for them.
 _COMPRESSED = {("output", "sha256"), ("output", "bytes")}
@@ -111,10 +116,10 @@ def build(folder: Path) -> tuple[Path, Path]:
     return source, overrides
 
 
-def run(folder: Path) -> dict:
+def run(folder: Path, *extra: str) -> dict:
     source, overrides = build(folder)
     out = folder / "out"
-    main(["prepare", str(source), "--output", str(out), "--overrides", str(overrides)])
+    main(["prepare", str(source), "--output", str(out), "--overrides", str(overrides), *extra])
     manifest = json.loads((out / "pagekit-prepare.json").read_text())
     return {"pages": manifest["pages"], "skipped": manifest["skipped"]}
 
@@ -141,18 +146,35 @@ def _within(pinned, now, where="manifest", parent=None):
         assert now == pinned, f"{where}: {now!r} != {pinned!r}"
 
 
-def test_defaults_give_the_pages_and_manifest_values_of_before(tmp_path, monkeypatch):
-    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})  # neutral, so only geometry
-    pinned = json.loads(PINNED.read_text())
-    now = run(tmp_path)
+def _same(pinned: dict, now: dict, folder: Path) -> None:
     _within(pinned, now)
     # The pages' decoded pixels, read back from the files written.
-    out = tmp_path / "out"
+    out = folder / "out"
     for old, new in zip(pinned["pages"], now["pages"], strict=True):
         assert old["output"]["pixels_sha256"] == new["output"]["pixels_sha256"]
         with Image.open(out / new["output"]["name"]) as page:
             assert hashlib.sha256(page.tobytes()).hexdigest() == old["output"]["pixels_sha256"]
     # The sources' bytes depend on nothing but their pixels, so they are pinned too.
     for page in pinned["pages"]:
-        path = tmp_path / "src" / page["source"]["name"]
+        path = folder / "src" / page["source"]["name"]
         assert hashlib.sha256(path.read_bytes()).hexdigest() == page["source"]["sha256"]
+
+
+def test_crop_content_gives_the_pages_and_manifest_values_of_before(tmp_path, monkeypatch):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})  # neutral, so only geometry
+    _same(json.loads(PINNED.read_text()), run(tmp_path, "--crop", "content"), tmp_path)
+
+
+def test_the_default_without_cropping_is_pinned(tmp_path, monkeypatch):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    pinned = json.loads(PINNED_0008.read_text())
+    now = run(tmp_path)
+    _same(pinned, now, tmp_path)
+    # The spread's page 2 has its boxes set by hand, which turns cropping on for it.
+    crops = {(p["source"]["name"], p["page"]): p["applied"]["crop"] for p in now["pages"]}
+    assert crops == {
+        ("colour.tif", 1): "none",
+        ("nodpi.tif", 1): "none",
+        ("spread.tif", 1): "none",
+        ("spread.tif", 2): "content",
+    }

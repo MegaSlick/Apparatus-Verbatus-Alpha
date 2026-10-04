@@ -167,3 +167,30 @@ meaning = "Blank paper colour added around each finished page, in millimetres, c
 value = 0
 status = "UNMEASURED"
 meaning = "The same padding in output pixels; use this or padding_mm, not both. 0 adds none."
+
+# --- Spec 0008: split-first defaults and the stage cache --------------------------
+
+[crop]
+value = "none"
+status = "UNMEASURED"
+meaning = "Whether pages are cropped: none (the default: each page is its whole levelled side of the cut), page (to the page box) or content (to the content box plus the margin). A crop line in the overrides file sets one page."
+
+[crop_detectors_when_off]
+value = 0
+status = "UNMEASURED"
+meaning = "1 runs the page-box and content-box detectors even when cropping is off, to report in the evidence what they would have cut; they never change the page. 0 (the default) does not run them."
+
+[stage_cache]
+value = 1
+status = "UNMEASURED"
+meaning = "1 writes the stage cache: each step's image of each source and page, for looking only; 0 writes none."
+
+[stage_cache_folder]
+value = ""
+status = "UNMEASURED"
+meaning = "Where the stage cache goes; empty means a folder named pagekit-cache beside the output folder. Never inside a source folder."
+
+[cache_preview_long_side_px]
+value = 320
+status = "UNMEASURED"
+meaning = "Long side, in pixels, of the previews in the stage cache."

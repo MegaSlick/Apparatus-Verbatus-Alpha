@@ -63,7 +63,7 @@ def test_a_tag_swaps_the_resolution_into_the_upright_axes(tmp_path, carrier):
     """Catches: no axis swap for tags 5 to 8 in the tagged resolution."""
     _save(tmp_path, carrier)
     out = tmp_path / "out"
-    main(["prepare", str(tmp_path / "src"), "--output", str(out)])
+    main(["prepare", str(tmp_path / "src"), "--output", str(out), "--crop", "content"])
     (page,) = json.loads((out / MANIFEST_NAME).read_text())["pages"]
     assert page["upright_resolution"] == pytest.approx([150, 300], abs=0.05)
     assert page["output"]["resolution"] == pytest.approx([150, 300], abs=0.05)

@@ -120,14 +120,44 @@ order, it finds:
 2. **pages and cut**: one page or a two-page spread, and where to cut it (the cut may
    lean);
 3. for each page, **skew**: the small angle that levels its lines;
-4. for each page, the **page box** (where the paper is) and then the **content box**
-   (everything to keep, notes and signatures included, or none for a blank page);
-5. the **margin** around the content, then one resampling of the original into the
-   prepared page.
+4. only when cropping is on (below): for each page, the **page box** (where the paper
+   is) and then the **content box** (everything to keep, notes and signatures
+   included, or none for a blank page), and the **margin** around the content;
+5. one resampling of the original into the prepared page.
+
+**Cropping is off by default** (spec 0008): pagekit's first job is to preserve the
+original and split it left and right. Each page is then its whole side of the cut
+(with the overlap), upright and levelled, on a canvas that holds the whole levelled
+side, with nothing of the source cut away; the margin does not apply (padding still
+does, when set). `--crop page` crops to the page box; `--crop content` to the content
+box plus the margin, exactly as before; an overrides line
+`{"source": ..., "step": "crop", "page": 1, "value": "content"}` (or `"page"`, `"none"`)
+sets one page; and a page or content box set by hand turns cropping on for that page.
+The page-box and content-box detectors do not run when cropping is off, unless the
+`crop_detectors_when_off` setting is 1: then they report in the evidence what they
+would have cut, and never change the page. The manifest's `applied` says, for each
+page, which steps were applied and the crop; the review sheet says "Cropping: ..." on
+every page.
 
 A blank page is still written, as an image of its paper, so the sequence of pages stays
 complete. Sources are a folder (its `.png`, `.tif`, `.tiff`, `.jpg` and `.jpeg` files)
-or a list of files; they are only read. Nothing is ever written inside a source folder.
+or a list of files; they are only read. Nothing is ever written inside a source folder,
+and a run never changes a source file's bytes or its modification time (a test pins
+it).
+
+### The stage cache
+
+`prepare` also writes a stage cache, by default the folder `pagekit-cache` beside the
+output folder (`--cache DIR` to put it elsewhere, never inside a source folder;
+`--no-cache` for none). For each source, in a folder named by its sha256: the source as
+opened (after any orientation tag), the upright frame with the cut drawn, and for each
+page its side of the cut and the levelled page, as full-resolution lossless TIFF and
+small PNG previews; with cropping on, the levelled page with its page box and content
+box drawn. `index.json` lists the entries, each keyed by the source's sha256 and the
+inputs hash and value of the step that made it, so a re-run with nothing changed
+writes nothing and a changed step rewrites only its own entries. The review sheet links
+to each preview. The cache is for looking only: no prepared page is ever made from it,
+so it can be deleted at any time and the next run rebuilds it.
 
 Options: `--project FILE` and `--overrides FILE` (below), `--report-stale`,
 `--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, `--dpi N`

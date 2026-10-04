@@ -27,6 +27,7 @@ from pagekit.prepare import PROJECT_NAME, Detector, plan
 from pagekit.review import REVIEW_NAME
 
 DPI = (150, 150)
+CROP = {"crop": "content"}  # the box steps on, as specs 0004 and 0005 test them
 PAPER = pages.PAPER
 NAMES = ("a_upright", "b_sideways", "c_upside_down", "d_spread", "e_tilted", "f_blank")
 
@@ -58,8 +59,9 @@ def prepared(tmp_path_factory):
     root = tmp_path_factory.mktemp("batch")
     source = _batch(root / "src")
     first, second = root / "out", root / "again"
-    assert main(["prepare", str(source), "--output", str(first)]) == 1  # the blank page
-    assert main(["prepare", str(source), "--output", str(second)]) == 1
+    crop = ["--crop", "content"]  # these tests pin the boxes of specs 0004 and 0005
+    assert main(["prepare", str(source), "--output", str(first), *crop]) == 1  # blank page
+    assert main(["prepare", str(source), "--output", str(second), *crop]) == 1
     return {"root": root, "src": source, "out": first, "again": second}
 
 
@@ -134,7 +136,8 @@ def test_the_same_input_gives_byte_identical_outputs_manifest_and_review(prepare
     assert first == again
     first = _snapshot(prepared["again"])
     # A re-run on the project it wrote keeps every value and gives the same bytes.
-    assert main(["prepare", str(prepared["src"]), "--output", str(prepared["again"])]) == 1
+    again = ["prepare", str(prepared["src"]), "--output", str(prepared["again"])]
+    assert main([*again, "--crop", "content"]) == 1
     assert _snapshot(prepared["again"]) == first
 
 
@@ -202,7 +205,9 @@ def test_an_override_line_pasted_into_an_overrides_file_changes_exactly_that_ste
 
     # A folder beside the first output, prepared from the same sources.
     target = prepared["root"] / "corrected"
-    assert main(["prepare", str(prepared["src"]), "--output", str(target)]) == 1
+    assert (
+        main(["prepare", str(prepared["src"]), "--output", str(target), "--crop", "content"]) == 1
+    )
     project = json.loads((target / PROJECT_NAME).read_text())
     before = _values(project)
     text = (target / REVIEW_NAME).read_text(encoding="utf-8")
@@ -342,7 +347,12 @@ def test_a_content_box_far_from_the_batch_is_flagged_by_its_size(tmp_path):
         small = context.source.path.name == "p08.png"
         return Answer([100, 100, 110, 110] if small else [20, 20, 220, 300], 0.9, "Test.", ())
 
-    prepared = plan([source], tmp_path / "out", detectors={"content_box": Detector("c/1", content)})
+    prepared = plan(
+        [source],
+        tmp_path / "out",
+        detectors={"content_box": Detector("c/1", content)},
+        settings_overrides={"crop": "content"},
+    )
     reasons = [flag["reason"] for flag in prepared.pages[-1].flags if flag["step"] == "batch"]
     assert any("content width" in reason for reason in reasons)
     assert any("content height" in reason for reason in reasons)
@@ -650,7 +660,7 @@ def _stale_after(monkeypatch, out: Path, source: Path, changed: str) -> dict:
         return "0" * 64 if name == changed else real(name)
 
     monkeypatch.setattr(prepare_module, "file_digest", edited)
-    stale = plan([source], out, detectors=DETECTORS, dry=True).stale
+    stale = plan([source], out, detectors=DETECTORS, dry=True, settings_overrides=CROP).stale
     monkeypatch.setattr(prepare_module, "file_digest", real)
     return {(item["step"], item["page"]): item["why"] for item in stale}
 
@@ -662,14 +672,14 @@ def test_a_changed_settings_file_or_detector_code_recomputes_exactly_what_reads_
     folder.mkdir()
     pages.page(size=(400, 560), seed=9, margin=(40, 50, 40, 50)).save(folder / "p.png", dpi=DPI)
     out = tmp_path / "out"
-    execute(plan([folder], out, detectors=DETECTORS))
+    execute(plan([folder], out, detectors=DETECTORS, settings_overrides=CROP))
     record = json.loads((out / PROJECT_NAME).read_text())["sources"][0]
     inputs = record["pages"][0]["steps"]["content_box"]["inputs"]["settings"]
     here = Path(__file__).parent
     for name in ("thresholds.toml", "thresholds_skew.toml", "content.py", "_box_common.py"):
         digest = hashlib.sha256((here / name).read_bytes()).hexdigest()
         assert inputs[f"file {name}"] == digest
-    assert plan([folder], out, detectors=DETECTORS, dry=True).stale == []
+    assert plan([folder], out, detectors=DETECTORS, dry=True, settings_overrides=CROP).stale == []
 
     # The crop check's thresholds feed only the content box.
     stale = _stale_after(monkeypatch, out, folder, "thresholds.toml")

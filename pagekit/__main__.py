@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from pagekit.check import CheckError, check, parse_box, report_json
 from pagekit.tone import GREY_RULES, ToneError, record_json, tone_file, write_view
@@ -80,6 +81,18 @@ def _parser() -> argparse.ArgumentParser:
         help="how a colour page chosen grey is made grey (default: luminance)",
     )
     preparer.add_argument(
+        "--crop",
+        choices=("none", "page", "content"),
+        help="crop pages to the page box or to the content box plus the margin "
+        "(default: none, each page is its whole levelled side of the cut)",
+    )
+    preparer.add_argument(
+        "--cache",
+        metavar="DIR",
+        help="where the stage cache goes (default: pagekit-cache beside the output folder)",
+    )
+    preparer.add_argument("--no-cache", action="store_true", help="write no stage cache")
+    preparer.add_argument(
         "--padding",
         metavar="N(mm|px)",
         help="blank paper colour added around each finished page, for example 4mm or "
@@ -130,6 +143,12 @@ def _prepare(arguments: argparse.Namespace) -> int:
         settings["max_output_dpi"] = arguments.max_dpi
     if arguments.grey_rule is not None:
         settings["grey_rule"] = arguments.grey_rule
+    if arguments.crop is not None:
+        settings["crop"] = arguments.crop
+    if arguments.no_cache:
+        settings["stage_cache"] = 0
+    if arguments.cache is not None:
+        settings["stage_cache_folder"] = str(Path(arguments.cache).resolve())
     if arguments.padding is not None:
         text = arguments.padding.strip().lower()
         try:
@@ -185,6 +204,8 @@ def _prepare(arguments: argparse.Namespace) -> int:
         + (f", {skipped} source file(s) skipped" if skipped else "")
         + f". Open {prepared.output_dir / REVIEW_NAME} to see them."
     )
+    if "cache_note" in manifest:
+        print(f"note: {manifest['cache_note']}", file=sys.stderr)
     if not manifest["thresholds_measured"]:
         print(f"note: {manifest['thresholds_note']}")
     return 1 if flagged or skipped else 0

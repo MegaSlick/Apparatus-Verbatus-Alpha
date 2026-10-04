@@ -53,6 +53,8 @@ def measure_page(page: Any) -> dict[str, float]:
     if content is None:
         return {}
     found = {"skew": float(steps["skew"]["value"])}
+    if not page.applied.get("content_box", True):  # cropping off: no content box
+        return found
     if page.upright_resolution is None:  # missing or implausible
         return found
     # The levelled page's axes: the tag (whoever applied it) and the turns are in it.

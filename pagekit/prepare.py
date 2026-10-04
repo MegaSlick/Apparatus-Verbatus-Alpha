@@ -67,6 +67,7 @@ from pagekit.project import (
 )
 
 PROJECT_NAME = "pagekit-project.json"
+CACHE_NAME = "pagekit-cache"  # the stage cache's default folder, beside the output folder
 IMAGE_SUFFIXES = (".png", ".tif", ".tiff", ".jpg", ".jpeg")
 # Modes read: grey and colour as they are; bilevel to grey; palette to grey or colour.
 _KEPT_MODES = frozenset({"L", "RGB", "1", "P"})
@@ -372,6 +373,64 @@ _NEUTRAL_WORDS = {
 }
 
 
+CROP_MODES = ("none", "page", "content")
+CROP_WORDS = {
+    "none": "off (the whole levelled side of the cut is kept)",
+    "page": "to the page box",
+    "content": "to the content box, with the margin",
+}
+
+
+def _crop_off_detector(step: str, real: Detector, values: dict[str, Any]) -> Detector:
+    """A box step with cropping off: the page box is the whole levelled side and the
+    content box the page box, so nothing of the side is cut away (spec 0008). With the
+    crop_detectors_when_off setting, the real detector still runs and its answer is
+    reported in the evidence, never applied."""
+    report = bool(values["crop_detectors_when_off"])
+    words = "page box" if step == "page_box" else "content box"
+
+    def run(context: StepContext) -> Answer:
+        value = _whole_grid(context) if step == "page_box" else context.values["page_box"]
+        evidence = f"Cropping is off for this page, so the {words} is the whole levelled side."
+        if report:
+            try:
+                found = validate_answer(step, real.run(context))
+                evidence += (
+                    f" The {words} detector, run only to report, would have cut to "
+                    f"{found.value} (confidence {found.confidence:.2f})."
+                )
+            except Exception as error:  # reporting only: a failure changes nothing
+                evidence += f" The {words} detector, run only to report, failed ({error})."
+        return Answer(value, 1.0, evidence, ())
+
+    method = f"pagekit.crop-off.{step}/1" + (f" reporting {real.method}" if report else "")
+    reads = ("crop_detectors_when_off",) + (real.settings if report else ())
+    return Detector(method, run, reads, None, real.files if report else ())
+
+
+def _crop_mode(override, old_page: dict, overrides: dict, number: int, values) -> dict:
+    """A page's crop mode and who set it: an override this run; one set by hand before;
+    a box set by hand (cropping is then on for that page, to that box); the crop setting."""
+    if override is not None:
+        set_by = "locked" if override.lock else "manual"
+        return {"value": override.value, "set_by": set_by, "evidence": override.evidence}
+    old = old_page.get("crop")
+    if old is not None:
+        return dict(old)
+    steps = old_page.get("steps", {})
+
+    def by_hand(step: str) -> bool:
+        if overrides.get((step, number)) is not None:
+            return True
+        return steps.get(step, {}).get("origin") in ("manual", "locked")
+
+    if by_hand("content_box"):
+        return {"value": "content", "set_by": "box", "evidence": "A content box was set by hand."}
+    if by_hand("page_box") and values["crop"] != "content":
+        return {"value": "page", "set_by": "box", "evidence": "A page box was set by hand."}
+    return {"value": values["crop"], "set_by": "setting", "evidence": "From the crop setting."}
+
+
 def _whole_grid(context: StepContext) -> list[int]:
     width, height = context.chain().output_size
     return [0, 0, width, height]
@@ -429,6 +488,8 @@ class PagePlan:
     # The usable resolution (x, y) of the upright frame and the levelled page, before
     # any shrinking, in the axes the tag and the turns give; None when there is none.
     upright_resolution: list[float] | None = None
+    applied: dict[str, Any] = field(default_factory=dict)  # which steps were applied
+    crop: dict[str, Any] = field(default_factory=dict)  # the crop mode and who set it
 
 
 @dataclass
@@ -444,6 +505,7 @@ class Plan:
     stale_outputs: list[str]  # outputs of pages that no longer exist, left in place
     batch: dict[str, Any] = field(default_factory=dict)  # the volume-wide checks
     tone_view: bool = False  # also write the grey tone view of spec 0006 beside each page
+    cache_dir: Path | None = None  # the stage cache (spec 0008), or None when off
     # Source files that cannot be used: name, path, sha256 (None if unreadable), reason.
     skipped: list[dict[str, Any]] = field(default_factory=list)
 
@@ -510,9 +572,16 @@ class _Runner:
         # {(source relative path, step, page): sentence} for hand-set values a confident
         # detection disagrees with.
         self.comparisons: dict[tuple[str, str, int | None], str] = {}
+        self.crop_off: frozenset[str] = frozenset()  # box steps off for the current page
+
+    def _detector(self, step: str) -> Detector:
+        """The step's detector, or, for a box step with cropping off, the whole side."""
+        if step in self.crop_off:
+            return _crop_off_detector(step, self.detectors[step], self.values)
+        return self.detectors[step]
 
     def _reads(self, step: str, resolution) -> dict[str, Any]:
-        detector = self.detectors[step]
+        detector = self._detector(step)
         reads = {name: self.values[name] for name in detector.settings}
         for name in detector.files:
             reads[f"file {name}"] = file_digest(name)
@@ -581,7 +650,7 @@ class _Runner:
                 )
             self._compare(source, step, page, earlier, resolution, kept["value"])
             return kept, False
-        detector = self.detectors[step]
+        detector = self._detector(step)
         if (
             old is not None
             and old["inputs_hash"] == inputs_hash
@@ -806,6 +875,9 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         page_steps = {}
         page_uncertain = set(uncertain)
         old_page = old_pages.get(number, {"steps": {}})
+        crop = _crop_mode(overrides.get(("crop", number)), old_page, overrides, number, values)
+        off = {"none": {"page_box", "content_box"}, "page": {"content_box"}, "content": set()}
+        runner.crop_off = frozenset(off[crop["value"]])
         for step in PAGE_STEPS:
             entry, unsure = runner.settle(
                 source,
@@ -828,7 +900,10 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         mode_record = _mode_record(
             overrides.get(("output_mode", number)), old_page.get("output_mode"), runner.run_mode
         )
+        runner.crop_off = frozenset()
         page_entry = {"page": number, "output": output_name, "steps": page_steps}
+        if crop["set_by"] in ("manual", "locked"):
+            page_entry["crop"] = crop
         if mode_record is not None:
             page_entry["output_mode"] = mode_record
         density_override = overrides.get(("density", number))
@@ -839,8 +914,22 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         if runner.dry:
             continue
         chain, chain_flags, output_dpi, upright_resolution = _page_chain(
-            source, number, page_earlier, usable, stored_frame, values, tag
+            source, number, page_earlier, usable, stored_frame, values, tag, crop["value"]
         )
+        applied = {
+            "orientation_tag": tag_record["applied"],
+            "orientation": True,
+            "split": True,
+            "skew": True,
+            "page_box": crop["value"] != "none",
+            "content_box": crop["value"] == "content",
+            "margin": crop["value"] == "content",
+            "crop": crop["value"],
+        }
+        if crop["value"] != "content":
+            runner.notes[(source.relative, "margin", number)] = (
+                f"The margin is not applied: cropping is {CROP_WORDS[crop['value']]}."
+            )
         all_steps = {}
         for step, entry in {**steps, **page_steps}.items():
             key = (source.relative, step, None if step in SOURCE_STEPS else number)
@@ -883,6 +972,8 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
                 mode,
                 density,
                 None if upright_resolution is None else list(upright_resolution),
+                applied,
+                crop,
             )
         )
     entry = {
@@ -1166,8 +1257,12 @@ def _padding(settings, upright_dpi, scale) -> tuple[tuple[int, int, int, int], l
     return (across, down, across, down), []
 
 
-def _page_chain(source, number, values, usable, stored, settings, tag: int = 1):
-    """The chain of page `number` (from 1), any margin flags, and its output dpi."""
+def _page_chain(source, number, values, usable, stored, settings, tag: int = 1, crop="content"):
+    """The chain of page `number` (from 1), any margin flags, and its output dpi.
+
+    With cropping off (`crop` "none") the page is the whole levelled side of the cut;
+    with "page" it is cut to the page box; with "content" to the content box plus the
+    margin, held to the page box and its allowance (specs 0002, 0005)."""
     turns = values["orientation"]
     overlap = _overlap_px(settings, usable, turns)
     upright_dpi = _upright_dpi(usable, turns)
@@ -1177,13 +1272,18 @@ def _page_chain(source, number, values, usable, stored, settings, tag: int = 1):
         per_mm = (upright_dpi[0] / _MM_PER_INCH, upright_dpi[1] / _MM_PER_INCH)
     margin, allowance = values["margin"], settings["margin_allowance_mm"]
     flags = []
-    box = margin_box(
-        values["page_box"],
-        values["content_box"],
-        (margin * per_mm[0], margin * per_mm[1]),
-        (allowance * per_mm[0], allowance * per_mm[1]),
-    )
-    if box is None:
+    if crop == "none":
+        box = None
+    elif crop == "page":
+        box = tuple(values["page_box"])
+    else:
+        box = margin_box(
+            values["page_box"],
+            values["content_box"],
+            (margin * per_mm[0], margin * per_mm[1]),
+            (allowance * per_mm[0], allowance * per_mm[1]),
+        )
+    if box is None and crop == "content":
         box = tuple(values["page_box"])
         flags.append(
             {
@@ -1315,11 +1415,20 @@ def plan(
                 raise PrepareError(f"the project's source {path} does not exist")
     else:
         raise PrepareError("no source images were given")
+    cache_dir = None
+    if values["stage_cache"]:
+        folder = values["stage_cache_folder"]
+        cache_dir = Path(folder).resolve() if folder else output_dir.parent / CACHE_NAME
     for path in paths:
         if _inside(output_dir, path.parent) or _inside(project_folder, path.parent):
             raise PrepareError(
                 f"pagekit never writes inside a source folder, and {path.parent} holds "
                 f"{path.name}; choose an output folder and project file elsewhere"
+            )
+        if cache_dir is not None and _inside(cache_dir, path.parent):
+            raise PrepareError(
+                f"pagekit never writes inside a source folder, and {path.parent} holds "
+                f"{path.name}; choose a stage cache folder elsewhere (--cache)"
             )
     # A source that cannot be used is skipped, not fatal: it gets no page and no new
     # project entry, so a later run tries it again. Only a run with none usable stops.
@@ -1459,5 +1568,6 @@ def plan(
         stale_outputs,
         batch,
         tone_view,
-        skipped,
+        cache_dir=cache_dir,
+        skipped=skipped,
     )
