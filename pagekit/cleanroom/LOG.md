@@ -713,3 +713,6 @@ record".
   only on request. **Follow-up brief:** `briefs/0044-build-cache-thumbnails.md` (sha256
   c91bdde1beca189bf8599ac5f180a23e68f1d9f87ac7edc11dd567ac02c69eff), to the agent of
   brief 0023. Saved before it was sent.
+- **Briefs 0043 and 0044 done:** commits ac89cf4, 29d941e, 1c95e02, fc75687, 265b47a,
+  0e7c58b and 478a671 on `work/pk-integrate`. Leak scan no hits in 184 files. Merged into
+  `work/pagekit-prepare`. The cache keeps previews only by default (76 kB for a test spread).
