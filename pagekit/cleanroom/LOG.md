@@ -641,3 +641,6 @@ record".
 - **Follow-up brief:** `briefs/0037-build-platform-independent-pins.md` (sha256
   411b6757aa638b12f4054476a8a3f07f01f3eec5f22fc9c00a4ef1b28fdd3c9f), to the agent of
   brief 0023. Saved before it was sent.
+- **Brief 0037 done:** commit e7c0922 on `work/pk-integrate`. Leak scan no hits. Merged into
+  `work/pagekit-prepare`; the pin compares decoded pixels and regenerated its data from
+  2d10a14.
