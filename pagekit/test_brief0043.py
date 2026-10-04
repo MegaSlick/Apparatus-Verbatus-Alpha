@@ -71,7 +71,7 @@ def test_the_opened_cache_entry_follows_the_tag_trust(tmp_path):
     folder.mkdir()
     upright.save(folder / "page.tif", "TIFF", dpi=DPI, tiffinfo={ORIENTATION: 6})
     out = tmp_path / "out"
-    main(["prepare", str(folder), "--output", str(out)])
+    main(["prepare", str(folder), "--output", str(out), "--cache-full"])
     cache = next(path for path in tmp_path.iterdir() if path.name.endswith("pagekit-cache"))
     (sha,) = [path.name for path in cache.iterdir() if path.is_dir()]
     index = json.loads((cache / sha / "index.json").read_text())
@@ -81,7 +81,9 @@ def test_the_opened_cache_entry_follows_the_tag_trust(tmp_path):
     distrust = _overrides(
         tmp_path, [{"source": "src/page.tif", "step": "tag_trust", "value": False}]
     )
-    main(["prepare", str(folder), "--output", str(out), "--overrides", str(distrust)])
+    main(
+        ["prepare", str(folder), "--output", str(out), "--overrides", str(distrust), "--cache-full"]
+    )
     index = json.loads((cache / sha / "index.json").read_text())
     opened = next(e for e in index["entries"] if e["stage"] == "opened")
     with Image.open(cache / sha / opened["files"]["full"]) as image:
@@ -271,7 +273,7 @@ def test_a_corrupted_cache_file_is_found_by_its_hash_and_rewritten(tmp_path):
     main(["prepare", str(tmp_path / "src"), "--output", str(out)])
     cache = tmp_path / "out.pagekit-cache"
     good = _cache_files(cache)
-    victim = next(cache / name for name in good if name.endswith(".tif"))
+    victim = next(cache / name for name in good if name.endswith(".png"))
     data = bytearray(victim.read_bytes())
     data[-10] ^= 0xFF  # one byte flipped
     victim.write_bytes(bytes(data))

@@ -104,8 +104,9 @@ def load_settings(overrides: dict[str, Any] | None = None) -> dict[str, dict[str
             raise PrepareError(f"setting {name!r} must be more than 0")
     if value["crop"] not in ("none", "page", "content"):
         raise PrepareError("crop must be none, page or content")
-    if value["crop_detectors_when_off"] not in (0, 1) or value["stage_cache"] not in (0, 1):
-        raise PrepareError("crop_detectors_when_off and stage_cache are 1 (on) or 0 (off)")
+    for name in ("crop_detectors_when_off", "stage_cache", "stage_cache_full"):
+        if value[name] not in (0, 1):
+            raise PrepareError(f"{name} is 1 (on) or 0 (off)")
     if value["cache_preview_long_side_px"] < 32:
         raise PrepareError("cache_preview_long_side_px must be at least 32")
     if value["padding_mm"] < 0 or value["padding_px"] < 0:

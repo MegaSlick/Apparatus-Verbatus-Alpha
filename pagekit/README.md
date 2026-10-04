@@ -153,9 +153,12 @@ share one. `--cache DIR` puts it elsewhere (never inside a source folder or the 
 folder; a cache folder records the output folder it belongs to, and one belonging to
 another is refused); `--no-cache` writes none. For each source, in a folder named by its sha256: the source as
 opened (after any orientation tag), the upright frame with the cut drawn, and for each
-page its side of the cut and the levelled page, as full-resolution lossless TIFF and
-small PNG previews; with cropping on, the levelled page with its page box and content
-box drawn. `index.json` lists the entries, each keyed by the source's sha256 and the
+page its side of the cut and the levelled page, as small PNG previews; with cropping
+on, the levelled page with its page box and content box drawn. pagekit keeps each
+page's settings in the project file and makes the real images only once, at output,
+so by default the cache holds previews only; `--cache-full` (setting
+`stage_cache_full`) also keeps the source as opened and each page's side and levelled
+page at full resolution, as lossless TIFF. `index.json` lists the entries, each keyed by the source's sha256 and the
 inputs hash and value of the step that made it, so a re-run with nothing changed
 writes nothing and a changed step rewrites only its own entries. The review sheet links
 to each preview. The index records each file's sha256: a file whose bytes no longer

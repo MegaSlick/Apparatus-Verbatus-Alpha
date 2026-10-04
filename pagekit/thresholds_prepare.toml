@@ -185,6 +185,11 @@ value = 1
 status = "UNMEASURED"
 meaning = "1 writes the stage cache: each step's image of each source and page, for looking only; 0 writes none."
 
+[stage_cache_full]
+value = 0
+status = "UNMEASURED"
+meaning = "1 also keeps full-resolution lossless images of the source as opened and of each page's side and levelled page in the stage cache; 0 (the default) keeps small previews only. The real images are made once, at output, from the original."
+
 [stage_cache_folder]
 value = ""
 status = "UNMEASURED"

@@ -1,14 +1,17 @@
 """The stage cache (spec 0008): what each step did, as images a person can open.
 
-For each source, in `<cache>/<source sha256>/`:
+Every step's image is kept as a small PNG preview. With the stage_cache_full setting
+(`--cache-full`), the source as opened and each page's side and levelled page are also
+kept at full resolution, as lossless TIFF; by default they are not, since pagekit keeps
+each page's settings in the project file and makes the real images only once, at
+output. For each source, in `<cache>/<source sha256>/`:
 
-- `opened`: the source as opened (after any orientation tag the chain applies), full
-  resolution and a preview;
-- `upright`: the upright frame, with the cut drawn, as a preview;
-- per page, `side`: the page's side of the cut (with the overlap), full resolution and a
-  preview; `levelled`: the side levelled by the skew, full resolution and a preview;
+- `opened`: the source as opened (after any orientation tag the chain applies);
+- `upright`: the upright frame, with the cut drawn;
+- per page, `side`: the page's side of the cut (with the overlap); `levelled`: the side
+  levelled by the skew;
 - per page with cropping on, `boxes`: the levelled page with its page box (blue) and
-  content box (green) drawn, as a preview.
+  content box (green) drawn.
 
 Every entry is keyed by the source's sha256 and the inputs hash and value of the step
 that produced it; a re-run whose keys are unchanged writes nothing, and only entries
@@ -61,7 +64,7 @@ def _entry(stage, page, step, inputs_hash, sha, key, full: bool) -> dict[str, An
     }
 
 
-def plan_entries(pages: list[Any]) -> dict[str, list[dict[str, Any]]]:
+def plan_entries(pages: list[Any], full: bool = False) -> dict[str, list[dict[str, Any]]]:
     """{source sha256: entries} for the planned pages, without writing anything."""
     by_source: dict[str, list[Any]] = {}
     for page in pages:
@@ -72,7 +75,7 @@ def plan_entries(pages: list[Any]) -> dict[str, list[dict[str, Any]]]:
         tag = first.chain.tag
         steps = first.steps
         entries = [
-            _entry("opened", None, None, None, sha, _key(sha, "opened", grid_key(first.tag)), True),
+            _entry("opened", None, None, None, sha, _key(sha, "opened", grid_key(first.tag)), full),
             _entry(
                 "upright",
                 None,
@@ -87,11 +90,11 @@ def plan_entries(pages: list[Any]) -> dict[str, list[dict[str, Any]]]:
             split, skew, content = (page.steps[name] for name in ("split", "skew", "content_box"))
             side = _key(sha, "side", page.number, split["inputs_hash"], split["value"], tag)
             entries.append(
-                _entry("side", page.number, "split", split["inputs_hash"], sha, side, True)
+                _entry("side", page.number, "split", split["inputs_hash"], sha, side, full)
             )
             levelled = _key(sha, "levelled", page.number, side, skew["inputs_hash"], skew["value"])
             entries.append(
-                _entry("levelled", page.number, "skew", skew["inputs_hash"], sha, levelled, True)
+                _entry("levelled", page.number, "skew", skew["inputs_hash"], sha, levelled, full)
             )
             if page.applied.get("page_box"):
                 boxes = _key(
@@ -163,7 +166,7 @@ def write(cache_dir: Path, pages: list[Any], settings: dict[str, Any], output_di
     folders of sources no longer in the batch are removed; each source's index is
     written when it changed. The cache folder records the output folder it belongs to."""
     long_side = settings["cache_preview_long_side_px"]
-    planned = plan_entries(pages)
+    planned = plan_entries(pages, bool(settings["stage_cache_full"]))
     cache_dir.mkdir(parents=True, exist_ok=True)
     marker = (json.dumps({"schema": "pagekit-cache.v1", "output": str(output_dir)}) + "\n").encode()
     if not (cache_dir / OWNER_NAME).is_file() or (cache_dir / OWNER_NAME).read_bytes() != marker:
@@ -219,8 +222,9 @@ def size(cache_dir: Path) -> int:
 
 
 def estimate_bytes(pages: list[Any], with_cache: bool) -> int:
-    """An upper estimate of the bytes a run writes: each page uncompressed, and with the
-    cache each source as opened and each page's side and levelled page, uncompressed."""
+    """An upper estimate of the bytes a run writes: each page uncompressed, and with a
+    full-resolution cache each source as opened and each page's side and levelled page,
+    uncompressed (previews are small and left out)."""
     total = 0
     seen = set()
     for page in pages:
@@ -306,7 +310,7 @@ def links(cache_dir: Path | None, output_dir: Path, pages: list[Any]) -> dict[st
     import os
 
     found = {}
-    for sha, entries in plan_entries(pages).items():
+    for sha, entries in plan_entries(pages, False).items():
         found[sha] = [
             {
                 "stage": entry["stage"],

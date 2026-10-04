@@ -416,6 +416,8 @@ def _setting_options(settings: dict[str, dict[str, Any]]) -> list[str]:
         options += ["--padding", f"{value['padding_px']}px"]
     if "stage_cache" in given and not value["stage_cache"]:
         options += ["--no-cache"]
+    if "stage_cache_full" in given and value["stage_cache_full"]:
+        options += ["--cache-full"]
     if "stage_cache_folder" in given and value["stage_cache_folder"]:
         options += ["--cache", value["stage_cache_folder"]]
     return options

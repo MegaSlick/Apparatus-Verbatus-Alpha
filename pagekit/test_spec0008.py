@@ -161,7 +161,7 @@ def _stamps(folder: Path) -> dict[str, tuple[int, int]]:
 
 def test_the_cache_holds_every_stage_keyed_by_source_and_inputs(tmp_path):
     spread(tmp_path)
-    manifest, out = run(tmp_path, "--crop", "content")
+    manifest, out = run(tmp_path, "--crop", "content", "--cache-full")
     sha = manifest["pages"][0]["source"]["sha256"]
     index = _index(tmp_path, sha)
     project = json.loads((out / PROJECT_NAME).read_text())["sources"][0]
@@ -228,10 +228,10 @@ def test_prepared_pages_are_the_same_with_the_cache_stale_deleted_or_off(tmp_pat
     }
     sha = manifest["pages"][0]["source"]["sha256"]
     # A stale cache: every cached image replaced by noise of the same size.
-    for path in (_cache(tmp_path) / sha).glob("*.tif"):
+    for path in (_cache(tmp_path) / sha).glob("*.png"):
         with Image.open(path) as image:
             size, mode = image.size, image.mode
-        Image.new(mode, size, 0).save(path, "TIFF")
+        Image.new(mode, size, 0).save(path, "PNG")
     shutil.rmtree(out)
     manifest, out = run(tmp_path)
     assert {name: (out / name).read_bytes() for name in pages_before} == pages_before
@@ -297,3 +297,34 @@ def test_the_box_detectors_may_report_when_off_and_never_change_the_page(tmp_pat
         assert a["steps"]["page_box"]["value"] == b["steps"]["page_box"]["value"]
         assert "would have cut to" in b["steps"]["page_box"]["evidence"]
         assert b["applied"]["page_box"] is False
+
+
+def test_a_default_cache_holds_small_thumbnails_only_and_full_images_on_request(tmp_path):
+    spread(tmp_path / "a")
+    spread(tmp_path / "b")
+    manifest, out_a = run(tmp_path / "a")
+    full, out_b = run(tmp_path / "b", "--cache-full")
+    sha = manifest["pages"][0]["source"]["sha256"]
+    thumbs = tmp_path / "a" / "out.pagekit-cache" / sha
+    index = json.loads((thumbs / "index.json").read_text())
+    assert all(set(entry["files"]) == {"preview"} for entry in index["entries"])
+    assert not list(thumbs.glob("*.tif"))
+    total = sum(path.stat().st_size for path in thumbs.iterdir())
+    assert total < 400_000  # a 2000 x 1400 spread: under 400 kB of thumbnails
+    for path in thumbs.glob("*.png"):
+        with Image.open(path) as image:
+            assert max(image.size) <= 320
+    big = tmp_path / "b" / "out.pagekit-cache" / sha
+    full_index = json.loads((big / "index.json").read_text())
+    with_full = {(e["stage"], e["page"]) for e in full_index["entries"] if "full" in e["files"]}
+    assert with_full == {
+        ("opened", None),
+        ("side", 1),
+        ("side", 2),
+        ("levelled", 1),
+        ("levelled", 2),
+    }
+    for a, b in zip(manifest["pages"], full["pages"], strict=True):
+        assert (out_a / a["output"]["name"]).read_bytes() == (
+            out_b / b["output"]["name"]
+        ).read_bytes()

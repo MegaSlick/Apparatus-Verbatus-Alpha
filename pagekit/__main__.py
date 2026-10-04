@@ -93,6 +93,12 @@ def _parser() -> argparse.ArgumentParser:
     )
     preparer.add_argument("--no-cache", action="store_true", help="write no stage cache")
     preparer.add_argument(
+        "--cache-full",
+        action="store_true",
+        help="also keep full-resolution lossless images of each step in the stage cache "
+        "(default: small previews only)",
+    )
+    preparer.add_argument(
         "--padding",
         metavar="N(mm|px)",
         help="blank paper colour added around each finished page, for example 4mm or "
@@ -147,6 +153,8 @@ def _prepare(arguments: argparse.Namespace) -> int:
         settings["crop"] = arguments.crop
     if arguments.no_cache:
         settings["stage_cache"] = 0
+    if arguments.cache_full:
+        settings["stage_cache_full"] = 1
     if arguments.cache is not None:
         settings["stage_cache_folder"] = str(Path(arguments.cache).resolve())
     if arguments.padding is not None:
@@ -230,7 +238,8 @@ def _warn_disk(prepared) -> None:
 
     from pagekit.cache import estimate_bytes
 
-    need = estimate_bytes(prepared.pages, prepared.cache_dir is not None)
+    full = prepared.cache_dir is not None and bool(prepared.settings["stage_cache_full"]["value"])
+    need = estimate_bytes(prepared.pages, full)
     folder = prepared.output_dir
     while not folder.exists() and folder != folder.parent:
         folder = folder.parent
