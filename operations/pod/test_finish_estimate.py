@@ -36,6 +36,7 @@ from .finish_estimate import (
     RunTreeProgress,
     StageProgress,
     deadline_at_risk_message,
+    sealed_budget,
 )
 from .notify_hooks import NO_GUARD_TOPIC, _unsafe_reason
 from .spend import load_spend_policy
@@ -61,6 +62,18 @@ def test_the_shipped_policy_carries_the_default_budget() -> None:
     # The guard is armed from the launch ceilings, at the soft maximum, never past it.
     assert policy.hard_lifetime_seconds == policy.soft_max_seconds
     assert policy.max_estimated_metered_cost_usd == policy.soft_max_cost_usd
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "-1", "NaN", "Infinity"])
+def test_a_sealed_budget_value_that_is_not_a_positive_number_leaves_the_budget_unknown(
+    bad: str,
+) -> None:
+    sealed = load_spend_policy(SHIPPED_SPEND).budget_environment()
+    assert sealed_budget(sealed) == (BUDGET, None)
+
+    for name in sealed:
+        budget, problem = sealed_budget({**sealed, name: bad})
+        assert budget is None and problem and problem.startswith("unusable"), (name, bad)
 
 
 # --- the estimate --------------------------------------------------------------------

@@ -20,6 +20,7 @@ on a requirement missing the Linux/x86_64 marker that keeps a laptop
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -1492,6 +1493,78 @@ def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
     assert notice["delivered"] is True
     assert (estimate["hourly_usd"], estimate["hourly_usd_source"]) == (hourly, source)
     assert "mv $G/deadline.new $G/deadline-pod123" in call[3]
+
+
+SEALED_BUDGET = {
+    "VERBATUS_SOFT_MAX_SECONDS": "7200",
+    "VERBATUS_HARD_MAX_SECONDS": "10800",
+    "VERBATUS_SOFT_MAX_COST_USD": "1.00",
+    "VERBATUS_HARD_MAX_COST_USD": "1.50",
+}
+SHIPPED_SPEND_SHA256 = hashlib.sha256((ROOT / "config" / "spend.toml").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("sealed", "limits", "source"),
+    [
+        (
+            SEALED_BUDGET,
+            "soft max 2 h / $1.00, hard max 3 h / $1.50",
+            "sealed into the pod at launch",
+        ),
+        (
+            {},
+            "soft max 4 h / $2.00, hard max 6 h / $3.00",
+            f"the checked-out config/spend.toml (SHA-256 {SHIPPED_SPEND_SHA256})",
+        ),
+        (
+            {"VERBATUS_SOFT_MAX_SECONDS": "7200"},
+            "soft and hard max unknown",
+            "sealed into the pod at launch",
+        ),
+    ],
+    ids=["sealed", "checkout", "half-sealed"],
+)
+def test_the_deadline_notice_quotes_the_budget_that_armed_the_pod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sealed: dict[str, str],
+    limits: str,
+    source: str,
+) -> None:
+    """A launch seals its budget into the pod; the checkout's own spend policy, which the
+    laptop may not have launched with, is used only when nothing was sealed, and then
+    named with its digest. A budget sealed in part is never filled from the checkout."""
+    ws = _prepared(tmp_path)
+    (ws.repository / "config" / "spend.toml").write_bytes(
+        (ROOT / "config" / "spend.toml").read_bytes()
+    )
+    clock = Clock()
+    _first_process(tmp_path, monkeypatch, "pod123")
+    _guard_deadline(ws, int(clock.now().timestamp()) + 3600)
+    (ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic").write_text("guard-topic\n", "utf-8")
+    notify = NotifyRecorder()
+
+    code = main(
+        _run_argv(ws, extra=("--notify", "--hourly-usd", "1.99")),
+        environ=_environ(clock, lifetime=4.0, extra=sealed),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=PacedRunner(ticks=3, clock=clock),
+        notify_runner=notify.factory,
+    )
+
+    assert code == EXIT_COMPLETE
+    [call] = notify.calls
+    assert limits in call[3]
+    estimate = json.loads(Path(_report(ws)["estimate_path"]).read_text(encoding="utf-8"))
+    assert source in estimate["budget_source"]
+    if sealed == SEALED_BUDGET:
+        assert estimate["budget"]["soft_max_seconds"] == 7200
+    elif sealed:
+        assert estimate["budget"] is None
+        assert estimate["budget_problem"].endswith("VERBATUS_HARD_MAX_COST_USD missing")
 
 
 def test_a_finish_estimate_that_fails_never_stops_the_run_and_is_reported(

@@ -195,6 +195,7 @@ from .run_exits import (
     EXIT_REFUSED,
     EXIT_SELECTION_COMPLETE,
 )
+from .spend import POD_BUDGET_ENVIRONMENT
 
 RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
@@ -1499,6 +1500,32 @@ def _hourly_price(
     return total, " plus ".join(HOURLY_RATE_ENVIRONMENT)
 
 
+def _pod_budget(
+    plan: RunPlan, sealed: Mapping[str, str | None]
+) -> tuple[finish_estimate.Budget | None, str | None, str]:
+    """The pod's budget, why it is unknown, and where it came from.
+
+    A launch seals the budget of the spend policy it armed the pod with into the
+    pod's environment; that is the budget, and a part of it missing leaves it
+    unknown. Only a pod with none sealed (started by hand, or adopted) falls back
+    to the checkout's own spend policy, which the launching laptop may not have
+    used, so it is named with its digest.
+    """
+
+    if any(value is not None for value in sealed.values()):
+        budget, problem = finish_estimate.sealed_budget(sealed)
+        return budget, problem, "sealed into the pod at launch"
+    path = plan.repository / "config" / "spend.toml"
+    budget, problem, digest = finish_estimate.load_budget(path)
+    named = "unreadable" if digest is None else f"SHA-256 {digest}"
+    return (
+        budget,
+        problem,
+        f"the checked-out config/spend.toml ({named}), as no budget was sealed into the "
+        "pod at launch",
+    )
+
+
 def _deadline_watch(
     plan: RunPlan,
     *,
@@ -1506,6 +1533,7 @@ def _deadline_watch(
     hard_deadline: datetime,
     launch_token: str | None,
     rates: Mapping[str, str | None],
+    sealed_budget: Mapping[str, str | None],
     notify: bool,
     notify_runner: RunnerFactory,
     now: Callable[[], datetime],
@@ -1514,8 +1542,8 @@ def _deadline_watch(
 
     Under the pod timer (a launch token) its hard deadline ends the pod; otherwise
     this pod's guard deadline does (`finish_estimate.PodDeadline`). The budget is
-    the spend policy at the checked-out commit, and the page witnesses come from
-    the run's models configuration.
+    the one the launch sealed into the pod (`_pod_budget`), and the page witnesses
+    come from the run's models configuration.
     """
 
     volume = plan.bootstrap.volume_mount_path
@@ -1541,7 +1569,7 @@ def _deadline_watch(
             file=sys.stderr,
         )
         chairs = None
-    budget, budget_problem = finish_estimate.load_budget(plan.repository / "config" / "spend.toml")
+    budget, budget_problem, budget_source = _pod_budget(plan, sealed_budget)
     hourly_usd, hourly_source = _hourly_price(plan, rates)
     return finish_estimate.DeadlineWatch(
         run_id=plan.run_id,
@@ -1552,6 +1580,7 @@ def _deadline_watch(
         budget_problem=budget_problem,
         hourly_usd=hourly_usd,
         hourly_source=hourly_source,
+        budget_source=budget_source,
         deadline=deadline,
         ignored=lambda: deadline.ignored,
         send=send if notify else None,
@@ -1795,6 +1824,7 @@ def main(
     launch_token = environment.get("VERBATUS_LAUNCH_TOKEN") or None
     shell_pod_id = environment.get(POD_ID_ENVIRONMENT) or None
     rates = {name: environment.get(name) for name in HOURLY_RATE_ENVIRONMENT}
+    sealed_budget = {name: environment.get(name) for name in POD_BUDGET_ENVIRONMENT.values()}
     # Only the container's first process names this pod (see PID1_ENVIRON).
     pod_id = container_pod_id()
     try:
@@ -1968,6 +1998,7 @@ def main(
         hard_deadline=hard_deadline,
         launch_token=launch_token,
         rates=rates,
+        sealed_budget=sealed_budget,
         notify=args.notify,
         notify_runner=notify_runner,
         now=now,
