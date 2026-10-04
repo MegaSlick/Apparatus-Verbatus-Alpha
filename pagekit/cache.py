@@ -21,7 +21,9 @@ rebuilds it.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import shutil
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -135,22 +137,67 @@ def _box_outline(draw, box, colour, scale, width):
     draw.line([*points, points[0]], fill=colour, width=width)
 
 
-def write(cache_dir: Path, pages: list[Any], settings: dict[str, Any]) -> None:
-    """Write every entry whose files are missing, remove the source's files no entry
-    names any more, and write each source's index when it changed."""
+OWNER_NAME = "pagekit-cache.json"
+
+
+def owner(cache_dir: Path) -> str | None:
+    """The output folder a cache folder belongs to, if it names one."""
+    try:
+        return json.loads((cache_dir / OWNER_NAME).read_text())["output"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _sha(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def write(cache_dir: Path, pages: list[Any], settings: dict[str, Any], output_dir: Path) -> None:
+    """Bring the cache in line with the planned pages.
+
+    An entry is rewritten when a file is missing or its bytes no longer match the
+    sha256 the index recorded (a damaged file); files no entry names are removed; the
+    folders of sources no longer in the batch are removed; each source's index is
+    written when it changed. The cache folder records the output folder it belongs to."""
     long_side = settings["cache_preview_long_side_px"]
     planned = plan_entries(pages)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    marker = (json.dumps({"schema": "pagekit-cache.v1", "output": str(output_dir)}) + "\n").encode()
+    if not (cache_dir / OWNER_NAME).is_file() or (cache_dir / OWNER_NAME).read_bytes() != marker:
+        write_atomic(cache_dir / OWNER_NAME, marker)
+    for folder in cache_dir.iterdir():
+        if folder.is_dir() and folder.name not in planned and (folder / INDEX_NAME).is_file():
+            shutil.rmtree(folder)
     for sha, entries in planned.items():
         folder = cache_dir / sha
         folder.mkdir(parents=True, exist_ok=True)
-        source_pages = [page for page in pages if page.source.sha256 == sha]
-        missing = [
-            entry
-            for entry in entries
-            if not all((folder / name).is_file() for name in entry["files"].values())
-        ]
+        recorded = {}
+        try:
+            old = json.loads((folder / INDEX_NAME).read_text())
+            for entry in old.get("entries", []):
+                recorded.update(entry.get("sha256", {}))
+        except (OSError, ValueError, AttributeError):
+            pass
+        hashes: dict[str, str] = {}
+        missing = []
+        for entry in entries:
+            sound = True
+            for name in entry["files"].values():
+                found = _sha(folder / name)
+                if found is None or recorded.get(name) != found:
+                    sound = False
+                else:
+                    hashes[name] = found
+            if not sound:
+                missing.append(entry)
         if missing:
-            _write_entries(folder, missing, source_pages, settings, long_side)
+            source_pages = [page for page in pages if page.source.sha256 == sha]
+            hashes.update(_write_entries(folder, missing, source_pages, settings, long_side))
+        for entry in entries:
+            entry["sha256"] = {name: hashes[name] for name in entry["files"].values()}
         named = {name for entry in entries for name in entry["files"].values()}
         for path in folder.iterdir():
             if path.is_file() and path.name not in named and path.name != INDEX_NAME:
@@ -166,11 +213,34 @@ def write(cache_dir: Path, pages: list[Any], settings: dict[str, Any]) -> None:
             write_atomic(path, index)
 
 
-def _write_entries(folder, entries, pages, settings, long_side) -> None:
+def size(cache_dir: Path) -> int:
+    """The bytes the cache folder holds."""
+    return sum(path.stat().st_size for path in cache_dir.rglob("*") if path.is_file())
+
+
+def estimate_bytes(pages: list[Any], with_cache: bool) -> int:
+    """An upper estimate of the bytes a run writes: each page uncompressed, and with the
+    cache each source as opened and each page's side and levelled page, uncompressed."""
+    total = 0
+    seen = set()
+    for page in pages:
+        bands = 3 if page.source.mode not in ("L", "1") else 1
+        width, height = page.chain.canvas_size
+        total += width * height * bands
+        if with_cache:
+            total += 2 * page.chain.levelled_size[0] * page.chain.levelled_size[1] * bands
+            if page.source.sha256 not in seen:
+                seen.add(page.source.sha256)
+                total += page.source.size[0] * page.source.size[1] * bands
+    return total
+
+
+def _write_entries(folder, entries, pages, settings, long_side) -> dict[str, str]:
     first = pages[0]
     source = first.source.open()
     by_page = {page.number: page for page in pages}
     paper_long = settings["paper_estimate_long_side_px"]
+    written: dict[str, str] = {}
     for entry in entries:
         stage, number = entry["stage"], entry["page"]
         files = entry["files"]
@@ -219,8 +289,13 @@ def _write_entries(folder, entries, pages, settings, long_side) -> None:
                         draw, page.steps["content_box"]["value"], CONTENT_BOX_COLOUR, 1.0, line
                     )
         if "full" in files:
-            write_atomic(folder / files["full"], tiff_bytes(image, None))
-        write_atomic(folder / files["preview"], _preview(image, long_side))
+            data = tiff_bytes(image, None)
+            write_atomic(folder / files["full"], data)
+            written[files["full"]] = hashlib.sha256(data).hexdigest()
+        data = _preview(image, long_side)
+        write_atomic(folder / files["preview"], data)
+        written[files["preview"]] = hashlib.sha256(data).hexdigest()
+    return written
 
 
 def links(cache_dir: Path | None, output_dir: Path, pages: list[Any]) -> dict[str, list[dict]]:

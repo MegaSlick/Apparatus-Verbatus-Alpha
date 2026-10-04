@@ -131,14 +131,22 @@ def test_the_same_input_gives_byte_identical_outputs_manifest_and_review(prepare
     again = _snapshot(prepared["again"])
     # The review sheet's correction command names its own output folder; otherwise a
     # second folder holds the same bytes.
-    review = first.pop(REVIEW_NAME).replace(bytes(prepared["out"]), b"OUT")
-    assert again.pop(REVIEW_NAME).replace(bytes(prepared["again"]), b"OUT") == review
+    review = _own_folder(first.pop(REVIEW_NAME), prepared["out"])
+    assert _own_folder(again.pop(REVIEW_NAME), prepared["again"]) == review
     assert first == again
     first = _snapshot(prepared["again"])
     # A re-run on the project it wrote keeps every value and gives the same bytes.
     again = ["prepare", str(prepared["src"]), "--output", str(prepared["again"])]
     assert main([*again, "--crop", "content"]) == 1
     assert _snapshot(prepared["again"]) == first
+
+
+def _own_folder(sheet: bytes, out: Path) -> bytes:
+    """A review sheet with the names of its own output folder and that folder's stage
+    cache (the only things a second folder changes) made the same."""
+    sheet = sheet.replace(bytes(out.parent / f"{out.name}.pagekit-cache"), b"CACHE")
+    sheet = sheet.replace(f"../{out.name}.pagekit-cache/".encode(), b"CACHE/")
+    return sheet.replace(bytes(out), b"OUT")
 
 
 def _articles(text: str) -> list[tuple[str, int]]:
@@ -458,7 +466,7 @@ def test_prepare_tone_view_writes_one_deterministic_view_beside_each_page(tmp_pa
     for name in names:  # identical bytes on repeat, views included
         one, two = (first / name).read_bytes(), (second / name).read_bytes()
         if name == REVIEW_NAME:  # its correction command names its own folder
-            one, two = one.replace(bytes(first), b"OUT"), two.replace(bytes(second), b"OUT")
+            one, two = _own_folder(one, first), _own_folder(two, second)
         assert one == two, name
 
 

@@ -144,7 +144,7 @@ def test_a_run_never_changes_the_source_folder(tmp_path):
 
 
 def _cache(tmp_path: Path) -> Path:
-    return tmp_path / "pagekit-cache"
+    return tmp_path / "out.pagekit-cache"  # named after the output folder
 
 
 def _index(tmp_path: Path, sha: str) -> dict:
@@ -194,7 +194,7 @@ def test_the_cache_holds_every_stage_keyed_by_source_and_inputs(tmp_path):
     # The review sheet links to each preview.
     review = (out / REVIEW_NAME).read_text(encoding="utf-8")
     for entry in index["entries"]:
-        assert f'href="../pagekit-cache/{sha}/{entry["files"]["preview"]}"' in review
+        assert f'href="../out.pagekit-cache/{sha}/{entry["files"]["preview"]}"' in review
 
 
 def test_a_re_run_rewrites_nothing_and_a_changed_skew_only_that_page(tmp_path):

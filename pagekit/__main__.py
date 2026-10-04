@@ -186,6 +186,7 @@ def _prepare(arguments: argparse.Namespace) -> int:
             if not prepared.stale:
                 print("nothing is stale")
             return 1 if prepared.stale or prepared.skipped else 0
+        _warn_disk(prepared)
         manifest = execute(prepared)
     except (PrepareError, OSError) as error:
         print(f"pagekit: {error}", file=sys.stderr)
@@ -204,11 +205,46 @@ def _prepare(arguments: argparse.Namespace) -> int:
         + (f", {skipped} source file(s) skipped" if skipped else "")
         + f". Open {prepared.output_dir / REVIEW_NAME} to see them."
     )
+    if prepared.cache_dir is not None and prepared.cache_dir.is_dir():
+        from pagekit.cache import size
+
+        print(f"stage cache: {prepared.cache_dir} ({_bytes(size(prepared.cache_dir))})")
     if "cache_note" in manifest:
         print(f"note: {manifest['cache_note']}", file=sys.stderr)
     if not manifest["thresholds_measured"]:
         print(f"note: {manifest['thresholds_note']}")
     return 1 if flagged or skipped else 0
+
+
+def _bytes(count: int) -> str:
+    if count >= 10**9:
+        return f"{count / 10**9:.1f} GB"
+    if count >= 10**6:
+        return f"{count / 10**6:.1f} MB"
+    return f"{count / 10**3:.1f} kB"
+
+
+def _warn_disk(prepared) -> None:
+    """Warn, before writing, when the disk holding the output may be too small."""
+    import shutil
+
+    from pagekit.cache import estimate_bytes
+
+    need = estimate_bytes(prepared.pages, prepared.cache_dir is not None)
+    folder = prepared.output_dir
+    while not folder.exists() and folder != folder.parent:
+        folder = folder.parent
+    try:
+        free = shutil.disk_usage(folder).free
+    except OSError:
+        return
+    if free < need:
+        print(
+            f"pagekit: warning: only {_bytes(free)} free on the disk holding {prepared.output_dir}; "
+            f"this run may need about {_bytes(need)} for the pages and the stage cache "
+            "(--no-cache writes no cache)",
+            file=sys.stderr,
+        )
 
 
 def _measure(arguments: argparse.Namespace) -> int:

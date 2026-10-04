@@ -210,7 +210,7 @@ def execute(plan: Plan) -> dict[str, Any]:
     if plan.cache_dir is not None:
         # The stage cache is for looking only; failing to write it changes no output.
         try:
-            write_cache(plan.cache_dir, plan.pages, values)
+            write_cache(plan.cache_dir, plan.pages, values, plan.output_dir)
         except Exception as error:
             manifest["cache_note"] = f"the stage cache could not be written: {error}"
     return manifest

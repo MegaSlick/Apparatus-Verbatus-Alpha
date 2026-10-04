@@ -147,17 +147,23 @@ it).
 
 ### The stage cache
 
-`prepare` also writes a stage cache, by default the folder `pagekit-cache` beside the
-output folder (`--cache DIR` to put it elsewhere, never inside a source folder;
-`--no-cache` for none). For each source, in a folder named by its sha256: the source as
+`prepare` also writes a stage cache, by default a folder beside the output folder
+named after it (`prepared.pagekit-cache` for `prepared`), so two output folders never
+share one. `--cache DIR` puts it elsewhere (never inside a source folder or the output
+folder; a cache folder records the output folder it belongs to, and one belonging to
+another is refused); `--no-cache` writes none. For each source, in a folder named by its sha256: the source as
 opened (after any orientation tag), the upright frame with the cut drawn, and for each
 page its side of the cut and the levelled page, as full-resolution lossless TIFF and
 small PNG previews; with cropping on, the levelled page with its page box and content
 box drawn. `index.json` lists the entries, each keyed by the source's sha256 and the
 inputs hash and value of the step that made it, so a re-run with nothing changed
 writes nothing and a changed step rewrites only its own entries. The review sheet links
-to each preview. The cache is for looking only: no prepared page is ever made from it,
-so it can be deleted at any time and the next run rebuilds it.
+to each preview. The index records each file's sha256: a file whose bytes no longer
+match (damaged) is rewritten, files no entry names are removed, and the folder of a
+source no longer in the batch is removed. Each run prints the cache's size, and before
+writing warns plainly when the disk has less free space than an estimate of what the
+pages and the cache may need. The cache is for looking only: no prepared page is ever
+made from it, so it can be deleted at any time and the next run rebuilds it.
 
 Options: `--project FILE` and `--overrides FILE` (below), `--report-stale`,
 `--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, `--dpi N`

@@ -72,7 +72,7 @@ def test_the_opened_cache_entry_follows_the_tag_trust(tmp_path):
     upright.save(folder / "page.tif", "TIFF", dpi=DPI, tiffinfo={ORIENTATION: 6})
     out = tmp_path / "out"
     main(["prepare", str(folder), "--output", str(out)])
-    cache = next(path for path in tmp_path.iterdir() if path.name.startswith("pagekit-cache"))
+    cache = next(path for path in tmp_path.iterdir() if path.name.endswith("pagekit-cache"))
     (sha,) = [path.name for path in cache.iterdir() if path.is_dir()]
     index = json.loads((cache / sha / "index.json").read_text())
     opened = next(e for e in index["entries"] if e["stage"] == "opened")
@@ -221,3 +221,98 @@ def test_the_correction_command_repeats_the_tone_view_and_padding(tmp_path):
     after = json.loads((out / "pagekit-prepare.json").read_text())["pages"][0]
     assert after["tone_view"]["sha256"] == before["tone_view"]["sha256"]
     assert after["output"]["size"] == before["output"]["size"]
+
+
+# --- The stage cache --------------------------------------------------------------------
+
+
+def _two_sources(folder: Path) -> None:
+    folder.mkdir(parents=True)
+    for index in (1, 2):
+        pages.page(size=(300, 420), seed=50 + index, margin=(30, 40, 30, 40)).save(
+            folder / f"p{index}.png", dpi=DPI
+        )
+
+
+def _cache_files(cache: Path) -> dict[str, bytes]:
+    return {
+        str(p.relative_to(cache)): p.read_bytes() for p in sorted(cache.rglob("*")) if p.is_file()
+    }
+
+
+def test_each_output_folder_has_its_own_cache_and_the_cache_size_is_printed(tmp_path, capsys):
+    _two_sources(tmp_path / "src")
+    for name in ("first", "second"):
+        main(["prepare", str(tmp_path / "src"), "--output", str(tmp_path / name)])
+        printed = capsys.readouterr().out
+        assert f"stage cache: {tmp_path / (name + '.pagekit-cache')}" in printed
+        assert " MB" in printed or " kB" in printed
+    assert (tmp_path / "first.pagekit-cache").is_dir() and (
+        tmp_path / "second.pagekit-cache"
+    ).is_dir()
+    assert not (tmp_path / "pagekit-cache").exists()
+
+
+def test_a_source_that_leaves_the_batch_leaves_the_cache(tmp_path):
+    _two_sources(tmp_path / "src")
+    out = tmp_path / "out"
+    main(["prepare", str(tmp_path / "src"), "--output", str(out)])
+    cache = tmp_path / "out.pagekit-cache"
+    folders = sorted(p.name for p in cache.iterdir() if p.is_dir())
+    assert len(folders) == 2
+    (tmp_path / "src" / "p2.png").write_bytes(b"no longer an image")  # skipped now
+    main(["prepare", str(tmp_path / "src"), "--output", str(out)])
+    assert len([p for p in cache.iterdir() if p.is_dir()]) == 1
+
+
+def test_a_corrupted_cache_file_is_found_by_its_hash_and_rewritten(tmp_path):
+    _two_sources(tmp_path / "src")
+    out = tmp_path / "out"
+    main(["prepare", str(tmp_path / "src"), "--output", str(out)])
+    cache = tmp_path / "out.pagekit-cache"
+    good = _cache_files(cache)
+    victim = next(cache / name for name in good if name.endswith(".tif"))
+    data = bytearray(victim.read_bytes())
+    data[-10] ^= 0xFF  # one byte flipped
+    victim.write_bytes(bytes(data))
+    main(["prepare", str(tmp_path / "src"), "--output", str(out)])
+    assert _cache_files(cache) == good
+
+
+def test_a_changed_page_leaves_no_stale_cache_files(tmp_path):
+    _two_sources(tmp_path / "src")
+    out = tmp_path / "out"
+    main(["prepare", str(tmp_path / "src"), "--output", str(out)])
+    cache = tmp_path / "out.pagekit-cache"
+    before = set(_cache_files(cache))
+    fix = _overrides(tmp_path, [{"source": "src/p1.png", "step": "skew", "page": 1, "value": 1.0}])
+    main(["prepare", str(tmp_path / "src"), "--output", str(out), "--overrides", str(fix)])
+    after = set(_cache_files(cache))
+    gone = before - after
+    assert gone and all("levelled_p1" in name for name in gone)
+    for folder in (p for p in cache.iterdir() if p.is_dir()):
+        index = json.loads((folder / "index.json").read_text())
+        named = {name for entry in index["entries"] for name in entry["files"].values()}
+        assert {p.name for p in folder.iterdir()} == named | {"index.json"}
+
+
+def test_the_cache_may_not_lie_inside_the_output_folder(tmp_path, capsys):
+    _two_sources(tmp_path / "src")
+    out = tmp_path / "out"
+    status = main(
+        ["prepare", str(tmp_path / "src"), "--output", str(out), "--cache", str(out / "c")]
+    )
+    assert status == 2 and "output folder" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_low_disk_space_is_warned_before_the_run(tmp_path, monkeypatch, capsys):
+    import shutil as shutil_module
+    from collections import namedtuple
+
+    _two_sources(tmp_path / "src")
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(shutil_module, "disk_usage", lambda path: usage(10**9, 10**9 - 1000, 1000))
+    main(["prepare", str(tmp_path / "src"), "--output", str(tmp_path / "out")])
+    error = capsys.readouterr().err
+    assert "free" in error and "may need" in error

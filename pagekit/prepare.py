@@ -1435,7 +1435,23 @@ def plan(
     cache_dir = None
     if values["stage_cache"]:
         folder = values["stage_cache_folder"]
-        cache_dir = Path(folder).resolve() if folder else output_dir.parent / CACHE_NAME
+        if folder:
+            cache_dir = Path(folder).resolve()
+        else:  # one cache per output folder, named after it
+            cache_dir = output_dir.parent / f"{output_dir.name}.{CACHE_NAME}"
+        if _inside(cache_dir, output_dir):
+            raise PrepareError(
+                f"the stage cache {cache_dir} would lie inside the output folder; choose a "
+                "folder elsewhere (--cache)"
+            )
+        from pagekit.cache import owner
+
+        belongs = owner(cache_dir)
+        if belongs is not None and belongs != str(output_dir):
+            raise PrepareError(
+                f"the stage cache {cache_dir} belongs to the output folder {belongs}; give "
+                "this output folder its own cache (--cache) so neither removes the other's"
+            )
     for path in paths:
         if _inside(output_dir, path.parent) or _inside(project_folder, path.parent):
             raise PrepareError(
