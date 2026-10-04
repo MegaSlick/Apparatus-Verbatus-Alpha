@@ -184,8 +184,10 @@ remaining pages are flagged about them on every run, and they come back if the p
 does. To discard them, delete that page's entry from `dropped_pages` in the project
 file.
 
-A detector's method name includes a digest of its thresholds file, so changing a
-threshold recomputes every value it decided.
+A detected value's inputs hash also covers the sha256 of every pagekit file its
+detector reads: its settings files (for the content box, the crop check's
+`thresholds.toml` too) and its own code, down to the shared helpers. Changing a
+threshold or a detector recomputes every value that detector decided, and nothing else.
 
 `--report-stale` lists the steps that would change and why, without running anything
 or writing any file (exit 1 when something is stale, 0 when nothing is).

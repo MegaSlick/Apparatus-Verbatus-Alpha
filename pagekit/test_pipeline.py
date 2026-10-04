@@ -606,3 +606,49 @@ def test_dpi_gives_a_resolution_to_sources_that_carry_none(tmp_path, monkeypatch
     assert main(["prepare", str(folder), "--output", str(out), "--dpi", "5"]) == 2
     assert "--dpi" in capsys.readouterr().err
     assert {path.name: path.read_bytes() for path in out.iterdir()} == before
+
+
+def _stale_after(monkeypatch, out: Path, source: Path, changed: str) -> dict:
+    """{(step, page): why} for a dry run in which file `changed` reads as edited."""
+    import pagekit.prepare as prepare_module
+
+    real = prepare_module.file_digest
+
+    def edited(name: str) -> str:
+        return "0" * 64 if name == changed else real(name)
+
+    monkeypatch.setattr(prepare_module, "file_digest", edited)
+    stale = plan([source], out, detectors=DETECTORS, dry=True).stale
+    monkeypatch.setattr(prepare_module, "file_digest", real)
+    return {(item["step"], item["page"]): item["why"] for item in stale}
+
+
+def test_a_changed_settings_file_or_detector_code_recomputes_exactly_what_reads_it(
+    tmp_path, monkeypatch
+):
+    folder = tmp_path / "src"
+    folder.mkdir()
+    pages.page(size=(400, 560), seed=9, margin=(40, 50, 40, 50)).save(folder / "p.png", dpi=DPI)
+    out = tmp_path / "out"
+    execute(plan([folder], out, detectors=DETECTORS))
+    record = json.loads((out / PROJECT_NAME).read_text())["sources"][0]
+    inputs = record["pages"][0]["steps"]["content_box"]["inputs"]["settings"]
+    here = Path(__file__).parent
+    for name in ("thresholds.toml", "thresholds_skew.toml", "content.py", "_box_common.py"):
+        digest = hashlib.sha256((here / name).read_bytes()).hexdigest()
+        assert inputs[f"file {name}"] == digest
+    assert plan([folder], out, detectors=DETECTORS, dry=True).stale == []
+
+    # The crop check's thresholds feed only the content box.
+    stale = _stale_after(monkeypatch, out, folder, "thresholds.toml")
+    assert "thresholds.toml" in stale[("content_box", 1)]
+    assert not any(step in ("orientation", "split", "skew", "page_box") for step, _ in stale)
+    # Code: the content box's own module, then the skew detector's and what follows.
+    stale = _stale_after(monkeypatch, out, folder, "content.py")
+    assert "content.py" in stale[("content_box", 1)]
+    assert ("page_box", 1) not in stale and ("skew", 1) not in stale
+    stale = _stale_after(monkeypatch, out, folder, "skew.py")
+    assert "skew.py" in stale[("skew", 1)]
+    assert ("orientation", None) not in stale and ("split", None) not in stale
+    stale = _stale_after(monkeypatch, out, folder, "thresholds_split.toml")
+    assert ("orientation", None) in stale and ("split", None) in stale

@@ -187,6 +187,14 @@ class Detector:
     # (value set by hand, the detector's answer, context) -> a sentence when they differ
     # by more than the step's comparison setting, else None.
     compare: Callable[[Any, Answer, StepContext], str | None] | None = None
+    # pagekit's files the detector reads: its settings files and its own code. Their
+    # sha256 enter every value's inputs hash, so editing one recomputes what it decided.
+    files: tuple[str, ...] = ()
+
+
+def file_digest(name: str) -> str:
+    """The sha256 of pagekit's own file `name` (a settings file or a module)."""
+    return hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
 
 
 def _neutral(step: str, description: str, value: Callable[[StepContext], Any], reads=()):
@@ -339,7 +347,10 @@ class _Runner:
         self.comparisons: dict[tuple[str, str, int | None], str] = {}
 
     def _reads(self, step: str, resolution) -> dict[str, Any]:
-        reads = {name: self.values[name] for name in self.detectors[step].settings}
+        detector = self.detectors[step]
+        reads = {name: self.values[name] for name in detector.settings}
+        for name in detector.files:
+            reads[f"file {name}"] = file_digest(name)
         if step in PAGE_STEPS or step == "split":
             reads["overlap_mm"] = self.values["overlap_mm"]
             reads["resolution"] = None if resolution is None else list(resolution)
