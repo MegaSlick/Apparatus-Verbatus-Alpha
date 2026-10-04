@@ -324,7 +324,8 @@ A cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return, which a spr
 would run as a formula, is written with one leading `'`, and so is a cell already
 starting with `'`, so the escape is undone exactly by removing one leading `'`. The
 hash column is the hash of the unescaped text, and every other format carries the text
-unescaped. Verification reads each delivered act's text and layer back, compares them
+unescaped. To check `canonical_text_sha256` against an escaped `canonical_clean_text`
+cell, a reader strips its one leading `'` first. Verification reads each delivered act's text and layer back, compares them
 with every other literal format, and renders the file again from `sources.json`, the
 manifest's lot and those readings, requiring the same bytes.
 
