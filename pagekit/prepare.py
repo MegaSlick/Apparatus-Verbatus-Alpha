@@ -369,6 +369,7 @@ class PagePlan:
     output_dpi: tuple[float, float] | None
     resolution: dict[str, Any]
     tag: dict[str, Any] = field(default_factory=dict)  # the orientation tag's record
+    mode: dict[str, Any] = field(default_factory=dict)  # the output mode (spec 0007)
 
 
 @dataclass
@@ -443,6 +444,7 @@ class _Runner:
         self.cache: dict[Any, Any] = {}
         self.source_dpi: float | None = None  # --dpi, for sources that carry none
         self.tag = 1  # the orientation tag applied to the source being settled
+        self.run_mode: str | None = None  # this run's output mode choice, if one was made
         # {(source, step, page): sentence} added to that step's evidence in the manifest.
         self.notes: dict[tuple[str, str, int | None], str] = {}
         self.stale: list[dict[str, Any]] = []
@@ -763,7 +765,13 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
             page_steps[step] = entry
             page_earlier[step] = entry["value"]
         output_name = f"{base}_p{number}.{extension}"
-        pages.append({"page": number, "output": output_name, "steps": page_steps})
+        mode_record = _mode_record(
+            overrides.get(("output_mode", number)), old_page.get("output_mode"), runner.run_mode
+        )
+        page_entry = {"page": number, "output": output_name, "steps": page_steps}
+        if mode_record is not None:
+            page_entry["output_mode"] = mode_record
+        pages.append(page_entry)
         if runner.dry:
             continue
         chain, chain_flags, output_dpi = _page_chain(
@@ -789,9 +797,22 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
             flags += [{"step": step, "reason": reason} for reason in all_steps[step]["flags"]]
         flags += [{"step": "margin", "reason": reason} for reason in chain_flags]
         flags += _outside_flags(chain, page_steps)
+        mode, mode_flags = _output_mode(
+            source, number, page_earlier, usable, mode_record, chain, runner, tag
+        )
+        flags += [{"step": "output_mode", "reason": reason} for reason in mode_flags]
         plans.append(
             PagePlan(
-                source, number, output_name, chain, all_steps, flags, output_dpi, stored, tag_record
+                source,
+                number,
+                output_name,
+                chain,
+                all_steps,
+                flags,
+                output_dpi,
+                stored,
+                tag_record,
+                mode,
             )
         )
     entry = {
@@ -839,6 +860,112 @@ def _outside_flags(chain: Chain, steps: dict[str, dict[str, Any]]) -> list[dict[
             }
         )
     return flags
+
+
+OUTPUT_MODES = ("source", "grey")
+_SET_BY_WORDS = {
+    "default": "the default",
+    "run": "this batch's choice",
+    "manual": "set by hand",
+    "locked": "set by hand and locked",
+}
+
+
+def _mode_record(override: Override | None, old: dict | None, run_mode: str | None):
+    """A page's output mode choice as the project keeps it, or None for the default.
+
+    Precedence: an override in this run; one set by hand before; this run's choice
+    (which covers only the sources of this run); an earlier run's choice."""
+    if override is not None:
+        set_by = "locked" if override.lock else "manual"
+        return {"value": override.value, "set_by": set_by, "evidence": override.evidence}
+    if old is not None and old["set_by"] in ("manual", "locked"):
+        return dict(old)
+    if run_mode is not None:
+        return {
+            "value": run_mode,
+            "set_by": "run",
+            "evidence": f"Chosen for the sources of a run (--output-mode {run_mode}).",
+        }
+    return None if old is None else dict(old)
+
+
+def _output_mode(source, number, values, usable, record, chain, runner, tag):
+    """The page's output mode as the manifest records it, and any flags.
+
+    A grey choice on a page whose colour is more than its paper's noise is flagged,
+    and the page is kept in source mode unless grey was set by hand or locked."""
+    from pagekit.greypage import RULE_WORDS, colour_evidence, equal_channels
+
+    settings = runner.values
+    chosen = "source" if record is None else record["value"]
+    set_by = "default" if record is None else record["set_by"]
+    mode = {
+        "mode": chosen,
+        "chosen": chosen,
+        "set_by": set_by,
+        "rule": None,
+        "rule_words": None,
+        "exact": None,
+        "colour": None,
+    }
+    if chosen != "grey":
+        return mode, []
+    image = runner.image_loader()
+    if "equal channels" not in runner.cache:
+        runner.cache["equal channels"] = equal_channels(image)
+    exact = runner.cache["equal channels"]
+    rule = settings["grey_rule"]
+    mode.update({"rule": rule, "rule_words": RULE_WORDS[rule], "exact": exact})
+    if exact:
+        return mode, []
+    # The colour measure, on a reduced copy of the page's side of the frame.
+    dpi = _upright_dpi(usable, values["orientation"])
+    dpi = dpi or (settings["unknown_dpi_assumed"],) * 2
+    scale = min(1.0, settings["colour_working_dpi"] / max(dpi))
+    overlap = _overlap_px(settings, usable, values["orientation"])
+    frame = Chain.build(
+        source.size,
+        values["orientation"],
+        values["split"],
+        number - 1,
+        overlap,
+        0.0,
+        None,
+        scale,
+        tag,
+    )
+    fill, _ = paper_colour(image, frame, settings["paper_estimate_long_side_px"])
+    small = render(image, frame, fill)
+    found = colour_evidence(small, _MM_PER_INCH / (max(dpi) * scale), settings)
+    where = None
+    if found["box"] is not None:
+        x0, y0, x1, y1 = found["box"]
+        corners = chain.forward(frame.inverse([(x0, y0), (x1, y0), (x1, y1), (x0, y1)]))
+        width, height = chain.output_size
+        xs = [min(max(x, 0.0), width) for x, _ in corners]
+        ys = [min(max(y, 0.0), height) for _, y in corners]
+        where = [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))]
+    mode["colour"] = {
+        "paper_chroma_noise": found["paper_chroma_noise"],
+        "chroma_threshold": found["chroma_threshold"],
+        "coloured_mm2": found["coloured_mm2"],
+        "where": where,
+    }
+    if not found["holds_colour"]:
+        return mode, []
+    place = f"around x {where[0]} to {where[2]}, y {where[1]} to {where[3]} of the page"
+    said = (
+        f"This page holds colour that grey would remove: {found['coloured_mm2']:g} mm² of "
+        f"marks stand clearly above the paper's own colour noise, {place}."
+    )
+    if set_by in ("manual", "locked"):
+        return mode, [f"{said} It is made grey as {_SET_BY_WORDS[set_by]}; the colour is lost."]
+    mode["mode"] = "source"
+    return mode, [
+        f"{said} It is kept in colour; to make it grey anyway, set output_mode grey for "
+        "this page by hand."
+    ]
 
 
 def _tagged_dpi(resolution, tag: int):
@@ -982,6 +1109,7 @@ def plan(
     dry: bool = False,
     tone_view: bool = False,
     source_dpi: float | None = None,
+    output_mode: str | None = None,
 ) -> Plan:
     """Read every source, settle every step value and plan every output, writing nothing.
 
@@ -1100,6 +1228,10 @@ def plan(
                 f"({low:g} to {high:g} dots per inch)"
             )
         runner.source_dpi = float(source_dpi)
+    if output_mode is not None:
+        if output_mode not in OUTPUT_MODES:
+            raise PrepareError(f"the output mode is source or grey, not {output_mode!r}")
+        runner.run_mode = output_mode
     entries, pages = [], []
     for source in sources:
         cache: dict[str, Image.Image] = {}

@@ -49,7 +49,9 @@ _SOURCE_OPTIONAL = frozenset({"orientation_tag"})
 _TAG_KEYS = {"found", "trusted", "trust_origin", "applied", "transform"}
 # Corrections that are not steps: for the whole source, and per page.
 SOURCE_SETTINGS = ("resolution", "tag_trust")
-PAGE_SETTINGS = ()
+PAGE_SETTINGS = ("output_mode",)
+_PAGE_OPTIONAL = frozenset({"output_mode"})
+_MODE_KEYS = {"value", "set_by", "evidence"}
 _RECORD_KEYS = {
     "value",
     "origin",
@@ -97,6 +99,13 @@ def load_settings(overrides: dict[str, Any] | None = None) -> dict[str, dict[str
     if value["paper_estimate_long_side_px"] < 16:
         raise PrepareError("paper_estimate_long_side_px must be at least 16")
     for name in _POSITIVE:
+        if not value[name] > 0:
+            raise PrepareError(f"setting {name!r} must be more than 0")
+    if value["grey_rule"] not in ("luminance", "red", "green", "blue"):
+        raise PrepareError("grey_rule must be luminance, red, green or blue")
+    if not 0 < value["colour_paper_percentile"] <= 1:
+        raise PrepareError("colour_paper_percentile must be more than 0 and at most 1")
+    for name in ("colour_working_dpi", "colour_chroma_margin", "colour_min_area_mm2"):
         if not value[name] > 0:
             raise PrepareError(f"setting {name!r} must be more than 0")
     if value["trust_orientation_tag"] not in (0, 1):
@@ -242,6 +251,16 @@ def _check_tag(data: Any, where: str) -> None:
         raise PrepareError(f"{where}: trust_origin is setting or override")
 
 
+def _check_mode(data: Any, where: str) -> None:
+    _closed(data, _MODE_KEYS, where)
+    if data["value"] not in ("source", "grey"):
+        raise PrepareError(f"{where}: the output mode is source or grey")
+    if data["set_by"] not in ("run", "manual", "locked"):
+        raise PrepareError(f"{where}: set_by is run, manual or locked")
+    if not isinstance(data["evidence"], str) or not data["evidence"]:
+        raise PrepareError(f"{where}: evidence must be a sentence")
+
+
 def _sentences(data: Any, where: str) -> None:
     if not isinstance(data, list) or not all(isinstance(item, str) and item for item in data):
         raise PrepareError(f"{where} must be a list of sentences")
@@ -302,7 +321,9 @@ def validate_project(data: Any) -> dict[str, Any]:
         if not isinstance(source["pages"], list):
             raise PrepareError(f"{where}: pages must be a list")
         for number, page in enumerate(source["pages"], start=1):
-            _closed(page, _PAGE_KEYS, f"{where} page {number}")
+            _closed(page, _PAGE_KEYS, f"{where} page {number}", _PAGE_OPTIONAL)
+            if "output_mode" in page:
+                _check_mode(page["output_mode"], f"{where} page {number} output_mode")
             if page["page"] != number:
                 raise PrepareError(f"{where}: pages must be numbered 1, 2 in order")
             _closed(page["steps"], set(PAGE_STEPS), f"{where} page {number} steps")
@@ -311,7 +332,7 @@ def validate_project(data: Any) -> dict[str, Any]:
         if not isinstance(source["dropped_pages"], list):
             raise PrepareError(f"{where}: dropped_pages must be a list")
         for page in source["dropped_pages"]:
-            _closed(page, _PAGE_KEYS, f"{where} dropped page")
+            _closed(page, _PAGE_KEYS, f"{where} dropped page", _PAGE_OPTIONAL)
             number = page["page"]
             if (
                 isinstance(number, bool)
@@ -429,6 +450,10 @@ def _setting_value(step: str, value: Any) -> Any:
     """An override's value in its stored form, or AnswerError."""
     if step == "resolution":
         return _resolution(value)
+    if step == "output_mode":
+        if value not in ("source", "grey"):
+            raise AnswerError("output_mode is source (as scanned) or grey")
+        return value
     if step == "tag_trust":
         if not isinstance(value, bool):
             raise AnswerError("tag_trust is true (apply the file's orientation tag) or false")

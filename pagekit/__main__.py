@@ -69,6 +69,17 @@ def _parser() -> argparse.ArgumentParser:
         help="shrink pages above this resolution to it (default: keep the source resolution)",
     )
     preparer.add_argument(
+        "--output-mode",
+        choices=("source", "grey"),
+        help="the mode of the prepared pages of the sources in this run: source (as "
+        "scanned) or grey; kept for them on later runs (default: source)",
+    )
+    preparer.add_argument(
+        "--grey-rule",
+        choices=("luminance", "red", "green", "blue"),
+        help="how a colour page chosen grey is made grey (default: luminance)",
+    )
+    preparer.add_argument(
         "--dpi",
         type=float,
         help="the resolution, in dots per inch, of sources that carry none "
@@ -111,6 +122,8 @@ def _prepare(arguments: argparse.Namespace) -> int:
         settings["output_format"] = arguments.format
     if arguments.max_dpi is not None:
         settings["max_output_dpi"] = arguments.max_dpi
+    if arguments.grey_rule is not None:
+        settings["grey_rule"] = arguments.grey_rule
     try:
         prepared = plan(
             arguments.sources,
@@ -122,6 +135,7 @@ def _prepare(arguments: argparse.Namespace) -> int:
             dry=arguments.report_stale,
             tone_view=arguments.tone_view,
             source_dpi=arguments.dpi,
+            output_mode=arguments.output_mode,
         )
         for entry in prepared.skipped:
             print(f"skipped {entry['name']}: {entry['reason']}")

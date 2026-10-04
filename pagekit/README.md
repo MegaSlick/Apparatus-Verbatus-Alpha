@@ -174,6 +174,34 @@ tag, the orientation evidence says so, and later runs keep it. The manifest's
 `orientation_tag` and the project's record name the value found, whether it is trusted
 and applied, and the transform.
 
+### A grey main page
+
+`--output-mode grey` makes the pages of the sources in that run grey (8-bit, still
+lossless); `--output-mode source` (the default) keeps the source's colour mode. The
+choice is recorded with those sources in the project and kept for them on later runs;
+sources added later are not covered. For one page, an overrides line
+`{"source": ..., "step": "output_mode", "page": 1, "value": "grey"}` (or `"source"`,
+optionally with `"lock": true`) sets it by hand.
+
+The grey page goes through exactly the same chain as the colour page and is then
+converted pixel by pixel: no flattening, no tone curve, no sharpening (the tone view
+stays separate). When every pixel of the source has equal channels, the common channel
+is kept, so every intensity is unchanged, and the manifest says the conversion was
+exact. Otherwise the `grey_rule` setting (or `--grey-rule`) decides: `luminance`
+(the ITU-R BT.601 weights, 0.299 red + 0.587 green + 0.114 blue), or one channel,
+`red`, `green` or `blue`; the conversion is then a reviewed one.
+
+Before a colour page is made grey, pagekit measures its colour: the chroma of each
+pixel (largest minus smallest channel) on a reduced copy, against the chroma noise of
+the page's own plain paper. If marks stand clearly above that noise
+(`colour_chroma_margin`) over at least `colour_min_area_mm2`, the page is flagged ("this
+page holds colour that grey would remove", naming where) and kept in colour, unless grey
+was set by hand or locked for it, in which case it is grey and the flag stays. Colour
+that is only sensor noise does not count. The manifest's `output_mode` records the mode
+written, the choice and who made it, the rule, whether it was exact, and the colour
+measure; the review sheet shows the same with lines to keep the page as scanned or to
+force grey.
+
 ### Defaults
 
 - Pages are written as lossless TIFF (deflate). PNG is available with `--format png`;

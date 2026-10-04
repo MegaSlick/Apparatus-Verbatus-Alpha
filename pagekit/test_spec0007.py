@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from pagekit import _orient_testpages as pages
 from pagekit.__main__ import main
@@ -176,3 +176,155 @@ def test_an_untrusted_tag_is_ignored_and_the_evidence_says_so(tmp_path):
     again, _ = prepared(tmp_path / "a")
     assert again["pages"][0]["orientation_tag"]["trusted"] is False
     assert "not trusted" in (tmp_path / "a" / "out" / REVIEW_NAME).read_text(encoding="utf-8")
+
+
+# --- 2. A grey main page -----------------------------------------------------------
+
+
+def writing_page(seed: int = 14) -> Image.Image:
+    return pages.page(size=(360, 480), seed=seed, margin=(30, 40, 30, 40))
+
+
+def as_colour(grey: Image.Image) -> Image.Image:
+    return Image.merge("RGB", (grey, grey, grey))
+
+
+def noisy_colour(grey: Image.Image, amount: int, seed: int = 3) -> Image.Image:
+    """Colour with sensor-like noise: each channel moved by up to `amount` levels."""
+    import random
+
+    rng = random.Random(seed)
+    bands = []
+    for _ in range(3):
+        noise = Image.new("L", grey.size)
+        noise.putdata([128 + rng.randint(-amount, amount) for _ in range(grey.width * grey.height)])
+        bands.append(ImageChops.add(grey, noise, 1.0, -128))
+    return Image.merge("RGB", bands)
+
+
+def with_colour_marks(kind: str) -> Image.Image:
+    page = as_colour(writing_page())
+    draw = ImageDraw.Draw(page)
+    if kind == "red stamp":
+        draw.ellipse((240, 330, 320, 410), outline=(200, 30, 35), width=6)
+        draw.line((250, 370, 310, 370), fill=(200, 30, 35), width=5)
+    else:  # blue-black annotation: dark strokes with a clear blue cast
+        for row in range(3):
+            y = 340 + 25 * row
+            draw.line((60, y, 200, y + 6), fill=(35, 40, 105), width=4)
+    return page
+
+
+def manifest_page(folder: Path, *extra: str) -> tuple[dict, Path]:
+    manifest, out = prepared(folder, *extra)
+    (page,) = manifest["pages"]
+    return page, out
+
+
+def test_equal_channels_made_grey_keep_every_intensity_and_say_exact(tmp_path):
+    colour = as_colour(writing_page())
+    save(colour, tmp_path / "a" / "src" / "page.png", None)
+    save(colour, tmp_path / "b" / "src" / "page.png", None)
+    grey, out_a = manifest_page(tmp_path / "a", "--output-mode", "grey")
+    source, out_b = manifest_page(tmp_path / "b")
+    mode = grey["output_mode"]
+    assert (mode["mode"], mode["chosen"], mode["set_by"], mode["exact"]) == (
+        "grey",
+        "grey",
+        "run",
+        True,
+    )
+    assert grey["output"]["mode"] == "L" and source["output"]["mode"] == "RGB"
+    with (
+        Image.open(out_a / grey["output"]["name"]) as a,
+        Image.open(out_b / source["output"]["name"]) as b,
+    ):
+        assert a.tobytes() == b.getchannel(0).tobytes()  # the same geometry, every level kept
+    assert not [flag for flag in grey["flags"] if flag["step"] == "output_mode"]
+
+
+def test_a_near_equal_source_made_grey_says_reviewed(tmp_path):
+    save(noisy_colour(writing_page(), 1), tmp_path / "src" / "page.png", None)
+    page, out = manifest_page(tmp_path, "--output-mode", "grey")
+    mode = page["output_mode"]
+    assert (mode["mode"], mode["exact"], mode["rule"]) == ("grey", False, "luminance")
+    assert not [flag for flag in page["flags"] if flag["step"] == "output_mode"]
+    with Image.open(out / page["output"]["name"]) as written:
+        assert written.mode == "L"
+
+
+def test_sensor_noise_alone_is_made_grey_with_no_flag(tmp_path):
+    save(noisy_colour(writing_page(), 4), tmp_path / "src" / "page.png", None)
+    page, _ = manifest_page(tmp_path, "--output-mode", "grey")
+    assert page["output_mode"]["mode"] == "grey"
+    assert page["output_mode"]["colour"]["coloured_mm2"] < 2
+    assert not [flag for flag in page["flags"] if flag["step"] == "output_mode"]
+
+
+@pytest.mark.parametrize("kind", ["red stamp", "blue-black annotation"])
+def test_real_colour_is_flagged_and_kept_unless_grey_is_set_by_hand(tmp_path, kind):
+    save(with_colour_marks(kind), tmp_path / "a" / "src" / "page.png", None)
+    page, out = manifest_page(tmp_path / "a", "--output-mode", "grey")
+    assert (page["output_mode"]["mode"], page["output_mode"]["chosen"]) == ("source", "grey")
+    assert page["output"]["mode"] == "RGB"
+    (reason,) = [flag["reason"] for flag in page["flags"] if flag["step"] == "output_mode"]
+    assert "colour that grey would remove" in reason and "kept in colour" in reason
+    left, top, right, bottom = page["output_mode"]["colour"]["where"]
+    stamp = (240, 330, 320, 410) if kind == "red stamp" else (60, 340, 200, 396)
+    chain = Chain.from_dict(page["geometry"])
+    (x0, y0), (x1, y1) = chain.forward([stamp[:2], stamp[2:]])
+    assert left <= x0 + 6 and top <= y0 + 6 and right >= x1 - 6 and bottom >= y1 - 6
+    assert right - left < 220 and bottom - top < 140  # it names where, not the page
+
+    # Set by hand: grey, and the flag stays visible.
+    save(with_colour_marks(kind), tmp_path / "b" / "src" / "page.png", None)
+    hand = [{"source": "src/page.png", "step": "output_mode", "page": 1, "value": "grey"}]
+    page, out = manifest_page(tmp_path / "b", "--overrides", str(overrides(tmp_path / "b", hand)))
+    assert (page["output_mode"]["mode"], page["output_mode"]["set_by"]) == ("grey", "manual")
+    assert page["output"]["mode"] == "L"
+    (reason,) = [flag["reason"] for flag in page["flags"] if flag["step"] == "output_mode"]
+    assert "set by hand" in reason
+
+
+def test_a_batch_choice_covers_only_the_sources_of_that_run(tmp_path):
+    folder = tmp_path / "src"
+    save(as_colour(writing_page(14)), folder / "first.png", None)
+    out = tmp_path / "out"
+    assert main(["prepare", str(folder), "--output", str(out), "--output-mode", "grey"]) == 1
+    save(as_colour(writing_page(15)), folder / "later.png", None)
+    assert main(["prepare", str(folder), "--output", str(out)]) == 1
+    manifest = json.loads((out / MANIFEST_NAME).read_text())
+    modes = {page["source"]["name"]: page["output_mode"] for page in manifest["pages"]}
+    assert (modes["first.png"]["mode"], modes["first.png"]["set_by"]) == ("grey", "run")
+    assert (modes["later.png"]["mode"], modes["later.png"]["set_by"]) == ("source", "default")
+    project = json.loads((out / "pagekit-project.json").read_text())
+    kept = {s["path"]: s["pages"][0].get("output_mode") for s in project["sources"]}
+    assert kept["../src/first.png"]["value"] == "grey" and kept["../src/later.png"] is None
+
+
+def test_the_review_sheet_shows_the_rule_exactness_flag_and_override_lines(tmp_path):
+    folder = tmp_path / "src"
+    save(as_colour(writing_page(14)), folder / "plain.png", None)
+    save(with_colour_marks("red stamp"), folder / "stamp.png", None)
+    out = tmp_path / "out"
+    main(
+        [
+            "prepare",
+            str(folder),
+            "--output",
+            str(out),
+            "--output-mode",
+            "grey",
+            "--grey-rule",
+            "green",
+        ]
+    )
+    text = (out / REVIEW_NAME).read_text(encoding="utf-8")
+    assert "Output mode" in text and "green channel" in text
+    assert "exact: every pixel had equal channels" in text
+    assert "colour that grey would remove" in text
+    for value in ("source", "grey"):
+        assert (
+            f"&quot;step&quot;: &quot;output_mode&quot;, &quot;page&quot;: 1, &quot;value&quot;: &quot;{value}&quot;"
+            in text
+        )

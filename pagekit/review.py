@@ -275,6 +275,57 @@ def _step_block(step: str, entry: dict[str, Any], source_ref: str, page: int | N
     )
 
 
+_MODE_SET_BY = {
+    "default": "the default",
+    "run": "chosen for this batch",
+    "manual": "set by hand",
+    "locked": "set by hand and locked",
+}
+
+
+def _mode_block(mode: dict[str, Any], flags: list[str], source_ref: str, page: int) -> str:
+    """The page's output mode: what was chosen and by whom, what was written, the grey
+    rule and whether the conversion was exact, any colour flag, and override lines."""
+    written = "grey" if mode["mode"] == "grey" else "as scanned (source mode)"
+    rows = [
+        ("Written", written),
+        ("Chosen", f"{mode['chosen']} ({_MODE_SET_BY[mode['set_by']]})"),
+    ]
+    if mode["chosen"] == "grey":
+        rows.append(("Grey rule", mode["rule_words"]))
+        rows.append(
+            (
+                "Conversion",
+                "exact: every pixel had equal channels, so the common channel was kept"
+                if mode["exact"]
+                else "reviewed: the channels differ, so the rule changes values",
+            )
+        )
+    if mode["colour"] is not None:
+        colour = mode["colour"]
+        rows.append(
+            (
+                "Colour",
+                f"{colour['coloured_mm2']:g} mm² above the paper's chroma noise "
+                f"({colour['paper_chroma_noise']} levels; threshold "
+                f"{colour['chroma_threshold']})",
+            )
+        )
+    cells = "".join(f"<dt>{_escape(name)}</dt><dd>{_escape(text)}</dd>" for name, text in rows)
+    lines = "".join(
+        f'<pre class="override" data-step="output_mode" data-page="{page}">'
+        f"{_escape(_override_line(source_ref, 'output_mode', page, value))}</pre>"
+        for value in ("source", "grey")
+    )
+    return (
+        f'<section class="step{" flagged" if flags else ""}"><h4>Output mode</h4>'
+        f"<dl>{cells}</dl>{_flags_list(flags)}"
+        '<p class="fix">To keep this page as scanned, or to make it grey whatever its '
+        "colour, add one of these lines to the overrides file:</p>"
+        f"{lines}</section>"
+    )
+
+
 def _other_block(title: str, reasons: list[str], extra: str = "") -> str:
     if not reasons:
         return ""
@@ -498,6 +549,9 @@ def build(plan: Any, entries: list[dict[str, Any]], previews: dict[str, Any]) ->
             for step in PAGE_STEPS:
                 parts.append(_step_block(step, entry["steps"][step], ref, page.number))
                 page_shown |= {(step, reason) for reason in entry["steps"][step]["flags"]}
+            mode_flags = [f["reason"] for f in page.flags if f["step"] == "output_mode"]
+            parts.append(_mode_block(entry["output_mode"], mode_flags, ref, page.number))
+            page_shown |= {("output_mode", reason) for reason in mode_flags}
             others: dict[str, list[str]] = {}
             for flag in page.flags:
                 key = (flag["step"], flag["reason"])

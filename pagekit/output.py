@@ -29,6 +29,7 @@ from pagekit import __version__
 from pagekit._tiff import tiff_bytes
 from pagekit.answer import STEPS
 from pagekit.geometry import paper_colour, render
+from pagekit.greypage import to_grey
 from pagekit.prepare import PagePlan, Plan
 from pagekit.project import PrepareError, canonical_json
 from pagekit.review import REVIEW_NAME, page_preview, source_preview
@@ -77,6 +78,7 @@ def _page_entry(page: PagePlan, image: Image.Image, data: bytes, fill, fill_meth
         },
         "source_resolution": page.resolution,
         "orientation_tag": page.tag,
+        "output_mode": page.mode,
         "geometry": geometry,
         "steps": {step: _step_summary(page.steps[step]) for step in STEPS},
         "flags": page.flags,
@@ -159,6 +161,8 @@ def execute(plan: Plan) -> dict[str, Any]:
             source = opened[1]
             fill, method = paper_colour(source, page.chain, values["paper_estimate_long_side_px"])
             image = render(source, page.chain, fill)
+            if page.mode.get("mode") == "grey":  # the same geometry, then a plain conversion
+                image = to_grey(image, page.mode["exact"], page.mode["rule"])
             data = encode(image, fmt, page.output_dpi)
             _stage(plan.output_dir / page.output_name, data, staged)
             entry = _page_entry(page, image, data, fill, method, fmt)

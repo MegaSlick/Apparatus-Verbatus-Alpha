@@ -127,3 +127,28 @@ meaning = "A detected content box whose every side lies within this many millime
 value = 1
 status = "UNMEASURED"
 meaning = "1 applies a file's orientation tag (Exif tag 274) before everything else; 0 takes every source as stored. A tag_trust line in the overrides file sets it for one source."
+
+[grey_rule]
+value = "luminance"
+status = "UNMEASURED"
+meaning = "How a page chosen grey is made from a colour source whose channels differ: luminance (0.299 R + 0.587 G + 0.114 B), red, green or blue. A source with equal channels takes the common channel, exactly."
+
+[colour_working_dpi]
+value = 100
+status = "UNMEASURED"
+meaning = "Resolution of the reduced copy of a page on which its colour is measured before it is made grey."
+
+[colour_paper_percentile]
+value = 0.99
+status = "UNMEASURED"
+meaning = "The share of the page's plain paper whose chroma (largest minus smallest channel) is taken as its colour noise."
+
+[colour_chroma_margin]
+value = 12
+status = "UNMEASURED"
+meaning = "How many levels of chroma above the paper's noise a pixel must be to count as coloured."
+
+[colour_min_area_mm2]
+value = 2.0
+status = "UNMEASURED"
+meaning = "The coloured area, in square millimetres (about a small mark), at which a page holds colour that grey would remove."
