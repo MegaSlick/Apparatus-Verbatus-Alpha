@@ -49,6 +49,9 @@ meaning = "Mean thickness in working px at or below which a long mark that is no
 #   dpi, all four turns; and pages with margin notes turned a quarter, 200 to 560 px
 #   wide (the tile-dissent level sits between the widest notes decided, 35%, and the
 #   blocks that must stay open, 41% and above);
+# - pagekit's own handwritten account pages (brief 0036 follow-up): handwritten words
+#   across a quarter to a half of the width beside four or six columns of handwritten
+#   figures, some with tails below the line, 150 and 300 dpi, all four turns;
 # - the lead's two real register spreads (dense 17th and 18th century French cursive),
 #   run locally only.
 # The strip widths, core-band shares and the 1600 px working size were chosen on these;
@@ -153,6 +156,11 @@ meaning = "Relative distance from the median mark height (or width) within which
 value = 0.38
 status = "UNMEASURED"
 meaning = "Share of the voting tiles of writing whose own vote is against the median line direction above which the direction is flagged, not decided. On pagekit's pages: text and cursive 0 to 0.16, margin notes turned a quarter 0.22 and 0.35 (decided right), account pages mixing words with figure columns up to 0.42 before tiles of one-size marks were left out (0.09 after)."
+
+[uniform_tile_share]
+value = 0.33
+status = "UNMEASURED"
+meaning = "Share of the tiles holding writing that are left out as one-size tiles (figures or capitals) at or above which orientation is flagged, not decided. On pagekit's pages: text, cursive and notes pages 0 to 0.01; handwritten account pages 0.07 to 0.54 (0.07 to 0.19 at 150 dpi, 0.20 to 0.54 at 300 dpi); printed account pages about 0.5."
 
 [tile_min_marks]
 value = 6

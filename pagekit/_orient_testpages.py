@@ -479,3 +479,76 @@ def notes_page(seed: int = 5, *, notes_width: int = 300) -> Image.Image:
     canvas = Image.new("L", image.size, 255)
     canvas.paste(strip.transpose(Image.Transpose.ROTATE_90), (60, 180))
     return ImageChops.darker(image, canvas)
+
+
+def hand_account_page(
+    dpi: int = 150,
+    seed: int = 1,
+    *,
+    words_share: float = 0.5,
+    columns: int = 6,
+    spacing: float = 1.6,
+    extenders: tuple[float, float] = (0.3, 0.1),
+    tails: str = "34579",
+) -> Image.Image:
+    """A handwritten account page: lines of handwriting across `words_share` of the
+    width beside `columns` columns of handwritten amounts. The figures lean and wobble
+    a little, and the figures in `tails` have tails below the line (a lean of their own between
+    upright and upside down), as in a clerk's hand. `extenders` are the shares of
+    letters in the words with an ascender and with a descender."""
+    rng = random.Random(seed)
+    width, height = round(8.27 * dpi), round(11.69 * dpi)
+    image = Image.new("L", (width, height), PAPER)
+    draw = ImageDraw.Draw(image)
+    scale = dpi / 150
+    tall = round(13 * scale)
+    pitch = round(spacing * 2.6 * tall)
+    stroke = max(1, round(2 * scale))
+    margin = round(15 / 25.4 * dpi)
+    usable = width - 2 * margin
+    words_right = margin + round(words_share * usable)
+    write_block(
+        draw,
+        (margin, margin, words_right - round(10 * scale), height - margin),
+        seed,
+        pitch=pitch,
+        core=round(10 * scale),
+        rise=round(9 * scale),
+        letter=round(8 * scale),
+        stroke=stroke,
+        ragged=(0.7, 1.0),
+        ascenders=extenders[0],
+        descenders=extenders[1],
+    )
+    if not columns:
+        return image.filter(ImageFilter.GaussianBlur(dpi / 500))
+    column_width = (width - margin - words_right) // columns
+    base = margin + round(9 * scale) + round(10 * scale)
+    while base + round(9 * scale) <= height - margin:
+        for c in range(columns):
+            if rng.random() < 0.15:
+                continue
+            text = f"{rng.randint(1, 10 ** rng.randint(1, 3))}{rng.randint(0, 99):02d}"
+            x = (
+                words_right
+                + (c + 1) * column_width
+                - round(0.5 * tall)
+                - len(text) * round(0.7 * tall)
+            )
+            for digit in text:
+                lift = rng.randint(-1, 1) * max(1, round(scale))
+                x += _figure(draw, digit, x, base + lift, tall, stroke, "plain")
+                if digit in tails:
+                    tail_x = x - round(0.45 * tall)
+                    draw.line(
+                        (
+                            tail_x,
+                            base + lift,
+                            tail_x - round(0.15 * tall),
+                            base + lift + round(0.45 * tall),
+                        ),
+                        fill=30,
+                        width=stroke,
+                    )
+        base += pitch
+    return image.filter(ImageFilter.GaussianBlur(dpi / 500))
