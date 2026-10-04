@@ -343,7 +343,7 @@ meaning = "Writing within this many working px of the frame edge counts as cut o
 [backdrop_min_thickness_px]
 value = 5
 status = "UNMEASURED"
-meaning = "Size in working px of the square erosion a mark joined to a dark band must survive to be excused as backdrop or shadow; wider than a pen stroke, so a flourish touching the band still counts as writing across the cut."
+meaning = "Size in working px of the square opening that separates the thick part (backdrop, shadow, a blot) of a mark joined to a dark band; only that part is excused from writing across the cut. Thin pieces at least three times this long that reach away from the band are a pen stroke and still count; shorter ones and fringes within this distance of the band edge do not."
 
 [overlap_mm]
 value = 5.0

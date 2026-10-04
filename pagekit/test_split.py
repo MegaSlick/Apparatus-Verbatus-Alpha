@@ -484,3 +484,23 @@ def test_pen_stroke_touching_the_backdrop_band_still_counts_as_writing_across_th
     _two_pages(result, "fold")
     assert len(result["flags"]) == 1
     assert "more than the 5 mm overlap" in result["flags"][0]
+
+
+def test_pen_stroke_touching_a_small_backdrop_bump_still_counts_as_writing():
+    """The backdrop band has a small bump where the flourish touches it: the bump is
+    thick, the stroke is not, so only the bump is excused."""
+    image = _band_and_flourish(gap=22)
+    ImageDraw.Draw(image).ellipse((975, 30, 1025, 84), fill=30)
+    result = _check(image)
+    _two_pages(result, "fold")
+    assert len(result["flags"]) == 1
+    assert "more than the 5 mm overlap" in result["flags"][0]
+
+
+def test_pen_stroke_ending_in_a_blot_and_touching_the_band_still_counts_as_writing():
+    image = _band_and_flourish(gap=0)
+    ImageDraw.Draw(image).ellipse((1150, 102, 1176, 128), fill=40)
+    result = _check(image)
+    _two_pages(result, "fold")
+    assert len(result["flags"]) == 1
+    assert "more than the 5 mm overlap" in result["flags"][0]

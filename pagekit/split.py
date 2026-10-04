@@ -316,16 +316,53 @@ def _fit_gap(gap: _Gap, marks: list[Mark], value: dict[str, Any]) -> _Line:
     return _Line(x_mid, y_mid, slope, gap.width)
 
 
-def _is_thick(mark: Mark, size: int) -> bool:
-    """Whether some of the mark survives an erosion by a `size` px square: backdrop or
-    shadow is broad, a pen stroke is not."""
-    width, height = mark.width + 2 * size, mark.height + 2 * size
+def _thin_parts(mark: Mark, size: int) -> list[Mark] | None:
+    """The mark without its thick part. The thick part is what an opening by a `size`
+    px square keeps (backdrop, shadow, a blot), grown by one px so its fringe goes
+    with it; the rest, such as a pen stroke touching the backdrop or ending in a blot,
+    stays writing, each connected piece as its own mark. Returns None when nothing is
+    thick (the mark stands as it is)."""
+    side = size | 1
+    width, height = mark.width + 2 * side, mark.height + 2 * side
     canvas = bytearray(width * height)
     for y, start, end in mark.runs:
-        row = (y - mark.y0 + size) * width
-        canvas[row + start - mark.x0 + size : row + end - mark.x0 + size] = b"\xff" * (end - start)
+        row = (y - mark.y0 + side) * width
+        canvas[row + start - mark.x0 + side : row + end - mark.x0 + side] = b"\xff" * (end - start)
     image = Image.frombytes("L", (width, height), bytes(canvas))
-    return image.filter(ImageFilter.MinFilter(size | 1)).getbbox() is not None
+    opened = image.filter(ImageFilter.MinFilter(side)).filter(ImageFilter.MaxFilter(side))
+    if opened.getbbox() is None:
+        return None
+    thin = ImageChops.subtract(image, opened.filter(ImageFilter.MaxFilter(3)))
+    dx, dy = mark.x0 - side, mark.y0 - side
+    return [
+        Mark(
+            m.x0 + dx,
+            m.y0 + dy,
+            m.x1 + dx,
+            m.y1 + dy,
+            m.count,
+            [(y + dy, start + dx, end + dx) for y, start, end in m.runs],
+        )
+        for m in marks_of(thin)
+    ]
+
+
+def _along_band(
+    mark: Mark,
+    band_rows: list[tuple[int, int]],
+    band_columns: list[tuple[int, int]],
+    reach: int,
+) -> bool:
+    """Whether the whole mark lies within `reach` px of a dark band's edge: a fringe of
+    the band's own ragged edge thinner than the backdrop erosion, not a stroke reaching
+    away from it."""
+    for a, b in band_rows:
+        if mark.y0 >= a - reach and mark.y1 <= b + reach:
+            return True
+    for a, b in band_columns:
+        if mark.x0 >= a - reach and mark.x1 <= b + reach:
+            return True
+    return False
 
 
 def _joins_band(
@@ -605,17 +642,46 @@ def detect_split(
         # Dark bands at the frame's edges are backdrop; a dark band inside the frame may
         # be a gutter shadow that writing runs into, so it does not excuse a mark.
         outer_columns = [(a, b) for a, b in band_columns if a == 0 or b == width]
-        crossing_marks = [
-            m
-            for m in marks
-            if not (
-                _joins_band(m, band_rows, outer_columns, value["touch_px"])
-                and _is_thick(m, value["backdrop_min_thickness_px"])
-            )
-        ]
-        joined = len(_straddlers(marks, cut, value["speck_px"] * 2)) - len(
-            _straddlers(crossing_marks, cut, value["speck_px"] * 2)
-        )
+        crossing_marks = []
+        excused = []
+        for m in marks:
+            if not _joins_band(m, band_rows, outer_columns, value["touch_px"]):
+                crossing_marks.append(m)
+                continue
+            pieces = _thin_parts(m, value["backdrop_min_thickness_px"])
+            if pieces is None:
+                crossing_marks.append(m)
+            else:
+                excused.append(m)
+                # Short fringes left at the thick part's corners, and thin pieces lying
+                # along a band's ragged edge, are dropped; the long thin pieces (a pen
+                # stroke, even when the thick part cut it in two) stay together as one
+                # mark of writing.
+                least = 3 * value["backdrop_min_thickness_px"]
+                strokes = [
+                    p
+                    for p in pieces
+                    if max(p.width, p.height) >= least
+                    and not _along_band(
+                        p,
+                        band_rows,
+                        outer_columns,
+                        value["touch_px"] + value["backdrop_min_thickness_px"],
+                    )
+                ]
+                if strokes:
+                    runs = sorted(r for p in strokes for r in p.runs)
+                    crossing_marks.append(
+                        Mark(
+                            min(p.x0 for p in strokes),
+                            min(p.y0 for p in strokes),
+                            max(p.x1 for p in strokes),
+                            max(p.y1 for p in strokes),
+                            sum(p.count for p in strokes),
+                            runs,
+                        )
+                    )
+        joined = len(_straddlers(excused, cut, value["speck_px"] * 2))
         straddling = _straddlers(crossing_marks, cut, value["speck_px"] * 2)
         crossing = sum(1 for *_, both in straddling if both)
         if crossing > value["fold_max_crossings"]:
@@ -659,8 +725,9 @@ def detect_split(
         if joined:
             evidence.append(
                 f"{joined} dark mark{'s' if joined != 1 else ''} crossing the cut "
-                f"{'are' if joined != 1 else 'is'} joined to a dark band and too broad for a pen "
-                "stroke (backdrop or shadow), and not counted as writing"
+                f"{'are' if joined != 1 else 'is'} joined to a dark band; the part too broad "
+                "for a pen stroke (backdrop or shadow) is not counted as writing, any pen "
+                "stroke in it is"
             )
         result = {"pages": 2, "cut": to_full(cut), "method": method, "part": part}
         result["neighbour"] = None
