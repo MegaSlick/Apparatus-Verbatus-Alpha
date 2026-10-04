@@ -685,3 +685,7 @@ record".
   brief 0023, after briefs 0039 and 0040. Saved before it was sent.
 - **Brief 0038 re-test:** no regression; two synthetic account pages that were already
   wrong remain wrong without a flag; 17 pages that were right are now flagged.
+- **Follow-up brief:** `briefs/0042-build-split-hardening.md` (sha256
+  ebe09a921dcddc97dc0dc3935e814fea91c60f2ba7bcb60b13b13bb34889d7da), to the agent of
+  brief 0017: harden the split over a wide range of spreads, and the remaining account-page
+  case. Saved before it was sent.
