@@ -78,6 +78,10 @@ UNCERTAIN_CORE_BAND = (
 # reports below 0.2, because its 0 turns is a default, not a finding.
 UNCERTAIN_SCALE = 0.4
 DEFAULT_NOTE = "left at 0 turns as a default, not a finding, so its confidence is scaled below 0.2"
+UNCERTAIN_UNIFORM = (
+    "orientation uncertain: nearly all marks share one size (figures or capitals), with no "
+    "ascenders or descenders and no runs of writing to orient by"
+)
 POSSIBLY_NEGATIVE = (
     "possibly a negative (light writing on a dark ground); orientation not decided from it"
 )
@@ -100,6 +104,23 @@ def _trim_dark_border(ink: Image.Image, share: float) -> tuple[int, int, int, in
     if x1 <= x0 or y1 <= y0:
         return 0, 0, ink.size[0], ink.size[1]
     return x0, y0, x1, y1
+
+
+def _uniform_share(marks: list[Mark], value: dict[str, Any]) -> float:
+    """The larger of the shares of marks whose height, or whose width, is within
+    same_size_tolerance of the median. Writing mixes ascenders, descenders and letters
+    of many widths; a page of lining figures or capitals does not."""
+    sized = [m for m in marks if m.count >= 2 * value["speck_px"]]
+    if not sized:
+        return 0.0
+    best = 0.0
+    for sizes in ([m.height for m in sized], [m.width for m in sized]):
+        middle = median(sizes)
+        near = sum(
+            1 for size in sizes if abs(size - middle) <= value["same_size_tolerance"] * middle
+        )
+        best = max(best, near / len(sizes))
+    return best
 
 
 def _peakedness(values: list[int]) -> float:
@@ -290,6 +311,15 @@ def _ragged(ink: Image.Image, value: dict[str, Any]) -> tuple[float, int]:
     return ragged, len(bands)
 
 
+def _guarded(estimates: list[float], value: dict[str, Any]) -> tuple[float, bool]:
+    """The median estimate, and whether any estimate of the opposite sign reaches
+    updown_guard_score standard errors (the vote then depends on where the core band
+    is put)."""
+    middle = median(estimates)
+    guard = value["updown_guard_score"]
+    return middle, any(e * middle < 0 and abs(e) >= guard for e in estimates)
+
+
 def _updown(ink: Image.Image, value: dict[str, Any]) -> dict[str, Any]:
     """Positive score: upright. Negative: upside down. `ink` has its lines across.
 
@@ -315,8 +345,7 @@ def _updown(ink: Image.Image, value: dict[str, Any]) -> dict[str, Any]:
     ragged_backward, _ = _ragged(flipped, value)
     ragged = (ragged_forward - ragged_backward) / 2
     estimates = [e + value["ragged_score_weight"] * ragged for e in estimates]
-    middle = median(estimates)
-    disagreeing = [e for e in estimates if e * middle < 0 and abs(e) >= value["updown_guard_score"]]
+    middle, disagree = _guarded(estimates, value)
     core_heights: list[int] = []
     votes = _strip_votes(ink, sizes[0], shares[1], value, core_heights)
     back_votes = _strip_votes(flipped, sizes[0], shares[1], value)
@@ -332,7 +361,7 @@ def _updown(ink: Image.Image, value: dict[str, Any]) -> dict[str, Any]:
         "consistency": middle - value["ragged_score_weight"] * ragged,
         "low": min(estimates),
         "high": max(estimates),
-        "disagree": bool(disagreeing),
+        "disagree": disagree,
         "strips": len(votes),
         "ascender": mean_cue(0),
         "baseline": mean_cue(1),
@@ -410,6 +439,18 @@ def detect_orientation(
         base, lines, frame = 0, "across", clean
     else:
         base, lines, frame = 1, "down", clean.transpose(Image.Transpose.ROTATE_270)
+    uniform = _uniform_share(marks, value)
+    if uniform >= value["same_size_share"]:
+        return answer(
+            0,
+            UNCERTAIN_SCALE * 0.25,
+            f"Lines seem to run {lines} the frame ({profiles}), but {uniform:.0%} of the "
+            f"marks share one height (or one width) to within "
+            f"{value['same_size_tolerance']:.0%}: figures or capitals in aligned columns, "
+            "with no ascenders or descenders; columns of such marks look like lines either "
+            f"way, so neither the line direction nor up and down is decided; {DEFAULT_NOTE}.",
+            [UNCERTAIN_UNIFORM],
+        )
     updown = _updown(frame, value)
     vote = updown["score"]
     updown_confidence = strength(abs(vote), value["updown_min_score"])

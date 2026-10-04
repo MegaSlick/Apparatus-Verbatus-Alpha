@@ -20,6 +20,7 @@ from pagekit._orient_testpages import (
     PAPER,
     cursive_page,
     cursive_spread,
+    figure_page,
     page,
     printed_page,
     printed_spread,
@@ -30,7 +31,9 @@ from pagekit.orient import (
     POSSIBLY_NEGATIVE,
     UNCERTAIN_CORE_BAND,
     UNCERTAIN_DIRECTION,
+    UNCERTAIN_UNIFORM,
     UNCERTAIN_UPDOWN,
+    _guarded,
     _updown,
     detect_orientation,
 )
@@ -105,9 +108,10 @@ def test_symmetric_writing_is_uncertain_up_or_down_and_says_which_part():
             draw.rectangle((x, y, x + 43, y + 13), outline=45, width=3)
     result = detect_orientation(image)
     assert result["value"] == 0
-    assert result["flags"] == [UNCERTAIN_UPDOWN]
+    # Boxes of one height are uniform marks; the flag names that reason.
+    assert result["flags"] == [UNCERTAIN_UNIFORM]
     assert result["confidence"] < 0.2
-    assert "Lines run across" in result["evidence"]
+    assert "run across" in result["evidence"]
 
 
 def test_blank_page_gives_zero_turns_zero_confidence_and_a_flag():
@@ -266,10 +270,17 @@ def test_dense_cursive_page_with_gutter_strip_is_oriented(quarter_turns):
 
 
 def test_ascender_cue_decides_when_the_baseline_cue_is_silent():
-    """Unjoined round letters have edges as sharp at the x-line as at the baseline, so
-    only ascenders tell upright from upside down."""
+    """Unjoined round letters of varying width have edges as sharp at the x-line as at
+    the baseline, so only ascenders tell upright from upside down."""
     image = Image.new("L", (1000, 1400), PAPER)
-    write_block(ImageDraw.Draw(image), (100, 120, 900, 1280), seed=2, joined=False, descenders=0.0)
+    write_block(
+        ImageDraw.Draw(image),
+        (100, 120, 900, 1280),
+        seed=2,
+        joined=False,
+        descenders=0.0,
+        narrow=4,
+    )
     upright = detect_orientation(image)
     assert upright["value"] == 0 and upright["flags"] == []
     assert re.search(r"baseline against x-line [+-]0\.0", upright["evidence"])
@@ -349,3 +360,59 @@ def test_up_down_vote_that_changes_sign_with_the_core_band_is_flagged(quarter_tu
     assert result["value"] == 0
     assert result["flags"] == [UNCERTAIN_CORE_BAND]
     assert result["confidence"] < 0.2
+
+
+# --- Figures only (follow-up to brief 0030: tables of figures turned silently) ---------
+
+
+@pytest.mark.parametrize("style", ["mono", "plain", "round"])
+@pytest.mark.parametrize(
+    ("spacing", "aligned"), [(1.2, True), (1.6, True), (2.4, False)], ids=["tight", "mid", "loose"]
+)
+@pytest.mark.parametrize("dpi", [150, 300])
+def test_page_of_figures_is_never_turned_wrong_without_a_flag(style, spacing, aligned, dpi):
+    """Figures in columns stack exactly, so the columns look like lines, and lining
+    figures have no ascenders or descenders to tell up from down: such a page must be
+    flagged, never decided silently, in every turn."""
+    image = figure_page(
+        dpi, seed=dpi + round(10 * spacing), style=style, spacing=spacing, aligned=aligned
+    )
+    for quarter_turns in range(4):
+        result = detect_orientation(turned(image, quarter_turns))
+        assert _right_or_flagged(result, (4 - quarter_turns) % 4), (
+            quarter_turns,
+            result["evidence"],
+        )
+
+
+def test_marks_of_many_sizes_balanced_about_the_line_are_too_weak_to_turn():
+    """Lines across of word boxes of varied heights, each centred on its line and the
+    lines centred on the page: the marks are not uniform, but nothing tells upright
+    from upside down."""
+    image = Image.new("L", (1000, 1400), PAPER)
+    draw = ImageDraw.Draw(image)
+    for row, middle in enumerate(range(160, 1260, 48)):
+        widths = [20 + (row * 7 + i * 13) % 50 for i in range(9)]
+        heights = [8 + (row * 5 + i * 3) % 12 for i in range(9)]
+        total = sum(widths) + 14 * (len(widths) - 1)
+        x = (1000 - total) // 2
+        for w, h in zip(widths, heights, strict=True):
+            draw.rectangle((x, middle - h, x + w, middle + h), outline=45, width=3)
+            x += w + 14
+    result = detect_orientation(image)
+    assert result["value"] == 0
+    assert result["flags"] == [UNCERTAIN_UPDOWN]
+    assert detect_orientation(turned(image, 2))["flags"] == [UNCERTAIN_UPDOWN]
+
+
+@pytest.mark.parametrize(
+    ("dissent", "flagged"), [(-1.25, True), (-1.0, True), (-0.75, False), (0.3, False)]
+)
+def test_sign_guard_trips_at_one_standard_error_of_dissent(dissent, flagged):
+    """Six estimates whose median is clearly upright, with one dissenting estimate:
+    a dissent of a standard error or more makes the answer uncertain, a smaller one
+    does not. Loosening the guard past 1.25 or tightening it below 0.75 fails this."""
+    estimates = [6.0, 5.5, 4.8, 4.2, 3.9, dissent]
+    middle, disagree = _guarded(estimates, setting_values())
+    assert middle > 0
+    assert disagree is flagged

@@ -39,6 +39,10 @@ meaning = "Mean thickness in working px at or below which a long mark that is no
 #   1.2 to 8 mm x-height at 150 to 600 dpi, rendered serif, sans and italic type from
 #   7 to 14 pt at 150 to 600 dpi, two-column print, printed and handwritten spreads,
 #   sparse pages, a form, ledgers and margin notes turned a quarter;
+# - pagekit's own figure-only pages (brief 0030 follow-up): lining figures drawn in
+#   three styles (monospaced with footed 1, proportional, rounder), five columns,
+#   right-aligned and ragged, line spacing 1.2, 1.6 and 2.4 figure heights, 150 and
+#   300 dpi, all four turns (all flagged, none decided);
 # - the lead's two real register spreads (dense 17th and 18th century French cursive),
 #   run locally only.
 # The strip widths, core-band shares and the 1600 px working size were chosen on these;
@@ -129,6 +133,16 @@ value = 2.5
 status = "UNMEASURED"
 meaning = "Up-down score (strip agreement in standard errors plus the weighted ragged-edge cue) needed to decide upright against upside down; at this score the up-down confidence is 0.5."
 
+[same_size_share]
+value = 0.85
+status = "UNMEASURED"
+meaning = "Share of marks within same_size_tolerance of the median height (or width) at or above which the page is figures or capitals only and orientation is flagged, not decided. Writing and running text on pagekit's test pages reach 0.36 to 0.62; pages of lining figures reach 1.0."
+
+[same_size_tolerance]
+value = 0.15
+status = "UNMEASURED"
+meaning = "Relative distance from the median mark height (or width) within which a mark counts as the same size."
+
 [orient_tile_px]
 value = 96
 status = "UNMEASURED"
@@ -165,7 +179,7 @@ status = "UNMEASURED"
 meaning = "Least ink share for a strip to vote on upright against upside down."
 
 [min_strips]
-value = 6
+value = 10
 status = "UNMEASURED"
 meaning = "Fewest voting strips for the strip cues to count."
 
