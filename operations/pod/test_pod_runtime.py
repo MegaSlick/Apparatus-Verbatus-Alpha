@@ -112,6 +112,7 @@ from .shutdown import VerifiedShutdown
 from .spend import (
     CHALLENGE_BYTES,
     CONFIRMATION_PREFIX,
+    POD_BUDGET_ENVIRONMENT,
     SpendAssessment,
     SpendPolicy,
     confirmation_phrase,
@@ -2819,6 +2820,13 @@ def test_guarded_create_seals_dead_man_facts_into_the_creation_request(tmp_path:
     assert submitted.metadata["VERBATUS_POD_HOURLY_USD"] == "0.77"
     assert submitted.metadata["VERBATUS_VOLUME_ONGOING_HOURLY_USD"] == "0.05"
     assert submitted.metadata[BILLING_CUTOFF_MARGIN_ENV] == "3600"
+    # The budget that armed the pod, so the pod's deadline notice quotes it.
+    assert {name: submitted.metadata.get(name) for name in POD_BUDGET_ENVIRONMENT.values()} == {
+        "VERBATUS_SOFT_MAX_SECONDS": "86400",
+        "VERBATUS_HARD_MAX_SECONDS": "86400",
+        "VERBATUS_SOFT_MAX_COST_USD": "1000.00",
+        "VERBATUS_HARD_MAX_COST_USD": "1000.00",
+    }
 
 
 def test_default_runtime_refuses_paid_create_without_an_approved_controller_harness(
@@ -4998,12 +5006,10 @@ def _fixture_configuration_receipt() -> dict[str, object]:
             name: {"path": f"/fixture/{name}.toml", "sha256": "0" * 64}
             for name in (
                 "models_config",
-                "witness_context_config",
                 "serving_recipes_config",
                 "placement_config",
             )
         },
-        "witness_context_validation": {},
     }
 
 
@@ -6926,6 +6932,15 @@ def test_an_unconfigured_spend_policy_refuses_both_paid_paths_end_to_end(tmp_pat
         ({"billing_cutoff_margin_seconds": "3601"}, "must be between 0 and 3600 seconds"),
         ({"hard_lifetime_seconds": None}, "missing a required ceiling"),
         ({"currency": '"EUR"'}, "currency must be USD"),
+        ({"soft_max_seconds": "25000"}, "soft maximum seconds cannot exceed"),
+        ({"soft_max_cost_usd": '"3.50"'}, "soft maximum cost cannot exceed"),
+        ({"hard_max_seconds": None}, "missing a required ceiling"),
+        ({"hard_max_cost_usd": None}, "missing hard_max_cost_usd"),
+        ({"soft_max_cost_usd": "2.00"}, "decimal string, not a TOML number"),
+        ({"soft_max_seconds": "0"}, "soft maximum seconds must be a positive integer"),
+        ({"hard_lifetime_seconds": "18000"}, "hard lifetime cannot exceed the soft maximum"),
+        ({"max_estimated_metered_cost_usd": '"2.50"'}, "cannot exceed the soft maximum cost"),
+        ({"schema": '"pod-spend.v3"'}, "soft and hard pod budget maximums"),
     ],
 )
 def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
@@ -6934,7 +6949,7 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
     from .spend import load_spend_policy
 
     base: dict[str, str | None] = {
-        "schema": '"pod-spend.v3"',
+        "schema": '"pod-spend.v4"',
         "state": '"configured"',
         "currency": '"USD"',
         "max_hourly_usd": '"1.00"',
@@ -6946,6 +6961,10 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
         "shutdown_poll_interval_seconds": "1",
         "shutdown_deadline_seconds": "5",
         "billing_cutoff_margin_seconds": "3600",
+        "soft_max_seconds": "14400",
+        "hard_max_seconds": "21600",
+        "soft_max_cost_usd": '"2.00"',
+        "hard_max_cost_usd": '"3.00"',
     }
     base.update(mutation)
     path = tmp_path / "spend.toml"
@@ -7050,7 +7069,7 @@ def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceilin
     detail = str(refusal.value)
     assert "retired" in detail
     assert "account_balance_alert_usd" in detail
-    assert "pod-spend.v3" in detail
+    assert "pod-spend.v4" in detail
     assert "missing a required ceiling" not in detail
 
 
@@ -7059,7 +7078,7 @@ def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path
 
     path = tmp_path / "spend.toml"
     path.write_text(
-        'schema = "pod-spend.v3"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
+        'schema = "pod-spend.v4"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
         encoding="utf-8",
     )
 
