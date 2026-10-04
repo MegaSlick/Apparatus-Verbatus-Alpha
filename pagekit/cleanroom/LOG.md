@@ -664,3 +664,8 @@ record".
 - **Follow-up brief:** `briefs/0039-build-tag-twice-and-colour-scope.md` (sha256
   2f5acac512b82069a55911d707453f7e886e60c59145ffca2c8eee230c7681d5), to the agent of
   brief 0023. Saved before it was sent.
+- **Correction brief:** `briefs/0040-build-tag-correction.md` (sha256
+  6bb69ded51e611bcbe116a7ab098736ae87bdc087a5a5d46de4636fbb25e0577), to the same agent:
+  the main pipeline opens scans through the same image library, so pagekit keeps the grid
+  as the library opens it and applies a tag only when the library has not, rather than
+  undoing the library's turn. Saved before it was sent.
