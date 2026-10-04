@@ -316,16 +316,30 @@ def _fit_gap(gap: _Gap, marks: list[Mark], value: dict[str, Any]) -> _Line:
     return _Line(x_mid, y_mid, slope, gap.width)
 
 
+def _is_thick(mark: Mark, size: int) -> bool:
+    """Whether some of the mark survives an erosion by a `size` px square: backdrop or
+    shadow is broad, a pen stroke is not."""
+    width, height = mark.width + 2 * size, mark.height + 2 * size
+    canvas = bytearray(width * height)
+    for y, start, end in mark.runs:
+        row = (y - mark.y0 + size) * width
+        canvas[row + start - mark.x0 + size : row + end - mark.x0 + size] = b"\xff" * (end - start)
+    image = Image.frombytes("L", (width, height), bytes(canvas))
+    return image.filter(ImageFilter.MinFilter(size | 1)).getbbox() is not None
+
+
 def _joins_band(
     mark: Mark,
     band_rows: list[tuple[int, int]],
     band_columns: list[tuple[int, int]],
     reach: int,
 ) -> bool:
-    """Whether the mark reaches within `reach` px of a removed dark band: it is then a
-    remnant of the backdrop or a shadow (such as the backdrop reaching into the top of
-    the gutter where the pages curve into the binding), not writing. The reach covers
-    a ragged band edge that the straight-mark mask has already taken away."""
+    """Whether the mark reaches within `reach` px of a removed dark band. A mark that
+    does and is also thick (see _is_thick) is a remnant of the backdrop or a shadow,
+    such as the backdrop reaching into the top of the gutter where the pages curve into
+    the binding, not writing; a pen stroke touching the band is still writing. The
+    reach covers a ragged band edge that the straight-mark mask has already taken
+    away."""
     near_rows = set()
     for a, b in band_rows:
         near_rows.update(range(b, b + reach + 1))
@@ -592,7 +606,12 @@ def detect_split(
         # be a gutter shadow that writing runs into, so it does not excuse a mark.
         outer_columns = [(a, b) for a, b in band_columns if a == 0 or b == width]
         crossing_marks = [
-            m for m in marks if not _joins_band(m, band_rows, outer_columns, value["touch_px"])
+            m
+            for m in marks
+            if not (
+                _joins_band(m, band_rows, outer_columns, value["touch_px"])
+                and _is_thick(m, value["backdrop_min_thickness_px"])
+            )
         ]
         joined = len(_straddlers(marks, cut, value["speck_px"] * 2)) - len(
             _straddlers(crossing_marks, cut, value["speck_px"] * 2)
@@ -640,8 +659,8 @@ def detect_split(
         if joined:
             evidence.append(
                 f"{joined} dark mark{'s' if joined != 1 else ''} crossing the cut "
-                f"{'are' if joined != 1 else 'is'} joined to a dark band (backdrop or "
-                "shadow) and not counted as writing"
+                f"{'are' if joined != 1 else 'is'} joined to a dark band and too broad for a pen "
+                "stroke (backdrop or shadow), and not counted as writing"
             )
         result = {"pages": 2, "cut": to_full(cut), "method": method, "part": part}
         result["neighbour"] = None
