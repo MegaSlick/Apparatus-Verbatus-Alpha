@@ -20,6 +20,7 @@ import pytest
 from common.chairs.config import load_models_toml
 from common.chairs.models import AbsentChair
 from common.contracts.stages import PERLECTOR
+from common.stage import EXIT_HELD
 from operations.notify.client import NotifyOutcome
 
 from .finish_estimate import (
@@ -120,7 +121,7 @@ FIXTURE_CHAIRS = load_models_toml(ROOT / "config" / "models.toml").chairs
 @pytest.fixture(scope="module")
 def fixture_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("runs")
-    subprocess.run(
+    completed = subprocess.run(
         [
             sys.executable,
             str(ROOT / "pipeline" / "orchestrator" / "run.py"),
@@ -135,8 +136,11 @@ def fixture_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
         ],
         cwd=ROOT,
         capture_output=True,
+        text=True,
         check=False,
     )
+    # The happy scenario ends held: the act that may cross its page break goes to review.
+    assert completed.returncode == EXIT_HELD, completed.stderr[-2000:]
     return root / "estimate"
 
 

@@ -149,7 +149,9 @@ class RunTreeProgress:
         if stage in (DOOR, EXEMPLAR) or not self._sealed(EXEMPLAR):
             pages = len(sources)
         else:
-            pages = sum(outcome == "sealed" for _, outcome in set(self._records(EXEMPLAR, "page")))
+            pages = len(
+                {unit for unit, outcome in self._records(EXEMPLAR, "page") if outcome == "sealed"}
+            )
         if PAGE_RECORDS[stage].per_witness:
             witnesses = self._page_witnesses(run)
             if witnesses is None:
