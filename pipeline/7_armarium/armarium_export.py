@@ -591,7 +591,7 @@ def build_armarium_bundle(
         projection, formats, members, ledger, ink_map_rows, edge_hold_pages, other_outcomes
     )
     archive_members = {EXPORT_MANIFEST_NAME: canonical_bytes(manifest), **members}
-    # Checked on the members first, so an oversized archive is never assembled.
+    # Members that alone pass the limit are refused before the archive is assembled.
     embed_pixels = formats.embed_pixels
     members_size = sum(map(len, archive_members.values()))
     what = "the export archive's members together"

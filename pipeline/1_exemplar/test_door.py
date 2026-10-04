@@ -38,6 +38,7 @@ from synthetic_sources import (
 
 import common.imaging as common_imaging
 from common import armarium_formats
+from common.armarium_formats import ArmariumFormats
 from common.chairs import load_models_toml
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import (
@@ -219,7 +220,9 @@ def truncated_animated_gif() -> bytes:
     return data[: descriptors[1] + 9]
 
 
-def open_door(tmp_path, sources, *, run_id="r1", ingress=None, register_bytes=None):
+def open_door(
+    tmp_path, sources, *, run_id="r1", ingress=None, register_bytes=None, embed_pixels=False
+):
     """A real tree/context writing the door's own artifacts."""
     tree = RunTree.create(
         tmp_path / "runs",
@@ -263,6 +266,7 @@ def open_door(tmp_path, sources, *, run_id="r1", ingress=None, register_bytes=No
         adapter_revision=RECIPES[DOOR],
         args=None,
         registry=None,
+        armarium_formats=ArmariumFormats(("jsonl",), embed_pixels),
     )
 
 
@@ -857,7 +861,7 @@ def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed
     assert admitted == 2
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, admitted, embed_pixels=False)
+        door._finish_door_run(context, admitted)
 
     message = str(refusal.value)
     assert "ordinal(s) 1 and 2 carry identical bytes" in message
@@ -916,7 +920,7 @@ def test_two_copies_of_one_container_are_refused_naming_every_ordinal(tmp_path):
     assert admitted == 4
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, admitted, embed_pixels=False)
+        door._finish_door_run(context, admitted)
 
     message = str(refusal.value)
     assert "ordinal(s) 1, 2 and 3, 4 carry identical bytes" in message
@@ -945,7 +949,7 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
     admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
     assert admitted == 3
 
-    assert door._finish_door_run(context, admitted, embed_pixels=False) == EXIT_COMPLETE
+    assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
     assert [
         item
         for item in tree.build_manifest(DOOR)["artifacts"]
@@ -970,7 +974,7 @@ def test_an_export_estimated_past_the_archive_limit_is_refused_at_the_door(
         ],
         reader(files),
     )
-    tree, context = open_door(tmp_path, sources)
+    tree, context = open_door(tmp_path, sources, embed_pixels=embed_pixels)
     admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
     # A one-frame raster is sealed as its own bytes; its crops at a byte per pixel.
     estimate = sum(len(payload) for payload in files.values()) + 2 * 40 * 30
@@ -979,11 +983,27 @@ def test_an_export_estimated_past_the_archive_limit_is_refused_at_the_door(
 
     if refused:
         with pytest.raises(ContractError, match=f"{limit}-byte export archive limit"):
-            door._finish_door_run(context, admitted, embed_pixels=embed_pixels)
+            door._finish_door_run(context, admitted)
         kinds = {item["kind"] for item in tree.build_manifest(DOOR)["artifacts"]}
         assert "stage-seal" not in kinds
     else:
-        assert door._finish_door_run(context, admitted, embed_pixels=embed_pixels) == EXIT_COMPLETE
+        assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
+
+
+def test_a_door_without_a_sealed_format_choice_is_refused_not_waved_through(tmp_path):
+    files = {"one.png": png(4, 3)}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
+            for path, payload in files.items()
+        ],
+        reader(files),
+    )
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
+    context.armarium_formats = None
+    with pytest.raises(ContractError, match="no sealed Armarium format selection"):
+        door._finish_door_run(context, admitted)
 
 
 def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicate_refusal(
@@ -1014,7 +1034,7 @@ def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicat
     assert admitted == 0
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, admitted, embed_pixels=False)
+        door._finish_door_run(context, admitted)
 
     message = str(refusal.value)
     assert "the door admitted nothing" in message
@@ -1551,7 +1571,7 @@ def test_a_re_shoot_is_refused_whole_before_the_seal_confirmed_or_not(tmp_path, 
     register = None if pages is None else _re_shoot_register(tmp_path, pages)
     context, _digests = _admitted_re_shoot_pair(tmp_path, register_bytes=register)
     with pytest.raises(ContractError, match="^re-shoot:") as refused:
-        door._finish_door_run(context, 2, embed_pixels=False)
+        door._finish_door_run(context, 2)
     message = str(refused.value)
     assert "cluster 1 (submitted ordinal(s) 1, 2" in message
     assert ("not confirmed" in message) is not confirmed
@@ -2931,7 +2951,7 @@ def test_a_wholly_refused_door_does_not_publish_a_completion_seal(tmp_path):
     )
 
     with pytest.raises(ContractError, match="the door admitted nothing"):
-        door._finish_door_run(context, admitted, embed_pixels=False)
+        door._finish_door_run(context, admitted)
 
     kinds = [entry["kind"] for entry in tree.build_manifest(DOOR)["artifacts"]]
     assert "refusal-report" in kinds

@@ -130,7 +130,7 @@ MAX_FETCH_OBJECT_BYTES = 256 * 1024 * 1024
 """One object's bound. A whole-page blob and the export archive are the largest
 things a run tree holds; the manifest walk already refuses an artifact above
 64 MiB, and a quarter of a gigabyte is past any page this project has rendered
-and at or above the export archive limit (`common/runtree/store.py`)."""
+and at or above the export archive limit (`common/armarium_formats.py`)."""
 
 
 class _UploadManifestConflict(TransferFailure):

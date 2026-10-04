@@ -27,8 +27,12 @@ DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH: Final = (
 # `operations/operator/test_surface.py` pins that. Every whole-archive read is
 # held in memory, so raising it raises peak memory at sealing and publication.
 MAX_EXPORT_ARCHIVE_BYTES: Final = 192 * 1024 * 1024
-# Crops are cut from their page and stored as lossless PNG, and together cover
-# about one page; the Door estimates them at this many bytes per page pixel.
+# The Door's estimate of an embedded export's crops, in bytes per page pixel.
+# A crop is stored as uncompressed PNG (1/8 byte per pixel bilevel, 1 grey, 3
+# colour, more with alpha or 16 bits), and the crops of a page cover the
+# regions read, usually less than the whole page. One byte per page pixel is a
+# provisional average, to be calibrated on real pages; the Armarium still
+# checks the real archive before storing it.
 CROP_BYTES_PER_PIXEL: Final = 1
 
 
@@ -107,7 +111,7 @@ def estimated_embedded_export_bytes(pages: Iterable[tuple[int, int, int]]) -> in
 
     Each page is carried as stored, and its crops at `CROP_BYTES_PER_PIXEL` over
     its pixel area. The records beside them are small next to the pixels and
-    are not counted; the Armarium checks the real archive before storing it.
+    are not counted.
     """
     return sum(stored + width * height * CROP_BYTES_PER_PIXEL for stored, width, height in pages)
 

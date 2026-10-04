@@ -1446,21 +1446,47 @@ def require_some_admitted(
     )
 
 
+def require_export_can_be_sealed(context: StageContext) -> None:
+    """Refuse a run whose embedded export is estimated past the archive limit.
+
+    The Armarium refuses an oversized archive in any case, but only after every
+    page has been read; the sealed format choice and pages already say enough
+    to refuse it here, before any reading starts.
+    """
+    formats = context.armarium_formats
+    if formats is None:
+        raise ContractError(
+            "the Door has no sealed Armarium format selection, so it cannot tell whether "
+            "this run's export could be sealed"
+        )
+    if not formats.embed_pixels:
+        return
+    require_within_export_archive_limit(
+        estimated_embedded_export_bytes(_exported_pages(context)),
+        what="this run's export archive, estimated from its sealed pages and their crops,",
+        embed_pixels=True,
+    )
+
+
 def _exported_pages(context: StageContext) -> list[tuple[int, int, int]]:
     """`(stored bytes, width, height)` of every admitted page the export carries.
 
     Canaries are controls and are never exported.
     """
     canaries = canary_ordinals(context.run)
-    return [
-        (
-            context.tree.resolve(payload["stored_at"]).stat().st_size,
-            payload["geometry"]["width"],
-            payload["geometry"]["height"],
-        )
-        for _entry, payload in _iter_admissions(context, "admitted")
-        if payload["ordinal"] not in canaries
-    ]
+    pages = []
+    for _entry, payload in _iter_admissions(context, "admitted"):
+        if payload["ordinal"] in canaries:
+            continue
+        try:
+            stored = context.tree.resolve(payload["stored_at"]).stat().st_size
+        except OSError as error:
+            raise ContractError(
+                f"the stored page of admitted ordinal {payload['ordinal']} could not be "
+                f"measured ({type(error).__name__}), so the export's size cannot be estimated"
+            ) from error
+        pages.append((stored, payload["geometry"]["width"], payload["geometry"]["height"]))
+    return pages
 
 
 def _refusal_census(refusal_report: Report) -> dict[str, int]:
@@ -1582,14 +1608,11 @@ def _load_pdf_render_binding(args) -> render_config.PdfRenderBinding:
     )
 
 
-def _finish_door_run(
-    context: StageContext, admitted: int, *, embed_pixels: bool, canary_admitted: int = 0
-) -> int:
+def _finish_door_run(context: StageContext, admitted: int, *, canary_admitted: int = 0) -> int:
     """The shared close for both entry points: reports, then the loud checks.
 
     Reports seal first so a refused run still leaves its evidence; every refusal
-    fires before `seal_boundary` writes anything else. `embed_pixels` is the
-    run's sealed format choice, which decides how large its export will be.
+    fires before `seal_boundary` writes anything else.
     """
     refusal_report = publish_refusal_report(context)
     duplicate_report = publish_duplicate_report(context)
@@ -1599,12 +1622,7 @@ def _finish_door_run(
     require_no_duplicate_sources(duplicate_report)
     require_no_re_shoots(context, cluster_report)
     require_some_admitted(admitted, refusal_report, canary_admitted=canary_admitted)
-    if embed_pixels:
-        require_within_export_archive_limit(
-            estimated_embedded_export_bytes(_exported_pages(context)),
-            what="this run's export archive, estimated from its sealed pages and their crops,",
-            embed_pixels=True,
-        )
+    require_export_can_be_sealed(context)
     context.seal_boundary()
     context.finish(DOOR)
     return EXIT_COMPLETE
@@ -1674,9 +1692,7 @@ def fixture_submission(args, registry) -> int:
         lambda declared_path: (fixture_root / declared_path).read_bytes(),
         pdf_settings=pdf_settings,
     )
-    return _finish_door_run(
-        context, admitted, embed_pixels=bindings["armarium_formats"].embed_pixels
-    )
+    return _finish_door_run(context, admitted)
 
 
 def real_submission(args, registry) -> int:
@@ -1895,12 +1911,7 @@ def real_submission(args, registry) -> int:
         )
         for ledger_sources in (real_sources, canary_sources)
     ]
-    return _finish_door_run(
-        context,
-        admitted,
-        embed_pixels=bindings["armarium_formats"].embed_pixels,
-        canary_admitted=canary_admitted,
-    )
+    return _finish_door_run(context, admitted, canary_admitted=canary_admitted)
 
 
 def _refuse_overlapping_run_tree(tree_root: Path, folder: Path, label: str) -> None:
@@ -2107,6 +2118,7 @@ def _door_context(
         args=args,
         registry=registry,
         sealed_config_digests=bindings["sealed_config_digests"],
+        armarium_formats=bindings["armarium_formats"],
     )
 
 
