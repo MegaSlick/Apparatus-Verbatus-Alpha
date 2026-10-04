@@ -1448,7 +1448,8 @@ class PacedRunner(RecordedRunner):
             (),
             {"VERBATUS_POD_HOURLY_USD": "1.99", "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.06"},
             "2.05",
-            "VERBATUS_POD_HOURLY_USD plus VERBATUS_VOLUME_ONGOING_HOURLY_USD",
+            "the launch-time estimate before create "
+            "(VERBATUS_POD_HOURLY_USD plus VERBATUS_VOLUME_ONGOING_HOURLY_USD)",
         ),
     ],
     ids=["flag", "pod-timer-rates"],
@@ -1492,6 +1493,9 @@ def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
     [notice] = report["deadline_watch"]["notices"]
     assert notice["delivered"] is True
     assert (estimate["hourly_usd"], estimate["hourly_usd_source"]) == (hourly, source)
+    # The rate is quoted with where it came from: a sealed rate is the price before
+    # create, and the pod may bill more, up to the spend policy's hourly ceiling.
+    assert f"more at ${hourly}/h ({source})" in call[3]
     assert "mv $G/deadline.new $G/deadline-pod123" in call[3]
 
 

@@ -1497,7 +1497,12 @@ def _hourly_price(
         return None, f"unusable {' and '.join(HOURLY_RATE_ENVIRONMENT)}"
     if not total.is_finite() or total <= 0:
         return None, f"unusable {' and '.join(HOURLY_RATE_ENVIRONMENT)}"
-    return total, " plus ".join(HOURLY_RATE_ENVIRONMENT)
+    # The launch seals the price it assessed before create. The provider's price after
+    # create may be higher and still within the spend policy's hourly ceiling, and the
+    # pod cannot read it, so the rate is named for what it is.
+    return total, (
+        f"the launch-time estimate before create ({' plus '.join(HOURLY_RATE_ENVIRONMENT)})"
+    )
 
 
 def _pod_budget(

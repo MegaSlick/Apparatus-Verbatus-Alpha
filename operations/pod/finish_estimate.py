@@ -509,6 +509,7 @@ def deadline_at_risk_message(
     hourly_usd: Decimal | None,
     now: datetime,
     budget_source: str | None = None,
+    hourly_source: str | None = None,
 ) -> str:
     """One line for the phone: what is at risk, what it would cost, and how to extend."""
 
@@ -520,6 +521,7 @@ def deadline_at_risk_message(
         "cost unknown (no --hourly-usd)"
         if hourly_usd is None
         else f"about ${_cents(_cost(extra, hourly_usd))} more at ${hourly_usd}/h"
+        + ("" if hourly_source is None else f" ({hourly_source})")
     )
     # The pod's creation time is not known here, so the hard maximum is stated, not
     # turned into an instant; the lead judges the extension against it.
@@ -679,6 +681,7 @@ class DeadlineWatch:
             hourly_usd=self._hourly_usd,
             now=now,
             budget_source=self._budget_source,
+            hourly_source=self._hourly_source,
         )
         if self._send is None:
             outcome = NotifyOutcome(False, False, "no --notify")
