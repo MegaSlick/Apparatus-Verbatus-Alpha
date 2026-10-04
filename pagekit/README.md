@@ -236,7 +236,8 @@ from 1. The values: `orientation` 0 to 3 quarter turns clockwise; `split`
 `{"pages": 1}` or `{"pages": 2, "cut": [[x, y], [x, y]]}` in the upright frame's
 pixels; `skew` degrees counterclockwise, under 45; `page_box` and `content_box`
 `[left, top, right, bottom]` in the levelled page's pixels, right and bottom not
-included, and `content_box` `null` for a blank page; `margin` millimetres; `resolution`
+included, and `content_box` `null` for a blank page (a box partly or wholly outside the
+levelled page is flagged, since only filled-in paper colour lies there); `margin` millimetres; `resolution`
 `[x_dpi, y_dpi]`. An entry may add `evidence`, a sentence saying why. Values are set as
 manual, or locked with `"lock": true`, and only what depends on them is recomputed. An
 override naming a source, page or step that does not exist is refused (exit 2) and

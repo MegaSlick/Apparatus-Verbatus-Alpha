@@ -828,3 +828,37 @@ def test_the_review_sheet_is_light_to_open_and_says_what_lock_and_the_margin_mea
     # The margin comes from a setting, not from a detector.
     margins = re.findall(r"<h4>Margin</h4><dl>.*?<dt>From</dt><dd>([^<]+)</dd>", text)
     assert margins and set(margins) == {"the margin_mm setting"}
+
+
+@pytest.mark.parametrize(
+    ("page_box", "content_box", "flagged"),
+    [
+        ([-50, -40, 2000, 3000], [20, 20, 200, 300], {"page_box": "partly"}),
+        (
+            [1000, 1000, 1200, 1300],
+            [1010, 1010, 1100, 1100],
+            {"page_box": "wholly", "content_box": "wholly"},
+        ),
+        ([0, 0, 240, 320], [200, 280, 260, 340], {"content_box": "partly"}),
+        ([0, 0, 240, 320], [20, 20, 200, 300], {}),
+    ],
+)
+def test_a_hand_set_box_outside_the_levelled_page_is_flagged(
+    tmp_path, page_box, content_box, flagged
+):
+    source = _plain_sources(tmp_path / "src", 1)
+    overrides = tmp_path / "fix.json"
+    entries = [
+        {"source": "src/p00.png", "step": "page_box", "page": 1, "value": page_box},
+        {"source": "src/p00.png", "step": "content_box", "page": 1, "value": content_box},
+    ]
+    overrides.write_text(json.dumps({"schema": "pagekit-overrides.v1", "overrides": entries}))
+    (page,) = plan([source], tmp_path / "out", overrides_path=overrides).pages
+    found = {
+        flag["step"]: flag["reason"]
+        for flag in page.flags
+        if "outside the levelled page" in flag["reason"]
+    }
+    assert set(found) == set(flagged)
+    for step, extent in flagged.items():
+        assert f"lies {extent} outside the levelled page (240 by 320 pixels)" in found[step]

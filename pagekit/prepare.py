@@ -691,6 +691,7 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         for step in STEPS:
             flags += [{"step": step, "reason": reason} for reason in all_steps[step]["flags"]]
         flags += [{"step": "margin", "reason": reason} for reason in chain_flags]
+        flags += _outside_flags(chain, page_steps)
         plans.append(
             PagePlan(source, number, output_name, chain, all_steps, flags, output_dpi, stored)
         )
@@ -707,6 +708,37 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         "dropped_pages": dropped_pages,
     }
     return entry, plans
+
+
+_BOX_WORDS = {"page_box": "page box", "content_box": "content box"}
+
+
+def _outside_flags(chain: Chain, steps: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    """Flags for a page or content box that lies partly or wholly outside the levelled
+    page, where there is nothing but the paper colour pagekit fills in."""
+    width, height = chain.levelled_size
+    flags = []
+    for step, words in _BOX_WORDS.items():
+        entry = steps[step]
+        box = entry["value"]
+        if box is None:
+            continue
+        left, top, right, bottom = box
+        if left >= 0 and top >= 0 and right <= width and bottom <= height:
+            continue
+        wholly = right <= 0 or bottom <= 0 or left >= width or top >= height
+        who = "set by hand" if entry["origin"] != "detected" else "found"
+        flags.append(
+            {
+                "step": step,
+                "reason": (
+                    f"The {words} {who}, {box}, lies {'wholly' if wholly else 'partly'} "
+                    f"outside the levelled page ({width} by {height} pixels), where there "
+                    "is only filled-in paper colour; check the box."
+                ),
+            }
+        )
+    return flags
 
 
 def _page_chain(source, number, values, usable, stored, settings):
