@@ -13,29 +13,37 @@ been checked against the real tool or account. Nothing here is permission to spe
 the RunPod console). The guard drill (step 6) uses the cheapest card, `NVIDIA RTX A5000`,
 $0.27/h.
 
-**The budget to ask for.** Nothing has been timed on a real pod, so these are planning
-figures (to confirm):
+**The pod budget** is the lead's, in `config/spend.toml` (`pod-spend.v4`): at most
+$2.10/h for pod plus volume, a soft maximum of 2 h or $5.00 and a hard maximum of 3 h or
+$7.00, whichever comes first. A pod's window is 2 h: the guard's deadline sits at the
+soft maximum. Going past it is an extension only the lead makes, and the hard maximum
+bounds it at 3 h. The hourly cap admits the RTX PRO 6000 ($1.99/h) beside a volume of up
+to $0.11/h, so 2 h costs about $4.10 and 3 h about $6.15 at a $0.06/h volume. The hand
+route below (`runpodctl` plus the pod guard) does not enforce the file, so the lead's
+approval in the session is the limit that counts, and it stays inside this budget.
+
+**The plan inside it.** Nothing has been timed on a real pod, so these are planning
+figures. Costs are $1.99/h plus the volume's hourly price (to confirm in the console).
 
 | Launch | Card | Window | Most it can cost |
 |---|---|---|---|
 | Guard drill | RTX A5000 | 1 h | about $0.55 (the backstop may add an hour) |
-| Run 1: 4 prepared pages | RTX PRO 6000 | 4 h | about $8 + volume |
-| Run 2: 2 original spreads | RTX PRO 6000 | 4 h | about $8 + volume |
-| Run 3: a slightly larger set | RTX PRO 6000 | 6 h | about $12 + volume |
+| Run 1: 4 prepared pages | RTX PRO 6000 | 2 h, extendable to 3 h | about $3.98 + volume; $5.97 + volume extended |
+| Run 2: 2 original spreads | RTX PRO 6000 | 2 h, extendable to 3 h | about $3.98 + volume; $5.97 + volume extended |
+| Run 3: a slightly larger set | RTX PRO 6000 | 2 h, extendable to 3 h | about $3.98 + volume; $5.97 + volume extended |
 
-**The pod budget in `config/spend.toml`** (`pod-spend.v4`): a soft maximum of 4 h or
-$2.00 and a hard maximum of 6 h or $3.00, whichever comes first. The guard's deadline
-sits at the soft maximum; going past it is an extension only the lead makes, and the
-hard maximum bounds it. These four values are **pending the lead's decision**: at
-$1.99/h the $2.00 soft maximum is reached in about an hour. The same file still says
-`max_hourly_usd = "0.50"` and `max_estimated_metered_cost_usd = "2.00"`, below the
-RTX PRO 6000's price. The hand route below (`runpodctl` plus the pod guard) does not
-enforce the file, so the lead's approval in the session is the limit that counts.
+The earlier plan allowed 4 h for runs 1 and 2 and 6 h for run 3. Whether runs 1 and 2
+finish in 2 h, or in 3 h with the extension, is to confirm on run 1; nothing measured
+says they will. Run 3 is sized from run 1's timing to fit the same window, so it may hold
+fewer pages than planned (to confirm). **Any run that needs more than 3 h needs a new
+budget decision from the lead**, and `config/spend.toml` changed to match, before it
+starts.
 
 **The account balance.** `account_balance_floor_usd = "50.00"` is a policy value the
 file itself marks unverified. Check the RunPod balance (console, Billing) is above $50
-plus the approved budget before each launch. `verbatus spend show` prints the policy,
-ending with the `Soft maximum` and `Hard maximum` lines; it never reads the balance.
+plus the run's budget (at most $7.00) before each launch. `verbatus spend show` prints
+the policy, ending with the `Soft maximum` and `Hard maximum` lines; it never reads the
+balance.
 
 ## 2. Set up the Mac (free)
 
@@ -142,9 +150,10 @@ sed -n 's/^NTFY_TOPIC=//p' private/ntfy.conf | tail -n 1 | tr -d "\"'" |
 
 Create the pod as in step 6, but with `--name verbatus-<run id>`,
 `--gpu-id "NVIDIA RTX PRO 6000 Blackwell Server Edition"`, `--container-disk-in-gb 120`
-and `pod_start_command.sh <approved hours> <sha>`. Then, on the pod over SSH, the checks
-from `operations/pod/README.md` ("On the pod, over SSH"): `findmnt /workspace/private`,
-the guard log, `echo "$RUNPOD_POD_ID"`, the deadline file, then
+and `pod_start_command.sh 2 <sha>` (the 2 h window, the soft maximum). Then, on the
+pod over SSH, the checks from `operations/pod/README.md` ("On the pod, over SSH"):
+`findmnt /workspace/private`, the guard log, `echo "$RUNPOD_POD_ID"`, the deadline file,
+then
 
 ```sh
 git clone https://github.com/MegaSlick/Apparatus-Verbatus-Alpha /opt/verbatus
@@ -212,10 +221,10 @@ A healthy run reads like this (synthetic files, real output):
 Run rg-pages-1: pod_run report says running.
 Stage attestatores: 2/4 pages.
 This stage finishes about 2026-10-04 01:24 UTC (in 39 min); later stages are not counted.
-Deadline 2026-10-04 03:44 UTC (in 3.0 h), the pod guard's deadline; extendable by hand: yes.
+Deadline 2026-10-04 01:44 UTC (in 59 min), the pod guard's deadline; extendable by hand: yes.
 Guard: watch cannot tell whether the guard is armed; it shows only the deadline pod_run read from the guard's file.
-Budget: soft max 4 h / $2.00, hard max 6 h / $3.00.
-Spend to now: at least $2.05 of soft $2.00 / hard $3.00 (1.0 h at $2.05/h since pod_run started; the pod was created earlier).
+Budget: soft max 2 h / $5.00, hard max 3 h / $7.00.
+Spend to now: at least $2.05 of soft $5.00 / hard $7.00 (1.0 h at $2.05/h since pod_run started; the pod was created earlier).
 ```
 
 What the other lines mean:

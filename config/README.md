@@ -159,7 +159,9 @@ guard's deadline sits at the soft maximum, so the loader refuses a soft value ab
 hard one and a `hard_lifetime_seconds` or `max_estimated_metered_cost_usd` above the soft
 maximum. `pod_run` sends one `deadline-at-risk` notice ahead of time, when a stage's
 projected finish passes the deadline that ends the pod; going on past the soft maximum is
-an extension only the lead makes, and the hard maximum bounds it. A paid action reads the available
+an extension only the lead makes, and the hard maximum bounds it. The committed values are
+the lead's budget: `max_hourly_usd` $2.10, `max_estimated_metered_cost_usd` $5.00, a soft
+maximum of 2 h or $5.00 and a hard maximum of 3 h or $7.00. A paid action reads the available
 balance through the provider's explicitly configured source and refuses when that source
 is unavailable or the action would breach the reserve. The `$50.00` floor is a policy
 value, not a balance observation, until checked against RunPod before a live run. The loader refuses an unknown or missing key. The policy does not
