@@ -184,6 +184,18 @@ two).
 - `ink_map`: `{denominator, held_pages, unmeasurable_pages}`, derived from
   `sources.json`'s `ink_map_pages`.
 - `not_measured`, `other_readings`, `page_accounting`, `reask`: below.
+- `doubt_share`: `{denominator, status, acts: [{act_id, act_key, page_ordinal,
+  doubtful_or_unread, out_of}], pages: [{ordinal, doubtful_or_unread, out_of}]}`, in
+  reading order, over each delivered act's established text
+  (`common.reading_annotations.doubt_count`: its non-whitespace characters inside an
+  uncertain span, each gap counted as one unread character) and each page's delivered
+  acts together. `status` is `measured`, or `not-applicable-no-literal-format` with
+  empty lists when no literal format carries the text. Verification recounts it from
+  the package's own literals. The Perlector holds a reading, and every reading of a
+  page, over the sealed `[doubt]` limits (`pipeline/4_perlector/CONTRACT.md`); the
+  export refuses a delivered act over the act limit that was never held
+  `doubt-share-high`, so only a person's decision delivers one. The page record
+  counts delivered acts only, so it can be lower than the share the page was held on.
 
 ### `sources.json`
 
@@ -295,8 +307,9 @@ These files are rows only: they carry no run status and are read with
 One flat row per counted act, in reading order, for a spreadsheet: UTF-8 with a
 byte-order mark, CRLF rows, RFC 4180 quoting. Its header row is `act_key`, `act_id`,
 `lot`, `category`, `reason`, `reading`, `text_status`, `canonical_clean_text`,
-`diplomatic_text` (the text as a reader is shown it, below), `canonical_text_sha256` and
-`uncertainty_json` (the layer as one canonical JSON object). Null is an empty cell; the text columns are empty for an act not delivered.
+`diplomatic_text` (the text as a reader is shown it, below), `canonical_text_sha256`,
+`uncertainty_json` (the layer as one canonical JSON object), and `doubtful_or_unread`
+and `out_of`, the act's doubt share (below). Null is an empty cell; the text columns are empty for an act not delivered.
 
 A cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return, which a spreadsheet
 would run as a formula, is written with one leading `'`, and so is a cell already

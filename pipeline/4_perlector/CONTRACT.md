@@ -147,6 +147,13 @@ act `no-autopsia`.
   doubt layer meets `common.contracts.uncertainty.validate`. Marks that do not parse
   keep the text as returned and hold `doubt-marks-malformed`. An entry with no
   readable text holds `entry-no-readable-text`.
+- The doubt share (`common.reading_annotations.doubt_count`) is the share of an
+  entry's non-whitespace characters inside an uncertain span, each gap counted as one
+  unread character. An entry over the sealed `[doubt] max_act_doubt_share_bp` of
+  `config/page_accounting.toml` holds `doubt-share-high`; when a reading's entries
+  together are over `max_page_doubt_share_bp`, every entry holds
+  `page-doubt-share-high`, a page-wide hold. Both limits are provisional and
+  unmeasured, so a reading cannot pass by marking everything doubtful.
 - `truncation` classifies the entry `complete`, `truncated` or `unknown` from the
   engine's stop word and three computed signals, with every term of the length signal
   recorded so a reader can judge it again. `truncated` and `unknown` hold

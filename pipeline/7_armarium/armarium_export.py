@@ -102,7 +102,7 @@ from common.correction import (
     PROVENANCE_FIELDS as CORRECTION_PROVENANCE_FIELDS,
 )
 from common.imaging import dimensions
-from common.reading_annotations import diplomatic_display
+from common.reading_annotations import diplomatic_display, doubt_count
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
 from common.review_policy import parse_share
 
@@ -262,6 +262,8 @@ _CSV_COLUMNS: Final = (
     "diplomatic_text",
     "canonical_text_sha256",
     "uncertainty_json",
+    "doubtful_or_unread",
+    "out_of",
 )
 # A spreadsheet runs a cell starting with one of these as a formula. Such a cell,
 # and one already starting with the escape, is written with one leading `'`,
@@ -732,6 +734,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
         root, manifest, formats, sources
     )
     _verify_page_layers(root, manifest, formats, sources)
+    _verify_doubt_share_claim(root, manifest, formats)
     _verify_continuation_joins(root, formats, sources)
     # The operator rows and the model readings beside corrected ones, read once
     # for both layers that hold readings to them.
@@ -1056,6 +1059,7 @@ _MANIFEST_CLAIM_FIELDS: Final = frozenset(
         "other_readings",
         "page_accounting",
         "reask",
+        "doubt_share",
     }
 )
 _ACT_PARTITION_CLAIM_FIELDS: Final = frozenset(
@@ -3944,6 +3948,9 @@ def _acts_csv_bytes(acts: tuple[dict[str, Any], ...], lot: str | None) -> bytes:
     for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
         fields = _text_fields(act)
         delivered = fields[CANONICAL_TEXT_FIELD] is not None
+        doubt = (
+            doubt_count(fields[CANONICAL_TEXT_FIELD], fields["uncertainty"]) if delivered else None
+        )
         row = {
             **_row_head(act),
             "lot": lot,
@@ -3957,6 +3964,8 @@ def _acts_csv_bytes(acts: tuple[dict[str, Any], ...], lot: str | None) -> bytes:
             ),
             "canonical_text_sha256": fields["canonical_text_sha256"],
             "uncertainty_json": canonical_text(fields["uncertainty"]) if delivered else None,
+            "doubtful_or_unread": None if doubt is None else str(doubt[0]),
+            "out_of": None if doubt is None else str(doubt[1]),
         }
         writer.writerow([_csv_cell(row[column]) for column in _CSV_COLUMNS])
     return _CSV_BOM + buffer.getvalue().encode("utf-8")
@@ -4801,6 +4810,15 @@ def _export_manifest(
                 _act_readings(projection.acts),
                 [row["ordinal"] for row in projection.page_accounting],
             ),
+            "doubt_share": _doubt_share_claim(
+                {
+                    act["act_id"]: (act[CANONICAL_TEXT_FIELD], act["uncertainty"])
+                    for act in projection.acts
+                    if act["category"] == ArmariumCategory.DELIVERED.value
+                },
+                {act["act_id"]: act["act_key"] for act in projection.acts},
+                measured=bool(_literal_formats_in(formats.formats)),
+            ),
         },
         "aggregate": projection.aggregate,
         "aggregate_basis": projection.aggregate_basis,
@@ -4813,6 +4831,78 @@ def _export_manifest(
     }
     manifest["self_hash"] = self_hash(manifest)
     return manifest
+
+
+_DOUBT_SHARE_DENOMINATOR: Final = (
+    "each delivered act's established text: its non-whitespace characters, each "
+    "zero-width gap counted as one unread character"
+)
+_DOUBT_SHARE_MEASURED: Final = "measured"
+_DOUBT_SHARE_NOT_APPLICABLE: Final = "not-applicable-no-literal-format"
+
+
+def _doubt_share_claim(
+    texts: dict[str, tuple[str, Any]], act_keys: dict[str, str], *, measured: bool
+) -> dict[str, Any]:
+    """How much of each delivered act, and of each page's delivered acts, is doubtful or unread.
+
+    `texts` is each delivered act's literal and layer. A package with no literal
+    format carries no text to recount, so it states that rather than numbers.
+    """
+    acts: list[dict[str, Any]] = []
+    pages: dict[int, list[int]] = defaultdict(lambda: [0, 0])
+    if measured:
+        for act_id in sorted(texts, key=lambda item: act_key_sort_key(act_keys[item])):
+            doubtful, out_of = doubt_count(*texts[act_id])
+            page = _key_page(act_keys[act_id])
+            acts.append(
+                {
+                    "act_id": act_id,
+                    "act_key": act_keys[act_id],
+                    "page_ordinal": page,
+                    "doubtful_or_unread": doubtful,
+                    "out_of": out_of,
+                }
+            )
+            if page is not None:
+                pages[page][0] += doubtful
+                pages[page][1] += out_of
+    return {
+        "denominator": _DOUBT_SHARE_DENOMINATOR,
+        "status": _DOUBT_SHARE_MEASURED if measured else _DOUBT_SHARE_NOT_APPLICABLE,
+        "acts": acts,
+        "pages": [
+            {"ordinal": ordinal, "doubtful_or_unread": counts[0], "out_of": counts[1]}
+            for ordinal, counts in sorted(pages.items())
+        ],
+    }
+
+
+def _verify_doubt_share_claim(
+    root: Path, manifest: dict[str, Any], formats: ArmariumFormats
+) -> None:
+    """The doubt-share claim, recounted from a literal format's own text and layers.
+
+    Every literal format gives the same reading (`_compare_literal_projections`),
+    so the first one selected stands for all.
+    """
+    literal_formats = [name for name in _LITERAL_TEXT_FORMATS if name in formats.formats]
+    texts = (
+        {
+            act_id: (record[0], record[2])
+            for act_id, record in _literal_projection(root, literal_formats[0]).items()
+        }
+        if literal_formats
+        else {}
+    )
+    act_keys = _manifest_act_keys(manifest, _manifest_act_categories(manifest))
+    if set(texts) - set(act_keys):
+        raise SchemaRefusal("a literal format delivers an act the manifest does not partition")
+    expected = _doubt_share_claim(texts, act_keys, measured=bool(literal_formats))
+    if manifest["claims"]["doubt_share"] != expected:
+        raise SchemaRefusal(
+            "the manifest's doubt share is not what the package's own readings count"
+        )
 
 
 def _zip_bytes(members: dict[str, bytes]) -> bytes:

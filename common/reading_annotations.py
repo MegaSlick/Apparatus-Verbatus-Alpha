@@ -202,6 +202,36 @@ def bracket_doubt_marks(raw: str) -> str:
     )
 
 
+BASIS_POINTS: Final = 10_000
+
+
+def doubt_count(text: str, layer: dict[str, Any]) -> tuple[int, int]:
+    """`(doubtful or unread, out of)` for one reading, from its spans and gaps.
+
+    Counted in the text's non-whitespace characters: each one inside an uncertain
+    span is doubtful. A gap is zero-width, so how much ink it stands for was never
+    measured; each counts as one unread character, on both sides of the share.
+    """
+    doubtful = {
+        offset
+        for span in layer["uncertain_spans"]
+        for offset in range(span["start"], span["end"])
+        if not text[offset].isspace()
+    }
+    gaps = len(layer["gaps"])
+    read = sum(1 for character in text if not character.isspace())
+    return len(doubtful) + gaps, read + gaps
+
+
+def doubt_exceeds(count: tuple[int, int], limit_bp: int) -> bool:
+    """Whether more than `limit_bp` basis points of `count` are doubtful or unread.
+
+    Compared exactly, in integers; a reading with nothing read counts as all unread.
+    """
+    doubtful, out_of = count
+    return out_of == 0 or doubtful * BASIS_POINTS > limit_bp * out_of
+
+
 def doubt_mark_offsets(raw: str) -> tuple[list[int | None], list[int | None]]:
     """`(raw_to_clean, clean_to_raw)`: where each offset of a marked reading lands.
 

@@ -115,6 +115,7 @@ from common.page_testimonia import (  # noqa: E402
     declared_page_witness_chairs,
     shown_page_witnesses,
 )
+from common.reading_annotations import doubt_count, doubt_exceeds  # noqa: E402
 from common.reconstruction_records import verified_reconstructions  # noqa: E402
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
@@ -1303,6 +1304,24 @@ def systemic_review_basis(context) -> dict | None:
     return {key: share[key] for key in ("held_pages", "pages", "max_held_page_share")}
 
 
+def require_doubt_hold(row: dict, text: str, layer: dict, limit_bp: int) -> None:
+    """A delivered reading over the sealed act doubt limit must have been held for it.
+
+    The Perlector holds such an entry `doubt-share-high`, so it is delivered only
+    when a person's decision released it. One delivered without that hold means a
+    reading too doubtful to pass quietly passed quietly, and the export stops.
+    """
+    if (
+        doubt_exceeds(doubt_count(text, layer), limit_bp)
+        and page_path.DOUBT_SHARE_HIGH not in row["hold_codes"]
+    ):
+        raise FatalAccounting(
+            f"the delivered reading {row['act_key']} is more doubtful or unread than the "
+            f"sealed limit of {limit_bp} basis points, but was never held "
+            f"{page_path.DOUBT_SHARE_HIGH!r} for a person to decide"
+        )
+
+
 def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
     """Export the run: acts, the other layer, page rows, and the page accounting."""
     # Before anything is published, so a decision no review applied refuses cleanly.
@@ -1341,6 +1360,8 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
     continuation_flags: dict[str, list[str]] = {}
     projected_acts: list[dict] = []
     projected_others: list[dict] = []
+    # The sealed act doubt limit, read at the first delivered reading.
+    doubt_limit_bp: int | None = None
     delivered: list[dict] = []
     non_delivered: list[dict] = []
     canary_acts: list[dict] = []
@@ -1397,6 +1418,11 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 except SchemaRefusal as error:
                     refusal = f"the established reading's provenance was refused: {error}"
                 else:
+                    if doubt_limit_bp is None:
+                        doubt_limit_bp = require_page_accounting_policy(
+                            context, context.page_accounting_config_path
+                        ).max_act_doubt_share_bp
+                    require_doubt_hold(row, payload["text"], payload["uncertainty"], doubt_limit_bp)
                     entry.update(
                         {
                             "text": payload["text"],

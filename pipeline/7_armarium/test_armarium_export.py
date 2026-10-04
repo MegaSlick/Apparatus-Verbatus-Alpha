@@ -47,7 +47,7 @@ from textnorm import TEXTNORM_REVISION, search_fold
 from common.armarium_formats import ArmariumFormats
 from common.contracts.approval import real_ingress_record
 from common.contracts.canonical import canonical_bytes, canonical_text, digest_bytes, self_hash
-from common.contracts.errors import ApprovalRefusal, SchemaRefusal
+from common.contracts.errors import ApprovalRefusal, FatalAccounting, SchemaRefusal
 from common.contracts.identities import lot_id
 from common.contracts.outcomes import PAGE_READ_SILENT_PAGE_REASON, ArmariumCategory
 from common.contracts.outcomes import run_aggregate as _run_aggregate
@@ -586,6 +586,18 @@ def test_a_csv_cell_the_writer_would_not_write_is_refused(tmp_path):
 
 
 def test_the_readers_views_bracket_doubtful_ink_and_the_literal_stays_clean(tmp_path):
+    projection = _doubtful_projection()
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    shown = "[illegible] Cǣsar [d’Exemple?]"
+    lines = _members(bundle.data)[TEXT_REGISTER].decode("utf-8").split("\n")
+    assert lines[lines.index("diplomatic:") + 1] == json.dumps(shown, ensure_ascii=False)
+    assert _csv_rows(bundle.data)[0]["diplomatic_text"] == shown
+    literal = projection.acts[0][CANONICAL_TEXT_FIELD]
+    assert _verified_literals(bundle.data, tmp_path / "clean") == {"act-1": literal}
+
+
+def _doubtful_projection() -> ArmariumProjection:
+    """`act-1` read with a leading gap and `d’Exemple` doubtful: 10 of 15 doubtful or unread."""
     text, report = read_doubt_marks("[[?]] Cǣsar [[d’Exemple|d’Example]]")
     layer = {
         "uncertain_spans": report["uncertain_spans"],
@@ -594,15 +606,51 @@ def test_the_readers_views_bracket_doubtful_ink_and_the_literal_stays_clean(tmp_
         "assessment": _ASSESSED,
         "lectio_kind": "page-read",
     }
-    projection = _damaged_delivered(
+    return _damaged_delivered(
         _projection(), text_status="partial", canonical_clean_text=text, uncertainty=layer
     )
-    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
-    shown = "[illegible] Cǣsar [d’Exemple?]"
-    lines = _members(bundle.data)[TEXT_REGISTER].decode("utf-8").split("\n")
-    assert lines[lines.index("diplomatic:") + 1] == json.dumps(shown, ensure_ascii=False)
-    assert _csv_rows(bundle.data)[0]["diplomatic_text"] == shown
-    assert _verified_literals(bundle.data, tmp_path / "clean") == {"act-1": text}
+
+
+def test_the_doubt_share_of_each_act_and_page_is_recorded_and_recounted(tmp_path):
+    bundle = build_armarium_bundle(
+        _doubtful_projection(), _formats(embed_pixels=False), _source_bytes
+    )
+    claim = bundle.manifest["claims"]["doubt_share"]
+    assert claim["status"] == "measured"
+    assert claim["acts"] == [
+        {
+            "act_id": "act-1",
+            "act_key": "p1:1",
+            "page_ordinal": 1,
+            "doubtful_or_unread": 10,
+            "out_of": 15,
+        }
+    ]
+    assert claim["pages"] == [{"ordinal": 1, "doubtful_or_unread": 10, "out_of": 15}]
+    row = _csv_rows(bundle.data)[0]
+    assert (row["doubtful_or_unread"], row["out_of"]) == ("10", "15")
+    verify_delivered_bundle(bundle.data, tmp_path / "clean")
+
+    members = _members(bundle.data)
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["claims"]["doubt_share"]["acts"][0]["doubtful_or_unread"] = 0
+    manifest["claims"]["doubt_share"]["pages"][0]["doubtful_or_unread"] = 0
+    _refresh_manifest(members, manifest)
+    with pytest.raises(SchemaRefusal, match="doubt share"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "tampered")
+
+
+def test_a_reading_over_the_doubt_limit_is_exported_only_after_it_was_held():
+    """The export's own check that the Perlector's hold was not skipped."""
+    armarium = load_stage("7_armarium")
+    projection = _doubtful_projection()
+    act = projection.acts[0]
+    row = {"act_key": "p1:1", "hold_codes": []}
+    with pytest.raises(FatalAccounting, match="never held 'doubt-share-high'"):
+        armarium.require_doubt_hold(row, act[CANONICAL_TEXT_FIELD], act["uncertainty"], 2000)
+    released = {**row, "hold_codes": ["doubt-share-high"]}
+    armarium.require_doubt_hold(released, act[CANONICAL_TEXT_FIELD], act["uncertainty"], 2000)
+    armarium.require_doubt_hold(row, act[CANONICAL_TEXT_FIELD], act["uncertainty"], 7000)
 
 
 def test_a_partial_runs_text_bundle_says_it_is_partial_and_names_what_it_lacks(tmp_path):

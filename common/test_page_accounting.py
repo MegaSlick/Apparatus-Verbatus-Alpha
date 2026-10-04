@@ -1922,6 +1922,44 @@ def test_an_act_wrapping_columns_is_classified_over_its_lines_area_only():
     assert plans[0]["union_box_px"] == bx(100, 100, 900, 650)
 
 
+def _doubt_holds(*texts: str) -> list[list[str]]:
+    """Each entry's doubt holds when a two-column page is read as `texts`, one line each."""
+    case = two_columns([[f"L{n}"] for n in range(1, len(texts) + 1)])
+    answer = copy.deepcopy(case["reading"]["answer"])
+    for act, text in zip(answer["acts"], texts, strict=True):
+        act["text"] = text
+    plans = page_path.entry_plans(
+        answer,
+        {**case["feed"], "page_size": {"w": WIDTH, "h": HEIGHT}, "page_render": None},
+        page_id="pg_0123456789abcdef",
+        stop_reason="stop",
+        truncation_policy={truncation.LENGTH_FLOOR_FIELD: 1, truncation.LEGIBLE_PAGE_FIELD: 1},
+        accounting_policy=POLICY,
+    )
+    doubt = {page_path.DOUBT_SHARE_HIGH, page_path.PAGE_DOUBT_SHARE_HIGH}
+    return [sorted(doubt & set(plan["reading_holds"])) for plan in plans]
+
+
+def test_an_entry_or_a_page_mostly_doubtful_or_unread_is_held():
+    """More than the sealed share doubtful or unread holds; exactly the share does not.
+
+    "Jean Roy fils" with "Roy" doubtful is 3 of 11 characters, over 20%; "Jean"
+    and one gap is 1 of 5, exactly 20%. Two entries mostly doubtful take the page
+    over 30%, and then every entry on it holds.
+    """
+    assert (POLICY.max_act_doubt_share_bp, POLICY.max_page_doubt_share_bp) == (2000, 3000)
+    assert _doubt_holds("Jean [[Roy]] fils", "Jean [[?]]", "Le deux mai a été baptisé") == [
+        ["doubt-share-high"],
+        [],
+        [],
+    ]
+    assert _doubt_holds("[[Jean Roy]]", "Le deux [[mai]]", "baptisé") == [
+        ["doubt-share-high", "page-doubt-share-high"],
+        ["doubt-share-high", "page-doubt-share-high"],
+        ["page-doubt-share-high"],
+    ]
+
+
 def test_interleaved_blocks_are_cited_one_by_one_and_lend_no_area():
     record = account(two_columns([["S1-S3"]]))
     assert problem_codes_of(record) == ["detection-range"]

@@ -156,6 +156,11 @@ NO_AUTOPSIA: Final = "no-autopsia"
 # Held on every entry of an operator re-read that does not read each act of the
 # reading it replaces as one act of its own (`superseded_acts_kept`).
 SUPERSEDED_ACT_NOT_READ: Final = "superseded-act-not-read"
+# An entry, or every entry of a page reading, with more of its text doubtful or
+# unread than the sealed page-accounting policy's `[doubt]` limits allow, so a
+# reading cannot pass by marking everything doubtful.
+DOUBT_SHARE_HIGH: Final = "doubt-share-high"
+PAGE_DOUBT_SHARE_HIGH: Final = "page-doubt-share-high"
 
 # The act classes an entry mints: placed on the page, or citing no placing id
 # (`page_accounting.placement_boxes`).
@@ -742,8 +747,10 @@ def entry_plans(
     not the rectangle around them), and its own holds: the region's (`reading-unplaced`,
     `duplicate-region`, and `no-autopsia` when no page image was shown) and the
     reading's (`doubt-marks-malformed`, `reading-incomplete`,
-    `entry-no-readable-text`). The page accounting reads the truncations from
-    here, before any act record exists.
+    `entry-no-readable-text`, and `doubt-share-high` over the sealed `[doubt]`
+    limit). When all of the answer's entries together are over the page limit,
+    every entry also holds `page-doubt-share-high`. The page accounting reads the
+    truncations from here, before any act record exists.
 
     An operator re-read is given `superseded`, the entry plans the page counted
     before it. When it does not read each of their acts as one act of its own
@@ -761,6 +768,8 @@ def entry_plans(
     reading_attempt = page_reading_attempt(page_id, attempt)
     autopsia = feed["page_render"] is not None
     plans = []
+    # Each entry's (doubtful or unread, out of), summed for the page's limit.
+    doubts: list[tuple[int, int]] = []
     for entry in answer_entries(answer, feed, accounting_policy, named):
         act, union = entry["act"], entry["union_box_px"]
         act_class = READING_CLASS if union is not None else UNPLACED_CLASS
@@ -786,6 +795,13 @@ def entry_plans(
             reading_holds.append(READING_INCOMPLETE)
         if not text.strip():
             reading_holds.append(ENTRY_NO_READABLE_TEXT)
+        doubt = annotations.doubt_count(text, assessment)
+        doubts.append(doubt)
+        # An entry with no readable text is held by its own rule above.
+        if text.strip() and annotations.doubt_exceeds(
+            doubt, accounting_policy.max_act_doubt_share_bp
+        ):
+            reading_holds.append(DOUBT_SHARE_HIGH)
         plans.append(
             {
                 "act": act,
@@ -809,6 +825,10 @@ def entry_plans(
                 "autopsia": autopsia,
             }
         )
+    page_doubt = (sum(d for d, _ in doubts), sum(n for _, n in doubts))
+    if plans and annotations.doubt_exceeds(page_doubt, accounting_policy.max_page_doubt_share_bp):
+        for plan in plans:
+            plan["reading_holds"].append(PAGE_DOUBT_SHARE_HIGH)
     if superseded is not None and not superseded_acts_kept(superseded, plans):
         for plan in plans:
             plan["reading_holds"].append(SUPERSEDED_ACT_NOT_READ)
