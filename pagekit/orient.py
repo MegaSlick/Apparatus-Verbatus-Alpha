@@ -134,39 +134,73 @@ def _peakedness(values: list[int]) -> float:
     return variance / (mean * mean)
 
 
-def _tile_scores(ink: Image.Image, value: dict[str, Any]) -> list[float]:
+def _tile_scores(
+    ink: Image.Image,
+    value: dict[str, Any],
+    marks: list[Mark] | None = None,
+    offset: tuple[int, int] = (0, 0),
+) -> tuple[list[float], int]:
     """ln(row sharpness / column sharpness) for each square tile that holds writing
-    (ink share within the tile limits). Inside a tile of writing the row profile
-    alternates lines and gaps while the column profile is flat; tiles of margin,
-    gutter, page edges or dark masses are left out, so their structure does not pull
-    the score."""
+    (ink share within the tile limits), and how many tiles of uniform marks were left
+    out. Inside a tile of writing the row profile alternates lines and gaps while the
+    column profile is flat; tiles of margin, gutter, page edges or dark masses are left
+    out, so their structure does not pull the score. Tiles whose marks nearly all share
+    one size (figures in columns, which stack as exactly along a column as along a
+    line) do not vote either. The grid is centred on the frame, so a half turn gives
+    the same tiles. `marks` are in the coordinates of the frame `ink` was cropped from,
+    at `offset`."""
     width, height = ink.size
     size = value["orient_tile_px"]
+    across, down = width // size, height // size
+    left, top = (width - across * size) // 2, (height - down * size) // 2
+    by_tile: dict[tuple[int, int], list[Mark]] = {}
+    for mark in marks or []:
+        cx = (mark.x0 + mark.x1) / 2 - offset[0] - left
+        cy = (mark.y0 + mark.y1) / 2 - offset[1] - top
+        if 0 <= cx < across * size and 0 <= cy < down * size:
+            by_tile.setdefault((int(cx // size), int(cy // size)), []).append(mark)
     tiny = 1e-6
     scores = []
-    for y in range(0, height - size + 1, size):
-        for x in range(0, width - size + 1, size):
+    uniform = 0
+    for j in range(down):
+        for i in range(across):
+            x, y = left + i * size, top + j * size
             tile = ink.crop((x, y, x + size, y + size))
             share = tile.histogram()[255] / (size * size)
             if not value["tile_min_ink"] <= share <= value["tile_max_ink"]:
                 continue
+            inside = by_tile.get((i, j), [])
+            if (
+                len(inside) >= value["tile_min_marks"]
+                and _uniform_share(inside, value) >= value["same_size_share"]
+            ):
+                uniform += 1
+                continue
             rows = _peakedness(profile(tile, along_x=False))
             columns = _peakedness(profile(tile, along_x=True))
             scores.append(math.log((rows + tiny) / (columns + tiny)))
-    return scores
+    return scores, uniform
 
 
-def _direction(ink: Image.Image, marks: list[Mark], value: dict[str, Any]) -> dict[str, Any]:
+def _direction(
+    ink: Image.Image,
+    marks: list[Mark],
+    value: dict[str, Any],
+    offset: tuple[int, int] = (0, 0),
+) -> dict[str, Any]:
     """Positive score: lines run across. Negative: lines run down.
 
     The profile cue is the median over tiles of writing; when too few tiles hold
-    writing it falls back to the profiles of the whole content."""
-    tiles = _tile_scores(ink, value)
+    writing it falls back to the profiles of the whole content. `dissent` is the share
+    of voting tiles whose own vote is against the median."""
+    tiles, uniform = _tile_scores(ink, value, marks, offset)
     rows = _peakedness(profile(ink, along_x=False))
     columns = _peakedness(profile(ink, along_x=True))
     tiny = 1e-9
+    dissent = 0.0
     if len(tiles) >= value["min_tiles"]:
         profile_score = median(tiles)
+        dissent = sum(1 for t in tiles if t * profile_score < 0) / len(tiles)
     else:
         profile_score = math.log((rows + tiny) / (columns + tiny))
     ratio = value["shape_ratio"]
@@ -177,6 +211,8 @@ def _direction(ink: Image.Image, marks: list[Mark], value: dict[str, Any]) -> di
         "score": score,
         "profile": profile_score,
         "tiles": len(tiles) if len(tiles) >= value["min_tiles"] else 0,
+        "uniform_tiles": uniform,
+        "dissent": dissent,
         "rows": rows,
         "columns": columns,
         "wide": wide,
@@ -415,13 +451,19 @@ def detect_orientation(
             [TOO_LITTLE_INK],
         )
     clean = paint(marks, ink.size)
-    clean = clean.crop(clean.getbbox())
-    direction = _direction(clean, marks, value)
+    box = clean.getbbox()
+    clean = clean.crop(box)
+    direction = _direction(clean, marks, value, (box[0], box[1]))
     margin = math.log(value["direction_margin"])
     score = direction["score"]
     across_confidence = strength(abs(score), margin)
     if direction["tiles"]:
-        basis = f"median over {direction['tiles']} tiles of writing"
+        basis = (
+            f"median over {direction['tiles']} tiles of writing, "
+            f"{direction['dissent']:.0%} of them voting the other way"
+        )
+        if direction["uniform_tiles"]:
+            basis += f"; {direction['uniform_tiles']} tiles of one-size marks left out"
     else:
         basis = "whole content, too few tiles of writing"
     profiles = (
@@ -433,6 +475,15 @@ def detect_orientation(
             0,
             UNCERTAIN_SCALE * across_confidence,
             f"Lines across or down too close to call ({profiles}); {DEFAULT_NOTE}.",
+            [UNCERTAIN_DIRECTION],
+        )
+    if direction["dissent"] > value["tile_dissent_share"]:
+        return answer(
+            0,
+            UNCERTAIN_SCALE * min(across_confidence, 0.49),
+            f"Lines across or down not decided ({profiles}): more than "
+            f"{value['tile_dissent_share']:.0%} of the tiles of writing vote against the "
+            f"median, as on a page mixing writing with columns of figures; {DEFAULT_NOTE}.",
             [UNCERTAIN_DIRECTION],
         )
     if score > 0:
