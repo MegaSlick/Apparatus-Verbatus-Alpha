@@ -95,8 +95,8 @@ jobs:
         run: sh .githooks/check-all.sh --ci --parallel
 
   # The operator runs on the lead's Mac, Intel or Apple silicon, so the parts a Mac runs
-  # are tested there: the operator, pagekit, the hooks, and the shell scripts it runs or
-  # prints (the start command's laptop half, not the command it prints). The pod and
+  # are tested there: the operator, pagekit, the triage geometry `verbatus prepare` writes
+  # and the Door renders, the hooks, and the shell scripts it runs or prints (the start command's laptop half, not the command it prints). The pod and
   # serving suites, the guard's among them, need Linux and stay in `test`. Not part of the
   # required `check`: the Linux gate alone decides a merge.
   mac:
@@ -149,6 +149,8 @@ jobs:
           export NTFY_TOPIC
           .venv/bin/python -m pytest -p xdist -n 3 --dist loadfile \
             operations/operator pagekit \
+            operations/triage/test_pagekit_geometry.py operations/triage/test_pagekit_recipe.py \
+            common/test_triage_post_crop.py \
             operations/pod/test_pod_start_command.py operations/pod/test_session_end_pod_check.py \
             .githooks/test_hooks.py .githooks/test_ci_workflow.py
 
