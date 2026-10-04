@@ -387,3 +387,18 @@ record".
 - **Brief 0023:** `briefs/0023-build-prepare-pipeline.md` (sha256
   931a7ee1bbc1b1cf089629941ee1079102d17877c59ea862d45aa434e716c769), for a fresh build-side
   agent, saved before it started.
+
+## 0022 — Reviews of the tone view and of the skew fixes; follow-up briefs 0024 and 0025
+
+- **Independent review of the tone view** (`work/pk-tone`) by a fresh agent bound by the
+  clean-room rule (it saw no GPL source): gentle, fast and pixel-deterministic, but paper
+  clipped to white near sharp stain edges and on dense pages, the written TIFF was not
+  byte-identical on repeat, and the output could overwrite the input.
+- **Re-review of 64c8fe0** (`work/pk-skew`), same rule: the four losses are fixed, but
+  paper mottling, textured backdrops and targets were read as ink, sending ordinary
+  pages to review, and a ruler on a pale backdrop gave a confident wrong page box.
+- **Follow-up briefs:** `briefs/0024-build-tone-review-fixes.md` (sha256
+  37b02eaad4245533bdbd3faf484c36b444a1fc1d8d58108467110ec27b9c4431), sent to the agent of
+  brief 0020; `briefs/0025-build-skew-regression-fixes.md` (sha256
+  f67a91369193bf7eb22f141614abe8975448b44c437ceb79ea18b510cb3d9d23), sent to the agent of
+  brief 0018. Both saved before they were sent.
