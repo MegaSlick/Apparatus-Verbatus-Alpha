@@ -293,3 +293,22 @@ record".
 - **The agent's own account:** it opened only pagekit's clean-room code and tests, the
   report-check part of CLEANROOM.md and the hook files. It saw no ScanTailor or other
   GPL source. All 35 accepted findings still pass the report check unchanged.
+
+## 0016 — Specs 0002 to 0004 written; three build-side briefs issued
+
+- **Who:** the host (Claude Opus 5.5), in the session the lead asked to bring pagekit
+  towards a usable page-preparation tool with the two-sided process.
+- **Specs:** `specs/0002-prepare-core.md` (the project file, the geometry chain applied
+  once, point mapping, the output writer and the `prepare` command),
+  `specs/0003-orientation-and-split.md` and `specs/0004-skew-and-boxes.md`. The host
+  wrote them from the finding reports accepted in entry 0008 (with the correction in
+  entry 0014), spec 0001 and the papers those reports cite. They were committed before
+  any brief was issued.
+- **Briefs**, each saved before its agent started, for three fresh build-side agents
+  working in parallel in separate worktrees:
+  - `briefs/0016-build-prepare-core.md` (sha256 ee4b17a61f3991a7a1df8dd46e0a37402ab2992c400090fd4792fbd824bb36d0);
+  - `briefs/0017-build-orientation-split.md` (sha256 00ece8d673cd968a239b37012b530b54175235902612d127be3092269ef447c3);
+  - `briefs/0018-build-skew-boxes.md` (sha256 6e5f0d64c0da25b49919a6cb9bd6550313876473f5f2dc7972770cdb8a2b92b0).
+- **Sources named in the briefs:** the spec and the finding reports listed in each
+  brief, published papers, pagekit's own code and Pillow. No reading-side material
+  beyond the accepted findings.
