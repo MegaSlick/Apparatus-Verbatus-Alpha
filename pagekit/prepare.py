@@ -32,7 +32,7 @@ import hashlib
 import io
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -40,7 +40,16 @@ from PIL import Image, UnidentifiedImageError
 
 from pagekit import __version__
 from pagekit.answer import PAGE_STEPS, SOURCE_STEPS, STEPS, Answer, AnswerError, validate_answer
-from pagekit.geometry import Chain, GeometryError, margin_box, paper_colour, render
+from pagekit.geometry import (
+    TAG_WORDS,
+    Chain,
+    GeometryError,
+    apply_tag,
+    margin_box,
+    paper_colour,
+    render,
+    tagged_size,
+)
 from pagekit.project import (
     PROJECT_SCHEMA,
     SHA256,
@@ -59,6 +68,7 @@ IMAGE_SUFFIXES = (".png", ".tif", ".tiff", ".jpg", ".jpeg")
 # Modes read: grey and colour as they are; bilevel to grey; palette to grey or colour.
 _KEPT_MODES = frozenset({"L", "RGB", "1", "P"})
 _MM_PER_INCH = 25.4
+_ORIENTATION_TAG = 0x0112  # Exif and TIFF tag 274
 
 
 @dataclass(frozen=True)
@@ -72,6 +82,7 @@ class Source:
     size: tuple[int, int]
     mode: str  # the stored mode
     file_dpi: tuple[float, float] | None
+    tag_found: int | None = None  # the file's orientation tag as read, if it has one
 
     def open(self) -> Image.Image:
         """The decoded original in L or RGB, checked against the sha256 read first."""
@@ -157,6 +168,21 @@ def _decode(data: bytes, path: Path) -> Image.Image:
         raise SourceError(path, reason) from error
 
 
+def _file_tag(image: Image.Image) -> int | None:
+    """The file's orientation tag (Exif tag 274) as a whole number, if it has one; a
+    value that is not a whole number reads as 0, which is not a valid tag."""
+    try:
+        value = image.getexif().get(_ORIENTATION_TAG)
+    except Exception:  # unreadable metadata is no tag
+        return None
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _file_dpi(image: Image.Image) -> tuple[float, float] | None:
     dpi = image.info.get("dpi")
     if not dpi or len(dpi) != 2:
@@ -176,7 +202,7 @@ def read_source(path: Path, project_folder: Path) -> Source:
         raise SourceError(path, f"the file cannot be read ({reason})") from error
     image = _decode(data, path)
     with Image.open(io.BytesIO(data)) as stored:
-        mode, dpi = stored.mode, _file_dpi(stored)
+        mode, dpi, tag = stored.mode, _file_dpi(stored), _file_tag(stored)
     return Source(
         path=path,
         relative=Path(os.path.relpath(path, project_folder)).as_posix(),
@@ -185,6 +211,7 @@ def read_source(path: Path, project_folder: Path) -> Source:
         size=image.size,
         mode=mode,
         file_dpi=dpi,
+        tag_found=tag,
     )
 
 
@@ -200,27 +227,38 @@ class StepContext:
     settings: dict[str, Any]  # every setting's value
     _image: Callable[[], Image.Image] = field(repr=False, default=None)
     cache: dict[Any, Any] = field(repr=False, default_factory=dict)  # shared per source
+    tag: int = 1  # the orientation tag applied before everything else (1: none)
 
     def image(self) -> Image.Image:
         """The decoded original source. Never change it and never write it out."""
         return self._image()
 
+    def frame(self) -> Image.Image:
+        """The source after its orientation tag (exact): what orientation and the split
+        look at."""
+        return apply_tag(self.image(), self.tag)
+
+    @property
+    def frame_size(self) -> tuple[int, int]:
+        return tagged_size(self.source.size, self.tag)
+
     def chain(self, scale: float = 1.0) -> Chain:
         """The chain to the grid this step works in, whole, scaled by `scale` (<= 1).
 
-        Orientation works on the source as stored, split on the upright frame, skew on
-        the page before levelling, and the box steps on the levelled page.
+        Orientation works on the tagged frame (the source after its orientation tag),
+        split on the upright frame, skew on the page before levelling, and the box steps
+        on the levelled page.
         """
-        size = self.source.size
+        size, tag = self.source.size, self.tag
         if self.step == "orientation":
-            return Chain.build(size, 0, {"pages": 1}, 0, 0.0, 0.0, None, scale)
+            return Chain.build(size, 0, {"pages": 1}, 0, 0.0, 0.0, None, scale, tag)
         turns = self.values["orientation"]
         if self.step == "split":
-            return Chain.build(size, turns, {"pages": 1}, 0, 0.0, 0.0, None, scale)
+            return Chain.build(size, turns, {"pages": 1}, 0, 0.0, 0.0, None, scale, tag)
         angle = 0.0 if self.step == "skew" else self.values["skew"]
         overlap = _overlap_px(self.settings, self.resolution, turns)
         return Chain.build(
-            size, turns, self.values["split"], self.page - 1, overlap, angle, None, scale
+            size, turns, self.values["split"], self.page - 1, overlap, angle, None, scale, tag
         )
 
     def working_copy(self, long_side: int) -> tuple[Image.Image, Chain]:
@@ -330,6 +368,9 @@ class PagePlan:
     flags: list[dict[str, str]]
     output_dpi: tuple[float, float] | None
     resolution: dict[str, Any]
+    tag: dict[str, Any] = field(default_factory=dict)  # the orientation tag's record
+    mode: dict[str, Any] = field(default_factory=dict)  # the output mode (spec 0007)
+    density: dict[str, Any] | None = None  # a nominal density set by hand, if any
 
 
 @dataclass
@@ -403,6 +444,10 @@ class _Runner:
         self.image_loader = image_loader
         self.cache: dict[Any, Any] = {}
         self.source_dpi: float | None = None  # --dpi, for sources that carry none
+        self.tag = 1  # the orientation tag applied to the source being settled
+        self.run_mode: str | None = None  # this run's output mode choice, if one was made
+        # {(source, step, page): sentence} added to that step's evidence in the manifest.
+        self.notes: dict[tuple[str, str, int | None], str] = {}
         self.stale: list[dict[str, Any]] = []
         # {(source relative path, step, page): sentence} for hand-set values a confident
         # detection disagrees with.
@@ -413,6 +458,8 @@ class _Runner:
         reads = {name: self.values[name] for name in detector.settings}
         for name in detector.files:
             reads[f"file {name}"] = file_digest(name)
+        if self.tag != 1:  # only when applied, so a source with no tag reads as before
+            reads["orientation_tag"] = self.tag
         if step in PAGE_STEPS or step == "split":
             reads["overlap_mm"] = self.values["overlap_mm"]
             reads["resolution"] = None if resolution is None else list(resolution)
@@ -532,6 +579,7 @@ class _Runner:
             self.values,
             self.image_loader,
             self.cache,
+            self.tag,
         )
 
     def _compare(self, source, step, page, earlier, resolution, value) -> None:
@@ -613,10 +661,10 @@ def _resolution(source: Source, old: dict | None, override: Override | None, val
     return stored, usable, flags
 
 
-def _check_split(source: Source, split_record, turns: int) -> None:
+def _check_split(source: Source, split_record, turns: int, tag: int = 1) -> None:
     for page in range(split_record["value"]["pages"]):
         try:
-            Chain.build(source.size, turns, split_record["value"], page, 0.0, 0.0)
+            Chain.build(source.size, turns, split_record["value"], page, 0.0, 0.0, tag=tag)
         except GeometryError as error:
             raise PrepareError(
                 f"{source.relative}: the {split_record['origin']} split cannot be used: {error}"
@@ -631,6 +679,16 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
     )
     if runner.dry and old is not None and old["resolution"] != stored:
         runner._note(source, "resolution", None, "the resolution changes")
+    tag_record, tag_flags, tag_note = _orientation_tag(
+        source, old, overrides.get(("tag_trust", None)), values
+    )
+    tag = tag_record["found"] if tag_record["applied"] else 1
+    runner.tag = tag
+    if tag_note:
+        runner.notes[(source.relative, "orientation", None)] = tag_note
+    # The millimetre settings work in the tagged frame, whose axes a tag may swap.
+    usable = _tagged_dpi(usable, tag)
+    stored_frame = dict(stored, value=_tagged_dpi(stored["value"], tag))
     old_steps = old["steps"] if old else {}
     steps: dict[str, dict[str, Any]] = {}
     earlier: dict[str, Any] = {}
@@ -647,7 +705,7 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
             uncertain.add(step)
         steps[step] = entry
         earlier[step] = entry["value"]
-    _check_split(source, steps["split"], earlier["orientation"])
+    _check_split(source, steps["split"], earlier["orientation"], tag)
     count = earlier["split"]["pages"]
     old_pages = {page["page"]: page for page in (old["dropped_pages"] if old else [])}
     old_pages.update({page["page"]: page for page in (old["pages"] if old else [])})
@@ -708,31 +766,64 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
             page_steps[step] = entry
             page_earlier[step] = entry["value"]
         output_name = f"{base}_p{number}.{extension}"
-        pages.append({"page": number, "output": output_name, "steps": page_steps})
+        mode_record = _mode_record(
+            overrides.get(("output_mode", number)), old_page.get("output_mode"), runner.run_mode
+        )
+        page_entry = {"page": number, "output": output_name, "steps": page_steps}
+        if mode_record is not None:
+            page_entry["output_mode"] = mode_record
+        density_override = overrides.get(("density", number))
+        nominal = density_override.value if density_override else old_page.get("density")
+        if nominal is not None:
+            page_entry["density"] = list(nominal)
+        pages.append(page_entry)
         if runner.dry:
             continue
         chain, chain_flags, output_dpi = _page_chain(
-            source, number, page_earlier, usable, stored, values
+            source, number, page_earlier, usable, stored_frame, values, tag
         )
         all_steps = {}
         for step, entry in {**steps, **page_steps}.items():
             key = (source.relative, step, None if step in SOURCE_STEPS else number)
-            sentence = runner.comparisons.get(key)
+            said = [runner.comparisons.get(key), runner.notes.get(key)]
+            sentence = " ".join(part for part in said if part) or None
             # The project keeps the person's own evidence; the manifest and the review
-            # sheet also say where a confident detection disagrees.
+            # sheet also say where a confident detection disagrees, or a tag is not
+            # trusted.
             all_steps[step] = (
                 entry
                 if sentence is None
                 else {**entry, "evidence": f"{entry['evidence']} {sentence}"}
             )
         flags = [{"step": "resolution", "reason": reason} for reason in source_flags]
+        flags += [{"step": "orientation_tag", "reason": reason} for reason in tag_flags]
         flags += [{"step": "split", "reason": reason} for reason in split_flags]
         for step in STEPS:
             flags += [{"step": step, "reason": reason} for reason in all_steps[step]["flags"]]
-        flags += [{"step": "margin", "reason": reason} for reason in chain_flags]
+        flags += chain_flags
         flags += _outside_flags(chain, page_steps)
+        density = None
+        if nominal is not None:
+            density = _nominal_density(source, number, nominal, output_dpi)
+            output_dpi = tuple(density["nominal"])
+        mode, mode_flags = _output_mode(
+            source, number, page_earlier, usable, mode_record, chain, runner, tag
+        )
+        flags += [{"step": "output_mode", "reason": reason} for reason in mode_flags]
         plans.append(
-            PagePlan(source, number, output_name, chain, all_steps, flags, output_dpi, stored)
+            PagePlan(
+                source,
+                number,
+                output_name,
+                chain,
+                all_steps,
+                flags,
+                output_dpi,
+                stored,
+                tag_record,
+                mode,
+                density,
+            )
         )
     entry = {
         "path": source.relative,
@@ -741,7 +832,8 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         "size": list(source.size),
         "mode": source.mode,
         "resolution": stored,
-        "flags": source_flags + split_flags,
+        "orientation_tag": tag_record,
+        "flags": source_flags + tag_flags + split_flags,
         "steps": steps,
         "pages": pages,
         "dropped_pages": dropped_pages,
@@ -780,7 +872,207 @@ def _outside_flags(chain: Chain, steps: dict[str, dict[str, Any]]) -> list[dict[
     return flags
 
 
-def _page_chain(source, number, values, usable, stored, settings):
+OUTPUT_MODES = ("source", "grey")
+_SET_BY_WORDS = {
+    "default": "the default",
+    "run": "this batch's choice",
+    "manual": "set by hand",
+    "locked": "set by hand and locked",
+}
+
+
+def _mode_record(override: Override | None, old: dict | None, run_mode: str | None):
+    """A page's output mode choice as the project keeps it, or None for the default.
+
+    Precedence: an override in this run; one set by hand before; this run's choice
+    (which covers only the sources of this run); an earlier run's choice."""
+    if override is not None:
+        set_by = "locked" if override.lock else "manual"
+        return {"value": override.value, "set_by": set_by, "evidence": override.evidence}
+    if old is not None and old["set_by"] in ("manual", "locked"):
+        return dict(old)
+    if run_mode is not None:
+        return {
+            "value": run_mode,
+            "set_by": "run",
+            "evidence": f"Chosen for the sources of a run (--output-mode {run_mode}).",
+        }
+    return None if old is None else dict(old)
+
+
+def _output_mode(source, number, values, usable, record, chain, runner, tag):
+    """The page's output mode as the manifest records it, and any flags.
+
+    A grey choice on a page whose colour is more than its paper's noise is flagged,
+    and the page is kept in source mode unless grey was set by hand or locked."""
+    from pagekit.greypage import RULE_WORDS, colour_evidence, equal_channels
+
+    settings = runner.values
+    chosen = "source" if record is None else record["value"]
+    set_by = "default" if record is None else record["set_by"]
+    mode = {
+        "mode": chosen,
+        "chosen": chosen,
+        "set_by": set_by,
+        "rule": None,
+        "rule_words": None,
+        "exact": None,
+        "colour": None,
+    }
+    if chosen != "grey":
+        return mode, []
+    image = runner.image_loader()
+    if "equal channels" not in runner.cache:
+        runner.cache["equal channels"] = equal_channels(image)
+    exact = runner.cache["equal channels"]
+    rule = settings["grey_rule"]
+    mode.update({"rule": rule, "rule_words": RULE_WORDS[rule], "exact": exact})
+    if exact:
+        return mode, []
+    # The colour measure, on a reduced copy of the page's side of the frame.
+    dpi = _upright_dpi(usable, values["orientation"])
+    dpi = dpi or (settings["unknown_dpi_assumed"],) * 2
+    scale = min(1.0, settings["colour_working_dpi"] / max(dpi))
+    overlap = _overlap_px(settings, usable, values["orientation"])
+    frame = Chain.build(
+        source.size,
+        values["orientation"],
+        values["split"],
+        number - 1,
+        overlap,
+        0.0,
+        None,
+        scale,
+        tag,
+    )
+    fill, _ = paper_colour(image, frame, settings["paper_estimate_long_side_px"])
+    small = render(image, frame, fill)
+    found = colour_evidence(small, _MM_PER_INCH / (max(dpi) * scale), settings)
+    where = None
+    if found["box"] is not None:
+        x0, y0, x1, y1 = found["box"]
+        corners = chain.forward(frame.inverse([(x0, y0), (x1, y0), (x1, y1), (x0, y1)]))
+        width, height = chain.output_size
+        xs = [min(max(x, 0.0), width) for x, _ in corners]
+        ys = [min(max(y, 0.0), height) for _, y in corners]
+        where = [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))]
+    mode["colour"] = {
+        "paper_chroma_noise": found["paper_chroma_noise"],
+        "chroma_threshold": found["chroma_threshold"],
+        "coloured_mm2": found["coloured_mm2"],
+        "where": where,
+    }
+    if not found["holds_colour"]:
+        return mode, []
+    place = f"around x {where[0]} to {where[2]}, y {where[1]} to {where[3]} of the page"
+    said = (
+        f"This page holds colour that grey would remove: {found['coloured_mm2']:g} mm² of "
+        f"marks stand clearly above the paper's own colour noise, {place}."
+    )
+    if set_by in ("manual", "locked"):
+        return mode, [f"{said} It is made grey as {_SET_BY_WORDS[set_by]}; the colour is lost."]
+    mode["mode"] = "source"
+    return mode, [
+        f"{said} It is kept in colour; to make it grey anyway, set output_mode grey for "
+        "this page by hand."
+    ]
+
+
+def _tagged_dpi(resolution, tag: int):
+    """A resolution (x, y) of the stored pixels, in the tagged frame's axes."""
+    if resolution is None or tag not in (5, 6, 7, 8):
+        return resolution
+    swapped = (resolution[1], resolution[0])
+    return list(swapped) if isinstance(resolution, list) else swapped
+
+
+def _orientation_tag(source: Source, old, override: Override | None, values):
+    """The orientation tag's record for a source, flags, and a note for the evidence.
+
+    The tag is trusted by the trust_orientation_tag setting unless a tag_trust override
+    (this run's, or one kept in the project) says otherwise. A trusted tag of 2 to 8 is
+    applied; a value outside 1 to 8 is flagged and the source taken as stored."""
+    if override is not None:
+        trusted, origin = bool(override.value), "override"
+    elif old is not None and old.get("orientation_tag", {}).get("trust_origin") == "override":
+        trusted, origin = old["orientation_tag"]["trusted"], "override"
+    else:
+        trusted, origin = bool(values["trust_orientation_tag"]), "setting"
+    found = source.tag_found
+    flags, note, applied = [], None, 1
+    if found is not None and found not in TAG_WORDS:
+        flags.append(
+            f"The file's orientation tag has the value {found}, which is not one of the "
+            "eight the Exif standard defines (1 to 8); the source is taken as stored."
+        )
+    elif found not in (None, 1) and not trusted:
+        note = (
+            f"The file's orientation tag ({found}: {TAG_WORDS[found]}) is not trusted for "
+            "this source, so the stored pixels were used as they are."
+        )
+    elif found not in (None, 1):
+        applied = found
+    record = {
+        "found": found,
+        "trusted": trusted,
+        "trust_origin": origin,
+        "applied": applied != 1,
+        "transform": TAG_WORDS[applied],
+    }
+    return record, flags, note
+
+
+_RATIO_TOLERANCE = 0.002
+
+
+def _nominal_density(source, number, nominal, accepted) -> dict[str, Any]:
+    """A nominal output density set by hand, checked against the accepted resolution:
+    the ratio of its axes must be the accepted one, since pagekit never stretches
+    pixels to change it. PrepareError otherwise."""
+    where = f"{source.relative} page {number}"
+    if accepted is None:
+        raise PrepareError(
+            f"{where}: a nominal density needs the scan's resolution, which this source "
+            "does not have; give it first (--dpi, or a resolution line)"
+        )
+    want = nominal[0] / nominal[1]
+    have = accepted[0] / accepted[1]
+    # Within the precision a file stores a resolution in (PNG keeps dots per metre).
+    if abs(want - have) > _RATIO_TOLERANCE * have:
+        raise PrepareError(
+            f"{where}: the nominal density {nominal[0]:g} x {nominal[1]:g} dpi changes the "
+            f"ratio between the axes (accepted {accepted[0]:g} x {accepted[1]:g} dpi); "
+            "pagekit never stretches pixels to change it, so give a density with the same "
+            "ratio"
+        )
+    return {"nominal": [float(v) for v in nominal], "accepted": [float(v) for v in accepted]}
+
+
+def _padding(settings, upright_dpi, scale) -> tuple[tuple[int, int, int, int], list[dict]]:
+    """The padding on each side in output pixels, and any flag (spec 0007): padding_px
+    as it is, or padding_mm converted per axis with the output resolution."""
+    if settings["padding_px"] > 0:
+        side = int(settings["padding_px"])
+        return (side, side, side, side), []
+    if settings["padding_mm"] <= 0:
+        return (0, 0, 0, 0), []
+    if upright_dpi is None:
+        return (0, 0, 0, 0), [
+            {
+                "step": "padding",
+                "reason": (
+                    f"Padding of {settings['padding_mm']:g} mm needs the scan's resolution, "
+                    "which this source does not have, so none was added; give it with "
+                    "--dpi, or set the padding in pixels."
+                ),
+            }
+        ]
+    across = round(settings["padding_mm"] * upright_dpi[0] * scale[0] / _MM_PER_INCH)
+    down = round(settings["padding_mm"] * upright_dpi[1] * scale[1] / _MM_PER_INCH)
+    return (across, down, across, down), []
+
+
+def _page_chain(source, number, values, usable, stored, settings, tag: int = 1):
     """The chain of page `number` (from 1), any margin flags, and its output dpi."""
     turns = values["orientation"]
     overlap = _overlap_px(settings, usable, turns)
@@ -800,18 +1092,35 @@ def _page_chain(source, number, values, usable, stored, settings):
     if box is None:
         box = tuple(values["page_box"])
         flags.append(
-            "The content box lies wholly outside the page box and its allowance, so the "
-            "whole page box was kept."
+            {
+                "step": "margin",
+                "reason": (
+                    "The content box lies wholly outside the page box and its allowance, "
+                    "so the whole page box was kept."
+                ),
+            }
         )
     scale = 1.0
     if upright_dpi is not None and settings["max_output_dpi"] > 0:
         scale = min(1.0, settings["max_output_dpi"] / max(upright_dpi))
     try:
         chain = Chain.build(
-            source.size, turns, values["split"], number - 1, overlap, values["skew"], box, scale
+            source.size,
+            turns,
+            values["split"],
+            number - 1,
+            overlap,
+            values["skew"],
+            box,
+            scale,
+            tag,
         )
     except GeometryError as error:
         raise PrepareError(f"{source.relative} page {number}: {error}") from error
+    padding, padding_flags = _padding(settings, upright_dpi, chain.scale)
+    flags += padding_flags
+    if any(padding):
+        chain = replace(chain, padding=padding)
     declared = _upright_dpi(stored["value"], turns)
     output_dpi = None
     if declared is not None:
@@ -869,6 +1178,7 @@ def plan(
     dry: bool = False,
     tone_view: bool = False,
     source_dpi: float | None = None,
+    output_mode: str | None = None,
 ) -> Plan:
     """Read every source, settle every step value and plan every output, writing nothing.
 
@@ -987,6 +1297,10 @@ def plan(
                 f"({low:g} to {high:g} dots per inch)"
             )
         runner.source_dpi = float(source_dpi)
+    if output_mode is not None:
+        if output_mode not in OUTPUT_MODES:
+            raise PrepareError(f"the output mode is source or grey, not {output_mode!r}")
+        runner.run_mode = output_mode
     entries, pages = [], []
     for source in sources:
         cache: dict[str, Image.Image] = {}

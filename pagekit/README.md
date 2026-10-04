@@ -156,6 +156,80 @@ page at `detector_working_dpi`, made from the original in one resampling, and th
 boxes are scaled back outward. The prepared page itself is always made from the
 original.
 
+### The orientation tag
+
+Some image files carry a tag saying how their stored pixels must be turned, or turned
+and mirrored, to show the picture upright: the orientation tag of the Exif standard
+(CIPA DC-008, Exif 2.32, 2019), which defines eight values. pagekit reads it and applies
+its transform once, exactly (no resampling), before anything else: orientation, the
+split and every later step see the corrected frame, and a person's quarter turns come
+after it. The transform is the first link of the geometry chain (an `orientation_tag`
+step, only when a tag is applied), so the point maps still lead back to the stored
+pixels. Prepared pages carry no orientation tag, so no reader turns them again.
+
+A tag outside the eight values is flagged and the source taken as stored. Whether to
+trust tags is the `trust_orientation_tag` setting (default 1, trust); for one source,
+an overrides line `{"source": ..., "step": "tag_trust", "value": false}` ignores its
+tag, the orientation evidence says so, and later runs keep it. The manifest's
+`orientation_tag` and the project's record name the value found, whether it is trusted
+and applied, and the transform.
+
+### A grey main page
+
+`--output-mode grey` makes the pages of the sources in that run grey (8-bit, still
+lossless); `--output-mode source` (the default) keeps the source's colour mode. The
+choice is recorded with those sources in the project and kept for them on later runs;
+sources added later are not covered. For one page, an overrides line
+`{"source": ..., "step": "output_mode", "page": 1, "value": "grey"}` (or `"source"`,
+optionally with `"lock": true`) sets it by hand.
+
+The grey page goes through exactly the same chain as the colour page and is then
+converted pixel by pixel: no flattening, no tone curve, no sharpening (the tone view
+stays separate). When every pixel of the source has equal channels, the common channel
+is kept, so every intensity is unchanged, and the manifest says the conversion was
+exact. Otherwise the `grey_rule` setting (or `--grey-rule`) decides: `luminance`
+(the ITU-R BT.601 weights, 0.299 red + 0.587 green + 0.114 blue), or one channel,
+`red`, `green` or `blue`; the conversion is then a reviewed one.
+
+Before a colour page is made grey, pagekit measures its colour: the chroma of each
+pixel (largest minus smallest channel) on a reduced copy, against the chroma noise of
+the page's own plain paper. If marks stand clearly above that noise
+(`colour_chroma_margin`) over at least `colour_min_area_mm2`, the page is flagged ("this
+page holds colour that grey would remove", naming where) and kept in colour, unless grey
+was set by hand or locked for it, in which case it is grey and the flag stays. Colour
+that is only sensor noise does not count. The manifest's `output_mode` records the mode
+written, the choice and who made it, the rule, whether it was exact, and the colour
+measure; the review sheet shows the same with lines to keep the page as scanned or to
+force grey.
+
+### Padding apart from the margin
+
+The margin keeps photographed paper around the content box (clamped to the page box
+plus the allowance), as before. Padding is separate, default none: a band of the
+page's measured paper colour added around the finished page, `--padding 4mm`
+(converted per axis with the resolution; a source with no resolution gets none, with a
+flag) or `--padding 20px` (settings `padding_mm` and `padding_px`, one or the other). It
+enlarges the canvas without changing the content's scale or position relative to the
+source: it is the last link of the geometry chain (a `pad` step, only when set), so the
+point maps include it.
+
+The manifest's geometry also records, for every page, `margin_box` (in the levelled
+grid and as its four corners in the stored source's pixels) and `regions`: the canvas,
+the padding on each side, the content area, the `photographed` polygon (the part of the
+page that comes from the source) and what is fill (everything else, in the paper
+colour).
+
+### Density on output
+
+Output density tags come only from a resolution the project holds. A person may set a
+nominal density for a page with an overrides line
+`{"source": ..., "step": "density", "page": 1, "value": [600, 600]}`: the pixels are
+unchanged and the tag says 600 dpi. Its ratio between the axes must be the accepted
+one (within the precision files store, 0.2%); one that changes it, or one for a source
+with no resolution, is refused with a plain message and nothing is written. pagekit
+never stretches pixels to make the axes equal. The manifest's `density` records the
+nominal and the accepted values.
+
 ### Defaults
 
 - Pages are written as lossless TIFF (deflate). PNG is available with `--format png`;
@@ -254,7 +328,9 @@ pixels; `skew` degrees counterclockwise, under 45; `page_box` and `content_box`
 `[left, top, right, bottom]` in the levelled page's pixels, right and bottom not
 included, and `content_box` `null` for a blank page (a box partly or wholly outside the
 levelled page is flagged, since only filled-in paper colour lies there); `margin` millimetres; `resolution`
-`[x_dpi, y_dpi]`. An entry may add `evidence`, a sentence saying why. Values are set as
+`[x_dpi, y_dpi]`; `tag_trust` true or false (whether to apply the file's orientation
+tag); per page, `output_mode` `"source"` or `"grey"`, and `density` `[x_dpi, y_dpi]`
+(a nominal output density). An entry may add `evidence`, a sentence saying why. Values are set as
 manual, or locked with `"lock": true`, and only what depends on them is recomputed. An
 override naming a source, page or step that does not exist is refused (exit 2) and
 nothing changes.
@@ -317,7 +393,10 @@ parameters, with both composed affine maps (source to output and back) and the f
 colour; every step's value with origin, confidence, evidence and flags; the flags; and
 the verdict, `review` or `no_flags`. `batch` holds the volume-wide comparison: for each
 measurement the number of pages, whether it was compared, the median, the spread and how
-many pages were flagged. `review` names the review sheet. `skipped` lists the source
+many pages were flagged. `review` names the review sheet. Spec 0007 adds, for each page, `orientation_tag`, `output_mode`
+and `density` (null unless set), and in `geometry` the `margin_box` and `regions`; with
+no tag, no grey choice and no padding every earlier value is unchanged.
+`skipped` lists the source
 files that could not be used, each with `name`, `path` (from the project file's folder),
 `sha256` (null when the file cannot be read) and `reason`; they have no pages.
 `stale_outputs` lists the output files of pages
