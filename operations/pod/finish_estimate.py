@@ -418,6 +418,20 @@ class GuardDeadline:
         return self._valid
 
 
+def pod_created_at(volume_mount: Path, pod_id: str) -> datetime | None:
+    """The instant this pod's hard maximum counts from, as ``pod_start_command.sh``
+    records it on the volume, or None when it is absent or not epoch seconds."""
+
+    path = Path(volume_mount) / POD_GUARD_DIRECTORY / f"created-{pod_id}"
+    try:
+        text = path.read_text(encoding="ascii").rstrip("\n")
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not (text.isascii() and text.isdigit()):
+        return None
+    return datetime.fromtimestamp(int(text), UTC)
+
+
 @dataclass(frozen=True, slots=True)
 class Deadline:
     """The deadline that ends the pod, where it came from, and whether the lead can move
@@ -510,8 +524,13 @@ def deadline_at_risk_message(
     now: datetime,
     budget_source: str | None = None,
     hourly_source: str | None = None,
+    created_at: datetime | None = None,
 ) -> str:
-    """One line for the phone: what is at risk, what it would cost, and how to extend."""
+    """One line for the phone: what is at risk, what it would cost, and how to extend.
+
+    The suggested extension never passes the hard maximum, counted from ``created_at``
+    (``pod_created_at``); without that instant or a budget it is said to be unchecked.
+    """
 
     if estimate.finishes_at is None:
         raise ValueError("only a stage with a finish time can be at risk")
@@ -523,8 +542,6 @@ def deadline_at_risk_message(
         else f"about ${_cents(_cost(extra, hourly_usd))} more at ${hourly_usd}/h"
         + ("" if hourly_source is None else f" ({hourly_source})")
     )
-    # The pod's creation time is not known here, so the hard maximum is stated, not
-    # turned into an instant; the lead judges the extension against it.
     if budget is None:
         why = budget_problem if budget_source is None else f"{budget_problem}; {budget_source}"
         limits = f"soft and hard max unknown ({why})"
@@ -551,11 +568,42 @@ def deadline_at_risk_message(
         suggested = math.ceil(projected.timestamp() / 60) * 60
         # The one mount path the bootstrap accepts, so the route names it as the lead sees it.
         guard = f"{POD_VOLUME_MOUNT_PATH}/{POD_GUARD_DIRECTORY}"
-        route = (
-            "To extend to the projected end (the lead only, over SSH; checked against no "
-            f"budget): G={guard}; echo {suggested} > $G/deadline.new && mv $G/deadline.new "
-            f"$G/deadline-{pod_id}"
-        )
+
+        def command(epoch: int) -> str:
+            return (
+                f"G={guard}; echo {epoch} > $G/deadline.new && mv $G/deadline.new "
+                f"$G/deadline-{pod_id}"
+            )
+
+        if budget is None or created_at is None:
+            unknown = (
+                "the budget is unknown" if budget is None else "this pod's creation time is unknown"
+            )
+            route = (
+                "To extend to the projected end (the lead only, over SSH; not checked "
+                f"against the hard maximum: {unknown}): {command(suggested)}"
+            )
+        else:
+            hard_end = created_at + timedelta(seconds=budget.hard_max_seconds)
+            cap = math.floor(hard_end.timestamp())
+            limit = f"the hard maximum {_when(hard_end, now)}"
+            if suggested <= cap:
+                route = (
+                    f"To extend to the projected end, within {limit} (the lead only, over "
+                    f"SSH): {command(suggested)}"
+                )
+            elif cap <= deadline.at.timestamp():
+                route = (
+                    f"The projected end passes {limit}, and the deadline already reaches "
+                    "it: the budget allows no extension, so this stage will not finish on "
+                    "this pod"
+                )
+            else:
+                route = (
+                    f"The projected end passes {limit}: this stage will not finish within "
+                    "the budget. To extend only as far as the hard maximum (the lead only, "
+                    f"over SSH): {command(cap)}"
+                )
         if suggested > now.timestamp() + GUARD_HORIZON_SECONDS:
             route += " (more than a week out: the guard would ignore it)"
     return (
@@ -591,6 +639,7 @@ class DeadlineWatch:
         hourly_source: str | None = None,
         budget_source: str | None = None,
         ignored: Callable[[], list[str]] = list,
+        created_at: Callable[[], datetime | None] = lambda: None,
     ) -> None:
         self._run_id = run_id
         self._pod_id = pod_id
@@ -605,6 +654,7 @@ class DeadlineWatch:
         self._send = send
         self._now = now
         self._ignored = ignored
+        self._created_at = created_at
         self._estimator = FinishEstimator()
         self._attempts: dict[datetime, int] = {}
         self._settled: set[datetime] = set()
@@ -682,6 +732,7 @@ class DeadlineWatch:
             now=now,
             budget_source=self._budget_source,
             hourly_source=self._hourly_source,
+            created_at=self._created_at(),
         )
         if self._send is None:
             outcome = NotifyOutcome(False, False, "no --notify")

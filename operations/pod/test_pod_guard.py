@@ -659,7 +659,7 @@ def start_command(env, hours):
 
 def test_the_start_command_arms_the_guard_and_keeps_the_container_up(pod):
     env, calls, state = pod
-    argv, env = start_command(env, "5")
+    argv, env = start_command(env, "3")
     alive = run_until(argv, env, lambda: halted(env))
     assert "armed for pod testpod" in log_of(state)
     assert "no GPU, CPU or network work" in log_of(state)
@@ -689,6 +689,78 @@ def test_the_backstop_honours_an_extended_deadline(pod):
     assert lines(calls) == []
 
 
+def test_the_backstop_deletes_at_the_hard_maximum_even_past_an_extended_deadline(pod):
+    env, calls, state = pod
+    env["FAKE_CURL_FAIL"] = "yes"
+    env["VERBATUS_HARD_MAX_SECONDS"] = "5"
+    state.mkdir()
+    started = clock_of(env)
+    (state / "deadline-testpod").write_text(f"{started + 3600}\n")
+    argv, env = start_command(env, "0.0003")
+    run_until(argv, env, lambda: halted(env))
+    assert "pod delete testpod" in lines(calls)
+    # Five seconds from when the command was printed, plus at most one poll.
+    assert clock_of(env) <= started + 6
+    # The instant the hard maximum counts from, for the finish estimate on the pod.
+    assert (state / "created-testpod").read_text() == f"{started}\n"
+
+
+@pytest.mark.parametrize(
+    ("sealed", "hours"),
+    [(None, "3.01"), (None, "4"), ("3600", "1.5")],
+    ids=["checkout-just-over", "checkout-4h", "sealed"],
+)
+def test_the_start_command_refuses_hours_past_the_hard_maximum(pod, sealed, hours):
+    env, _, _ = pod
+    env.pop("VERBATUS_HARD_MAX_SECONDS", None)
+    if sealed is not None:
+        env["VERBATUS_HARD_MAX_SECONDS"] = sealed
+    result = subprocess.run(
+        ["sh", str(START_COMMAND), hours, "0" * 40], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 2
+    assert "hard maximum" in result.stderr
+    assert result.stdout == ""
+
+
+def test_the_start_command_accepts_the_hard_maximum_itself(pod):
+    env, _, _ = pod
+    env.pop("VERBATUS_HARD_MAX_SECONDS", None)
+    result = subprocess.run(
+        ["sh", str(START_COMMAND), "3", "0" * 40], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("policy", [None, 'hard_max_seconds = "10800"\n', "state = 1\n"])
+def test_the_start_command_refuses_when_the_hard_maximum_cannot_be_read(pod, tmp_path, policy):
+    env, _, _ = pod
+    env.pop("VERBATUS_HARD_MAX_SECONDS", None)
+    checkout = tmp_path / "checkout"
+    (checkout / "operations" / "pod").mkdir(parents=True)
+    script = checkout / "operations" / "pod" / "pod_start_command.sh"
+    shutil.copy(START_COMMAND, script)
+    if policy is not None:
+        (checkout / "config").mkdir()
+        (checkout / "config" / "spend.toml").write_text(policy)
+    result = subprocess.run(
+        ["sh", str(script), "1", "0" * 40], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 2
+    assert "hard maximum" in result.stderr and result.stdout == ""
+
+
+@pytest.mark.parametrize("sealed", ["", "abc", "0", " 10800", "1_0800"])
+def test_the_start_command_refuses_an_unusable_sealed_hard_maximum(pod, sealed):
+    env, _, _ = pod
+    env["VERBATUS_HARD_MAX_SECONDS"] = sealed
+    result = subprocess.run(
+        ["sh", str(START_COMMAND), "1", "0" * 40], env=env, capture_output=True, text=True
+    )
+    assert result.returncode == 2
+    assert "VERBATUS_HARD_MAX_SECONDS" in result.stderr and result.stdout == ""
+
+
 def test_the_guard_keeps_its_records_under_the_volume_mount_the_bootstrap_requires():
     from operations.pod.models import POD_VOLUME_MOUNT_PATH
 
@@ -716,7 +788,7 @@ def test_a_guard_fetched_from_an_older_commit_still_uses_the_start_command_s_dir
     )
     env = {key: value for key, value in env.items() if key != "POD_GUARD_DIR"}
     env["FAKE_GUARD"] = str(older)
-    argv, env = start_command(env, "5")
+    argv, env = start_command(env, "3")
     argv[2] = argv[2].replace("/workspace/private/.pod_guard", str(state))
     run_until(argv, env, lambda: "pod delete testpod" in lines(calls))
     assert "armed for pod testpod" in log_of(state)

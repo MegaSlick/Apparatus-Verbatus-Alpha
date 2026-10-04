@@ -18,9 +18,11 @@ $2.10/h for pod plus volume, a soft maximum of 2 h or $5.00 and a hard maximum o
 $7.00, whichever comes first. A pod's window is 2 h: the guard's deadline sits at the
 soft maximum. Going past it is an extension only the lead makes, and the hard maximum
 bounds it at 3 h. The hourly cap admits the RTX PRO 6000 ($1.99/h) beside a volume of up
-to $0.11/h, so 2 h costs about $4.10 and 3 h about $6.15 at a $0.06/h volume. The hand
-route below (`runpodctl` plus the pod guard) does not enforce the file, so the lead's
-approval in the session is the limit that counts, and it stays inside this budget.
+to $0.11/h, so 2 h costs about $4.10 and 3 h about $6.15 at a $0.06/h volume. On the hand
+route below (`runpodctl` plus the pod guard) the file bounds time only: the start command
+refuses a window past the hard maximum and its backstop deletes the pod at the hard
+maximum from creation. Nothing on that route checks the hourly price or the cost, so the
+lead's approval in the session is the limit that counts there, inside this budget.
 
 **The plan inside it.** Nothing has been timed on a real pod, so these are planning
 figures. Costs are $1.99/h plus the volume's hourly price (to confirm in the console).

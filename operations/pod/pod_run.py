@@ -1588,6 +1588,9 @@ def _deadline_watch(
         budget_source=budget_source,
         deadline=deadline,
         ignored=lambda: deadline.ignored,
+        created_at=(lambda: None)
+        if known_pod is None
+        else (lambda: finish_estimate.pod_created_at(volume, known_pod)),
         send=send if notify else None,
         now=now,
     )

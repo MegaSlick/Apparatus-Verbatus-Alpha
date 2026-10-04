@@ -28,6 +28,7 @@ import time
 import tomllib
 from argparse import Namespace
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1545,8 +1546,11 @@ def test_the_deadline_notice_quotes_the_budget_that_armed_the_pod(
     )
     clock = Clock()
     _first_process(tmp_path, monkeypatch, "pod123")
-    _guard_deadline(ws, int(clock.now().timestamp()) + 3600)
+    created = int(clock.now().timestamp())
+    _guard_deadline(ws, created + 3600)
     (ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic").write_text("guard-topic\n", "utf-8")
+    # The instant the start command records, from which the hard maximum counts.
+    (ws.volume / pod_run.POD_GUARD_DIRECTORY / "created-pod123").write_text(f"{created}\n")
     notify = NotifyRecorder()
 
     code = main(
@@ -1562,6 +1566,9 @@ def test_the_deadline_notice_quotes_the_budget_that_armed_the_pod(
     assert code == EXIT_COMPLETE
     [call] = notify.calls
     assert limits in call[3]
+    if sealed.keys() in (SEALED_BUDGET.keys(), set()):
+        hard_end = datetime.fromtimestamp(created + 10_800, UTC).strftime("%Y-%m-%d %H:%M UTC")
+        assert f"the hard maximum {hard_end}" in call[3]
     estimate = json.loads(Path(_report(ws)["estimate_path"]).read_text(encoding="utf-8"))
     assert source in estimate["budget_source"]
     if sealed == SEALED_BUDGET:
