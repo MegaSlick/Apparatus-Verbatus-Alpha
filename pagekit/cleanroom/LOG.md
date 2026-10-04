@@ -612,3 +612,6 @@ record".
 - **Brief:** `briefs/0035-build-tag-grey-padding.md` (sha256
   6801b6788c3e905fb22feed54a4dccc7eb2bb87a43dd0754ad59e99784d6fd45), to the agent of
   brief 0023. Saved before it was sent.
+- **Brief 0034 done:** commits fc5226f and 39f511b on `work/pk-split`. Leak scan no hits.
+  Merged into `work/pagekit-prepare`. The builder did not run the reviewer's generator,
+  so its held-out set stays unseen; the reviewer is re-running it.
