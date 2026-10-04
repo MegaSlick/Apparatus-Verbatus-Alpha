@@ -23,23 +23,23 @@ figures (to confirm):
 | Run 2: 2 original spreads | RTX PRO 6000 | 4 h | about $8 + volume |
 | Run 3: a slightly larger set | RTX PRO 6000 | 6 h | about $12 + volume |
 
-**How this sits against `config/spend.toml`.** Today it says `max_hourly_usd = "0.50"`,
-`max_estimated_metered_cost_usd = "2.00"`, `hard_lifetime_seconds = 14400` (4 h). The
-hand route below (`runpodctl` plus the pod guard) does not read that file, so the lead's
-approval in the session is the only limit; the RTX PRO 6000 is above both money
-ceilings. The soft and hard maximums being added to the policy (default soft 4 h / $2,
-hard 6 h / $3) are **pending the lead's decision**; at $1.99/h a $2 soft maximum is
-reached in about an hour.
+**The pod budget in `config/spend.toml`** (`pod-spend.v4`): a soft maximum of 4 h or
+$2.00 and a hard maximum of 6 h or $3.00, whichever comes first. The guard's deadline
+sits at the soft maximum; going past it is an extension only the lead makes, and the
+hard maximum bounds it. These four values are **pending the lead's decision**: at
+$1.99/h the $2.00 soft maximum is reached in about an hour. The same file still says
+`max_hourly_usd = "0.50"` and `max_estimated_metered_cost_usd = "2.00"`, below the
+RTX PRO 6000's price. The hand route below (`runpodctl` plus the pod guard) does not
+enforce the file, so the lead's approval in the session is the limit that counts.
 
 **The account balance.** `account_balance_floor_usd = "50.00"` is a policy value the
 file itself marks unverified. Check the RunPod balance (console, Billing) is above $50
-plus the approved budget before each launch. `verbatus spend show` prints the policy's
-numbers; it never reads the balance.
+plus the approved budget before each launch. `verbatus spend show` prints the policy,
+ending with the `Soft maximum` and `Hard maximum` lines; it never reads the balance.
 
 ## 2. Set up the Mac (free)
 
-In Terminal, from a fresh clone. uv must be exactly 0.12.1; the installer line is the
-one uv publishes (to confirm).
+In Terminal, from a fresh clone. uv must be exactly 0.12.1 (installer line: to confirm).
 
 ```sh
 curl -LsSf https://astral.sh/uv/0.12.1/install.sh | sh     # (to confirm)
@@ -50,10 +50,11 @@ sh .githooks/install.sh
 sh .githooks/check-static.sh
 source .venv/bin/activate          # once per Terminal window; puts `verbatus` on PATH
 verbatus spend show
+verbatus watch --help              # present only on code new enough for this runbook
 ```
 
-`runpodctl` must be installed and given the account's API key (to confirm the install
-command for the Mac). The RunPod S3 keys go in the shell only, never in a file here:
+`runpodctl` must be installed and given the account's API key (Mac install: to
+confirm). The RunPod S3 keys go in the shell only, never in a file here:
 
 ```sh
 read -rs RUNPOD_S3_ACCESS_KEY; export RUNPOD_S3_ACCESS_KEY
@@ -62,8 +63,7 @@ read -rs RUNPOD_S3_SECRET_KEY; export RUNPOD_S3_SECRET_KEY
 
 ## 3. Confirm three fixes on macOS (free)
 
-These were fixed on Linux; only a Mac run proves them there. Each needs the test-gate
-change (pull request #266) merged first (to confirm).
+Linux CI runs these; only a Mac run proves them on macOS.
 
 - **F10, the uv guard.** Expected: all pass, including the `sh` and `bash-posix` cases.
   `python -m pytest .githooks/test_ci_workflow.py -k "path_entry"`
@@ -128,7 +128,7 @@ runpodctl pod get <pod id>          # shows the SSH details
 
 Over SSH, `tail /workspace/private/.pod_guard/guard.log` must show `armed for pod <id>`;
 if not, `runpodctl pod delete <pod id>` and stop. Otherwise leave it: idle, it should
-delete itself after about 30 minutes. Confirm as in step 9. (Drill disk size: to confirm.)
+delete itself after about 30 minutes. Confirm as in step 10. (Drill disk size: to confirm.)
 
 ## 7. Launch a real run
 
@@ -163,7 +163,7 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   --report-path $V/pod-run-report-$RUN.json --run-id $RUN \
   --submission-folder $V/submission --submission-manifest $V/submission-manifest.json \
   --mechanics-qualification --no-hold \
-  --notify --hourly-usd <card price per hour plus the volume's> \
+  --notify --hourly-usd <card price per hour plus the volume's, e.g. 2.05> \
   -- \
   --volume-mount-path $V --report-path $V/bootstrap-report-$RUN.json \
   --repository $R --repository-commit <sha> --lockfile $R/uv.lock \
@@ -173,31 +173,75 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   > $V/pod-run-$RUN.out 2>&1 < /dev/null &
 ```
 
-- **If the lead keeps three files, add
-  `--witness-context-config config/witness_context-real.toml`** (as
-  `$R/config/witness_context-real.toml`, after the serving recipes line). That decision is
-  pending. The two-file form works only once the real-configuration change is merged; on
-  today's `main` the third file is still needed (to confirm).
-- `--hourly-usd` and the deadline-at-risk notice come with the deadline-estimate change,
-  which is not merged yet (to confirm before launch).
+- The real configuration is these **two files, always together**; one without the
+  other is refused before anything starts.
+- `--hourly-usd` must be a positive decimal. It lets the deadline-at-risk notice say
+  what running past the deadline costs; `--notify` sends that notice (and the systemic
+  alarm) to the phone. Drop `--notify` if no phone should be paged.
+- **Deadline at risk.** Each tick `pod_run` estimates when the current stage finishes,
+  reading the guard's deadline file the way the guard does. If that finish plus 20
+  minutes passes the deadline, one notice goes to the phone, naming the soft and hard
+  maximums, the extra time and its cost, and the command that moves the deadline. Nothing
+  moves the deadline by itself; extending is the lead's call.
 - For the spreads, use `--submission-folder $V/spreads --submission-manifest $V/spreads-manifest.json`.
 - Use the same `--store-root` every time, so later pods reuse the downloaded weights.
 
-## 8. Watch it
+## 8. Watch it from the Mac
 
-On the pod (or by phone notifications):
+`verbatus watch` reads copies of four report files from a folder on the Mac. It contacts
+nothing and writes nothing, so copy fresh files in a loop (`scp` from the pod's
+public-IP SSH; the exact `scp` form is to confirm). Ctrl+C stops it.
 
 ```sh
-cat $V/pod-run-report-$RUN.json            # bootstrapping, running, then the outcome
-cat $V/pod-run-report-$RUN-liveness.json   # last_seen keeps moving while it runs
-tail -f $V/pod-run-report-$RUN-transcript.log
-tail -f $V/.pod_guard/guard.log
+mkdir -p ~/verbatus-watch
+while :; do
+  scp -q -P <port> "root@<pod ip>:/workspace/private/pod-run-report-<run id>{.json,-liveness.json,-timings.json,-estimate.json}" ~/verbatus-watch/
+  verbatus watch --run-id <run id> --receipts ~/verbatus-watch
+  sleep 60
+done
 ```
 
-More time is the lead's decision: write a new deadline file before the old one passes
-(`operations/pod/README.md`, "The pod guard").
+A healthy run reads like this (synthetic files, real output):
 
-## 9. Confirm the pod is gone
+```text
+Run rg-pages-1: pod_run report says running.
+Stage attestatores: 2/4 pages.
+This stage finishes about 2026-10-04 01:24 UTC (in 39 min); later stages are not counted.
+Deadline 2026-10-04 03:44 UTC (in 3.0 h), the pod guard's deadline; extendable by hand: yes.
+Guard: watch cannot tell whether the guard is armed; it shows only the deadline pod_run read from the guard's file.
+Budget: soft max 4 h / $2.00, hard max 6 h / $3.00.
+Spend to now: at least $2.05 of soft $2.00 / hard $3.00 (1.0 h at $2.05/h since pod_run started; the pod was created earlier).
+```
+
+What the other lines mean:
+
+- **`STALE liveness: last written 47 min ago (limit 2 min). Copy fresh files from the
+  volume, or check the pod.`** The copies are old, or the pod has stopped writing. Every
+  line after it says the time it was true (`as of …, 47 min old`).
+- **`Estimated finish: unknown; the estimate is failing (12 ticks): <error>.`** The run
+  may be fine, but there is no finish time; the deadline line then falls back to `the
+  bootstrap's hard deadline from the report … the guard's own deadline may be earlier`.
+- **`Pod still billing until <time>: pod_run keeps it up to the hard deadline after the
+  run ended.`** The run is over but the pod is not. With `--no-hold` this should not
+  appear; if it does, delete the pod (`runpodctl pod delete <pod id>`) and confirm.
+- **`Guard: watch cannot tell whether the guard is armed`** is always shown. Only the
+  guard log on the pod (step 6) shows that.
+- `Spend to now: at least …` counts from `pod_run`'s start, so the true figure is higher.
+- `AT RISK` on the deadline line means the deadline-at-risk notice applies.
+
+On the pod itself, `tail -f $V/.pod_guard/guard.log` and
+`tail -f $V/pod-run-report-$RUN-transcript.log` show the guard and the run. More time is
+the lead's decision: a new deadline file (`operations/pod/README.md`, "The pod guard").
+
+## 9. If the run stops early
+
+- **Export too large** (only when `embed_pixels = true` in `config/formats.toml`): the
+  Door refuses before any reading, `… is <n> bytes, above the 201326592-byte export
+  archive limit, so it could never be sealed. Nothing was dropped: …`. Start smaller
+  runs, or keep `embed_pixels = false` (the shipped setting).
+- **Halted** (exit 4): more than two counted failures; see `review` (step 11).
+
+## 10. Confirm the pod is gone
 
 With `--no-hold` the pod deletes itself about a minute after the run's final report.
 From the Mac:
@@ -211,7 +255,7 @@ Then open RunPod's console, Billing, and find this pod's charges. Billing can la
 it shows them, the shutdown is **unverified**, not done. The volume stays and keeps
 billing.
 
-## 10. Bring the results home and export (free)
+## 11. Bring the results home and export (free)
 
 ```sh
 verbatus fetch-run --run-id <run id> --into <local root> --network-volume DATACENTER:VOLUME_ID \
@@ -220,6 +264,7 @@ verbatus fetch-run --run-id <run id> --into <local root> --network-volume DATACE
   --evidence-key pod-run-report-<run id>-transcript.log \
   --evidence-key pod-run-report-<run id>-liveness.json \
   --evidence-key pod-run-report-<run id>-timings.json \
+  --evidence-key pod-run-report-<run id>-estimate.json \
   --evidence-key bootstrap-report-<run id>.json \
   --evidence-key bootstrap-journal-<run id>.json \
   --evidence-key pod-run-<run id>.out --evidence-key .pod_guard/guard.log
@@ -228,11 +273,14 @@ verbatus export --run-id <run id> --run-root <local root>
 verbatus backup --run-root <local root> --run-id <run id> --mac-directory <synced folder>
 ```
 
-Add `--evidence-key pod-run-report-<run id>-estimate.json` once the deadline-estimate
-change is merged. A run that holds pages exits 3; `review` says why, and each decision
-is the lead's (`operations/operator/README.md`, "Recording a review decision").
+A run that holds pages exits 3; `review` says why, and each decision is the lead's
+(`operations/operator/README.md`, "Recording a review decision"). `export` refuses, with
+no bundle written, a run whose Armarium export was never sealed (`export-unsealed`:
+"The run has an Armarium export record, but its completion seal is missing or does not
+verify."); open it with `review` and bring it to the lead before running the Armarium
+again.
 
-## 11. Which pages, in order, and what each run proves
+## 12. Which pages, in order, and what each run proves
 
 1. **The four prepared RecordGold single pages** (`private/` only). Proves on real pages:
    the guard, the bootstrap and weight download, preflight of every chair on the real
@@ -243,11 +291,12 @@ is the lead's (`operations/operator/README.md`, "Recording a review decision").
    surround as one component spanning the whole frame.
 3. **A slightly larger set**, for example 8 to 12 pages from `private/` or
    `scriptorium/`. Proves timing and the hold rate at a size where held pages show a
-   pattern. Keep `embed_pixels = false` (the shipped default in `config/formats.toml`).
-   With pixels embedded, pages like these add about 14 to 21 MB each to the archive,
-   so the 192 MiB read ceiling is reached at roughly 9 to 14 pages (an estimate; F07).
+   pattern. Keep `embed_pixels = false`. With pixels embedded the Door estimates each
+   page like these at about 33 MiB (its stored bytes plus two whole-page crops), so the
+   four pages come to 131.7 MiB, all six images to 176.2 MiB, and a seventh page of this
+   size is refused (checked on Linux).
 
-## 12. Open live checks
+## 13. Open live checks
 
 None of these can be proved without a paid pod. Record each as verified, unverified or
 not run.
@@ -261,4 +310,4 @@ not run.
 - RunPod's S3 view: Range reads, and reading a file while it is being appended to.
 - pagekit thresholds on real crops. (On the two spreads, a split even at the detected
   gutter is flagged for ink crossing the edge; all thresholds are still uncalibrated.)
-- F07: peak memory for a real-size export archive, and the archive limit chosen from it.
+- F07: peak memory for a real-size export archive, against the 192 MiB archive limit.
