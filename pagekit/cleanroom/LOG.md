@@ -373,3 +373,17 @@ record".
 - **Follow-up brief:** `briefs/0022-build-skew-review-fixes.md` (sha256
   7338768933221b2ff8cb114702a00f249b367647d53d73b085efffa93a807bcd), sent to the agent of
   brief 0018.
+
+## 0021 — Slices merged; tone view built; brief 0023 issued
+
+- **Brief 0021 done:** commits 9bbb537, c0c1d18 and 3157503 on `work/pk-split`. Leak scan
+  no hits. Merged into `work/pagekit-prepare` (8cf2296).
+- **Brief 0022 done:** commit 64c8fe0 on `work/pk-skew`. Leak scan no hits. Merged into
+  `work/pagekit-prepare`; the only conflict was in NOTICE, where the host kept both
+  slices' citation sections word for word. The combined pagekit suite passes and the leak
+  scan finds no hits in 108 files. A re-review of 64c8fe0 is running.
+- **Brief 0020 (tone view) done:** commits 0a2ab1f and ae63d66 on `work/pk-tone`. Leak
+  scan no hits. An independent review is running; not merged yet.
+- **Brief 0023:** `briefs/0023-build-prepare-pipeline.md` (sha256
+  931a7ee1bbc1b1cf089629941ee1079102d17877c59ea862d45aa434e716c769), for a fresh build-side
+  agent, saved before it started.
