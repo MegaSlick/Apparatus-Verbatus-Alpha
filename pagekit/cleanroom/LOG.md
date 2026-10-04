@@ -556,17 +556,17 @@ record".
   agent's task message gave it only the brief's path and sha256.
 - **What came back:** 35 files in the local quarantine folder; the agent's reply listed
   only their names and sha256 digests, which matched the files.
-- **Check before reading:** 32 finding reports and one index. 31 reports passed every
+- **Check before reading:** 34 finding reports and one index. 32 reports passed every
   rule. Two were refused and deleted unread: `0026-colour-profiles-modes.md` (sha256
   0593168ba85410fc480891f797cdc526f576238c24826e7dfa3f311bc4fc7c9e; a line-number
   reference) and `0031-platform-qualification.md` (sha256
   74c200d23d319970e2d73abc3152c914178e620eb2db9b78281629b268012f20; an identifier shape).
   The index (sha256 b004da9e2c5d2c1749f53a00752a4e4c50a82c1991c7f629258b3128a643724a)
   failed only the template-structure rules.
-- **Host's reading:** the host read the index and all 31 passing reports. They describe
+- **Host's reading:** the host read the index and all 32 passing reports. They describe
   requirements and published or general methods in plain words, with pagekit's current
   behaviour from its README and specs; none describes another program's code or internals.
-- **Accepted** into `findings/` as 0036 to 0066 (reader brief sha256
+- **Accepted** into `findings/` as 0036 to 0067 (reader brief sha256
   bd3e1c50d4f2819416114fdebe2da7d245b3d9485f5f30c6a1589476880d56c2):
   - `findings/0036-reviewed-grey-main-page.md`: 61ea156f51c5a365b6793ab20ca0d2a1236b6fb3fd086706194dd6c570de31ef
   - `findings/0037-grey-loses-colour-evidence.md`: 34dc84ce7c6045d8f382f28ab38b7a1d423011ff5cd98f018aadec9102785134
