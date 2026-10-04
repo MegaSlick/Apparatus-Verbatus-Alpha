@@ -10,6 +10,7 @@ from common.contracts.uncertainty import PAGE_READ_LECTIO, corrected_layer, vali
 from common.reading_annotations import (
     bracket_doubt_marks,
     diplomatic_display,
+    doubt_exceeds,
     doubt_mark_offsets,
     malformed_assessment,
     read_doubt_marks,
@@ -210,3 +211,8 @@ def test_a_reading_with_no_machine_doubt_report_is_shown_as_it_is():
         "gaps": [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}]
     }
     assert diplomatic_display("", whole) == "[illegible]"
+
+
+def test_a_doubt_share_exactly_at_the_limit_is_not_over_it():
+    assert not doubt_exceeds((1, 2), 5000)
+    assert doubt_exceeds((1, 2), 4999)

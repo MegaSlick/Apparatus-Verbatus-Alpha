@@ -631,10 +631,15 @@ def test_the_doubt_share_of_each_act_and_page_is_recorded_and_recounted(tmp_path
     assert (row["doubtful_or_unread"], row["out_of"]) == ("10", "15")
     verify_delivered_bundle(bundle.data, tmp_path / "clean")
 
+
+@pytest.mark.parametrize("count", ["acts", "pages"])
+def test_a_doubt_share_count_changed_in_the_manifest_is_refused(tmp_path, count):
+    bundle = build_armarium_bundle(
+        _doubtful_projection(), _formats(embed_pixels=False), _source_bytes
+    )
     members = _members(bundle.data)
     manifest = json.loads(members[EXPORT_MANIFEST_NAME])
-    manifest["claims"]["doubt_share"]["acts"][0]["doubtful_or_unread"] = 0
-    manifest["claims"]["doubt_share"]["pages"][0]["doubtful_or_unread"] = 0
+    manifest["claims"]["doubt_share"][count][0]["doubtful_or_unread"] = 0
     _refresh_manifest(members, manifest)
     with pytest.raises(SchemaRefusal, match="doubt share"):
         verify_export_bundle(_zip_bytes(members), tmp_path / "tampered")
@@ -646,11 +651,14 @@ def test_a_reading_over_the_doubt_limit_is_exported_only_after_it_was_held():
     projection = _doubtful_projection()
     act = projection.acts[0]
     row = {"act_key": "p1:1", "hold_codes": []}
+    text, layer = act[CANONICAL_TEXT_FIELD], act["uncertainty"]
+    # 10 of 15 is 6666.67 basis points, compared exactly (10 * 10000 > limit * 15):
+    # 6666 is the highest limit it exceeds and 6667 the lowest it does not.
     with pytest.raises(FatalAccounting, match="never held 'doubt-share-high'"):
-        armarium.require_doubt_hold(row, act[CANONICAL_TEXT_FIELD], act["uncertainty"], 2000)
+        armarium.require_doubt_hold(row, text, layer, 6666)
     released = {**row, "hold_codes": ["doubt-share-high"]}
-    armarium.require_doubt_hold(released, act[CANONICAL_TEXT_FIELD], act["uncertainty"], 2000)
-    armarium.require_doubt_hold(row, act[CANONICAL_TEXT_FIELD], act["uncertainty"], 7000)
+    armarium.require_doubt_hold(released, text, layer, 6666)
+    armarium.require_doubt_hold(row, text, layer, 6667)
 
 
 def test_a_partial_runs_text_bundle_says_it_is_partial_and_names_what_it_lacks(tmp_path):
