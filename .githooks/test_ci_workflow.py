@@ -8,6 +8,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+import packaging
 import pytest
 import yaml
 
@@ -336,19 +337,85 @@ def test_the_gate_takes_the_required_uv_version_from_pyproject(tmp_path):
     assert "could not reconcile" in accepted.stderr
 
 
-def test_the_gate_refuses_a_uv_found_through_a_relative_path_entry(tmp_path):
+# macOS /bin/sh is bash in POSIX mode, whose `command -v` makes a relative PATH match
+# absolute; dash prints it as found. The gate must refuse the same way under both.
+GATE_SHELLS = [
+    pytest.param(["sh"], id="sh"),
+    pytest.param(["bash", "--posix"], id="bash-posix"),
+]
+
+
+def run_gate_with(shell, repo, env):
+    command = [shutil.which(shell[0]), *shell[1:], ".githooks/check-all.sh"]
+    return subprocess.run(command, cwd=repo, env=env, capture_output=True, text=True, timeout=60)
+
+
+def recording_uv(directory, marker):
+    """A uv under `directory` that records every call, version checks included."""
+    directory.mkdir(parents=True, exist_ok=True)
+    uv = directory / "uv"
+    uv.write_text(f'#!/bin/sh\necho "$*" >> {marker}\nexit 1\n')
+    uv.chmod(0o755)
+
+
+@pytest.mark.parametrize("shell", GATE_SHELLS)
+@pytest.mark.parametrize(
+    ("entry", "directory"),
+    [("fake-bin", "fake-bin"), ("", "."), (".", "."), ("./fake-bin", "fake-bin")],
+    ids=["relative", "empty", "dot", "dot-relative"],
+)
+def test_the_gate_refuses_a_uv_found_through_a_relative_path_entry(
+    tmp_path, shell, entry, directory
+):
     repo = gate_repo(tmp_path)
     frozen_venv(repo)
-    stub_uv(repo)
-    environment = {**os.environ, "PATH": f"fake-bin{os.pathsep}{os.environ['PATH']}"}
+    marker = tmp_path / "uv-ran"
+    recording_uv(repo / directory, marker)
+    environment = {**os.environ, "PATH": f"{entry}{os.pathsep}{os.environ['PATH']}"}
 
-    result = run_gate(repo, env=environment)
+    result = run_gate_with(shell, repo, environment)
+
+    assert result.returncode == 1, result.stderr
+    assert "from the PATH entry" in result.stderr
+    assert not marker.exists(), "the checkout's uv ran before the gate refused it"
+
+
+@pytest.mark.parametrize("shell", GATE_SHELLS)
+def test_the_gate_refuses_a_trailing_empty_path_entry_that_selects_uv(tmp_path, shell):
+    repo = gate_repo(tmp_path)
+    frozen_venv(repo)
+    marker = tmp_path / "uv-ran"
+    recording_uv(repo, marker)
+    environment = {**os.environ, "PATH": f"/usr/bin{os.pathsep}/bin{os.pathsep}"}
+
+    result = run_gate_with(shell, repo, environment)
+
+    assert result.returncode == 1, result.stderr
+    assert "from the PATH entry" in result.stderr
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("shell", GATE_SHELLS)
+def test_the_gate_runs_a_uv_from_an_absolute_path_entry_after_a_relative_one(tmp_path, shell):
+    """A relative entry that holds no uv does not matter; the selected uv does."""
+    repo = gate_repo(tmp_path)
+    frozen_venv(repo)
+    marker = tmp_path / "uv-ran"
+    recording_uv(tmp_path / "trusted", marker)
+    environment = {
+        **os.environ,
+        "PATH": os.pathsep.join(["empty-dir", str(tmp_path / "trusted"), os.environ["PATH"]]),
+    }
+
+    result = run_gate_with(shell, repo, environment)
 
     assert result.returncode == 1
-    assert "relative path 'fake-bin/uv'" in result.stderr
+    assert "from the PATH entry" not in result.stderr
+    assert marker.read_text().splitlines() == ["--version"]
+    assert "requires uv" in result.stderr
 
 
-def full_gate_repo(tmp_path, *, audit_status=0, topic="verbatus-test-sink"):
+def full_gate_repo(tmp_path, *, audit_status=0, serving_audit_status=0, topic="verbatus-test-sink"):
     """A gate repo whose every check is a recorder, to run check-all.sh end to end.
 
     The fake `.venv` is a real virtual environment, so the sys.prefix check passes, with
@@ -381,21 +448,53 @@ def full_gate_repo(tmp_path, *, audit_status=0, topic="verbatus-test-sink"):
             "log.write(' '.join(['audit', *sys.argv[1:-1]]) + '\\n')\n"
             "log.write('inventory ' + open(inventory).read())\n"
             "log.write('directory ' + os.path.dirname(inventory) + '\\n')\n"
-            f"raise SystemExit({audit_status})\n",
+            "serving = os.path.basename(inventory).startswith('serving-')\n"
+            f"raise SystemExit({serving_audit_status} if serving else {audit_status})\n",
         ),
     ):
         (Path(purelib) / package).mkdir()
         (Path(purelib) / package / "__init__.py").write_text("")
         (Path(purelib) / package / "__main__.py").write_text(record + body)
+    # The serving audit evaluates the lock's markers with the real `packaging`.
+    shutil.copytree(Path(packaging.__file__).parent, Path(purelib) / "packaging")
+    shutil.copy(ROOT / ".githooks" / "serving_audit.py", repo / ".githooks" / "serving_audit.py")
+    with (repo / "pyproject.toml").open("a") as pyproject:
+        pyproject.write(SERVING_PYPROJECT)
     (repo / ".githooks" / "check-static.sh").write_text(f"#!/bin/sh\necho static >> {log}\n")
     (repo / ".githooks" / "check_ingress.py").write_text(
         f"import sys\nopen({str(log)!r}, 'a').write(' '.join(['ingress', *sys.argv[1:]]) + '\\n')\n"
     )
     (repo / "conftest.py").write_text(f'NOTIFY_TEST_SINK_TOPIC = "{topic}"\n')
+    (tmp_path / "serving-export").write_text(SERVING_EXPORT_OUTPUT)
     environment = stub_uv(
-        tmp_path, f'echo "uv $*" >> {log}\n[ "$1" != export ] || echo "example==1.0"\n'
+        tmp_path,
+        f'echo "uv $*" >> {log}\n'
+        'if [ "$1" = export ]; then\n'
+        '  case " $* " in\n'
+        f'    *" --group pod "*) cat {tmp_path / "serving-export"} ;;\n'
+        '    *) echo "example==1.0" ;;\n'
+        "  esac\n"
+        "fi\n",
     )
     return repo, environment, log
+
+
+# A serving group as the lock exports it: Linux-only markers, one package locked at a
+# version per Python, and a line for another platform that the pod never installs.
+SERVING_PYPROJECT = """
+[project]
+requires-python = ">=3.12"
+
+[dependency-groups]
+pod = ["served==2.0; sys_platform == 'linux' and platform_machine == 'x86_64'"]
+"""
+SERVING_EXPORT_OUTPUT = """\
+numpy==1.0 ; python_full_version < '3.13' and sys_platform == 'linux'
+numpy==2.0 ; python_full_version >= '3.13' and sys_platform == 'linux'
+    # via served
+served==2.0 ; platform_machine == 'x86_64' and sys_platform == 'linux'
+windows-only==1.0 ; sys_platform == 'win32'
+"""
 
 
 SYNC = "uv sync --frozen --offline --group test --group audit --no-config"
@@ -404,6 +503,9 @@ EXPORT = (
     "--group test --group audit"
 )
 AUDIT = "audit --strict --no-deps --disable-pip --requirement"
+SERVING_EXPORT = (
+    "uv export --frozen --offline --no-config --no-emit-project --no-hashes --group pod"
+)
 
 
 def test_the_local_gate_runs_every_check_and_audits_the_locked_inventory(tmp_path):
@@ -413,8 +515,8 @@ def test_the_local_gate_runs_every_check_and_audits_the_locked_inventory(tmp_pat
 
     assert result.returncode == 0, result.stderr
     recorded = log.read_text().splitlines()
-    directory = recorded.pop()
-    assert recorded == [
+    directories = {line for line in recorded if line.startswith("directory ")}
+    assert [line for line in recorded if not line.startswith("directory ")] == [
         SYNC,
         "static",
         "ingress --history HEAD",
@@ -425,8 +527,16 @@ def test_the_local_gate_runs_every_check_and_audits_the_locked_inventory(tmp_pat
         EXPORT,
         AUDIT,
         "inventory example==1.0",
+        # The serving stack as the Linux x86_64 pod installs it, whatever the host.
+        SERVING_EXPORT,
+        AUDIT,
+        "inventory numpy==1.0",
+        "served==2.0",
+        AUDIT,
+        "inventory numpy==2.0",
     ]
-    assert not Path(directory.removeprefix("directory ")).exists()
+    assert len(directories) == 1
+    assert not Path(directories.pop().removeprefix("directory ")).exists()
 
 
 def test_the_ci_gate_leaves_history_to_the_workflow_and_runs_the_suite_in_parallel(tmp_path):
@@ -449,6 +559,15 @@ def test_a_failed_or_unrunnable_audit_fails_the_gate(tmp_path):
     recorded = log.read_text().splitlines()
     assert AUDIT in recorded
     assert not Path(recorded[-1].removeprefix("directory ")).exists()
+
+
+def test_a_failed_serving_audit_fails_the_gate(tmp_path):
+    repo, environment, log = full_gate_repo(tmp_path, serving_audit_status=1)
+
+    result = run_gate(repo, env=environment)
+
+    assert result.returncode != 0
+    assert SERVING_EXPORT in log.read_text().splitlines()
 
 
 def test_the_gate_refuses_to_run_the_suites_without_the_test_sink_topic(tmp_path):

@@ -20,6 +20,7 @@ from common.contracts.errors import ApprovalRefusal, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARMARIUM
 from common.runtree.store import RunTree
+from conftest import account_operator_state_snapshot
 from operations.operator import advance, cli, review, review_text, surface
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.review import ReviewProjection
@@ -1076,9 +1077,10 @@ def test_a_confirmed_operator_advance_reports_its_record(
 
 
 def test_the_advance_verb_records_a_confirmed_advance(
-    orchestrated_run, tmp_path, monkeypatch, capsys
+    orchestrated_run, tmp_path, monkeypatch, capsys, operator_state_home
 ):
     run_root, run_id = _make_run(orchestrated_run, tmp_path)
+    account_state = account_operator_state_snapshot()
     monkeypatch.setattr(cli, "_typed_advance_confirmation", lambda phrase: phrase)
 
     result = cli.main(
@@ -1103,6 +1105,20 @@ def test_the_advance_verb_records_a_confirmed_advance(
     assert [row["reason"] for row in projected.advance_records] == [
         "reviewed through the operator verb"
     ]
+    receipts = list((operator_state_home / "verbatus" / "receipts").glob("advance-*.json"))
+    assert len(receipts) == 1
+    assert account_operator_state_snapshot() == account_state
+
+
+def test_the_state_folder_redirect_outlives_the_tests_own_monkeypatch(
+    monkeypatch, operator_state_home
+):
+    """The redirect is not the test's patch: undoing that keeps the temporary folder,
+    and the test's patches are undone before the module fixtures that ran after it."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(operator_state_home / "elsewhere"))
+    monkeypatch.undo()
+
+    assert os.environ["XDG_STATE_HOME"] == str(operator_state_home)
 
 
 def test_a_confirmed_digest_changed_before_the_append_is_refused_without_a_record(

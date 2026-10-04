@@ -1047,6 +1047,15 @@ with each advisory's first fixed version as pip-audit gives it:
 
 The same audit over this lock reports none against `vllm`.
 
+The full gate (`.githooks/check-all.sh`) audits this group on every run, from the lock and
+for the pod's Linux x86_64 target, without installing it (`.githooks/serving_audit.py`).
+One advisory is accepted there, for its exact pin only: `setuptools` 80.10.2,
+PYSEC-2026-3447 (CVE-2026-59890), fixed in 83.0.0. vLLM 0.30.0, the latest release,
+requires `setuptools<81`, so the lock cannot reach the fix. The flaw is in building a
+source distribution on a Unicode-normalizing (macOS) filesystem; the pod installs wheels
+on Linux and builds no sdist, and the project's own build uses `setuptools` 84.0.0. A lock
+that moves `setuptools` ends the acceptance.
+
 Licence sources: the `LICENSE` files at `github.com/vllm-project/vllm` (tag `v0.30.0`; the
 0.30.0 wheel carries an Apache-2.0 `LICENSE` and `License-Expression: Apache-2.0`) and
 `github.com/huggingface/transformers`; `qwen-vl-utils`'s PyPI metadata (maintained under
