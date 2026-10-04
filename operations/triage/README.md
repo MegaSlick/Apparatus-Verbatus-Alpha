@@ -85,3 +85,8 @@ nearest one that loses no ink, and a note says why:
   lean of its cut fall on one side of it; each page's crops hold everything either page
   shows inside its region, so across the scan nothing pagekit kept is dropped.
 - **Shrunk**: the Door's page keeps the scan's resolution.
+
+A scan's orientation tag is read from pagekit's chain: one that turns the scan folds
+into the rotation; one that mirrors it is refused (`MappingError`), since triage has no
+mirror. pagekit's padding is part of the crop after rotation. `door_colour_mode` maps a
+grey page made by luminance to `grayscale` and refuses one made from a single channel.

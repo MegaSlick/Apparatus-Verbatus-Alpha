@@ -261,6 +261,7 @@ class Prepared:
 def _plan(request: dict[str, Any]) -> Prepared:
     from operations.triage.pagekit_geometry import (
         MappingError,
+        door_colour_mode,
         make_manifest,
         make_row,
         map_pages,
@@ -298,6 +299,7 @@ def _plan(request: dict[str, Any]) -> Prepared:
             [page.chain for page in source_pages],
             steps[0]["split"]["value"],
             _fills(source, source_pages, planned.settings),
+            [door_colour_mode(getattr(page, "mode", None), source.mode) for page in source_pages],
         )
         human = any(
             entry["origin"] in ("manual", "locked") for page in steps for entry in page.values()
@@ -329,6 +331,7 @@ def _plan(request: dict[str, Any]) -> Prepared:
                     "flags": page.flags,
                     "steps": page.steps,
                     "door": door,
+                    "density": getattr(page, "density", None),
                 }
             )
     prepared = Prepared(request, planned, pages)
@@ -439,7 +442,7 @@ def _notes(prepared: Prepared) -> list[str]:
         "pagekit's own page. Produced by verbatus prepare; it is rewritten on every run.",
         "",
     ]
-    differing = [page for page in prepared.pages if page["door"].notes]
+    differing = [page for page in prepared.pages if page["door"].notes or page.get("density")]
     if not differing:
         lines.append(
             "Every page is cut as pagekit cut it (a skewed page to within half a pixel on each axis)."
@@ -447,6 +450,13 @@ def _notes(prepared: Prepared) -> list[str]:
     for page in differing:
         lines.append(f"{page['output']} (from {page['scan']}, page {page['page']}):")
         lines += [f"  - {note.text}" for note in page["door"].notes]
+        if page.get("density"):
+            nominal = page["density"]["nominal"]
+            lines.append(
+                f"  - pagekit tags this page with a nominal density of {nominal[0]:g} x "
+                f"{nominal[1]:g} dpi; the Door's page carries no density (its pages hold "
+                "pixels only), so the run does not see it"
+            )
     return lines
 
 

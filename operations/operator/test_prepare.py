@@ -397,3 +397,57 @@ def test_a_scan_pagekit_skips_is_named_and_can_never_reach_upload_unnoticed(
         )
     assert "broken.png" in str(refusal.value.detail)
     assert store.puts == []
+
+
+def test_a_scan_with_a_mirrored_orientation_tag_is_refused_before_anything_is_written(
+    tmp_path, capsys
+):
+    scans = tmp_path / "my scans"
+    scans.mkdir()
+    exif = Image.Exif()
+    exif[0x0112] = 2  # mirrored left to right
+    Image.new("L", (600, 800), 215).save(scans / "mirrored.png", dpi=(300, 300), exif=exif)
+
+    code, printed = _run(tmp_path, capsys)
+
+    assert code == 2
+    assert "mirror" in printed
+    assert not (tmp_path / "out dir").exists()
+
+
+def test_a_grey_page_and_a_nominal_density_reach_the_triage_row_and_the_notes(tmp_path, capsys):
+    scans = _scans(tmp_path / "my scans")
+    fixes = tmp_path / "fixes.json"
+    fixes.write_text(
+        json.dumps(
+            {
+                "schema": "pagekit-overrides.v1",
+                "overrides": [
+                    {
+                        "source": "my scans/spread.png",
+                        "step": "output_mode",
+                        "page": 1,
+                        "value": "grey",
+                    },
+                    {
+                        "source": "my scans/leaf one.png",
+                        "step": "density",
+                        "page": 1,
+                        "value": [150, 150],
+                    },
+                ],
+            }
+        )
+    )
+
+    code, printed = _run(tmp_path, capsys, "--overrides", str(fixes))
+
+    assert code == 0, printed
+    out = tmp_path / "out dir"
+    spread = next(
+        row for row in _rows(out).values() if row["frame"] == {"width": 900, "height": 600}
+    )
+    assert spread["split"]["parts"][0]["colour_mode"] == "grayscale"
+    notes = (out / "triage-notes.txt").read_text()
+    assert "leaf one_p1.tif" in notes and "nominal density" in notes
+    del scans

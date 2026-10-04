@@ -107,6 +107,15 @@ the page from it, so every reading still traces to the scan.
   of the scan: what lies past it is on the facing page, and each Door page also holds
   the facing page's sliver in its half, so nothing pagekit kept is dropped. A shrunk
   page keeps the scan's resolution at the Door. `triage-notes.txt` lists each case.
+- **pagekit's spec 0007 choices.** A scan's orientation tag that turns it folds into the
+  Door's rotation; a tag that mirrors it (values 2, 4, 5 and 7) is refused before
+  anything is written, since the Door turns a scan but never mirrors it. A page made grey
+  by luminance (pagekit's default rule, exact on a scan with equal channels) becomes the
+  triage colour mode `grayscale`, which the Door applies after the same geometry, so its
+  grey page is pagekit's; a page made grey from one channel is refused. Padding is part
+  of the crop after rotation, within the Door's limit; more is refused. A nominal
+  density pagekit writes into a page is not carried: the Door's pages hold pixels only,
+  and `triage-notes.txt` says so for each such page.
 - **Corrections are kept.** Run it again over the same output folder: pagekit continues
   its project, keeps every value set by hand, and recomputes only what changed. Give
   corrections with `--overrides FILE` (`pagekit/README.md`, "Corrections").

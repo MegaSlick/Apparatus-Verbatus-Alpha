@@ -17,6 +17,7 @@ from common.imaging import render_triage_derivative
 from operations.triage.pagekit_geometry import (
     GUTTER,
     door_affine,
+    door_colour_mode,
     make_manifest,
     make_row,
     map_pages,
@@ -28,28 +29,41 @@ from pagekit.prepare import plan
 INK, PAPER = 20, 215
 
 
-def _scan(folder: Path, size, dots, name="scan.png") -> Path:
+def _scan(folder: Path, size, dots, name="scan.png", tag=None, mode="L", ink=INK, paper=PAPER):
     folder.mkdir(parents=True, exist_ok=True)
-    image = Image.new("L", size, PAPER)
+    image = Image.new(mode, size, paper)
     draw = ImageDraw.Draw(image)
     for x, y in dots:
-        draw.rectangle((x - 5, y - 5, x + 5, y + 5), fill=INK)
+        draw.rectangle((x - 5, y - 5, x + 5, y + 5), fill=ink)
     path = folder / name
-    image.save(path, dpi=(300, 300))
+    if tag is None:
+        image.save(path, dpi=(300, 300))
+    else:
+        exif = Image.Exif()
+        exif[0x0112] = tag  # the orientation tag
+        image.save(path, dpi=(300, 300), exif=exif)
     return path
 
 
-def _prepare(tmp_path: Path, scan: Path, overrides: list[dict]):
+def _prepare(tmp_path: Path, scan: Path, overrides: list[dict], settings=None):
     fixes = tmp_path / "fixes.json"
     for entry in overrides:
         entry["source"] = scan.relative_to(tmp_path).as_posix()
     fixes.write_text(json.dumps({"schema": "pagekit-overrides.v1", "overrides": overrides}))
-    prepared = plan([scan], tmp_path / "out", overrides_path=fixes)
+    prepared = plan([scan], tmp_path / "out", overrides_path=fixes, settings_overrides=settings)
     manifest = execute(prepared)
     pages = prepared.pages
     # pagekit's own paper colour, as its manifest records it.
-    fills = [[entry["geometry"]["fill"]["colour"]] for entry in manifest["pages"]]
-    mapped = map_pages([page.chain for page in pages], pages[0].steps["split"]["value"], fills)
+    fills = [
+        colour if isinstance(colour, list) else [colour]
+        for colour in (entry["geometry"]["fill"]["colour"] for entry in manifest["pages"])
+    ]
+    with Image.open(scan) as stored:
+        master_mode = stored.mode
+    modes = [door_colour_mode(page.mode, master_mode) for page in pages]
+    mapped = map_pages(
+        [page.chain for page in pages], pages[0].steps["split"]["value"], fills, modes
+    )
     return pages, mapped
 
 
@@ -299,3 +313,102 @@ def test_a_page_whose_margin_runs_further_past_the_scan_than_the_door_allows_is_
     scan = _scan(tmp_path / "scans", (100, 80), [])
     with pytest.raises(MappingError, match="post-crop"):
         _prepare(tmp_path, scan, [{"step": "content_box", "page": 1, "value": [0, 0, 100, 80]}])
+
+
+@pytest.mark.parametrize("tag", [1, 3, 6, 8])
+def test_a_scan_whose_orientation_tag_turns_it_is_cut_exactly_as_pagekit_cut_it(tmp_path, tag):
+    """The Door renders the scan as stored; a tag that turns it folds into the rotation."""
+    dots = [(150, 160), (520, 140), (330, 600), (140, 880)]
+    scan = _scan(tmp_path / "scans", (703, 1000), dots, tag=tag)
+    pages, mapped = _prepare(tmp_path, scan, [])
+    (page,), (door_page,) = pages, mapped
+    assert page.chain.tag == tag
+    door = _door(scan, door_page.part)
+    with Image.open(tmp_path / "out" / page.output_name) as prepared:
+        assert door.size == prepared.size
+        assert door.tobytes() == prepared.convert("L").tobytes()
+
+
+@pytest.mark.parametrize("tag", [2, 4, 5, 7])
+def test_a_scan_whose_orientation_tag_mirrors_it_is_refused(tmp_path, tag):
+    """Triage turns a scan but never mirrors it, so a mirrored tag cannot reach the Door."""
+    from operations.triage.pagekit_geometry import MappingError
+
+    scan = _scan(tmp_path / "scans", (703, 1000), [(150, 160)], tag=tag)
+    with pytest.raises(MappingError, match="mirror"):
+        _prepare(tmp_path, scan, [])
+
+
+@pytest.mark.parametrize(
+    ("ink", "rule", "colour_mode"),
+    [
+        ((60, 60, 60), "luminance", "grayscale"),  # equal channels: exact
+        ((120, 30, 40), "luminance", "grayscale"),  # a reviewed luminance conversion
+    ],
+)
+def test_a_grey_page_is_rendered_grey_by_the_door_exactly_as_pagekit_made_it(
+    tmp_path, ink, rule, colour_mode
+):
+    dots = [(150, 160), (520, 140), (330, 600)]
+    scan = _scan(tmp_path / "scans", (701, 999), dots, mode="RGB", ink=ink, paper=(215, 215, 215))
+    pages, mapped = _prepare(
+        tmp_path,
+        scan,
+        [
+            {"step": "output_mode", "page": 1, "value": "grey"},
+            {"step": "orientation", "value": 1},
+        ],
+        settings={"grey_rule": rule},
+    )
+    (page,), (door_page,) = pages, mapped
+    assert page.mode["mode"] == "grey"
+    assert door_page.part["colour_mode"] == colour_mode
+    door = _door(scan, door_page.part)
+    with Image.open(tmp_path / "out" / page.output_name) as prepared:
+        assert prepared.mode == door.mode == "L"
+        assert door.size == prepared.size
+        assert door.tobytes() == prepared.tobytes()
+
+
+def test_a_grey_page_made_from_one_channel_is_refused(tmp_path):
+    """The Door converts to grey only by luminance, so a one-channel rule has no row."""
+    from operations.triage.pagekit_geometry import MappingError
+
+    scan = _scan(
+        tmp_path / "scans",
+        (701, 999),
+        [(150, 160)],
+        mode="RGB",
+        ink=(120, 30, 40),
+        paper=(215, 215, 215),
+    )
+    with pytest.raises(MappingError, match="grey"):
+        _prepare(
+            tmp_path,
+            scan,
+            [{"step": "output_mode", "page": 1, "value": "grey"}],
+            settings={"grey_rule": "red"},
+        )
+
+
+@pytest.mark.parametrize("turns", [0, 1])
+def test_a_padded_page_re_derives_exactly_as_pagekit_padded_it(tmp_path, turns):
+    dots = [(150, 160), (520, 140), (330, 600), (140, 880)]
+    scan = _scan(tmp_path / "scans", (703, 1000), dots)
+    pages, mapped = _prepare(
+        tmp_path, scan, [{"step": "orientation", "value": turns}], settings={"padding_px": 40}
+    )
+    (page,), (door_page,) = pages, mapped
+    assert page.chain.padding == (40, 40, 40, 40)
+    door = _door(scan, door_page.part)
+    with Image.open(tmp_path / "out" / page.output_name) as prepared:
+        assert door.size == prepared.size
+        assert door.tobytes() == prepared.convert("L").tobytes()
+
+
+def test_padding_past_the_doors_limit_is_refused_at_prepare(tmp_path):
+    from operations.triage.pagekit_geometry import MappingError
+
+    scan = _scan(tmp_path / "scans", (400, 500), [(150, 160)])
+    with pytest.raises(MappingError, match="post-crop"):
+        _prepare(tmp_path, scan, [], settings={"padding_px": 120})

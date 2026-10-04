@@ -159,12 +159,40 @@ def _rectangle(x0: float, y0: float, x1: float, y1: float) -> list[Point]:
     return [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
 
 
+def _page_size(chain: Chain) -> tuple[int, int]:
+    """The written page's size: pagekit's page and any padding around it."""
+    return getattr(chain, "canvas_size", chain.output_size)
+
+
+def stored_turns(chain: Chain) -> int:
+    """The quarter turns clockwise that take the stored scan to pagekit's upright frame:
+    the orientation tag's and pagekit's own, folded together.
+
+    The Door renders the scan as stored and triage can turn it but never mirror it, so
+    a mirrored orientation tag (2, 4, 5 or 7) is refused.
+    """
+    to_upright = chain.source_to_upright() if hasattr(chain, "source_to_upright") else None
+    if to_upright is None:
+        return chain.turns
+    for turns in range(4):
+        if all(
+            abs(a - b) <= _EPSILON
+            for a, b in zip(quarter_turn(chain.source_size, turns), to_upright, strict=True)
+        ):
+            return turns
+    raise MappingError(
+        f"the scan's orientation tag ({getattr(chain, 'tag', '?')}) mirrors it, and the Door "
+        "can turn a scan but never mirror it; save the scan without the mirror (as stored, "
+        "or turned), or tell pagekit not to trust its tag"
+    )
+
+
 def _shown(chain: Chain) -> list[Point]:
-    """The source area pagekit's page shows: its output rectangle mapped back to the
+    """The source area pagekit's page shows: its written page mapped back to the
     source, inside the page's polygon (beyond it pagekit shows paper colour)."""
-    width, height = chain.output_size
+    width, height = _page_size(chain)
     on_source = apply(chain.output_to_source(), _rectangle(0, 0, width, height))
-    from_upright = _invert(quarter_turn(chain.source_size, chain.turns))
+    from_upright = _invert(quarter_turn(chain.source_size, stored_turns(chain)))
     polygon = apply(from_upright, chain.polygon)
     return _intersect(on_source, polygon)
 
@@ -198,7 +226,7 @@ def _regions(
     whole = {"x": 0, "y": 0, "w": width, "h": height}
     if len(chains) == 1:
         return [(whole, 0, 0.0)]
-    turns = chains[0].turns
+    turns = stored_turns(chains[0])
     upright_width, upright_height = upright_size((width, height), turns)
     (x0, y0), (x1, y1) = split["cut"]
     # Where the cut crosses the middle of the upright frame, back on the source.
@@ -228,19 +256,40 @@ def _beyond(polygon: list[Point], region: dict[str, int], axis: int) -> float:
     return max(0.0, start - min(values), max(values) - end)
 
 
+def door_colour_mode(page_mode: dict[str, Any] | None, master_mode: str) -> str:
+    """The triage colour mode that makes the Door's page in pagekit's output mode.
+
+    A page in the scan's own mode is `keep`. A grey page is `grayscale`, Pillow's
+    luminance conversion after the same geometry, which is pagekit's luminance rule and,
+    on a scan whose channels are equal, its exact common channel. pagekit's one-channel
+    rules have no triage colour mode, so such a page is refused.
+    """
+    if not page_mode or page_mode.get("mode") != "grey" or master_mode in ("L", "1"):
+        return "keep"
+    if page_mode.get("exact") or page_mode.get("rule") == "luminance":
+        return "grayscale"
+    raise MappingError(
+        f"this page is made grey from one channel ({page_mode.get('rule')}), and the Door "
+        "makes grey only by luminance; use the luminance grey rule, or keep it in colour"
+    )
+
+
 def map_pages(
-    chains: Sequence[Chain], split: dict[str, Any], fills: Sequence[Sequence[int]]
+    chains: Sequence[Chain],
+    split: dict[str, Any],
+    fills: Sequence[Sequence[int]],
+    colour_modes: Sequence[str] | None = None,
 ) -> list[MappedPage]:
     """The triage part of each page of one source, from pagekit's chains, in page order.
 
-    `split` is pagekit's split value for the source, and `fills` each page's paper
-    colour as sample levels in the master's own mode (`fill_levels`). Every page's
-    colour mode is `keep`: the Door stores pagekit's source modes losslessly, and no
-    page is converted.
+    `split` is pagekit's split value for the source, `fills` each page's paper colour
+    as sample levels in the master's own mode (`fill_levels`), and `colour_modes` each
+    page's triage colour mode (`door_colour_mode`; `keep` when not given).
     """
+    colour_modes = list(colour_modes or ["keep"] * len(chains))
     if not chains or len(chains) != split["pages"] or len(fills) != len(chains):
         raise MappingError("one chain and one fill are needed for each page of the split")
-    if len({(chain.source_size, chain.turns) for chain in chains}) != 1:
+    if len({(chain.source_size, stored_turns(chain)) for chain in chains}) != 1:
         raise MappingError("the pages of one source disagree on its size or quarter turn")
     shown = [_shown(chain) for chain in chains]
     for number, polygon in enumerate(shown, start=1):
@@ -255,7 +304,7 @@ def map_pages(
         # Every source pixel any page shows that falls in this region, so the frame's
         # pages together drop nothing pagekit kept.
         held = [_intersect(polygon, region_polygon) for polygon in shown]
-        rotation = _clockwise_millidegrees(chain.turns, chain.angle)
+        rotation = _clockwise_millidegrees(stored_turns(chain), chain.angle)
         pad = 0 if rotation % 90_000 == 0 else _BICUBIC_REACH
         crop = _box_around([polygon for polygon in held if polygon], pad, region)
         notes: list[PageNote] = []
@@ -280,12 +329,12 @@ def map_pages(
         to_canvas = _invert(triage_page_to_frame(unplaced))
         page_corners = apply(
             _compose(to_canvas, chain.output_to_source()),
-            _rectangle(0, 0, *chain.output_size),
+            _rectangle(0, 0, *_page_size(chain)),
         )
         left = round(min(x for x, _ in page_corners))
         top = round(min(y for _, y in page_corners))
         if chain.scale == (1.0, 1.0):
-            right, bottom = left + chain.output_size[0], top + chain.output_size[1]
+            right, bottom = left + _page_size(chain)[0], top + _page_size(chain)[1]
         else:
             right = round(max(x for x, _ in page_corners))
             bottom = round(max(y for _, y in page_corners))
@@ -304,7 +353,7 @@ def map_pages(
             unplaced["region"],
             unplaced["crop_box"],
             rotation,
-            colour_mode="keep",
+            colour_mode=colour_modes[index],
             post_crop_box={"x": left, "y": top, "w": right - left, "h": bottom - top},
             fill=list(fills[index]),
         )
@@ -313,12 +362,12 @@ def map_pages(
         except ValueError as error:
             raise MappingError(
                 f"page {index + 1}: the Door would refuse this page ({error}); pagekit's "
-                "margin runs too far past so small a scan. Set a smaller margin for it"
+                "margin or padding runs too far past so small a scan. Set a smaller one"
             ) from error
         to_door, door_size = door_affine(part)
         corners = apply(
             _compose(to_door, chain.output_to_source()),
-            _rectangle(0, 0, *chain.output_size),
+            _rectangle(0, 0, *_page_size(chain)),
         )
         box = (
             min(x for x, _ in corners),
