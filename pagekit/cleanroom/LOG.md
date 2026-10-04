@@ -740,3 +740,6 @@ record".
 - **Follow-up brief:** `briefs/0046-build-split-gap-only-flag.md` (sha256
   bc019117ae2224d36daa78001f8841d80b978d60e78dd2defaa589bdef7a8f57), to the agent of
   brief 0017. Saved before it was sent.
+- **Brief 0046 done:** commit ee314d7 on `work/pk-split`. Leak scan no hits. Merged into
+  `work/pagekit-prepare`. A two-page answer from an empty band alone, with the paper unbroken
+  across it, is flagged; no correct spread in the builder's grid gets the flag.
