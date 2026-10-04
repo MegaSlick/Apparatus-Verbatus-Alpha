@@ -329,7 +329,7 @@ class OperatorSurface:
                 # ledger is a local refusal and must cause no remote access.
                 ledger = submission_door.load_manifest(manifest_snapshot)
                 if triage_documents:
-                    _refuse_triage_not_covering(triage_documents[0][1], ledger)
+                    _refuse_triage_the_door_would(triage_documents, ledger)
                 manifest_key = f"{prefix}-manifest.json"
                 claim_key = f"{prefix}-manifest.sha256"
                 claim_bytes = f"{manifest_sha256}\n".encode("ascii")
@@ -345,6 +345,18 @@ class OperatorSurface:
                     raise _UploadManifestConflict(
                         f"target {claim_key!r} is permanently claimed by a different sealed "
                         "submission manifest; no image was written"
+                    )
+                if triage_documents and (
+                    _remote_state(store, manifest_key, manifest_bytes, manifest_sha256) == "ours"
+                    and any(
+                        _remote_state(store, key, data, sha256) == "absent"
+                        for key, data, sha256 in triage_documents
+                    )
+                ):
+                    raise _UploadManifestConflict(
+                        f"target {manifest_key!r} already marks this submission complete "
+                        "without this triage, and a run may already have read it so; upload "
+                        "the scans with their triage under a new --prefix"
                     )
                 for key, data, sha256 in triage_documents:
                     if _remote_state(store, key, data, sha256) == "other":
@@ -2201,16 +2213,31 @@ def _triage_documents(prefix: str, manifest: Path, recipe: Path) -> list[tuple[s
     return documents
 
 
-def _refuse_triage_not_covering(data: bytes, ledger: dict[str, Any]) -> None:
-    """The triage manifest must be valid and hold a row for every sealed scan, as the
-    Door requires, so a pod is never started on triage it would refuse."""
+def _refuse_triage_the_door_would(
+    documents: list[tuple[str, bytes, str]], ledger: dict[str, Any]
+) -> None:
+    """The Door's own checks, made before anything is sent, so a pod is never started on
+    triage it would refuse: a valid manifest, a valid producer recipe that declares its
+    rows, and a row for every sealed scan."""
     from common.contracts import triage as triage_contract
+    from operations.triage.producer_recipes import (
+        refuse_rows_outside_recipe,
+        validate_recipe_document,
+    )
 
     try:
-        document = json.loads(data.decode("utf-8"))
-        triage_contract.validate_manifest(document)
+        document = json.loads(documents[0][1].decode("utf-8"))
+        recipe = json.loads(documents[1][1].decode("utf-8"))
     except (UnicodeDecodeError, ValueError) as error:
+        raise ContractError(f"a triage document is not valid JSON: {error}") from error
+    if not isinstance(document, dict) or not isinstance(document.get("records"), list):
+        raise ContractError("the triage decision manifest has no records")
+    try:
+        triage_contract.validate_manifest(document)
+    except ValueError as error:
         raise ContractError(f"the triage decision manifest is not valid: {error}") from error
+    validate_recipe_document(recipe)
+    refuse_rows_outside_recipe(recipe, document["records"])
     covered = {row["source_frame_sha256"] for row in document["records"]}
     missing = [
         entry["relative_path"] for entry in ledger["files"] if entry["sha256"] not in covered

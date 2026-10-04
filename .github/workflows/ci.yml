@@ -96,9 +96,10 @@ jobs:
 
   # The operator runs on the lead's Mac, Intel or Apple silicon, so the parts a Mac runs
   # are tested there: the operator, pagekit, the triage geometry `verbatus prepare` writes
-  # and the Door renders, the hooks, and the shell scripts it runs or prints (the start command's laptop half, not the command it prints). The pod and
-  # serving suites, the guard's among them, need Linux and stay in `test`. Not part of the
-  # required `check`: the Linux gate alone decides a merge.
+  # and the Door renders, the hooks, and the shell scripts it runs or prints (the start
+  # command's laptop half, not the command it prints). The pod and serving suites, the
+  # guard's among them, need Linux and stay in `test`. Not part of the required `check`:
+  # the Linux gate alone decides a merge.
   mac:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40

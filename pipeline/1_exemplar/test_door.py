@@ -4840,3 +4840,62 @@ def test_a_second_order_triage_row_is_cut_tight_on_its_fill_and_re_derives(tmp_p
         {"sha256": digest, "stored_at": "x", "source_frame_index": 0},
         digest_bytes(sealed),
     )
+
+
+def _pagekit_manifest_and_recipes(tmp_path, *, revision="0.1.0"):
+    """A manifest with one pagekit row, pagekit's recipe and the instrument's recipe."""
+    from operations.triage import instrument
+    from operations.triage.pagekit_recipe import make_recipe
+
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 4, "h": 4},
+        {"x": 0, "y": 0, "w": 4, "h": 4},
+        0,
+        colour_mode="keep",
+        post_crop_box={"x": 0, "y": 0, "w": 4, "h": 4},
+        fill=[200],
+    )
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256="a" * 64,
+        frame={"width": 4, "height": 4},
+        split=door.triage_manifest.make_split(
+            [part], operation_order=door.triage_manifest.SPLIT_OPERATION_ORDER_V2
+        ),
+        re_shoot_cluster_id=None,
+        confidence=0,
+        mode="auto",
+        actor={"kind": "producer", "identity": "pagekit", "revision": revision},
+        human_override=False,
+    )
+    manifest = tmp_path / "triage-decision-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {"schema": "triage-decision-manifest-v1", "corpus_id": "parish-a", "records": [row]}
+        )
+    )
+    pagekit = tmp_path / "pagekit-recipe.json"
+    pagekit.write_text(
+        json.dumps(make_recipe(revision="0.1.0", settings_sha256="b" * 64, detector_methods={}))
+    )
+    instrument_recipe = tmp_path / "instrument-recipe.json"
+    instrument_recipe.write_text(json.dumps(instrument.producer_recipe(instrument.load_config())))
+    return manifest, pagekit, instrument_recipe
+
+
+def test_the_door_reads_pagekit_rows_under_pagekits_own_recipe(tmp_path):
+    manifest, pagekit, _instrument = _pagekit_manifest_and_recipes(tmp_path)
+    rows, _clusters, digests = door.load_triage_decisions(manifest, None, pagekit)
+    assert len(rows) == 1 and "triage-producer-recipe" in digests
+
+
+def test_the_door_refuses_a_pagekit_row_its_recipe_does_not_declare(tmp_path):
+    manifest, pagekit, _instrument = _pagekit_manifest_and_recipes(tmp_path, revision="0.2.0")
+    with pytest.raises(ContractError, match="does not declare the manifest's rows"):
+        door.load_triage_decisions(manifest, None, pagekit)
+
+
+def test_the_door_refuses_pagekit_rows_under_the_instruments_recipe(tmp_path):
+    manifest, _pagekit, instrument_recipe = _pagekit_manifest_and_recipes(tmp_path)
+    with pytest.raises(ContractError, match="duplicate-detection instrument's"):
+        door.load_triage_decisions(manifest, None, instrument_recipe)

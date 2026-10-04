@@ -386,16 +386,9 @@ def load_triage_decisions(
     if clusters_bytes is not None:
         digests["triage-re-shoot-clusters"] = digest_bytes(clusters_bytes)
     if recipe_bytes is not None:
-        from operations.triage import pagekit_recipe
-        from operations.triage.instrument import validate_producer_recipe
+        from operations.triage.producer_recipes import validate_recipe_document
 
-        try:
-            if pagekit_recipe.is_recipe(recipe_document):
-                pagekit_recipe.validate_recipe(recipe_document)
-            else:
-                validate_producer_recipe(recipe_document)
-        except ContractError as error:
-            raise ContractError(f"the triage producer recipe is invalid: {error}") from error
+        validate_recipe_document(recipe_document)
         digests["triage-producer-recipe"] = digest_bytes(recipe_bytes)
     if clusters_document is not None:
         if not isinstance(clusters_document, dict):
@@ -423,33 +416,12 @@ def load_triage_decisions(
             "recipe was supplied"
         )
     if recipe_document is not None:
-        _refuse_rows_outside_recipe(recipe_document, checked["records"])
+        from operations.triage.producer_recipes import refuse_rows_outside_recipe
+
+        refuse_rows_outside_recipe(recipe_document, checked["records"])
     # `validate_manifest` refuses a second row for one frame, so keying is exact.
     rows = {row["source_frame_sha256"]: row for row in checked["records"]}
     return rows, dict(clusters or {}), digests
-
-
-def _refuse_rows_outside_recipe(recipe: Any, rows: list[dict[str, Any]]) -> None:
-    """Each producer's rows are declared by that producer's own recipe."""
-    from operations.triage import pagekit_recipe
-
-    try:
-        if pagekit_recipe.is_recipe(recipe):
-            pagekit_recipe.refuse_rows_outside_recipe(recipe, rows)
-        elif any(
-            row["actor"]["kind"] == "producer"
-            and row["actor"]["identity"] == pagekit_recipe.PRODUCER_IDENTITY
-            for row in rows
-        ):
-            raise ContractError(
-                "pagekit's rows are declared by a pagekit producer recipe, and the one "
-                "supplied is the duplicate-detection instrument's"
-            )
-    except ContractError as error:
-        raise ContractError(
-            f"the triage producer recipe does not declare the manifest's rows ({error}); no "
-            "run was created; supply the recipe written beside this manifest"
-        ) from error
 
 
 def _read_optional_triage_document(

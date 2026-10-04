@@ -5437,7 +5437,9 @@ def test_a_resume_range_names_both_ends_ends_at_the_export_and_needs_a_known_run
     assert (parsed.from_stage, parsed.to_stage) == ("recensor", "armarium")
 
 
-def _triage_documents(tmp_path: Path, source: Path, *, skip: str | None = None):
+def _triage_documents(
+    tmp_path: Path, source: Path, *, skip: str | None = None, actor: dict | None = None
+):
     """A decision manifest with one whole-frame row per sealed page, and a recipe."""
     from common.contracts import triage as triage_contract
 
@@ -5460,7 +5462,7 @@ def _triage_documents(tmp_path: Path, source: Path, *, skip: str | None = None):
                 re_shoot_cluster_id=None,
                 confidence=0,
                 mode="auto",
-                actor={"kind": "human", "identity": "lead", "revision": None},
+                actor=actor or {"kind": "human", "identity": "lead", "revision": None},
                 human_override=False,
             )
         )
@@ -5470,8 +5472,14 @@ def _triage_documents(tmp_path: Path, source: Path, *, skip: str | None = None):
             {"schema": "triage-decision-manifest-v1", "corpus_id": "synthetic", "records": rows}
         )
     )
+    from operations.triage.pagekit_recipe import make_recipe
+
     recipe = tmp_path / "triage-producer-recipe.json"
-    recipe.write_bytes(b'{"schema":"pagekit-producer-recipe.v1"}')
+    recipe.write_bytes(
+        canonical_bytes(
+            make_recipe(revision="0.1.0", settings_sha256="b" * 64, detector_methods={})
+        )
+    )
     return manifest, recipe
 
 
@@ -5552,3 +5560,56 @@ def test_upload_never_replaces_the_triage_documents_a_submission_was_sent_with(
 
     assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
     assert "--prefix" in str(refusal.value.detail)
+
+
+@pytest.mark.parametrize("problem", ["malformed recipe", "rows the recipe does not declare"])
+def test_upload_refuses_a_producer_recipe_the_door_would_refuse(tmp_path: Path, problem) -> None:
+    """The Door's own recipe checks run before anything is sent, so a pod is never
+    started on triage the Door would refuse."""
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(
+        tmp_path,
+        source,
+        actor={"kind": "producer", "identity": "operations.triage.producer", "revision": "r1"},
+    )
+    if problem == "malformed recipe":
+        recipe.write_bytes(b'{"schema":"pagekit-producer-recipe.v1"}')
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=store,
+            triage_decision_manifest=triage,
+            triage_producer_recipe=recipe,
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "producer recipe" in str(refusal.value.detail), refusal.value.detail
+    assert store.puts == []
+
+
+def test_upload_never_adds_triage_to_a_submission_already_marked_complete(
+    tmp_path: Path,
+) -> None:
+    """A pod may already have run the completed submission without triage."""
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(tmp_path, source)
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+    surface.upload(source, sealed_manifest=manifest, target=store)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=store,
+            triage_decision_manifest=triage,
+            triage_producer_recipe=recipe,
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "--prefix" in str(refusal.value.detail)
+    assert not (tmp_path / "volume" / "submission-triage-decision-manifest.json").exists()
