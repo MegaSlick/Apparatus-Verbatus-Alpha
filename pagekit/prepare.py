@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import struct
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -160,7 +161,9 @@ def _decode_opened(data: bytes, path: Path) -> tuple[Image.Image, int | None, bo
     Pillow turns some carriers upright by their tag as it loads them (TIFF, today) and
     drops the tag; others (PNG, JPEG) it leaves as stored. Which it does is found, not
     assumed: a tag of 2 to 8 that is gone after loading was applied; so was a tag of 5
-    to 8 when the loaded size is the transposed size the file's own header gives."""
+    to 8 when the loaded size is the transposed size the file's own header gives; and
+    for a TIFF, the loaded pixels are compared with the same file read with its tag set
+    to 1, which settles it for every tag whatever a later Pillow does."""
     try:
         with Image.open(io.BytesIO(data)) as image:
             before = _file_tag(image)
@@ -185,6 +188,12 @@ def _decode_opened(data: bytes, path: Path) -> tuple[Image.Image, int | None, bo
                     and image.size == (header[1], header[0])
                 )
             )
+            if before in _TAG_TRANSFORMS and header is not None:
+                # A TIFF: compare with the same file read with its tag set to 1, which
+                # is the stored pixels whatever the library does with tags.
+                found = _applied_by_comparison(data, image, before)
+                if found is not None:
+                    on_open = found
             if image.mode == "1":
                 decoded = image.convert("L")
             elif image.mode == "P":
@@ -209,6 +218,51 @@ def _decode_opened(data: bytes, path: Path) -> tuple[Image.Image, int | None, bo
 
 
 _TAG_TRANSFORMS = (2, 3, 4, 5, 6, 7, 8)
+
+
+def _tiff_without_tag(data: bytes) -> bytes | None:
+    """The TIFF's bytes with its orientation tag set to 1 (first directory), or None
+    when the tag cannot be found where a plain TIFF keeps it."""
+    if data[:2] == b"II":
+        order = "<"
+    elif data[:2] == b"MM":
+        order = ">"
+    else:
+        return None
+    try:
+        (offset,) = struct.unpack(order + "I", data[4:8])
+        (count,) = struct.unpack(order + "H", data[offset : offset + 2])
+        patched = bytearray(data)
+        for index in range(count):
+            at = offset + 2 + 12 * index
+            tag, kind, number = struct.unpack(order + "HHI", data[at : at + 8])
+            if tag == _ORIENTATION_TAG and kind == 3 and number == 1:
+                patched[at + 8 : at + 10] = struct.pack(order + "H", 1)
+                return bytes(patched)
+    except struct.error:
+        return None
+    return None
+
+
+def _applied_by_comparison(data: bytes, loaded: Image.Image, tag: int) -> bool | None:
+    """Whether the library applied `tag` while loading this TIFF: the loaded pixels
+    equal the stored pixels turned by the tag (True), or the stored pixels as they are
+    (False). None when that cannot be told."""
+    plain = _tiff_without_tag(data)
+    if plain is None:
+        return None
+    try:
+        with Image.open(io.BytesIO(plain)) as stored:
+            stored.load()
+            stored = stored.copy()
+    except Exception:
+        return None
+    turned = stored.transpose(TAG_TRANSPOSE[tag])
+    if loaded.size == turned.size and loaded.tobytes() == turned.tobytes():
+        return True
+    if loaded.size == stored.size and loaded.tobytes() == stored.tobytes():
+        return False
+    return None
 
 
 def _header_size(image: Image.Image) -> tuple[int, int] | None:
@@ -564,7 +618,10 @@ class _Runner:
         self.image_loader = image_loader
         self.cache: dict[Any, Any] = {}
         self.source_dpi: float | None = None  # --dpi, for sources that carry none
-        self.tag = 1  # the orientation tag applied to the source being settled
+        self.tag = 1  # the orientation tag the chain applies to the source being settled
+        # The tag applied (whoever applied it) and the grid the chain starts from, for a
+        # source with a tag; part of every step's inputs. None for a source without one.
+        self.grid: dict[str, Any] | None = None
         self.run_mode: str | None = None  # this run's output mode choice, if one was made
         # {(source, step, page): sentence} added to that step's evidence in the manifest.
         self.notes: dict[tuple[str, str, int | None], str] = {}
@@ -585,8 +642,8 @@ class _Runner:
         reads = {name: self.values[name] for name in detector.settings}
         for name in detector.files:
             reads[f"file {name}"] = file_digest(name)
-        if self.tag != 1:  # only when applied, so a source with no tag reads as before
-            reads["orientation_tag"] = self.tag
+        if self.grid is not None:  # only for a tagged source, so others read as before
+            reads["orientation_tag"] = self.grid
         if step in PAGE_STEPS or step == "split":
             reads["overlap_mm"] = self.values["overlap_mm"]
             reads["resolution"] = None if resolution is None else list(resolution)
@@ -810,6 +867,7 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         source, old, overrides.get(("tag_trust", None)), values
     )
     runner.tag = tag
+    runner.grid = grid_key(tag_record)
     if tag_note:
         runner.notes[(source.relative, "orientation", None)] = tag_note
     # The millimetre settings work in the tagged frame. The file's resolution is for its
@@ -1157,6 +1215,19 @@ def _tagged_dpi(resolution, tag: int):
     return list(swapped) if isinstance(resolution, list) else swapped
 
 
+def grid_key(record: dict[str, Any]) -> dict[str, Any] | None:
+    """What a source's tag did to the grid every step works on: the tag applied and by
+    whom, and whether the grid is the stored pixels. None when the source has no tag."""
+    if record["found"] in (None, 1):
+        return None
+    return {
+        "tag": record["found"],
+        "applied": record["applied"],
+        "applied_by": record["applied_by"],
+        "grid": record["grid"],
+    }
+
+
 def _tag_trust(old, override: Override | None, values) -> tuple[bool, str]:
     """Whether a source's orientation tag is trusted, and what says so."""
     if override is not None:
@@ -1418,7 +1489,23 @@ def plan(
     cache_dir = None
     if values["stage_cache"]:
         folder = values["stage_cache_folder"]
-        cache_dir = Path(folder).resolve() if folder else output_dir.parent / CACHE_NAME
+        if folder:
+            cache_dir = Path(folder).resolve()
+        else:  # one cache per output folder, named after it
+            cache_dir = output_dir.parent / f"{output_dir.name}.{CACHE_NAME}"
+        if _inside(cache_dir, output_dir):
+            raise PrepareError(
+                f"the stage cache {cache_dir} would lie inside the output folder; choose a "
+                "folder elsewhere (--cache)"
+            )
+        from pagekit.cache import owner
+
+        belongs = owner(cache_dir)
+        if belongs is not None and belongs != str(output_dir):
+            raise PrepareError(
+                f"the stage cache {cache_dir} belongs to the output folder {belongs}; give "
+                "this output folder its own cache (--cache) so neither removes the other's"
+            )
     for path in paths:
         if _inside(output_dir, path.parent) or _inside(project_folder, path.parent):
             raise PrepareError(

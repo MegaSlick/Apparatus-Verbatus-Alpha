@@ -86,6 +86,10 @@ UNCERTAIN_FIGURE_TILES = (
     "orientation uncertain: a large share of the writing is figures or capitals of one "
     "size, with no ascenders or descenders of their own to orient by"
 )
+UNCERTAIN_COLUMNS = (
+    "orientation uncertain: most of the writing is in narrow columns of items (amounts) "
+    "beside a block of writing"
+)
 POSSIBLY_NEGATIVE = (
     "possibly a negative (light writing on a dark ground); orientation not decided from it"
 )
@@ -124,6 +128,47 @@ def _uniform_share(marks: list[Mark], value: dict[str, Any]) -> float:
             1 for size in sizes if abs(size - middle) <= value["same_size_tolerance"] * middle
         )
         best = max(best, near / len(sizes))
+    return best
+
+
+def _layout(marks: list[Mark], box: tuple[int, int, int, int], value: dict[str, Any]):
+    """Columns of items beside a block of writing. Along each axis the mark boxes are
+    projected into runs of content; a run no wider than narrow_run_share of the
+    content's extent is narrow (a column of amounts, or a line of writing seen
+    sideways). An axis is mixed when narrow runs hold at least mixed_narrow_share of the
+    ink and wide runs at least mixed_wide_share: a block of writing beside columns of
+    items. Text whose lines are seen sideways has only narrow runs, and upright text
+    only wide ones, so neither is mixed. Returns the largest narrow share on a mixed
+    axis and the marks in that axis's wide runs (None when no axis is mixed)."""
+    total = sum(m.count for m in marks) or 1
+    best = (0.0, None)
+    for axis in (0, 1):
+        low, high = (box[0], box[2]) if axis == 0 else (box[1], box[3])
+        extent = high - low
+        covered = [False] * extent
+        for m in marks:
+            a, b = (m.x0, m.x1) if axis == 0 else (m.y0, m.y1)
+            for i in range(max(a, low), min(b, high)):
+                covered[i - low] = True
+        narrow = 0
+        wide_marks: list[Mark] = []
+        for a, b in runs_of(covered):
+            inside = [
+                m
+                for m in marks
+                if a <= ((m.x0 + m.x1) / 2 if axis == 0 else (m.y0 + m.y1) / 2) - low < b
+            ]
+            if b - a <= value["narrow_run_share"] * extent:
+                narrow += sum(m.count for m in inside)
+            else:
+                wide_marks += inside
+        narrow_share = narrow / total
+        wide_share = sum(m.count for m in wide_marks) / total
+        mixed = (
+            narrow_share >= value["mixed_narrow_share"] and wide_share >= value["mixed_wide_share"]
+        )
+        if mixed and narrow_share > best[0]:
+            best = (narrow_share, wide_marks)
     return best
 
 
@@ -461,7 +506,22 @@ def detect_orientation(
     clean = paint(marks, ink.size)
     box = clean.getbbox()
     clean = clean.crop(box)
-    direction = _direction(clean, marks, value, (box[0], box[1]))
+    columns_share, block_marks = _layout(marks, box, value)
+    if columns_share >= value["columns_ink_share"]:
+        return answer(
+            0,
+            UNCERTAIN_SCALE * 0.25,
+            f"{columns_share:.0%} of the ink lies in narrow columns of items beside a block "
+            "of writing (amounts in columns, as on an account page); such columns read as "
+            f"lines either way, so orientation is not decided from them; {DEFAULT_NOTE}.",
+            [UNCERTAIN_COLUMNS],
+        )
+    voting = marks
+    if block_marks is not None:
+        # Only the block of writing votes; the columns of items beside it do not.
+        voting = block_marks
+        clean = paint(voting, ink.size).crop(box)
+    direction = _direction(clean, voting, value, (box[0], box[1]))
     margin = math.log(value["direction_margin"])
     score = direction["score"]
     across_confidence = strength(abs(score), margin)
@@ -523,7 +583,7 @@ def detect_orientation(
         )
     if direction["left_out"]:
         # The marks of the one-size tiles vote neither on the line direction nor here.
-        kept = [m for m in marks if id(m) not in direction["left_out"]]
+        kept = [m for m in voting if id(m) not in direction["left_out"]]
         frame = paint(kept, ink.size).crop(box)
         if base == 1:
             frame = frame.transpose(Image.Transpose.ROTATE_270)

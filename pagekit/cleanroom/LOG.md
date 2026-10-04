@@ -695,3 +695,24 @@ record".
   measures only the written page; cropping is off by default; the stage cache is written
   beside the output. The builder reported that the library turns some uncompressed tagged
   TIFFs differently when opened by path than from bytes.
+
+## 0039 — Review of the tag fix and spec 0008; follow-up brief 0043
+
+- **Independent review** of ad4a27a by a fresh agent bound by the clean-room rule: the tag
+  handling matched the upright page in all 80 cases, the default canvas kept every pixel,
+  the cache never changed an output, and the source folder was untouched; a change of tag
+  trust on a TIFF re-ran nothing; `measure` scored uncropped pages as wrong; colour on
+  cream paper could be lost; the cache's disk use needs the lead's decision.
+- **Follow-up brief:** `briefs/0043-build-trust-measure-colour-cache.md` (sha256
+  293f80e0e46254a9b26d591e25194b062467cd75f94ece4d701af1896b6accc1), to the agent of
+  brief 0023. Saved before it was sent.
+- **Brief 0042 done:** commits fd6031e and 944e6f7 on `work/pk-split`. Leak scan no hits.
+  Merged into `work/pagekit-prepare`. On the builder's 18 kinds of spread (456 runs), none
+  is wrong without a flag; both real spreads unchanged.
+- **The lead decided** the cache keeps thumbnails by default; full-resolution step images
+  only on request. **Follow-up brief:** `briefs/0044-build-cache-thumbnails.md` (sha256
+  c91bdde1beca189bf8599ac5f180a23e68f1d9f87ac7edc11dd567ac02c69eff), to the agent of
+  brief 0023. Saved before it was sent.
+- **Briefs 0043 and 0044 done:** commits ac89cf4, 29d941e, 1c95e02, fc75687, 265b47a,
+  0e7c58b and 478a671 on `work/pk-integrate`. Leak scan no hits in 184 files. Merged into
+  `work/pagekit-prepare`. The cache keeps previews only by default (76 kB for a test spread).
