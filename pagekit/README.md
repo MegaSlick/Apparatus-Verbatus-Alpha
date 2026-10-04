@@ -78,25 +78,87 @@ is not proof the crop is right.
 ## Preparing pages
 
 ```sh
-python -m pagekit prepare scans/ --output prepared/ \
-    [--project prepared/pagekit-project.json] [--overrides fixes.json] [--report-stale]
+python -m pagekit prepare scans/ --output prepared/
 ```
 
-`prepare` turns each source image into one clean image per page: a quarter turn to
-upright, a split of a two-page spread along a straight cut (which may lean), a small
-rotation to level the lines, a crop to the content plus a margin, and an optional
-shrink. Sources are a folder (its `.png`, `.tif`, `.tiff`, `.jpg` and `.jpeg` files) or
-a list of files; they are only read. Outputs, the manifest and the project file never
-go inside a source folder.
+Then open `prepared/review.html` in any browser, on a laptop or a phone, to see every
+page and every decision.
 
-The detectors (orientation, split, skew, page box, content box) are built in later
-slices. Until they are connected, each of those steps takes a neutral default (no turn,
-one page, no skew, the whole page), recorded with confidence 0 and a flag saying the
-step was not run, so every page goes to review unless a person set its values. The
-margin is a setting, not a detection: unless set by hand it is `margin_mm`, recorded as
-detected with confidence 1, evidence naming the setting, and no flag. Exit status is 0
-when no page is flagged, 1 when any page needs review and 2 when the input cannot be
-used. A run that fails at any point, even while writing, leaves the output folder and
+`prepare` turns each source image into one clean image per page. For each scan, in
+order, it finds:
+
+1. **orientation**: how many quarter turns make the page upright;
+2. **pages and cut**: one page or a two-page spread, and where to cut it (the cut may
+   lean);
+3. for each page, **skew**: the small angle that levels its lines;
+4. for each page, the **page box** (where the paper is) and then the **content box**
+   (everything to keep, notes and signatures included, or none for a blank page);
+5. the **margin** around the content, then one resampling of the original into the
+   prepared page.
+
+A blank page is still written, as an image of its paper, so the sequence of pages stays
+complete. Sources are a folder (its `.png`, `.tif`, `.tiff`, `.jpg` and `.jpeg` files)
+or a list of files; they are only read. Nothing is ever written inside a source folder.
+
+Options: `--project FILE` and `--overrides FILE` (below), `--report-stale`,
+`--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, and
+`--tone-view` (below). Exit status is 0 when no page is flagged, 1 when any page needs
+review and 2 when the input cannot be used (and then nothing is written).
+
+When pagekit is not sure of a step, it says so with a flag and the page goes to review;
+it never guesses silently. If a step fails on one page, that page gets a flag naming the
+step and the error, the step takes a neutral default (no turn, one page, no skew, the
+whole page), and the rest of the batch carries on. The margin is a setting, not a
+detection: unless set by hand it is `margin_mm`, with no flag.
+
+A full-size scan (about 3000 by 4500 pixels) takes a few seconds. Every detector works
+on a reduced copy: the page and content boxes are measured on a copy of the levelled
+page at `detector_working_dpi`, made from the original in one resampling, and their
+boxes are scaled back outward. The prepared page itself is always made from the
+original.
+
+### Defaults
+
+- Pages are written as lossless TIFF (deflate). PNG is available with `--format png`;
+  no lossy format is offered.
+- A colour scan gives a colour page and a grey scan a grey page. pagekit never turns a
+  page into black and white.
+- Pages keep the source resolution. They are shrunk only when you ask (`--max-dpi`).
+
+### The review sheet
+
+`review.html` sits beside the manifest. It is one file with everything inside it: no
+internet, no scripts and no fonts from elsewhere. It lists every scan, flagged ones
+first, the most flagged first. For each scan it shows a small preview of the original
+turned upright, with the cut (vermilion), each page box (blue) and each content box
+(green) drawn on it, and a small preview of each prepared page. For each step it gives
+the value, where it came from, the confidence, the evidence and every flag in plain
+words, and under it the exact line to copy into an overrides file to change it. The
+previews are small JPEG copies, only for looking. A note at the top says that the
+settings are not yet measured: until they are, a flag means "look at this page" and no
+flag is not proof that the page is right.
+
+To correct a page from the sheet: copy the line under the step, change the value, put
+it in `overrides.json` in the output folder, and run, from that folder:
+
+```sh
+python -m pagekit prepare --output . --overrides overrides.json
+```
+
+### Pages unlike the rest of the batch
+
+After every page has its values, pagekit compares each page's skew, content width and
+height, and four margins with the rest of the batch: the median and the median absolute
+deviation, with a floor on the spread. A page far from the middle is flagged, naming the
+measurement and how far off it is. This needs at least `volume_min_pages` pages with
+that measurement; a smaller batch is not compared. Blank pages are left out.
+
+### Values set by hand and the detectors
+
+A value set by hand is never detected again. Its detector still runs to compare, and if
+it is confident (no flags) and far from the hand-set value (the `compare_*` settings),
+the manifest and the review sheet say so in the evidence. That is a note, never a
+change and never a flag. The project file keeps the person's own evidence. A run that fails at any point, even while writing, leaves the output folder and
 the project file as they were: every file is first written in full beside its target,
 then all are moved into place together.
 
@@ -120,6 +182,9 @@ never discarded. They stay in the project under the source's `dropped_pages`, th
 remaining pages are flagged about them on every run, and they come back if the page
 does. To discard them, delete that page's entry from `dropped_pages` in the project
 file.
+
+A detector's method name includes a digest of its thresholds file, so changing a
+threshold recomputes every value it decided.
 
 `--report-stale` lists the steps that would change and why, without running anything
 or writing any file (exit 1 when something is stale, 0 when nothing is).
@@ -185,10 +250,10 @@ Everything outside the page's polygon, including anything outside the source, is
 filled with the page's paper colour: the median of each band over the pixels above
 Otsu's threshold inside the page, measured on a reduced working copy.
 
-Pages are written losslessly, PNG or TIFF with deflate compression (`output_format`),
-as `<source stem>_p<page>.png` (or `.tif`); greyscale stays greyscale and colour stays
-colour, and the file carries its resolution (the source's, or the shrunk value). A
-3000 x 4500 colour page takes a few seconds, most of it lossless encoding.
+Pages are written losslessly, TIFF with deflate compression (the default) or PNG
+(`output_format`), as `<source stem>_p<page>.tif` (or `.png`); greyscale stays
+greyscale and colour stays colour, and the file carries its resolution (the source's,
+or the shrunk value).
 
 ### The manifest
 
@@ -197,7 +262,9 @@ source's name and sha256; the output's name, sha256, byte size, format, mode, pi
 and resolution; the source resolution and its origin; the geometry chain as plain
 parameters, with both composed affine maps (source to output and back) and the fill
 colour; every step's value with origin, confidence, evidence and flags; the flags; and
-the verdict, `review` or `no_flags`. `stale_outputs` lists the output files of pages
+the verdict, `review` or `no_flags`. `batch` holds the volume-wide comparison: for each
+measurement the number of pages, whether it was compared, the median, the spread and how
+many pages were flagged. `review` names the review sheet. `stale_outputs` lists the output files of pages
 that no longer exist, which are left in place, never deleted. Like the crop check it reports `thresholds`,
 `thresholds_measured` and `thresholds_note`. The same project gives byte-identical
 images and manifest.
@@ -207,26 +274,63 @@ prepared page maps back to the source through `affine_output_to_source`
 `[a, b, c, d, e, f]` as (a x + b y + c, d x + e y + f), and `pagekit.geometry.Chain`
 maps points and polygons both ways.
 
-### For the detector slices
+### The grey tone view
+
+`--tone-view` also writes the grey tone view of spec 0006 beside each page, as
+`<page>_tone.tif`, and records it in the manifest. It needs `pagekit/tone.py`. Where
+that is not yet part of pagekit, `--tone-view` stops with a plain message and writes
+nothing; the one place it is called is `make_tone_view` in `pagekit/pipeline.py`.
+
+### Measuring success
+
+```sh
+python -m pagekit measure --prepared prepared/ --gold answers.json [--json]
+```
+
+`measure` compares a prepared batch with a hand-checked answer file (`pagekit-gold.v1`):
+
+```json
+{"schema": "pagekit-gold.v1", "sources": [
+  {"source": "0012.tif", "orientation": 1, "pages": 2,
+   "cut": [[1510, 0], [1532, 4480]], "skew": [0.4, -0.2],
+   "content_box": [[120, 200, 1450, 4300], null]}
+]}
+```
+
+`source` is the file name or sha256; every other key is optional. The cut and the
+content boxes are in the pixels of the upright image; `null` is a blank page. For each
+step it reports how many were right (within the `measure_*` tolerance and not flagged),
+wrong (outside it and not flagged: the errors that matter most, listed by name) and sent
+to review (flagged), with the size of the errors. It changes no setting. Exit status 0,
+or 2 when a file cannot be used.
+
+### For other code
 
 `pagekit.answer` defines a detector's answer (value, confidence, evidence, flags) and
 refuses one that breaks the shape. `pagekit.prepare.plan(..., detectors={step:
-Detector(method, run, settings)})` calls each detector in step order with a
+Detector(method, run, settings, compare)})` calls each detector in step order with a
 `StepContext` (earlier values, settings, the original image, and
 `working_copy(long_side)`, a reduced copy of the step's grid made from the original)
-and stores its answer; `pagekit.output.execute(plan)` writes the pages.
+and stores its answer; `pagekit.pipeline.DETECTORS` are the connected detectors (with no
+detectors given, every step takes its neutral default with a flag);
+`pagekit.output.execute(plan)` writes the pages, the manifest, the project file and the
+review sheet.
 
 ### Settings
 
-`thresholds_prepare.toml`: `overlap_mm`, `margin_mm`, `margin_allowance_mm`,
-`min_plausible_dpi`, `max_plausible_dpi`, `max_output_dpi`,
-`paper_estimate_long_side_px` and `output_format`. All are starting guesses with status
-`UNMEASURED`.
+`thresholds_prepare.toml` holds the settings of `prepare` and `measure`: the overlap,
+margin and allowance, the plausible resolution range, shrinking and the output format,
+the detectors' working resolution, the comparison with hand-set values, the batch
+checks, the preview size and the `measure` tolerances. The detectors' own settings are
+in `thresholds_split.toml` (orientation and split) and `thresholds_skew.toml` (skew and
+the boxes). All are starting guesses with status `UNMEASURED`, and the review sheet
+lists them.
 
 ### Not yet
 
-- No detectors: every detected step's default is flagged until a person sets it or a
-  detector slice is connected.
+- Every setting is an unmeasured guess until a hand-checked set of real pages is run
+  through `measure`.
+- The tone view needs `pagekit/tone.py`.
 - Output files of pages that no longer exist (a spread re-split into one page) are
   left in the output folder and listed under `stale_outputs`; pagekit never deletes.
 - EXIF orientation tags are ignored: sources are taken in their stored pixel grid.

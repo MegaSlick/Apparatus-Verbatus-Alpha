@@ -7,7 +7,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pagekit"
 dynamic = ["version"]
-description = "Page preparation checks for scanned masters: crops, splits, resolution."
+description = "Page preparation for scanned masters: turn, split, level, crop, and a review sheet."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.12"
@@ -20,4 +20,9 @@ pagekit = "pagekit.__main__:main"
 version = { attr = "pagekit.__version__" }
 
 [tool.setuptools.package-data]
-pagekit = ["thresholds.toml", "thresholds_prepare.toml"]
+pagekit = [
+  "thresholds.toml",
+  "thresholds_prepare.toml",
+  "thresholds_skew.toml",
+  "thresholds_split.toml",
+]
