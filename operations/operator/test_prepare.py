@@ -481,3 +481,29 @@ def test_a_tiff_whose_orientation_tag_is_not_trusted_is_refused(tmp_path, capsys
     assert code == 2, printed
     assert "not trusted" in printed
     assert not (tmp_path / "out dir").exists()
+
+
+def test_crop_and_cache_choices_pass_through_to_pagekit(tmp_path, capsys):
+    _scans(tmp_path / "my scans")
+
+    code, printed = _run(tmp_path, capsys, "--crop", "page", "--no-cache")
+
+    assert code == 0, printed
+    project = json.loads((tmp_path / "out dir" / "pagekit-project.json").read_text())
+    assert project["settings"]["crop"]["value"] == "page"
+    assert not any(path.name == "pagekit-cache" for path in tmp_path.rglob("pagekit-cache"))
+
+    cache = tmp_path / "elsewhere" / "cache"
+    code, printed = _run(tmp_path, capsys, "--cache", str(cache))
+    assert code == 0, printed
+    assert cache.is_dir()
+    assert not any((tmp_path / "my scans").rglob("*cache*"))
+
+
+def test_a_cache_inside_the_scans_folder_is_refused(tmp_path, capsys):
+    _scans(tmp_path / "my scans")
+
+    code, printed = _run(tmp_path, capsys, "--cache", str(tmp_path / "my scans" / "cache"))
+
+    assert code == 2, printed
+    assert not (tmp_path / "my scans" / "cache").exists()

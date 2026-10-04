@@ -78,7 +78,8 @@ need. The other words never read those and run from anywhere.
 
 ```sh
 verbatus prepare --scans private/parish-a/scans --out private/parish-a/prepared \
-    [--overrides private/parish-a/fixes.json] [--corpus-id parish-a]
+    [--overrides private/parish-a/fixes.json] [--corpus-id parish-a] \
+    [--crop none|page|content] [--cache DIR | --no-cache]
 ```
 
 The double-click window asks for the two folders (you can drag them in from Finder) and
@@ -116,6 +117,12 @@ the page from it, so every reading still traces to the scan.
   of the crop after rotation, within the Door's limit; more is refused. A nominal
   density pagekit writes into a page is not carried: the Door's pages hold pixels only,
   and `triage-notes.txt` says so for each such page.
+- **Cropping and the stage cache are pagekit's.** pagekit does not crop by default: each
+  page is its whole side of the cut, levelled. `--crop page` or `--crop content` crops;
+  the Door's rows follow either way. pagekit's stage cache (pictures of each step, for
+  looking only) goes beside `--out` unless `--cache DIR` names another place or
+  `--no-cache` turns it off; pagekit refuses one inside the scans folder, and upload never
+  sends it.
 - **Corrections are kept.** Run it again over the same output folder: pagekit continues
   its project, keeps every value set by hand, and recomputes only what changed. Give
   corrections with `--overrides FILE` (`pagekit/README.md`, "Corrections").

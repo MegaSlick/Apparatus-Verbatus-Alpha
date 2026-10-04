@@ -562,6 +562,20 @@ def build_parser() -> PlainParser:
         "--overrides", type=Path, help="a pagekit-overrides.v1 file of corrections to apply"
     )
     prepare.add_argument(
+        "--crop",
+        choices=("none", "page", "content"),
+        help="crop pages: none (pagekit's default, each page its whole levelled side of the "
+        "cut), page (to the page box) or content (to the writing plus a margin)",
+    )
+    cache = prepare.add_mutually_exclusive_group()
+    cache.add_argument(
+        "--cache",
+        type=Path,
+        help="where pagekit's stage cache goes (default: pagekit-cache beside --out); never "
+        "inside the scans folder",
+    )
+    cache.add_argument("--no-cache", action="store_true", help="write no stage cache")
+    prepare.add_argument(
         "--corpus-id",
         help="corpus identity for the triage manifest (default: the scans folder's name)",
     )
@@ -954,6 +968,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 workspace=workspace,
                 printer=_print,
                 state_dir=state,
+                crop=args.crop,
+                cache=args.cache,
+                no_cache=args.no_cache,
             )
         elif args.verb == "run":
             surface.run(

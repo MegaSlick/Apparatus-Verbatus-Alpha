@@ -59,6 +59,9 @@ def prepare(
     workspace: Path,
     printer: Callable[[str], None],
     state_dir: Path | None = None,
+    crop: str | None = None,
+    cache: Path | None = None,
+    no_cache: bool = False,
 ) -> None:
     """Prepare `scans` into `out` in a credential-free child process.
 
@@ -76,6 +79,9 @@ def prepare(
         "overrides": None if overrides is None else str(_absolute(overrides, workspace)),
         "corpus_id": corpus_id if corpus_id is not None else scans_path.name,
         "state_dir": None if state_dir is None else str(_absolute(state_dir, workspace)),
+        "crop": crop,
+        "cache": None if cache is None else str(_absolute(cache, workspace)),
+        "no_cache": bool(no_cache),
     }
     try:
         _check_request(request)
@@ -282,6 +288,12 @@ def _plan(request: dict[str, Any]) -> Prepared:
     settings: dict[str, Any] = {}
     if load_settings()["output_format"]["value"] != "tiff":
         settings["output_format"] = "tiff"
+    if request.get("crop") is not None:
+        settings["crop"] = request["crop"]
+    if request.get("no_cache"):
+        settings["stage_cache"] = 0
+    if request.get("cache") is not None:
+        settings["stage_cache_folder"] = request["cache"]
     # The detector pipeline pagekit's own prepare runs: none is chosen here.
     planned = plan(
         [scans], request["out"], None, overrides, detectors=DETECTORS, settings_overrides=settings
