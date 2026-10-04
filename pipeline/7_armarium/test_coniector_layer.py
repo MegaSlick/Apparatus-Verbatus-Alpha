@@ -16,7 +16,7 @@ from zipfile import ZipFile
 import armarium_export
 import pytest
 from armarium_export import EXPORT_MANIFEST_NAME, _zip_bytes, verify_export_bundle
-from coniector_layer import CONIECTOR_MEMBER, export_rows
+from coniector_layer import CONIECTOR_MEMBER, export_rows, with_reconstructions
 
 from common.armarium_formats import ArmariumFormats
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
@@ -242,6 +242,22 @@ def test_a_reconstruction_is_shown_only_beneath_its_delivered_reading():
     assert row["not_made"] == [{"code": "reply-malformed", "detail": "x"}]
     with pytest.raises(SchemaRefusal, match="over a reading other than the one delivered"):
         export_rows([record], {"act_a": "the reading"}, {"act_a": "another"}, refs)
+
+
+def test_a_reconstruction_s_own_doubt_mark_is_shown_as_the_diplomatic_s_are():
+    """A replacement's marks are parsed doubt marks of its own (one that does not
+    parse leaves the reconstruction not made), so the view brackets them alike."""
+    row = {
+        "diplomatic_raw_pieces": ["Ioh[[?]] filius [[Petri|Petris]]"],
+        "departures": [
+            {
+                "diplomatic": "Ioh[[?]]",
+                "reconstruction": "[[Iohannes|Iohanna]]",
+                "raw_span": {"start": 0, "end": 8},
+            }
+        ],
+    }
+    assert with_reconstructions(row) == "⟨[Iohannes?]⟩ filius [Petri?]"
 
 
 def test_free_text_is_one_json_line_so_no_reason_can_start_a_line_the_parser_reads():
