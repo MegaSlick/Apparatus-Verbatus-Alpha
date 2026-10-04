@@ -4835,7 +4835,8 @@ def _export_manifest(
 
 _DOUBT_SHARE_DENOMINATOR: Final = (
     "each delivered act's established text: its non-whitespace characters, each "
-    "zero-width gap counted as one unread character"
+    "zero-width gap counted as one unread character, and a reading with nothing read "
+    "as one unread character"
 )
 _DOUBT_SHARE_MEASURED: Final = "measured"
 _DOUBT_SHARE_NOT_APPLICABLE: Final = "not-applicable-no-literal-format"

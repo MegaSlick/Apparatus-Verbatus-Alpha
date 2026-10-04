@@ -188,7 +188,8 @@ two).
   doubtful_or_unread, out_of}], pages: [{ordinal, doubtful_or_unread, out_of}]}`, in
   reading order, over each delivered act's established text
   (`common.reading_annotations.doubt_count`: its non-whitespace characters inside an
-  uncertain span, each gap counted as one unread character) and each page's delivered
+  uncertain span, each gap counted as one unread character, and a reading with nothing
+  read as one unread character) and each page's delivered
   acts together. `status` is `measured`, or `not-applicable-no-literal-format` with
   empty lists when no literal format carries the text. Verification recounts it from
   the package's own literals. The Perlector holds a reading, and every reading of a
