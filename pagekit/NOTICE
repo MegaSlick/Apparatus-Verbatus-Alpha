@@ -31,3 +31,25 @@ Orientation and split (orient.py, split.py and their helpers):
   Document Analysis Systems, 2002.
   Connected components are labelled after A. Rosenfeld and J. L. Pfaltz, "Sequential
   Operations in Digital Picture Processing", Journal of the ACM 13(4):471-494, 1966.
+
+Skew, page box and content box (spec 0004)
+
+  The skew estimate scores projection profiles, after W. Postl, "Detection of linear
+  oblique structures and skew scan in digitized documents", Proc. International
+  Conference on Pattern Recognition, 1986, and H. S. Baird, "The skew angle of printed
+  documents", Proc. SPSE Symposium on Hybrid Imaging Systems, 1987. Its cross-check by a
+  second estimator follows finding 0009, which cites D. S. Le, G. R. Thoma and
+  H. Wechsler, "Automated page orientation and skew angle detection for binary document
+  images", Pattern Recognition, 1994.
+
+  Bands, blobs and border shadows are removed by reconstruction from markers, after
+  L. Vincent, "Morphological grayscale reconstruction in image analysis: applications
+  and efficient algorithms", IEEE Transactions on Image Processing, 1993.
+
+  The page box walks in from the frame's sides, after the page-frame detection of
+  F. Shafait, J. van Beusekom, D. Keysers and T. M. Breuel, "Document cleanup using page
+  frame detection", International Journal on Document Analysis and Recognition, 2008,
+  and K.-C. Fan, Y.-K. Wang and T.-R. Lay, "Marginal noise removal of document images",
+  Pattern Recognition, 2002.
+
+  These detectors use Otsu's threshold, credited above.

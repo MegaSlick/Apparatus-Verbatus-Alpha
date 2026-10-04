@@ -1,0 +1,285 @@
+# Settings for the skew, page-box and content-box detectors (spec 0004).
+# Every value here is a starting guess. None has been calibrated on real pages, so each
+# carries status = "UNMEASURED" and is reported as unmeasured until it is measured and
+# its status changed to "MEASURED". Lengths are in millimetres on the paper, so they
+# hold at any scan resolution.
+
+# --- All three detectors ---------------------------------------------------------
+
+[plausible_page_min_mm]
+value = 20.0
+status = "UNMEASURED"
+meaning = "Shortest plausible side of the sheet, from its pixels and resolution; outside the range the resolution is flagged."
+
+[plausible_page_max_mm]
+value = 2000.0
+status = "UNMEASURED"
+meaning = "Longest plausible side of the sheet, from its pixels and resolution."
+
+[fallback_dpi]
+value = 300
+status = "UNMEASURED"
+meaning = "Resolution a page with an implausible resolution is measured as, with a flag."
+
+[busy_runs_per_cm2]
+value = 150.0
+status = "UNMEASURED"
+meaning = "Runs of dark pixels per square centimetre, counted at 100 dpi, above which the page is noise rather than writing and is not labelled further."
+
+[busy_max_runs]
+value = 400000
+status = "UNMEASURED"
+meaning = "Runs of dark pixels above which a working copy is not labelled further, whatever its size, so no page takes long."
+
+[faint_contrast]
+value = 20
+status = "UNMEASURED"
+meaning = "Grey levels below the flattened paper that a mark must reach to be kept as faint ink; marks that never reach blank_contrast are kept and flagged."
+
+[edge_mark_mm2]
+value = 2.0
+status = "UNMEASURED"
+meaning = "A component touching the paper edge and left out as debris is flagged when its ink covers at least this many square millimetres (a small cross)."
+
+[pale_step_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "A pale backdrop gives way to the paper within this distance; a slow brightening of the paper is not a backdrop."
+
+# --- Skew -------------------------------------------------------------------------
+
+[skew_working_dpi]
+value = 75
+status = "UNMEASURED"
+meaning = "Resolution of the reduced working copy the skew is measured on; it must keep the gaps between lines of writing."
+
+[skew_range_deg]
+value = 5.0
+status = "UNMEASURED"
+meaning = "The skew search runs from minus to plus this angle."
+
+[skew_widen_range_deg]
+value = 10.0
+status = "UNMEASURED"
+meaning = "When the best angle lies at the edge of the search range, the search is widened once to this angle."
+
+[skew_coarse_step_deg]
+value = 0.5
+status = "UNMEASURED"
+meaning = "Step of the coarse skew search across the range."
+
+[skew_refine_step_deg]
+value = 0.05
+status = "UNMEASURED"
+meaning = "Step of the refined skew search near the best coarse angle."
+
+[skew_refine_dpi]
+value = 150
+status = "UNMEASURED"
+meaning = "Resolution of the sharper copy the refined search runs on."
+
+[skew_profile_lag_mm]
+value = 1.0
+status = "UNMEASURED"
+meaning = "Rows this far apart are compared in the profile score; about a stroke's width, so a one-row slit left by a removed rule does not outscore the gaps between lines."
+
+[skew_score_margin]
+value = 1.5
+status = "UNMEASURED"
+meaning = "The best profile score must be at least this many times the median score across the range for the angle to be trusted."
+
+[skew_disagree_deg]
+value = 0.5
+status = "UNMEASURED"
+meaning = "The profile estimate and the line-fit estimate may differ by at most this angle before the page is flagged."
+
+[skew_region_disagree_deg]
+value = 1.0
+status = "UNMEASURED"
+meaning = "A region of the page whose own angle differs from the page's angle by more than this disagrees."
+
+[skew_region_grid]
+value = 2
+status = "UNMEASURED"
+meaning = "The writing is cut into this many regions across and this many down for the local estimates."
+
+[skew_region_min_ink_mm2]
+value = 120.0
+status = "UNMEASURED"
+meaning = "Writing a region needs, in square millimetres of ink, for its own angle to be measured."
+
+[skew_dominant_share]
+value = 0.6
+status = "UNMEASURED"
+meaning = "When regions disagree, the page's angle is applied only if the regions agreeing with it hold at least this share of the measured writing."
+
+[skew_snap_deg]
+value = 0.1
+status = "UNMEASURED"
+meaning = "An angle smaller than this is snapped to 0 to avoid a needless resample."
+
+[skew_min_ink_mm2]
+value = 200.0
+status = "UNMEASURED"
+meaning = "Writing, in square millimetres of ink after bands and rules are removed, needed for a skew estimate."
+
+[skew_band_length_mm]
+value = 40.0
+status = "UNMEASURED"
+meaning = "Length of the opening element that finds wide dark bands; much longer than any word."
+
+[skew_band_thickness_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "Thickness of the opening element that finds wide dark bands; thicker than any pen stroke."
+
+[skew_smear_mm]
+value = 6.0
+status = "UNMEASURED"
+meaning = "Horizontal closing that smears each line of writing into one band for the line-fit estimate; wider than a word gap."
+
+[skew_line_min_mm]
+value = 20.0
+status = "UNMEASURED"
+meaning = "Shortest smeared line used by the line-fit estimate."
+
+# --- Rules (used by skew and the content box) ----------------------------------
+
+[rule_min_length_mm]
+value = 50.0
+status = "UNMEASURED"
+meaning = "A straight run of ink at least this long is a ruled line, not writing."
+
+[rule_fatten_mm]
+value = 0.7
+status = "UNMEASURED"
+meaning = "Ink is thickened across a rule by this much before the run test, so a slightly tilted rule still makes one long run."
+
+[rule_max_thickness_mm]
+value = 1.0
+status = "UNMEASURED"
+meaning = "A component at least rule_min_length_mm long whose mean thickness is at most this is a ruled line by its shape."
+
+[rule_overhang_mm]
+value = 5.0
+status = "UNMEASURED"
+meaning = "How far a ruled line alone may extend the content box past the writing; stands for spec 0002's margin setting until the core exposes it."
+
+# --- Page box ---------------------------------------------------------------------
+
+[pagebox_working_dpi]
+value = 50
+status = "UNMEASURED"
+meaning = "Resolution of the reduced working copy the paper edge is found on."
+
+[backdrop_line_share]
+value = 0.8
+status = "UNMEASURED"
+meaning = "Share of a scanline that must look like backdrop for the line to count as backdrop."
+
+[backdrop_min_contrast]
+value = 40
+status = "UNMEASURED"
+meaning = "Grey levels between paper and a dark backdrop below which no dark backdrop is looked for."
+
+[pale_backdrop_delta]
+value = 12
+status = "UNMEASURED"
+meaning = "Grey levels above the paper at which a pixel counts as pale backdrop."
+
+[edge_run_mm]
+value = 8.0
+status = "UNMEASURED"
+meaning = "The paper edge is where the run of backdrop lines ends and stays ended for this distance, so dust, tears and labels do not stop the walk."
+
+[shadow_min_depth_mm]
+value = 2.0
+status = "UNMEASURED"
+meaning = "Depth from a box edge at which backdrop-like pixels on a scanline count as a partial shadow."
+
+[shadow_min_share]
+value = 0.1
+status = "UNMEASURED"
+meaning = "Share of a side's scanlines that must carry a partial shadow before it is reported."
+
+[shadow_exclude_share]
+value = 0.5
+status = "UNMEASURED"
+meaning = "A partial shadow covering at least this share of a side, at an even depth, is cut off the box; a smaller one is flagged."
+
+# --- Content box and blank pages -----------------------------------------------
+
+[content_working_dpi]
+value = 100
+status = "UNMEASURED"
+meaning = "Resolution of the reduced working copy the content is found on."
+
+[speck_mm]
+value = 0.4
+status = "UNMEASURED"
+meaning = "Side of the square below whose area a mark is a speck; below an i-dot or an abbreviation stroke."
+
+[border_seed_mm]
+value = 5.0
+status = "UNMEASURED"
+meaning = "Side of the solid dark square that marks border-connected material (shadow, backdrop, book edge)."
+
+[debris_distance_mm]
+value = 1.0
+status = "UNMEASURED"
+meaning = "A component this close to the page box edge touches the paper edge and is debris."
+
+[debris_zone_mm]
+value = 15.0
+status = "UNMEASURED"
+meaning = "Within this distance of the page box edge, a solid strip is treated as tape or a tear."
+
+[tape_min_thickness_mm]
+value = 2.0
+status = "UNMEASURED"
+meaning = "Thinnest solid strip near the edge treated as tape; thicker than any ruled line."
+
+[blank_contrast]
+value = 40
+status = "UNMEASURED"
+meaning = "Grey levels below the flattened paper a pixel must reach to count as ink; a page with no such mark above speck size is blank."
+
+[blank_ink_mm2]
+value = 1.0
+status = "UNMEASURED"
+meaning = "A page with less ink above speck size than this, in square millimetres, is blank (and flagged if it has any)."
+
+[background_smoothing_mm]
+value = 8.0
+status = "UNMEASURED"
+meaning = "Size of the closing that removes writing from the paper background before the slow brightness gradient is flattened."
+
+[target_patch_min_mm]
+value = 4.0
+status = "UNMEASURED"
+meaning = "Smallest side of a patch of a colour or grey target."
+
+[target_patch_max_mm]
+value = 40.0
+status = "UNMEASURED"
+meaning = "Largest side of a patch of a colour or grey target."
+
+[target_min_patches]
+value = 4
+status = "UNMEASURED"
+meaning = "Patches of like size in a grid needed to call a region a scanning target."
+
+[target_saturation]
+value = 90
+status = "UNMEASURED"
+meaning = "Saturation, 0 to 255, at or above which a pixel is strongly coloured."
+
+[ruler_min_ticks]
+value = 8
+status = "UNMEASURED"
+meaning = "Evenly spaced ticks along a straight bar needed to call it a ruler."
+
+[ruler_min_length_mm]
+value = 30.0
+status = "UNMEASURED"
+meaning = "Shortest bar checked for evenly spaced ticks."
