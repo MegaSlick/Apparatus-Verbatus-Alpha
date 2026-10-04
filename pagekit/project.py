@@ -30,7 +30,18 @@ RESOLUTION_ORIGINS = ("file", "override", "missing")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 
 _TOP_KEYS = {"schema", "tool", "settings", "sources"}
-_SOURCE_KEYS = {"path", "sha256", "bytes", "size", "mode", "resolution", "flags", "steps", "pages"}
+_SOURCE_KEYS = {
+    "path",
+    "sha256",
+    "bytes",
+    "size",
+    "mode",
+    "resolution",
+    "flags",
+    "steps",
+    "pages",
+    "dropped_pages",
+}
 _RESOLUTION_KEYS = {"value", "origin", "file_value"}
 _PAGE_KEYS = {"page", "output", "steps"}
 _RECORD_KEYS = {
@@ -170,6 +181,7 @@ def write_atomic(path: Path, data: bytes) -> None:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
+        os.chmod(temporary, 0o644)
         os.replace(temporary, path)
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
@@ -235,9 +247,7 @@ def validate_project(data: Any) -> dict[str, Any]:
         _closed(source, _SOURCE_KEYS, where)
         if not isinstance(source["path"], str) or not SHA256.fullmatch(str(source["sha256"])):
             raise PrepareError(f"{where}: path and sha256 are required")
-        _closed(source["resolution"], _RESOLUTION_KEYS, f"{where} resolution")
-        if source["resolution"]["origin"] not in RESOLUTION_ORIGINS:
-            raise PrepareError(f"{where}: unknown resolution origin")
+        _check_resolution(source["resolution"], f"{where} resolution")
         _sentences(source["flags"], f"{where} flags")
         _closed(source["steps"], set(SOURCE_STEPS), f"{where} steps")
         for step in SOURCE_STEPS:
@@ -251,7 +261,40 @@ def validate_project(data: Any) -> dict[str, Any]:
             _closed(page["steps"], set(PAGE_STEPS), f"{where} page {number} steps")
             for step in PAGE_STEPS:
                 _check_record(page["steps"][step], step, f"{where} page {number} {step}")
+        if not isinstance(source["dropped_pages"], list):
+            raise PrepareError(f"{where}: dropped_pages must be a list")
+        for page in source["dropped_pages"]:
+            _closed(page, _PAGE_KEYS, f"{where} dropped page")
+            number = page["page"]
+            if (
+                isinstance(number, bool)
+                or not isinstance(number, int)
+                or number <= len(source["pages"])
+            ):
+                raise PrepareError(f"{where}: a dropped page must be past the last page")
+            if not isinstance(page["output"], str) or not isinstance(page["steps"], dict):
+                raise PrepareError(f"{where} dropped page {number}: output and steps required")
+            for step, entry in page["steps"].items():
+                if step not in PAGE_STEPS:
+                    raise PrepareError(f"{where} dropped page {number}: unknown step {step!r}")
+                _check_record(entry, step, f"{where} dropped page {number} {step}")
+                if entry["origin"] == "detected":
+                    raise PrepareError(f"{where} dropped page {number}: only hand-set values")
     return data
+
+
+def _check_resolution(data: Any, where: str) -> None:
+    _closed(data, _RESOLUTION_KEYS, where)
+    if data["origin"] not in RESOLUTION_ORIGINS:
+        raise PrepareError(f"{where}: unknown origin {data['origin']!r}")
+    if (data["value"] is None) != (data["origin"] == "missing"):
+        raise PrepareError(f"{where}: a value is missing exactly when its origin is missing")
+    for name in ("value", "file_value"):
+        if data[name] is not None:
+            try:
+                _resolution(data[name])
+            except AnswerError as error:
+                raise PrepareError(f"{where} {name}: {error}") from error
 
 
 def load_project(path: Path) -> dict[str, Any]:

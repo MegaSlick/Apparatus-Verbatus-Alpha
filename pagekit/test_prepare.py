@@ -255,9 +255,19 @@ def test_overrides_are_kept_manual_ones_flagged_when_inputs_move_locked_ones_not
     page_flags = [flag["reason"] for flag in _manifest(out)["pages"][0]["flags"]]
     assert steps["skew"]["flags"][0] in page_flags
 
-    # Applying the same correction again confirms it on the new inputs.
+    # Applying the same correction again does not make it fresh: it stays flagged.
     assert main([*command, "--overrides", str(first)]) == 1
-    assert _project(out)["sources"][0]["pages"][0]["steps"]["skew"]["flags"] == []
+    skew = _project(out)["sources"][0]["pages"][0]["steps"]["skew"]
+    assert skew["flags"] == steps["skew"]["flags"]
+    # Locking it, after a check, accepts it on the new inputs.
+    lock = _overrides(
+        tmp_path,
+        [{"source": "src/spread.png", "step": "skew", "page": 1, "value": 1.5, "lock": True}],
+        name="lock.json",
+    )
+    assert main([*command, "--overrides", str(lock)]) == 1
+    skew = _project(out)["sources"][0]["pages"][0]["steps"]["skew"]
+    assert (skew["origin"], skew["flags"]) == ("locked", [])
 
 
 @pytest.mark.parametrize(
@@ -490,3 +500,270 @@ def test_continuing_needs_every_source_the_project_holds(tmp_path):
         plan([first], out)
     # With no sources named, the project's own are used.
     assert [page.output_name for page in plan(None, out).pages] == ["a_p1.png", "b_p1.png"]
+
+
+# Review fixes (brief 0019)
+
+
+def _spread_with_page_two_skew(tmp_path: Path, cut_x: int, name="overrides.json") -> Path:
+    return _overrides(
+        tmp_path,
+        [
+            {
+                "source": "src/spread.png",
+                "step": "split",
+                "value": {"pages": 2, "cut": [[cut_x, 0], [cut_x, 1000]]},
+            },
+            {"source": "src/spread.png", "step": "skew", "page": 2, "value": 1.0},
+        ],
+        name=name,
+    )
+
+
+def test_a_moved_cut_flags_the_unchanged_manual_skew_of_page_two(tmp_path):
+    """The spec's example: the overrides file moves the cut and keeps page 2's skew."""
+    source = _source(tmp_path / "src")
+    out = tmp_path / "out"
+    command = ["prepare", str(source), "--output", str(out)]
+    first = _spread_with_page_two_skew(tmp_path, 700)
+    assert main([*command, "--overrides", str(first)]) == 1
+    skew = _project(out)["sources"][0]["pages"][1]["steps"]["skew"]
+    assert skew["flags"] == []
+    moved = _spread_with_page_two_skew(tmp_path, 720)
+    assert main([*command, "--overrides", str(moved)]) == 1
+    after = _project(out)["sources"][0]["pages"][1]["steps"]["skew"]
+    assert after["value"] == 1.0 and after["origin"] == "manual"
+    assert after["inputs_hash"] == skew["inputs_hash"]  # still the inputs it was set on
+    assert len(after["flags"]) == 1 and "earlier step split changed" in after["flags"][0]
+
+
+def test_hand_set_values_of_a_dropped_page_are_kept_flagged_and_restored(tmp_path):
+    source = _source(tmp_path / "src")
+    out = tmp_path / "out"
+    command = ["prepare", str(source), "--output", str(out)]
+    spread = _spread_with_page_two_skew(tmp_path, 700)
+    assert main([*command, "--overrides", str(spread)]) == 1
+    one = _overrides(
+        tmp_path,
+        [{"source": "src/spread.png", "step": "split", "value": {"pages": 1}}],
+        name="one.json",
+    )
+    assert main([*command, "--overrides", str(one)]) == 1
+    for _ in range(2):  # flagged on every run, not only the first
+        entry = _project(out)["sources"][0]
+        assert [page["page"] for page in entry["pages"]] == [1]
+        (dropped,) = entry["dropped_pages"]
+        assert dropped["page"] == 2 and dropped["output"] == "spread_p2.png"
+        assert dropped["steps"]["skew"]["value"] == 1.0
+        assert set(dropped["steps"]) == {"skew"}  # detected values are not kept
+        manifest = _manifest(out)
+        reasons = [flag["reason"] for flag in manifest["pages"][0]["flags"]]
+        assert any("Page 2" in reason and "dropped_pages" in reason for reason in reasons)
+        # The left-over output is listed as stale and not deleted.
+        assert manifest["stale_outputs"] == ["spread_p2.png"]
+        assert (out / "spread_p2.png").is_file()
+        assert main(command) == 1
+    # Splitting again restores the hand-set value, on the inputs it was set on.
+    assert (
+        main([*command, "--overrides", str(_overrides(tmp_path, spread_entries(), "two.json"))])
+        == 1
+    )
+    entry = _project(out)["sources"][0]
+    assert entry["dropped_pages"] == []
+    skew = entry["pages"][1]["steps"]["skew"]
+    assert (skew["value"], skew["origin"], skew["flags"]) == (1.0, "manual", [])
+    assert _manifest(out)["stale_outputs"] == []
+
+
+def spread_entries() -> list[dict]:
+    return [
+        {
+            "source": "src/spread.png",
+            "step": "split",
+            "value": {"pages": 2, "cut": [[700, 0], [700, 1000]]},
+        }
+    ]
+
+
+def test_a_dropped_page_is_cleared_by_removing_it_from_the_project(tmp_path):
+    source = _source(tmp_path / "src")
+    out = tmp_path / "out"
+    command = ["prepare", str(source), "--output", str(out)]
+    assert main([*command, "--overrides", str(_spread_with_page_two_skew(tmp_path, 700))]) == 1
+    one = _overrides(
+        tmp_path,
+        [{"source": "src/spread.png", "step": "split", "value": {"pages": 1}}],
+        name="one.json",
+    )
+    assert main([*command, "--overrides", str(one)]) == 1
+    project = _project(out)
+    project["sources"][0]["dropped_pages"] = []
+    (out / PROJECT_NAME).write_text(canonical_json(project))
+    assert main(command) == 1
+    assert not [
+        flag for flag in _manifest(out)["pages"][0]["flags"] if "dropped_pages" in flag["reason"]
+    ]
+
+
+def test_an_output_path_that_cannot_be_replaced_changes_nothing(tmp_path, capsys):
+    source = _source(tmp_path / "src")
+    out = tmp_path / "out"
+    command = ["prepare", str(source), "--output", str(out)]
+    assert main(command) == 1
+    (out / "spread_p2.png").mkdir()  # in the way of the second page
+    before = _snapshot(out)
+    names = sorted(path.name for path in out.iterdir())
+    split = _overrides(tmp_path, spread_entries())
+    assert main([*command, "--overrides", str(split)]) == 2
+    assert _snapshot(out) == before
+    assert sorted(path.name for path in out.iterdir()) == names
+
+
+@pytest.mark.parametrize("failing", ["render", "rename"])
+def test_a_failure_part_way_leaves_the_earlier_run_untouched(tmp_path, monkeypatch, failing):
+    source = _source(tmp_path / "src")
+    out = tmp_path / "out"
+    assert main(["prepare", str(source), "--output", str(out)]) == 1
+    before = _snapshot(out)
+    names = sorted(path.name for path in out.iterdir())
+    prepared = plan([source], out, overrides_path=_overrides(tmp_path, spread_entries()))
+    import pagekit.output as output
+
+    if failing == "render":
+        real = output.render
+        calls = []
+
+        def render_then_fail(*args):
+            calls.append(1)
+            if len(calls) == 2:
+                raise RuntimeError("out of memory")
+            return real(*args)
+
+        monkeypatch.setattr(output, "render", render_then_fail)
+    else:
+        real_replace = os.replace
+
+        failed = []
+
+        def replace(source_path, target):
+            # Fails once, when the pages are already in place: on the manifest.
+            if Path(target).name == MANIFEST_NAME and not failed:
+                failed.append(1)
+                raise OSError("disk full")
+            return real_replace(source_path, target)
+
+        monkeypatch.setattr(os, "replace", replace)
+    with pytest.raises((RuntimeError, OSError)):
+        execute(prepared)
+    assert _snapshot(out) == before
+    assert sorted(path.name for path in out.iterdir()) == names
+
+
+def test_outputs_are_readable_by_others(tmp_path):
+    source = _source(tmp_path / "src")
+    out = tmp_path / "out"
+    assert main(["prepare", str(source), "--output", str(out)]) == 1
+    for path in out.iterdir():
+        assert path.stat().st_mode & 0o777 == 0o644
+
+
+def test_a_resolution_override_carries_forward_and_enters_the_page_inputs(tmp_path):
+    source = _source(tmp_path / "src", dpi=None)
+    out = tmp_path / "out"
+    command = ["prepare", str(source), "--output", str(out)]
+
+    def resolution(dpi, name):
+        entry = {"source": "src/spread.png", "step": "resolution", "value": [dpi, dpi]}
+        return _overrides(tmp_path, [entry], name=name)
+
+    assert main([*command, "--overrides", str(resolution(400, "r400.json"))]) == 1
+    assert main(command) == 1  # no overrides file: the override is kept
+    entry = _project(out)["sources"][0]
+    assert entry["resolution"]["origin"] == "override"
+    assert entry["resolution"]["value"] == [400.0, 400.0]
+    assert not [
+        flag for flag in _manifest(out)["pages"][0]["flags"] if flag["step"] == "resolution"
+    ]
+    skew = entry["pages"][0]["steps"]["skew"]
+    assert skew["inputs"]["settings"]["resolution"] == [400.0, 400.0]
+
+    assert main([*command, "--overrides", str(resolution(500, "r500.json"))]) == 1
+    again = _project(out)["sources"][0]["pages"][0]["steps"]["skew"]
+    assert again["inputs"]["settings"]["resolution"] == [500.0, 500.0]
+    assert again["inputs_hash"] != skew["inputs_hash"]
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {
+            "schema": "pagekit-overrides.v1",
+            "overrides": [
+                {"source": "src/spread.png", "step": "skew", "page": 1, "value": 1, "note": "x"}
+            ],
+        },
+        {"schema": "pagekit-overrides.v1", "overrides": [], "author": "someone"},
+    ],
+)
+def test_unknown_keys_in_an_overrides_file_are_refused(tmp_path, capsys, document):
+    source = _source(tmp_path / "src")
+    path = tmp_path / "overrides.json"
+    path.write_text(json.dumps(document))
+    out = tmp_path / "out"
+    assert main(["prepare", str(source), "--output", str(out), "--overrides", str(path)]) == 2
+    assert "unknown keys" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_a_source_changed_while_running_is_refused_and_nothing_written(tmp_path):
+    source = _source(tmp_path / "src")
+    out = tmp_path / "out"
+    prepared = plan([source], out)
+    _source(tmp_path / "src", paper=200)  # the same file, rewritten
+    with pytest.raises(PrepareError, match="changed while"):
+        execute(prepared)
+    assert not out.exists() or not list(out.iterdir())
+
+
+def test_the_overlap_uses_the_upright_frames_own_axis(tmp_path):
+    source = _source(tmp_path / "src", size=(1000, 1400), dpi=(300, 600))
+    entries = [
+        {"source": "src/spread.png", "step": "orientation", "value": 1},
+        {
+            "source": "src/spread.png",
+            "step": "split",
+            "value": {"pages": 2, "cut": [[700, 0], [700, 1000]]},
+        },
+    ]
+    page = plan([source], tmp_path / "out", overrides_path=_overrides(tmp_path, entries)).pages[0]
+    # After one quarter turn the upright frame's x axis is the source's y axis: 600 dpi.
+    assert max(x for x, _ in page.chain.polygon) == pytest.approx(700 + 3.0 * 600 / 25.4)
+
+
+def test_a_stored_resolution_is_checked_when_the_project_is_read(tmp_path):
+    source = _source(tmp_path / "src")
+    out = tmp_path / "out"
+    assert main(["prepare", str(source), "--output", str(out)]) == 1
+    project = _project(out)
+    project["sources"][0]["resolution"]["value"] = [-300, 300]
+    (out / PROJECT_NAME).write_text(canonical_json(project))
+    with pytest.raises(PrepareError, match="resolution"):
+        plan([source], out)
+
+
+def test_the_margin_comes_from_its_setting_sure_and_unflagged(tmp_path):
+    """The margin is a setting, not a detection: confidence 1, no flag."""
+    source = _source(tmp_path / "src")
+    hand = [entry for entry in HAND_VALUES if entry["step"] != "margin"]
+    out = tmp_path / "out"
+    command = ["prepare", str(source), "--output", str(out), "--overrides"]
+    assert main([*command, str(_overrides(tmp_path, hand))]) == 0
+    margin = _project(out)["sources"][0]["pages"][0]["steps"]["margin"]
+    assert (margin["value"], margin["origin"], margin["confidence"], margin["flags"]) == (
+        5.0,
+        "detected",
+        1.0,
+        [],
+    )
+    assert "margin_mm" in margin["evidence"]
+    assert margin["inputs"]["settings"]["margin_mm"] == 5.0

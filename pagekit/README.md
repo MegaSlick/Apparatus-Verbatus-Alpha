@@ -90,11 +90,15 @@ a list of files; they are only read. Outputs, the manifest and the project file 
 go inside a source folder.
 
 The detectors (orientation, split, skew, page box, content box) are built in later
-slices. Until they are connected, each step takes a neutral default (no turn, one page,
-no skew, the whole page, the margin setting), recorded with confidence 0 and a flag
-saying the step was not run, so every page goes to review unless a person set its
-values. Exit status is 0 when no page is flagged, 1 when any page needs review and 2
-when the input cannot be used, in which case nothing is written.
+slices. Until they are connected, each of those steps takes a neutral default (no turn,
+one page, no skew, the whole page), recorded with confidence 0 and a flag saying the
+step was not run, so every page goes to review unless a person set its values. The
+margin is a setting, not a detection: unless set by hand it is `margin_mm`, recorded as
+detected with confidence 1, evidence naming the setting, and no flag. Exit status is 0
+when no page is flagged, 1 when any page needs review and 2 when the input cannot be
+used. A run that fails at any point, even while writing, leaves the output folder and
+the project file as they were: every file is first written in full beside its target,
+then all are moved into place together.
 
 ### Steps and where their values come from
 
@@ -105,9 +109,17 @@ read. On a re-run:
 
 - a detected value is recomputed when its inputs hash or its detector's method changes,
   and kept otherwise;
-- a manual value is kept; if what it was set on has changed, it is flagged for a check
-  until the correction is applied again;
+- a manual value is kept; if what it was set on has changed, it is flagged for a check.
+  Applying the same correction again does not clear the flag: it keeps the inputs it
+  was first set on. After checking it, lock it (`"lock": true`) or give a new value;
+  either sets it afresh on the current inputs;
 - a locked value is kept and never flagged for that.
+
+Values set by hand on a page that no longer exists (a spread set back to one page) are
+never discarded. They stay in the project under the source's `dropped_pages`, the
+remaining pages are flagged about them on every run, and they come back if the page
+does. To discard them, delete that page's entry from `dropped_pages` in the project
+file.
 
 `--report-stale` lists the steps that would change and why, without running anything
 or writing any file (exit 1 when something is stale, 0 when nothing is).
@@ -144,7 +156,8 @@ another, and continued from on the next run, so corrections are never lost. It i
 closed JSON object: the settings used, and for each source its path relative to the
 project file, sha256, byte size, pixel size, mode, resolution and where it came from
 (`file`, `override` or `missing`), the source flags, the orientation and split values,
-and each page with its output file name and its per-page values. The same inputs and
+each page with its output file name and its per-page values, and `dropped_pages`
+(pages that no longer exist: their output name and hand-set values). The same inputs and
 values give the same bytes, and it is written atomically. A project naming a source not
 given to the run is refused; with no sources given, the project's own are used.
 
@@ -184,7 +197,8 @@ source's name and sha256; the output's name, sha256, byte size, format, mode, pi
 and resolution; the source resolution and its origin; the geometry chain as plain
 parameters, with both composed affine maps (source to output and back) and the fill
 colour; every step's value with origin, confidence, evidence and flags; the flags; and
-the verdict, `review` or `no_flags`. Like the crop check it reports `thresholds`,
+the verdict, `review` or `no_flags`. `stale_outputs` lists the output files of pages
+that no longer exist, which are left in place, never deleted. Like the crop check it reports `thresholds`,
 `thresholds_measured` and `thresholds_note`. The same project gives byte-identical
 images and manifest.
 
@@ -211,11 +225,10 @@ and stores its answer; `pagekit.output.execute(plan)` writes the pages.
 
 ### Not yet
 
-- No detectors: every step's default is flagged until a person sets it or a detector
-  slice is connected.
-- The margin step has no detector of its own; its default is flagged like the others.
+- No detectors: every detected step's default is flagged until a person sets it or a
+  detector slice is connected.
 - Output files of pages that no longer exist (a spread re-split into one page) are
-  left in the output folder; the manifest lists only the current pages.
+  left in the output folder and listed under `stale_outputs`; pagekit never deletes.
 - EXIF orientation tags are ignored: sources are taken in their stored pixel grid.
 - Source modes handled: greyscale, colour, bilevel (written as greyscale) and palette
   (written as colour). Others, such as 16-bit greyscale, are refused.

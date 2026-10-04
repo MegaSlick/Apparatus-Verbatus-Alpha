@@ -6,6 +6,8 @@ precedence: an override in the overrides file being applied; a value already set
 hand (manual or locked) in the project; a detected value in the project whose inputs
 and method are unchanged; or the step's detector, run now. A step with no detector
 connected takes a neutral default, recorded as detected with confidence 0 and a flag.
+The margin is a setting, not a detection: unless set by hand it is `margin_mm`, recorded
+as detected with confidence 1 and no flag.
 
 Detectors are built in other slices. A detector is a `Detector`: a method name with a
 version, the settings it reads (part of every value's inputs hash) and a function that
@@ -199,11 +201,15 @@ NEUTRAL_DETECTORS: dict[str, Detector] = {
     "content_box": _neutral(
         "content_box", "the whole page box", lambda context: context.values["page_box"]
     ),
-    "margin": _neutral(
-        "margin",
-        "the margin_mm setting",
-        lambda context: context.settings["margin_mm"],
-        reads=("margin_mm",),
+    "margin": Detector(
+        "pagekit.setting.margin_mm/1",
+        lambda context: Answer(
+            context.settings["margin_mm"],
+            1.0,
+            f"From the margin_mm setting ({context.settings['margin_mm']:g} mm).",
+            (),
+        ),
+        ("margin_mm",),
     ),
 }
 
@@ -245,6 +251,7 @@ class Plan:
     pages: list[PagePlan]
     settings: dict[str, dict[str, Any]]
     stale: list[dict[str, Any]]
+    stale_outputs: list[str]  # outputs of pages that no longer exist, left in place
 
 
 def _gather_inputs(inputs: list[Path]) -> list[Path]:
@@ -318,6 +325,17 @@ class _Runner:
             source.sha256, page, earlier, self._reads(step, resolution)
         )
         override = self.overrides.get((step, page))
+        if (
+            override is not None
+            and old is not None
+            and old["origin"] in ("manual", "locked")
+            and old["value"] == override.value
+            and (old["origin"] == "locked") == override.lock
+        ):
+            # The same correction again: keep the inputs it was first set on, so it is
+            # still flagged if what it was set on has moved. Changing the value or the
+            # lock is what sets it afresh.
+            override = None
         if override is not None:
             origin = "locked" if override.lock else "manual"
             new = record(
@@ -452,7 +470,7 @@ def _check_split(source: Source, split_record, turns: int) -> None:
             ) from error
 
 
-def _run_source(source, old, overrides, runner: _Runner, settings, base, extension):
+def _run_source(source, old, overrides, runner: _Runner, base, extension, output_dir):
     values = runner.values
     resolution_override = overrides.get(("resolution", None))
     stored, usable, source_flags = _resolution(source, old, resolution_override, values)
@@ -476,22 +494,35 @@ def _run_source(source, old, overrides, runner: _Runner, settings, base, extensi
         earlier[step] = entry["value"]
     _check_split(source, steps["split"], earlier["orientation"])
     count = earlier["split"]["pages"]
-    old_pages = {page["page"]: page for page in (old["pages"] if old else [])}
+    old_pages = {page["page"]: page for page in (old["dropped_pages"] if old else [])}
+    old_pages.update({page["page"]: page for page in (old["pages"] if old else [])})
     for (_step, page), override in sorted(overrides.items(), key=lambda item: item[1].where):
         if page is not None and page > count:
             raise PrepareError(
                 f"{override.where}: {source.relative} has {count} page(s); there is no page {page}"
             )
-    dropped = sorted(
-        number
-        for number, page in old_pages.items()
-        if number > count and any(entry["origin"] != "detected" for entry in page["steps"].values())
-    )
-    split_flags = []
-    for number in dropped:
+    dropped_pages, split_flags = [], []
+    for number in sorted(old_pages):
+        if number <= count:
+            continue  # a page that exists, or comes back with its values restored
+        output_name = f"{base}_p{number}.{extension}"
+        kept = {
+            step: entry
+            for step, entry in old_pages[number]["steps"].items()
+            if entry["origin"] != "detected"
+        }
+        # A page with nothing set by hand is remembered only while its old output is
+        # still in the output folder, so that file can be reported as stale.
+        if not kept and not (output_dir / output_name).is_file():
+            continue
+        dropped_pages.append({"page": number, "output": output_name, "steps": kept})
+        if not kept:
+            continue
         message = (
-            f"Page {number} had values set by hand, but the split now gives {count} page(s); "
-            "those values were dropped."
+            f"Page {number} no longer exists (the split gives {count} page(s)), but it had "
+            f"values set by hand ({', '.join(sorted(kept))}); they are kept in the project's "
+            "dropped_pages and come back if the page does. To discard them, delete that "
+            "entry from dropped_pages in the project file."
         )
         split_flags.append(message)
         if runner.dry:
@@ -547,6 +578,7 @@ def _run_source(source, old, overrides, runner: _Runner, settings, base, extensi
         "flags": source_flags + split_flags,
         "steps": steps,
         "pages": pages,
+        "dropped_pages": dropped_pages,
     }
     return entry, plans
 
@@ -707,9 +739,9 @@ def plan(
             old_entries.get(source.relative),
             overrides[source.relative],
             runner,
-            settings,
             bases[source.relative],
             extension,
+            output_dir,
         )
         if result is not None:
             entry, source_pages = result
@@ -721,4 +753,10 @@ def plan(
         "settings": settings,
         "sources": sorted(entries, key=lambda entry: entry["path"]),
     }
-    return Plan(output_dir, project_path, project, pages, settings, runner.stale)
+    stale_outputs = sorted(
+        dropped["output"]
+        for entry in entries
+        for dropped in entry["dropped_pages"]
+        if (output_dir / dropped["output"]).is_file()
+    )
+    return Plan(output_dir, project_path, project, pages, settings, runner.stale, stale_outputs)
