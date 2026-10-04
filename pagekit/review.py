@@ -85,8 +85,7 @@ def page_preview(page: Image.Image, long_side: int) -> dict[str, Any]:
 def _to_upright(page_plan: Any, points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Points in the page's levelled grid, in the upright frame of its source."""
     chain = page_plan.chain
-    crop, scale = chain.crop_box, chain.scale
-    output = [((x - crop[0]) * scale[0], (y - crop[1]) * scale[1]) for x, y in points]
+    output = apply(chain.levelled_to_output(), points)
     return apply(chain.source_to_upright(), chain.inverse(output))
 
 

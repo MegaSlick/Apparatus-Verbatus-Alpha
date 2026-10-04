@@ -328,3 +328,99 @@ def test_the_review_sheet_shows_the_rule_exactness_flag_and_override_lines(tmp_p
             f"&quot;step&quot;: &quot;output_mode&quot;, &quot;page&quot;: 1, &quot;value&quot;: &quot;{value}&quot;"
             in text
         )
+
+
+# --- 3. Padding apart from the margin ---------------------------------------------------
+
+
+def _tilted_source(folder: Path, dpi=DPI) -> Path:
+    page = upright_page().rotate(-1.5, Image.BICUBIC, fillcolor=pages.PAPER)
+    path = folder / "src" / "page.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if dpi is None:
+        page.save(path)
+    else:
+        page.save(path, dpi=dpi)
+    return path
+
+
+SKEW = [{"source": "src/page.png", "step": "skew", "page": 1, "value": 1.5}]
+
+
+@pytest.mark.parametrize(("padding", "pixels_each"), [("4mm", round(4 * 150 / 25.4)), ("10px", 10)])
+def test_padding_enlarges_the_canvas_exactly_and_keeps_the_content(tmp_path, padding, pixels_each):
+    for name in ("plain", "padded"):
+        _tilted_source(tmp_path / name)
+    plain, out_plain = manifest_page(
+        tmp_path / "plain", "--overrides", str(overrides(tmp_path / "plain", SKEW))
+    )
+    padded, out_padded = manifest_page(
+        tmp_path / "padded",
+        "--overrides",
+        str(overrides(tmp_path / "padded", SKEW)),
+        "--padding",
+        padding,
+    )
+    p = pixels_each
+    with (
+        Image.open(out_plain / plain["output"]["name"]) as a,
+        Image.open(out_padded / padded["output"]["name"]) as b,
+    ):
+        assert b.size == (a.size[0] + 2 * p, a.size[1] + 2 * p)
+        inner = b.crop((p, p, p + a.size[0], p + a.size[1]))
+        assert inner.tobytes() == a.tobytes()  # same content, same scale, same place
+        fill = padded["geometry"]["fill"]["colour"]
+        bands = [(0, 0, b.size[0], p), (0, b.size[1] - p, b.size[0], b.size[1])]
+        bands += [(0, 0, p, b.size[1]), (b.size[0] - p, 0, b.size[0], b.size[1])]
+        for box in bands:
+            colours = b.crop(box).getcolors()
+            assert [colour for _, colour in colours] == [fill if b.mode == "L" else tuple(fill)]
+    plain_chain = Chain.from_dict(plain["geometry"])
+    chain = Chain.from_dict(padded["geometry"])
+    assert chain.scale == plain_chain.scale
+    for point in [(40.0, 60.0), (200.5, 300.25), MARK]:
+        x, y = plain_chain.forward([point])[0]
+        assert chain.forward([point])[0] == pytest.approx((x + p, y + p))
+        assert chain.inverse(chain.forward([point]))[0] == pytest.approx(point, abs=1e-6)
+    a = padded["geometry"]["affine_output_to_source"]
+    x, y = chain.forward([MARK])[0]
+    assert (a[0] * x + a[1] * y + a[2], a[3] * x + a[4] * y + a[5]) == pytest.approx(MARK)
+
+
+def test_the_manifest_records_margin_box_padding_and_regions(tmp_path):
+    _tilted_source(tmp_path)
+    page, _ = manifest_page(
+        tmp_path, "--overrides", str(overrides(tmp_path, SKEW)), "--padding", "10px"
+    )
+    geometry = page["geometry"]
+    chain = Chain.from_dict(geometry)
+    regions = geometry["regions"]
+    width, height = page["output"]["size"]
+    assert regions["canvas"] == [0, 0, width, height]
+    assert regions["padding"] == {"left": 10, "top": 10, "right": 10, "bottom": 10}
+    assert regions["content"] == [10, 10, width - 10, height - 10]
+    photographed = regions["photographed"]
+    assert len(photographed) >= 4
+    for x, y in photographed:  # inside the content area, and back inside the source
+        assert 10 - 1e-6 <= x <= width - 10 + 1e-6 and 10 - 1e-6 <= y <= height - 10 + 1e-6
+        sx, sy = chain.inverse([(x, y)])[0]
+        assert -1e-6 <= sx <= 300 + 1e-6 and -1e-6 <= sy <= 420 + 1e-6
+    assert "fill" in regions and "paper colour" in regions["fill"]
+    crop = geometry["margin_box"]["levelled"]
+    corners = geometry["margin_box"]["source"]
+    levelled = [(crop[0], crop[1]), (crop[2], crop[1]), (crop[2], crop[3]), (crop[0], crop[3])]
+    expected = chain.inverse(
+        [
+            ((x - crop[0]) * chain.scale[0] + 10, (y - crop[1]) * chain.scale[1] + 10)
+            for x, y in levelled
+        ]
+    )
+    assert corners == [pytest.approx(list(point)) for point in expected]
+
+
+def test_padding_in_millimetres_needs_a_resolution(tmp_path):
+    _tilted_source(tmp_path, dpi=None)
+    page, out = manifest_page(tmp_path, "--padding", "4mm")
+    reasons = [flag["reason"] for flag in page["flags"] if flag["step"] == "padding"]
+    assert len(reasons) == 1 and "resolution" in reasons[0]
+    assert page["geometry"]["regions"]["padding"] == {"left": 0, "top": 0, "right": 0, "bottom": 0}

@@ -32,7 +32,7 @@ import hashlib
 import io
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -795,7 +795,7 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         flags += [{"step": "split", "reason": reason} for reason in split_flags]
         for step in STEPS:
             flags += [{"step": step, "reason": reason} for reason in all_steps[step]["flags"]]
-        flags += [{"step": "margin", "reason": reason} for reason in chain_flags]
+        flags += chain_flags
         flags += _outside_flags(chain, page_steps)
         mode, mode_flags = _output_mode(
             source, number, page_earlier, usable, mode_record, chain, runner, tag
@@ -1012,6 +1012,30 @@ def _orientation_tag(source: Source, old, override: Override | None, values):
     return record, flags, note
 
 
+def _padding(settings, upright_dpi, scale) -> tuple[tuple[int, int, int, int], list[dict]]:
+    """The padding on each side in output pixels, and any flag (spec 0007): padding_px
+    as it is, or padding_mm converted per axis with the output resolution."""
+    if settings["padding_px"] > 0:
+        side = int(settings["padding_px"])
+        return (side, side, side, side), []
+    if settings["padding_mm"] <= 0:
+        return (0, 0, 0, 0), []
+    if upright_dpi is None:
+        return (0, 0, 0, 0), [
+            {
+                "step": "padding",
+                "reason": (
+                    f"Padding of {settings['padding_mm']:g} mm needs the scan's resolution, "
+                    "which this source does not have, so none was added; give it with "
+                    "--dpi, or set the padding in pixels."
+                ),
+            }
+        ]
+    across = round(settings["padding_mm"] * upright_dpi[0] * scale[0] / _MM_PER_INCH)
+    down = round(settings["padding_mm"] * upright_dpi[1] * scale[1] / _MM_PER_INCH)
+    return (across, down, across, down), []
+
+
 def _page_chain(source, number, values, usable, stored, settings, tag: int = 1):
     """The chain of page `number` (from 1), any margin flags, and its output dpi."""
     turns = values["orientation"]
@@ -1032,8 +1056,13 @@ def _page_chain(source, number, values, usable, stored, settings, tag: int = 1):
     if box is None:
         box = tuple(values["page_box"])
         flags.append(
-            "The content box lies wholly outside the page box and its allowance, so the "
-            "whole page box was kept."
+            {
+                "step": "margin",
+                "reason": (
+                    "The content box lies wholly outside the page box and its allowance, "
+                    "so the whole page box was kept."
+                ),
+            }
         )
     scale = 1.0
     if upright_dpi is not None and settings["max_output_dpi"] > 0:
@@ -1052,6 +1081,10 @@ def _page_chain(source, number, values, usable, stored, settings, tag: int = 1):
         )
     except GeometryError as error:
         raise PrepareError(f"{source.relative} page {number}: {error}") from error
+    padding, padding_flags = _padding(settings, upright_dpi, chain.scale)
+    flags += padding_flags
+    if any(padding):
+        chain = replace(chain, padding=padding)
     declared = _upright_dpi(stored["value"], turns)
     output_dpi = None
     if declared is not None:

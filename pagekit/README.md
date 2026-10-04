@@ -202,6 +202,23 @@ written, the choice and who made it, the rule, whether it was exact, and the col
 measure; the review sheet shows the same with lines to keep the page as scanned or to
 force grey.
 
+### Padding apart from the margin
+
+The margin keeps photographed paper around the content box (clamped to the page box
+plus the allowance), as before. Padding is separate, default none: a band of the
+page's measured paper colour added around the finished page, `--padding 4mm`
+(converted per axis with the resolution; a source with no resolution gets none, with a
+flag) or `--padding 20px` (settings `padding_mm` and `padding_px`, one or the other). It
+enlarges the canvas without changing the content's scale or position relative to the
+source: it is the last link of the geometry chain (a `pad` step, only when set), so the
+point maps include it.
+
+The manifest's geometry also records, for every page, `margin_box` (in the levelled
+grid and as its four corners in the stored source's pixels) and `regions`: the canvas,
+the padding on each side, the content area, the `photographed` polygon (the part of the
+page that comes from the source) and what is fill (everything else, in the paper
+colour).
+
 ### Defaults
 
 - Pages are written as lossless TIFF (deflate). PNG is available with `--format png`;

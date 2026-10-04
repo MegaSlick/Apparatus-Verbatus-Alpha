@@ -26,6 +26,9 @@ The chain for one page has these parts, applied in this order:
    top-left corner.
 5. **scale**: multiplied by sx and sy, each at most 1, which are the output size over
    the margin box size.
+6. **padding** (only when set, spec 0007): the page moved right and down by the left
+   and top padding, on a canvas larger by the padding on each side, filled with the
+   paper colour; the scale is unchanged.
 
 All are affine, so the whole chain is one affine map, stored both ways in the
 manifest. The prepared image is made from the original source through that one map in
@@ -41,7 +44,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from PIL import Image, ImageDraw
@@ -183,6 +186,29 @@ def _clip(polygon: list[Point], inside, cross) -> list[Point]:
     return kept
 
 
+def clip_to_box(polygon: Sequence[Point], box: Sequence[float]) -> list[Point]:
+    """The part of a convex `polygon` inside `box` (left, top, right, bottom), by four
+    steps of Sutherland and Hodgman's method."""
+    left, top, right, bottom = box
+    edges = [
+        (lambda p: p[0] >= left, 0, left),
+        (lambda p: p[0] <= right, 0, right),
+        (lambda p: p[1] >= top, 1, top),
+        (lambda p: p[1] <= bottom, 1, bottom),
+    ]
+    kept = [tuple(point) for point in polygon]
+    for inside, axis, limit in edges:
+        if not kept:
+            break
+
+        def cross(start: Point, end: Point, axis=axis, limit=limit) -> Point:
+            t = (limit - start[axis]) / (end[axis] - start[axis])
+            return (start[0] + t * (end[0] - start[0]), start[1] + t * (end[1] - start[1]))
+
+        kept = _clip(kept, inside, cross)
+    return kept
+
+
 def _area(polygon: list[Point]) -> float:
     total = 0.0
     for index, (x1, y1) in enumerate(polygon):
@@ -306,6 +332,58 @@ class Chain:
     scale: tuple[float, float]
     output_size: tuple[int, int]
     tag: int = 1  # the orientation tag applied first (spec 0007); 1 is none
+    padding: tuple[int, int, int, int] = (0, 0, 0, 0)  # left, top, right, bottom, pixels
+
+    @property
+    def canvas_size(self) -> tuple[int, int]:
+        """The size of the written page: the scaled margin box plus the padding."""
+        left, top, right, bottom = self.padding
+        return (self.output_size[0] + left + right, self.output_size[1] + top + bottom)
+
+    @property
+    def content_box(self) -> tuple[int, int, int, int]:
+        """Where the scaled margin box lies on the canvas."""
+        left, top = self.padding[0], self.padding[1]
+        return (left, top, left + self.output_size[0], top + self.output_size[1])
+
+    def regions(self) -> dict[str, Any]:
+        """Which parts of the written page are photographed source and which are fill,
+        and the margin box in the levelled grid and in stored source pixels."""
+        left, top, right, bottom = self.padding
+        width, height = self.canvas_size
+        content = self.content_box
+        photographed = clip_to_box(apply(self.upright_to_output(), self.polygon), content)
+        crop = self.crop_box
+        corners = [(crop[0], crop[1]), (crop[2], crop[1]), (crop[2], crop[3]), (crop[0], crop[3])]
+        source_corners = self.inverse(apply(self.levelled_to_output(), corners))
+        return {
+            "regions": {
+                "canvas": [0, 0, width, height],
+                "padding": {"left": left, "top": top, "right": right, "bottom": bottom},
+                "content": list(content),
+                "photographed": [list(point) for point in photographed],
+                "fill": (
+                    "every other pixel of the canvas: the padding, and any part of the "
+                    "content area outside the photographed polygon (past the source's "
+                    "edge or the cut), in the page's paper colour"
+                ),
+            },
+            "margin_box": {
+                "levelled": list(crop),
+                "source": [list(point) for point in source_corners],
+            },
+        }
+
+    def levelled_to_output(self) -> Affine:
+        """The levelled grid to the written page: crop, scale and padding."""
+        return (
+            self.scale[0],
+            0.0,
+            self.padding[0] - self.crop_box[0] * self.scale[0],
+            0.0,
+            self.scale[1],
+            self.padding[1] - self.crop_box[1] * self.scale[1],
+        )
 
     @property
     def frame_size(self) -> tuple[int, int]:
@@ -334,6 +412,7 @@ class Chain:
         crop_box: Sequence[int] | None = None,
         scale: float = 1.0,
         tag: int = 1,
+        padding: Sequence[int] = (0, 0, 0, 0),
     ) -> Chain:
         """The chain for page `page`. With no crop box, the whole levelled grid. `tag`
         is the orientation tag applied before everything else (1: none).
@@ -343,6 +422,8 @@ class Chain:
         if not 0 < scale <= 1:
             raise GeometryError(f"scale {scale} is refused: outputs are never upsampled")
         tag_affine(source_size, tag)  # refuses a tag outside 1 to 8
+        if len(padding) != 4 or any(int(side) != side or side < 0 for side in padding):
+            raise GeometryError(f"padding {list(padding)} must be four whole numbers of pixels")
         upright = upright_size(tagged_size(source_size, tag), turns)
         polygon = page_polygon(upright, split, page, overlap_px)
         box = frame_box(polygon, upright)
@@ -363,6 +444,7 @@ class Chain:
             scale=(output[0] / crop_width, output[1] / crop_height),
             output_size=output,
             tag=tag,
+            padding=tuple(int(side) for side in padding),
         )
 
     def upright_to_output(self) -> Affine:
@@ -379,7 +461,14 @@ class Chain:
             self.levelled_size[0] / 2 - self.crop_box[0],
             self.levelled_size[1] / 2 - self.crop_box[1],
         )
-        scaled = (self.scale[0], 0.0, 0.0, 0.0, self.scale[1], 0.0)
+        scaled = (
+            self.scale[0],
+            0.0,
+            float(self.padding[0]),
+            0.0,
+            self.scale[1],
+            float(self.padding[1]),
+        )
         return _compose(scaled, _compose(placed, _compose(turned, centred)))
 
     def source_to_output(self) -> Affine:
@@ -445,7 +534,18 @@ class Chain:
                     "factor": list(self.scale),
                     "size_after": list(self.output_size),
                 },
-            ],
+            ]
+            + (
+                [
+                    {
+                        "op": "pad",
+                        "left_top_right_bottom": list(self.padding),
+                        "size_after": list(self.canvas_size),
+                    }
+                ]
+                if any(self.padding)  # only when set, so a chain without it is unchanged
+                else []
+            ),
             "affine_source_to_output": list(self.source_to_output()),
             "affine_output_to_source": list(self.output_to_source()),
         }
@@ -467,6 +567,9 @@ class Chain:
             scale=tuple(scale["factor"]),
             output_size=tuple(scale["size_after"]),
             tag=steps.get("orientation_tag", {"tag": 1})["tag"],
+            padding=tuple(
+                steps.get("pad", {"left_top_right_bottom": (0, 0, 0, 0)})["left_top_right_bottom"]
+            ),
         )
 
 
@@ -515,6 +618,12 @@ def render(source: Image.Image, chain: Chain, fill: int | tuple[int, ...]) -> Im
     """
     if source.size != chain.source_size:
         raise GeometryError("the source is not the size the chain was built for")
+    if any(chain.padding):
+        # The page as without padding, then placed on a canvas of the paper colour.
+        page = render(source, replace(chain, padding=(0, 0, 0, 0)), fill)
+        canvas = Image.new(page.mode, chain.canvas_size, fill)
+        canvas.paste(page, chain.padding[:2])
+        return canvas
     shrunk = chain.scale != (1.0, 1.0)
     if chain.angle == 0:
         upright = upright_image(source, chain.tag, chain.turns)

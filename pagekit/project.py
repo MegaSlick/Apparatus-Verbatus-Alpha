@@ -101,6 +101,12 @@ def load_settings(overrides: dict[str, Any] | None = None) -> dict[str, dict[str
     for name in _POSITIVE:
         if not value[name] > 0:
             raise PrepareError(f"setting {name!r} must be more than 0")
+    if value["padding_mm"] < 0 or value["padding_px"] < 0:
+        raise PrepareError("padding must not be negative")
+    if value["padding_mm"] > 0 and value["padding_px"] > 0:
+        raise PrepareError("give padding in millimetres or in pixels, not both")
+    if int(value["padding_px"]) != value["padding_px"]:
+        raise PrepareError("padding_px must be a whole number of pixels")
     if value["grey_rule"] not in ("luminance", "red", "green", "blue"):
         raise PrepareError("grey_rule must be luminance, red, green or blue")
     if not 0 < value["colour_paper_percentile"] <= 1:

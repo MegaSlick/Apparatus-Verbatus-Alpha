@@ -143,10 +143,9 @@ def _levelled_by_truth(page: dict[str, Any], box: list[int], true_skew: float) -
     the true one, the corners come out square and the box is exact.
     """
     chain = Chain.from_dict(page["geometry"])
-    crop, scale = chain.crop_box, chain.scale
     left, top, right, bottom = box
     corners = [(left, top), (right, top), (right, bottom), (left, bottom)]
-    output = [((x - crop[0]) * scale[0], (y - crop[1]) * scale[1]) for x, y in corners]
+    output = apply(chain.levelled_to_output(), corners)
     upright = apply(chain.source_to_upright(), chain.inverse(output))
     width, height = chain.upright_size
     centre_x, centre_y = width / 2, height / 2

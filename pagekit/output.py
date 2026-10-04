@@ -61,6 +61,7 @@ def _step_summary(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _page_entry(page: PagePlan, image: Image.Image, data: bytes, fill, fill_method, fmt):
     geometry = page.chain.to_dict()
+    geometry.update(page.chain.regions())
     geometry["fill"] = {"colour": list(fill) if isinstance(fill, tuple) else fill}
     geometry["fill"]["method"] = fill_method
     return {

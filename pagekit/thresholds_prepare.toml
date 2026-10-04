@@ -152,3 +152,13 @@ meaning = "How many levels of chroma above the paper's noise a pixel must be to 
 value = 2.0
 status = "UNMEASURED"
 meaning = "The coloured area, in square millimetres (about a small mark), at which a page holds colour that grey would remove."
+
+[padding_mm]
+value = 0.0
+status = "UNMEASURED"
+meaning = "Blank paper colour added around each finished page, in millimetres, converted per axis with the resolution. Separate from the margin, which keeps photographed paper. 0 adds none."
+
+[padding_px]
+value = 0
+status = "UNMEASURED"
+meaning = "The same padding in output pixels; use this or padding_mm, not both. 0 adds none."
