@@ -453,3 +453,9 @@ record".
   pages. Leak scan no hits. Merged into `work/pagekit-prepare` (31fb320); the combined
   suite passes. On the host's re-run, the page tilted about 2.5 degrees is levelled, the
   page-edge stack is cut away, and the discarded-ink flag remains on one page of four.
+- **Brief 0028 done:** commits 99ebaa6 and ee56315 on `work/pk-split`. The agent read only
+  numbers from the lead's spreads and built every test from synthetic pages. Leak scan no
+  hits. Merged into `work/pagekit-prepare` (1a7e872); the combined suite passes. On the
+  host's re-run all four pages are upright with no orientation flag and the gutter
+  overhang flag is gone. Because some settings were chosen on these two spreads, an
+  independent review of generalisation is running.
