@@ -625,3 +625,7 @@ record".
 - **Follow-up brief:** `briefs/0036-build-orientation-tables-and-band-strokes.md` (sha256
   08f0717868d3e2855ceb780c5270e3bdc27d229ca39073eeb92f3d6306d0c020), to the agent of
   brief 0017. Saved before it was sent.
+- **Brief 0035 done:** commits 514e6f0, 490444e, abb602c, 45ba2cc and f94a0d6 on
+  `work/pk-integrate`. Leak scan no hits in 168 files. Merged into `work/pagekit-prepare`.
+  A test pins that defaults leave prepared pages and manifest values unchanged. An
+  independent review is running.
