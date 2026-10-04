@@ -705,6 +705,39 @@ def test_the_backstop_deletes_at_the_hard_maximum_even_past_an_extended_deadline
     assert (state / "created-testpod").read_text() == f"{started}\n"
 
 
+def test_the_backstop_wakes_at_the_hard_maximum_not_a_whole_poll_later(pod):
+    env, calls, state = pod
+    env["FAKE_CURL_FAIL"] = "yes"
+    env["VERBATUS_HARD_MAX_SECONDS"] = "5"
+    started = clock_of(env)
+    # A real five-minute poll: each sleep second moves the fake clock one second.
+    env = {**env, "POD_BACKSTOP_GRACE": "1", "POD_BACKSTOP_POLL": "300"}
+    printed = subprocess.run(
+        ["sh", str(START_COMMAND), "0.001", "0" * 40],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    run_until(["sh", "-c", printed], env, lambda: halted(env))
+    assert "pod delete testpod" in lines(calls)
+    assert clock_of(env) <= started + 6
+
+
+def test_the_guard_s_deadline_never_passes_the_hard_maximum(pod):
+    """The image pull runs between printing the command and starting the container; the
+    guard's window is cut so its orderly end comes before the backstop's cap."""
+    env, calls, state = pod
+    env["VERBATUS_HARD_MAX_SECONDS"] = "7200"
+    printed_at = clock_of(env)
+    argv, env = start_command(env, "2")
+    clock = Path(env["POD_GUARD_DIR"]).parent / "clock"
+    clock.write_text(f"{printed_at + 600}\n")
+    deadline = state / "deadline-testpod"
+    run_until(argv, env, deadline.exists)
+    assert int(deadline.read_text()) <= printed_at + 7200 - 120
+
+
 @pytest.mark.parametrize(
     ("sealed", "hours"),
     [(None, "3.01"), (None, "4"), ("3600", "1.5")],

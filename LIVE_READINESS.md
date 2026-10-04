@@ -182,7 +182,9 @@ runpodctl pod get <pod id>          # shows the SSH details
 nothing when the hours are past the hard maximum (3 h) or the hard maximum cannot be read
 from `config/spend.toml`. The `&&` keeps a refusal from creating a pod: written inline as
 `--docker-args "$(...)"`, the create would still run, with no guard. The backstop counts
-the hard maximum from when the command is printed, so print it afresh for every pod.
+the hard maximum from when the command is printed, so print it afresh for every pod. That
+moment is read from the laptop's clock, so keep it set automatically (System Settings,
+General, Date & Time).
 
 Over SSH, `tail /workspace/private/.pod_guard/guard.log` must show `armed for pod <id>`;
 if not, `runpodctl pod delete <pod id>` and stop. Otherwise leave it: idle, it should

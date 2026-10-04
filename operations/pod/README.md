@@ -565,8 +565,11 @@ deadline, and in any case at the hard maximum, even if the guard never ran, and 
 hands over to the image's `/start.sh`. The hard maximum is the sealed
 `VERBATUS_HARD_MAX_SECONDS` when set, else `hard_max_seconds` in the checkout's
 `config/spend.toml`; it counts from when the command is printed, just before the create,
-so print a fresh command for every pod. The command refuses `<hours>` past the hard
-maximum, and refuses outright when the hard maximum cannot be read:
+so print a fresh command for every pod, on a laptop whose clock is set automatically.
+At container start the guard's window is cut to end two minutes inside the hard maximum,
+so the guard's orderly delete comes first and the backstop is the fallback. The command
+refuses `<hours>` past the hard maximum, and refuses outright when the hard maximum
+cannot be read:
 
 ```sh
 START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&

@@ -11,7 +11,10 @@
 # and separately runs a backstop that deletes the pod an hour after its deadline (the one
 # the guard keeps on the volume, so extensions count) even if the guard never started, and
 # in any case once the budget's hard maximum has passed. Then it hands over to the image's
-# own /start.sh, or keeps the container alive without it.
+# own /start.sh, or keeps the container alive without it. At container start the window
+# is cut so the deadline falls inside the cap, and is written as the guard's deadline file
+# when there is none yet, so the guard (which keeps an existing deadline) ends the pod in
+# order before the backstop; the backstop wakes at the cap, not a whole poll after it.
 #
 # The hard maximum is the sealed VERBATUS_HARD_MAX_SECONDS when set, else hard_max_seconds
 # in this checkout's config/spend.toml. It counts from when this command is printed, just
@@ -45,18 +48,24 @@ window=$(awk -v h="$hours" 'BEGIN { printf "%d", h * 3600 }')
 created=$(date +%s)
 cap=$((created + hard_max))
 grace=${POD_BACKSTOP_GRACE:-3600}
+# The guard's deadline sits this far inside the cap, two of its ticks, so its orderly
+# delete comes before the backstop's.
+guard_margin=120
 poll=${POD_BACKSTOP_POLL:-300}
 guard_dir=/workspace/private/.pod_guard
 url="https://raw.githubusercontent.com/MegaSlick/Apparatus-Verbatus-Alpha/$sha/operations/pod/pod_guard.sh"
 
 cat <<COMMAND
-bash -c 'd=\${POD_GUARD_DIR:-$guard_dir}; export POD_GUARD_DIR=\$d; first=\$((\$(date +%s) + $window)); \
+bash -c 'd=\${POD_GUARD_DIR:-$guard_dir}; export POD_GUARD_DIR=\$d; start=\$(date +%s); \
+w=\$(($cap - $guard_margin - start)); [ "\$w" -gt $window ] && w=$window; [ "\$w" -lt 1 ] && w=1; \
+first=\$((start + w)); gh=\$(awk -v s="\$w" "BEGIN { printf \"%.6f\", s / 3600 }"); \
 (mkdir -p "\$d" && echo $created > "\$d/created-\$RUNPOD_POD_ID") 2>/dev/null; \
-(curl -fsSL --max-time 120 $url -o /tmp/pod_guard.sh && sh /tmp/pod_guard.sh $hours 30) > /tmp/pod_guard.out 2>&1 & \
+[ -s "\$d/deadline-\$RUNPOD_POD_ID" ] || echo \$first > "\$d/deadline-\$RUNPOD_POD_ID" 2>/dev/null; \
+(curl -fsSL --max-time 120 $url -o /tmp/pod_guard.sh && sh /tmp/pod_guard.sh \$gh 30) > /tmp/pod_guard.out 2>&1 & \
 t=; command -v timeout >/dev/null && t="timeout 60"; \
 (while :; do dl=\$(cat "\$d/deadline-\$RUNPOD_POD_ID" 2>/dev/null); case \$dl in ""|*[!0-9]*) dl=\$first;; esac; \
 [ "\$dl" -le \$((\$(date +%s) + 604800)) ] || dl=\$first; \
 now=\$(date +%s); if [ "\$now" -ge \$((dl + $grace)) ] || [ "\$now" -ge $cap ]; then \$t runpodctl pod delete "\$RUNPOD_POD_ID" || \$t runpodctl remove pod "\$RUNPOD_POD_ID" || \$t runpodctl pod stop "\$RUNPOD_POD_ID"; fi; \
-sleep $poll; done) > /tmp/pod_backstop.out 2>&1 & \
+s=\$(($cap - \$(date +%s))); [ "\$s" -gt $poll ] && s=$poll; [ "\$s" -lt 1 ] && s=1; sleep \$s; done) > /tmp/pod_backstop.out 2>&1 & \
 if [ -x /start.sh ]; then exec /start.sh; fi; exec sleep infinity'
 COMMAND
