@@ -77,7 +77,7 @@ fold into one clockwise rotation of `90 * turns - skew` degrees; the first crop 
 smallest box of the scan holding everything pagekit's page shows; the crop after
 rotation is pagekit's page to the nearest pixel; and the fill is pagekit's paper
 colour, in the scan's own mode. A page with no skew is cut exactly, a skewed one to
-within half a pixel. Where triage still cannot say what pagekit did, the part is the
+within half a pixel on each axis (the crop after rotation starts on a whole pixel). Where triage still cannot say what pagekit did, the part is the
 nearest one that loses no ink, and a note says why:
 
 - **Gutter** (two pages): the regions must partition the scan, so the scan is split

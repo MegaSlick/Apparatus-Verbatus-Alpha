@@ -171,7 +171,7 @@ def test_a_turned_skewed_cropped_page_lands_where_pagekit_put_it(tmp_path, turns
     door = _door(scan, door_page.part)
     with Image.open(tmp_path / "out" / page.output_name) as opened:
         prepared = opened.copy()
-    # Cut tight: pagekit's page, placed to within half a pixel.
+    # Cut tight: pagekit's page, placed to within half a pixel on each axis.
     assert door.size == door_page.door_size == prepared.size
     assert all(abs(value) <= 0.5 for value in door_page.pagekit_box_in_door[:2])
     pagekit_blobs = _blobs(prepared)

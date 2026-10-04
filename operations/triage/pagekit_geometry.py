@@ -14,7 +14,8 @@ rotation of ``90 * turns - skew`` degrees clockwise. The first crop is the small
 box of the original holding every source pixel pagekit's page shows; the crop after
 rotation is pagekit's own page, to the nearest whole pixel, and the fill is pagekit's
 paper colour. A page with no skew is therefore cut exactly, and a skewed one to within
-half a pixel.
+half a pixel on each axis: the crop after rotation starts on a whole pixel, and where
+pagekit's page falls on the rotated canvas is fixed by its own sub-pixel position.
 
 What triage still cannot say is a cut that is not straight along the frame, a pixel
 given to two pages, and a shrink. For a split frame, each page's first crop holds

@@ -103,7 +103,7 @@ the page from it, so every reading still traces to the scan.
 - **What the Door cannot copy exactly.** Rows use the triage order with a crop after
   rotation and a recorded fill, so a quarter turn, a skew, a crop and pagekit's paper
   margin are all reproduced: a page with no skew exactly, a skewed one to within half a
-  pixel. A cut that leans, or pagekit's overlap past the cut, becomes a straight split
+  pixel on each axis. A cut that leans, or pagekit's overlap past the cut, becomes a straight split
   of the scan: what lies past it is on the facing page, and each Door page also holds
   the facing page's sliver in its half, so nothing pagekit kept is dropped. A shrunk
   page keeps the scan's resolution at the Door. `triage-notes.txt` lists each case.

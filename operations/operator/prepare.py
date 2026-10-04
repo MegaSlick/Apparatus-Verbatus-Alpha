@@ -426,7 +426,9 @@ def _notes(prepared: Prepared) -> list[str]:
     ]
     differing = [page for page in prepared.pages if page["door"].notes]
     if not differing:
-        lines.append("Every page is cut as pagekit cut it (a skewed page to within half a pixel).")
+        lines.append(
+            "Every page is cut as pagekit cut it (a skewed page to within half a pixel on each axis)."
+        )
     for page in differing:
         lines.append(f"{page['output']} (from {page['scan']}, page {page['page']}):")
         lines += [f"  - {note.text}" for note in page["door"].notes]
@@ -479,7 +481,7 @@ def summary(prepared: Prepared) -> list[str]:
     lines.append(
         f"Triage manifest for the Door: {out / TRIAGE_MANIFEST_NAME}. The Door will cut "
         f"{len(pages)} page(s) from the original scans, {len(exact)} as pagekit cut them "
-        "(a skewed page to within half a pixel)."
+        "(a skewed page to within half a pixel on each axis)."
     )
     counts = Counter(note.code for page in pages for note in page["door"].notes)
     for code, count in sorted(counts.items()):
