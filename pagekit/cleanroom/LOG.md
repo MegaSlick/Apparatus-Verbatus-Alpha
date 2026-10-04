@@ -672,3 +672,16 @@ record".
 - **Brief 0038 done:** commit cb623d0 on `work/pk-split`. Leak scan no hits. Merged into
   `work/pagekit-prepare`. One-size tiles no longer vote up or down; a page whose writing
   tiles are a third or more one-size is flagged.
+
+## 0038 — Lead's direction: split first, cropping off by default; spec 0008; brief 0041
+
+- **The lead decided** that pagekit should preserve the original, focus on splitting left
+  and right, keep the page-box and content-box crops as a later feature off by default, and
+  keep a cache of each step's image for inspection.
+- **Spec 0008** (`specs/0008-split-first-defaults-and-stage-cache.md`): those defaults and
+  the stage cache, with the rule that no output is ever made from a cache image.
+- **Brief:** `briefs/0041-build-split-first-and-cache.md` (sha256
+  80d71ffb4f044a5f69318d857f0386635256573cf07553f1034376d2652b06db), to the agent of
+  brief 0023, after briefs 0039 and 0040. Saved before it was sent.
+- **Brief 0038 re-test:** no regression; two synthetic account pages that were already
+  wrong remain wrong without a flag; 17 pages that were right are now flagged.
