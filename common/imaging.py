@@ -1340,21 +1340,14 @@ def triage_point_to_frame(part: dict, point: tuple[float, float]) -> tuple[float
     return (a * x + b * y + c, d * x + e * y + f)
 
 
-def _post_crop_on_fill(rotated: Image.Image, box: dict, fill) -> Image.Image:
-    """`box` of the rotated canvas, with every pixel beyond the canvas set to `fill`.
+def refuse_post_crop_outside(canvas_size: tuple[int, int], box: dict) -> None:
+    """Refuse a post-crop the Door will not render on a rotated canvas of this size.
 
     The box must hold some of the canvas, and may reach past each of its edges by at
     most a fifth of the canvas on that axis: room for a page's margin beyond the scan,
     never a page made of fill.
     """
-    _refuse_past_pixel_bound(box["w"], box["h"])
-    width, height = rotated.size
-    overhang = (
-        (-box["x"], width),
-        (box["x"] + box["w"] - width, width),
-        (-box["y"], height),
-        (box["y"] + box["h"] - height, height),
-    )
+    width, height = canvas_size
     if (
         box["x"] >= width
         or box["y"] >= height
@@ -1362,10 +1355,34 @@ def _post_crop_on_fill(rotated: Image.Image, box: dict, fill) -> Image.Image:
         or box["y"] + box["h"] <= 0
     ):
         raise ValueError("the triage post-crop holds none of the rotated scan")
+    overhang = (
+        (-box["x"], width),
+        (box["x"] + box["w"] - width, width),
+        (-box["y"], height),
+        (box["y"] + box["h"] - height, height),
+    )
     if any(beyond * _POST_CROP_REACH_DENOMINATOR > extent for beyond, extent in overhang):
         raise ValueError(
             "the triage post-crop runs more than a fifth of the rotated scan past its edge"
         )
+
+
+def triage_rotated_canvas_size(part: dict) -> tuple[int, int]:
+    """The size of the canvas a part's crop is rotated onto, as the renderer makes it."""
+    crop = part["crop_box"]
+    angle = -part["rotation"]["rotation_millidegrees"] / 1000
+    return _rotation_canvas(crop["w"], crop["h"], angle)[1]
+
+
+def check_triage_post_crop(part: dict) -> None:
+    """The renderer's post-crop limits, checked from the part alone, before any pixel."""
+    refuse_post_crop_outside(triage_rotated_canvas_size(part), part["post_crop_box"])
+
+
+def _post_crop_on_fill(rotated: Image.Image, box: dict, fill) -> Image.Image:
+    """`box` of the rotated canvas, with every pixel beyond the canvas set to `fill`."""
+    _refuse_past_pixel_bound(box["w"], box["h"])
+    refuse_post_crop_outside(rotated.size, box)
     page = rotated.crop((box["x"], box["y"], box["x"] + box["w"], box["y"] + box["h"]))
     beyond = Image.new("L", page.size, 255)
     inside = (

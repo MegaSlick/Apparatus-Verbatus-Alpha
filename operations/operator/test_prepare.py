@@ -298,3 +298,34 @@ def test_identical_scans_share_one_triage_row(tmp_path, capsys):
     assert code == 0, printed
     assert "Prepared 3 page(s) from 3 scan(s)" in printed
     assert len(_rows(tmp_path / "out dir")) == 2
+
+
+def test_a_row_the_door_would_refuse_is_refused_before_anything_is_written(tmp_path, capsys):
+    scans = tmp_path / "my scans"
+    scans.mkdir()
+    Image.new("L", (100, 80), 215).save(scans / "tiny.png", dpi=(300, 300))
+    # Writing out to the edges of a 100 x 80 scan: pagekit's margin then runs past the
+    # scan by its 2 mm allowance, a quarter of the scan's width.
+    fixes = tmp_path / "fixes.json"
+    fixes.write_text(
+        json.dumps(
+            {
+                "schema": "pagekit-overrides.v1",
+                "overrides": [
+                    {
+                        "source": "my scans/tiny.png",
+                        "step": "content_box",
+                        "page": 1,
+                        "value": [0, 0, 100, 80],
+                    }
+                ],
+            }
+        )
+    )
+
+    code, printed = _run(tmp_path, capsys, "--overrides", str(fixes))
+
+    assert code == 2
+    assert "What happened: The pages could not be prepared." in printed
+    assert "post-crop" in printed
+    assert not (tmp_path / "out dir").exists()

@@ -349,3 +349,18 @@ def test_a_fill_the_mode_carries_is_every_pixel_beyond_the_crop(mode, paper, lev
     page = Image.open(BytesIO(rendered))
     expected = levels[0] if len(levels) == 1 else tuple(levels)
     assert page.getpixel((0, 0)) == expected
+
+
+@pytest.mark.parametrize("rotation", [0, 90_000, -90_000, 180_000, 1_234, -45_000, 179_999])
+@pytest.mark.parametrize("crop", [(31, 23), (180, 171), (260, 180)])
+def test_the_canvas_size_checked_before_rendering_is_the_one_the_renderer_makes(rotation, crop):
+    from common.imaging import triage_rotated_canvas_size
+
+    part = triage.make_part(
+        {"x": 0, "y": 0, "w": 300, "h": 200},
+        {"x": 0, "y": 0, "w": crop[0], "h": crop[1]},
+        rotation,
+        colour_mode="keep",
+    )
+    rotated = Image.new("L", crop).rotate(-rotation / 1000, expand=True)
+    assert triage_rotated_canvas_size(part) == rotated.size

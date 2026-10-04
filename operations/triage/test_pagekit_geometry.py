@@ -286,3 +286,16 @@ def test_a_quarter_turned_spread_splits_the_scan_across_its_other_axis(tmp_path)
     assert [(r["x"], r["w"]) for r in regions] == [(0, 1000), (0, 1000)]
     assert regions[0]["y"] == regions[1]["h"] and regions[1]["y"] == 0
     assert {page.part["rotation"]["rotation_millidegrees"] for page in mapped} == {90_000}
+
+
+def test_a_page_whose_margin_runs_further_past_the_scan_than_the_door_allows_is_refused(
+    tmp_path,
+):
+    """pagekit's 2 mm margin allowance is a quarter of a 100-pixel-wide scan, past the
+    fifth the Door lets a post-crop run beyond the rotated scan: the mapping refuses it
+    here, with the Door's own check, rather than the Door refusing it on the pod."""
+    from operations.triage.pagekit_geometry import MappingError
+
+    scan = _scan(tmp_path / "scans", (100, 80), [])
+    with pytest.raises(MappingError, match="post-crop"):
+        _prepare(tmp_path, scan, [{"step": "content_box", "page": 1, "value": [0, 0, 100, 80]}])

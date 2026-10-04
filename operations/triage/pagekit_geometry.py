@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from common.contracts import triage as triage_manifest
-from common.imaging import triage_page_to_frame
+from common.imaging import check_triage_post_crop, triage_page_to_frame
 from pagekit.geometry import Chain, apply, quarter_turn, upright_size
 
 Point = tuple[float, float]
@@ -308,6 +308,13 @@ def map_pages(
             post_crop_box={"x": left, "y": top, "w": right - left, "h": bottom - top},
             fill=list(fills[index]),
         )
+        try:
+            check_triage_post_crop(part)
+        except ValueError as error:
+            raise MappingError(
+                f"page {index + 1}: the Door would refuse this page ({error}); pagekit's "
+                "margin runs too far past so small a scan. Set a smaller margin for it"
+            ) from error
         to_door, door_size = door_affine(part)
         corners = apply(
             _compose(to_door, chain.output_to_source()),
