@@ -219,6 +219,17 @@ the padding on each side, the content area, the `photographed` polygon (the part
 page that comes from the source) and what is fill (everything else, in the paper
 colour).
 
+### Density on output
+
+Output density tags come only from a resolution the project holds. A person may set a
+nominal density for a page with an overrides line
+`{"source": ..., "step": "density", "page": 1, "value": [600, 600]}`: the pixels are
+unchanged and the tag says 600 dpi. Its ratio between the axes must be the accepted
+one (within the precision files store, 0.2%); one that changes it, or one for a source
+with no resolution, is refused with a plain message and nothing is written. pagekit
+never stretches pixels to make the axes equal. The manifest's `density` records the
+nominal and the accepted values.
+
 ### Defaults
 
 - Pages are written as lossless TIFF (deflate). PNG is available with `--format png`;
@@ -317,7 +328,9 @@ pixels; `skew` degrees counterclockwise, under 45; `page_box` and `content_box`
 `[left, top, right, bottom]` in the levelled page's pixels, right and bottom not
 included, and `content_box` `null` for a blank page (a box partly or wholly outside the
 levelled page is flagged, since only filled-in paper colour lies there); `margin` millimetres; `resolution`
-`[x_dpi, y_dpi]`. An entry may add `evidence`, a sentence saying why. Values are set as
+`[x_dpi, y_dpi]`; `tag_trust` true or false (whether to apply the file's orientation
+tag); per page, `output_mode` `"source"` or `"grey"`, and `density` `[x_dpi, y_dpi]`
+(a nominal output density). An entry may add `evidence`, a sentence saying why. Values are set as
 manual, or locked with `"lock": true`, and only what depends on them is recomputed. An
 override naming a source, page or step that does not exist is refused (exit 2) and
 nothing changes.
@@ -380,7 +393,10 @@ parameters, with both composed affine maps (source to output and back) and the f
 colour; every step's value with origin, confidence, evidence and flags; the flags; and
 the verdict, `review` or `no_flags`. `batch` holds the volume-wide comparison: for each
 measurement the number of pages, whether it was compared, the median, the spread and how
-many pages were flagged. `review` names the review sheet. `skipped` lists the source
+many pages were flagged. `review` names the review sheet. Spec 0007 adds, for each page, `orientation_tag`, `output_mode`
+and `density` (null unless set), and in `geometry` the `margin_box` and `regions`; with
+no tag, no grey choice and no padding every earlier value is unchanged.
+`skipped` lists the source
 files that could not be used, each with `name`, `path` (from the project file's folder),
 `sha256` (null when the file cannot be read) and `reason`; they have no pages.
 `stale_outputs` lists the output files of pages

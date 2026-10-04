@@ -370,6 +370,7 @@ class PagePlan:
     resolution: dict[str, Any]
     tag: dict[str, Any] = field(default_factory=dict)  # the orientation tag's record
     mode: dict[str, Any] = field(default_factory=dict)  # the output mode (spec 0007)
+    density: dict[str, Any] | None = None  # a nominal density set by hand, if any
 
 
 @dataclass
@@ -771,6 +772,10 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         page_entry = {"page": number, "output": output_name, "steps": page_steps}
         if mode_record is not None:
             page_entry["output_mode"] = mode_record
+        density_override = overrides.get(("density", number))
+        nominal = density_override.value if density_override else old_page.get("density")
+        if nominal is not None:
+            page_entry["density"] = list(nominal)
         pages.append(page_entry)
         if runner.dry:
             continue
@@ -797,6 +802,10 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
             flags += [{"step": step, "reason": reason} for reason in all_steps[step]["flags"]]
         flags += chain_flags
         flags += _outside_flags(chain, page_steps)
+        density = None
+        if nominal is not None:
+            density = _nominal_density(source, number, nominal, output_dpi)
+            output_dpi = tuple(density["nominal"])
         mode, mode_flags = _output_mode(
             source, number, page_earlier, usable, mode_record, chain, runner, tag
         )
@@ -813,6 +822,7 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
                 stored,
                 tag_record,
                 mode,
+                density,
             )
         )
     entry = {
@@ -1010,6 +1020,32 @@ def _orientation_tag(source: Source, old, override: Override | None, values):
         "transform": TAG_WORDS[applied],
     }
     return record, flags, note
+
+
+_RATIO_TOLERANCE = 0.002
+
+
+def _nominal_density(source, number, nominal, accepted) -> dict[str, Any]:
+    """A nominal output density set by hand, checked against the accepted resolution:
+    the ratio of its axes must be the accepted one, since pagekit never stretches
+    pixels to change it. PrepareError otherwise."""
+    where = f"{source.relative} page {number}"
+    if accepted is None:
+        raise PrepareError(
+            f"{where}: a nominal density needs the scan's resolution, which this source "
+            "does not have; give it first (--dpi, or a resolution line)"
+        )
+    want = nominal[0] / nominal[1]
+    have = accepted[0] / accepted[1]
+    # Within the precision a file stores a resolution in (PNG keeps dots per metre).
+    if abs(want - have) > _RATIO_TOLERANCE * have:
+        raise PrepareError(
+            f"{where}: the nominal density {nominal[0]:g} x {nominal[1]:g} dpi changes the "
+            f"ratio between the axes (accepted {accepted[0]:g} x {accepted[1]:g} dpi); "
+            "pagekit never stretches pixels to change it, so give a density with the same "
+            "ratio"
+        )
+    return {"nominal": [float(v) for v in nominal], "accepted": [float(v) for v in accepted]}
 
 
 def _padding(settings, upright_dpi, scale) -> tuple[tuple[int, int, int, int], list[dict]]:

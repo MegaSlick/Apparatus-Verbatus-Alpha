@@ -49,8 +49,8 @@ _SOURCE_OPTIONAL = frozenset({"orientation_tag"})
 _TAG_KEYS = {"found", "trusted", "trust_origin", "applied", "transform"}
 # Corrections that are not steps: for the whole source, and per page.
 SOURCE_SETTINGS = ("resolution", "tag_trust")
-PAGE_SETTINGS = ("output_mode",)
-_PAGE_OPTIONAL = frozenset({"output_mode"})
+PAGE_SETTINGS = ("output_mode", "density")
+_PAGE_OPTIONAL = frozenset({"output_mode", "density"})
 _MODE_KEYS = {"value", "set_by", "evidence"}
 _RECORD_KEYS = {
     "value",
@@ -330,6 +330,11 @@ def validate_project(data: Any) -> dict[str, Any]:
             _closed(page, _PAGE_KEYS, f"{where} page {number}", _PAGE_OPTIONAL)
             if "output_mode" in page:
                 _check_mode(page["output_mode"], f"{where} page {number} output_mode")
+            if "density" in page:
+                try:
+                    _resolution(page["density"])
+                except AnswerError as error:
+                    raise PrepareError(f"{where} page {number} density: {error}") from error
             if page["page"] != number:
                 raise PrepareError(f"{where}: pages must be numbered 1, 2 in order")
             _closed(page["steps"], set(PAGE_STEPS), f"{where} page {number} steps")
@@ -432,7 +437,7 @@ def load_overrides(path: Path) -> list[Override]:
         elif page is not None:
             raise PrepareError(f"{where}: the {step} step is for the whole source; drop 'page'")
         lock = entry.get("lock", False)
-        if not isinstance(lock, bool) or (lock and step in SOURCE_SETTINGS):
+        if not isinstance(lock, bool) or (lock and step in (*SOURCE_SETTINGS, "density")):
             raise PrepareError(
                 f"{where}: lock must be true or false, and is not for {', '.join(SOURCE_SETTINGS)}"
             )
@@ -455,6 +460,8 @@ def load_overrides(path: Path) -> list[Override]:
 def _setting_value(step: str, value: Any) -> Any:
     """An override's value in its stored form, or AnswerError."""
     if step == "resolution":
+        return _resolution(value)
+    if step == "density":
         return _resolution(value)
     if step == "output_mode":
         if value not in ("source", "grey"):

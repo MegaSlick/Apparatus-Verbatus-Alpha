@@ -80,6 +80,7 @@ def _page_entry(page: PagePlan, image: Image.Image, data: bytes, fill, fill_meth
         "source_resolution": page.resolution,
         "orientation_tag": page.tag,
         "output_mode": page.mode,
+        "density": page.density,
         "geometry": geometry,
         "steps": {step: _step_summary(page.steps[step]) for step in STEPS},
         "flags": page.flags,

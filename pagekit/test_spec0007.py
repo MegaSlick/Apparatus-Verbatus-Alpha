@@ -424,3 +424,81 @@ def test_padding_in_millimetres_needs_a_resolution(tmp_path):
     reasons = [flag["reason"] for flag in page["flags"] if flag["step"] == "padding"]
     assert len(reasons) == 1 and "resolution" in reasons[0]
     assert page["geometry"]["regions"]["padding"] == {"left": 0, "top": 0, "right": 0, "bottom": 0}
+
+
+# --- 4. Density on output ----------------------------------------------------------------
+
+
+def _density(folder: Path, value, dpi=DPI) -> tuple[int, str]:
+    path = folder / "src" / "page.png"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if dpi is None:
+        upright_page().save(path)
+    else:
+        upright_page().save(path, dpi=dpi)
+    entry = [{"source": "src/page.png", "step": "density", "page": 1, "value": value}]
+    status = main(
+        [
+            "prepare",
+            str(folder / "src"),
+            "--output",
+            str(folder / "out"),
+            "--overrides",
+            str(overrides(folder, entry)),
+        ]
+    )
+    return status
+
+
+def test_a_nominal_density_keeping_the_axis_ratio_is_written_and_pixels_unchanged(tmp_path):
+    assert _density(tmp_path / "a", [600, 600]) == 1  # the neutral defaults are flagged
+    save(upright_page(), tmp_path / "b" / "src" / "page.png", None)
+    plain, out_b = prepared(tmp_path / "b")
+    manifest = json.loads((tmp_path / "a" / "out" / MANIFEST_NAME).read_text())
+    (page,) = manifest["pages"]
+    assert page["output"]["resolution"] == [600.0, 600.0]
+    assert page["density"]["nominal"] == [600.0, 600.0]
+    assert page["density"]["accepted"] == pytest.approx([150.0, 150.0], abs=0.05)
+    with Image.open(tmp_path / "a" / "out" / page["output"]["name"]) as written:
+        assert written.info["dpi"] == pytest.approx((600, 600))
+        assert pixels(tmp_path / "a" / "out" / page["output"]["name"]) == pixels(
+            out_b / plain["pages"][0]["output"]["name"]
+        )
+    # Unequal axes keep their own ratio.
+    assert _density(tmp_path / "c", [600, 300], dpi=(300, 150)) == 1
+
+
+@pytest.mark.parametrize(
+    ("value", "dpi", "words"),
+    [
+        ([600, 300], DPI, "ratio"),
+        ([600, 600], (300, 150), "ratio"),
+        ([600, 600], None, "resolution"),
+    ],
+)
+def test_a_nominal_density_that_changes_the_axis_ratio_is_refused(
+    tmp_path, capsys, value, dpi, words
+):
+    assert _density(tmp_path, value, dpi) == 2
+    error = capsys.readouterr().err
+    assert "density" in error and words in error
+    assert not (tmp_path / "out").exists()
+
+
+def test_the_same_input_gives_byte_identical_outputs_manifest_and_review(tmp_path):
+    def run(folder: Path) -> dict[str, bytes]:
+        save(stored(6), folder / "src" / "tagged.png", 6)
+        save(with_colour_marks("red stamp"), folder / "src" / "stamp.png", None)
+        save(noisy_colour(writing_page(16), 3), folder / "src" / "noisy.png", None)
+        out = folder / "out"
+        command = ["prepare", str(folder / "src"), "--output", str(out)]
+        main([*command, "--output-mode", "grey", "--padding", "3mm"])
+        return {
+            path.name: path.read_bytes().replace(bytes(out), b"OUT")
+            for path in sorted(out.iterdir())
+        }
+
+    first = run(tmp_path / "a")
+    assert first == run(tmp_path / "b")
+    again = run(tmp_path / "a")  # a re-run on its own project
+    assert again == first
