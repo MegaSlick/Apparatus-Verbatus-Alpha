@@ -26,7 +26,7 @@ import pytest
 from admission import RefusalReason, reason_code
 from door import SourceEntry, expand_sources, process_sources
 from image_formats import MAX_SOURCE_BYTES, validate_png
-from PIL import Image
+from PIL import Image, ImageDraw
 from synthetic_sources import (
     blank_pages_pdf,
     content_page_pdf,
@@ -4767,3 +4767,62 @@ def test_triage_clusters_without_a_manifest_are_refused_at_the_real_door(tmp_pat
             extra=["--triage-clusters", str(clusters_path)],
         )
     assert not (approved / "runs").exists()
+
+
+def test_a_second_order_triage_row_is_cut_tight_on_its_fill_and_re_derives(tmp_path):
+    """A row with a post-crop and a fill: the Door seals the page under the second
+    recipe, records its post-crop and fill, and the Exemplar's re-derivation agrees."""
+    from common.exemplar_boundary import verify_triage_derivative
+
+    master_image = Image.new("L", (40, 30), 220)
+    ImageDraw.Draw(master_image).rectangle((15, 10, 25, 20), fill=20)
+    output = BytesIO()
+    master_image.save(output, format="PNG")
+    master = output.getvalue()
+    digest = digest_bytes(master)
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 40, "h": 30},
+        {"x": 2, "y": 2, "w": 36, "h": 26},
+        5_000,
+        colour_mode="keep",
+        post_crop_box={"x": -3, "y": 1, "w": 34, "h": 30},
+        fill=[220],
+    )
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 40, "height": 30},
+        split=door.triage_manifest.make_split(
+            [part], operation_order=door.triage_manifest.SPLIT_OPERATION_ORDER_V2
+        ),
+        re_shoot_cluster_id=None,
+        confidence=0,
+        mode="auto",
+        actor={"kind": "producer", "identity": "pagekit", "revision": "0.1.0"},
+        human_override=False,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "frame.png", "sha256": digest}],
+        reader({"frame.png": master}),
+        triage_rows={digest: row},
+    )
+    tree, context = open_door(tmp_path, sources)
+    process_sources(
+        context, tree, sources, reader({"frame.png": master}), pdf_settings=PDF_SETTINGS
+    )
+    record = admissions(tree)[1]
+    assert record["outcome"] == "admitted", record["payload"]
+    contract = record["payload"]["rendered_from"]["render_contract"]
+    derivative = contract["derivative_page"]
+    assert derivative["apply_recipe"]["schema"] == "triage-raster-apply-v2"
+    assert {"operation": "fill", "fill": {"levels": [220]}} in derivative["operations"]
+    assert contract["mode_transform"] == "triage-region-crop-rotate-crop-fill-convert"
+    assert (contract["width"], contract["height"]) == (34, 30)
+    sealed, _geometry = common_imaging.render_triage_derivative(master, page_index=0, part=part)
+    verify_triage_derivative(
+        contract,
+        master,
+        digest,
+        {"sha256": digest, "stored_at": "x", "source_frame_index": 0},
+        digest_bytes(sealed),
+    )

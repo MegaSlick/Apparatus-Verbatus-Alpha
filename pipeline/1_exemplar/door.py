@@ -84,9 +84,10 @@ from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.image_sniff import SIGNATURE_PREFIX_BYTES  # noqa: E402
 from common.imaging import (  # noqa: E402
     MAX_CROP_BYTES_PER_PIXEL,
-    TRIAGE_APPLY_RECIPE,
     crop_bytes_per_pixel,
     stored_image_mode,
+    triage_apply_recipe,
+    triage_operations,
 )
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
@@ -531,6 +532,7 @@ def decide(
         backlink = triage_manifest.derivative_page_backlink(
             source.triage_row, source.triage_part_index
         )
+        order = source.triage_row["split"]["operation_order"]
         rendered_from = {
             "container_format": "triage-split-raster",
             "container_sha256": whole_digest,
@@ -544,14 +546,9 @@ def decide(
                     "parent_frame_page_index": frame_index,
                     "triage_manifest_row": source.triage_row,
                     "triage_backlink": backlink,
-                    "operation_order": source.triage_row["split"]["operation_order"],
-                    "apply_recipe": dict(TRIAGE_APPLY_RECIPE),
-                    "operations": [
-                        {"operation": "split", "region": part["region"]},
-                        {"operation": "crop", "bounds": part["crop_box"]},
-                        {"operation": "deskew", "rotation": part["rotation"]},
-                        {"operation": "convert", "colour_mode": part["colour_mode"]},
-                    ],
+                    "operation_order": order,
+                    "apply_recipe": dict(triage_apply_recipe(order)),
+                    "operations": triage_operations(part, order),
                 },
             },
         }

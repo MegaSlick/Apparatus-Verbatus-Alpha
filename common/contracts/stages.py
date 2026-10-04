@@ -138,6 +138,9 @@ MAX_TRIAGE_SPLIT_PARTS: Final = 64
 TRIAGE_ACTOR_KINDS: Final = ("human", "model", "scantailor", "producer")
 TRIAGE_ACTOR_FIELDS: Final = frozenset({"kind", "identity", "revision"})
 TRIAGE_PART_FIELDS: Final = frozenset({"region", "crop_box", "rotation", "colour_mode"})
+# The second operation order adds a crop after rotation and the level that fills the
+# canvas beyond the scan.
+TRIAGE_PART_FIELDS_V2: Final = TRIAGE_PART_FIELDS | {"post_crop_box", "fill"}
 TRIAGE_ROW_FIELDS: Final = frozenset(
     {
         "corpus_id",

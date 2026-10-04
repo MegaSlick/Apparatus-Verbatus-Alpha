@@ -27,6 +27,7 @@ from typing import Any, Final, NamedTuple
 import pillow_heif
 from PIL import Image, UnidentifiedImageError
 
+from common.contracts.triage import SPLIT_OPERATION_ORDER, SPLIT_OPERATION_ORDER_V2
 from common.image_sniff import (
     _SIGNATURES,
     GIF_SIGNATURES,
@@ -39,6 +40,7 @@ from common.imaging import (
     imaging_library_versions,
     raster_mode_transform,
     render_triage_derivative,
+    triage_mode_transform,
 )
 
 pillow_heif.register_heif_opener()
@@ -1259,10 +1261,12 @@ def render_raster_page(
                 **raster_renderer_recipe(),
                 "source_mode": source_mode,
                 "source_bands": output_geometry["source_bands"],
-                "mode_transform": (
-                    "triage-region-crop-rotate-convert"
-                    if source_mode == encoded_mode
-                    else f"triage-region-crop-rotate-convert-to-{encoded_mode.lower()}"
+                "mode_transform": triage_mode_transform(
+                    SPLIT_OPERATION_ORDER_V2
+                    if "post_crop_box" in split_part
+                    else SPLIT_OPERATION_ORDER,
+                    source_mode,
+                    encoded_mode,
                 ),
                 "output": {"codec": "png", "color_mode": encoded_mode},
                 "container_page_index": page_index,
