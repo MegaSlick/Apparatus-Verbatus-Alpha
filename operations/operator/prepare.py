@@ -253,6 +253,8 @@ class Prepared:
         self.uncovered: list[str] = []
         self.folder_refusal: str | None = None
         self.unapproved: list[Path] = []
+        # Scans pagekit could not use: no page, no triage row; each with its reason.
+        self.skipped: list[dict[str, Any]] = list(getattr(plan, "skipped", []))
         self.pagekit_manifest: dict[str, Any] = {}
 
 
@@ -404,8 +406,11 @@ def _check_folder(prepared: Prepared, rows: set[str]) -> None:
         )
         prepared.folder_refusal = str(error) + (f" ({listed})" if named else "")
         return
+    skipped = {entry["sha256"] for entry in prepared.skipped}
     prepared.uncovered = sorted(
-        entry["relative_path"] for entry in entries if entry["sha256"] not in rows
+        entry["relative_path"]
+        for entry in entries
+        if entry["sha256"] not in rows and entry["sha256"] not in skipped
     )
 
 
@@ -463,6 +468,17 @@ def summary(prepared: Prepared) -> list[str]:
         "The scans were only read; nothing in the scans folder was changed.",
         f"Pages to review: {len(flagged)} of {len(pages)}.",
     ]
+    if prepared.skipped:
+        lines.append(
+            f"Warning: {len(prepared.skipped)} scan(s) were skipped and not prepared, so the "
+            "triage manifest has no row for them:"
+        )
+        lines += [f"  {entry['name']}: {entry['reason']}" for entry in prepared.skipped]
+        lines.append(
+            "  These scans were not prepared; remove them from the scans folder or fix them "
+            "before uploading. Upload refuses a scans folder holding a scan the triage "
+            "manifest has no row for."
+        )
     neutral = [
         step.replace("_", " ")
         for step in STEPS

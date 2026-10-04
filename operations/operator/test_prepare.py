@@ -12,6 +12,7 @@ import pytest
 from PIL import Image, ImageDraw
 
 from common.contracts import triage as triage_manifest
+from common.contracts.canonical import canonical_bytes
 from operations.operator import cli
 from operations.operator import prepare as prepare_module
 from operations.submit import submit
@@ -346,3 +347,53 @@ def test_prepare_runs_when_the_shell_keeps_the_current_folder_off_pythons_path(
 
     assert code == 0, printed
     assert (tmp_path / "out dir" / "triage-decision-manifest.json").is_file()
+
+
+def test_a_scan_pagekit_skips_is_named_and_can_never_reach_upload_unnoticed(
+    tmp_path, capsys, monkeypatch
+):
+    """One good scan and one truncated file: the good one is prepared, the truncated one
+    is named with pagekit's reason, gets no triage row, and the upload that would carry
+    it to a pod refuses before sending anything."""
+    import io as io_module
+
+    from operations.operator.local_volume import LocalFixtureObjectStore
+    from operations.operator.surface import OperatorSurface
+    from operations.submit.submit import build_manifest
+
+    monkeypatch.setenv("PYTHONSAFEPATH", "1")
+    monkeypatch.setenv("PYTHONNOUSERSITE", "1")
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    scans = tmp_path / "my scans"
+    scans.mkdir()
+    Image.new("L", (600, 800), 215).save(scans / "good.png", dpi=(300, 300))
+    whole = io_module.BytesIO()
+    Image.new("L", (600, 800), 215).save(whole, "PNG", dpi=(300, 300))
+    (scans / "broken.png").write_bytes(whole.getvalue()[: len(whole.getvalue()) // 2])
+
+    code, printed = _run(tmp_path, capsys)
+
+    assert code == 0, printed
+    assert "1 scan(s) were skipped and not prepared" in printed
+    assert "broken.png:" in printed
+    assert (
+        "These scans were not prepared; remove them from the scans folder or fix them "
+        "before uploading" in printed
+    )
+    out = tmp_path / "out dir"
+    assert len(_rows(out)) == 1
+
+    sealed = tmp_path / "sealed.json"
+    sealed.write_bytes(canonical_bytes(build_manifest(submit.walk_folder(scans))))
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+    surface = OperatorSurface(ROOT, tmp_path / "state", present=lambda _line: None)
+    with pytest.raises(cli.OperatorError) as refusal:
+        surface.upload(
+            scans,
+            sealed_manifest=sealed,
+            target=store,
+            triage_decision_manifest=out / "triage-decision-manifest.json",
+            triage_producer_recipe=out / "triage-producer-recipe.json",
+        )
+    assert "broken.png" in str(refusal.value.detail)
+    assert store.puts == []
