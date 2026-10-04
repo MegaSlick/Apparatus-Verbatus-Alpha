@@ -31,6 +31,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import struct
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -160,7 +161,9 @@ def _decode_opened(data: bytes, path: Path) -> tuple[Image.Image, int | None, bo
     Pillow turns some carriers upright by their tag as it loads them (TIFF, today) and
     drops the tag; others (PNG, JPEG) it leaves as stored. Which it does is found, not
     assumed: a tag of 2 to 8 that is gone after loading was applied; so was a tag of 5
-    to 8 when the loaded size is the transposed size the file's own header gives."""
+    to 8 when the loaded size is the transposed size the file's own header gives; and
+    for a TIFF, the loaded pixels are compared with the same file read with its tag set
+    to 1, which settles it for every tag whatever a later Pillow does."""
     try:
         with Image.open(io.BytesIO(data)) as image:
             before = _file_tag(image)
@@ -185,6 +188,12 @@ def _decode_opened(data: bytes, path: Path) -> tuple[Image.Image, int | None, bo
                     and image.size == (header[1], header[0])
                 )
             )
+            if before in _TAG_TRANSFORMS and header is not None:
+                # A TIFF: compare with the same file read with its tag set to 1, which
+                # is the stored pixels whatever the library does with tags.
+                found = _applied_by_comparison(data, image, before)
+                if found is not None:
+                    on_open = found
             if image.mode == "1":
                 decoded = image.convert("L")
             elif image.mode == "P":
@@ -209,6 +218,51 @@ def _decode_opened(data: bytes, path: Path) -> tuple[Image.Image, int | None, bo
 
 
 _TAG_TRANSFORMS = (2, 3, 4, 5, 6, 7, 8)
+
+
+def _tiff_without_tag(data: bytes) -> bytes | None:
+    """The TIFF's bytes with its orientation tag set to 1 (first directory), or None
+    when the tag cannot be found where a plain TIFF keeps it."""
+    if data[:2] == b"II":
+        order = "<"
+    elif data[:2] == b"MM":
+        order = ">"
+    else:
+        return None
+    try:
+        (offset,) = struct.unpack(order + "I", data[4:8])
+        (count,) = struct.unpack(order + "H", data[offset : offset + 2])
+        patched = bytearray(data)
+        for index in range(count):
+            at = offset + 2 + 12 * index
+            tag, kind, number = struct.unpack(order + "HHI", data[at : at + 8])
+            if tag == _ORIENTATION_TAG and kind == 3 and number == 1:
+                patched[at + 8 : at + 10] = struct.pack(order + "H", 1)
+                return bytes(patched)
+    except struct.error:
+        return None
+    return None
+
+
+def _applied_by_comparison(data: bytes, loaded: Image.Image, tag: int) -> bool | None:
+    """Whether the library applied `tag` while loading this TIFF: the loaded pixels
+    equal the stored pixels turned by the tag (True), or the stored pixels as they are
+    (False). None when that cannot be told."""
+    plain = _tiff_without_tag(data)
+    if plain is None:
+        return None
+    try:
+        with Image.open(io.BytesIO(plain)) as stored:
+            stored.load()
+            stored = stored.copy()
+    except Exception:
+        return None
+    turned = stored.transpose(TAG_TRANSPOSE[tag])
+    if loaded.size == turned.size and loaded.tobytes() == turned.tobytes():
+        return True
+    if loaded.size == stored.size and loaded.tobytes() == stored.tobytes():
+        return False
+    return None
 
 
 def _header_size(image: Image.Image) -> tuple[int, int] | None:

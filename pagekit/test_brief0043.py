@@ -316,3 +316,64 @@ def test_low_disk_space_is_warned_before_the_run(tmp_path, monkeypatch, capsys):
     main(["prepare", str(tmp_path / "src"), "--output", str(tmp_path / "out")])
     error = capsys.readouterr().err
     assert "free" in error and "may need" in error
+
+
+# --- The tag detection's version guard ----------------------------------------------------
+
+
+def _simulate(monkeypatch, behaviour: str) -> None:
+    """Make Pillow's TIFF reader behave as a later version might."""
+    from PIL import ImageOps, TiffImagePlugin
+
+    original = TiffImagePlugin.TiffImageFile.load_end
+
+    if behaviour == "applies, keeps the tag":
+
+        def load_end(self):
+            tag = self.tag_v2.get(ORIENTATION)
+            original(self)
+            if tag is not None:
+                self.tag_v2[ORIENTATION] = tag
+                self.getexif()[ORIENTATION] = tag
+
+    elif behaviour == "does not apply":
+
+        def load_end(self):
+            real = ImageOps.exif_transpose
+            monkeypatch.setattr(ImageOps, "exif_transpose", lambda image, **kw: image)
+            try:
+                original(self)
+            finally:
+                monkeypatch.setattr(ImageOps, "exif_transpose", real)
+
+    monkeypatch.setattr(TiffImagePlugin.TiffImageFile, "load_end", load_end)
+
+
+@pytest.mark.parametrize(
+    ("behaviour", "tag"),
+    [("applies, keeps the tag", tag) for tag in range(2, 9)]
+    + [("does not apply", tag) for tag in (2, 3, 4)],
+)
+def test_one_application_whatever_pillow_does_with_a_tiff_tag(
+    tmp_path, monkeypatch, behaviour, tag
+):
+    from pagekit.geometry import TAG_TRANSPOSE
+
+    upright = pages.page(size=(300, 420), seed=47, margin=(30, 40, 30, 40))
+    undo = {2: 2, 3: 3, 4: 4, 5: 5, 6: 8, 7: 7, 8: 6}[tag]
+    stored = upright.transpose(TAG_TRANSPOSE[undo])
+    folder = tmp_path / "src"
+    folder.mkdir()
+    stored.save(folder / "page.tif", "TIFF", dpi=DPI, tiffinfo={ORIENTATION: tag})
+    _simulate(monkeypatch, behaviour)
+    manifest = execute(plan([folder], tmp_path / "out"))
+    (page,) = manifest["pages"]
+    expected = "image library on open" if behaviour.startswith("applies") else "chain"
+    assert page["orientation_tag"]["applied_by"] == expected
+    reference = tmp_path / "ref"
+    reference.mkdir()
+    upright.save(reference / "page.png", dpi=DPI)
+    plain = execute(plan([reference], tmp_path / "ref-out"))
+    assert _pixels(tmp_path / "out" / page["output"]["name"]) == _pixels(
+        tmp_path / "ref-out" / plain["pages"][0]["output"]["name"]
+    )
