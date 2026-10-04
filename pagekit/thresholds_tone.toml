@@ -1,0 +1,68 @@
+# Settings of the grey tone view (spec 0006). Every value is a starting guess, none has
+# been calibrated on real pages, so each carries status = "UNMEASURED" and the record
+# says settings_measured = false until every one is measured and changed to "MEASURED".
+
+[grey_rule]
+value = "luminance"
+status = "UNMEASURED"
+meaning = "How a colour source becomes grey: luminance, min (the darkest of the three channels), or the red, green or blue channel alone. A grey source is used as it is."
+
+[paper_level]
+value = 235
+status = "UNMEASURED"
+meaning = "Grey level the flattened paper is brought to: just below white, never 255."
+
+[work_long_side_px]
+value = 750
+status = "UNMEASURED"
+meaning = "Long side, in pixels, of the reduced copy on which the paper background is estimated."
+
+[background_window_px]
+value = 81
+status = "UNMEASURED"
+meaning = "Side, in source pixels, of the square closing window that removes strokes from the background estimate; much larger than any stroke, smaller than the lighting's changes. Half of it is also how far bright paper can leak into a dark stain at a sharp edge."
+
+[min_background_share]
+value = 0.5
+status = "UNMEASURED"
+meaning = "The background estimate is never taken darker than this share of the page's paper level, so a solid dark area wider than the window (a blot, a seal) is not lifted to paper."
+
+[background_blur_px]
+value = 12
+status = "UNMEASURED"
+meaning = "Radius, in source pixels, of the box blur that smooths the background estimate; also the widest halo a sharp stain edge can leave."
+
+[min_paper_share]
+value = 0.25
+status = "UNMEASURED"
+meaning = "Share of the reduced page that must be paper (above the ink threshold) for the background estimate to be trusted; below it flattening is skipped and the record says so."
+
+[min_ink_contrast]
+value = 48
+status = "UNMEASURED"
+meaning = "Grey levels between the dark and light classes below which the page is treated as carrying no ink, so every pixel counts as paper."
+
+[lift_strength]
+value = 0.2
+status = "UNMEASURED"
+meaning = "Strength of the faint-ink lift, 0 (no lift) to 0.4; the tone curve's slope at the paper level is 1 + strength * lift_shape, and at black 1 - strength."
+
+[lift_shape]
+value = 3
+status = "UNMEASURED"
+meaning = "Shape of the lift curve, 1 to 8: higher puts the darkening nearer the paper level and leaves dark ink more alone."
+
+[sharpen]
+value = 0
+status = "UNMEASURED"
+meaning = "1 applies a mild unsharp mask after the lift; 0 (the default) does not."
+
+[sharpen_radius_px]
+value = 1.0
+status = "UNMEASURED"
+meaning = "Radius of the unsharp mask in pixels; must stay below the stroke width."
+
+[sharpen_percent]
+value = 30
+status = "UNMEASURED"
+meaning = "Amount of the unsharp mask in percent; small."

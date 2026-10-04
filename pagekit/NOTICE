@@ -11,3 +11,16 @@ The ink threshold follows N. Otsu, "A Threshold Selection Method from Gray-Level
 Histograms", IEEE Transactions on Systems, Man, and Cybernetics, SMC-9(1):62-66, 1979.
 
 Built on Pillow (MIT-CMU licence): https://python-pillow.org
+
+The grey tone view (pagekit/tone.py) follows published methods:
+
+  Flat-field correction by background estimation and division: B. Gatos,
+  I. Pratikakis and S. J. Perantonis, "Adaptive degraded document image
+  binarization", Pattern Recognition 39(3), 2006; S. Lu, B. Su and C. L. Tan,
+  "Document image binarization using background estimation and stroke edges",
+  International Journal on Document Analysis and Recognition 13(4), 2010.
+  Grey-scale closing as the local background estimator: J. Serra, "Image Analysis
+  and Mathematical Morphology", Academic Press, 1982.
+  The paper-share guard uses Otsu's threshold (above).
+  The choice of a gentle view, without binarisation, denoising or local histogram
+  equalisation: Farazi et al., 2026, arXiv:2608.22366.
