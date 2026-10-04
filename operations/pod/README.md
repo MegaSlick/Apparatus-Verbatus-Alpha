@@ -408,7 +408,8 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   states them rather than an instant), the finish
   and deadline with how far off they are, the extra time and its cost at the hourly price
   (`--hourly-usd`, or a pod-timer launch's `VERBATUS_POD_HOURLY_USD` plus
-  `VERBATUS_VOLUME_ONGOING_HOURLY_USD`; "unknown" without either), and, for a guard
+  `VERBATUS_VOLUME_ONGOING_HOURLY_USD`, the launch-time estimate before create, which the
+  notice names as such; "unknown" without either), and, for a guard
   deadline, one command that moves it to the projected end. Under the pod timer it says
   the deadline cannot be extended by hand. It is sent once for each deadline value; a new
   value the lead writes re-arms it. A send that did not arrive (or found no guard topic

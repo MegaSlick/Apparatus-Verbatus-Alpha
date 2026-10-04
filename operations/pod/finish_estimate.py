@@ -343,16 +343,29 @@ def sealed_budget(environment: Mapping[str, str | None]) -> tuple[Budget | None,
     missing = [POD_BUDGET_ENVIRONMENT[field] for field, value in values.items() if value is None]
     if missing:
         return None, f"{' and '.join(missing)} missing"
-    try:
-        parsed = {field: _positive(field, value or "") for field, value in values.items()}
-    except ValueError:
-        return None, f"unusable {', '.join(POD_BUDGET_ENVIRONMENT.values())}"
+    parsed: dict[str, int | Decimal] = {}
+    for field, value in values.items():
+        try:
+            parsed[field] = _positive(field, value or "")
+        except ValueError:
+            return None, f"unusable {POD_BUDGET_ENVIRONMENT[field]}"
+    for soft, hard in (
+        ("soft_max_seconds", "hard_max_seconds"),
+        ("soft_max_cost_usd", "hard_max_cost_usd"),
+    ):
+        if parsed[soft] > parsed[hard]:
+            return None, (
+                f"unusable {POD_BUDGET_ENVIRONMENT[soft]} above {POD_BUDGET_ENVIRONMENT[hard]}"
+            )
     return Budget(**parsed), None  # type: ignore[arg-type]
 
 
 def _positive(field: str, text: str) -> int | Decimal:
-    """A positive whole number of seconds, or a positive finite dollar amount."""
+    """A positive whole number of seconds, or a positive finite dollar amount, written
+    plainly: no surrounding space and no digit separators."""
 
+    if text != text.strip() or "_" in text:
+        raise ValueError(text)
     if field.endswith("_seconds"):
         if not (text.isascii() and text.isdigit()) or int(text) <= 0:
             raise ValueError(text)
@@ -496,6 +509,7 @@ def deadline_at_risk_message(
     hourly_usd: Decimal | None,
     now: datetime,
     budget_source: str | None = None,
+    hourly_source: str | None = None,
 ) -> str:
     """One line for the phone: what is at risk, what it would cost, and how to extend."""
 
@@ -507,6 +521,7 @@ def deadline_at_risk_message(
         "cost unknown (no --hourly-usd)"
         if hourly_usd is None
         else f"about ${_cents(_cost(extra, hourly_usd))} more at ${hourly_usd}/h"
+        + ("" if hourly_source is None else f" ({hourly_source})")
     )
     # The pod's creation time is not known here, so the hard maximum is stated, not
     # turned into an instant; the lead judges the extension against it.
@@ -666,6 +681,7 @@ class DeadlineWatch:
             hourly_usd=self._hourly_usd,
             now=now,
             budget_source=self._budget_source,
+            hourly_source=self._hourly_source,
         )
         if self._send is None:
             outcome = NotifyOutcome(False, False, "no --notify")
