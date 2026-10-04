@@ -6,7 +6,7 @@ when nothing is flagged, 1 when the page should go to review, 2 when the inputs 
 be checked.
 
 prepare: `[SOURCE ...] --output DIR [--project FILE] [--overrides FILE]
-[--report-stale] [--format tiff|png] [--max-dpi N] [--tone-view]`. Runs every detector
+[--report-stale] [--format tiff|png] [--max-dpi N] [--dpi N] [--tone-view]`. Runs every detector
 in order and writes the pages, the manifest, the project file and `review.html`. Exit
 status 0 when no page is flagged, 1 when any page needs review (with --report-stale:
 when any step is stale), 2 when the input cannot be used, and then nothing is written.
@@ -69,6 +69,12 @@ def _parser() -> argparse.ArgumentParser:
         help="shrink pages above this resolution to it (default: keep the source resolution)",
     )
     preparer.add_argument(
+        "--dpi",
+        type=float,
+        help="the resolution, in dots per inch, of sources that carry none "
+        "(kept in the project as an override)",
+    )
+    preparer.add_argument(
         "--tone-view",
         action="store_true",
         help="also write the grey tone view of each page beside it (needs pagekit/tone.py)",
@@ -115,6 +121,7 @@ def _prepare(arguments: argparse.Namespace) -> int:
             settings_overrides=settings,
             dry=arguments.report_stale,
             tone_view=arguments.tone_view,
+            source_dpi=arguments.dpi,
         )
         if arguments.report_stale:
             for item in prepared.stale:

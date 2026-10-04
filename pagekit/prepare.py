@@ -332,6 +332,7 @@ class _Runner:
         self.dry = dry
         self.image_loader = image_loader
         self.cache: dict[Any, Any] = {}
+        self.source_dpi: float | None = None  # --dpi, for sources that carry none
         self.stale: list[dict[str, Any]] = []
         # {(source relative path, step, page): sentence} for hand-set values a confident
         # detection disagrees with.
@@ -497,10 +498,14 @@ def _without_flags(entry: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in entry.items() if key != "flags"}
 
 
-def _resolution(source: Source, old: dict | None, override: Override | None, values):
-    """The stored resolution, the resolution the millimetre settings use, and flags."""
+def _resolution(source: Source, old: dict | None, override: Override | None, values, given=None):
+    """The stored resolution, the resolution the millimetre settings use, and flags.
+
+    `given` is the resolution `--dpi` gives to a source that carries none."""
     if override is not None:
         stored = {"value": override.value, "origin": "override"}
+    elif source.file_dpi is None and given is not None:
+        stored = {"value": [float(given), float(given)], "origin": "override"}
     elif old is not None and old["resolution"]["origin"] == "override":
         stored = {"value": old["resolution"]["value"], "origin": "override"}
     elif source.file_dpi is not None:
@@ -514,7 +519,9 @@ def _resolution(source: Source, old: dict | None, override: Override | None, val
     if stored["origin"] == "missing":
         flags.append(
             "The source carries no resolution and the project has no override for it, so "
-            "the millimetre settings (overlap, margin, allowance) were applied as 0 px."
+            "the millimetre settings (overlap, margin, allowance) were applied as 0 px. "
+            "Give the scan's resolution with --dpi (for example --dpi 300), or with a "
+            "resolution line in the overrides file."
         )
     elif stored["origin"] == "file" and not all(low <= v <= high for v in stored["value"]):
         flags.append(
@@ -546,7 +553,9 @@ def _check_split(source: Source, split_record, turns: int) -> None:
 def _run_source(source, old, overrides, runner: _Runner, base, extension, output_dir):
     values = runner.values
     resolution_override = overrides.get(("resolution", None))
-    stored, usable, source_flags = _resolution(source, old, resolution_override, values)
+    stored, usable, source_flags = _resolution(
+        source, old, resolution_override, values, runner.source_dpi
+    )
     if runner.dry and old is not None and old["resolution"] != stored:
         runner._note(source, "resolution", None, "the resolution changes")
     old_steps = old["steps"] if old else {}
@@ -733,6 +742,7 @@ def plan(
     settings_overrides: dict[str, Any] | None = None,
     dry: bool = False,
     tone_view: bool = False,
+    source_dpi: float | None = None,
 ) -> Plan:
     """Read every source, settle every step value and plan every output, writing nothing.
 
@@ -741,6 +751,8 @@ def plan(
     the plan holds only the list of stale steps and why. Once every page has its values,
     the volume-wide checks (pagekit.volume) compare each page with the rest of the batch.
     With `tone_view`, the grey tone view of spec 0006 is written beside each page.
+    `source_dpi` is the resolution given to every source that carries none, stored as
+    an override.
     """
     if tone_view and not dry:
         from pagekit.pipeline import tone_view_available
@@ -817,6 +829,14 @@ def plan(
     extension = "png" if values["output_format"] == "png" else "tif"
     bases = _output_names(sources, extension)
     runner = _Runner(settings, detectors, {}, dry, None)
+    if source_dpi is not None:
+        low, high = values["min_plausible_dpi"], values["max_plausible_dpi"]
+        if not low <= source_dpi <= high:
+            raise PrepareError(
+                f"--dpi {source_dpi:g} is not a plausible scan resolution "
+                f"({low:g} to {high:g} dots per inch)"
+            )
+        runner.source_dpi = float(source_dpi)
     entries, pages = [], []
     for source in sources:
         cache: dict[str, Image.Image] = {}

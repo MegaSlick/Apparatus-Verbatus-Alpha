@@ -101,7 +101,8 @@ complete. Sources are a folder (its `.png`, `.tif`, `.tiff`, `.jpg` and `.jpeg` 
 or a list of files; they are only read. Nothing is ever written inside a source folder.
 
 Options: `--project FILE` and `--overrides FILE` (below), `--report-stale`,
-`--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, and
+`--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, `--dpi N`
+for sources that carry no resolution (see Resolution), and
 `--tone-view` (below). Exit status is 0 when no page is flagged, 1 when any page needs
 review and 2 when the input cannot be used (and then nothing is written).
 
@@ -230,7 +231,11 @@ given to the run is refused; with no sources given, the project's own are used.
 
 Millimetre settings (overlap, margin, allowance) need the scan resolution. A resolution
 missing from the file, or outside the plausible range, with no override in the project
-is a flag, never a silent default: those settings are then applied as 0 px. Unequal
+is a flag, never a silent default: those settings are then applied as 0 px, and the
+flag says how to give it. `--dpi 300` gives every source that carries no resolution
+300 dots per inch; it is stored in the project with origin `override`, so later runs
+keep it, and a source's own resolution is never replaced by it. A value outside the
+plausible range is refused. A resolution line in the overrides file sets one source. Unequal
 axes are flagged and converted per axis; the page is not resampled to equal axes.
 
 ### Geometry and output

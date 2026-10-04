@@ -551,3 +551,45 @@ def test_each_manifest_entry_carries_the_sha256_of_its_decoded_pixels(tmp_path, 
                 assert image.mode == page["output"]["mode"]
                 if page["source"]["name"] == "n.png":  # no resolution: none written
                     assert "dpi" not in image.info
+
+
+def test_dpi_gives_a_resolution_to_sources_that_carry_none(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    folder = tmp_path / "src"
+    folder.mkdir()
+    Image.new("L", (600, 800), 220).save(folder / "none.png")
+    Image.new("L", (600, 800), 220).save(folder / "own.png", dpi=(200, 200))
+    out = tmp_path / "out"
+
+    def resolution_of(name: str) -> tuple[dict, list[str], dict]:
+        manifest = json.loads((out / MANIFEST_NAME).read_text())
+        (page,) = [p for p in manifest["pages"] if p["source"]["name"] == name]
+        flags = [flag["reason"] for flag in page["flags"] if flag["step"] == "resolution"]
+        return page["source_resolution"], flags, page
+
+    # Without it the flag says how to give one.
+    assert main(["prepare", str(folder), "--output", str(out)]) == 1
+    stored, flags, page = resolution_of("none.png")
+    assert stored["origin"] == "missing"
+    (reason,) = flags
+    assert "--dpi" in reason and "resolution" in reason
+    assert page["geometry"]["steps"][3]["size_after"] == [600, 800]  # margins were 0 px
+
+    assert main(["prepare", str(folder), "--output", str(out), "--dpi", "300"]) == 1
+    stored, flags, page = resolution_of("none.png")
+    assert stored == {"value": [300.0, 300.0], "origin": "override", "file_value": None}
+    assert flags == []
+    assert page["output"]["resolution"] == [300.0, 300.0]
+    with Image.open(out / page["output"]["name"]) as image:
+        assert image.info["dpi"] == (300.0, 300.0)
+    # The file's own resolution is kept; --dpi is only for sources with none.
+    stored, _, _ = resolution_of("own.png")
+    assert stored == {"value": [200.0, 200.0], "origin": "file", "file_value": [200.0, 200.0]}
+    # It is kept in the project like any override, so a later run keeps it.
+    assert main(["prepare", str(folder), "--output", str(out)]) == 1
+    assert resolution_of("none.png")[0]["origin"] == "override"
+    # A value that cannot be a scan resolution is refused, and nothing changes.
+    before = {path.name: path.read_bytes() for path in out.iterdir()}
+    assert main(["prepare", str(folder), "--output", str(out), "--dpi", "5"]) == 2
+    assert "--dpi" in capsys.readouterr().err
+    assert {path.name: path.read_bytes() for path in out.iterdir()} == before
