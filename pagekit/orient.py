@@ -70,6 +70,10 @@ UNCERTAIN_DIRECTION = (
     "orientation uncertain: whether the lines run across or down is too close to call"
 )
 UNCERTAIN_UPDOWN = "orientation uncertain: whether the page is upright or upside down is too weak"
+UNCERTAIN_CORE_BAND = (
+    "orientation uncertain: whether the page is upright or upside down depends on where "
+    "each line's core band is taken"
+)
 # An uncertain step has confidence below 0.5; scaled by this, an uncertain answer
 # reports below 0.2, because its 0 turns is a default, not a finding.
 UNCERTAIN_SCALE = 0.4
@@ -164,17 +168,49 @@ def _mad(values: list[int]) -> float:
     return median(abs(v - centre) for v in values)
 
 
-def _strip_votes(ink: Image.Image, value: dict[str, Any]) -> list[tuple[float, float]]:
-    """For each vertical strip holding writing: the ascender-against-descender balance
-    and the baseline-against-x-line sharpness of its lines, each from -1 to 1, positive
-    when upright. A strip is narrow enough that a slight lean or lines out of step
-    between facing pages do not blur its lines, and its core bands are found as the
-    rows at or above core_share of its busy level, so lines whose ascenders and
-    descenders touch still separate."""
+def _line_segments(rows: list[int], busy: float, value: dict[str, Any]) -> list[tuple[int, int]]:
+    """The lines of a strip: runs of rows above a low floor, split at any inner minimum
+    that falls below line_split_share of the lower of the peaks on its two sides (so
+    lines whose ascenders and descenders touch still separate)."""
+    floor = value["strip_line_floor_share"] * busy
+    split = value["line_split_share"]
+    found = []
+    stack = [(a, b) for a, b in runs_of([level > floor for level in rows]) if b - a >= 3]
+    while stack:
+        a, b = stack.pop()
+        segment = rows[a:b]
+        cut = None
+        for i in range(2, len(segment) - 2):
+            if segment[i] <= segment[i - 1] and segment[i] <= segment[i + 1]:
+                lower_peak = min(max(segment[:i]), max(segment[i + 1 :]))
+                if segment[i] < split * lower_peak and (cut is None or segment[i] < segment[cut]):
+                    cut = i
+        if cut is None:
+            found.append((a, b))
+        else:
+            stack += [(a, a + cut), (a + cut, b)]
+    return sorted(found)
+
+
+def _strip_votes(
+    ink: Image.Image,
+    size: int,
+    share: float,
+    value: dict[str, Any],
+    cores: list[int] | None = None,
+) -> list[tuple[float, float]]:
+    """For each vertical strip of `size` px holding writing: the ascender-against-
+    descender balance and the baseline-against-x-line sharpness of its lines, each from
+    -1 to 1, positive when upright. Each line's core band is found from that line's own
+    profile: its rows from the first to the last at or above `share` of the line's
+    busiest row. The strips are laid out centred on the frame, so a half turn of the
+    frame gives the same strips."""
     width, height = ink.size
-    size = value["orient_strip_px"]
+    count = width // size
+    offset = (width - count * size) // 2
     out = []
-    for x in range(0, width - size + 1, size):
+    for i in range(count):
+        x = offset + i * size
         strip = ink.crop((x, 0, x + size, height))
         if strip.histogram()[255] / (size * height) < value["strip_min_ink"]:
             continue
@@ -182,28 +218,46 @@ def _strip_votes(ink: Image.Image, value: dict[str, Any]) -> list[tuple[float, f
         busy = sorted(rows)[int(0.9 * (len(rows) - 1))]
         if busy <= 0:
             continue
-        cores = [
-            (a, b)
-            for a, b in runs_of([level >= value["core_share"] * busy for level in rows])
-            if b - a >= 2
-        ]
-        if len(cores) < 2:
+        lines = _line_segments(rows, busy, value)
+        if len(lines) < 2:
             continue
+        bands = []
+        for a, b in lines:
+            segment = rows[a:b]
+            floor = share * max(segment)
+            busy_rows = [j for j, level in enumerate(segment) if level >= floor]
+            bands.append((a + busy_rows[0], a + busy_rows[-1] + 1))
         above = below = rise = fall = 0.0
-        for index, (low, high) in enumerate(cores):
+        for index, (low, high) in enumerate(bands):
+            if cores is not None:
+                cores.append(high - low)
+            # Ascender and descender zones reach halfway to the neighbouring lines'
+            # core bands (sparse ascender rows fall below the line floor), and at the
+            # first and last line one and a half core heights.
             reach = round(1.5 * (high - low)) + 1
-            upper = low - reach if index == 0 else (cores[index - 1][1] + low + 1) // 2
-            lower = high + reach if index + 1 == len(cores) else (high + cores[index + 1][0]) // 2
+            upper = low - reach if index == 0 else (bands[index - 1][1] + low + 1) // 2
+            lower = high + reach if index + 1 == len(bands) else (high + bands[index + 1][0]) // 2
             upper, lower = max(0, upper), min(height, lower)
             above += sum(rows[upper:low])
             below += sum(rows[high:lower])
-            rise += max(rows[i] - rows[i - 1] for i in range(max(1, low - 2), min(height, low + 3)))
+            rise += max(rows[j] - rows[j - 1] for j in range(max(1, low - 2), min(height, low + 3)))
             fall += max(
-                rows[i - 1] - rows[i] for i in range(max(1, high - 2), min(height, high + 3))
+                rows[j - 1] - rows[j] for j in range(max(1, high - 2), min(height, high + 3))
             )
         if above + below and rise + fall:
             out.append(((above - below) / (above + below), (fall - rise) / (fall + rise)))
     return out
+
+
+def _consistency(votes: list[tuple[float, float]], value: dict[str, Any]) -> float:
+    """Mean of the strips' combined votes over its standard error; 0 with too few."""
+    if len(votes) < value["min_strips"]:
+        return 0.0
+    weight = value["ascender_weight"]
+    combined = [weight * a + (1 - weight) * b for a, b in votes]
+    mean = sum(combined) / len(combined)
+    spread = max(value["strip_vote_sd_floor"], pstdev(combined))
+    return mean / (spread / math.sqrt(len(combined)))
 
 
 def _ragged(ink: Image.Image, value: dict[str, Any]) -> tuple[float, int]:
@@ -239,30 +293,52 @@ def _ragged(ink: Image.Image, value: dict[str, Any]) -> tuple[float, int]:
 def _updown(ink: Image.Image, value: dict[str, Any]) -> dict[str, Any]:
     """Positive score: upright. Negative: upside down. `ink` has its lines across.
 
-    Each strip votes with its two line cues; the strip votes are combined by how
-    consistently they agree (their mean over its standard error), so a small but
-    steady asymmetry over many strips counts and a large but erratic one does not.
-    The ragged-edge cue adds its weight when enough lines are found."""
-    votes = _strip_votes(ink, value)
-    weight = value["ascender_weight"]
-    ascender = baseline = consistency = 0.0
-    if len(votes) >= value["min_strips"]:
-        ascender = sum(a for a, _ in votes) / len(votes)
-        baseline = sum(b for _, b in votes) / len(votes)
-        combined = [weight * a + (1 - weight) * b for a, b in votes]
-        mean = sum(combined) / len(combined)
-        spread = max(value["strip_vote_sd_floor"], pstdev(combined))
-        consistency = mean / (spread / math.sqrt(len(combined)))
-    ragged, lines = _ragged(ink, value)
-    score = consistency + value["ragged_score_weight"] * ragged
+    Each strip votes with its two line cues, and the votes are combined by how
+    consistently they agree (mean over standard error). That measures agreement, not
+    correctness: a core band misplaced the same way on every line would read as
+    confidence. So the score is estimated several times, with the line core taken at
+    three shares of each line's busiest row and at two strip widths, and every
+    estimate is made antisymmetric by scoring the frame and its half turn and taking
+    half the difference. The score is the median estimate; when an estimate of the
+    opposite sign reaches updown_guard_score, the cues depend on where the core band is
+    put, and the answer is uncertain."""
+    flipped = ink.transpose(Image.Transpose.ROTATE_180)
+    shares = (value["core_share_low"], value["core_share"], value["core_share_high"])
+    sizes = (value["orient_strip_px"], value["orient_strip_px_wide"])
+    estimates = []
+    for size in sizes:
+        for share in shares:
+            forward = _consistency(_strip_votes(ink, size, share, value), value)
+            backward = _consistency(_strip_votes(flipped, size, share, value), value)
+            estimates.append((forward - backward) / 2)
+    ragged_forward, lines = _ragged(ink, value)
+    ragged_backward, _ = _ragged(flipped, value)
+    ragged = (ragged_forward - ragged_backward) / 2
+    estimates = [e + value["ragged_score_weight"] * ragged for e in estimates]
+    middle = median(estimates)
+    disagreeing = [e for e in estimates if e * middle < 0 and abs(e) >= value["updown_guard_score"]]
+    core_heights: list[int] = []
+    votes = _strip_votes(ink, sizes[0], shares[1], value, core_heights)
+    back_votes = _strip_votes(flipped, sizes[0], shares[1], value)
+
+    def mean_cue(index: int) -> float:
+        forward = sum(v[index] for v in votes) / len(votes) if votes else 0.0
+        backward = sum(v[index] for v in back_votes) / len(back_votes) if back_votes else 0.0
+        return (forward - backward) / 2
+
+    score = middle
     return {
         "score": score,
-        "consistency": consistency,
+        "consistency": middle - value["ragged_score_weight"] * ragged,
+        "low": min(estimates),
+        "high": max(estimates),
+        "disagree": bool(disagreeing),
         "strips": len(votes),
-        "ascender": ascender,
-        "baseline": baseline,
+        "ascender": mean_cue(0),
+        "baseline": mean_cue(1),
         "ragged": ragged,
         "lines": lines,
+        "core_px": median(core_heights) if core_heights else 0,
     }
 
 
@@ -339,9 +415,11 @@ def detect_orientation(
     updown_confidence = strength(abs(vote), value["updown_min_score"])
     confidence = min(across_confidence, updown_confidence)
     cues = (
-        f"up-down score {vote:+.2f} from {updown['strips']} strips agreeing at "
-        f"{updown['consistency']:+.2f} standard errors (ascenders against descenders "
-        f"{updown['ascender']:+.2f}, baseline against x-line {updown['baseline']:+.2f}) "
+        f"up-down score {vote:+.2f}: strips agreeing at a median of "
+        f"{updown['consistency']:+.2f} standard errors over {updown['strips']} strips "
+        f"(from {updown['low']:+.2f} to {updown['high']:+.2f} as the line core band and "
+        f"strip width vary; ascenders against descenders {updown['ascender']:+.2f}, "
+        f"baseline against x-line {updown['baseline']:+.2f}) "
         f"and ragged right edge {updown['ragged']:+.2f} over {updown['lines']} lines"
         + ("" if value["ragged_score_weight"] else " (not counted, weight 0)")
     )
@@ -352,6 +430,15 @@ def detect_orientation(
             f"Lines run {lines} the frame ({profiles}), but the {cues} is too weak to tell "
             f"upright from upside down; {DEFAULT_NOTE}.",
             [UNCERTAIN_UPDOWN],
+        )
+    if updown["disagree"]:
+        return answer(
+            0,
+            UNCERTAIN_SCALE * min(confidence, 0.49),
+            f"Lines run {lines} the frame ({profiles}), but the {cues} changes sign with "
+            f"where the core band is put, so it cannot tell upright from upside down; "
+            f"{DEFAULT_NOTE}.",
+            [UNCERTAIN_CORE_BAND],
         )
     turns = base if vote > 0 else (base + 2) % 4
     verdict = {

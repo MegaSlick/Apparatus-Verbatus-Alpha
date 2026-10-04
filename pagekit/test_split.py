@@ -456,3 +456,31 @@ def test_backdrop_notch_at_the_top_of_the_gutter_is_not_writing_across_the_cut()
     _two_pages(result, "fold")
     assert result["flags"] == []
     assert "joined to a dark band" in result["evidence"]
+
+
+def _band_and_flourish(gap: int, bottom: bool = False) -> Image.Image:
+    """A fold at x=1000, a dark backdrop band at the top (or bottom), and a 5 px pen
+    stroke from the left page across the fold, reaching up to (or `gap` px short of)
+    the band."""
+    image = _fold(spread(), 1000)
+    draw = ImageDraw.Draw(image)
+    if bottom:
+        draw.rectangle((0, 1340, 1999, 1399), fill=30)
+        edge, sign = 1339 - gap, -1
+    else:
+        draw.rectangle((0, 0, 1999, 59), fill=30)
+        edge, sign = 60 + gap, 1
+    points = [(880, edge + sign * 60), (950, edge + sign * 20), (1000, edge)]
+    points += [(1060, edge + sign * 15), (1160, edge + sign * 55)]
+    draw.line(points, fill=40, width=5, joint="curve")
+    return image
+
+
+@pytest.mark.parametrize(
+    ("gap", "bottom"), [(0, False), (3, False), (0, True)], ids=["touching", "3px", "bottom"]
+)
+def test_pen_stroke_touching_the_backdrop_band_still_counts_as_writing_across_the_cut(gap, bottom):
+    result = _check(_band_and_flourish(gap, bottom))
+    _two_pages(result, "fold")
+    assert len(result["flags"]) == 1
+    assert "more than the 5 mm overlap" in result["flags"][0]
