@@ -344,23 +344,32 @@ each time; reading them over S3 from `watch` itself is the next step.
 
 It shows, in a few short lines:
 
-- **STALE** first, loudly, when the run is still going and the newest pod record
-  (`liveness.last_seen`, `estimate.updated_at`) is older than `--stale-minutes` (default 2)
-  by this computer's clock. The progress lines are then labelled with the time they were
-  true. An ended run is never called stale.
-- The report's state (and exit code once it ended), the stage and pages done of total, and
-  "this stage finishes about …" — the current stage only; later stages are not counted.
-  With no estimate it says `unknown` and why.
-- The deadline and the time left, with its source and `AT RISK` when the estimate passes it.
+- **STALE** first, loudly, while the run is still going: the liveness copy and the
+  estimate copy are each judged on their own time (`last_seen`, `updated_at`) against
+  `--stale-minutes` (default 2) by this computer's clock. A stale estimate's stage, finish
+  and deadline lines say the time they were true. An ended run is never called stale.
+- The report's state (and exit code, hold and detail once it ended), the stage and pages
+  done of total, and "this stage finishes about …" — the current stage only; later stages
+  are not counted. With no estimate it says `unknown` and why: a failing estimate says
+  "the estimate is failing" with its last error, and a failed estimate write is counted.
+  An ended run shows no stage estimate.
+- **An ended run whose pod is kept up** (`held_to_hard_deadline`) says the pod is still
+  billing until the hard deadline, and counts spend to now.
+- The deadline and the time left, with its source, whether it can be extended by hand,
+  and `AT RISK` when the estimate passes it. With no deadline in the estimate it shows the
+  bootstrap's hard deadline from the report and says why. It cannot tell whether the guard
+  is armed, and says so; deadline-file values the pod ignored are listed.
 - The soft and hard maximums, from the estimate file (the budget the pod read).
-- Spend: with `--lease`, the pod and volume rate from the verified lease since the pod was
-  created; without it, `at least` pod_run's `--hourly-usd` since pod_run started. A lease
-  whose seal does not verify is named and not used.
+- Spend, set against the soft and hard maximums: with `--lease`, the pod and volume rate
+  from the verified lease since the pod was created; without it, `at least` pod_run's
+  `--hourly-usd` since pod_run started. A lease whose seal does not verify is named and
+  not used.
 - The last notice `pod_run` recorded, and whether it was delivered; each finished stage
-  invocation's duration; the liveness age.
+  invocation's duration, with unreadable timings lines counted; the liveness age.
 
 Without `--interval` it shows once. With `--interval N` it reads again every N seconds,
-prints only when a copy changed or turned stale, and stops when the report says the run
+prints only when a copy changed or turned stale, reads once more after a pause when a
+copy did not parse (it may have been caught mid-copy), and stops when the report says the run
 ended or after `--timeout`. Ctrl+C stops it. A missing or another run's report is refused
 (`watch-unreadable`); a missing or unreadable sibling is named as a note.
 
