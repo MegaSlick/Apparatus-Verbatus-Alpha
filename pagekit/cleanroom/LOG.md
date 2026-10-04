@@ -533,3 +533,7 @@ record".
   bd3e1c50d4f2819416114fdebe2da7d245b3d9485f5f30c6a1589476880d56c2).
 - **Outcome:** recorded in a later entry once the host has run the report check on each
   report.
+- **Brief 0032 done:** commit 54b960e on `work/pk-integrate`. Leak scan no hits. Merged
+  into `work/pagekit-prepare`; the suite passes under the check script's settings. The
+  host corrected spec 0002's wording: a missing output folder is created as before; only
+  one that cannot be created or written stops the run.

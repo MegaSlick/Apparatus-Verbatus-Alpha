@@ -154,8 +154,8 @@ mode or depth pagekit does not support) is skipped, not fatal: the other sources
 prepared as usual, and the skipped file is named with a plain reason in the manifest, at
 the top of the review sheet and in the command's output. It produces no page and no
 project entry, so a later run tries it again. Exit status 2 is kept for problems that
-stop the whole run: no usable source at all, a missing or unwritable output folder, an
-output folder inside the source folder, an unreadable project or overrides file, or an
+stop the whole run: no usable source at all, an output folder that cannot be created or written,
+an output folder inside the source folder, an unreadable project or overrides file, or an
 invalid option.
 
 ## Settings
@@ -191,8 +191,8 @@ slice can call each detector in step order, store its answer, and run the chain.
 - A blank page is written as an image of the paper.
 - An unusable source file among usable ones is skipped, named with its reason in the
   manifest, the review sheet and the output, and gives exit status 1; the usable sources
-  are prepared. A run with no usable source, or with an unusable output folder, project
-  or overrides file, is exit status 2 and writes nothing. A source image is never
+  are prepared. A run with no usable source, or with an output folder that cannot be created or
+  written, or an unreadable project or overrides file, is exit status 2 and writes nothing. A source image is never
   changed.
 
 ## Not in this slice
