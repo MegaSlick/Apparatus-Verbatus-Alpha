@@ -101,6 +101,7 @@ from common.correction import (
 from common.imaging import dimensions
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
 from common.review_policy import parse_share
+from common.runtree import store as runtree_store
 
 _atomic_replace = os.replace
 _unlink_at = os.unlink
@@ -588,6 +589,7 @@ def build_armarium_bundle(
     )
     archive_members = {EXPORT_MANIFEST_NAME: canonical_bytes(manifest), **members}
     data = _zip_bytes(archive_members)
+    _require_archive_within_limit(len(data), formats)
     # A package that does not survive a clean extraction must fail before it
     # becomes a run-tree blob.
     with tempfile.TemporaryDirectory(prefix="armarium-verify-") as directory:
@@ -4613,6 +4615,22 @@ def _export_manifest(
     }
     manifest["self_hash"] = self_hash(manifest)
     return manifest
+
+
+def _require_archive_within_limit(size: int, formats: ArmariumFormats) -> None:
+    """Refuse an archive no later reader of the run tree would accept, before it is stored."""
+    limit = runtree_store.MAX_EXPORT_ARCHIVE_BYTES
+    if size > limit:
+        remedy = (
+            "it embeds every page and crop (embed_pixels = true); split the submission "
+            "into smaller runs, or export with embed_pixels = false"
+            if formats.embed_pixels
+            else "it embeds no pixels; split the submission into smaller runs"
+        )
+        raise SchemaRefusal(
+            f"the export archive is {size} bytes, above the {limit}-byte export archive "
+            f"limit, so nothing was stored or published and nothing was dropped: {remedy}"
+        )
 
 
 def _zip_bytes(members: dict[str, bytes]) -> bytes:

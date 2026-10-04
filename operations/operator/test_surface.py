@@ -4298,6 +4298,8 @@ def test_the_tree_read_ceiling_stays_below_what_fetch_run_will_pull() -> None:
 
     assert runtree_store._MAX_TREE_READ_BYTES < surface_module.MAX_FETCH_OBJECT_BYTES
     assert runtree_store.MAX_RECORD_READ_BYTES <= runtree_store._MAX_TREE_READ_BYTES
+    # An export archive that seals must also come home.
+    assert runtree_store.MAX_EXPORT_ARCHIVE_BYTES <= surface_module.MAX_FETCH_OBJECT_BYTES
 
 
 def test_fetch_run_never_overwrites_a_local_file_that_differs(tmp_path: Path) -> None:

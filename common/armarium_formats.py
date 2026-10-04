@@ -6,11 +6,13 @@ can emit.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
+from common.runtree import store as runtree_store
 from common.sealed_config import read_sealed_toml
 
 FORMAT_SCHEMA: Final = "armarium-formats.v1"
@@ -18,6 +20,10 @@ KNOWN_FORMATS: Final = frozenset({"text-bundle", "acts-database", "jsonl", "revi
 DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "formats.toml"
 )
+# An embedded export carries every exported page and the crops cut from it. The
+# crops are stored losslessly and together cover about one page, so they are
+# estimated at the page's own bytes again.
+CROP_BYTES_PER_PAGE_BYTE: Final = 1
 
 
 @dataclass(frozen=True)
@@ -88,3 +94,27 @@ def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
     """
     raw, digest = read_sealed_toml(path, "Armarium formats configuration")
     return digest, armarium_formats_from_record(raw, source=f"configuration {path}")
+
+
+def require_export_within_archive_limit(page_bytes: Iterable[int], *, embed_pixels: bool) -> None:
+    """Refuse a run whose export archive is estimated past its limit, before any reading.
+
+    The Armarium refuses an oversized archive anyway, but only at the end of the
+    run; this estimate from the sealed pages lets the run be refused at its
+    start. With `embed_pixels = false` the archive holds records only, so no
+    estimate is made here.
+    """
+    if not embed_pixels:
+        return
+    sizes = list(page_bytes)
+    pages = sum(sizes)
+    estimate = pages * (1 + CROP_BYTES_PER_PAGE_BYTE)
+    limit = runtree_store.MAX_EXPORT_ARCHIVE_BYTES
+    if estimate > limit:
+        raise ContractError(
+            f"with embed_pixels = true this run's export archive is estimated at {estimate} "
+            f"bytes ({len(sizes)} exported page(s) of {pages} bytes, and their crops estimated "
+            f"at as much again), above the {limit}-byte export archive limit, so it could "
+            "never be sealed. The submission is refused whole before any reading starts, and "
+            "nothing is dropped: split it into smaller runs, or export with embed_pixels = false"
+        )

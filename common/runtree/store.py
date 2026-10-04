@@ -77,7 +77,7 @@ from common.contracts.errors import (
     SchemaRefusal,
 )
 from common.contracts.identities import validate_run_id
-from common.contracts.stages import DOOR, writing_directory
+from common.contracts.stages import ARMARIUM, DOOR, writing_directory
 from common.corpus_register import empty_register, validate_register_bytes
 from common.durability import (
     HardLinkUnsupported,
@@ -128,6 +128,15 @@ _MAX_MANIFEST_WALK_ENTRIES: Final = 100_000
 # `operations/operator/test_surface.py` pins that ordering.
 MAX_RECORD_READ_BYTES: Final = _MAX_MANIFEST_ARTIFACT_BYTES
 _MAX_TREE_READ_BYTES: Final = 192 * 1024 * 1024
+# The one aggregate file a tree holds, the Armarium's export archive, embeds
+# pages and crops and so may outgrow any one of them: its own ceiling bounds
+# every read of the Armarium's blobs (the archive is the only one), and the
+# Armarium refuses to build an archive above it.  The Door refuses a run whose
+# estimated export would exceed it, before any page is read.  It must also stay
+# at or below `MAX_FETCH_OBJECT_BYTES`, so an archive that seals can be fetched;
+# `operations/operator/test_surface.py` pins that too.
+MAX_EXPORT_ARCHIVE_BYTES: Final = 192 * 1024 * 1024
+_EXPORT_ARCHIVE_BLOB_PREFIX: Final = f"{writing_directory(ARMARIUM)}/{BLOBS_DIR}/"
 _DIRECTORY_OPEN_FLAGS: Final = (
     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
 )
@@ -801,12 +810,21 @@ class RunTree:
     def read_bytes(self, relative_path: str, *, max_bytes: int | None = None) -> bytes:
         """One file's bytes, under the blob-sized tree ceiling unless told otherwise.
 
+        The Armarium's blobs, the export archive, are read under the archive
+        ceiling instead.
+
         A caller that knows it is reading a JSON record rather than a page blob
         passes `max_bytes=MAX_RECORD_READ_BYTES`, so the bytes it is about to
         hand to `json.loads` -- which costs several times their size again in
         parsed objects -- are bounded by what a record can legitimately be and
         not by what an image can.
         """
+        if max_bytes is None:
+            max_bytes = (
+                MAX_EXPORT_ARCHIVE_BYTES
+                if relative_path.startswith(_EXPORT_ARCHIVE_BLOB_PREFIX)
+                else _MAX_TREE_READ_BYTES
+            )
         return _read_bytes_bounded(self.resolve(relative_path), max_bytes=max_bytes)
 
     def _read_record_bytes(self, relative_path: str) -> bytes:

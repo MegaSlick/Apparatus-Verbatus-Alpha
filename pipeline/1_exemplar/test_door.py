@@ -51,6 +51,7 @@ from common.contracts.identities import physical_page_id
 from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, INK_MAP
 from common.corpus_register import append_records, empty_register, members_of, register_digest
 from common.recovery import load_recovery_policy
+from common.runtree import store as runtree_store
 from common.runtree.store import RunTree
 from common.sealed_config import SEAL_METHOD, SEAL_METHOD_FIELD, read_sealed_toml
 from common.stage import (
@@ -856,7 +857,7 @@ def test_two_files_deriving_one_page_refuse_the_run_after_their_report_is_sealed
     assert admitted == 2
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, admitted)
+        door._finish_door_run(context, admitted, embed_pixels=False)
 
     message = str(refusal.value)
     assert "ordinal(s) 1 and 2 carry identical bytes" in message
@@ -915,7 +916,7 @@ def test_two_copies_of_one_container_are_refused_naming_every_ordinal(tmp_path):
     assert admitted == 4
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, admitted)
+        door._finish_door_run(context, admitted, embed_pixels=False)
 
     message = str(refusal.value)
     assert "ordinal(s) 1, 2 and 3, 4 carry identical bytes" in message
@@ -944,12 +945,45 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
     admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
     assert admitted == 3
 
-    assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
+    assert door._finish_door_run(context, admitted, embed_pixels=False) == EXIT_COMPLETE
     assert [
         item
         for item in tree.build_manifest(DOOR)["artifacts"]
         if item["kind"] == "duplicate-report"
     ] == []
+
+
+@pytest.mark.parametrize(
+    ("embed_pixels", "limit_over_estimate", "refused"),
+    [(True, -1, True), (True, 0, False), (False, None, False)],
+)
+def test_an_export_estimated_past_the_archive_limit_is_refused_at_the_door(
+    tmp_path, monkeypatch, embed_pixels, limit_over_estimate, refused
+):
+    """With pixels embedded, the export carries every page and its crops; a run
+    whose export could never be sealed is refused before any page is read."""
+    files = {"one.png": png(40, 30), "two.png": png(30, 40)}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
+            for path, payload in files.items()
+        ],
+        reader(files),
+    )
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
+    # A one-frame raster is sealed as its own bytes; crops are allowed as much again.
+    estimate = 2 * sum(len(payload) for payload in files.values())
+    limit = 1 if limit_over_estimate is None else estimate + limit_over_estimate
+    monkeypatch.setattr(runtree_store, "MAX_EXPORT_ARCHIVE_BYTES", limit, raising=False)
+
+    if refused:
+        with pytest.raises(ContractError, match=f"{limit}-byte export archive limit"):
+            door._finish_door_run(context, admitted, embed_pixels=embed_pixels)
+        kinds = {item["kind"] for item in tree.build_manifest(DOOR)["artifacts"]}
+        assert "stage-seal" not in kinds
+    else:
+        assert door._finish_door_run(context, admitted, embed_pixels=embed_pixels) == EXIT_COMPLETE
 
 
 def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicate_refusal(
@@ -980,7 +1014,7 @@ def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicat
     assert admitted == 0
 
     with pytest.raises(ContractError) as refusal:
-        door._finish_door_run(context, admitted)
+        door._finish_door_run(context, admitted, embed_pixels=False)
 
     message = str(refusal.value)
     assert "the door admitted nothing" in message
@@ -1517,7 +1551,7 @@ def test_a_re_shoot_is_refused_whole_before_the_seal_confirmed_or_not(tmp_path, 
     register = None if pages is None else _re_shoot_register(tmp_path, pages)
     context, _digests = _admitted_re_shoot_pair(tmp_path, register_bytes=register)
     with pytest.raises(ContractError, match="^re-shoot:") as refused:
-        door._finish_door_run(context, 2)
+        door._finish_door_run(context, 2, embed_pixels=False)
     message = str(refused.value)
     assert "cluster 1 (submitted ordinal(s) 1, 2" in message
     assert ("not confirmed" in message) is not confirmed
@@ -2897,7 +2931,7 @@ def test_a_wholly_refused_door_does_not_publish_a_completion_seal(tmp_path):
     )
 
     with pytest.raises(ContractError, match="the door admitted nothing"):
-        door._finish_door_run(context, admitted)
+        door._finish_door_run(context, admitted, embed_pixels=False)
 
     kinds = [entry["kind"] for entry in tree.build_manifest(DOOR)["artifacts"]]
     assert "refusal-report" in kinds

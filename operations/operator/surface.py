@@ -127,9 +127,10 @@ MAX_FETCH_EVIDENCE_OBJECTS = 10_000
 receipts. Ten thousand is far past that and still bounds a listing that is not
 what this verb thinks it is."""
 MAX_FETCH_OBJECT_BYTES = 256 * 1024 * 1024
-"""One object's bound. A whole-page blob is the largest thing a run tree holds;
-the manifest walk already refuses an artifact above 64 MiB, and a quarter of a
-gigabyte is past any page this project has rendered."""
+"""One object's bound. A whole-page blob and the export archive are the largest
+things a run tree holds; the manifest walk already refuses an artifact above
+64 MiB, and a quarter of a gigabyte is past any page this project has rendered
+and at or above the export archive limit (`common/runtree/store.py`)."""
 
 
 class _UploadManifestConflict(TransferFailure):

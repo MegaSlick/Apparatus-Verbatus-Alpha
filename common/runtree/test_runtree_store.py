@@ -27,7 +27,14 @@ from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.envelope import build_envelope, read_verified
 from common.contracts.errors import ApprovalRefusal, IncompatibleReuse, SchemaRefusal
 from common.contracts.identities import artifact_id
-from common.contracts.stages import DESIGNATOR, DOOR, EXEMPLAR, PERLECTOR, writing_directory
+from common.contracts.stages import (
+    ARMARIUM,
+    DESIGNATOR,
+    DOOR,
+    EXEMPLAR,
+    PERLECTOR,
+    writing_directory,
+)
 from common.corpus_register import EMPTY_REGISTER_DIGEST, empty_register
 from common.recensor_receipt import build_recensor_reading_receipt
 from common.runtree import store as runtree_store
@@ -1946,6 +1953,30 @@ def test_read_bytes_refuses_a_file_grown_past_the_tree_read_limit(tmp_path, monk
     with pytest.raises(SchemaRefusal, match="tree read limit"):
         tree.read_bytes(relative)
     assert artifact.stat().st_size > 4  # the file itself was never truncated
+
+
+def test_the_export_archive_is_read_under_its_own_ceiling_and_a_page_blob_under_the_page_one(
+    tmp_path, monkeypatch
+):
+    """The export archive embeds pages and crops, so it may outgrow any one of them.
+
+    Its blob is read under the archive ceiling; a page blob of the same size is
+    still refused under the page ceiling, and an archive past its own ceiling is
+    refused too.
+    """
+    tree = make_run(tmp_path)
+    monkeypatch.setattr(runtree_store, "_MAX_TREE_READ_BYTES", 8)
+    monkeypatch.setattr(runtree_store, "MAX_EXPORT_ARCHIVE_BYTES", 16, raising=False)
+    archive = b"z" * 12
+    _, stored_archive = tree.put_blob(ARMARIUM, archive)
+    _, stored_page = tree.put_blob(EXEMPLAR, archive)
+    _, oversized_archive = tree.put_blob(ARMARIUM, b"z" * 17)
+
+    assert tree.read_bytes(stored_archive.relative_path) == archive
+    with pytest.raises(SchemaRefusal, match="8-byte tree read limit"):
+        tree.read_bytes(stored_page.relative_path)
+    with pytest.raises(SchemaRefusal, match="16-byte tree read limit"):
+        tree.read_bytes(oversized_archive.relative_path)
 
 
 def test_a_verified_read_refusal_names_no_host_path(tmp_path, monkeypatch):
