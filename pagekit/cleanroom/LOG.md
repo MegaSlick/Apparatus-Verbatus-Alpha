@@ -669,3 +669,6 @@ record".
   the main pipeline opens scans through the same image library, so pagekit keeps the grid
   as the library opens it and applies a tag only when the library has not, rather than
   undoing the library's turn. Saved before it was sent.
+- **Brief 0038 done:** commit cb623d0 on `work/pk-split`. Leak scan no hits. Merged into
+  `work/pagekit-prepare`. One-size tiles no longer vote up or down; a page whose writing
+  tiles are a third or more one-size is flagged.
