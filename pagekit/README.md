@@ -241,13 +241,18 @@ exact. Otherwise the `grey_rule` setting (or `--grey-rule`) decides: `luminance`
 
 Before a colour page is made grey, pagekit measures its colour on the written page
 only (its margin box, within the page box; a coloured backdrop or a colour target
-beside the paper does not count): the chroma of each pixel (largest minus smallest
-channel) on a copy at `colour_working_dpi`, against the chroma noise of the page's own
-plain paper, taken from its most neutral part (the median plus `colour_noise_spread`
-times the median absolute deviation, so a pale wash over part of the paper does not
-raise it). Coloured pixels are opened by a square as wide as `colour_thinnest_mm`
-(at least two pixels), which drops stray specks and keeps ruling and other lines that
-wide. If marks stand clearly above the noise (`colour_chroma_margin`) over at least
+beside the paper does not count): on a copy at `colour_working_dpi`, each pixel's colour
+difference from the page's own paper colour (the median paper colour, on two opponent
+axes, red against green and yellow against blue). Moving across the paper's hue counts
+in full; along it, only colour more saturated than the paper or past neutral into the
+opposite hue counts, so an ink that only loses the paper's tint (black, faded brown on
+yellowed paper) does not, while pale blue on cream does. The noise is that difference
+over the page's own plain paper, from its most neutral part (the median plus
+`colour_noise_spread` times the median absolute deviation, so a pale wash over part of
+the paper does not raise it). Coloured pixels count by connected piece: a piece smaller
+than `colour_speck_mm2` is a speck and dropped, so dust goes and lines of any width,
+such as fine ruling, stay. If marks stand clearly above the noise
+(`colour_chroma_margin`) over at least
 `colour_min_area_mm2`, the page is flagged ("this
 page holds colour that grey would remove", naming where) and kept in colour, unless grey
 was set by hand or locked for it, in which case it is grey and the flag stays. Colour
@@ -257,12 +262,12 @@ measure; the review sheet shows the same with lines to keep the page as scanned 
 force grey.
 
 What the colour check does not detect: colour fainter than `colour_chroma_margin`
-above the paper's noise; coloured lines thinner than `colour_thinnest_mm`; a colour
-covering more than half of the paper, which reads as the paper's own tint; and
-differences between inks that are less saturated than the paper itself. Black and
-brown inks on yellowed paper are not compared with each other, so in grey they may
-merge into one level; when the difference between such inks matters, keep the page in
-source mode.
+above the paper's noise; coloured specks smaller than `colour_speck_mm2`; a colour
+covering more than half of the paper, which reads as the paper's own colour; and
+differences between inks that lie between neutral and the paper's own hue (less
+saturated than the paper, in its hue). Black and brown inks on yellowed paper are such
+inks: they are not compared with each other, so in grey they may merge into one level;
+when the difference between such inks matters, keep the page in source mode.
 
 ### Padding apart from the margin
 

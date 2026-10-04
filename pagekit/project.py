@@ -121,7 +121,7 @@ def load_settings(overrides: dict[str, Any] | None = None) -> dict[str, dict[str
         "colour_chroma_margin",
         "colour_min_area_mm2",
         "colour_noise_spread",
-        "colour_thinnest_mm",
+        "colour_speck_mm2",
     ):
         if not value[name] > 0:
             raise PrepareError(f"setting {name!r} must be more than 0")

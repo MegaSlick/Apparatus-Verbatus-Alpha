@@ -143,10 +143,10 @@ value = 3.0
 status = "UNMEASURED"
 meaning = "The paper's colour noise is its median chroma (largest minus smallest channel) plus this many times its median absolute deviation, scaled to a standard deviation; taken from the most neutral paper, so a pale colour over part of the page does not hide itself."
 
-[colour_thinnest_mm]
-value = 0.25
+[colour_speck_mm2]
+value = 0.05
 status = "UNMEASURED"
-meaning = "The narrowest coloured line, in millimetres, the colour check keeps; narrower specks are taken as noise."
+meaning = "A connected piece of colour smaller than this, in square millimetres, is a speck (dust, a stray pixel) and does not count; lines of any width, such as fine ruling, are larger and do."
 
 [colour_chroma_margin]
 value = 12
