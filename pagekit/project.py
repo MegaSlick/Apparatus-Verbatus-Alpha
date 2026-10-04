@@ -47,6 +47,7 @@ _PAGE_KEYS = {"page", "output", "steps"}
 # Keys added by spec 0007; a project written before it does not hold them.
 _SOURCE_OPTIONAL = frozenset({"orientation_tag"})
 _TAG_KEYS = {"found", "trusted", "trust_origin", "applied", "transform"}
+_TAG_OPTIONAL = frozenset({"applied_by", "grid"})
 # Corrections that are not steps: for the whole source, and per page.
 SOURCE_SETTINGS = ("resolution", "tag_trust")
 PAGE_SETTINGS = ("output_mode", "density")
@@ -247,7 +248,7 @@ def _closed(data: Any, keys: set[str], where: str, optional: frozenset = frozens
 
 
 def _check_tag(data: Any, where: str) -> None:
-    _closed(data, _TAG_KEYS, where)
+    _closed(data, _TAG_KEYS, where, _TAG_OPTIONAL)
     found = data["found"]
     if found is not None and (isinstance(found, bool) or not isinstance(found, int)):
         raise PrepareError(f"{where}: found is the tag's whole-number value or null")

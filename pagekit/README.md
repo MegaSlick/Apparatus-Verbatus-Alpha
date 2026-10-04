@@ -13,8 +13,10 @@ python -m pagekit check --master scan.tif --crop 120,90,2480,3400 [--crop ...] \
     [--split-x 2510] [--min-short-side-px 1200] --json
 ```
 
-Crop boxes are `x0,y0,x1,y1` in the master's stored pixel grid (no EXIF rotation),
-right and bottom exclusive. Exit status is 0 when nothing is flagged, 1 when the page
+Crop boxes are `x0,y0,x1,y1` in the master's pixel grid as the image library (Pillow)
+opens the file's bytes, right and bottom exclusive: the stored pixels, except for a
+carrier Pillow turns upright by its orientation tag as it opens it (a TIFF, today); see
+"The orientation tag" below. Exit status is 0 when nothing is flagged, 1 when the page
 should go to review and 2 when the inputs cannot be checked. Any failure to read the
 master is exit 2, including an image mode pagekit does not handle: a 16-bit greyscale
 (`I;16`) master is refused loudly rather than reduced to 8 bits unseen. Without `--json` the
@@ -167,10 +169,26 @@ after it. The transform is the first link of the geometry chain (an `orientation
 step, only when a tag is applied), so the point maps still lead back to the stored
 pixels. Prepared pages carry no orientation tag, so no reader turns them again.
 
+**Which grid.** pagekit works on each source exactly as Pillow opens the file's bytes,
+the grid every other tool that opens the scan with Pillow sees; the manifest's
+`source_size` and the point maps refer to that grid. Pillow turns some carriers upright
+by their tag as it opens them and drops the tag (TIFF, with Pillow 12.3); others it
+leaves as stored (PNG, JPEG). pagekit reads the tag before loading and finds out, file
+by file, whether Pillow applied it: the tag is gone after loading, or, for tags 5 to 8,
+the loaded size is the transposed size the file's own header gives. If Pillow applied
+it, the record says "applied on open by the image library" and the chain adds nothing;
+if not, the chain applies it once as its first link. So a tag is applied exactly once
+whatever Pillow does, now or in a later version. The record's `applied_by` says who
+(`image library on open` or `chain`) and `grid` which grid the chain starts from. (With
+Pillow 12.3, opening an uncompressed TIFF with a tag of 5 to 8 by its path, rather than
+from its bytes, gives an image sized as stored; pagekit always opens the bytes.)
+
 A tag outside the eight values is flagged and the source taken as stored. Whether to
 trust tags is the `trust_orientation_tag` setting (default 1, trust); for one source,
 an overrides line `{"source": ..., "step": "tag_trust", "value": false}` ignores its
-tag, the orientation evidence says so, and later runs keep it. The manifest's
+tag, the orientation evidence says so, and later runs keep it. For a carrier Pillow
+turned on open, an untrusted tag means undoing that turn, so the source is taken as
+stored; the record's `grid` then says `stored pixels`. The manifest's
 `orientation_tag` and the project's record name the value found, whether it is trusted
 and applied, and the transform.
 

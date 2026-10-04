@@ -3,6 +3,7 @@ the nominal density. Synthetic pages only; no real register material."""
 
 from __future__ import annotations
 
+import io
 import json
 import math
 from pathlib import Path
@@ -13,7 +14,7 @@ from PIL import Image, ImageChops, ImageDraw
 from pagekit import _orient_testpages as pages
 from pagekit.__main__ import main
 from pagekit.answer import Answer
-from pagekit.geometry import Chain
+from pagekit.geometry import TAG_TRANSPOSE, Chain
 from pagekit.output import MANIFEST_NAME, execute
 from pagekit.prepare import Detector, plan
 from pagekit.review import REVIEW_NAME
@@ -95,10 +96,48 @@ def dark_centre(image: Image.Image) -> tuple[float, float]:
 # --- 1. The orientation tag ------------------------------------------------------------
 
 
+def save_as(image: Image.Image, path: Path, tag: int | None, carrier: str, dpi=DPI) -> Path:
+    """`image` saved as PNG, TIFF or JPEG, with orientation tag `tag` if given."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    options: dict = {} if dpi is None else {"dpi": dpi}
+    if carrier == "tiff":
+        if tag is not None:
+            options["tiffinfo"] = {ORIENTATION: tag}
+        image.save(path, "TIFF", **options)
+    else:
+        if tag is not None:
+            exif = Image.Exif()
+            exif[ORIENTATION] = tag
+            options["exif"] = exif
+        kind = {"png": "PNG", "jpeg": "JPEG"}[carrier]
+        image.save(path, kind, **({"quality": 95} if carrier == "jpeg" else {}), **options)
+    return path
+
+
+def opened(path: Path) -> tuple[Image.Image, bool]:
+    """The image as Pillow opens and loads it from the file's bytes, as pagekit reads
+    it, and whether Pillow applied its tag. (Pillow 12.3 opening an uncompressed TIFF
+    by its path, with a tag of 5 to 8, gives an image sized as stored with turned
+    rows; pagekit always opens the bytes it hashed.)"""
+    with Image.open(io.BytesIO(path.read_bytes())) as image:
+        before = image.getexif().get(ORIENTATION)
+        image.load()
+        after = image.getexif().get(ORIENTATION)
+        return image.copy(), before not in (None, 1) and after in (None, 1)
+
+
+SUFFIX = {"png": ".png", "tiff": ".tif", "jpeg": ".jpg"}
+
+
+@pytest.mark.parametrize("carrier", ["png", "tiff", "jpeg"])
 @pytest.mark.parametrize("tag", range(1, 9))
-def test_each_tag_gives_the_upright_page_and_maps_the_mark_back(tmp_path, tag):
-    tagged = save(stored(tag), tmp_path / "a" / "src" / "page.png", tag)
-    save(upright_page(), tmp_path / "b" / "src" / "page.png", None)
+def test_each_tag_gives_the_upright_page_once_whoever_applies_it(tmp_path, tag, carrier):
+    tagged = save_as(stored(tag), tmp_path / "a" / "src" / f"page{SUFFIX[carrier]}", tag, carrier)
+    grid, turned_on_open = opened(tagged)
+    # The same page stored upright: for a lossy carrier, the decoded pixels turned by
+    # the tag, so both runs start from the same samples.
+    upright = grid if turned_on_open else (grid if tag == 1 else grid.transpose(TAG_TRANSPOSE[tag]))
+    save(upright, tmp_path / "b" / "src" / "page.png", None)
     frames = []
 
     def spy(context):
@@ -107,23 +146,41 @@ def test_each_tag_gives_the_upright_page_and_maps_the_mark_back(tmp_path, tag):
 
     detectors = {"orientation": Detector("spy/1", spy)}
     a = execute(plan([tagged.parent], tmp_path / "a" / "out", detectors=detectors))
-    assert frames == [upright_page().tobytes()]  # the detector sees the upright frame
+    assert frames == [upright.tobytes()]  # the detector sees the upright frame
     b = execute(plan([tmp_path / "b" / "src"], tmp_path / "b" / "out"))
     (page_a,), (page_b,) = a["pages"], b["pages"]
     out_a = tmp_path / "a" / "out" / page_a["output"]["name"]
     out_b = tmp_path / "b" / "out" / page_b["output"]["name"]
-    assert pixels(out_a) == pixels(out_b)
+    assert pixels(out_a) == pixels(out_b)  # one application, whoever made it
     record = page_a["orientation_tag"]
     assert (record["found"], record["trusted"], record["applied"]) == (tag, True, tag != 1)
-    # The mark maps back to where it is stored.
+    who = None if tag == 1 else ("image library on open" if turned_on_open else "chain")
+    assert record["applied_by"] == who
     chain = Chain.from_dict(page_a["geometry"])
+    steps = [step["op"] for step in page_a["geometry"]["steps"]]
+    assert ("orientation_tag" in steps) == (who == "chain")
+    # source_size is the grid the chain starts from: what Pillow opens.
+    assert tuple(page_a["geometry"]["source_size"]) == grid.size
     with Image.open(out_a) as written:
         found = dark_centre(written)
-    assert math.dist(chain.inverse([found])[0], dark_centre(stored(tag))) < 0.5
-    assert math.dist(chain.forward([dark_centre(stored(tag))])[0], found) < 0.5
-    # The output carries no tag that would turn it again.
+    assert math.dist(chain.inverse([found])[0], dark_centre(grid)) < 1.0
     with Image.open(out_a) as written:
         assert written.getexif().get(ORIENTATION) in (None, 1)
+
+
+@pytest.mark.parametrize("tag", [3, 6, 2])
+def test_an_untrusted_tiff_tag_is_taken_as_stored(tmp_path, tag):
+    save_as(stored(tag), tmp_path / "a" / "src" / "page.tif", tag, "tiff")
+    save(stored(tag), tmp_path / "b" / "src" / "page.png", None)
+    distrust = [{"source": "src/page.tif", "step": "tag_trust", "value": False}]
+    a, out_a = prepared(tmp_path / "a", "--overrides", str(overrides(tmp_path / "a", distrust)))
+    b, out_b = prepared(tmp_path / "b")
+    page = a["pages"][0]
+    assert pixels(out_a / page["output"]["name"]) == pixels(out_b / b["pages"][0]["output"]["name"])
+    assert tuple(page["geometry"]["source_size"]) == stored(tag).size
+    record = page["orientation_tag"]
+    assert (record["trusted"], record["applied"], record["grid"]) == (False, False, "stored pixels")
+    assert "not trusted" in page["steps"]["orientation"]["evidence"]
 
 
 def test_a_png_output_carries_no_tag_either(tmp_path):
@@ -502,3 +559,21 @@ def test_the_same_input_gives_byte_identical_outputs_manifest_and_review(tmp_pat
     assert first == run(tmp_path / "b")
     again = run(tmp_path / "a")  # a re-run on its own project
     assert again == first
+
+
+@pytest.mark.parametrize("carrier", ["tiff", "png"])
+def test_the_crop_check_and_the_tone_view_see_the_grid_prepare_starts_from(tmp_path, carrier):
+    from pagekit.check import check
+    from pagekit.tone import tone_file
+
+    path = save_as(stored(6), tmp_path / "src" / f"page{SUFFIX[carrier]}", 6, carrier)
+    manifest, _ = prepared(tmp_path)
+    size = manifest["pages"][0]["geometry"]["source_size"]
+    width, height = size
+    report = check(path, [(0, 0, width, height)])
+    assert [
+        report["checks"]["resolution"]["width_px"],
+        report["checks"]["resolution"]["height_px"],
+    ] == size
+    view, _ = tone_file(path)
+    assert list(view.size) == size

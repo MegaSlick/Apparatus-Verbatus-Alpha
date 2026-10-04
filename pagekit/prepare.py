@@ -41,6 +41,7 @@ from PIL import Image, UnidentifiedImageError
 from pagekit import __version__
 from pagekit.answer import PAGE_STEPS, SOURCE_STEPS, STEPS, Answer, AnswerError, validate_answer
 from pagekit.geometry import (
+    TAG_TRANSPOSE,
     TAG_WORDS,
     Chain,
     GeometryError,
@@ -83,13 +84,16 @@ class Source:
     mode: str  # the stored mode
     file_dpi: tuple[float, float] | None
     tag_found: int | None = None  # the file's orientation tag as read, if it has one
+    tag_on_open: bool = False  # the image library applied that tag as it opened the file
+    undo_tag: int | None = None  # undo the library's turn: the tag is not trusted
 
     def open(self) -> Image.Image:
-        """The decoded original in L or RGB, checked against the sha256 read first."""
+        """The decoded original in L or RGB, checked against the sha256 read first: the
+        grid the chain starts from."""
         data = self.path.read_bytes()
         if hashlib.sha256(data).hexdigest() != self.sha256:
             raise PrepareError(f"{self.path} changed while pagekit was running")
-        return _decode(data, self.path)
+        return _decode(data, self.path, self.undo_tag)
 
 
 def _grey_palette(image: Image.Image) -> bool:
@@ -131,12 +135,33 @@ _MODE_WORDS = {
 }
 
 
-def _decode(data: bytes, path: Path) -> Image.Image:
-    """The decoded source in L or RGB. Bilevel and grey-palette images become grey,
-    colour-palette images colour; nothing is resampled. SourceError when it cannot be
-    used."""
+# The transpose that undoes each orientation tag's transform.
+_UNDO_TAG = {2: 2, 3: 3, 4: 4, 5: 5, 6: 8, 7: 7, 8: 6}
+
+
+def _decode(data: bytes, path: Path, undo_tag: int | None = None) -> Image.Image:
+    """The decoded source in L or RGB, as the image library opens it (pagekit's source
+    grid). Bilevel and grey-palette images become grey, colour-palette images colour;
+    nothing is resampled. With `undo_tag`, the turn the library applied on open for that
+    tag is undone, giving the stored pixels. SourceError when it cannot be used."""
+    image = _decode_opened(data, path)[0]
+    if undo_tag is not None:
+        image = image.transpose(TAG_TRANSPOSE[_UNDO_TAG[undo_tag]])
+    return image
+
+
+def _decode_opened(data: bytes, path: Path) -> tuple[Image.Image, int | None, bool]:
+    """The decoded image, the orientation tag read before loading, and whether the
+    image library applied that tag while loading.
+
+    Pillow turns some carriers upright by their tag as it loads them (TIFF, today) and
+    drops the tag; others (PNG, JPEG) it leaves as stored. Which it does is found, not
+    assumed: a tag of 2 to 8 that is gone after loading was applied; so was a tag of 5
+    to 8 when the loaded size is the transposed size the file's own header gives."""
     try:
         with Image.open(io.BytesIO(data)) as image:
+            before = _file_tag(image)
+            header = _header_size(image)
             if getattr(image, "n_frames", 1) != 1:
                 raise SourceError(path, "it holds more than one page; give one page per file")
             if image.mode not in _KEPT_MODES:
@@ -147,11 +172,23 @@ def _decode(data: bytes, path: Path) -> Image.Image:
                     "colour, bilevel and palette images); save it as 8-bit grey or colour",
                 )
             image.load()
+            after = _file_tag(image)
+            on_open = before in _TAG_TRANSFORMS and (
+                after in (None, 1)
+                or (
+                    before in (5, 6, 7, 8)
+                    and header is not None
+                    and header[0] != header[1]
+                    and image.size == (header[1], header[0])
+                )
+            )
             if image.mode == "1":
-                return image.convert("L")
-            if image.mode == "P":
-                return image.convert("L" if _grey_palette(image) else "RGB")
-            return image.copy()
+                decoded = image.convert("L")
+            elif image.mode == "P":
+                decoded = image.convert("L" if _grey_palette(image) else "RGB")
+            else:
+                decoded = image.copy()
+            return decoded, before, on_open
     except SourceError:
         raise
     except UnidentifiedImageError as error:
@@ -166,6 +203,21 @@ def _decode(data: bytes, path: Path) -> Image.Image:
                 f"the image cannot be decoded (the file may be damaged; {type(error).__name__})"
             )
         raise SourceError(path, reason) from error
+
+
+_TAG_TRANSFORMS = (2, 3, 4, 5, 6, 7, 8)
+
+
+def _header_size(image: Image.Image) -> tuple[int, int] | None:
+    """The stored width and height the file's own header gives, where pagekit can read
+    it (TIFF image width and length), else None."""
+    tags = getattr(image, "tag_v2", None)
+    if tags is None:
+        return None
+    try:
+        return int(tags[256]), int(tags[257])
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _file_tag(image: Image.Image) -> int | None:
@@ -200,9 +252,9 @@ def read_source(path: Path, project_folder: Path) -> Source:
     except OSError as error:
         reason = error.strerror or type(error).__name__
         raise SourceError(path, f"the file cannot be read ({reason})") from error
-    image = _decode(data, path)
+    image, tag, on_open = _decode_opened(data, path)
     with Image.open(io.BytesIO(data)) as stored:
-        mode, dpi, tag = stored.mode, _file_dpi(stored), _file_tag(stored)
+        mode, dpi = stored.mode, _file_dpi(stored)
     return Source(
         path=path,
         relative=Path(os.path.relpath(path, project_folder)).as_posix(),
@@ -212,6 +264,7 @@ def read_source(path: Path, project_folder: Path) -> Source:
         mode=mode,
         file_dpi=dpi,
         tag_found=tag,
+        tag_on_open=on_open,
     )
 
 
@@ -679,16 +732,17 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
     )
     if runner.dry and old is not None and old["resolution"] != stored:
         runner._note(source, "resolution", None, "the resolution changes")
-    tag_record, tag_flags, tag_note = _orientation_tag(
+    tag_record, tag_flags, tag_note, tag = _orientation_tag(
         source, old, overrides.get(("tag_trust", None)), values
     )
-    tag = tag_record["found"] if tag_record["applied"] else 1
     runner.tag = tag
     if tag_note:
         runner.notes[(source.relative, "orientation", None)] = tag_note
-    # The millimetre settings work in the tagged frame, whose axes a tag may swap.
-    usable = _tagged_dpi(usable, tag)
-    stored_frame = dict(stored, value=_tagged_dpi(stored["value"], tag))
+    # The millimetre settings work in the tagged frame. The file's resolution is for its
+    # stored axes, which a tag of 5 to 8 swaps, whoever applies it.
+    axes = tag_record["found"] if tag_record["applied"] else 1
+    usable = _tagged_dpi(usable, axes)
+    stored_frame = dict(stored, value=_tagged_dpi(stored["value"], axes))
     old_steps = old["steps"] if old else {}
     steps: dict[str, dict[str, Any]] = {}
     earlier: dict[str, Any] = {}
@@ -986,40 +1040,54 @@ def _tagged_dpi(resolution, tag: int):
     return list(swapped) if isinstance(resolution, list) else swapped
 
 
-def _orientation_tag(source: Source, old, override: Override | None, values):
-    """The orientation tag's record for a source, flags, and a note for the evidence.
-
-    The tag is trusted by the trust_orientation_tag setting unless a tag_trust override
-    (this run's, or one kept in the project) says otherwise. A trusted tag of 2 to 8 is
-    applied; a value outside 1 to 8 is flagged and the source taken as stored."""
+def _tag_trust(old, override: Override | None, values) -> tuple[bool, str]:
+    """Whether a source's orientation tag is trusted, and what says so."""
     if override is not None:
-        trusted, origin = bool(override.value), "override"
-    elif old is not None and old.get("orientation_tag", {}).get("trust_origin") == "override":
-        trusted, origin = old["orientation_tag"]["trusted"], "override"
-    else:
-        trusted, origin = bool(values["trust_orientation_tag"]), "setting"
+        return bool(override.value), "override"
+    if old is not None and old.get("orientation_tag", {}).get("trust_origin") == "override":
+        return old["orientation_tag"]["trusted"], "override"
+    return bool(values["trust_orientation_tag"]), "setting"
+
+
+def _orientation_tag(source: Source, old, override: Override | None, values):
+    """The orientation tag's record for a source, flags, a note for the evidence, and
+    the tag the chain applies (1: none).
+
+    The source grid is the image as the image library opens it. A trusted tag of 2 to 8
+    is applied once: by the library on open (then the chain adds nothing), or else as
+    the chain's first link. An untrusted tag is not applied; where the library applied
+    it on open, its turn is undone, so the grid is the stored pixels. A value outside 1
+    to 8 is flagged and the source taken as stored."""
+    trusted, origin = _tag_trust(old, override, values)
     found = source.tag_found
-    flags, note, applied = [], None, 1
+    flags, note, applied, by = [], None, 1, None
+    grid = "stored pixels" if source.undo_tag else "as the image library opens it"
     if found is not None and found not in TAG_WORDS:
         flags.append(
             f"The file's orientation tag has the value {found}, which is not one of the "
             "eight the Exif standard defines (1 to 8); the source is taken as stored."
         )
     elif found not in (None, 1) and not trusted:
+        undone = " (the turn the image library made on opening it was undone)"
         note = (
             f"The file's orientation tag ({found}: {TAG_WORDS[found]}) is not trusted for "
-            "this source, so the stored pixels were used as they are."
+            f"this source, so the stored pixels were used as they are"
+            f"{undone if source.undo_tag else ''}."
         )
     elif found not in (None, 1):
         applied = found
+        by = "image library on open" if source.tag_on_open else "chain"
     record = {
         "found": found,
         "trusted": trusted,
         "trust_origin": origin,
         "applied": applied != 1,
+        "applied_by": by,
+        "grid": grid,
         "transform": TAG_WORDS[applied],
     }
-    return record, flags, note
+    chain_tag = applied if by == "chain" else 1
+    return record, flags, note, chain_tag
 
 
 _RATIO_TOLERANCE = 0.002
@@ -1303,6 +1371,18 @@ def plan(
         runner.run_mode = output_mode
     entries, pages = [], []
     for source in sources:
+        trusted, _ = _tag_trust(
+            old_entries.get(source.relative),
+            overrides[source.relative].get(("tag_trust", None)),
+            values,
+        )
+        if source.tag_on_open and not trusted:
+            # The library turned it on open; an untrusted tag means the stored pixels.
+            source = replace(
+                source,
+                undo_tag=source.tag_found,
+                size=tagged_size(source.size, _UNDO_TAG[source.tag_found]),
+            )
         cache: dict[str, Image.Image] = {}
 
         def load(source=source, cache=cache) -> Image.Image:
