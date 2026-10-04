@@ -323,10 +323,10 @@ def test_a_scan_whose_orientation_tag_turns_it_is_cut_exactly_as_pagekit_cut_it(
     pages, mapped = _prepare(tmp_path, scan, [])
     (page,), (door_page,) = pages, mapped
     assert page.chain.tag == tag
-    door = _door(scan, door_page.part)
+    sealed = _door(scan, door_page.part)
     with Image.open(tmp_path / "out" / page.output_name) as prepared:
-        assert door.size == prepared.size
-        assert door.tobytes() == prepared.convert("L").tobytes()
+        assert sealed.size == prepared.size
+        assert sealed.tobytes() == prepared.convert("L").tobytes()
 
 
 @pytest.mark.parametrize("tag", [2, 4, 5, 7])
@@ -400,10 +400,10 @@ def test_a_padded_page_re_derives_exactly_as_pagekit_padded_it(tmp_path, turns):
     )
     (page,), (door_page,) = pages, mapped
     assert page.chain.padding == (40, 40, 40, 40)
-    door = _door(scan, door_page.part)
+    sealed = _door(scan, door_page.part)
     with Image.open(tmp_path / "out" / page.output_name) as prepared:
-        assert door.size == prepared.size
-        assert door.tobytes() == prepared.convert("L").tobytes()
+        assert sealed.size == prepared.size
+        assert sealed.tobytes() == prepared.convert("L").tobytes()
 
 
 def test_padding_past_the_doors_limit_is_refused_at_prepare(tmp_path):
@@ -435,10 +435,10 @@ def test_a_tagged_tiff_scan_is_cut_by_the_door_as_pagekit_cut_it(tmp_path, tag):
     (page,), (door_page,) = pages, mapped
     with Image.open(scan) as opened:
         assert page.chain.source_size == opened.size, "the row's frame is not the Door's"
-    door = _door(scan, door_page.part)
+    sealed = _door(scan, door_page.part)
     with Image.open(tmp_path / "out" / page.output_name) as prepared:
-        assert door.size == prepared.size
-        assert door.tobytes() == prepared.convert("L").tobytes()
+        assert sealed.size == prepared.size
+        assert sealed.tobytes() == prepared.convert("L").tobytes()
 
 
 @pytest.mark.parametrize("compression", ["raw", "tiff_adobe_deflate", "tiff_lzw"])
@@ -454,7 +454,7 @@ def test_every_reader_opens_a_tagged_tiff_from_its_bytes_as_pagekit_does(
     monkeypatch.syspath_prepend(
         str(Path(__file__).resolve().parents[2] / "pipeline" / "1_exemplar")
     )
-    from image_formats import decode_raster
+    import door
 
     dots = [(40, 50), (150, 40), (90, 250)]
     folder = tmp_path / "scans"
@@ -475,9 +475,9 @@ def test_every_reader_opens_a_tagged_tiff_from_its_bytes_as_pagekit_does(
     (page,), (door_page,) = pages, mapped
 
     assert page.chain.source_size == from_bytes
-    decoded = decode_raster(data, page_index=0)
+    decoded = door.decode_raster(data, page_index=0)
     assert (decoded.width, decoded.height) == from_bytes
-    door = _door(scan, door_page.part)
+    sealed = _door(scan, door_page.part)
     with Image.open(tmp_path / "out" / page.output_name) as prepared:
-        assert door.size == prepared.size
-        assert door.tobytes() == prepared.convert("L").tobytes()
+        assert sealed.size == prepared.size
+        assert sealed.tobytes() == prepared.convert("L").tobytes()
