@@ -23,6 +23,7 @@ import sys
 import zlib
 from collections.abc import Mapping
 from io import BytesIO
+from pathlib import Path
 from types import MappingProxyType
 from typing import Final, NamedTuple, TypedDict
 
@@ -1022,6 +1023,37 @@ def _to_display_mode(crop: Image.Image) -> Image.Image:
 # `_to_display_mode`, and that is a *conversion* — for `I;16` it is an 8-bit
 # crush of 16-bit samples. Named here so a caller can ask before it converts.
 ENCODER_LOSSLESS_MODES: Final = frozenset(_PNG_LAYOUT) | {"P"}
+
+# The widest crop `crop_png` writes: RGBA at 8 bits, which every colour class
+# with alpha becomes. Used when a page's mode is unknown.
+MAX_CROP_BYTES_PER_PIXEL: Final = 4
+
+
+def crop_bytes_per_pixel(mode: str) -> float:
+    """The bytes per pixel `crop_png` stores for a crop of a page in `mode`.
+
+    Crops are uncompressed PNG: the encoder's own layouts as they are, 16-bit
+    grey scaled to 8-bit grey, and every other mode converted to RGB or RGBA,
+    counted here as RGBA so the figure is never too low.
+    """
+    layout = _PNG_LAYOUT.get(mode)
+    if layout is not None:
+        bit_depth, _color_type, samples = layout
+        return bit_depth * samples / 8
+    if mode in _HIGH_PRECISION_SCALE:
+        return 1
+    if mode == "La":
+        return 2
+    return MAX_CROP_BYTES_PER_PIXEL
+
+
+def stored_image_mode(path: Path) -> str | None:
+    """The decoded mode of a stored image, read from its header, or `None` if unreadable."""
+    try:
+        with Image.open(path) as image:
+            return image.mode
+    except _DECODE_FAILURES:
+        return None
 
 
 # The Door's PDF page recipe, shared by its PDFium renderer

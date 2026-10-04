@@ -121,10 +121,13 @@ whole run, before its own completion seal, when:
    not count.
 4. **The export could never be sealed.** With `embed_pixels = true` the export
    archive carries every admitted page (canaries excepted) and its crops. The Door
-   estimates it as each page's stored bytes plus `CROP_BYTES_PER_PIXEL` per page
-   pixel for the crops, and refuses an estimate above `MAX_EXPORT_ARCHIVE_BYTES`
-   (both in `common/armarium_formats.py`) here rather than after the reading.
-   Remedy: smaller runs, or `embed_pixels = false`.
+   estimates it as each page's stored bytes plus `CROP_PAGE_COVERAGE` whole-page
+   crops at the page's uncompressed crop layout (`crop_bytes_per_pixel` in
+   `common/imaging.py`; 4 bytes per pixel when the mode cannot be read), and refuses
+   an estimate above `MAX_EXPORT_ARCHIVE_BYTES` (both constants in
+   `common/armarium_formats.py`) here rather than after the reading. The format
+   choice is sealed into the run, so the remedy is a new run: over a smaller part of
+   the submission, or with `embed_pixels = false`.
 
 A refusal names ordinals and the private report's location, never a filename: it is
 printed to the terminal, and the reports are where filenames belong. A refused Door

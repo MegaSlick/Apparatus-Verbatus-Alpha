@@ -82,7 +82,12 @@ from common.corpus_register import (  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.image_sniff import SIGNATURE_PREFIX_BYTES  # noqa: E402
-from common.imaging import TRIAGE_APPLY_RECIPE  # noqa: E402
+from common.imaging import (  # noqa: E402
+    MAX_CROP_BYTES_PER_PIXEL,
+    TRIAGE_APPLY_RECIPE,
+    crop_bytes_per_pixel,
+    stored_image_mode,
+)
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
@@ -1468,24 +1473,29 @@ def require_export_can_be_sealed(context: StageContext) -> None:
     )
 
 
-def _exported_pages(context: StageContext) -> list[tuple[int, int, int]]:
-    """`(stored bytes, width, height)` of every admitted page the export carries.
+def _exported_pages(context: StageContext) -> list[tuple[int, int, int, float]]:
+    """`(stored bytes, width, height, crop bytes per pixel)` of each page the export carries.
 
-    Canaries are controls and are never exported.
+    Canaries are controls and are never exported. A page whose mode cannot be
+    read is counted at the widest crop layout.
     """
     canaries = canary_ordinals(context.run)
     pages = []
     for _entry, payload in _iter_admissions(context, "admitted"):
         if payload["ordinal"] in canaries:
             continue
+        path = context.tree.resolve(payload["stored_at"])
         try:
-            stored = context.tree.resolve(payload["stored_at"]).stat().st_size
+            stored = path.stat().st_size
         except OSError as error:
             raise ContractError(
                 f"the stored page of admitted ordinal {payload['ordinal']} could not be "
                 f"measured ({type(error).__name__}), so the export's size cannot be estimated"
             ) from error
-        pages.append((stored, payload["geometry"]["width"], payload["geometry"]["height"]))
+        mode = stored_image_mode(path)
+        rate = MAX_CROP_BYTES_PER_PIXEL if mode is None else crop_bytes_per_pixel(mode)
+        geometry = payload["geometry"]
+        pages.append((stored, geometry["width"], geometry["height"], rate))
     return pages
 
 

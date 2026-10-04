@@ -6,6 +6,7 @@ can emit.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,13 +28,15 @@ DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH: Final = (
 # `operations/operator/test_surface.py` pins that. Every whole-archive read is
 # held in memory, so raising it raises peak memory at sealing and publication.
 MAX_EXPORT_ARCHIVE_BYTES: Final = 192 * 1024 * 1024
-# The Door's estimate of an embedded export's crops, in bytes per page pixel.
-# A crop is stored as uncompressed PNG (1/8 byte per pixel bilevel, 1 grey, 3
-# colour, more with alpha or 16 bits), and the crops of a page cover the
-# regions read, usually less than the whole page. One byte per page pixel is a
-# provisional average, to be calibrated on real pages; the Armarium still
-# checks the real archive before storing it.
-CROP_BYTES_PER_PIXEL: Final = 1
+# How many whole pages of crops the Door allows for each exported page. Only
+# delivered readings carry crops, one per reading: the bounding box of its
+# region. Two readings whose regions claim mostly the same ink are held
+# (`duplicate-region` in `common/page_accounting.py`), so delivered regions
+# barely overlap, but their bounding boxes can still intersect where readings
+# interleave (columns, marginalia). Twice the page area allows for that; it is
+# an allowance rather than a proof, so the Armarium still checks the real
+# archive before storing it.
+CROP_PAGE_COVERAGE: Final = 2
 
 
 @dataclass(frozen=True)
@@ -106,14 +109,18 @@ def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
     return digest, armarium_formats_from_record(raw, source=f"configuration {path}")
 
 
-def estimated_embedded_export_bytes(pages: Iterable[tuple[int, int, int]]) -> int:
-    """An embedded export's size from its sealed pages, as `(stored bytes, width, height)`.
+def estimated_embedded_export_bytes(pages: Iterable[tuple[int, int, int, float]]) -> int:
+    """An upper estimate of an embedded export's pixels, from its sealed pages.
 
-    Each page is carried as stored, and its crops at `CROP_BYTES_PER_PIXEL` over
-    its pixel area. The records beside them are small next to the pixels and
-    are not counted.
+    Each page is `(stored bytes, width, height, crop bytes per pixel)`: it is
+    carried as stored, and its crops as `CROP_PAGE_COVERAGE` whole-page crops,
+    each an uncompressed PNG of one filter byte plus the packed pixels per row.
+    The records beside them are small next to the pixels and are not counted.
     """
-    return sum(stored + width * height * CROP_BYTES_PER_PIXEL for stored, width, height in pages)
+    return sum(
+        stored + CROP_PAGE_COVERAGE * height * (1 + math.ceil(width * bytes_per_pixel))
+        for stored, width, height, bytes_per_pixel in pages
+    )
 
 
 def require_within_export_archive_limit(size: int, *, what: str, embed_pixels: bool) -> None:
@@ -121,10 +128,13 @@ def require_within_export_archive_limit(size: int, *, what: str, embed_pixels: b
     limit = MAX_EXPORT_ARCHIVE_BYTES
     if size <= limit:
         return
+    # The format choice is sealed into the run, so a run is never re-exported
+    # under another; the remedy is always a new run.
     remedy = (
-        "split the submission into smaller runs, or export with embed_pixels = false"
+        "start new runs over smaller parts of the submission, or a new run whose formats "
+        "configuration (config/formats.toml, or --formats-config) sets embed_pixels = false"
         if embed_pixels
-        else "split the submission into smaller runs"
+        else "start new runs over smaller parts of the submission"
     )
     raise ContractError(
         f"{what} is {size} bytes, above the {limit}-byte export archive limit, so it could "
