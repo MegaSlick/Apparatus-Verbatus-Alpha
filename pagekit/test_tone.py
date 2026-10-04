@@ -9,6 +9,7 @@ paper, strokes, hairlines and the stain lie) is kept beside the image.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import random
 import statistics
@@ -33,6 +34,7 @@ from pagekit.tone import (
     lift_lut,
     load_settings,
     record_json,
+    tiff_bytes,
     to_grey,
     tone,
     tone_file,
@@ -549,6 +551,10 @@ def test_the_command_writes_a_lossless_tiff_and_prints_the_record(tmp_path, caps
         assert written.info["compression"] == "tiff_adobe_deflate"
         assert written.info["dpi"] == (300.0, 300.0)
         assert written.tobytes() == expected.tobytes()
+    # The same page and settings give the same bytes on disk.
+    again = tmp_path / "again.tif"
+    assert main(["tone", "--in", str(source), "--out", str(again), "--grey-rule", "min"]) == 0
+    assert again.read_bytes() == out.read_bytes()
 
 
 def test_the_command_refuses_what_it_cannot_do(tmp_path, capsys):
@@ -753,3 +759,61 @@ def test_background_edges_are_counted_only_where_the_estimate_steps():
     _, stained = tone(synthetic()[0])
     edges = stained["flatten"]["background_edges"]
     assert 0 < edges["edge_share"] < edges["band_share"] < 0.5
+
+
+def test_the_written_tiff_is_byte_identical_on_repeat_even_with_an_odd_strip(tmp_path):
+    # Find a view whose compressed strip ends on an odd byte, where a pad byte precedes
+    # the directory, then write it several times.
+    for seed in range(40):
+        view, record = tone(_grain((301, 203), 200, seed))
+        data = tiff_bytes(view, [300.0, 300.0])
+        with Image.open(io.BytesIO(data)) as written:
+            counts = written.tag_v2[279]
+        if any(count & 1 for count in counts):
+            break
+    else:
+        pytest.fail("no page gave an odd strip")
+    directory_offset = int.from_bytes(data[4:8], "little")
+    assert directory_offset % 2 == 0 and data[directory_offset - 1] == 0
+    out = tmp_path / "view.tif"
+    digests = set()
+    for repeat in range(5):
+        info = write_view(view, out, [300.0, 300.0], force=repeat > 0)
+        digests.add(hashlib.sha256(out.read_bytes()).hexdigest())
+        assert (
+            info["sha256"] in digests and info["pixels_sha256"] == record["view"]["pixels_sha256"]
+        )
+    assert len(digests) == 1
+    with Image.open(out) as written:
+        assert written.mode == "L" and written.size == view.size
+        assert written.info["compression"] == "tiff_adobe_deflate"
+        assert written.info["dpi"] == (300.0, 300.0)
+        assert written.tobytes() == view.tobytes()
+    # Without dpi the file carries none, and a tall page is written in several strips.
+    tall, _ = tone(_grain((40, 700), 200, 0))
+    with Image.open(io.BytesIO(tiff_bytes(tall))) as written:
+        assert "dpi" not in written.info and len(written.tag_v2[273]) == 3
+        assert written.tobytes() == tall.tobytes()
+
+
+def test_the_command_never_writes_over_its_input_or_an_existing_file(tmp_path, capsys):
+    page, _ = synthetic()
+    source = tmp_path / "page.tif"
+    page.save(source, format="TIFF")
+    original = source.read_bytes()
+    assert main(["tone", "--in", str(source), "--out", str(source)]) == 2
+    assert "never written over" in capsys.readouterr().err
+    assert (
+        main(["tone", "--in", str(source), "--out", str(tmp_path / "sub" / ".." / "page.tif")]) == 2
+    )
+    assert source.read_bytes() == original
+    out = tmp_path / "view.tif"
+    assert main(["tone", "--in", str(source), "--out", str(out)]) == 0
+    first = out.read_bytes()
+    assert main(["tone", "--in", str(source), "--out", str(out)]) == 2
+    assert "exists" in capsys.readouterr().err and out.read_bytes() == first
+    assert main(["tone", "--in", str(source), "--out", str(out), "--force"]) == 0
+    assert out.read_bytes() == first
+    # --force never allows the input itself.
+    assert main(["tone", "--in", str(source), "--out", str(source), "--force"]) == 2
+    assert source.read_bytes() == original

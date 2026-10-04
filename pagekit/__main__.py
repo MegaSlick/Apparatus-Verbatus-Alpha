@@ -40,6 +40,9 @@ def _parser() -> argparse.ArgumentParser:
     toner.add_argument("--grey-rule", choices=GREY_RULES, help="how a colour page becomes grey")
     toner.add_argument("--lift-strength", type=float, help="faint-ink lift, 0 (off) to 0.4")
     toner.add_argument("--sharpen", action="store_true", help="apply the mild unsharp mask")
+    toner.add_argument(
+        "--force", action="store_true", help="write over an existing output (never the input)"
+    )
     return parser
 
 
@@ -53,7 +56,13 @@ def _tone(arguments: argparse.Namespace) -> int:
         overrides["sharpen"] = 1
     try:
         view, record = tone_file(arguments.page, overrides)
-        record["output"] = write_view(view, arguments.out, record["input"]["dpi"])
+        record["output"] = write_view(
+            view,
+            arguments.out,
+            record["input"]["dpi"],
+            source=arguments.page,
+            force=arguments.force,
+        )
     except (ToneError, OSError) as error:
         print(f"pagekit: {error}", file=sys.stderr)
         return 2
