@@ -695,3 +695,14 @@ record".
   measures only the written page; cropping is off by default; the stage cache is written
   beside the output. The builder reported that the library turns some uncompressed tagged
   TIFFs differently when opened by path than from bytes.
+
+## 0039 — Review of the tag fix and spec 0008; follow-up brief 0043
+
+- **Independent review** of ad4a27a by a fresh agent bound by the clean-room rule: the tag
+  handling matched the upright page in all 80 cases, the default canvas kept every pixel,
+  the cache never changed an output, and the source folder was untouched; a change of tag
+  trust on a TIFF re-ran nothing; `measure` scored uncropped pages as wrong; colour on
+  cream paper could be lost; the cache's disk use needs the lead's decision.
+- **Follow-up brief:** `briefs/0043-build-trust-measure-colour-cache.md` (sha256
+  293f80e0e46254a9b26d591e25194b062467cd75f94ece4d701af1896b6accc1), to the agent of
+  brief 0023. Saved before it was sent.
