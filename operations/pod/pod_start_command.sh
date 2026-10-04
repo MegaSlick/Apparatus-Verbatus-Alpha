@@ -1,6 +1,8 @@
 #!/bin/sh
 # Prints the container start command that arms a new pod's guard, for
-# `runpodctl pod create ... --docker-args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"`.
+#   START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&
+#   runpodctl pod create ... --docker-args "$START"
+# The && keeps a refusal (exit 2, nothing printed) from creating an unguarded pod.
 #
 # The guard keeps its records on the network volume, which must be mounted at
 # /workspace/private: the one mount path the bootstrap and the data gate accept.

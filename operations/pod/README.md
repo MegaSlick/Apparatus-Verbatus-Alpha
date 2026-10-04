@@ -569,9 +569,12 @@ so print a fresh command for every pod. The command refuses `<hours>` past the h
 maximum, and refuses outright when the hard maximum cannot be read:
 
 ```sh
-runpodctl pod create ... --volume-mount-path /workspace/private \
-  --docker-args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"
+START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&
+runpodctl pod create ... --volume-mount-path /workspace/private --docker-args "$START"
 ```
+
+The `&&` matters: the script exits 2 and prints nothing when it refuses, and an inline
+`--docker-args "$(...)"` would let the create run anyway, with no guard.
 
 (`runpodctl create pod ... --args` in runpodctl releases before `pod create`.) `<hours>` is
 the approved window and `<sha>` a commit on `main` that carries the guard. The network
@@ -669,6 +672,7 @@ serves every chair in turn.
 From a checkout at `<sha>` on the laptop:
 
 ```sh
+START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&
 runpodctl pod create \
   --name verbatus-<run id> \
   --image <RunPod Ubuntu 24.04 CUDA image> \
@@ -679,7 +683,7 @@ runpodctl pod create \
   --volume-mount-path /workspace/private \
   --container-disk-in-gb 120 \
   --ports "22/tcp" \
-  --docker-args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"
+  --docker-args "$START"
 ```
 
 `<hours>` is the approved window, at most the soft maximum in `config/spend.toml` (2 h in
