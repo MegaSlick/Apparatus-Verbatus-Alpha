@@ -149,8 +149,8 @@
    },
    "page": 1,
    "source": {
-    "name": "colour.png",
-    "sha256": "8728c3084cf644e10e7d7e44fbb72d5ca16d3fe9f3608fea5be5960de5ff9ac7"
+    "name": "colour.tif",
+    "sha256": "fd323c660788acbb2846353ddcd286b455bcd00961e735091ae0d1b78a789eeb"
    },
    "source_resolution": {
     "file_value": [
@@ -377,8 +377,8 @@
    },
    "page": 1,
    "source": {
-    "name": "nodpi.png",
-    "sha256": "71ddf719efdd5d1653076de016057192ab58ce7f811ca65f6439269c22d925f4"
+    "name": "nodpi.tif",
+    "sha256": "b7c09fb8dd2a9ed7a21c463a15a96f6d5f83d8d81d625d8cc8c48378433653ee"
    },
    "source_resolution": {
     "file_value": null,
@@ -513,11 +513,11 @@
         0.0
        ],
        [
-        1007.7199071241139,
+        1007.718725875722,
         0.0
        ],
        [
-        1029.7356326423412,
+        1029.7344513939497,
         1400.0
        ],
        [
@@ -575,10 +575,10 @@
     "name": "spread_p1.tif",
     "pixels_sha256": "49238e16ec878fc30e6222b0a70e5ad79840a00b55fe5f520c76cd8293c2d11e",
     "resolution": [
-     150.01,
-     150.01
+     150.0,
+     150.0
     ],
-    "sha256": "322501880888ff8e09d427aa3264271996a706ce87c5a98209b4fe1b9e1c35e1",
+    "sha256": "2155e562698cc88dbdb8b6c55dd7866c1d909205dc4a6fcd5f5de92977ed3516",
     "size": [
      1091,
      1451
@@ -586,18 +586,18 @@
    },
    "page": 1,
    "source": {
-    "name": "spread.png",
-    "sha256": "2dd0936f14065f51b5850a6a941d79e371872f963e910eceb7eec262a9bf7dce"
+    "name": "spread.tif",
+    "sha256": "88c0b388d2d9b31442da033dad24b08fbaa8fa8afe4fef90ef4c3cd087551692"
    },
    "source_resolution": {
     "file_value": [
-     150.01,
-     150.01
+     150.0,
+     150.0
     ],
     "origin": "file",
     "value": [
-     150.01,
-     150.01
+     150.0,
+     150.0
     ]
    },
    "steps": {
@@ -724,7 +724,7 @@
       "op": "page_polygon",
       "polygon": [
        [
-        972.2800928758861,
+        972.2812741242777,
         0.0
        ],
        [
@@ -736,7 +736,7 @@
         1400.0
        ],
        [
-        994.2958183941136,
+        994.2969996425053,
         1400.0
        ]
       ],
@@ -790,10 +790,10 @@
     "name": "spread_p2.tif",
     "pixels_sha256": "5fbcb02ed48b81d7515761e76be3b4edb42bcb73d75de4613f6fef5743c3bd52",
     "resolution": [
-     150.01,
-     150.01
+     150.0,
+     150.0
     ],
-    "sha256": "bb082e6c9c084771bb856bdbf5a973d75875636556926b4c8b01787517656050",
+    "sha256": "3f2c7371ecead76fa8d77ad2b586e1953641be1169cb3457e39d94a1b26cb1bd",
     "size": [
      900,
      1270
@@ -801,18 +801,18 @@
    },
    "page": 2,
    "source": {
-    "name": "spread.png",
-    "sha256": "2dd0936f14065f51b5850a6a941d79e371872f963e910eceb7eec262a9bf7dce"
+    "name": "spread.tif",
+    "sha256": "88c0b388d2d9b31442da033dad24b08fbaa8fa8afe4fef90ef4c3cd087551692"
    },
    "source_resolution": {
     "file_value": [
-     150.01,
-     150.01
+     150.0,
+     150.0
     ],
     "origin": "file",
     "value": [
-     150.01,
-     150.01
+     150.0,
+     150.0
     ]
    },
    "steps": {

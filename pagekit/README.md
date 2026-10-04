@@ -379,8 +379,8 @@ Pages are written losslessly, TIFF with deflate compression (the default) or PNG
 (`output_format`), as `<source stem>_p<page>.tif` (or `.png`); greyscale stays
 greyscale and colour stays colour, and the file carries its resolution (the source's,
 or the shrunk value; none when the source has none). TIFF files are written by
-pagekit's own writer (`pagekit/_tiff.py`, shared with the tone view), so the same
-pixels always give the same bytes.
+pagekit's own writer (`pagekit/_tiff.py`, shared with the tone view), which leaves
+nothing to chance in the file's layout.
 
 ### The manifest
 
@@ -401,8 +401,21 @@ files that could not be used, each with `name`, `path` (from the project file's 
 `sha256` (null when the file cannot be read) and `reason`; they have no pages.
 `stale_outputs` lists the output files of pages
 that no longer exist, which are left in place, never deleted. Like the crop check it reports `thresholds`,
-`thresholds_measured` and `thresholds_note`. The same project gives byte-identical
-images and manifest.
+`thresholds_measured` and `thresholds_note`.
+
+### What is identical, and where
+
+- **Everywhere** (any platform, any library build): the decoded pixels of every
+  prepared page and tone view (the manifest's `pixels_sha256`), every value in the
+  manifest and project file other than a compressed file's sha256 and byte size, and the
+  geometry (to within the last bit of floating-point rounding, where a maths library's
+  sine and cosine may differ). These are what a reader receives and what the tests pin across platforms.
+- **Byte for byte, on the same platform with the same library versions**: the page
+  and tone-view files, the manifest, the project file and the review sheet, run after
+  run. TIFF pages are compressed with zlib and PNG pages and the sheet's previews by
+  Pillow's encoders, whose output may differ between builds of zlib or libjpeg; so a
+  file's sha256 and size can differ on another machine even though its pixels do not.
+  The manifest therefore records both the file's sha256 and its pixels' sha256.
 
 Coordinates are continuous: pixel (i, j) covers [i, i+1) x [j, j+1). A point on a
 prepared page maps back to the source through `affine_output_to_source`
