@@ -104,7 +104,8 @@ Options: `--project FILE` and `--overrides FILE` (below), `--report-stale`,
 `--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, `--dpi N`
 for sources that carry no resolution (see Resolution), and
 `--tone-view` (below). Exit status is 0 when no page is flagged, 1 when any page needs
-review and 2 when the input cannot be used (and then nothing is written).
+review and 2 when the input cannot be used (and then nothing is written). Every source
+is checked first, and one message names every file that cannot be used and why.
 
 When pagekit is not sure of a step, it says so with a flag and the page goes to review;
 it never guesses silently. If a step fails on one page, that page gets a flag naming the
@@ -350,7 +351,8 @@ lists them.
   left in the output folder and listed under `stale_outputs`; pagekit never deletes.
 - EXIF orientation tags are ignored: sources are taken in their stored pixel grid.
 - Source modes handled: greyscale, colour, bilevel (written as greyscale) and palette
-  (written as colour). Others, such as 16-bit greyscale, are refused.
+  (written as greyscale when every colour it uses is a grey, else as colour). Others,
+  such as 16-bit greyscale, are refused.
 
 ## Airlock
 

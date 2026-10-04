@@ -739,3 +739,45 @@ def test_measure_wraps_orientation_errors_and_measures_the_cut_across_the_page(t
     zero = _fake_batch(tmp_path / "zero", Image.new("L", (300, 400), 220), (150, 150), {})
     gold = _gold_file(tmp_path / "zero", {"source": "s.png", "orientation": 3})
     assert measure(zero, gold)["steps"]["orientation"]["error_largest"] == 1
+
+
+def test_every_unusable_source_is_named_in_one_message_and_nothing_is_written(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    folder = tmp_path / "src"
+    folder.mkdir()
+    Image.new("L", (200, 300), 220).save(folder / "good.png", dpi=DPI)
+    (folder / "broken.png").write_bytes(b"this is not an image")
+    Image.new("I;16", (200, 300), 4000).save(folder / "deep.png")
+    (folder / "empty.jpg").write_bytes(b"")
+    out = tmp_path / "out"
+    assert main(["prepare", str(folder), "--output", str(out)]) == 2
+    error = capsys.readouterr().err
+    assert error.count("pagekit:") == 1  # one message
+    for name in ("broken.png", "deep.png", "empty.jpg"):
+        assert name in error
+    assert "good.png" not in error
+    assert "BytesIO" not in error and "0x" not in error
+    assert "nothing was written" in error
+    assert not out.exists()
+
+
+def test_a_grey_palette_source_gives_a_grey_page_and_a_colour_one_a_colour_page(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    folder = tmp_path / "src"
+    folder.mkdir()
+    grey = pages.page(size=(300, 400), seed=11, margin=(30, 40, 30, 40))
+    grey.convert("P").save(folder / "grey_palette.png", dpi=DPI)  # r = g = b throughout
+    colour = Image.merge("RGB", (grey, grey, grey.point(lambda v: round(v * 0.8))))
+    colour.convert("P", palette=Image.Palette.ADAPTIVE).save(folder / "colour_palette.png", dpi=DPI)
+    with Image.open(folder / "grey_palette.png") as check:
+        assert check.mode == "P"
+    out = tmp_path / "out"
+    assert main(["prepare", str(folder), "--output", str(out)]) == 1
+    with Image.open(out / "grey_palette_p1.tif") as page:
+        assert page.mode == "L"
+    with Image.open(out / "colour_palette_p1.tif") as page:
+        assert page.mode == "RGB"

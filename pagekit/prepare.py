@@ -56,8 +56,8 @@ from pagekit.project import (
 
 PROJECT_NAME = "pagekit-project.json"
 IMAGE_SUFFIXES = (".png", ".tif", ".tiff", ".jpg", ".jpeg")
-# Modes kept as they are, and modes turned into one of them exactly (no resampling).
-_KEPT_MODES = {"L": "L", "RGB": "RGB", "1": "L", "P": "RGB"}
+# Modes read: grey and colour as they are; bilevel to grey; palette to grey or colour.
+_KEPT_MODES = frozenset({"L", "RGB", "1", "P"})
 _MM_PER_INCH = 25.4
 
 
@@ -81,21 +81,43 @@ class Source:
         return _decode(data, self.path)
 
 
+def _grey_palette(image: Image.Image) -> bool:
+    """Whether every colour a palette image uses is a grey (red = green = blue)."""
+    palette = image.getpalette("RGB") or []
+    used = image.getcolors(256) or []
+    for _, index in used:
+        red, green, blue = palette[3 * index : 3 * index + 3] or (0, 0, 0)
+        if not red == green == blue:
+            return False
+    return True
+
+
 def _decode(data: bytes, path: Path) -> Image.Image:
+    """The decoded source in L or RGB. Bilevel and grey-palette images become grey,
+    colour-palette images colour; nothing is resampled."""
     try:
         with Image.open(io.BytesIO(data)) as image:
             if getattr(image, "n_frames", 1) != 1:
-                raise PrepareError(f"{path} has more than one frame; give one page per file")
+                raise PrepareError(f"{path.name}: it holds more than one page; give one per file")
             if image.mode not in _KEPT_MODES:
-                raise PrepareError(f"{path}: image mode {image.mode!r} is not supported")
+                raise PrepareError(
+                    f"{path.name}: its image mode {image.mode} is not one pagekit reads "
+                    "(8-bit grey, colour, bilevel or palette); save it as 8-bit grey or colour"
+                )
             image.load()
-            return (
-                image.convert(_KEPT_MODES[image.mode]) if image.mode in ("1", "P") else image.copy()
-            )
+            if image.mode == "1":
+                return image.convert("L")
+            if image.mode == "P":
+                return image.convert("L" if _grey_palette(image) else "RGB")
+            return image.copy()
     except PrepareError:
         raise
     except Exception as error:  # any decoder failure means the source cannot be used
-        raise PrepareError(f"{path} cannot be read as an image: {error}") from error
+        kind = type(error).__name__
+        raise PrepareError(
+            f"{path.name}: not an image pagekit can read (it may be damaged, empty or of "
+            f"another kind; {kind})"
+        ) from error
 
 
 def _file_dpi(image: Image.Image) -> tuple[float, float] | None:
@@ -113,7 +135,8 @@ def read_source(path: Path, project_folder: Path) -> Source:
     try:
         data = path.read_bytes()
     except OSError as error:
-        raise PrepareError(f"{path} cannot be read: {error}") from error
+        reason = error.strerror or type(error).__name__
+        raise PrepareError(f"{path.name}: the file cannot be read ({reason})") from error
     image = _decode(data, path)
     with Image.open(io.BytesIO(data)) as stored:
         mode, dpi = stored.mode, _file_dpi(stored)
@@ -802,7 +825,17 @@ def plan(
                 f"pagekit never writes inside a source folder, and {path.parent} holds "
                 f"{path.name}; choose an output folder and project file elsewhere"
             )
-    sources = [read_source(path, project_folder) for path in paths]
+    sources, problems = [], []
+    for path in paths:  # every source is checked before stopping, so all are named at once
+        try:
+            sources.append(read_source(path, project_folder))
+        except PrepareError as error:
+            problems.append(str(error))
+    if problems:
+        raise PrepareError(
+            f"{len(problems)} of {len(paths)} source image(s) cannot be used, so nothing "
+            "was written:\n  " + "\n  ".join(problems)
+        )
 
     old_entries: dict[str, dict[str, Any]] = {}
     if old_project is not None:
