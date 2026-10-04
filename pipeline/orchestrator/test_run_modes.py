@@ -101,7 +101,6 @@ def test_store_root_reaches_a_stage_registry(tmp_path, monkeypatch) -> None:
         "pdf_target_dpi",
         "placement_tier",
         "witness_context",
-        "witness_context_config",
         "perlector_protocol_config",
         "perlector_audit_config",
     )

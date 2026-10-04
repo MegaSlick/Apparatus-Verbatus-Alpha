@@ -11,6 +11,10 @@ checked against the digest the `export` artifact recorded, so there is no
 path here by which a second version of an established reading could reach a
 deliverable.
 
+**Only a sealed run is published.** The Armarium's completion seal
+(`common.stage.verify_final_seal`) must verify and witness the export record
+read here; an export record under an unsealed or altered boundary is refused.
+
 **Publish is all-or-nothing, and an existing destination is refused rather
 than merged into.** The destination is reserved, staged and renamed into place,
 so it never holds halves of two different publications, which would later be
@@ -51,6 +55,7 @@ from common.stage import (  # noqa: E402
     run_stage,
     stage_parser,
     submission_identity,
+    verify_final_seal,
 )
 
 DESCRIPTION = "Take the sealed export bundle out of the run tree and put it where it was asked for."
@@ -273,6 +278,14 @@ def publish(tree: RunTree, out_dir: Path) -> dict:
                     "a declined terminal measurement is a publication refusal, so nothing was "
                     "published; use a verifier whose Unicode database matches the package's "
                     "recorded version and retry"
+                )
+            # Only a run whose Armarium sealed its boundary has a completed export, and
+            # the seal must witness the very export record these bytes were read under.
+            if verify_final_seal(tree)["payload"] != payload:
+                raise ContractError(
+                    "the export artifact read for publication is not the one the Armarium's "
+                    "completion seal witnessed; nothing was published; restore the immutable "
+                    "run tree from an intact copy before retrying publication"
                 )
             (staging / ARMARIUM_ARCHIVE_NAME).write_bytes(data)
             # `mkdtemp` creates at 0o700, so the published directory's permissions

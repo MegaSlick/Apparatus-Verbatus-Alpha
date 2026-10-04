@@ -347,15 +347,13 @@ def test_a_run_sealed_with_no_data_handling_digest_is_refused_by_name(real_root)
     assert "sealed no digest for the data-handling configuration" in str(refusal.value)
 
 
-def test_run_policy_digest_moves_with_each_of_its_three_fields():
+def test_run_policy_digest_moves_with_each_of_its_fields():
     base = dict(
         witness_context="named",
-        witness_context_declaration_sha256="a" * 64,
         mechanics_qualification=False,
     )
     moved = {
         "witness_context": "blinded",
-        "witness_context_declaration_sha256": "b" * 64,
         # A run created ordinarily must not resume under the mechanics flag and
         # pass the reuse check, mixing ordinary and mechanics-only artefacts in
         # one tree.

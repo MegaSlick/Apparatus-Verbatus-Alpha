@@ -20,6 +20,7 @@ import pytest
 from common.chairs.config import load_models_toml
 from common.chairs.models import AbsentChair
 from common.contracts.stages import PERLECTOR
+from common.stage import EXIT_HELD
 from operations.notify.client import NotifyOutcome
 
 from .finish_estimate import (
@@ -35,6 +36,7 @@ from .finish_estimate import (
     RunTreeProgress,
     StageProgress,
     deadline_at_risk_message,
+    sealed_budget,
 )
 from .notify_hooks import NO_GUARD_TOPIC, _unsafe_reason
 from .spend import load_spend_policy
@@ -60,6 +62,18 @@ def test_the_shipped_policy_carries_the_default_budget() -> None:
     # The guard is armed from the launch ceilings, at the soft maximum, never past it.
     assert policy.hard_lifetime_seconds == policy.soft_max_seconds
     assert policy.max_estimated_metered_cost_usd == policy.soft_max_cost_usd
+
+
+@pytest.mark.parametrize("bad", ["abc", "0", "-1", "NaN", "Infinity"])
+def test_a_sealed_budget_value_that_is_not_a_positive_number_leaves_the_budget_unknown(
+    bad: str,
+) -> None:
+    sealed = load_spend_policy(SHIPPED_SPEND).budget_environment()
+    assert sealed_budget(sealed) == (BUDGET, None)
+
+    for name in sealed:
+        budget, problem = sealed_budget({**sealed, name: bad})
+        assert budget is None and problem and problem.startswith("unusable"), (name, bad)
 
 
 # --- the estimate --------------------------------------------------------------------
@@ -120,7 +134,7 @@ FIXTURE_CHAIRS = load_models_toml(ROOT / "config" / "models.toml").chairs
 @pytest.fixture(scope="module")
 def fixture_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
     root = tmp_path_factory.mktemp("runs")
-    subprocess.run(
+    completed = subprocess.run(
         [
             sys.executable,
             str(ROOT / "pipeline" / "orchestrator" / "run.py"),
@@ -135,8 +149,11 @@ def fixture_run(tmp_path_factory: pytest.TempPathFactory) -> Path:
         ],
         cwd=ROOT,
         capture_output=True,
+        text=True,
         check=False,
     )
+    # The happy scenario ends held: the act that may cross its page break goes to review.
+    assert completed.returncode == EXIT_HELD, completed.stderr[-2000:]
     return root / "estimate"
 
 

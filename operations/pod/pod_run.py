@@ -13,7 +13,6 @@ own interpreter, over the volume::
     submission          --submission-folder / --submission-manifest, inside the volume
     roster              the bootstrap plan's --models-config
     serving catalogue   the bootstrap plan's --serving-recipes-config
-    witness context     the bootstrap plan's --witness-context-config
     data gate           --data-gate-policy, inside the repository
 
 The roster and the serving catalogue are deliberately taken from the bootstrap
@@ -149,7 +148,6 @@ from common.stage import (
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     real_run_policy_digest,
     run_sealed_config_digests,
-    validate_witness_context_bindings,
     verify_predecessor_seal,
 )
 from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
@@ -197,6 +195,7 @@ from .run_exits import (
     EXIT_REFUSED,
     EXIT_SELECTION_COMPLETE,
 )
+from .spend import POD_BUDGET_ENVIRONMENT
 
 RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
@@ -366,19 +365,6 @@ class RunPlan:
         return _named(self.bootstrap.serving_recipes_config, "--serving-recipes-config")
 
     @property
-    def witness_context_config(self) -> Path:
-        """The factual witness-context declaration this run seals.
-
-        Named on the plan beside the roster, never defaulted here:
-        `bootstrap_main.resolve_plan` supplies the default when none is named.
-        After checkout, the journaled CONFIGURATION step checks known shipped
-        sentences against their present witness identities before environment
-        or model work. This property receives that resolved path selection;
-        it does not choose another declaration for the orchestrator.
-        """
-        return _named(self.bootstrap.witness_context_config, "--witness-context-config")
-
-    @property
     def repository(self) -> Path:
         return _named(self.bootstrap.repository, "--repository")
 
@@ -482,8 +468,6 @@ class RunPlan:
             str(self.models_config),
             "--serving-recipes-config",
             str(self.serving_recipes_config),
-            "--witness-context-config",
-            str(self.witness_context_config),
             "--stage-timing-journal",
             str(self.timing_journal_path),
             "--stop-record",
@@ -533,7 +517,6 @@ class RunPlan:
             "data_gate_policy": str(self.data_gate_policy),
             "models_config": str(self.models_config),
             "serving_recipes_config": str(self.serving_recipes_config),
-            "witness_context_config": str(self.witness_context_config),
             "fixture": self.fixture,
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,
@@ -650,7 +633,7 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
     the ``perlector-protocol`` digest against the file this launch would hand
     the orchestrator (read by the same seal reader the run binding uses), and,
     on a real run, the ``run-policy`` digest recomputed from
-    ``--mechanics-qualification``, the witness-context declaration and the
+    ``--mechanics-qualification`` and the
     orchestrator defaults pod_run leaves in place. A fixture run seals those
     knobs only inside its ``config_digest``, which this cannot recompute; its
     stages still refuse a mismatch.
@@ -676,8 +659,8 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
                 mismatches.append(
                     "its run policy (sealed "
                     f"{sealed['run-policy']}, this launch {policy}); pass the "
-                    "--mechanics-qualification the run started with, against the same "
-                    "--witness-context-config"
+                    "--mechanics-qualification the run started with, or the run was sealed by "
+                    "an older version of this code; start a new run"
                 )
     except (ContractError, OSError) as error:
         # `read_run` already turns an unreadable or non-JSON run.json into a
@@ -699,13 +682,7 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
 
 def _recomputed_run_policy(plan: RunPlan) -> str:
     defaults = ORCHESTRATOR_RUN_POLICY_DEFAULTS
-    declaration = validate_witness_context_bindings(
-        load_models_toml(plan.models_config),
-        witness_context_config_path=plan.witness_context_config,
-        **defaults,  # type: ignore[arg-type]
-    )
     return real_run_policy_digest(
-        witness_context_declaration_sha256=declaration,
         mechanics_qualification=plan.mechanics_qualification,
         **defaults,  # type: ignore[arg-type]
     )
@@ -1523,6 +1500,32 @@ def _hourly_price(
     return total, " plus ".join(HOURLY_RATE_ENVIRONMENT)
 
 
+def _pod_budget(
+    plan: RunPlan, sealed: Mapping[str, str | None]
+) -> tuple[finish_estimate.Budget | None, str | None, str]:
+    """The pod's budget, why it is unknown, and where it came from.
+
+    A launch seals the budget of the spend policy it armed the pod with into the
+    pod's environment; that is the budget, and a part of it missing leaves it
+    unknown. Only a pod with none sealed (started by hand, or adopted) falls back
+    to the checkout's own spend policy, which the launching laptop may not have
+    used, so it is named with its digest.
+    """
+
+    if any(value is not None for value in sealed.values()):
+        budget, problem = finish_estimate.sealed_budget(sealed)
+        return budget, problem, "sealed into the pod at launch"
+    path = plan.repository / "config" / "spend.toml"
+    budget, problem, digest = finish_estimate.load_budget(path)
+    named = "unreadable" if digest is None else f"SHA-256 {digest}"
+    return (
+        budget,
+        problem,
+        f"the checked-out config/spend.toml ({named}), as no budget was sealed into the "
+        "pod at launch",
+    )
+
+
 def _deadline_watch(
     plan: RunPlan,
     *,
@@ -1530,6 +1533,7 @@ def _deadline_watch(
     hard_deadline: datetime,
     launch_token: str | None,
     rates: Mapping[str, str | None],
+    sealed_budget: Mapping[str, str | None],
     notify: bool,
     notify_runner: RunnerFactory,
     now: Callable[[], datetime],
@@ -1538,8 +1542,8 @@ def _deadline_watch(
 
     Under the pod timer (a launch token) its hard deadline ends the pod; otherwise
     this pod's guard deadline does (`finish_estimate.PodDeadline`). The budget is
-    the spend policy at the checked-out commit, and the page witnesses come from
-    the run's models configuration.
+    the one the launch sealed into the pod (`_pod_budget`), and the page witnesses
+    come from the run's models configuration.
     """
 
     volume = plan.bootstrap.volume_mount_path
@@ -1565,7 +1569,7 @@ def _deadline_watch(
             file=sys.stderr,
         )
         chairs = None
-    budget, budget_problem = finish_estimate.load_budget(plan.repository / "config" / "spend.toml")
+    budget, budget_problem, budget_source = _pod_budget(plan, sealed_budget)
     hourly_usd, hourly_source = _hourly_price(plan, rates)
     return finish_estimate.DeadlineWatch(
         run_id=plan.run_id,
@@ -1576,6 +1580,7 @@ def _deadline_watch(
         budget_problem=budget_problem,
         hourly_usd=hourly_usd,
         hourly_source=hourly_source,
+        budget_source=budget_source,
         deadline=deadline,
         ignored=lambda: deadline.ignored,
         send=send if notify else None,
@@ -1819,6 +1824,7 @@ def main(
     launch_token = environment.get("VERBATUS_LAUNCH_TOKEN") or None
     shell_pod_id = environment.get(POD_ID_ENVIRONMENT) or None
     rates = {name: environment.get(name) for name in HOURLY_RATE_ENVIRONMENT}
+    sealed_budget = {name: environment.get(name) for name in POD_BUDGET_ENVIRONMENT.values()}
     # Only the container's first process names this pod (see PID1_ENVIRON).
     pod_id = container_pod_id()
     try:
@@ -1992,6 +1998,7 @@ def main(
         hard_deadline=hard_deadline,
         launch_token=launch_token,
         rates=rates,
+        sealed_budget=sealed_budget,
         notify=args.notify,
         notify_runner=notify_runner,
         now=now,

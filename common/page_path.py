@@ -1043,7 +1043,7 @@ def _feed_render(
     protocol_config: Mapping[str, Any],
     page_id: str,
     ordinal: int,
-    retain: Callable[[bytes], dict[str, str]] | None,
+    retain: Callable[[bytes, str], dict[str, str]] | None,
 ):
     """The page image the sealed `page_image` switch shows, or `None` when it is off."""
     setting = protocol_config["feed"]["page_image"]
@@ -1071,7 +1071,7 @@ def page_feed_of(
     surya_census: dict[str, dict[str, Any]] | None,
     serving_recipe: str | None,
     fixture_placeholders: bool,
-    retain: Callable[[bytes], dict[str, str]] | None = None,
+    retain: Callable[[bytes, str], dict[str, str]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, str]]]:
     """One sealed page's `page-feed` payload, its page witnesses and its inputs.
 

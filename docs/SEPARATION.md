@@ -43,9 +43,11 @@ for a script to read.
 | `.githooks/install.sh` | PRODUCT | stop creating the `workbench/` folders |
 | `.githooks/pre-commit` | PRODUCT | |
 | `.githooks/pre-merge-commit` | PRODUCT | |
+| `.githooks/serving_audit.py` | PRODUCT | GPU serving inventory audit |
 | `.githooks/test_ci_workflow.py` | PRODUCT | |
 | `.githooks/test_hooks.py` | PRODUCT | |
 | `.githooks/test_ingress.py` | PRODUCT | |
+| `.githooks/test_serving_audit.py` | PRODUCT | |
 | `.github/` | PRODUCT | CI, Dependabot, pull request template |
 | `.gitignore` | PRODUCT | drop the harness lines |
 | `.graphifyignore` | HARNESS | |

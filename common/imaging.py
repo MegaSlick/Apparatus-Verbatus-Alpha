@@ -23,6 +23,7 @@ import sys
 import zlib
 from collections.abc import Mapping
 from io import BytesIO
+from pathlib import Path
 from types import MappingProxyType
 from typing import Final, NamedTuple, TypedDict
 
@@ -714,6 +715,22 @@ def crop_png(png_bytes: bytes, bounds: Bounds) -> bytes:
 # carried from `src/PIL/Image.py:2404-2405` under Pillow's MIT-CMU licence:
 # https://github.com/python-pillow/Pillow/blob/12.3.0/src/PIL/Image.py#L2404-L2405
 # https://github.com/python-pillow/Pillow/blob/12.3.0/LICENSE
+def lanczos_source(image: Image.Image) -> Image.Image:
+    """`image` in a mode Pillow really resamples with LANCZOS rather than NEAREST.
+
+    Bilevel becomes grayscale; a palette becomes RGB, or RGBA when it carries
+    transparency. Every other mode is returned as it is.
+    """
+    if image.mode == "1":
+        return image.convert("L")
+    if image.mode == "P":
+        # A palette's transparency can live either in image metadata or
+        # its palette; RGB promotion would discard those samples.
+        keeps_alpha = "transparency" in image.info or "A" in getattr(image.palette, "mode", "RGB")
+        return image.convert("RGBA" if keeps_alpha else "RGB")
+    return image
+
+
 def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
     """Resize an image with Pillow LANCZOS and deterministic PNG framing.
 
@@ -742,18 +759,11 @@ def resize_png_lanczos(png_bytes: bytes, width: int, height: int) -> bytes:
         with Image.open(BytesIO(png_bytes)) as image:
             _refuse_past_pixel_bound(image.width, image.height)
             image.load()
-            source = image
-            resizing = (image.width, image.height) != (width, height)
-            if resizing and image.mode == "1":
-                source = image.convert("L")
-            elif resizing and image.mode == "P":
-                # A palette's transparency can live either in image metadata or
-                # its palette; RGB promotion would discard those samples.
-                keeps_alpha = "transparency" in image.info or "A" in getattr(
-                    image.palette, "mode", "RGB"
-                )
-                source = image.convert("RGBA" if keeps_alpha else "RGB")
-            resized = source.resize((width, height), resample=Image.Resampling.LANCZOS)
+            if (image.width, image.height) == (width, height):
+                return encode_image_deterministic(image)
+            resized = lanczos_source(image).resize(
+                (width, height), resample=Image.Resampling.LANCZOS
+            )
             return encode_image_deterministic(resized)
     except _DECODE_FAILURES as error:
         raise ValueError(f"image bytes are not decodable for resize ({error})") from error
@@ -1022,6 +1032,37 @@ def _to_display_mode(crop: Image.Image) -> Image.Image:
 # `_to_display_mode`, and that is a *conversion* — for `I;16` it is an 8-bit
 # crush of 16-bit samples. Named here so a caller can ask before it converts.
 ENCODER_LOSSLESS_MODES: Final = frozenset(_PNG_LAYOUT) | {"P"}
+
+# The widest crop `crop_png` writes: RGBA at 8 bits, which every colour class
+# with alpha becomes. Used when a page's mode is unknown.
+MAX_CROP_BYTES_PER_PIXEL: Final = 4
+
+
+def crop_bytes_per_pixel(mode: str) -> float:
+    """The bytes per pixel `crop_png` stores for a crop of a page in `mode`.
+
+    Crops are uncompressed PNG: the encoder's own layouts as they are, 16-bit
+    grey scaled to 8-bit grey, and every other mode converted to RGB or RGBA,
+    counted here as RGBA so the figure is never too low.
+    """
+    layout = _PNG_LAYOUT.get(mode)
+    if layout is not None:
+        bit_depth, _color_type, samples = layout
+        return bit_depth * samples / 8
+    if mode in _HIGH_PRECISION_SCALE:
+        return 1
+    if mode == "La":
+        return 2
+    return MAX_CROP_BYTES_PER_PIXEL
+
+
+def stored_image_mode(path: Path) -> str | None:
+    """The decoded mode of a stored image, read from its header, or `None` if unreadable."""
+    try:
+        with Image.open(path) as image:
+            return image.mode
+    except _DECODE_FAILURES:
+        return None
 
 
 # The Door's PDF page recipe, shared by its PDFium renderer

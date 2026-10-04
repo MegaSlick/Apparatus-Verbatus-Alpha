@@ -112,6 +112,7 @@ from .shutdown import VerifiedShutdown
 from .spend import (
     CHALLENGE_BYTES,
     CONFIRMATION_PREFIX,
+    POD_BUDGET_ENVIRONMENT,
     SpendAssessment,
     SpendPolicy,
     confirmation_phrase,
@@ -2819,6 +2820,13 @@ def test_guarded_create_seals_dead_man_facts_into_the_creation_request(tmp_path:
     assert submitted.metadata["VERBATUS_POD_HOURLY_USD"] == "0.77"
     assert submitted.metadata["VERBATUS_VOLUME_ONGOING_HOURLY_USD"] == "0.05"
     assert submitted.metadata[BILLING_CUTOFF_MARGIN_ENV] == "3600"
+    # The budget that armed the pod, so the pod's deadline notice quotes it.
+    assert {name: submitted.metadata.get(name) for name in POD_BUDGET_ENVIRONMENT.values()} == {
+        "VERBATUS_SOFT_MAX_SECONDS": "86400",
+        "VERBATUS_HARD_MAX_SECONDS": "86400",
+        "VERBATUS_SOFT_MAX_COST_USD": "1000.00",
+        "VERBATUS_HARD_MAX_COST_USD": "1000.00",
+    }
 
 
 def test_default_runtime_refuses_paid_create_without_an_approved_controller_harness(
@@ -4998,12 +5006,10 @@ def _fixture_configuration_receipt() -> dict[str, object]:
             name: {"path": f"/fixture/{name}.toml", "sha256": "0" * 64}
             for name in (
                 "models_config",
-                "witness_context_config",
                 "serving_recipes_config",
                 "placement_config",
             )
         },
-        "witness_context_validation": {},
     }
 
 

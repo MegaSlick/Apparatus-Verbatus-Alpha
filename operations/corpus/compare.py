@@ -36,7 +36,9 @@ bound well above the corpus's own measured maximum (see below), refusing an
 absurd input rather than silently degrading to an approximation.
 
 **Scoring.** A matched pair's CER/WER comes from `normalization.py`'s
-`graphemic-v1` profile and `scoring.score_response`.
+`graphemic-v1` profile and `scoring.score_response`. A hypothesis beyond the
+profile's text bounds is not scored: its pair carries no rate and names
+`unmeasured: "text-out-of-bounds"`.
 This module supplies the reference text (carried on the reference act) and each matched
 pipeline act's hypothesis text, obtained from
 a caller-supplied mapping rather than an assumed Perlector artifact shape:
@@ -59,11 +61,11 @@ from common.contracts.stages import EXEMPLAR, PERLECTOR
 from common.runtree.store import RunTree
 
 from . import CorpusRefusal
-from .normalization import GRAPHEMIC_V1, NormalizationProfile
+from .normalization import GRAPHEMIC_V1, NormalizationProfile, within_text_bounds
 from .reference import validate_reference_page
-from .scoring import OutputStatus, score_response
+from .scoring import TEXT_OUT_OF_BOUNDS, OutputStatus, hypothesis_for_status, score_response
 
-SCHEMA = "reference-comparison.v2"
+SCHEMA = "reference-comparison.v3"
 
 # One decision, in one place: a pipeline-act/reference pair whose IoU falls below
 # this is not an eligible match at all, never merely a low-scoring one.
@@ -646,7 +648,7 @@ def compare_page(
     profile: NormalizationProfile = GRAPHEMIC_V1,
     excluded_region_counts: dict[str, dict[str, int]] | None = None,
 ) -> dict[str, Any]:
-    """Build one `reference-comparison.v2` for a single page.
+    """Build one `reference-comparison.v3` for a single page.
 
     `pipeline_acts` is exactly `load_pipeline_reading_acts`'s output shape --
     `{"act_id", "bounds", "page_sha256"}` -- so a run tree's own loader output can
@@ -701,6 +703,17 @@ def compare_page(
                 "entry in the supplied hypotheses mapping"
             )
         status, text = hypothesis
+        if not within_text_bounds(hypothesis_for_status(status, text), profile):
+            matched_pairs.append(
+                {
+                    **pair,
+                    "cer": None,
+                    "wer": None,
+                    "status": status.value,
+                    "unmeasured": TEXT_OUT_OF_BOUNDS,
+                }
+            )
+            continue
         score = score_response(ract["text"], status=status, text=text, profile=profile)
         matched_pairs.append(
             {
@@ -722,6 +735,7 @@ def compare_page(
                     "deletions": score.wer.edits.deletions,
                 },
                 "status": status.value,
+                "unmeasured": None,
             }
         )
     body = {
@@ -766,6 +780,7 @@ _MATCHED_PAIR_FIELDS = frozenset(
         "cer",
         "wer",
         "status",
+        "unmeasured",
     }
 )
 _THRESHOLD_FIELDS = frozenset({"numerator", "denominator"})
@@ -811,7 +826,7 @@ def _closed_list(value: Any, fields: frozenset[str], what: str) -> list[dict[str
 
 
 def validate_comparison(comparison: Any) -> dict[str, Any]:
-    """Refuse a comparison record that is not exactly `reference-comparison.v2`."""
+    """Refuse a comparison record that is not exactly `reference-comparison.v3`."""
     comparison = _closed(comparison, _TOP_FIELDS, "reference comparison")
     if comparison["schema"] != SCHEMA:
         raise Refusal(f"wrong-schema: expected {SCHEMA!r}, got {comparison['schema']!r}")
@@ -820,8 +835,13 @@ def validate_comparison(comparison: Any) -> dict[str, Any]:
     _closed_list(comparison["matrix"], _MATRIX_ENTRY_FIELDS, "matrix")
     matched_pairs = _closed_list(comparison["matched_pairs"], _MATCHED_PAIR_FIELDS, "matched_pairs")
     for pair in matched_pairs:
-        _closed(pair["cer"], _EDIT_FIELDS, "matched pair cer")
-        _closed(pair["wer"], _EDIT_FIELDS, "matched pair wer")
+        if pair["unmeasured"] is None:
+            _closed(pair["cer"], _EDIT_FIELDS, "matched pair cer")
+            _closed(pair["wer"], _EDIT_FIELDS, "matched pair wer")
+        elif pair["unmeasured"] != TEXT_OUT_OF_BOUNDS or (pair["cer"], pair["wer"]) != (None, None):
+            raise Refusal(
+                "malformed-record: an unmeasured matched pair names its reason and carries no rate"
+            )
     _closed_list(comparison["misses"], _MISS_FIELDS, "misses")
     _closed_list(
         comparison["unmatched_pipeline_acts"], _UNMATCHED_PIPELINE_FIELDS, "unmatched_pipeline_acts"

@@ -44,7 +44,12 @@ from common.runtree.store import (
     SERVING_LOGS_DIR,
     RunTree,
 )
-from common.stage import load_fixture
+from common.stage import (
+    REAL_CONFIGURATION_FLAGS,
+    load_fixture,
+    partial_real_configuration_refusal,
+    verify_final_seal,
+)
 from operations.pod.pod_run import DEFAULT_RUNS_DIRECTORY
 from operations.pod.transfer import (
     ChecksummedTransfer,
@@ -95,7 +100,6 @@ _RESUMED_BINDINGS: Final = frozenset(
         "--data-gate-policy",
         "--models-config",
         "--serving-recipes-config",
-        "--witness-context-config",
     }
 )
 
@@ -123,9 +127,10 @@ MAX_FETCH_EVIDENCE_OBJECTS = 10_000
 receipts. Ten thousand is far past that and still bounds a listing that is not
 what this verb thinks it is."""
 MAX_FETCH_OBJECT_BYTES = 256 * 1024 * 1024
-"""One object's bound. A whole-page blob is the largest thing a run tree holds;
-the manifest walk already refuses an artifact above 64 MiB, and a quarter of a
-gigabyte is past any page this project has rendered."""
+"""One object's bound. A whole-page blob and the export archive are the largest
+things a run tree holds; the manifest walk already refuses an artifact above
+64 MiB, and a quarter of a gigabyte is past any page this project has rendered
+and at or above the export archive limit (`common/armarium_formats.py`)."""
 
 
 class _UploadManifestConflict(TransferFailure):
@@ -156,6 +161,14 @@ class RunOutcome:
     run_id: str
     aggregate: dict[str, Any]
     export_payload: dict[str, Any]
+
+
+class UnsealedExportError(ValueError):
+    """An Armarium export record not covered by a verified completion seal.
+
+    Its own type, so callers can tell a record that exists but is unsealed
+    from one that is absent or malformed.
+    """
 
 
 class UnreconciledActPartitionError(ValueError):
@@ -715,7 +728,6 @@ class OperatorSurface:
         data_gate_policy: str | Path | None = None,
         models_config: str | Path | None = None,
         serving_recipes_config: str | Path | None = None,
-        witness_context_config: str | Path | None = None,
         from_stage: str | None = None,
         to_stage: str | None = None,
     ) -> RunOutcome:
@@ -747,7 +759,6 @@ class OperatorSurface:
             data_gate_policy = recorded.get("--data-gate-policy")
             models_config = recorded.get("--models-config")
             serving_recipes_config = recorded.get("--serving-recipes-config")
-            witness_context_config = recorded.get("--witness-context-config")
         if submission_folder is None:
             for flag, value in (
                 ("--submission-manifest", submission_manifest),
@@ -761,7 +772,6 @@ class OperatorSurface:
         roster_argv = _roster_argv(
             models_config=models_config,
             serving_recipes_config=serving_recipes_config,
-            witness_context_config=witness_context_config,
         )
 
         run_root = self.state_root / "runs"
@@ -856,7 +866,6 @@ class OperatorSurface:
             "configuration": {
                 "models_config": _config_binding(models_config),
                 "serving_recipes_config": _config_binding(serving_recipes_config),
-                "witness_context_config": _config_binding(witness_context_config),
                 "submission_manifest": _config_binding(submission_manifest),
                 "data_gate_policy": _config_binding(data_gate_policy),
             },
@@ -1047,7 +1056,9 @@ class OperatorSurface:
     ) -> OperatorError:
         """Record why a finished run has no usable Armarium record; the refusal to raise."""
 
-        if completed.returncode == 3:
+        # An export record under a failed seal is not "held before the Armarium";
+        # it is reported as unreadable, with the seal's own refusal.
+        if completed.returncode == 3 and not isinstance(error, UnsealedExportError):
             # Held before the Armarium, so no export record exists. A held
             # Recensor's stop, with what it holds, is the orchestrator's own
             # report on stdout; any other hold's reason is its last stderr line.
@@ -1236,6 +1247,8 @@ class OperatorSurface:
                 self._require_reconciled_act_partition(export_payload)
         except UnreconciledActPartitionError as error:
             raise OperatorError(ErrorCode.EXPORT_UNRECONCILED, detail=str(error)) from error
+        except UnsealedExportError as error:
+            raise OperatorError(ErrorCode.EXPORT_UNSEALED, detail=str(error)) from error
         except Exception as error:
             raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error
         exports_dir = self.state_root / "exports"
@@ -1243,6 +1256,7 @@ class OperatorSurface:
         try:
             exports_dir.mkdir(parents=True, exist_ok=True)
             self._write_base_armarium_bundle(run_root, recorded_id, staged)
+            self._require_export_unchanged(run_root, recorded_id, export_payload)
             digest = sha256_file(staged)
             # Content-addressed, so a later export never overwrites bytes an
             # earlier receipt vouches for.
@@ -1713,10 +1727,20 @@ class OperatorSurface:
             self.present(line)
 
     def _armarium_export(self, run_root: Path, run_id: str) -> dict[str, Any]:
+        # The export record the Armarium's completion seal witnessed: a record
+        # under an unsealed or altered boundary is not a completed export.
         tree = RunTree(run_root, run_id)
-        record = tree.read_artifact(
-            ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
-        )
+        try:
+            record = verify_final_seal(tree)
+        except ContractError as error:
+            export_path = tree.artifact_path(
+                ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
+            )
+            if not (tree.root / export_path).is_file():
+                raise
+            raise UnsealedExportError(
+                f"the Armarium export record is not covered by a verified completion seal: {error}"
+            ) from error
         payload = record.get("payload")
         if not isinstance(payload, dict) or not isinstance(payload.get("aggregate"), dict):
             raise ValueError("Armarium export record has no usable aggregate")
@@ -1728,6 +1752,24 @@ class OperatorSurface:
             if not isinstance(payload[member], list):
                 raise ValueError(f"Armarium export record's {member} is not a list")
         return payload
+
+    def _require_export_unchanged(
+        self, run_root: Path, run_id: str, export_payload: dict[str, Any]
+    ) -> None:
+        """Refuse a copy unless the seal still witnesses the export record it was checked under."""
+
+        try:
+            unchanged = self._armarium_export(run_root, run_id) == export_payload
+        except (ContractError, ValueError) as error:
+            raise OperatorError(
+                ErrorCode.EXPORT_UNSEALED,
+                detail=f"the Armarium completion seal no longer verifies after the copy: {error}",
+            ) from error
+        if not unchanged:
+            raise OperatorError(
+                ErrorCode.EXPORT_UNSEALED,
+                detail="the sealed Armarium export record changed while its evidence was copied",
+            )
 
     def _require_reconciled_act_partition(self, export_payload: dict[str, Any]) -> None:
         """Refuse a `complete` export unless every expected act appears exactly once.
@@ -2440,35 +2482,31 @@ def _roster_argv(
     *,
     models_config: str | Path | None,
     serving_recipes_config: str | Path | None,
-    witness_context_config: str | Path | None,
 ) -> list[str]:
-    """The real-roster trio, forwarded together; a partial selection is refused.
+    """The real configuration, forwarded whole; a partial selection is refused.
 
-    The shipped witness context calls every chair a synthetic fixture, and the
-    Perlector is told that as fact; a real roster needs its own. The Door also
-    refuses this, but refusing here names the console's own flags.
+    The orchestrator refuses this too, but refusing here names the console's own
+    flags before anything starts.
     """
 
-    selected = (models_config, serving_recipes_config, witness_context_config)
-    if any(value is None for value in selected) and any(value is not None for value in selected):
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND,
-            detail=(
-                "--models-config, --serving-recipes-config and --witness-context-config "
-                "select one roster together (the chairs, the catalogue they are served "
-                "under, and the factual witness context the Perlector is told about them); "
-                "supply all three or none"
-            ),
+    selected = dict(
+        zip(
+            REAL_CONFIGURATION_FLAGS,
+            (models_config, serving_recipes_config),
+            strict=True,
         )
+    )
+    refusal = partial_real_configuration_refusal(
+        flag for flag, value in selected.items() if value is not None
+    )
+    if refusal is not None:
+        raise OperatorError(ErrorCode.INVALID_COMMAND, detail=refusal)
     if models_config is None:
         return []
     return [
-        "--models-config",
-        str(Path(models_config).absolute()),
-        "--serving-recipes-config",
-        str(Path(serving_recipes_config).absolute()),  # type: ignore[arg-type]
-        "--witness-context-config",
-        str(Path(witness_context_config).absolute()),  # type: ignore[arg-type]
+        argument
+        for flag, value in selected.items()
+        for argument in (flag, str(Path(value).absolute()))  # type: ignore[arg-type]
     ]
 
 

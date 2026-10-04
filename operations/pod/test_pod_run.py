@@ -20,6 +20,7 @@ on a requirement missing the Linux/x86_64 marker that keeps a laptop
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -32,10 +33,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from common.chairs.config import load_models_toml
 from common.runtree.store import RunTree
 from common.sealed_config import read_sealed_toml
-from common.stage import real_run_policy_digest, validate_witness_context_bindings
+from common.stage import real_run_policy_digest
 from operations.operator import cli as operator_cli
 from operations.operator.errors import ErrorCode, OperatorError
 from operations.operator.records import SCHEMA as RECEIPT_SCHEMA
@@ -305,16 +305,7 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
     runner = RecordedRunner(returncode=0)
     real_recipes = ws.repository / "config" / "serving_recipes_real.toml"
     real_roster = ws.repository / "config" / "models-real.toml"
-    real_context = ws.repository / "config" / "witness_context-real.toml"
-    argv = _run_argv(
-        ws,
-        bootstrap_extra=(
-            "--serving-recipes-config",
-            str(real_recipes),
-            "--witness-context-config",
-            str(real_context),
-        ),
-    )
+    argv = _run_argv(ws, bootstrap_extra=("--serving-recipes-config", str(real_recipes)))
     argv[argv.index("--models-config") + 1] = str(real_roster)
     environment = _environ(clock, lifetime=4.0, extra={"RUNPOD_S3_ACCESS_KEY": "user_abc"})
 
@@ -352,8 +343,6 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
         str(real_roster),
         "--serving-recipes-config",
         str(real_recipes),
-        "--witness-context-config",
-        str(real_context),
         "--stage-timing-journal",
         str(ws.volume / "pod-run-report-timings.json"),
         # A private path made for this invocation, removed once read.
@@ -1016,17 +1005,10 @@ def test_a_real_resume_without_its_sealed_mechanics_qualification_is_refused_bef
     ws = _prepared(tmp_path)
     monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
     default, _ = _protocols(ws)
-    declaration = ws.repository / "config" / "witness_context.toml"
-    declaration.write_bytes((ROOT / "config" / "witness_context.toml").read_bytes())
     # Computed here from the stage library, not through pod_run, under the
     # values the orchestrator seals when pod_run forwards none of them.
     policy = real_run_policy_digest(
         witness_context="named",
-        witness_context_declaration_sha256=validate_witness_context_bindings(
-            load_models_toml(ws.models_config),
-            witness_context="named",
-            witness_context_config_path=declaration,
-        ),
         mechanics_qualification=True,
     )
     _sealed_run(
@@ -1511,6 +1493,78 @@ def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
     assert notice["delivered"] is True
     assert (estimate["hourly_usd"], estimate["hourly_usd_source"]) == (hourly, source)
     assert "mv $G/deadline.new $G/deadline-pod123" in call[3]
+
+
+SEALED_BUDGET = {
+    "VERBATUS_SOFT_MAX_SECONDS": "7200",
+    "VERBATUS_HARD_MAX_SECONDS": "10800",
+    "VERBATUS_SOFT_MAX_COST_USD": "1.00",
+    "VERBATUS_HARD_MAX_COST_USD": "1.50",
+}
+SHIPPED_SPEND_SHA256 = hashlib.sha256((ROOT / "config" / "spend.toml").read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("sealed", "limits", "source"),
+    [
+        (
+            SEALED_BUDGET,
+            "soft max 2 h / $1.00, hard max 3 h / $1.50",
+            "sealed into the pod at launch",
+        ),
+        (
+            {},
+            "soft max 4 h / $2.00, hard max 6 h / $3.00",
+            f"the checked-out config/spend.toml (SHA-256 {SHIPPED_SPEND_SHA256})",
+        ),
+        (
+            {"VERBATUS_SOFT_MAX_SECONDS": "7200"},
+            "soft and hard max unknown",
+            "sealed into the pod at launch",
+        ),
+    ],
+    ids=["sealed", "checkout", "half-sealed"],
+)
+def test_the_deadline_notice_quotes_the_budget_that_armed_the_pod(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    sealed: dict[str, str],
+    limits: str,
+    source: str,
+) -> None:
+    """A launch seals its budget into the pod; the checkout's own spend policy, which the
+    laptop may not have launched with, is used only when nothing was sealed, and then
+    named with its digest. A budget sealed in part is never filled from the checkout."""
+    ws = _prepared(tmp_path)
+    (ws.repository / "config" / "spend.toml").write_bytes(
+        (ROOT / "config" / "spend.toml").read_bytes()
+    )
+    clock = Clock()
+    _first_process(tmp_path, monkeypatch, "pod123")
+    _guard_deadline(ws, int(clock.now().timestamp()) + 3600)
+    (ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic").write_text("guard-topic\n", "utf-8")
+    notify = NotifyRecorder()
+
+    code = main(
+        _run_argv(ws, extra=("--notify", "--hourly-usd", "1.99")),
+        environ=_environ(clock, lifetime=4.0, extra=sealed),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=PacedRunner(ticks=3, clock=clock),
+        notify_runner=notify.factory,
+    )
+
+    assert code == EXIT_COMPLETE
+    [call] = notify.calls
+    assert limits in call[3]
+    estimate = json.loads(Path(_report(ws)["estimate_path"]).read_text(encoding="utf-8"))
+    assert source in estimate["budget_source"]
+    if sealed == SEALED_BUDGET:
+        assert estimate["budget"]["soft_max_seconds"] == 7200
+    elif sealed:
+        assert estimate["budget"] is None
+        assert estimate["budget_problem"].endswith("VERBATUS_HARD_MAX_COST_USD missing")
 
 
 def test_a_finish_estimate_that_fails_never_stops_the_run_and_is_reported(

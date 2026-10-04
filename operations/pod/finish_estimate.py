@@ -23,13 +23,14 @@ timer there is no hand route at all.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Final
 
@@ -47,7 +48,7 @@ from operations.notify.client import NotifyOutcome
 
 from .durable import atomic_write, canonical_json
 from .models import POD_GUARD_DIRECTORY, POD_VOLUME_MOUNT_PATH, SpendRefusal
-from .spend import SpendPolicy, load_spend_policy
+from .spend import POD_BUDGET_ENVIRONMENT, SpendPolicy, load_spend_policy_bytes
 
 ESTIMATE_SCHEMA: Final = "pod-run-estimate.v1"
 RESULTS_HOME_MARGIN_SECONDS: Final = 20 * 60
@@ -149,7 +150,9 @@ class RunTreeProgress:
         if stage in (DOOR, EXEMPLAR) or not self._sealed(EXEMPLAR):
             pages = len(sources)
         else:
-            pages = sum(outcome == "sealed" for _, outcome in set(self._records(EXEMPLAR, "page")))
+            pages = len(
+                {unit for unit, outcome in self._records(EXEMPLAR, "page") if outcome == "sealed"}
+            )
         if PAGE_RECORDS[stage].per_witness:
             witnesses = self._page_witnesses(run)
             if witnesses is None:
@@ -316,13 +319,51 @@ class Budget:
         }
 
 
-def load_budget(path: Path) -> tuple[Budget | None, str | None]:
-    """The budget the spend policy names, or None and why not."""
+def load_budget(path: Path) -> tuple[Budget | None, str | None, str | None]:
+    """The budget the spend policy at ``path`` names, or None and why not, and the
+    policy's SHA-256 (None when unreadable)."""
 
     try:
-        return Budget.from_policy(load_spend_policy(path)), None
+        data = path.read_bytes()
+    except OSError as error:
+        return None, f"cannot read spend policy {path}: {error}", None
+    digest = hashlib.sha256(data).hexdigest()
+    try:
+        return Budget.from_policy(load_spend_policy_bytes(data, source=path)), None, digest
     except SpendRefusal as refusal:
-        return None, str(refusal)
+        return None, str(refusal), digest
+
+
+def sealed_budget(environment: Mapping[str, str | None]) -> tuple[Budget | None, str | None]:
+    """The budget a launch sealed into the pod's environment, or None and why not.
+
+    Each value is required: a budget sealed in part is not filled from elsewhere."""
+
+    values = {field: environment.get(name) for field, name in POD_BUDGET_ENVIRONMENT.items()}
+    missing = [POD_BUDGET_ENVIRONMENT[field] for field, value in values.items() if value is None]
+    if missing:
+        return None, f"{' and '.join(missing)} missing"
+    try:
+        parsed = {field: _positive(field, value or "") for field, value in values.items()}
+    except ValueError:
+        return None, f"unusable {', '.join(POD_BUDGET_ENVIRONMENT.values())}"
+    return Budget(**parsed), None  # type: ignore[arg-type]
+
+
+def _positive(field: str, text: str) -> int | Decimal:
+    """A positive whole number of seconds, or a positive finite dollar amount."""
+
+    if field.endswith("_seconds"):
+        if not (text.isascii() and text.isdigit()) or int(text) <= 0:
+            raise ValueError(text)
+        return int(text)
+    try:
+        amount = Decimal(text)
+    except InvalidOperation as error:
+        raise ValueError(text) from error
+    if not amount.is_finite() or amount <= 0:
+        raise ValueError(text)
+    return amount
 
 
 GUARD_HORIZON_SECONDS: Final = 7 * 86_400
@@ -454,6 +495,7 @@ def deadline_at_risk_message(
     budget_problem: str | None,
     hourly_usd: Decimal | None,
     now: datetime,
+    budget_source: str | None = None,
 ) -> str:
     """One line for the phone: what is at risk, what it would cost, and how to extend."""
 
@@ -468,15 +510,16 @@ def deadline_at_risk_message(
     )
     # The pod's creation time is not known here, so the hard maximum is stated, not
     # turned into an instant; the lead judges the extension against it.
-    limits = (
-        f"soft and hard max unknown ({budget_problem})"
-        if budget is None
-        else (
-            f"Budget from creation: soft max {_hours(budget.soft_max_seconds)} h / "
+    if budget is None:
+        why = budget_problem if budget_source is None else f"{budget_problem}; {budget_source}"
+        limits = f"soft and hard max unknown ({why})"
+    else:
+        origin = "" if budget_source is None else f" ({budget_source})"
+        limits = (
+            f"Budget from creation{origin}: soft max {_hours(budget.soft_max_seconds)} h / "
             f"${budget.soft_max_cost_usd}, hard max {_hours(budget.hard_max_seconds)} h / "
             f"${budget.hard_max_cost_usd}"
         )
-    )
     if deadline.guard_unread:
         route = (
             f"This deadline is {deadline.source}: no guard deadline was readable; check the "
@@ -531,6 +574,7 @@ class DeadlineWatch:
         send: Callable[[str], NotifyOutcome] | None,
         now: Callable[[], datetime],
         hourly_source: str | None = None,
+        budget_source: str | None = None,
         ignored: Callable[[], list[str]] = list,
     ) -> None:
         self._run_id = run_id
@@ -539,6 +583,7 @@ class DeadlineWatch:
         self._sample = sample
         self._budget = budget
         self._budget_problem = budget_problem
+        self._budget_source = budget_source
         self._hourly_usd = hourly_usd
         self._hourly_source = hourly_source
         self._deadline = deadline
@@ -594,6 +639,7 @@ class DeadlineWatch:
             "at_risk": at_risk,
             "budget": None if self._budget is None else self._budget.to_record(),
             "budget_problem": self._budget_problem,
+            "budget_source": self._budget_source,
             "hourly_usd": None if self._hourly_usd is None else str(self._hourly_usd),
             "hourly_usd_source": self._hourly_source,
         }
@@ -619,6 +665,7 @@ class DeadlineWatch:
             budget_problem=self._budget_problem,
             hourly_usd=self._hourly_usd,
             now=now,
+            budget_source=self._budget_source,
         )
         if self._send is None:
             outcome = NotifyOutcome(False, False, "no --notify")

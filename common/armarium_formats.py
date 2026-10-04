@@ -7,11 +7,13 @@ can emit. `lot` says whether every row carries the run's lot
 
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.sealed_config import read_sealed_toml
 
 FORMAT_SCHEMA: Final = "armarium-formats.v2"
@@ -19,6 +21,23 @@ KNOWN_FORMATS: Final = frozenset({"text-bundle", "acts-database", "jsonl", "csv"
 DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "formats.toml"
 )
+# The largest export archive a run may produce. The archive embeds pages and
+# crops when `embed_pixels` is true, so it may outgrow the single page-blob read
+# ceiling in `common/runtree/store.py`, which reads the Armarium's blobs under
+# this limit instead. It must stay at or below `MAX_FETCH_OBJECT_BYTES` in
+# `operations/operator/surface.py`, so an archive that seals can be fetched;
+# `operations/operator/test_surface.py` pins that. Every whole-archive read is
+# held in memory, so raising it raises peak memory at sealing and publication.
+MAX_EXPORT_ARCHIVE_BYTES: Final = 192 * 1024 * 1024
+# How many whole pages of crops the Door allows for each exported page. Only
+# delivered readings carry crops, one per reading: the bounding box of its
+# region. Two readings whose regions claim mostly the same ink are held
+# (`duplicate-region` in `common/page_accounting.py`), so delivered regions
+# barely overlap, but their bounding boxes can still intersect where readings
+# interleave (columns, marginalia). Twice the page area allows for that; it is
+# an allowance rather than a proof, so the Armarium still checks the real
+# archive before storing it.
+CROP_PAGE_COVERAGE: Final = 2
 
 
 @dataclass(frozen=True)
@@ -93,3 +112,36 @@ def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
     """
     raw, digest = read_sealed_toml(path, "Armarium formats configuration")
     return digest, armarium_formats_from_record(raw, source=f"configuration {path}")
+
+
+def estimated_embedded_export_bytes(pages: Iterable[tuple[int, int, int, float]]) -> int:
+    """An upper estimate of an embedded export's pixels, from its sealed pages.
+
+    Each page is `(stored bytes, width, height, crop bytes per pixel)`: it is
+    carried as stored, and its crops as `CROP_PAGE_COVERAGE` whole-page crops,
+    each an uncompressed PNG of one filter byte plus the packed pixels per row.
+    The records beside them are small next to the pixels and are not counted.
+    """
+    return sum(
+        stored + CROP_PAGE_COVERAGE * height * (1 + math.ceil(width * bytes_per_pixel))
+        for stored, width, height, bytes_per_pixel in pages
+    )
+
+
+def require_within_export_archive_limit(size: int, *, what: str, embed_pixels: bool) -> None:
+    """Refuse an export archive of `size` bytes above the limit, naming `what` was measured."""
+    limit = MAX_EXPORT_ARCHIVE_BYTES
+    if size <= limit:
+        return
+    # The format choice is sealed into the run, so a run is never re-exported
+    # under another; the remedy is always a new run.
+    remedy = (
+        "start new runs over smaller parts of the submission, or a new run whose formats "
+        "configuration (config/formats.toml, or --formats-config) sets embed_pixels = false"
+        if embed_pixels
+        else "start new runs over smaller parts of the submission"
+    )
+    raise ContractError(
+        f"{what} is {size} bytes, above the {limit}-byte export archive limit, so it could "
+        f"never be sealed. Nothing was dropped: {remedy}"
+    )

@@ -108,6 +108,12 @@ The bundle is a ZIP written with every member stored (never compressed) and fixe
 metadata, with `EXPORT_MANIFEST.json` first. It is deterministic for given inputs,
 except that bytes 96-99 of `acts.sqlite` hold the writing library's SQLite version.
 
+The whole archive is bounded by its own limit, `MAX_EXPORT_ARCHIVE_BYTES`
+(`common/armarium_formats.py`), not by the single-page blob ceiling: every run-tree
+read of it (input verification, the completion seal, `bundle.py`) uses that limit, and
+an archive above it is refused before it is stored. The Door refuses a run whose embedded export
+is estimated above it (`pipeline/1_exemplar/CONTRACT.md`).
+
 The formats are the run's sealed selection, `config/formats.toml`
 (`common/armarium_formats.py`, `armarium-formats.v2`): any of `text-bundle`,
 `acts-database`, `jsonl`, `csv` and `review-items`, `embed_pixels`, and `lot`. The
@@ -459,9 +465,11 @@ rows against the sealed comparison budgets). `count` is how many did not measure
 its digest against the export record, verifies it again with
 `armarium_export.verify_delivered_bundle` (the same checks, plus the cross-format
 comparison of every literal), compares the package's aggregate, run binding, manifest
-self-hash and status with the export record and `run.json`, and publishes
-`armarium-export.zip` and the verified extraction (`bundle/`) by atomic rename. An
-existing destination is refused, and nothing is written unless everything verifies.
+self-hash and status with the export record and `run.json`, requires the Armarium's
+completion seal (`common.stage.verify_final_seal`) to verify and to witness that same
+export record, and publishes `armarium-export.zip` and the verified extraction
+(`bundle/`) by atomic rename. An existing destination is refused, and nothing is
+written unless everything verifies.
 
 Verification refuses an unsafe ZIP (a member that is compressed, a link, outside the
 root, or aliased by case or Unicode normalization), a member that does not match its

@@ -98,6 +98,15 @@ def confirmation_phrase(
     )
 
 
+POD_BUDGET_ENVIRONMENT = {
+    "soft_max_seconds": "VERBATUS_SOFT_MAX_SECONDS",
+    "hard_max_seconds": "VERBATUS_HARD_MAX_SECONDS",
+    "soft_max_cost_usd": "VERBATUS_SOFT_MAX_COST_USD",
+    "hard_max_cost_usd": "VERBATUS_HARD_MAX_COST_USD",
+}
+"""The pod environment a launch seals its policy's soft and hard maximums into, by field."""
+
+
 @dataclass(frozen=True, slots=True)
 class SpendPolicy:
     """Ceilings the project lead configures.
@@ -143,6 +152,14 @@ class SpendPolicy:
     @property
     def configured(self) -> bool:
         return self.state == "configured"
+
+    def budget_environment(self) -> dict[str, str]:
+        """The soft and hard maximums as the pod's environment carries them; none when
+        unconfigured."""
+
+        if not self.configured:
+            return {}
+        return {name: str(getattr(self, field)) for field, name in POD_BUDGET_ENVIRONMENT.items()}
 
     def __post_init__(self) -> None:
         if self.state not in {"unconfigured", "configured"}:

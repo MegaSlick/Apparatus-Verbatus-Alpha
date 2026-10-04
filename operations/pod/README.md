@@ -223,14 +223,13 @@ correct immediate close.
   `python -m operations.serving.qualify` renders review candidates for the measured tier;
   it never edits the catalogue.
 - **Configuration is one selection.** `--serving-recipes-config` defaults to the
-  fixture-only `config/serving_recipes.toml`. A real launch names `config/models-real.toml`,
-  `config/serving_recipes_real.toml` and `config/witness_context-real.toml` together. The
-  journaled `CONFIGURATION` step, after checkout and before anything is synced, fetched or
-  served, matches each role's shipped witness declaration to its source and binds the four
-  config paths and seals into its receipt. A resume with a changed selection fails there
-  (restore it or start a new journal); a journal whose receipt is
-  `pod-bootstrap-configuration.v1` bound raw file bytes and is refused by schema. A custom roster needs an operator-authored
-  declaration. The placement table is always the checkout's own `config/pod_placement.toml`,
+  fixture-only `config/serving_recipes.toml`. A real launch names `config/models-real.toml`
+  and `config/serving_recipes_real.toml` together. The journaled `CONFIGURATION` step,
+  after checkout and before anything is synced, fetched or served, parses the roster, the
+  catalogue and the placement table and binds the three config paths and seals into its
+  receipt. A resume with a changed selection fails there (restore it or start a new
+  journal); a journal whose receipt is an earlier `pod-bootstrap-configuration` version is
+  refused by schema. The placement table is always the checkout's own `config/pod_placement.toml`,
   the one the stages seal; `CONFIGURATION` refuses any other resolved path, a symlink out
   included.
 - **CUDA compatibility.** Before the uv install, `CUDA_COMPAT` records `nvidia-smi`'s
@@ -267,7 +266,7 @@ python -m operations.pod.pod_run <run flags> -- <bootstrap_main argv>
 The argv after `--` goes through `bootstrap_main`'s own `prepare`/`run_bootstrap`, so every
 bootstrap refusal, probe, scrub and deadline applies. After a green journal it runs
 `pipeline/orchestrator/run.py` with the pod's interpreter: run root `<volume>/runs` (or
-`--run-root`, inside the volume), submission inside the volume, the config trio the
+`--run-root`, inside the volume), submission inside the volume, the config pair the
 bootstrap checked and measured, and `--data-gate-policy` inside the repository. Its
 `pod-run-report.v1` at the launch-bound `--report-path` moves through `bootstrapping`,
 `running`, then `complete`, `held`, `halted`, `failed`, `bootstrap-red` or `refused`.
@@ -403,8 +402,10 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   read each tick the way the guard reads it (a value that is not epoch seconds within a
   week is ignored, recorded, and the last valid one stands); with none ever read, the
   bootstrap's hard deadline; under the pod timer, the timer's hard deadline, which no
-  file moves. The notice names the spend policy's soft and hard maximums (the pod's
-  creation time is not known here, so it states them rather than an instant), the finish
+  file moves. The notice names the spend policy's soft and hard maximums as the launch sealed them
+  into the pod's environment, or, for a pod launched without them, the checkout's
+  `config/spend.toml` by its SHA-256 (the pod's creation time is not known here, so it
+  states them rather than an instant), the finish
   and deadline with how far off they are, the extra time and its cost at the hourly price
   (`--hourly-usd`, or a pod-timer launch's `VERBATUS_POD_HOURLY_USD` plus
   `VERBATUS_VOLUME_ONGOING_HOURLY_USD`; "unknown" without either), and, for a guard
@@ -728,7 +729,6 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   --store-root $V/model-store \
   --models-config $R/config/models-real.toml \
   --serving-recipes-config $R/config/serving_recipes_real.toml \
-  --witness-context-config $R/config/witness_context-real.toml \
   > $V/pod-run-$RUN.out 2>&1 < /dev/null &
 ```
 
@@ -1048,6 +1048,15 @@ with each advisory's first fixed version as pip-audit gives it:
   PYSEC-2026-4000 (CVE-2026-93989), PYSEC-2026-4004 to -4008 (CVE-2026-94622 to -94626).
 
 The same audit over this lock reports none against `vllm`.
+
+The full gate (`.githooks/check-all.sh`) audits this group on every run, from the lock and
+for the pod's Linux x86_64 target, without installing it (`.githooks/serving_audit.py`).
+One advisory is accepted there, for its exact pin only: `setuptools` 80.10.2,
+PYSEC-2026-3447 (CVE-2026-59890), fixed in 83.0.0. vLLM 0.30.0, the latest release,
+requires `setuptools<81`, so the lock cannot reach the fix. The flaw is in building a
+source distribution on a Unicode-normalizing (macOS) filesystem; the pod installs wheels
+on Linux and builds no sdist, and the project's own build uses `setuptools` 84.0.0. A lock
+that moves `setuptools` ends the acceptance.
 
 Licence sources: the `LICENSE` files at `github.com/vllm-project/vllm` (tag `v0.30.0`; the
 0.30.0 wheel carries an Apache-2.0 `LICENSE` and `License-Expression: Apache-2.0`) and

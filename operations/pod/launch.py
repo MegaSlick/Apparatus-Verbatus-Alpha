@@ -1547,6 +1547,7 @@ class PodRuntime:
                 "VERBATUS_POD_HOURLY_USD": str(estimate.pod_hourly_usd),
                 "VERBATUS_VOLUME_ONGOING_HOURLY_USD": str(estimate.volume_hourly_usd),
                 "VERBATUS_REQUESTED_AT": self.now().isoformat().replace("+00:00", "Z"),
+                **self.spend_policy.budget_environment(),
             },
         )
 

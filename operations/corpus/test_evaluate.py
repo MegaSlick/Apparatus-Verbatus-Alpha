@@ -17,6 +17,7 @@ import json
 import subprocess
 import sys
 import tomllib
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -26,7 +27,7 @@ from common.contracts.canonical import self_hash as _self_hash
 from common.runtree.store import RunTree
 from common.sealed_config import SEAL_METHOD
 from conftest import advance_held_recensor, reask_recovery_config
-from operations.corpus import CorpusRefusal
+from operations.corpus import CorpusRefusal, evaluate
 from operations.corpus.compare import compare_page, load_exemplar_page_shas
 from operations.corpus.evaluate import (
     EVALUATION_REFUSAL_REASONS,
@@ -44,6 +45,7 @@ from operations.corpus.evaluate import (
 )
 from operations.corpus.local_admission import SCHEMA as LEDGER_SCHEMA
 from operations.corpus.local_admission import validate_local_admission_ledger
+from operations.corpus.normalization import MAX_TEXT_LENGTH
 from operations.corpus.reference import build_reference_page
 from operations.corpus.scoring import OutputStatus
 from proof.build_fixture import ACTS, act_descriptor
@@ -594,6 +596,48 @@ def test_a_missed_record_moves_only_the_aggregate_that_counts_it(sealed_run):
     assert with_missed["deletions"] > matched_only["deletions"]
     assert with_missed["rate"]["numerator"] > matched_only["rate"]["numerator"]
     assert "missed" in report["aggregate"]["including_missed_records"]["scope"]
+
+
+def test_a_reading_beyond_the_scoring_bounds_is_an_unmeasured_row_not_a_rate(
+    sealed_run, monkeypatch
+):
+    """One runaway reading is named and counted; the other record is still scored.
+
+    The headline rate counts it as wholly deleted, so a runaway reading never
+    scores better than reading nothing at all.
+    """
+    real = evaluate.hypotheses_from_export
+
+    def evaluate_with_first_text(text):
+        def replaced(*args):
+            hypotheses = real(*args)
+            first = min(hypotheses)
+            hypotheses[first] = {**hypotheses[first], "text": text}
+            return hypotheses
+
+        monkeypatch.setattr(evaluate, "hypotheses_from_export", replaced)
+        reference = _fixture_reference_for_page_one(sealed_run)
+        return evaluate_run(sealed_run, [reference], code_ref="t")
+
+    report = evaluate_with_first_text("a" * (MAX_TEXT_LENGTH + 1))
+    empty = evaluate_with_first_text("")
+
+    rows = {row["outcome"]: row for row in report["records"]}
+    assert sorted(rows) == ["scored", "unmeasured"]
+    assert rows["unmeasured"]["cer"] is None and rows["unmeasured"]["wer"] is None
+    assert "text-out-of-bounds" in rows["unmeasured"]["note"]
+    assert report["denominators"]["reference_records_unmeasured"] == 1
+    assert report["denominators"]["reference_records_scored"] == 1
+    assert (
+        report["aggregate"]["matched_pairs_only"]["cer"]["reference_units"]
+        == (rows["scored"]["cer"]["reference_units"])
+    )
+    for unit in ("cer", "wer"):
+        headline = report["aggregate"]["including_missed_records"][unit]["rate"]
+        floor = empty["aggregate"]["including_missed_records"][unit]["rate"]
+        assert Fraction(headline["numerator"], headline["denominator"]) >= Fraction(
+            floor["numerator"], floor["denominator"]
+        )
 
 
 def test_a_page_the_run_never_sealed_leaves_its_records_not_attempted_never_scored(sealed_run):

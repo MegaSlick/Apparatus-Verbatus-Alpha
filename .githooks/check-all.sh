@@ -54,17 +54,34 @@ print(project["tool"]["uv"]["required-version"].removeprefix("=="))
   exit 1
 }
 
-uv_binary=$(command -v uv 2>/dev/null) || {
+# The gate finds uv itself rather than trusting `command -v`, whose output for a match in
+# a relative PATH entry differs between shells (dash prints it relative, bash as sh makes
+# it absolute). `env -i` below runs uv from the checkout root, so a match in an empty, `.`
+# or other relative entry could be a file the checkout itself supplies.
+uv_binary=
+uv_entry=
+uv_search=${PATH-}
+while :; do
+  uv_entry=${uv_search%%:*}
+  uv_candidate=${uv_entry:-.}/uv
+  if [ -f "$uv_candidate" ] && [ -x "$uv_candidate" ]; then
+    uv_binary=$uv_candidate
+    break
+  fi
+  case "$uv_search" in
+    *:*) uv_search=${uv_search#*:} ;;
+    *) break ;;
+  esac
+done
+[ -n "$uv_binary" ] || {
   echo "check-all: uv is missing from PATH" >&2
   echo "check-all: recovery: install uv==$required_uv_version, then $recovery" >&2
   exit 1
 }
-# `env -i` below runs uv from the checkout root, where a relative path could name a
-# file the checkout itself supplies.
-case "$uv_binary" in
+case "$uv_entry" in
   /*) : ;;
   *)
-    echo "check-all: uv resolved to the relative path '$uv_binary'; put an absolute uv directory on PATH" >&2
+    echo "check-all: uv was found from the PATH entry '$uv_entry', which is not absolute; put an absolute uv directory on PATH" >&2
     exit 1
     ;;
 esac
@@ -159,3 +176,9 @@ run_uv export --frozen --offline --no-config --no-emit-project --no-hashes \
   --group test --group audit > "$audit_inventory"
 "$frozen_python" -m pip_audit --strict --no-deps --disable-pip \
   --requirement "$audit_inventory"
+# The GPU pod's serving group is never installed here, so its locked inventory is
+# audited from the lock, for the pod's Linux x86_64 target whatever this host is.
+serving_export="$audit_directory/serving-export.txt"
+run_uv export --frozen --offline --no-config --no-emit-project --no-hashes \
+  --group pod > "$serving_export"
+"$frozen_python" .githooks/serving_audit.py "$serving_export" pyproject.toml "$audit_directory"

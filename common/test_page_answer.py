@@ -93,10 +93,6 @@ def test_a_code_fenced_answer_is_malformed_and_named(opening):
         (_with(lambda a: a["acts"][0].update(text=None)), "text-invalid"),
         (_with(lambda a: a["acts"][0].update(continues_to_next_page="no")), "flag-invalid"),
         (
-            _with(lambda a: a["acts"][0].update(continues_to_next_page=True)),
-            "continuation-not-at-edge",
-        ),
-        (
             _with(lambda a: a["acts"][1].update(continues_from_previous_page=True)),
             "continuation-not-at-edge",
         ),
@@ -271,3 +267,74 @@ def test_the_shared_decoder_refuses_what_the_page_grammar_refuses(raw, code):
 
 def test_the_shared_decoder_returns_any_one_bare_json_value():
     assert page_answer.decode_json_reply(' [1, {"a": null}] \n') == ([1, {"a": None}], [])
+
+
+def _page(*entries) -> str:
+    """A page answer of `(kind, continues_from_previous_page, continues_to_next_page)` entries."""
+    acts = [
+        {
+            "n": n,
+            "kind": kind,
+            "cites": [],
+            "text": "x",
+            "continues_from_previous_page": start,
+            "continues_to_next_page": end,
+        }
+        for n, (kind, start, end) in enumerate(entries, 1)
+    ]
+    return json.dumps({"acts": acts, "set_aside": []})
+
+
+ACT, OTHER = ("act", False, False), ("other", False, False)
+START, END, BOTH = ("act", True, False), ("act", False, True), ("act", True, True)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _page(END, OTHER),
+        _page(OTHER, START),
+        _page(OTHER, BOTH, OTHER),
+        _page(OTHER, START, OTHER, ACT, OTHER, END, OTHER),
+        _page(("other", True, False), ACT),
+        _page(ACT, ("other", False, True)),
+        _page(("other", True, True)),
+    ],
+    ids=[
+        "page-number-last",
+        "heading-first",
+        "both-around-one-act",
+        "notes-between-acts",
+        "first-entry-other",
+        "last-entry-other",
+        "no-act-page-first-and-last",
+    ],
+)
+def test_a_flag_on_the_page_s_first_or_last_act_or_entry_is_read(raw):
+    """The act edge is what a break joins; a flag on a first or last `other` entry is
+    read too, and joins nothing (the Recensor notes it)."""
+    assert page_answer.parse_page_answer(raw)[::2] == ("parsed", [])
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _page(ACT, START),
+        _page(END, ACT),
+        _page(OTHER, END, OTHER, ACT),
+        _page(ACT, ("other", True, False), ACT),
+        _page(ACT, ("other", False, True), ACT),
+        _page(("other", False, True), OTHER),
+    ],
+    ids=[
+        "start-on-second-act",
+        "end-on-first-of-two",
+        "end-before-last-act",
+        "start-on-middle-other",
+        "end-on-middle-other",
+        "no-act-page-end-on-first-of-two",
+    ],
+)
+def test_a_flag_anywhere_else_is_refused(raw):
+    state, _answer, problems = page_answer.parse_page_answer(raw)
+    assert (state, _codes(problems)) == ("malformed", ["continuation-not-at-edge"])
