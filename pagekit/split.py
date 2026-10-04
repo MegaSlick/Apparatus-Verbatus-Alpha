@@ -347,21 +347,49 @@ def _thin_parts(mark: Mark, size: int) -> list[Mark] | None:
     ]
 
 
-def _along_band(
+def _band_fringe(
     mark: Mark,
     band_rows: list[tuple[int, int]],
     band_columns: list[tuple[int, int]],
     reach: int,
+    touch: int,
+    share: float,
 ) -> bool:
-    """Whether the whole mark lies within `reach` px of a dark band's edge: a fringe of
-    the band's own ragged edge thinner than the backdrop erosion, not a stroke reaching
-    away from it."""
+    """Whether the mark is a fringe of a dark band's own ragged edge: it lies wholly
+    within `reach` px of the band's edge and touches that edge (within `touch` px) along
+    at least `share` of its length. A pen stroke running just under the band, even a
+    few px away and joined to the band at one point, does not touch it along its
+    length."""
+    columns: dict[int, int] = {}
+    rows: dict[int, int] = {}
+    for y, start, end in mark.runs:
+        for x in range(start, end):
+            columns[x] = min(columns.get(x, y), y)
+        rows[y] = min(rows.get(y, start), start)
+    bottoms: dict[int, int] = {}
+    rights: dict[int, int] = {}
+    for y, start, end in mark.runs:
+        for x in range(start, end):
+            bottoms[x] = max(bottoms.get(x, y), y)
+        rights[y] = max(rights.get(y, end - 1), end - 1)
     for a, b in band_rows:
-        if mark.y0 >= a - reach and mark.y1 <= b + reach:
-            return True
+        if mark.y0 >= b and mark.y1 <= b + reach:
+            near = sum(1 for top in columns.values() if top - b <= touch)
+            if near >= share * len(columns):
+                return True
+        if mark.y1 <= a and mark.y0 >= a - reach:
+            near = sum(1 for bottom in bottoms.values() if a - 1 - bottom <= touch)
+            if near >= share * len(bottoms):
+                return True
     for a, b in band_columns:
-        if mark.x0 >= a - reach and mark.x1 <= b + reach:
-            return True
+        if mark.x0 >= b and mark.x1 <= b + reach:
+            near = sum(1 for left in rows.values() if left - b <= touch)
+            if near >= share * len(rows):
+                return True
+        if mark.x1 <= a and mark.x0 >= a - reach:
+            near = sum(1 for right in rights.values() if a - 1 - right <= touch)
+            if near >= share * len(rights):
+                return True
     return False
 
 
@@ -644,6 +672,7 @@ def detect_split(
         outer_columns = [(a, b) for a, b in band_columns if a == 0 or b == width]
         crossing_marks = []
         excused = []
+        dropped: list[Mark] = []
         for m in marks:
             if not _joins_band(m, band_rows, outer_columns, value["touch_px"]):
                 crossing_marks.append(m)
@@ -653,22 +682,23 @@ def detect_split(
                 crossing_marks.append(m)
             else:
                 excused.append(m)
-                # Short fringes left at the thick part's corners, and thin pieces lying
-                # along a band's ragged edge, are dropped; the long thin pieces (a pen
-                # stroke, even when the thick part cut it in two) stay together as one
-                # mark of writing.
+                # Short corner fringes, and fringes of a band's own ragged edge, are
+                # dropped (and checked below); the long thin pieces (a pen stroke, even
+                # when the thick part cut it in two) stay together as one mark.
                 least = 3 * value["backdrop_min_thickness_px"]
-                strokes = [
-                    p
-                    for p in pieces
-                    if max(p.width, p.height) >= least
-                    and not _along_band(
+                strokes = []
+                for p in pieces:
+                    if max(p.width, p.height) >= least and not _band_fringe(
                         p,
                         band_rows,
                         outer_columns,
                         value["touch_px"] + value["backdrop_min_thickness_px"],
-                    )
-                ]
+                        value["touch_px"],
+                        value["fringe_touch_share"],
+                    ):
+                        strokes.append(p)
+                    else:
+                        dropped.append(p)
                 if strokes:
                     runs = sorted(r for p in strokes for r in p.runs)
                     crossing_marks.append(
@@ -682,6 +712,9 @@ def detect_split(
                         )
                     )
         joined = len(_straddlers(excused, cut, value["speck_px"] * 2))
+        dropped_reach = (
+            max((reach for _, reach, _ in _straddlers(dropped, cut, 1)), default=0.0) * sx
+        )
         straddling = _straddlers(crossing_marks, cut, value["speck_px"] * 2)
         crossing = sum(1 for *_, both in straddling if both)
         if crossing > value["fold_max_crossings"]:
@@ -729,6 +762,14 @@ def detect_split(
                 "for a pen stroke (backdrop or shadow) is not counted as writing, any pen "
                 "stroke in it is"
             )
+        if dropped_reach and resolution:
+            dropped_mm = dropped_reach / resolution[0] * 25.4
+            if dropped_mm > overlap:
+                flags.append(
+                    f"a mark joined to the backdrop crosses the cut by {dropped_mm:.1f} mm, "
+                    f"more than the {overlap:g} mm overlap; it was taken for the backdrop's "
+                    "edge, so check it is not writing"
+                )
         result = {"pages": 2, "cut": to_full(cut), "method": method, "part": part}
         result["neighbour"] = None
         return answer(
