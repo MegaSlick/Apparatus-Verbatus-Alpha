@@ -153,13 +153,16 @@ original.
 ### The review sheet
 
 `review.html` sits beside the manifest. It is one file with everything inside it: no
-internet, no scripts and no fonts from elsewhere. It lists every scan, flagged ones
-first, the most flagged first. For each scan it shows a small preview of the original
+internet, no scripts and no fonts from elsewhere. A short table at the top lists every
+scan, flagged ones first, the most flagged first, each linking to its section, in the
+same order. For each scan it shows a small preview of the original
 turned upright, with the cut (vermilion), each page box (blue) and each content box
 (green) drawn on it, and a small preview of each prepared page. For each step it gives
 the value, where it came from, the confidence, the evidence and every flag in plain
 words, and under it the exact line to copy into an overrides file to change it. The
-previews are small JPEG copies, only for looking. A note at the top says that the
+previews are small JPEG copies (the original at most `preview_long_side_px`, 320
+pixels, each page at half that), only for looking, and the browser loads them only as
+you scroll to them, so a sheet of hundreds of scans stays light. A note at the top says that the
 settings are not yet measured: until they are, a flag means "look at this page" and no
 flag is not proof that the page is right.
 

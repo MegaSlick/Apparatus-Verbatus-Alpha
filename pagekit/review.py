@@ -70,7 +70,7 @@ _TRANSPOSE = {
 
 def _jpeg(image: Image.Image) -> str:
     buffer = io.BytesIO()
-    image.convert("L" if image.mode == "L" else "RGB").save(buffer, "JPEG", quality=72)
+    image.convert("L" if image.mode == "L" else "RGB").save(buffer, "JPEG", quality=60)
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
@@ -239,7 +239,8 @@ def _escape(text: Any) -> str:
 def _figure(preview: dict[str, Any], alt: str, caption: str) -> str:
     width, height = preview["size"]
     return (
-        f'<figure><img src="data:image/jpeg;base64,{preview["data"]}" width="{width}" '
+        f'<figure><img loading="lazy" decoding="async" '
+        f'src="data:image/jpeg;base64,{preview["data"]}" width="{width}" '
         f'height="{height}" alt="{_escape(alt)}"><figcaption>{caption}</figcaption></figure>'
     )
 
@@ -249,6 +250,12 @@ def _flags_list(reasons: list[str]) -> str:
         return ""
     items = "".join(f"<li>{_escape(reason)}</li>" for reason in reasons)
     return f'<ul class="flags">{items}</ul>'
+
+
+def _origin_words(step: str, origin: str) -> str:
+    if step == "margin" and origin == "detected":
+        return "the margin_mm setting"  # a setting, not a detection
+    return _ORIGIN_WORDS[origin]
 
 
 def _step_block(step: str, entry: dict[str, Any], source_ref: str, page: int | None) -> str:
@@ -261,12 +268,12 @@ def _step_block(step: str, entry: dict[str, Any], source_ref: str, page: int | N
         f'<section class="step{" flagged" if flagged else ""}">'
         f"<h4>{_escape(_STEP_NAMES[step])}</h4><dl>"
         f"<dt>Value</dt><dd>{_escape(_value_words(step, entry['value']))}</dd>"
-        f"<dt>From</dt><dd>{_escape(_ORIGIN_WORDS[entry['origin']])}</dd>"
+        f"<dt>From</dt><dd>{_escape(_origin_words(step, entry['origin']))}</dd>"
         f"<dt>Confidence</dt><dd>{_escape(confidence)}</dd>"
         f"<dt>Evidence</dt><dd>{_escape(entry['evidence'])}</dd></dl>"
         f"{_flags_list(entry['flags'])}"
         '<p class="fix">To change it, edit the value in this line and add it to the '
-        'overrides file (add <code>"lock": true</code> to keep it on every re-run):</p>'
+        "overrides file:</p>"
         f'<pre class="override" data-step="{step}" data-page="{"" if page is None else page}">'
         f"{_escape(line)}</pre></section>"
     )
@@ -278,6 +285,20 @@ def _other_block(title: str, reasons: list[str], extra: str = "") -> str:
     return (
         f'<section class="step flagged"><h4>{_escape(title)}</h4>'
         f"{_flags_list(reasons)}{extra}</section>"
+    )
+
+
+def _contents(cards: list) -> str:
+    """A short table of every source, in the sheet's order, linking to its section."""
+    rows = []
+    for number, (_, relative, _, pages, flags) in enumerate(cards, start=1):
+        rows.append(
+            f'<tr><td><a href="#source-{number}">{_escape(relative)}</a></td>'
+            f"<td>{len(pages)}</td><td>{len(flags) or ''}</td></tr>"
+        )
+    return (
+        '<section class="box"><h2>Sources</h2><table><tr><th>Source image</th>'
+        "<th>Pages</th><th>Flags</th></tr>" + "".join(rows) + "</table></section>"
     )
 
 
@@ -370,6 +391,7 @@ def build(plan: Any, entries: list[dict[str, Any]], previews: dict[str, Any]) ->
         f"<p>{len(cards)} source image(s), {total_pages} prepared page(s). "
         f"<b>{flagged_pages} page(s) from {flagged_sources} source image(s) need a look</b>; "
         "they are listed first, the most flagged first.</p>",
+        _contents(cards),
         '<section class="box"><h2>Before you trust this sheet</h2>',
         (
             f"<p>{unmeasured_count} settings are starting guesses that have not yet been "
@@ -386,6 +408,9 @@ def build(plan: Any, entries: list[dict[str, Any]], previews: dict[str, Any]) ->
         "list, with a comma between lines:</p>",
         '<pre>{"schema": "pagekit-overrides.v1", "overrides": [\n'
         "  ...the lines you copied, separated by commas...\n]}</pre>",
+        "<p>A value you set is kept on every run. If something it was set on changes later "
+        "(the cut moves, say), pagekit still keeps it but flags it for a check; add "
+        '<code>"lock": true</code> to its line to keep it without that flag.</p>',
         "<p>Then run pagekit again by pasting this command into a terminal; it works from "
         "any folder. It keeps every other value and redoes only what depends on your "
         "change:</p>",

@@ -161,7 +161,7 @@ def test_the_review_sheet_is_one_offline_file_flagged_first_with_small_previews(
     assert len(previews) == len(NAMES) + 7  # one per source, one per prepared page
     for data in previews:
         with Image.open(io.BytesIO(base64.b64decode(data))) as preview:
-            assert max(preview.size) <= 480
+            assert max(preview.size) <= 320
     assert "not yet been measured" in text and "no flag is not proof" in text
     assert "too little ink" in text  # the blank page's flags, in plain words
 
@@ -804,3 +804,27 @@ def test_a_grey_palette_source_gives_a_grey_page_and_a_colour_one_a_colour_page(
         assert page.mode == "L"
     with Image.open(out / "colour_palette_p1.tif") as page:
         assert page.mode == "RGB"
+
+
+def test_the_review_sheet_is_light_to_open_and_says_what_lock_and_the_margin_mean(prepared):
+    text = (prepared["out"] / REVIEW_NAME).read_text(encoding="utf-8")
+    images = re.findall(r"<img [^>]+>", text)
+    assert images and all('loading="lazy"' in image for image in images)
+    for data in re.findall(r'src="data:image/jpeg;base64,([^"]+)"', text):
+        with Image.open(io.BytesIO(base64.b64decode(data))) as preview:
+            assert max(preview.size) <= 320
+    # A short table at the top links to every source, flagged first.
+    table = text[: text.index("<article")]
+    links = re.findall(r'<a href="#(source-\d+)">([^<]+)</a>', table)
+    assert [name for _, name in links] == [name for name, _ in _articles(text)]
+    for anchor, _ in links:
+        assert f'id="{anchor}"' in text
+    # About 500 sources must stay well under 30 MB: under 36 KB a source on these
+    # dense synthetic pages (18 MB for 500); it was 74 KB.
+    assert len(text.encode("utf-8")) / len(NAMES) < 36_000
+    # Hand-set values are kept on every run; lock only stops the "inputs changed" flag.
+    assert "to keep it on every re-run" not in text
+    assert "kept on every run" in text and "lock" in text
+    # The margin comes from a setting, not from a detector.
+    margins = re.findall(r"<h4>Margin</h4><dl>.*?<dt>From</dt><dd>([^<]+)</dd>", text)
+    assert margins and set(margins) == {"the margin_mm setting"}
