@@ -152,10 +152,11 @@ act `no-autopsia`.
   unread character (a provisional weight). Marks that do not parse count every
   character unread, and an entry with nothing read counts as one unread character.
   An entry over the sealed `[doubt] max_act_doubt_share_bp` of
-  `config/page_accounting.toml` holds `doubt-share-high`. When every entry the page
-  publishes, its first reading's and a counted re-ask's together, is over
-  `max_page_doubt_share_bp`, each holds `page-doubt-share-high`, a page-wide hold,
-  decided before any act record is published. Both limits are provisional and
+  `config/page_accounting.toml` holds `doubt-share-high`. When the share over all
+  the entries the page publishes together, its first reading's and a counted
+  re-ask's, with their counts summed, is over `max_page_doubt_share_bp`, each entry
+  holds `page-doubt-share-high`, a page-wide hold, decided before any act record is
+  published. Both limits are provisional and
   unmeasured, so a reading cannot pass by marking everything doubtful.
 - `truncation` classifies the entry `complete`, `truncated` or `unknown` from the
   engine's stop word and three computed signals, with every term of the length signal
