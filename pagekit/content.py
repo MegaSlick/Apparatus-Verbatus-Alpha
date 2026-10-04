@@ -24,8 +24,10 @@ says why. It works on a reduced working copy and writes no file.
    stain), as an opening by the border-seed square finds it (Vincent 1993), is taken
    out, but writing joined to it is not; ink inside that dark part is measured against
    the dark part's own level, counted as discarded and flagged. Components touching the
-   paper edge, or shaped like a strip of tape near it, are debris, and debris as large
-   as a small mark is flagged. Every other component is kept, however far out: marginal
+   paper edge, or shaped like a strip of tape near it, are debris: not discarded
+   writing, so not counted as discarded ink, but debris as large as a small mark is
+   flagged unless it is a line running along the edge (the sheet's own edge, the pages
+   under it, a thin shadow). Every other component is kept, however far out: marginal
    notes, signatures and crosses.
 8. A page that looks like noise (far more runs of dark pixels than writing makes) is
    not labelled further: the whole page box is kept, with a flag.
@@ -249,7 +251,11 @@ def _ink_under(grey: Image.Image, region: Image.Image, work: common.Work, v: dic
     flat = common.flatten(alone, work.px(v["background_smoothing_mm"]))
     marks = common.threshold_map(flat, 255 - v["blank_contrast"], region)
     speck = (v["speck_mm"] / work.mm) ** 2
-    return common.paint([p for p in common.components(marks) if p.area >= speck], grey.size)
+    parts = [p for p in common.components(marks) if p.area >= speck]
+    # Lines along the sides inside the dark area are page edges or a board's edge.
+    lines = common.edge_line_pieces(parts, True, work, v)
+    lines |= common.edge_line_pieces(parts, False, work, v)
+    return common.paint([p for p in parts if id(p) not in lines], grey.size)
 
 
 def ink_levels(work: common.Work, area: Box, v: dict[str, Any]) -> dict[str, Any]:
@@ -448,9 +454,29 @@ def measure(work: common.Work, area: Box, v: dict[str, Any]) -> dict:
     else:
         box = None
 
+    # Lines along the paper edge (the sheet's own edge, the pages under it, a thin
+    # shadow) are debris but not writing: they are neither counted as discarded ink nor
+    # reported as marks (real-register follow-up, S4).
+    width, height = size
+    edge_ids: set[int] = set()
+    for upright, touching in (
+        (True, lambda p: p.x0 < touch),
+        (True, lambda p: p.x1 > width - touch),
+        (False, lambda p: p.y0 < touch),
+        (False, lambda p: p.y1 > height - touch),
+    ):
+        pieces = [p for p in debris if touching(p)]
+        edge_ids |= common.edge_line_pieces(pieces, upright, work, v)
+    edge_lines = [p for p in debris if id(p) in edge_ids]
+
     # Ink above speck size for the crop-check comparison: every mark but excluded
-    # targets and border material, and with ruled lines counted apart.
-    counted = common.paint([p for p in marks if id(p) not in excluded_ids], size)
+    # targets, border material and edge debris, and with ruled lines counted apart. Edge
+    # debris is not discarded writing: a mark-sized piece is reported on its own below,
+    # and edge lines not at all (real-register follow-up, S4).
+    debris_ids = {id(p) for p in debris}
+    counted = common.paint(
+        [p for p in marks if id(p) not in excluded_ids and id(p) not in debris_ids], size
+    )
     rules_counted = ImageChops.multiply(counted, rule_map)
     counted = ImageChops.lighter(ImageChops.subtract(counted, rule_map), under)
     # Marks touching the paper edge left out as debris, large enough to be a mark
@@ -459,7 +485,8 @@ def measure(work: common.Work, area: Box, v: dict[str, Any]) -> dict:
     edge_marks = [
         p
         for p in debris
-        if p.area * work.mm**2 >= v["edge_mark_mm2"]
+        if id(p) not in edge_ids
+        and p.area * work.mm**2 >= v["edge_mark_mm2"]
         and not common.rule_shaped(p, rule_length, thickest, 10.0)
     ]
     # Strokes fainter than the faint level, outside the box: checked on every page,
@@ -496,6 +523,7 @@ def measure(work: common.Work, area: Box, v: dict[str, Any]) -> dict:
         "rules_clipped": clipped,
         "only_rules": only_rules,
         "counted": counted,
+        "edge_lines": len(edge_lines),
         "rules": rules_counted,
     }
 
@@ -625,7 +653,17 @@ def _removed_text(found: dict) -> str:
     if found["border"]:
         parts.append(f"{_plural(found['border'], 'dark area')} connected to the edge")
     if found["debris"]:
-        parts.append(f"{_plural(found['debris'], 'piece')} of edge debris")
+        lines = found.get("edge_lines", 0)
+        detail = (
+            f" ({lines} of them lines along the paper's edge: its own edge, pages under it "
+            "or a thin shadow)"
+            if lines
+            else ""
+        )
+        parts.append(
+            f"{_plural(found['debris'], 'piece')} of edge debris{detail}, not counted as "
+            "discarded ink"
+        )
     if found["specks"]:
         parts.append(_plural(found["specks"], "speck"))
     return f"; removed {', '.join(parts)}" if parts else ""

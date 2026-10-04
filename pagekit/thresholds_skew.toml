@@ -118,10 +118,20 @@ value = 0.5
 status = "UNMEASURED"
 meaning = "The profile estimate and the line-fit estimate may differ by at most this angle before the page is flagged."
 
+[skew_disagree_share]
+value = 0.3
+status = "UNMEASURED"
+meaning = "The two skew estimates also agree when they share a sign and differ by no more than this share of the larger angle."
+
 [skew_region_disagree_deg]
 value = 1.0
 status = "UNMEASURED"
 meaning = "A region of the page whose own angle differs from the page's angle by more than this disagrees."
+
+[skew_region_fit]
+value = 0.85
+status = "UNMEASURED"
+meaning = "A region whose profile score at the page's angle is at least this share of its score at its own angle agrees with the page, however far its own peak lies."
 
 [skew_region_grid]
 value = 2
@@ -231,6 +241,46 @@ meaning = "In a strip the walk cuts off, a dark stroke must stand this many robu
 value = 5.0
 status = "UNMEASURED"
 meaning = "Ink in a cut strip counts only when it is within this distance of the paper edge, or of other such ink: writing joined to the paper, not marks on the backdrop."
+
+[edge_line_min_mm]
+value = 20.0
+status = "UNMEASURED"
+meaning = "Shortest line along a side, at or beyond the paper edge, taken for an edge of the sheet, of the pages under it or of a board, rather than writing."
+
+[edge_line_max_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "Thickest such edge line, across the side."
+
+[stack_window_mm]
+value = 15.0
+status = "UNMEASURED"
+meaning = "Lines parallel to a side are looked for this far either side of the found edge, for a stack of page edges or a board edge."
+
+[stack_reference_mm]
+value = 1.5
+status = "UNMEASURED"
+meaning = "Width of the running median a stack line must stand out from."
+
+[stack_line_contrast]
+value = 8
+status = "UNMEASURED"
+meaning = "Grey levels, in the median along the side, by which a stack line is lighter or darker than its surroundings."
+
+[stack_line_max_mm]
+value = 1.0
+status = "UNMEASURED"
+meaning = "Widest single line of a stack of page edges."
+
+[stack_gap_mm]
+value = 2.0
+status = "UNMEASURED"
+meaning = "Largest gap between neighbouring lines of one stack of page edges."
+
+[stack_min_lines]
+value = 4
+status = "UNMEASURED"
+meaning = "Thin parallel lines along a side, close together and reaching the found edge, that make a stack of page edges or a board edge."
 
 [shadow_min_depth_mm]
 value = 2.0
