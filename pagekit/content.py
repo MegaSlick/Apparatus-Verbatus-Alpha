@@ -7,10 +7,14 @@ says why. It works on a reduced working copy and writes no file.
 
 1. Uneven light (finding 0023): inside the page box, a slow brightness gradient (gutter
    shadow, staining) is flattened before anything is called ink.
-2. Ink is measured against the local, flattened paper at two levels. Every component
-   above speck size that reaches the lenient (faint-ink) level is kept; one that never
-   reaches the strict (blank-contrast) level is faint ink and is flagged. Dark main
-   writing does not raise the bar for a faint note beside it.
+2. Ink is measured from the median of the local, flattened paper, at levels set from
+   the page's own paper noise. A mark that reaches the dark level is ink whatever its
+   shape. A paler mark (down to the faint level) is kept only if it is shaped like a pen
+   stroke, thin and elongated, or is a small piece beside one; a faint stroke that never
+   reaches the strict level is flagged. Paler blotches (mottling, foxing, stains) never
+   widen the box; those the size of a mark are flagged. Dark main writing does not
+   raise the bar for a faint note beside it, and very faint strokes outside the box are
+   flagged on every page.
 3. Blank first (finding 0021, with entry 0014 of the clean-room log): a page with less
    ink above speck size than the blank amount is blank. A blank page that still has
    some ink above speck size is flagged, and a blank page with faint structure below
@@ -20,8 +24,10 @@ says why. It works on a reduced working copy and writes no file.
    stain), as an opening by the border-seed square finds it (Vincent 1993), is taken
    out, but writing joined to it is not; ink inside that dark part is measured against
    the dark part's own level, counted as discarded and flagged. Components touching the
-   paper edge, or shaped like a strip of tape near it, are debris, and debris as large
-   as a small mark is flagged. Every other component is kept, however far out: marginal
+   paper edge, or shaped like a strip of tape near it, are debris: not discarded
+   writing, so not counted as discarded ink, but debris as large as a small mark is
+   flagged unless it is a line running along the edge (the sheet's own edge, the pages
+   under it, a thin shadow). Every other component is kept, however far out: marginal
    notes, signatures and crosses.
 8. A page that looks like noise (far more runs of dark pixels than writing makes) is
    not labelled further: the whole page box is kept, with a flag.
@@ -54,6 +60,11 @@ _READS = (
     "busy_runs_per_cm2",
     "busy_max_runs",
     "faint_contrast",
+    "faint_noise_k",
+    "doubt_noise_k",
+    "dark_contrast",
+    "stroke_max_mm",
+    "stroke_min_length_mm",
     "edge_mark_mm2",
     "content_working_dpi",
     "speck_mm",
@@ -184,11 +195,23 @@ def _review_flags(
             f"{round(found['under'] * to_source)} source pixels of ink lie inside a dark area "
             "at the page edge (a shadow or stain) and are left out of the content box."
         )
-    if found["edge_marks"]:
-        largest_box, largest = max(found["edge_marks"], key=lambda item: item[1])
+    for kind in sorted({k for _, _, k in found["edge_marks"]}):
+        marks = [(b, a) for b, a, k in found["edge_marks"] if k == kind]
+        largest_box, largest = max(marks, key=lambda item: item[1])
         flags.append(
-            f"{_plural(len(found['edge_marks']), 'mark')} touching the paper edge left out as "
-            f"debris (the largest {largest:.1f} mm\u00b2 at {source(largest_box)}); check them."
+            f"{_plural(len(marks), 'mark')} {kind} left out as debris (the largest "
+            f"{largest:.1f} mm\u00b2 at {source(largest_box)}); check them."
+        )
+    if found["large_blotches"]:
+        flags.append(
+            f"{_plural(found['large_blotches'], 'pale blotch', 'pale blotches')} the size of a "
+            "mark (shaped like stains or foxing, not strokes) left out of the content box; "
+            "check them."
+        )
+    if found["doubtful"] and found["box"] is not None:
+        flags.append(
+            f"{_plural(found['doubtful'], 'very faint stroke')} outside the content box, "
+            "fainter than the faint-ink level; check them."
         )
     return flags
 
@@ -228,21 +251,55 @@ def _ink_under(grey: Image.Image, region: Image.Image, work: common.Work, v: dic
     flat = common.flatten(alone, work.px(v["background_smoothing_mm"]))
     marks = common.threshold_map(flat, 255 - v["blank_contrast"], region)
     speck = (v["speck_mm"] / work.mm) ** 2
-    return common.paint([p for p in common.components(marks) if p.area >= speck], grey.size)
+    parts = [p for p in common.components(marks) if p.area >= speck]
+    # Lines along the sides inside the dark area are page edges or a board's edge.
+    lines = common.edge_line_pieces(parts, True, work, v)
+    lines |= common.edge_line_pieces(parts, False, work, v)
+    return common.paint([p for p in parts if id(p) not in lines], grey.size)
+
+
+def ink_levels(work: common.Work, area: Box, v: dict[str, Any]) -> dict[str, Any]:
+    """The flattened page inside `area`, its paper level and noise, and the ink levels.
+
+    Flattening puts the brightest local paper at 255, so ordinary paper sits a little
+    below it. Contrast is therefore measured from the median of the paper (the pixels
+    within `blank_contrast` of 255), and the faint level is set from the page's own
+    paper noise: at least `faint_contrast`, and at least `faint_noise_k` robust
+    standard deviations, below the paper (second review, R1)."""
+    mask = work.mask.crop(area)
+    flat = _flat(work, area, v)
+    histogram = flat.histogram(mask)
+    levels = range(255 - v["blank_contrast"], 256)
+    paper = common.median_level(histogram, levels)
+    paper = 255 if paper is None else paper
+    deviations = [0] * 256
+    for level in levels:
+        deviations[abs(level - paper)] += histogram[level]
+    spread = 1.4826 * (common.median_level(deviations) or 0)
+    faint = max(v["faint_contrast"], v["faint_noise_k"] * spread)
+    doubt = max(v["faint_contrast"] / 2, v["doubt_noise_k"] * spread)
+    return {
+        "flat": flat,
+        "mask": mask,
+        "paper": paper,
+        "spread": spread,
+        "lenient": common.threshold_map(flat, round(paper - faint), mask),
+        "strict": common.threshold_map(flat, round(paper - v["blank_contrast"]), mask),
+        "dark": common.threshold_map(flat, round(paper - v["dark_contrast"]), mask),
+        "doubt": common.threshold_map(flat, round(paper - doubt), mask),
+    }
 
 
 def ink_map(work: common.Work, area: Box, v: dict[str, Any]) -> tuple[Image.Image, Image.Image]:
-    """Ink inside `area` of the working copy after flattening, at two levels.
+    """Ink inside `area` at the faint (lenient) level and at the strict level."""
+    found = ink_levels(work, area, v)
+    return found["lenient"], found["strict"]
 
-    The lenient map holds every pixel at least `faint_contrast` below the flattened
-    paper; the strict map, every pixel at least `blank_contrast` below it. Both are
-    measured against the local paper, so dark main writing does not raise the bar for a
-    faint note beside it (brief 0022, B1)."""
-    mask = work.mask.crop(area)
-    flat = _flat(work, area, v)
-    lenient = common.threshold_map(flat, 255 - v["faint_contrast"], mask)
-    strict = common.threshold_map(flat, 255 - v["blank_contrast"], mask)
-    return lenient, strict
+
+def _stroke_shaped(part: common.Component, thick: bytes, width: int, longest: int) -> bool:
+    """Thin (gone after an erosion by the thickest stroke) and elongated (at least
+    `longest` pixels along its longer side): a pen stroke, not a stain or a mottle."""
+    return max(part.width, part.height) >= longest and not part.touches(thick, width)
 
 
 def _near(part: common.Component, size: tuple[int, int], distance: int) -> bool:
@@ -285,7 +342,8 @@ def measure(work: common.Work, area: Box, v: dict[str, Any]) -> dict:
     border_mask = common.dilate(core, 1, 1)
     under = _ink_under(grey, border_mask, work, v)
 
-    lenient, strict = ink_map(work, area, v)
+    levels = ink_levels(work, area, v)
+    lenient, strict = levels["lenient"], levels["strict"]
     noise = common.busy(lenient, work, v)
     if noise is not None:
         return {"noise": noise}
@@ -296,15 +354,50 @@ def measure(work: common.Work, area: Box, v: dict[str, Any]) -> dict:
     marks = [p for p in parts if p.area >= speck]
     specks = len(parts) - len(marks)
     strict_marks = strict.tobytes()
-    faint_ids = {id(p) for p in marks if not p.touches(strict_marks, size[0])}
+    dark_marks = levels["dark"].tobytes()
+    stroke_r = max(1, work.px(v["stroke_max_mm"]) // 2)
+    thick = common.erode(ink, stroke_r, stroke_r).tobytes()
+    longest = work.px(v["stroke_min_length_mm"])
+    # A mark that reaches the dark level is ink whatever its shape. A paler one counts
+    # only if it is shaped like a pen stroke; a paler blotch (mottling, foxing, a stain)
+    # is counted and reported but never widens the box (second review, R1).
+    blotches = [
+        p
+        for p in marks
+        if not p.touches(dark_marks, size[0])
+        and not _stroke_shaped(p, thick, size[0], longest)
+        and not _near(p, size, touch)
+    ]
+    # A small thin piece close to a stroke is a broken-off bit of that stroke.
+    strokes = [p.box for p in marks if id(p) not in {id(b) for b in blotches}]
+    blotches = [
+        p
+        for p in blotches
+        if p.touches(thick, size[0])
+        or not any(_overlaps(_grow(p.box, longest), other) for other in strokes)
+    ]
+    blotch_ids = {id(p) for p in blotches}
+    marks = [p for p in marks if id(p) not in blotch_ids]
+    # Faint marks worth a look: stroke-shaped ones that never reach the strict level. A
+    # small piece kept only for lying beside a stroke is part of that stroke, not news.
+    faint_ids = {
+        id(p)
+        for p in marks
+        if not p.touches(strict_marks, size[0])
+        and (p.touches(dark_marks, size[0]) or _stroke_shaped(p, thick, size[0], longest))
+    }
 
     tape = v["tape_min_thickness_mm"] / work.mm
     rule_length = work.px(v["rule_min_length_mm"])
     thickest = v["rule_max_thickness_mm"] / work.mm
-    debris, kept = [], []
+    debris, kept, debris_kind = [], [], {}
     for part in marks:
-        if _near(part, size, touch) or (_near(part, size, zone) and _tape_shaped(part, tape)):
+        if _near(part, size, touch):
             debris.append(part)
+            debris_kind[id(part)] = "touching the paper edge"
+        elif _near(part, size, zone) and _tape_shaped(part, tape):
+            debris.append(part)
+            debris_kind[id(part)] = "shaped like tape or a tear near the paper edge"
         else:
             kept.append(part)
 
@@ -361,9 +454,29 @@ def measure(work: common.Work, area: Box, v: dict[str, Any]) -> dict:
     else:
         box = None
 
+    # Lines along the paper edge (the sheet's own edge, the pages under it, a thin
+    # shadow) are debris but not writing: they are neither counted as discarded ink nor
+    # reported as marks (real-register follow-up, S4).
+    width, height = size
+    edge_ids: set[int] = set()
+    for upright, touching in (
+        (True, lambda p: p.x0 < touch),
+        (True, lambda p: p.x1 > width - touch),
+        (False, lambda p: p.y0 < touch),
+        (False, lambda p: p.y1 > height - touch),
+    ):
+        pieces = [p for p in debris if touching(p)]
+        edge_ids |= common.edge_line_pieces(pieces, upright, work, v)
+    edge_lines = [p for p in debris if id(p) in edge_ids]
+
     # Ink above speck size for the crop-check comparison: every mark but excluded
-    # targets and border material, and with ruled lines counted apart.
-    counted = common.paint([p for p in marks if id(p) not in excluded_ids], size)
+    # targets, border material and edge debris, and with ruled lines counted apart. Edge
+    # debris is not discarded writing: a mark-sized piece is reported on its own below,
+    # and edge lines not at all (real-register follow-up, S4).
+    debris_ids = {id(p) for p in debris}
+    counted = common.paint(
+        [p for p in marks if id(p) not in excluded_ids and id(p) not in debris_ids], size
+    )
     rules_counted = ImageChops.multiply(counted, rule_map)
     counted = ImageChops.lighter(ImageChops.subtract(counted, rule_map), under)
     # Marks touching the paper edge left out as debris, large enough to be a mark
@@ -372,21 +485,31 @@ def measure(work: common.Work, area: Box, v: dict[str, Any]) -> dict:
     edge_marks = [
         p
         for p in debris
-        if p.area * work.mm**2 >= v["edge_mark_mm2"]
+        if id(p) not in edge_ids
+        and p.area * work.mm**2 >= v["edge_mark_mm2"]
         and not common.rule_shaped(p, rule_length, thickest, 10.0)
     ]
-    structure = False
-    if box is None or sum(p.area for p in kept) * work.mm**2 < v["blank_ink_mm2"]:
-        faint_level = common.threshold_map(
-            _flat(work, area, v), 255 - max(1, v["faint_contrast"] // 2), mask
-        )
-        structure = any(p.area >= 10 * speck for p in common.components(faint_level))
+    # Strokes fainter than the faint level, outside the box: checked on every page,
+    # since a pale pen beside ordinary writing would otherwise vanish unflagged.
+    doubt_map = ImageChops.subtract(levels["doubt"], ImageChops.lighter(lenient, border_mask))
+    doubt_thick = common.erode(levels["doubt"], stroke_r, stroke_r).tobytes()
+    doubtful = [
+        p
+        for p in common.components(doubt_map)
+        if p.area >= speck
+        and not _near(p, size, touch)
+        and _stroke_shaped(p, doubt_thick, size[0], 2 * longest)
+        and (box is None or not _overlaps(p.box, box))
+    ]
     return {
         "noise": None,
         "under": common.count(under),
         "faint": sum(1 for p in kept if id(p) in faint_ids),
-        "edge_marks": [(p.box, p.area * work.mm**2) for p in edge_marks],
-        "structure": structure,
+        "edge_marks": [(p.box, p.area * work.mm**2, debris_kind[id(p)]) for p in edge_marks],
+        "structure": bool(doubtful),
+        "doubtful": len(doubtful),
+        "blotches": len(blotches),
+        "large_blotches": sum(1 for p in blotches if p.area * work.mm**2 >= v["edge_mark_mm2"]),
         "box": box,
         "kept_pixels": sum(p.area for p in kept)
         + sum((b[2] - b[0]) * (b[3] - b[1]) for _, b in suspected),
@@ -400,8 +523,13 @@ def measure(work: common.Work, area: Box, v: dict[str, Any]) -> dict:
         "rules_clipped": clipped,
         "only_rules": only_rules,
         "counted": counted,
+        "edge_lines": len(edge_lines),
         "rules": rules_counted,
     }
+
+
+def _overlaps(a: Box, b: Box) -> bool:
+    return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
 def _grow(box: Box, by: int) -> Box:
@@ -497,7 +625,8 @@ def find_rulers(kept, work: common.Work, v: dict[str, Any]) -> list[common.Compo
             else:
                 counts[y - part.y0] += x1 - x0
         bar = statistics.median(counts)
-        tick = [c >= 1.8 * bar + 1 for c in counts]
+        # Ticks stand out from the bar, or are cut into it (dark ticks on a pale bar).
+        tick = [c >= 1.8 * bar + 1 or (bar >= 4 and c <= 0.7 * bar) for c in counts]
         centres = []
         start = None
         for i, on in enumerate(tick + [False]):
@@ -515,8 +644,8 @@ def find_rulers(kept, work: common.Work, v: dict[str, Any]) -> list[common.Compo
     return rulers
 
 
-def _plural(number: int, noun: str) -> str:
-    return f"{number} {noun}{'' if number == 1 else 's'}"
+def _plural(number: int, noun: str, many: str | None = None) -> str:
+    return f"{number} {noun if number == 1 else (many or noun + 's')}"
 
 
 def _removed_text(found: dict) -> str:
@@ -524,7 +653,17 @@ def _removed_text(found: dict) -> str:
     if found["border"]:
         parts.append(f"{_plural(found['border'], 'dark area')} connected to the edge")
     if found["debris"]:
-        parts.append(f"{_plural(found['debris'], 'piece')} of edge debris")
+        lines = found.get("edge_lines", 0)
+        detail = (
+            f" ({lines} of them lines along the paper's edge: its own edge, pages under it "
+            "or a thin shadow)"
+            if lines
+            else ""
+        )
+        parts.append(
+            f"{_plural(found['debris'], 'piece')} of edge debris{detail}, not counted as "
+            "discarded ink"
+        )
     if found["specks"]:
         parts.append(_plural(found["specks"], "speck"))
     return f"; removed {', '.join(parts)}" if parts else ""

@@ -25,23 +25,22 @@ full-size page is then measured in a few seconds with Pillow alone. A source wit
 usable resolution is measured as if it had `unknown_dpi_assumed`, and the evidence says
 so (the page carries the core's resolution flag either way).
 
-Each detector's method name carries a digest of its thresholds file, so changing a
-threshold recomputes every value it decided. Each one can also compare a value set by
-hand with what it finds; only a confident answer (no flags) that differs by more than
-the step's `compare_*` setting is reported.
+Each detector names the pagekit files it reads, its settings files and its own code;
+their sha256 enter every value's inputs hash, so changing a threshold or the detector's
+code recomputes every value it decided, and nothing else. Each one can also compare a
+value set by hand with what it finds; only a confident answer (no flags) that differs
+by more than the step's `compare_*` setting is reported.
 
 The grey tone view of spec 0006 is reached only through `make_tone_view`, the hook
-`prepare --tone-view` calls; it needs `pagekit/tone.py`, which this copy may not have yet.
+`prepare --tone-view` calls, which uses `pagekit/tone.py`'s `tone` and `tiff_bytes`.
 """
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import importlib.util
 import math
 import sys
-from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw
@@ -57,16 +56,18 @@ from pagekit.split import detect_split
 
 TONE_MODULE = "pagekit.tone"
 _MM_PER_INCH = 25.4
-_SPLIT_THRESHOLDS = "thresholds_split.toml"
-_BOX_THRESHOLDS = "thresholds_skew.toml"
-
-
-def _thresholds_digest(name: str) -> str:
-    return hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()[:12]
-
-
-def _method(name: str, thresholds: str) -> str:
-    return f"{name} ({thresholds} {_thresholds_digest(thresholds)})"
+# pagekit's files each detector reads: its settings files and the code that decides,
+# down to the shared helpers and this adapter. Their digests enter the inputs hash.
+_ORIENT_FILES = ("thresholds_split.toml", "_orient_ink.py", "check.py", "pipeline.py")
+_BOX_FILES = ("thresholds_skew.toml", "_box_common.py", "check.py", "geometry.py", "pipeline.py")
+_FILES = {
+    "orientation": ("orient.py", *_ORIENT_FILES),
+    "split": ("split.py", *_ORIENT_FILES),
+    "skew": ("skew.py", *_BOX_FILES),
+    "page_box": ("pagebox.py", *_BOX_FILES),
+    # The content box also measures discarded ink with the crop check's thresholds.
+    "content_box": ("content.py", "thresholds.toml", *_BOX_FILES),
+}
 
 
 def _answer(found: dict[str, Any], value: Any = None, extra: str = "") -> Answer:
@@ -332,34 +333,39 @@ _PAGE_READS = ("detector_working_dpi", "unknown_dpi_assumed", "paper_estimate_lo
 
 DETECTORS: dict[str, Detector] = {
     "orientation": Detector(
-        _method("pagekit.orientation/1", _SPLIT_THRESHOLDS),
+        "pagekit.orientation/1",
         _orientation,
         (),
         _compare_orientation,
+        _FILES["orientation"],
     ),
     "split": Detector(
-        _method("pagekit.split/1", _SPLIT_THRESHOLDS),
+        "pagekit.split/1",
         _split,
         (),
         _compare_split,
+        _FILES["split"],
     ),
     "skew": Detector(
-        _method("pagekit.skew/1", _BOX_THRESHOLDS),
+        "pagekit.skew/1",
         _skew,
         _PAGE_READS,
         _compare_skew,
+        _FILES["skew"],
     ),
     "page_box": Detector(
-        _method("pagekit.page-box/1", _BOX_THRESHOLDS),
+        "pagekit.page-box/1",
         _page_box,
         _PAGE_READS,
         _compare_box("page box"),
+        _FILES["page_box"],
     ),
     "content_box": Detector(
-        _method("pagekit.content-box/1", _BOX_THRESHOLDS),
+        "pagekit.content-box/1",
         _content_box,
         _PAGE_READS,
         _compare_box("content box"),
+        _FILES["content_box"],
     ),
 }
 
@@ -374,15 +380,22 @@ def tone_view_available() -> bool:
     return importlib.util.find_spec(TONE_MODULE) is not None
 
 
-def make_tone_view(page: Image.Image) -> tuple[Image.Image, dict[str, Any]]:
-    """THE TONE-VIEW HOOK: the grey tone view of a prepared page, and its record.
+def make_tone_view(
+    page: Image.Image, dpi: tuple[float, float] | None
+) -> tuple[Image.Image, dict[str, Any], bytes]:
+    """THE TONE-VIEW HOOK: the grey tone view of a prepared page, its record, and its
+    file bytes.
 
-    It calls `tone_view(image)` in `pagekit/tone.py`, which spec 0006 describes as taking
-    a page image and returning a grey image of the same size with a record. If that
-    module names its function differently, this hook is the one place to change.
+    It calls `tone(image)` in `pagekit/tone.py` (spec 0006), with the page's resolution
+    set on the image so the view's millimetre settings hold, and makes the file with
+    tone.py's own deterministic writer, `tiff_bytes`.
     """
     module = importlib.import_module(TONE_MODULE)
-    view, record = module.tone_view(page)
+    image = page.copy()
+    image.info.pop("dpi", None)
+    if dpi is not None:
+        image.info["dpi"] = tuple(dpi)
+    view, record = module.tone(image)
     if view.size != page.size or view.mode != "L":
         raise ValueError("the tone view must be a grey image the size of the page")
-    return view, record
+    return view, record, module.tiff_bytes(view, None if dpi is None else list(dpi))

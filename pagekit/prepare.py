@@ -56,8 +56,8 @@ from pagekit.project import (
 
 PROJECT_NAME = "pagekit-project.json"
 IMAGE_SUFFIXES = (".png", ".tif", ".tiff", ".jpg", ".jpeg")
-# Modes kept as they are, and modes turned into one of them exactly (no resampling).
-_KEPT_MODES = {"L": "L", "RGB": "RGB", "1": "L", "P": "RGB"}
+# Modes read: grey and colour as they are; bilevel to grey; palette to grey or colour.
+_KEPT_MODES = frozenset({"L", "RGB", "1", "P"})
 _MM_PER_INCH = 25.4
 
 
@@ -81,21 +81,43 @@ class Source:
         return _decode(data, self.path)
 
 
+def _grey_palette(image: Image.Image) -> bool:
+    """Whether every colour a palette image uses is a grey (red = green = blue)."""
+    palette = image.getpalette("RGB") or []
+    used = image.getcolors(256) or []
+    for _, index in used:
+        red, green, blue = palette[3 * index : 3 * index + 3] or (0, 0, 0)
+        if not red == green == blue:
+            return False
+    return True
+
+
 def _decode(data: bytes, path: Path) -> Image.Image:
+    """The decoded source in L or RGB. Bilevel and grey-palette images become grey,
+    colour-palette images colour; nothing is resampled."""
     try:
         with Image.open(io.BytesIO(data)) as image:
             if getattr(image, "n_frames", 1) != 1:
-                raise PrepareError(f"{path} has more than one frame; give one page per file")
+                raise PrepareError(f"{path.name}: it holds more than one page; give one per file")
             if image.mode not in _KEPT_MODES:
-                raise PrepareError(f"{path}: image mode {image.mode!r} is not supported")
+                raise PrepareError(
+                    f"{path.name}: its image mode {image.mode} is not one pagekit reads "
+                    "(8-bit grey, colour, bilevel or palette); save it as 8-bit grey or colour"
+                )
             image.load()
-            return (
-                image.convert(_KEPT_MODES[image.mode]) if image.mode in ("1", "P") else image.copy()
-            )
+            if image.mode == "1":
+                return image.convert("L")
+            if image.mode == "P":
+                return image.convert("L" if _grey_palette(image) else "RGB")
+            return image.copy()
     except PrepareError:
         raise
     except Exception as error:  # any decoder failure means the source cannot be used
-        raise PrepareError(f"{path} cannot be read as an image: {error}") from error
+        kind = type(error).__name__
+        raise PrepareError(
+            f"{path.name}: not an image pagekit can read (it may be damaged, empty or of "
+            f"another kind; {kind})"
+        ) from error
 
 
 def _file_dpi(image: Image.Image) -> tuple[float, float] | None:
@@ -113,7 +135,8 @@ def read_source(path: Path, project_folder: Path) -> Source:
     try:
         data = path.read_bytes()
     except OSError as error:
-        raise PrepareError(f"{path} cannot be read: {error}") from error
+        reason = error.strerror or type(error).__name__
+        raise PrepareError(f"{path.name}: the file cannot be read ({reason})") from error
     image = _decode(data, path)
     with Image.open(io.BytesIO(data)) as stored:
         mode, dpi = stored.mode, _file_dpi(stored)
@@ -187,6 +210,14 @@ class Detector:
     # (value set by hand, the detector's answer, context) -> a sentence when they differ
     # by more than the step's comparison setting, else None.
     compare: Callable[[Any, Answer, StepContext], str | None] | None = None
+    # pagekit's files the detector reads: its settings files and its own code. Their
+    # sha256 enter every value's inputs hash, so editing one recomputes what it decided.
+    files: tuple[str, ...] = ()
+
+
+def file_digest(name: str) -> str:
+    """The sha256 of pagekit's own file `name` (a settings file or a module)."""
+    return hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
 
 
 def _neutral(step: str, description: str, value: Callable[[StepContext], Any], reads=()):
@@ -332,13 +363,17 @@ class _Runner:
         self.dry = dry
         self.image_loader = image_loader
         self.cache: dict[Any, Any] = {}
+        self.source_dpi: float | None = None  # --dpi, for sources that carry none
         self.stale: list[dict[str, Any]] = []
         # {(source relative path, step, page): sentence} for hand-set values a confident
         # detection disagrees with.
         self.comparisons: dict[tuple[str, str, int | None], str] = {}
 
     def _reads(self, step: str, resolution) -> dict[str, Any]:
-        reads = {name: self.values[name] for name in self.detectors[step].settings}
+        detector = self.detectors[step]
+        reads = {name: self.values[name] for name in detector.settings}
+        for name in detector.files:
+            reads[f"file {name}"] = file_digest(name)
         if step in PAGE_STEPS or step == "split":
             reads["overlap_mm"] = self.values["overlap_mm"]
             reads["resolution"] = None if resolution is None else list(resolution)
@@ -497,10 +532,14 @@ def _without_flags(entry: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in entry.items() if key != "flags"}
 
 
-def _resolution(source: Source, old: dict | None, override: Override | None, values):
-    """The stored resolution, the resolution the millimetre settings use, and flags."""
+def _resolution(source: Source, old: dict | None, override: Override | None, values, given=None):
+    """The stored resolution, the resolution the millimetre settings use, and flags.
+
+    `given` is the resolution `--dpi` gives to a source that carries none."""
     if override is not None:
         stored = {"value": override.value, "origin": "override"}
+    elif source.file_dpi is None and given is not None:
+        stored = {"value": [float(given), float(given)], "origin": "override"}
     elif old is not None and old["resolution"]["origin"] == "override":
         stored = {"value": old["resolution"]["value"], "origin": "override"}
     elif source.file_dpi is not None:
@@ -514,7 +553,9 @@ def _resolution(source: Source, old: dict | None, override: Override | None, val
     if stored["origin"] == "missing":
         flags.append(
             "The source carries no resolution and the project has no override for it, so "
-            "the millimetre settings (overlap, margin, allowance) were applied as 0 px."
+            "the millimetre settings (overlap, margin, allowance) were applied as 0 px. "
+            "Give the scan's resolution with --dpi (for example --dpi 300), or with a "
+            "resolution line in the overrides file."
         )
     elif stored["origin"] == "file" and not all(low <= v <= high for v in stored["value"]):
         flags.append(
@@ -546,7 +587,9 @@ def _check_split(source: Source, split_record, turns: int) -> None:
 def _run_source(source, old, overrides, runner: _Runner, base, extension, output_dir):
     values = runner.values
     resolution_override = overrides.get(("resolution", None))
-    stored, usable, source_flags = _resolution(source, old, resolution_override, values)
+    stored, usable, source_flags = _resolution(
+        source, old, resolution_override, values, runner.source_dpi
+    )
     if runner.dry and old is not None and old["resolution"] != stored:
         runner._note(source, "resolution", None, "the resolution changes")
     old_steps = old["steps"] if old else {}
@@ -648,6 +691,7 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         for step in STEPS:
             flags += [{"step": step, "reason": reason} for reason in all_steps[step]["flags"]]
         flags += [{"step": "margin", "reason": reason} for reason in chain_flags]
+        flags += _outside_flags(chain, page_steps)
         plans.append(
             PagePlan(source, number, output_name, chain, all_steps, flags, output_dpi, stored)
         )
@@ -664,6 +708,37 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         "dropped_pages": dropped_pages,
     }
     return entry, plans
+
+
+_BOX_WORDS = {"page_box": "page box", "content_box": "content box"}
+
+
+def _outside_flags(chain: Chain, steps: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    """Flags for a page or content box that lies partly or wholly outside the levelled
+    page, where there is nothing but the paper colour pagekit fills in."""
+    width, height = chain.levelled_size
+    flags = []
+    for step, words in _BOX_WORDS.items():
+        entry = steps[step]
+        box = entry["value"]
+        if box is None:
+            continue
+        left, top, right, bottom = box
+        if left >= 0 and top >= 0 and right <= width and bottom <= height:
+            continue
+        wholly = right <= 0 or bottom <= 0 or left >= width or top >= height
+        who = "set by hand" if entry["origin"] != "detected" else "found"
+        flags.append(
+            {
+                "step": step,
+                "reason": (
+                    f"The {words} {who}, {box}, lies {'wholly' if wholly else 'partly'} "
+                    f"outside the levelled page ({width} by {height} pixels), where there "
+                    "is only filled-in paper colour; check the box."
+                ),
+            }
+        )
+    return flags
 
 
 def _page_chain(source, number, values, usable, stored, settings):
@@ -733,6 +808,7 @@ def plan(
     settings_overrides: dict[str, Any] | None = None,
     dry: bool = False,
     tone_view: bool = False,
+    source_dpi: float | None = None,
 ) -> Plan:
     """Read every source, settle every step value and plan every output, writing nothing.
 
@@ -741,6 +817,8 @@ def plan(
     the plan holds only the list of stale steps and why. Once every page has its values,
     the volume-wide checks (pagekit.volume) compare each page with the rest of the batch.
     With `tone_view`, the grey tone view of spec 0006 is written beside each page.
+    `source_dpi` is the resolution given to every source that carries none, stored as
+    an override.
     """
     if tone_view and not dry:
         from pagekit.pipeline import tone_view_available
@@ -779,7 +857,17 @@ def plan(
                 f"pagekit never writes inside a source folder, and {path.parent} holds "
                 f"{path.name}; choose an output folder and project file elsewhere"
             )
-    sources = [read_source(path, project_folder) for path in paths]
+    sources, problems = [], []
+    for path in paths:  # every source is checked before stopping, so all are named at once
+        try:
+            sources.append(read_source(path, project_folder))
+        except PrepareError as error:
+            problems.append(str(error))
+    if problems:
+        raise PrepareError(
+            f"{len(problems)} of {len(paths)} source image(s) cannot be used, so nothing "
+            "was written:\n  " + "\n  ".join(problems)
+        )
 
     old_entries: dict[str, dict[str, Any]] = {}
     if old_project is not None:
@@ -817,6 +905,14 @@ def plan(
     extension = "png" if values["output_format"] == "png" else "tif"
     bases = _output_names(sources, extension)
     runner = _Runner(settings, detectors, {}, dry, None)
+    if source_dpi is not None:
+        low, high = values["min_plausible_dpi"], values["max_plausible_dpi"]
+        if not low <= source_dpi <= high:
+            raise PrepareError(
+                f"--dpi {source_dpi:g} is not a plausible scan resolution "
+                f"({low:g} to {high:g} dots per inch)"
+            )
+        runner.source_dpi = float(source_dpi)
     entries, pages = [], []
     for source in sources:
         cache: dict[str, Image.Image] = {}

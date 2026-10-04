@@ -240,8 +240,10 @@ def test_discarded_ink_is_reported_and_flagged_at_the_crop_check_thresholds():
     # Writing that runs off the paper edge is debris here, so it is discarded and shown.
     ImageDraw.Draw(image).rectangle((0, mm(100), mm(15), mm(100) + 4), fill=30)
     answer = detect_content_box(synth.noisy(image), (DPI, DPI))
+    # Edge debris is not counted as discarded writing (real-register follow-up, S4),
+    # but a piece the size of a mark is still reported.
     assert "edge debris" in answer["evidence"]
-    assert any("outside the content box" in flag for flag in answer["flags"])
+    assert any("touching the paper edge" in flag for flag in answer["flags"])
 
 
 def test_large_scan_is_measured_on_a_reduced_copy():
@@ -377,3 +379,103 @@ def test_noise_page_finishes_quickly_and_is_flagged():
     assert time.monotonic() - start < 5
     assert any("noise" in flag for flag in answer["flags"])
     assert answer["value"] is not None  # when in doubt, keep everything
+
+
+# --- Second review (texture is not ink) ---------------------------------------------
+
+
+@cache
+def clean_300() -> tuple[Image.Image, list[int]]:
+    image = synth.page(seed=3, dpi=300, size_mm=(150, 200), margins_mm=(30, 30, 30, 30))
+    return image, detect_content_box(synth.noisy(image, sigma=2), (300, 300))["value"]
+
+
+def near(found: list[int], wanted: list[int], slack: int = 6) -> bool:
+    return all(abs(a - b) <= slack for a, b in zip(found, wanted, strict=True))
+
+
+def test_mottled_text_page_gives_the_clean_box_and_no_flag():
+    image, clean = clean_300()
+    answer = detect_content_box(synth.mottled(image, 5, 1.5, 300), (300, 300))
+    assert answer["flags"] == []
+    assert near(answer["value"], clean), (answer["value"], clean)
+
+
+@pytest.mark.parametrize("sd", [4, 5])
+def test_mottled_text_page_at_400_dpi_gives_no_flag(sd):
+    image = synth.page(seed=5, dpi=400, size_mm=(150, 200), margins_mm=(30, 30, 30, 30))
+    clean = detect_content_box(synth.noisy(image, sigma=2), (400, 400))["value"]
+    answer = detect_content_box(synth.mottled(image, sd, 1.5, 400, seed=5), (400, 400))
+    assert answer["flags"] == []
+    assert near(answer["value"], clean, 8), (answer["value"], clean)
+
+
+def test_strongly_mottled_text_page_does_not_spread_the_box():
+    image, clean = clean_300()
+    answer = detect_content_box(synth.mottled(image, 6.5, 2.0, 300, seed=8), (300, 300))
+    assert near(answer["value"], clean), (answer["value"], clean)
+
+
+def test_blank_mottled_page_is_blank():
+    blank = Image.new("L", clean_300()[0].size, synth.PAPER)
+    answer = detect_content_box(synth.mottled(blank, 5, 1.5, 300), (300, 300))
+    assert answer["value"] is None
+
+
+def test_foxed_page_keeps_its_box():
+    image, clean = clean_300()
+    answer = detect_content_box(synth.foxed(image, 300), (300, 300))
+    assert near(answer["value"], clean), (answer["value"], clean)
+
+
+def test_foxed_blank_page_is_blank():
+    blank = Image.new("L", clean_300()[0].size, synth.PAPER)
+    answer = detect_content_box(synth.foxed(blank, 300), (300, 300))
+    assert answer["value"] is None
+
+
+def test_very_faint_writing_outside_the_box_is_flagged():
+    # A 0.4 mm pen at contrast 15 beside ordinary writing used to vanish at 0.9.
+    image = text_page().copy()
+    note = Image.new("L", image.size, synth.PAPER)
+    synth.writing(
+        ImageDraw.Draw(note),
+        random.Random(7),
+        (mm(3), mm(60), mm(27), mm(100)),
+        DPI,
+        ink=synth.PAPER - 15,
+    )
+    answer = detect_content_box(synth.noisy(synth.darker(image, note), sigma=1.5), (DPI, DPI))
+    assert any("faint" in flag for flag in answer["flags"])
+
+
+def test_tape_near_the_edge_is_described_as_tape():
+    image = text_page().copy()
+    ImageDraw.Draw(image).rectangle((mm(8), mm(100), mm(11), mm(125)), fill=60)
+    answer = detect_content_box(synth.noisy(image), (DPI, DPI))
+    flags = [flag for flag in answer["flags"] if "tape" in flag]
+    assert flags and not any("touching" in flag for flag in flags)
+
+
+# --- Real-register follow-up: edge lines are not discarded writing ---------------
+
+
+def test_thin_shadows_along_the_paper_edges_are_not_discarded_writing():
+    image = text_page().copy()
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((mm(30), 0, mm(120), mm(1.2)), fill=90)  # along the top edge
+    draw.rectangle((mm(40), image.height - mm(1.5), mm(110), image.height), fill=80)
+    draw.rectangle((image.width - mm(1.0), mm(40), image.width, mm(160)), fill=70)
+    answer = detect_content_box(synth.noisy(image), (DPI, DPI))
+    assert close(answer["value"], ink_box(text_page()))
+    assert answer["flags"] == []
+    assert "lines along the paper's edge" in answer["evidence"]
+
+
+def test_slanted_edge_line_along_the_side_is_not_discarded_writing():
+    # The sheet's edge leaning a degree inside the page box: one long thin line.
+    image = text_page().copy()
+    ImageDraw.Draw(image).line((mm(0.3), mm(20), mm(2.6), mm(200)), fill=70, width=3)
+    answer = detect_content_box(synth.noisy(image), (DPI, DPI))
+    assert close(answer["value"], ink_box(text_page()))
+    assert answer["flags"] == []

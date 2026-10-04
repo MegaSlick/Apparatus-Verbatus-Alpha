@@ -100,9 +100,9 @@ meaning = "The smallest spread, in millimetres, used for the margins between the
 # --- The review sheet ---------------------------------------------------------------
 
 [preview_long_side_px]
-value = 480
+value = 320
 status = "UNMEASURED"
-meaning = "Long side, in pixels, of the reduced previews embedded in review.html. Previews are never full size."
+meaning = "Long side, in pixels, of the preview of each original embedded in review.html; each prepared page's preview is half that. Previews are never full size."
 
 # --- Measuring against a hand-checked answer file (finding 0035) --------------------
 

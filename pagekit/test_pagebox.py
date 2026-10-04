@@ -197,7 +197,8 @@ def test_pale_backdrop_is_found_by_its_step_to_the_paper():
 def test_tall_label_on_the_backdrop_does_not_stop_the_walk():
     # Fails if the run that ends the walk is set to one line.
     frame = on_backdrop(25)
-    ImageDraw.Draw(frame).rectangle((30, 300, 60, 1100), fill=240)
+    # Paper-like over two thirds of its columns, but narrower than the run setting.
+    ImageDraw.Draw(frame).rectangle((30, 200, 60, 1250), fill=232)
     answer = detect_page_box(frame, (DPI, DPI))
     assert_close(answer["value"], expected())
 
@@ -205,3 +206,110 @@ def test_tall_label_on_the_backdrop_does_not_stop_the_walk():
 def test_implausible_resolution_is_flagged():
     answer = detect_page_box(on_backdrop(25), (1e6, 1e6))
     assert any("resolution" in flag for flag in answer["flags"])
+
+
+# --- Second review (texture is not ink) ---------------------------------------------
+
+
+@pytest.mark.parametrize("sd", [8, 16])
+def test_textured_dark_backdrop_gives_the_papers_box_without_a_flag(sd):
+    # Backdrop cloth: grain about half a millimetre across.
+    frame = synth.mottled(Image.new("L", FRAME, 30), sd, 0.5, DPI, seed=4)
+    frame.paste(synth.noisy(paper()), AT)
+    answer = detect_page_box(frame, (DPI, DPI))
+    assert_close(answer["value"], expected())
+    assert answer["flags"] == []
+
+
+def grey_target(draw: ImageDraw.ImageDraw, x: int, y: int) -> None:
+    for column in range(6):
+        for row in range(2):
+            left, top = x + column * synth.mm(12, DPI), y + row * synth.mm(12, DPI)
+            level = 90 + 30 * ((column + row) % 6)
+            draw.rectangle(
+                (left, top, left + synth.mm(10, DPI), top + synth.mm(10, DPI)), fill=level
+            )
+
+
+def ruler(draw: ImageDraw.ImageDraw, x: int, y: int, bar: int = 200) -> None:
+    length, height = synth.mm(100, DPI), synth.mm(10, DPI)
+    draw.rectangle((x, y, x + length, y + height), fill=bar)
+    for tick in range(x + 4, x + length, synth.mm(5, DPI)):
+        draw.rectangle((tick, y, tick + 1, y + synth.mm(4, DPI)), fill=20)
+
+
+def on_tall_frame(level: int) -> Image.Image:
+    """The paper with 40 mm of backdrop below it, room for a target or ruler."""
+    frame = Image.new("L", (FRAME[0], AT[1] + paper().height + synth.mm(45, DPI)), level)
+    frame.paste(paper(), AT)
+    return frame
+
+
+@pytest.mark.parametrize("gap_mm", [12, 3])
+@pytest.mark.parametrize("thing", ["target", "ruler"])
+@pytest.mark.parametrize("backdrop", [25, 250])
+def test_target_or_ruler_on_the_backdrop_stays_out_of_the_box(thing, backdrop, gap_mm):
+    # At 3 mm the target is within reach of the paper edge, so only the target and
+    # ruler finders keep it out of the cut strip's ink.
+    frame = on_tall_frame(backdrop)
+    draw = ImageDraw.Draw(frame)
+    y = AT[1] + paper().height + synth.mm(gap_mm, DPI)
+    if thing == "target":
+        grey_target(draw, AT[0] + synth.mm(10, DPI), y)
+    else:
+        ruler(draw, AT[0] + synth.mm(10, DPI), y)
+    answer = detect_page_box(synth.noisy(frame), (DPI, DPI))
+    assert_close(answer["value"], expected())
+    assert answer["flags"] == []
+
+
+def test_unwalked_side_much_paler_than_the_paper_is_flagged():
+    # A soft-edged pale margin is not cut (no sharp step), but not passed as no backdrop.
+    frame = Image.new("L", (paper().width + 150, paper().height), 250)
+    frame.paste(paper(), (150, 0))
+    from PIL import ImageFilter
+
+    soft = frame.crop((0, 0, 300, frame.height)).filter(ImageFilter.BoxBlur(60))
+    frame.paste(soft.crop((0, 0, 210, frame.height)), (0, 0))
+    answer = detect_page_box(synth.noisy(frame), (DPI, DPI))
+    assert answer["value"][0] < 150
+    assert any("paler than the paper" in flag for flag in answer["flags"])
+    assert "no backdrop there" not in answer["evidence"].split("left")[1].split(";")[0]
+
+
+# --- Real-register follow-up: page-edge stacks -----------------------------------
+
+
+@pytest.mark.parametrize("board_mm", [0.0, 8.0])
+@pytest.mark.parametrize("lines", [6, 12])
+def test_stack_of_page_edges_gives_the_top_sheets_edge(lines, board_mm):
+    frame = Image.new("L", (FRAME[0] + 100, FRAME[1]), 20)
+    frame.paste(paper(), AT)
+    edge = AT[0] + paper().width
+    frame = synth.edge_stack(frame, edge, DPI, lines=lines, board_mm=board_mm)
+    # The stack runs only beside the sheet, with backdrop above and below it.
+    top = Image.new("L", (frame.width - edge, AT[1]), 20)
+    frame.paste(top, (edge, 0))
+    frame.paste(top, (edge, AT[1] + paper().height))
+    answer = detect_page_box(synth.noisy(frame), (DPI, DPI))
+    assert abs(answer["value"][2] - edge) <= 6, answer["value"]
+    assert_close(answer["value"][:2] + answer["value"][3:], expected()[:2] + expected()[3:])
+    assert answer["flags"] == []
+    assert "page edges" in answer["evidence"]
+
+
+def test_dashed_board_edge_beside_the_sheet_is_not_writing():
+    # A board edge or loose page edge 2 mm outside the sheet, broken into dashes and
+    # seen over part of the side, used to read as ink and pull the edge out.
+    frame = on_backdrop(25)
+    draw = ImageDraw.Draw(frame)
+    # A grey band of book edge in shadow beside the sheet, with a dark dashed line in it.
+    draw.rectangle((AT[0] - synth.mm(4, DPI), AT[1], AT[0] - 1, AT[1] + paper().height), fill=105)
+    x = AT[0] - synth.mm(2, DPI)
+    y = AT[1] + synth.mm(120, DPI)
+    while y < AT[1] + paper().height - synth.mm(5, DPI):
+        draw.line((x, y, x, y + synth.mm(6, DPI)), fill=30, width=2)
+        y += synth.mm(8, DPI)
+    answer = detect_page_box(frame, (DPI, DPI))
+    assert_close(answer["value"], expected())
+    assert answer["flags"] == []

@@ -25,4 +25,5 @@ pagekit = [
   "thresholds_prepare.toml",
   "thresholds_skew.toml",
   "thresholds_split.toml",
+  "thresholds_tone.toml",
 ]

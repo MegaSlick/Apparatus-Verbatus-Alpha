@@ -412,3 +412,55 @@ record".
 - **First run on the lead's two sample spreads**, locally (the images stay outside the
   repository): both splits correct, pages upright, all writing kept; every page flagged.
   An independent review of the pipeline, bound by the clean-room rule, is running.
+
+## 0024 — Fixes merged; first real-page findings; follow-up briefs 0026 to 0028
+
+- **Brief 0025 done:** commit 352a671 on `work/pk-skew`. Leak scan no hits. Merged into
+  `work/pagekit-prepare` (34d5d86); the combined suite passes. On the lead's two spreads,
+  faint-mark flags fell from 1317 to 15 on the first page.
+- **Brief 0024 done:** commits 8a01a53 and 2131539 on `work/pk-tone`. Leak scan no hits.
+  The host's merge conflicted in code (`pagekit/__main__.py`), so the host aborted it and
+  gave the merge to a build-side agent.
+- **Real-page findings** from the host's local run on the lead's spreads (the images stay
+  outside the repository): both splits right, every page upright, all writing kept; a page
+  tilted about 2.5 degrees left unlevelled because its two estimates differed by 0.6; the
+  book's board edge and page-edge stack kept in the page box; every page flagged for
+  orientation and for discarded ink.
+- **Follow-up briefs:** `briefs/0026-build-integrate-tone-merge.md` (sha256
+  1e137aaab7c94de06c05355ebe92a315105608555da86b65c2891b732cceddb5), to the agent of brief
+  0023; `briefs/0027-build-skew-real-pages.md` (sha256
+  3f759d37ceaf85be653903ae05fcf85f0d510ead219fddbdc2f4da2a6c890922), to the agent of brief
+  0018; `briefs/0028-build-orientation-real-pages.md` (sha256
+  6562ca00a4b274ea09f216f5b8e66b06737daf2eb563ba156639991cc941b3ab), to the agent of brief
+  0017. All saved before they were sent.
+
+## 0025 — Review of the prepare pipeline; follow-up brief 0029
+
+- **Independent review of 8c0a2cb** by a fresh agent bound by the clean-room rule (it saw
+  no GPL source): geometry, outward box scaling, the override round trip and per-page
+  failure flags held up; prepared TIFFs differed between processes at a pad byte; the
+  reduced-copy code was never tested above 150 dpi; settings and code changes did not
+  refresh stored content boxes; `measure` misjudged boxes on tilted pages; the review
+  sheet's correction command failed as printed.
+- **Follow-up brief:** `briefs/0029-build-prepare-review-fixes.md` (sha256
+  b9d754d4a1223124750728759bbc9e53eefdf32889127eba5cd510080976a2f7), to the agent of brief 0023, after brief 0026. Saved before it was sent.
+- **Brief 0026 done:** commits 81bc930 (merge of the tone view), 9705990, 05ed98e and
+  4e11e63 on `work/pk-integrate`. Leak scan no hits in 123 files. Merged into
+  `work/pagekit-prepare` (d6d17b2); the combined suite passes. Prepared pages and tone
+  views now share one deterministic TIFF writer.
+- **Brief 0027 done:** commit 5b5e7db on `work/pk-skew`. The agent read only numbers from
+  the lead's spreads, never viewed or sent them, and built every test from synthetic
+  pages. Leak scan no hits. Merged into `work/pagekit-prepare` (31fb320); the combined
+  suite passes. On the host's re-run, the page tilted about 2.5 degrees is levelled, the
+  page-edge stack is cut away, and the discarded-ink flag remains on one page of four.
+- **Brief 0028 done:** commits 99ebaa6 and ee56315 on `work/pk-split`. The agent read only
+  numbers from the lead's spreads and built every test from synthetic pages. Leak scan no
+  hits. Merged into `work/pagekit-prepare` (1a7e872); the combined suite passes. On the
+  host's re-run all four pages are upright with no orientation flag and the gutter
+  overhang flag is gone. Because some settings were chosen on these two spreads, an
+  independent review of generalisation is running.
+- **Brief 0029 done:** commits 12ad0c5, f18f334, 0d03860, 42dbc38, ffee5a9, cb0607c,
+  7aa8578, 595f661 and 34649a8 on `work/pk-integrate` (595f661 was committed with two
+  core tests failing; 34649a8 repairs them). Leak scan no hits in 124 files. Merged into
+  `work/pagekit-prepare` (786571d); the combined suite passes. A re-run on the lead's
+  spreads with `--tone-view` wrote each page and its grey view as lossless TIFF.

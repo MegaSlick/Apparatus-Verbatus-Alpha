@@ -232,3 +232,41 @@ def test_noise_page_finishes_quickly():
     answer = detect_skew(noise, (DPI, DPI))
     assert time.monotonic() - start < 5
     assert answer["value"] == 0 and answer["flags"]
+
+
+def test_ends_of_an_inked_block_do_not_make_noise_peak_at_zero():
+    # Fails without the taper: a block of random pixels (scored directly, so the noise
+    # guard does not stop it first) otherwise scores highest at 0 degrees because of its
+    # straight top and bottom.
+    from pagekit import _box_common as common
+    from pagekit import skew
+
+    rng = random.Random(3)
+    size = (900, 400)
+    block = Image.frombytes("L", size, rng.randbytes(size[0] * size[1]))
+    ink = block.point(lambda v: 1 if v > 127 else 0).convert("F")
+    settings = common.values(common.load_thresholds())
+    found = skew.profile_search(ink, settings, lag=3, widen=False)
+    assert found["ratio"] < settings["skew_score_margin"]
+
+
+# --- Real-register follow-up -----------------------------------------------------
+
+
+def test_estimates_that_agree_in_sign_and_roughly_in_size_level_the_page():
+    # Waving baselines and flourishes put the line fit about 0.7 degrees below the
+    # profile; a page visibly tilted 2.5 degrees must still be levelled.
+    image = synth.turned(synth.flourished_page(3), 2.5)
+    answer = detect_skew(image, (DPI, DPI))
+    assert answer["value"] == pytest.approx(2.5, abs=0.2)
+    assert "line fit" in answer["evidence"] and "profile" in answer["evidence"]
+    assert answer["confidence"] < 1.0
+
+
+def test_estimates_of_opposite_sign_still_give_zero(monkeypatch):
+    from pagekit import skew
+
+    monkeypatch.setattr(skew, "line_fit_estimate", lambda *args: -1.0)
+    answer = detect_skew(synth.turned(level_page(), 1.0), (DPI, DPI))
+    assert answer["value"] == 0
+    assert any("disagree" in flag for flag in answer["flags"])

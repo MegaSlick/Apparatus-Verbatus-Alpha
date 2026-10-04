@@ -150,3 +150,105 @@ def noisy(image: Image.Image, sigma: float = 6, seed: int = 3) -> Image.Image:
     )
     grain = small.resize(image.size, Image.NEAREST)
     return ImageChops.add(image, grain, 1.0, -128)
+
+
+def mottled(
+    image: Image.Image, sd: float, patch_mm: float, dpi: float, seed: int = 5
+) -> Image.Image:
+    """Paper mottling: smooth patches about `patch_mm` across, standard deviation `sd`."""
+    rng = random.Random(seed)
+    cell = max(1, round(patch_mm * dpi / 25.4))
+    grid = (max(2, image.width // cell + 2), max(2, image.height // cell + 2))
+    values = [rng.gauss(0, 1) for _ in range(grid[0] * grid[1])]
+    low = min(values)
+    span = (max(values) - low) or 1.0
+    small = Image.frombytes("L", grid, bytes(round((x - low) / span * 255) for x in values))
+    smooth = small.resize((grid[0] * cell, grid[1] * cell), Image.BICUBIC).crop((0, 0) + image.size)
+    from PIL import ImageStat
+
+    stat = ImageStat.Stat(smooth)
+    mean, spread = stat.mean[0], stat.stddev[0] or 1.0
+    offset = smooth.point(lambda v: max(0, min(255, round(128 + (v - mean) * sd / spread))))
+    return ImageChops.add(image, offset, 1.0, -128)
+
+
+def foxed(image: Image.Image, dpi: float, seed: int = 6, count: int = 12) -> Image.Image:
+    """Foxing: soft brown spots 2 to 5 mm across, 25 to 40 grey levels deep."""
+    from PIL import ImageFilter
+
+    rng = random.Random(seed)
+    spots = Image.new("L", image.size, 255)
+    draw = ImageDraw.Draw(spots)
+    for _ in range(count):
+        r = rng.uniform(1, 2.5) * dpi / 25.4
+        x, y = rng.uniform(r, image.width - r), rng.uniform(r, image.height - r)
+        depth = rng.randint(25, 40)
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=255 - depth)
+    spots = spots.filter(ImageFilter.GaussianBlur(dpi / 25.4 * 0.4))
+    return ImageChops.subtract(image, ImageChops.invert(spots))
+
+
+def flourished_page(seed: int, amp_mm: float = 1.5, loop_mm: float = 2.0, dpi: float = 150):
+    """Running writing whose baselines wave by `amp_mm` along each line, with a looping
+    flourish under about half the words: the kind of hand where a line fit and a
+    projection profile disagree by a fraction of a degree."""
+    rng = random.Random(seed)
+    image = Image.new("L", (mm(160, dpi), mm(220, dpi)), PAPER)
+    draw = ImageDraw.Draw(image)
+    px = dpi / 25.4
+    y = 25 * px
+    while y < 200 * px:
+        x = 20 * px + rng.uniform(0, 3) * px
+        while x < 135 * px:
+            wave = amp_mm * px * math.sin(2 * math.pi * x / (40 * px) + y)
+            start = x
+            x = word(draw, rng, x, y + wave, dpi)
+            if rng.random() < 0.5:
+                points = [
+                    (
+                        start + t * (x - start + 12 * px),
+                        y + wave + loop_mm * px * math.sin(math.pi * t),
+                    )
+                    for t in (i / 20 for i in range(21))
+                ]
+                draw.line(points, fill=INK, width=max(1, round(0.4 * px)))
+            x += rng.uniform(1.2, 2.2) * 2.4 * px
+        y += 9 * px
+    return image
+
+
+def edge_stack(
+    image: Image.Image,
+    side_x: int,
+    dpi: float,
+    lines: int = 8,
+    board_mm: float = 0.0,
+    backdrop: int = 20,
+    seed: int = 9,
+) -> Image.Image:
+    """A stack of page edges to the right of `side_x`: thin vertical lines, alternately
+    light and dark, about 0.6 mm apart, darkening outward as in the book's shadow,
+    running most of the height with small breaks; then an optional dark board edge and
+    the backdrop. Everything right of the stack is replaced."""
+    rng = random.Random(seed)
+    out = image.copy()
+    draw = ImageDraw.Draw(out)
+    px = dpi / 25.4
+    width, height = out.size
+    draw.rectangle((side_x, 0, width, height), fill=backdrop)
+    spacing = 0.6 * px
+    for i in range(lines):
+        base = round(200 - 140 * i / max(1, lines - 1))  # the shadow deepens outward
+        x0 = side_x + round(i * spacing)
+        x1 = side_x + round((i + 1) * spacing)
+        draw.rectangle((x0, 0, x1 - 1, height), fill=base)
+        level = base - 45 if i % 2 else min(255, base + 25)
+        y = 0
+        while y < height:  # each edge line, broken here and there
+            length = rng.uniform(30, 90) * px
+            draw.line((x0, y, x0, y + length), fill=level, width=max(1, round(0.2 * px)))
+            y += length + rng.uniform(0, 4) * px
+    edge = side_x + round(lines * spacing)
+    if board_mm:
+        draw.rectangle((edge, 0, edge + round(board_mm * px), height), fill=55)
+    return out

@@ -106,7 +106,7 @@ HAND_VALUES = [
         "value": {"pages": 2, "cut": [[500, 0], [520, 1400]]},
     },
     {"source": "src/spread.png", "step": "skew", "page": 1, "value": 2.0},
-    {"source": "src/spread.png", "step": "page_box", "page": 1, "value": [20, 20, 500, 1420]},
+    {"source": "src/spread.png", "step": "page_box", "page": 1, "value": [20, 20, 500, 1410]},
     {"source": "src/spread.png", "step": "content_box", "page": 1, "value": [60, 80, 460, 1300]},
     {"source": "src/spread.png", "step": "margin", "page": 1, "value": 4},
     {"source": "src/spread.png", "step": "skew", "page": 2, "value": 0},
