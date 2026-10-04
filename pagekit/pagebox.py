@@ -16,6 +16,10 @@ page much smaller than the frame is found too. A side with no backdrop keeps the
 edge, and the evidence says so; that alone is not a flag. Outside the page's own area
 (the polygon from the split) everything counts as backdrop.
 
+A stack of thin lines running along a side, close together and reaching the found
+edge (the edges of the pages under the top sheet, a board edge), puts the side at the
+innermost line, the top sheet's edge, and the strip beyond it is not searched for ink.
+
 A shadow along one side that does not fill the whole side is measured as the depth of
 backdrop-like pixels on each scanline from that edge. A shadow of even depth covering
 most of the side is cut off the box; a shorter one is flagged and left in.
@@ -25,7 +29,8 @@ backdrop resumes beyond them and no paper comes first. A side that is not walked
 whose frame edge is much paler than the paper is flagged, not called free of backdrop.
 
 Each strip a walked side cuts off is then searched for strokes that stand out from the
-strip's own texture, are joined to the paper edge (directly or through a chain of such
+strip's own texture, are not lines running along the side (page edges, a board
+edge), are the size of a mark, are joined to the paper edge (directly or through a chain of such
 strokes) and are not part of a target or ruler. Where there are any (writing under a
 gutter shadow, say), the side is moved back out to keep them and the page is flagged.
 
@@ -68,6 +73,15 @@ _READS = (
     "backdrop_object_mm",
     "strip_noise_k",
     "strip_reach_mm",
+    "edge_mark_mm2",
+    "edge_line_min_mm",
+    "edge_line_max_mm",
+    "stack_window_mm",
+    "stack_reference_mm",
+    "stack_line_contrast",
+    "stack_line_max_mm",
+    "stack_gap_mm",
+    "stack_min_lines",
     "shadow_min_depth_mm",
     "shadow_min_share",
     "shadow_exclude_share",
@@ -136,7 +150,10 @@ def detect_page_box(
         ]
         if clamped[0] < clamped[2] and clamped[1] < clamped[3]:
             value = clamped
-    value, kept_ink = _keep_ink_in_strips(page, value, walked, v)
+    value, stacks = _edge_stacks(page, value, v)
+    for index in range(4):
+        walked[index] = walked[index] or stacks[index] is not None
+    value, kept_ink = _keep_ink_in_strips(page, value, walked, v, stacks)
     for side, ink_box in kept_ink:
         flags.append(
             f"Ink lies in the strip the walk would cut on the {side} side (at {ink_box}): "
@@ -144,7 +161,12 @@ def detect_page_box(
         )
     parts = []
     for index, side in enumerate(SIDES):
-        if any(side == kept for kept, _ in kept_ink):
+        if stacks[index] is not None:
+            parts.append(
+                f"{side} at the innermost of {stacks[index][2]} thin lines running along it "
+                "(a stack of page edges or a board edge): the top sheet's edge"
+            )
+        elif any(side == kept for kept, _ in kept_ink):
             parts.append(f"{side} moved out to keep ink found in the cut strip")
         elif shadows[index] is not None:
             parts.append(f"{side} past a shadow {shadows[index]:.0f} mm deep")
@@ -364,7 +386,11 @@ def _to_source(work: common.Work, box, walked: list[bool], size: tuple[int, int]
 
 
 def _keep_ink_in_strips(
-    page: common.Page, value: list[int], walked: list[bool], v: dict[str, Any]
+    page: common.Page,
+    value: list[int],
+    walked: list[bool],
+    v: dict[str, Any],
+    stacks: list | None = None,
 ) -> tuple[list[int], list[tuple[str, list[int]]]]:
     """Move a walked side back out where the strip it cuts off holds ink.
 
@@ -391,8 +417,8 @@ def _keep_ink_in_strips(
     result = list(value)
     kept = []
     for index, side in enumerate(SIDES):
-        if not walked[index]:
-            continue
+        if not walked[index] or (stacks and stacks[index] is not None):
+            continue  # beyond a stack of page edges lies only book, not writing
         sx0, sy0, sx1, sy1 = work.from_source(strips[side])
         # Leave out the last millimetre before the paper edge, where the edge itself is.
         if side == "left":
@@ -428,6 +454,13 @@ def _keep_ink_in_strips(
         ]
         targets = _targets_in(grey, work, v)
         parts = [p for p in parts if not any(_centre_inside(p, t) for t in targets)]
+        # Long thin lines running along the side are page edges or a board edge, not
+        # writing (real-register follow-up, S3).
+        lines = common.edge_line_pieces(parts, index % 2 == 0, work, v)
+        parts = [p for p in parts if id(p) not in lines]
+        # Only marks the size of a mark move an edge: a speck-sized dash on a book edge
+        # is not worth a review.
+        parts = [p for p in parts if p.area * work.mm**2 >= v["edge_mark_mm2"]]
         parts = _joined_to_paper(parts, side, grey.size, work.px(v["strip_reach_mm"]))
         found = common.union_box([p.box for p in parts])
         if found is None:
@@ -504,3 +537,105 @@ def _joined_to_paper(parts: list, side: str, size: tuple[int, int], reach: int) 
                 rest.remove(part)
                 grew = True
     return chosen
+
+
+def _stack_lines(levels: list[float], px_per_mm: float, v: dict[str, Any]) -> list[tuple[int, int]]:
+    """Thin lines in a profile of medians: runs at least `stack_line_contrast` lighter
+    or darker than a running median over `stack_reference_mm`, no wider than
+    `stack_line_max_mm`. Returns (start, end) index pairs, end exclusive."""
+    half = max(1, round(v["stack_reference_mm"] * px_per_mm / 2))
+    widest = max(1, round(v["stack_line_max_mm"] * px_per_mm))
+    contrast = v["stack_line_contrast"]
+    signs = []
+    for i in range(len(levels)):
+        window = sorted(levels[max(0, i - half) : i + half + 1])
+        d = levels[i] - window[len(window) // 2]
+        signs.append(1 if d >= contrast else -1 if d <= -contrast else 0)
+    lines = []
+    i = 0
+    while i < len(signs):
+        if signs[i] == 0:
+            i += 1
+            continue
+        j = i
+        while j < len(signs) and signs[j] == signs[i]:
+            j += 1
+        if j - i <= widest:
+            lines.append((i, j))
+        i = j
+    return lines
+
+
+def _edge_stacks(page: common.Page, value: list[int], v: dict[str, Any]):
+    """Find, along each side, a stack of thin lines running most of its length: the
+    edges of the pages under the top sheet, or a book's board edge. Such lines are not
+    writing; the side belongs at the innermost one, the top sheet's edge.
+
+    For each side, the median grey level of every line parallel to it, over the box's
+    extent along it, is taken in a window either side of the found edge; a median means
+    a line must run most of the side's length to show. Thin lines in that profile, at
+    least `stack_min_lines` of them no more than `stack_gap_mm` apart and reaching the
+    found edge, make a stack (real-register follow-up, S3).
+
+    Returns the moved box and, per side, None or (low, high, count): the stack's extent
+    across the side in the page's grid, and its number of lines."""
+    grey = page.grey
+    width, height = grey.size
+    result = list(value)
+    found: list = [None, None, None, None]
+    for index in range(4):
+        horizontal = index % 2 == 0  # left and right: lines run down the page
+        dpi = page.dpi[0] if horizontal else page.dpi[1]
+        px_per_mm = dpi / 25.4
+        window = round(v["stack_window_mm"] * px_per_mm)
+        edge = value[index]
+        limit = width if horizontal else height
+        outward = -1 if index < 2 else 1
+        inner = edge - outward * window
+        outer = edge + outward * window
+        low, high = sorted((max(0, min(limit, inner)), max(0, min(limit, outer))))
+        if high - low < 8:
+            continue
+        if horizontal:
+            band = grey.crop((low, value[1], high, value[3]))
+            band = band.resize((band.width, min(band.height, 400)), Image.BOX)
+            band = band.transpose(Image.Transpose.TRANSPOSE)
+        else:
+            band = grey.crop((value[0], low, value[2], high))
+            band = band.resize((min(band.width, 400), band.height), Image.BOX)
+        length = band.width
+        data = band.tobytes()
+        medians = [
+            sorted(data[i * length : (i + 1) * length])[length // 2] for i in range(band.height)
+        ]
+        if outward < 0:
+            medians = medians[::-1]  # index grows outward
+
+        def to_page(i: int, outward: int = outward, low: int = low, high: int = high) -> int:
+            return high - 1 - i if outward < 0 else low + i
+
+        lines = _stack_lines(medians, px_per_mm, v)
+        if len(lines) < v["stack_min_lines"]:
+            continue
+        gap = v["stack_gap_mm"] * px_per_mm
+        chains = [[lines[0]]]
+        for line in lines[1:]:
+            if line[0] - chains[-1][-1][1] <= gap:
+                chains[-1].append(line)
+            else:
+                chains.append([line])
+        edge_at = abs(edge - (high - 1 if outward < 0 else low))  # the edge, as an index
+        chains = [c for c in chains if len(c) >= v["stack_min_lines"] and c[-1][1] >= edge_at - gap]
+        if not chains:
+            continue
+        chain = chains[0]
+        first, last = to_page(chain[0][0]), to_page(chain[-1][1] - 1)
+        top_sheet = first + (1 if outward < 0 else 0)  # the innermost line is excluded
+        if outward < 0:
+            result[index] = max(result[index], top_sheet)
+        else:
+            result[index] = min(result[index], top_sheet)
+        found[index] = (min(first, last), max(first, last) + 1, len(chain))
+    if result[2] <= result[0] or result[3] <= result[1]:
+        return list(value), [None, None, None, None]
+    return result, found

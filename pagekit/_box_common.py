@@ -383,6 +383,65 @@ def rule_shaped(part: Component, length_px: int, thickest_px: float, tilt_deg: f
     return across <= length * math.tan(math.radians(tilt_deg)) + 2 * thickest_px + 1
 
 
+def edge_line(part: Component, upright: bool, work: Work, v: dict[str, Any]) -> bool:
+    """A long thin line running along a side (vertical for the left and right sides,
+    `upright`; horizontal for the top and bottom): an edge of the sheet or of the pages
+    under it, a board edge or a thin shadow, not writing. Long: at least
+    `edge_line_min_mm`; thin: its mean thickness (area over length) at most
+    `edge_line_max_mm`; along the side: tilted from it by no more than 5 degrees, and at
+    least eight times as long as it is wide."""
+    along, across = (part.height, part.width) if upright else (part.width, part.height)
+    thickness = part.area / along
+    return (
+        along * work.mm >= v["edge_line_min_mm"]
+        and thickness * work.mm <= v["edge_line_max_mm"]
+        and across <= along * math.tan(math.radians(5)) + v["edge_line_max_mm"] / work.mm
+        and along >= 8 * across
+    )
+
+
+def edge_line_pieces(
+    parts: list[Component], upright: bool, work: Work, v: dict[str, Any]
+) -> set[int]:
+    """The ids of the components that are lines, or pieces of lines, running along a
+    side (vertical for left and right, `upright`).
+
+    A page edge or board edge is often broken into dashes. At each position across the
+    side (give or take a pixel, as the line wobbles), the thin pieces lying there are
+    gathered; when three or more of them reach from end to end over an edge line's
+    length, that position is a line band, and a thin piece lying mostly in a band is part
+    of that line (real-register follow-up, S3 and S4)."""
+    longest = v["edge_line_min_mm"] / work.mm
+    thickest = v["edge_line_max_mm"] / work.mm
+
+    def across(part: Component) -> tuple[int, int]:
+        return (part.x0, part.x1) if upright else (part.y0, part.y1)
+
+    def along(part: Component) -> tuple[int, int]:
+        return (part.y0, part.y1) if upright else (part.x0, part.x1)
+
+    thin = [p for p in parts if across(p)[1] - across(p)[0] <= thickest]
+    reach: dict[int, list[tuple[int, int]]] = {}
+    for part in thin:
+        low, high = across(part)
+        for position in range(low - 1, high + 1):
+            reach.setdefault(position, []).append(along(part))
+    band = {
+        position
+        for position, spans in reach.items()
+        if len(spans) >= 3 and max(b for _, b in spans) - min(a for a, _ in spans) >= longest
+    }
+    found = set()
+    for part in parts:
+        low, high = across(part)
+        inside = sum(1 for position in range(low, high) if position in band)
+        if edge_line(part, upright, work, v) or (
+            high - low <= thickest and inside * 2 >= high - low
+        ):
+            found.add(id(part))
+    return found
+
+
 def fit_line(part: Component) -> tuple[float, float]:
     """Least-squares line y = intercept + slope * x through a component's pixels."""
     n = sx = sy = sxx = sxy = 0.0

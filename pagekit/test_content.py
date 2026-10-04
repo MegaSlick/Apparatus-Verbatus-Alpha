@@ -240,8 +240,10 @@ def test_discarded_ink_is_reported_and_flagged_at_the_crop_check_thresholds():
     # Writing that runs off the paper edge is debris here, so it is discarded and shown.
     ImageDraw.Draw(image).rectangle((0, mm(100), mm(15), mm(100) + 4), fill=30)
     answer = detect_content_box(synth.noisy(image), (DPI, DPI))
+    # Edge debris is not counted as discarded writing (real-register follow-up, S4),
+    # but a piece the size of a mark is still reported.
     assert "edge debris" in answer["evidence"]
-    assert any("outside the content box" in flag for flag in answer["flags"])
+    assert any("touching the paper edge" in flag for flag in answer["flags"])
 
 
 def test_large_scan_is_measured_on_a_reduced_copy():
@@ -453,3 +455,27 @@ def test_tape_near_the_edge_is_described_as_tape():
     answer = detect_content_box(synth.noisy(image), (DPI, DPI))
     flags = [flag for flag in answer["flags"] if "tape" in flag]
     assert flags and not any("touching" in flag for flag in flags)
+
+
+# --- Real-register follow-up: edge lines are not discarded writing ---------------
+
+
+def test_thin_shadows_along_the_paper_edges_are_not_discarded_writing():
+    image = text_page().copy()
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((mm(30), 0, mm(120), mm(1.2)), fill=90)  # along the top edge
+    draw.rectangle((mm(40), image.height - mm(1.5), mm(110), image.height), fill=80)
+    draw.rectangle((image.width - mm(1.0), mm(40), image.width, mm(160)), fill=70)
+    answer = detect_content_box(synth.noisy(image), (DPI, DPI))
+    assert close(answer["value"], ink_box(text_page()))
+    assert answer["flags"] == []
+    assert "lines along the paper's edge" in answer["evidence"]
+
+
+def test_slanted_edge_line_along_the_side_is_not_discarded_writing():
+    # The sheet's edge leaning a degree inside the page box: one long thin line.
+    image = text_page().copy()
+    ImageDraw.Draw(image).line((mm(0.3), mm(20), mm(2.6), mm(200)), fill=70, width=3)
+    answer = detect_content_box(synth.noisy(image), (DPI, DPI))
+    assert close(answer["value"], ink_box(text_page()))
+    assert answer["flags"] == []

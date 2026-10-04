@@ -55,7 +55,9 @@ _READS = (
     "skew_profile_lag_mm",
     "skew_score_margin",
     "skew_disagree_deg",
+    "skew_disagree_share",
     "skew_region_disagree_deg",
+    "skew_region_fit",
     "skew_region_grid",
     "skew_region_min_ink_mm2",
     "skew_dominant_share",
@@ -129,19 +131,37 @@ def detect_skew(
         )
 
     second = line_fit_estimate(writing, work, v)
-    disagree = second is not None and abs(second - angle) > v["skew_disagree_deg"]
+    # The estimates agree when they have the same sign and differ by no more than the
+    # larger of a fixed tolerance and a share of the angle: on running hands with
+    # flourishes a line fit strays by a fraction of a degree, which must not leave a
+    # visibly tilted page unlevelled (real-register follow-up, S1).
+    spread = 0.0 if second is None else abs(second - angle)
+    tolerance = v["skew_disagree_deg"]
+    opposite = False
+    if second is not None:
+        tolerance = max(tolerance, v["skew_disagree_share"] * max(abs(angle), abs(second)))
+        opposite = angle * second < 0 and min(abs(angle), abs(second)) >= v["skew_snap_deg"]
+    disagree = second is not None and (opposite or spread > tolerance)
     if second is None:
         flags.append("The line-fit cross-check found no line long enough to measure.")
     elif disagree:
+        why = "opposite signs" if opposite else f"more than {tolerance:.2f}° apart"
         flags.append(
             f"The two skew estimates disagree: profile {angle:+.2f}°, line fit "
-            f"{second:+.2f}° (more than {v['skew_disagree_deg']:g}° apart); no rotation applied."
+            f"{second:+.2f}° ({why}); no rotation applied."
         )
 
-    regions = region_estimates(ink, writing, work, v, search["reach"])
-    measured = sum(weight for _, weight in regions)
-    agreeing = sum(w for a, w in regions if abs(a - angle) <= v["skew_region_disagree_deg"])
-    disagreeing = [a for a, _ in regions if abs(a - angle) > v["skew_region_disagree_deg"]]
+    regions = region_estimates(ink, writing, work, v, search["reach"], angle)
+    measured = sum(weight for _, weight, _ in regions)
+
+    def leans(a: float, fit: float) -> bool:
+        # A region leans differently only if its own angle is well apart from the
+        # page's and its lines are clearly less level at the page's angle: with running
+        # hands and flourishes a small region's peak wanders on a flat top (S2).
+        return abs(a - angle) > v["skew_region_disagree_deg"] and fit < v["skew_region_fit"]
+
+    agreeing = sum(w for a, w, fit in regions if not leans(a, fit))
+    disagreeing = [a for a, _, fit in regions if leans(a, fit)]
     applied = 0.0 if disagree else angle
     region_text = ""
     if disagreeing:
@@ -172,12 +192,19 @@ def detect_skew(
         applied = 0.0
     applied = round(applied, 2) + 0.0  # no negative zero
     cross = "" if second is None else f", line fit {second:+.2f}°"
+    if second is not None and not disagree and spread > v["skew_disagree_deg"]:
+        cross += (
+            f" (they differ by {spread:.2f}°, within {tolerance:.2f}° for an angle this size, "
+            "so the profile angle is applied)"
+        )
     evidence = (
         f"Projection profile on {ink_mm2:.0f} mm² of writing (after removing "
         f"{removed}) peaks at {angle:+.2f}°, {ratio:.2f} times the median score"
         f"{cross}.{region_text}{snapped}{note}"
     )
     confidence = min(1.0, 0.5 + 0.5 * (ratio - v["skew_score_margin"]) / v["skew_score_margin"])
+    if second is not None and not disagree:
+        confidence *= 1.0 - 0.5 * spread / tolerance  # a wider spread, less confidence
     if flags:
         confidence *= 0.5
     return common.answer(applied, max(0.0, confidence), evidence, flags)
@@ -444,9 +471,17 @@ def line_fit_estimate(writing: Image.Image, work: common.Work, v: dict[str, Any]
 
 
 def region_estimates(
-    ink: Image.Image, writing: Image.Image, work: common.Work, v: dict[str, Any], reach: float
-) -> list[tuple[float, float]]:
-    """(angle, ink in mm²) for each region of the writing with enough ink to measure."""
+    ink: Image.Image,
+    writing: Image.Image,
+    work: common.Work,
+    v: dict[str, Any],
+    reach: float,
+    page_angle: float = 0.0,
+) -> list[tuple[float, float, float]]:
+    """(angle, ink in mm², fit) for each region of the writing with enough ink to
+    measure. The fit is the region's own profile score at the page's angle as a share of
+    its score at its best angle: near 1, the region's lines are as level at the page's
+    angle as at its own, and its own peak is only noise on a flat top."""
     box = writing.getbbox()
     if box is None:
         return []
@@ -464,10 +499,12 @@ def region_estimates(
             amount = common.count(writing.crop(cell)) * work.mm**2
             if amount < v["skew_region_min_ink_mm2"]:
                 continue
-            found = profile_search(
-                ink.crop(cell), v, work.px(v["skew_profile_lag_mm"]), widen=False, reach=reach
-            )
+            lag = work.px(v["skew_profile_lag_mm"])
+            found = profile_search(ink.crop(cell), v, lag, widen=False, reach=reach)
             if found["ratio"] < v["skew_score_margin"]:
                 continue
-            estimates.append((found["angle"], amount))
+            tapered = _tapered(_inked(ink.crop(cell)), reach, lag)
+            own = _score(tapered, found["angle"], lag)
+            fit = _score(tapered, page_angle, lag) / own if own > 0 else 1.0
+            estimates.append((found["angle"], amount, min(1.0, fit)))
     return estimates

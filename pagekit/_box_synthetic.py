@@ -186,3 +186,69 @@ def foxed(image: Image.Image, dpi: float, seed: int = 6, count: int = 12) -> Ima
         draw.ellipse((x - r, y - r, x + r, y + r), fill=255 - depth)
     spots = spots.filter(ImageFilter.GaussianBlur(dpi / 25.4 * 0.4))
     return ImageChops.subtract(image, ImageChops.invert(spots))
+
+
+def flourished_page(seed: int, amp_mm: float = 1.5, loop_mm: float = 2.0, dpi: float = 150):
+    """Running writing whose baselines wave by `amp_mm` along each line, with a looping
+    flourish under about half the words: the kind of hand where a line fit and a
+    projection profile disagree by a fraction of a degree."""
+    rng = random.Random(seed)
+    image = Image.new("L", (mm(160, dpi), mm(220, dpi)), PAPER)
+    draw = ImageDraw.Draw(image)
+    px = dpi / 25.4
+    y = 25 * px
+    while y < 200 * px:
+        x = 20 * px + rng.uniform(0, 3) * px
+        while x < 135 * px:
+            wave = amp_mm * px * math.sin(2 * math.pi * x / (40 * px) + y)
+            start = x
+            x = word(draw, rng, x, y + wave, dpi)
+            if rng.random() < 0.5:
+                points = [
+                    (
+                        start + t * (x - start + 12 * px),
+                        y + wave + loop_mm * px * math.sin(math.pi * t),
+                    )
+                    for t in (i / 20 for i in range(21))
+                ]
+                draw.line(points, fill=INK, width=max(1, round(0.4 * px)))
+            x += rng.uniform(1.2, 2.2) * 2.4 * px
+        y += 9 * px
+    return image
+
+
+def edge_stack(
+    image: Image.Image,
+    side_x: int,
+    dpi: float,
+    lines: int = 8,
+    board_mm: float = 0.0,
+    backdrop: int = 20,
+    seed: int = 9,
+) -> Image.Image:
+    """A stack of page edges to the right of `side_x`: thin vertical lines, alternately
+    light and dark, about 0.6 mm apart, darkening outward as in the book's shadow,
+    running most of the height with small breaks; then an optional dark board edge and
+    the backdrop. Everything right of the stack is replaced."""
+    rng = random.Random(seed)
+    out = image.copy()
+    draw = ImageDraw.Draw(out)
+    px = dpi / 25.4
+    width, height = out.size
+    draw.rectangle((side_x, 0, width, height), fill=backdrop)
+    spacing = 0.6 * px
+    for i in range(lines):
+        base = round(200 - 140 * i / max(1, lines - 1))  # the shadow deepens outward
+        x0 = side_x + round(i * spacing)
+        x1 = side_x + round((i + 1) * spacing)
+        draw.rectangle((x0, 0, x1 - 1, height), fill=base)
+        level = base - 45 if i % 2 else min(255, base + 25)
+        y = 0
+        while y < height:  # each edge line, broken here and there
+            length = rng.uniform(30, 90) * px
+            draw.line((x0, y, x0, y + length), fill=level, width=max(1, round(0.2 * px)))
+            y += length + rng.uniform(0, 4) * px
+    edge = side_x + round(lines * spacing)
+    if board_mm:
+        draw.rectangle((edge, 0, edge + round(board_mm * px), height), fill=55)
+    return out

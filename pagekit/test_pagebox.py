@@ -275,3 +275,41 @@ def test_unwalked_side_much_paler_than_the_paper_is_flagged():
     assert answer["value"][0] < 150
     assert any("paler than the paper" in flag for flag in answer["flags"])
     assert "no backdrop there" not in answer["evidence"].split("left")[1].split(";")[0]
+
+
+# --- Real-register follow-up: page-edge stacks -----------------------------------
+
+
+@pytest.mark.parametrize("board_mm", [0.0, 8.0])
+@pytest.mark.parametrize("lines", [6, 12])
+def test_stack_of_page_edges_gives_the_top_sheets_edge(lines, board_mm):
+    frame = Image.new("L", (FRAME[0] + 100, FRAME[1]), 20)
+    frame.paste(paper(), AT)
+    edge = AT[0] + paper().width
+    frame = synth.edge_stack(frame, edge, DPI, lines=lines, board_mm=board_mm)
+    # The stack runs only beside the sheet, with backdrop above and below it.
+    top = Image.new("L", (frame.width - edge, AT[1]), 20)
+    frame.paste(top, (edge, 0))
+    frame.paste(top, (edge, AT[1] + paper().height))
+    answer = detect_page_box(synth.noisy(frame), (DPI, DPI))
+    assert abs(answer["value"][2] - edge) <= 6, answer["value"]
+    assert_close(answer["value"][:2] + answer["value"][3:], expected()[:2] + expected()[3:])
+    assert answer["flags"] == []
+    assert "page edges" in answer["evidence"]
+
+
+def test_dashed_board_edge_beside_the_sheet_is_not_writing():
+    # A board edge or loose page edge 2 mm outside the sheet, broken into dashes and
+    # seen over part of the side, used to read as ink and pull the edge out.
+    frame = on_backdrop(25)
+    draw = ImageDraw.Draw(frame)
+    # A grey band of book edge in shadow beside the sheet, with a dark dashed line in it.
+    draw.rectangle((AT[0] - synth.mm(4, DPI), AT[1], AT[0] - 1, AT[1] + paper().height), fill=105)
+    x = AT[0] - synth.mm(2, DPI)
+    y = AT[1] + synth.mm(120, DPI)
+    while y < AT[1] + paper().height - synth.mm(5, DPI):
+        draw.line((x, y, x, y + synth.mm(6, DPI)), fill=30, width=2)
+        y += synth.mm(8, DPI)
+    answer = detect_page_box(frame, (DPI, DPI))
+    assert_close(answer["value"], expected())
+    assert answer["flags"] == []
