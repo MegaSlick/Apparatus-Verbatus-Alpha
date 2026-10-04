@@ -103,8 +103,8 @@ FIXTURE = "synthetic-two-page-v0"
 # the reconstructor's receipt.
 HAPPY_SNAPSHOT_FILES = 141
 REVIEW_SNAPSHOT_FILES = 132
-HAPPY_RUN_TREE_DIGEST = "e8406eac0886007d0a91bcf33983144215e76fe42ff3d3dbf7e29ac67d8f5b59"
-REVIEW_RUN_TREE_DIGEST = "6e9fe2794ba6e9f8345206c1c37604e9c78cf19ed384e043fd9c90c07158974b"
+HAPPY_RUN_TREE_DIGEST = "c8c54d0bdf129920f66a0af9f9f54cefdf2d515dff5974de2db48d0d75be9eca"
+REVIEW_RUN_TREE_DIGEST = "c769a74e45e891ccbeef2026fc6a7a54c62b9d76030b31a2115a472bc9d8a32e"
 
 
 def orchestrate_to_export(
@@ -128,7 +128,6 @@ def orchestrate(
     *,
     models_config: Path | None = None,
     serving_recipes_config: Path | None = None,
-    witness_context_config: Path | None = None,
     hard_failure_config: Path | None = None,
     submission_folder: Path | None = None,
     submission_manifest: Path | None = None,
@@ -154,8 +153,6 @@ def orchestrate(
         command.extend(("--models-config", str(models_config)))
     if serving_recipes_config is not None:
         command.extend(("--serving-recipes-config", str(serving_recipes_config)))
-    if witness_context_config is not None:
-        command.extend(("--witness-context-config", str(witness_context_config)))
     if hard_failure_config is not None:
         command.extend(("--hard-failure-config", str(hard_failure_config)))
     if submission_folder is not None:
@@ -327,7 +324,6 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         # missing exactly this for a different flag).
         placement_tier=None,
         witness_context="named",
-        witness_context_config=ROOT / "config" / "witness_context.toml",
         perlector_protocol_config=ROOT / "config" / "perlector_protocol.toml",
         perlector_audit_config=ROOT / "config" / "perlector_audit.toml",
         # The corpus-register argv surface, which `invoke` reads by name on every
@@ -391,7 +387,6 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
 
     models = ROOT / "config" / "models-real.toml"
     recipes = ROOT / "config" / "serving_recipes_real.toml"
-    witness_context = ROOT / "config" / "witness_context-real.toml"
     run_root = tmp_path / "runs"
 
     # The tier selects a live-shaped row. Its deliberately unproven preflight
@@ -405,7 +400,6 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
         "happy",
         models_config=models,
         serving_recipes_config=recipes,
-        witness_context_config=witness_context,
         placement_tier="generic-48gb",
     )
 
@@ -421,13 +415,28 @@ def test_real_roster_and_catalogue_reach_the_real_orchestrator_route(monkeypatch
         load_fixture(ROOT / "proof"),
         "happy",
         serving_recipes_config_path=recipes,
-        witness_context_config_path=witness_context,
     )
     assert run_record["config_digest"] == expected["config_digest"]
     assert (
         expected["serving_config_inputs"]["serving_recipes_sha256"]
         == read_sealed_toml(recipes, "serving recipes")[1]
     )
+
+
+def test_a_partial_real_configuration_is_refused_before_anything_is_written(tmp_path):
+    """The real model configuration is one selection; a partial one is refused up front.
+
+    Otherwise the missing files fall back to their fixture defaults and the run
+    gets as far as a stage before a configuration check notices the mismatch.
+    """
+
+    run_root = tmp_path / "runs"
+    result = orchestrate(run_root, "r", "happy", models_config=ROOT / "config" / "models-real.toml")
+
+    assert result.returncode == 2
+    assert "supply both or neither" in result.stderr
+    assert "--serving-recipes-config" in result.stderr
+    assert not run_root.exists()
 
 
 def test_real_ingress_changes_only_the_doors_argv(monkeypatch, tmp_path):
@@ -2278,7 +2287,13 @@ def test_an_explicitly_absent_witness_counts_against_the_floor_on_every_page(
     is delivered as fully witnessed.
     """
     root = tmp_path / "runs"
-    result = orchestrate_to_export(root, "r", "happy", models_config=absent_third_chair_config)
+    result = orchestrate_to_export(
+        root,
+        "r",
+        "happy",
+        models_config=absent_third_chair_config,
+        serving_recipes_config=DEFAULT_SERVING_RECIPES_CONFIG_PATH,
+    )
     assert result.returncode == 3, result.stderr
     tree = RunTree(root, "r")
     assert tree.read_run()["witness_chairs"] == ["attestator_1", "attestator_2", "attestator_3"]

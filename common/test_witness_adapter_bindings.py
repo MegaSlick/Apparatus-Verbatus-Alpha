@@ -419,8 +419,8 @@ def test_witness_adapter_is_inside_the_sealed_config_digest(monkeypatch):
 def test_reducing_a_roster_cannot_reuse_one_run_id_silently(tmp_path):
     """A corpus may be run again under a changed roster, but not as the old run.
 
-    The witness-context declaration must change with the roster; both its chair
-    list and digest then prevent reuse before a byte changes.
+    The roster's chair list and the config digest prevent reuse before a byte
+    changes.
     """
     fixture = load_fixture(str(ROOT / "proof"))
     full_models = _models()
@@ -429,20 +429,7 @@ def test_reducing_a_roster_cannot_reuse_one_run_id_silently(tmp_path):
     reduced_chairs = dict(full_models.chairs)
     del reduced_chairs["attestator_3"]
     reduced_models = replace(full_models, chairs=reduced_chairs)
-    reduced_context = tmp_path / "witness_context.toml"
-    reduced_context.write_text(
-        "[attestator_1]\n"
-        'training_domain = "fixture"\n\n'
-        "[attestator_2]\n"
-        'training_domain = "fixture"\n',
-        encoding="utf-8",
-    )
-    reduced_bindings = run_config_bindings(
-        reduced_models,
-        fixture,
-        "happy",
-        witness_context_config_path=reduced_context,
-    )
+    reduced_bindings = run_config_bindings(reduced_models, fixture, "happy")
     assert reduced_bindings["witness_chairs"] == ["attestator_1", "attestator_2"]
     assert reduced_bindings["config_digest"] != full_bindings["config_digest"]
 

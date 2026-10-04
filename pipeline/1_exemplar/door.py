@@ -55,6 +55,10 @@ from image_formats import (  # noqa: E402
     sniff,
 )
 
+from common.armarium_formats import (  # noqa: E402
+    estimated_embedded_export_bytes,
+    require_within_export_archive_limit,
+)
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts import triage as triage_manifest  # noqa: E402
 from common.contracts.approval import (  # noqa: E402
@@ -78,7 +82,12 @@ from common.corpus_register import (  # noqa: E402
 from common.exemplar_boundary import SEALED_DERIVATIVE_PAGE_KIND  # noqa: E402
 from common.hard_failure import load_hard_failure_policy  # noqa: E402
 from common.image_sniff import SIGNATURE_PREFIX_BYTES  # noqa: E402
-from common.imaging import TRIAGE_APPLY_RECIPE  # noqa: E402
+from common.imaging import (  # noqa: E402
+    MAX_CROP_BYTES_PER_PIXEL,
+    TRIAGE_APPLY_RECIPE,
+    crop_bytes_per_pixel,
+    stored_image_mode,
+)
 from common.runtree.store import RunTree  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_CORPUS_FRAME_CONFIG_PATH,
@@ -87,6 +96,7 @@ from common.stage import (  # noqa: E402
     REAL_SCENARIO,
     StageContext,
     adapter_recipe_for,
+    canary_ordinals,
     load_corpus_frame_policy,
     load_fixture,
     real_run_bindings,
@@ -97,7 +107,6 @@ from common.stage import (  # noqa: E402
     run_stage,
     scenario_for,
     stage_parser,
-    validate_witness_context_bindings,
 )
 from operations.submit import gate, inventory  # noqa: E402
 from operations.submit import submit as submission_ledger  # noqa: E402
@@ -1442,6 +1451,54 @@ def require_some_admitted(
     )
 
 
+def require_export_can_be_sealed(context: StageContext) -> None:
+    """Refuse a run whose embedded export is estimated past the archive limit.
+
+    The Armarium refuses an oversized archive in any case, but only after every
+    page has been read; the sealed format choice and pages already say enough
+    to refuse it here, before any reading starts.
+    """
+    formats = context.armarium_formats
+    if formats is None:
+        raise ContractError(
+            "the Door has no sealed Armarium format selection, so it cannot tell whether "
+            "this run's export could be sealed"
+        )
+    if not formats.embed_pixels:
+        return
+    require_within_export_archive_limit(
+        estimated_embedded_export_bytes(_exported_pages(context)),
+        what="this run's export archive, estimated from its sealed pages and their crops,",
+        embed_pixels=True,
+    )
+
+
+def _exported_pages(context: StageContext) -> list[tuple[int, int, int, float]]:
+    """`(stored bytes, width, height, crop bytes per pixel)` of each page the export carries.
+
+    Canaries are controls and are never exported. A page whose mode cannot be
+    read is counted at the widest crop layout.
+    """
+    canaries = canary_ordinals(context.run)
+    pages = []
+    for _entry, payload in _iter_admissions(context, "admitted"):
+        if payload["ordinal"] in canaries:
+            continue
+        path = context.tree.resolve(payload["stored_at"])
+        try:
+            stored = path.stat().st_size
+        except OSError as error:
+            raise ContractError(
+                f"the stored page of admitted ordinal {payload['ordinal']} could not be "
+                f"measured ({type(error).__name__}), so the export's size cannot be estimated"
+            ) from error
+        mode = stored_image_mode(path)
+        rate = MAX_CROP_BYTES_PER_PIXEL if mode is None else crop_bytes_per_pixel(mode)
+        geometry = payload["geometry"]
+        pages.append((stored, geometry["width"], geometry["height"], rate))
+    return pages
+
+
 def _refusal_census(refusal_report: Report) -> dict[str, int]:
     """Count the reported refusals by closed-set reason code."""
     census: dict[str, int] = {}
@@ -1575,6 +1632,7 @@ def _finish_door_run(context: StageContext, admitted: int, *, canary_admitted: i
     require_no_duplicate_sources(duplicate_report)
     require_no_re_shoots(context, cluster_report)
     require_some_admitted(admitted, refusal_report, canary_admitted=canary_admitted)
+    require_export_can_be_sealed(context)
     context.seal_boundary()
     context.finish(DOOR)
     return EXIT_COMPLETE
@@ -1605,7 +1663,6 @@ def fixture_submission(args, registry) -> int:
         hard_failure_config_path=args.hard_failure_config,
         review_config_path=args.review_config,
         witness_context=args.witness_context,
-        witness_context_config_path=args.witness_context_config,
         perlector_protocol_config_path=args.perlector_protocol_config,
         perlector_audit_config_path=args.perlector_audit_config,
         serving_recipes_config_path=args.serving_recipes_config,
@@ -1962,11 +2019,6 @@ def _real_bindings(
     corpus_frame_policy, corpus_frame_config_sha256 = load_corpus_frame_policy(
         DEFAULT_CORPUS_FRAME_CONFIG_PATH
     )
-    witness_context_declaration_sha256 = validate_witness_context_bindings(
-        models,
-        witness_context=args.witness_context,
-        witness_context_config_path=args.witness_context_config,
-    )
     config_digest = digest_of(
         {
             "submission": [
@@ -2002,7 +2054,6 @@ def _real_bindings(
             "decoding_config_sha256": sealed["decoding"],
             "models": models.to_record(),
             "witness_context_regime": args.witness_context,
-            "witness_context_declaration_sha256": witness_context_declaration_sha256,
             "perlector_protocol_config_sha256": sealed["perlector-protocol"],
             "perlector_audit_config_sha256": sealed["perlector-audit"],
             "serving_config_inputs": base["serving_config_inputs"],
@@ -2013,6 +2064,7 @@ def _real_bindings(
         "config_digest": config_digest,
         "adapter_recipes": base["adapter_recipes"],
         "sealed_config_digests": sealed,
+        "armarium_formats": base["armarium_formats"],
     }
 
 
@@ -2076,6 +2128,7 @@ def _door_context(
         args=args,
         registry=registry,
         sealed_config_digests=bindings["sealed_config_digests"],
+        armarium_formats=bindings["armarium_formats"],
     )
 
 

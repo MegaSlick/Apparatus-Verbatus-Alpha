@@ -29,7 +29,6 @@ SEALED_CONFIG_FLAGS = (
     "--recovery-config",
     "--hard-failure-config",
     "--review-config",
-    "--witness-context-config",
 )
 
 # This exception is constrained by `stage_parser`'s matching default.

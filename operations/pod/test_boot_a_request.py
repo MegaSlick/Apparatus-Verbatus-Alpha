@@ -39,6 +39,10 @@ def configured(**overrides: object) -> SpendPolicy:
         "shutdown_poll_interval_seconds": 1,
         "shutdown_deadline_seconds": 5,
         "billing_cutoff_margin_seconds": 3600,
+        "soft_max_seconds": 86_400,
+        "hard_max_seconds": 86_400,
+        "soft_max_cost_usd": Decimal("1000.00"),
+        "hard_max_cost_usd": Decimal("1000.00"),
     }
     fields.update(overrides)
     return SpendPolicy(**fields)  # type: ignore[arg-type]
@@ -297,7 +301,7 @@ def test_main_exits_two_on_an_uncommitted_unconfigured_policy(
     """Against a policy file this test writes itself, so the refusal path keeps
     its own coverage now that the committed config/spend.toml is configured."""
     spend = tmp_path / "spend.toml"
-    spend.write_text('schema = "pod-spend.v3"\nstate = "unconfigured"\n', encoding="utf-8")
+    spend.write_text('schema = "pod-spend.v4"\nstate = "unconfigured"\n', encoding="utf-8")
 
     status = main(["--spend", str(spend), "--placement", str(PLACEMENT)])
 
@@ -316,7 +320,7 @@ def test_main_refuses_an_unreadable_spend_policy_instead_of_raising(
     """
 
     spend = tmp_path / "spend.toml"
-    spend.write_text('schema = "pod-spend.v3"\nstate = "configured"\nmax_hourly', encoding="utf-8")
+    spend.write_text('schema = "pod-spend.v4"\nstate = "configured"\nmax_hourly', encoding="utf-8")
 
     status = main(["--spend", str(spend), "--placement", str(PLACEMENT)])
 

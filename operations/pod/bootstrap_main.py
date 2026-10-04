@@ -127,7 +127,6 @@ from common.credentials import (
 from common.decoding import READING_CHAIRS, chair_decoding, load_decoding_policy
 from common.sealed_config import parse_sealed_toml
 from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
-from common.witness_context import validate_witness_context_configuration
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
 from operations.serving.config import (
     ServingConfigInputs,
@@ -198,7 +197,6 @@ _PLAN_ONLY_FLAGS = (
     "fixture",
     "page_witness_file",
     "serving_recipes_config",
-    "witness_context_config",
     "submission_manifest",
     "transfer_source_root",
     "transfer_prefix",
@@ -249,7 +247,6 @@ class Plan:
     fixture: Path | None = None
     page_witness_file: Path | None = None
     serving_recipes_config: Path | None = None
-    witness_context_config: Path | None = None
     submission_manifest: Path | None = None
     transfer_source_root: Path | None = None
     transfer_prefix: str = "pod-transfer"
@@ -283,9 +280,6 @@ class Plan:
             "page_witness_file": str(self.page_witness_file) if self.page_witness_file else None,
             "serving_recipes_config": str(self.serving_recipes_config)
             if self.serving_recipes_config
-            else None,
-            "witness_context_config": str(self.witness_context_config)
-            if self.witness_context_config
             else None,
             "submission_manifest": str(self.submission_manifest)
             if self.submission_manifest
@@ -551,10 +545,6 @@ def build_parser() -> RefusingParser:
         type=Path,
     )
     parser.add_argument(
-        "--witness-context-config",
-        type=Path,
-    )
-    parser.add_argument(
         "--submission-manifest",
         type=Path,
     )
@@ -705,25 +695,16 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
             "would preflight this roster's chairs against the fixture-only catalogue. Name both",
             report_path=report_path,
         )
+    # This path may not exist until REPOSITORY checks out the pinned commit.
+    # Plan and dry-run therefore validate containment and selection only. The
+    # journaled CONFIGURATION step parses its content immediately
+    # after checkout, before uv, model materialization, cache work, or serving.
     serving_recipes_config = _require_contained(
         _repository_config_path(
             args.serving_recipes_config or Path("config/serving_recipes.toml"), repository
         ),
         repository,
         "--serving-recipes-config",
-        base_label="the checked-out repository",
-        report_path=report_path,
-    )
-    # These paths may not exist until REPOSITORY checks out the pinned commit.
-    # Plan and dry-run therefore validate containment and selection only. The
-    # journaled CONFIGURATION step parses and pairs their content immediately
-    # after checkout, before uv, model materialization, cache work, or serving.
-    witness_context_config = _require_contained(
-        _repository_config_path(
-            args.witness_context_config or Path("config/witness_context.toml"), repository
-        ),
-        repository,
-        "--witness-context-config",
         base_label="the checked-out repository",
         report_path=report_path,
     )
@@ -775,7 +756,6 @@ def resolve_plan(args: argparse.Namespace, environment: Mapping[str, str] | None
         fixture=fixture,
         page_witness_file=page_witness_file,
         serving_recipes_config=serving_recipes_config,
-        witness_context_config=witness_context_config,
         submission_manifest=submission_manifest,
         transfer_source_root=transfer_source_root,
         transfer_prefix=args.transfer_prefix or "pod-transfer",
@@ -1392,19 +1372,18 @@ class _LazyChairCache:
 
 
 def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object]]:
-    """Read the pinned roster/declaration after checkout and before paid setup."""
+    """Read the pinned roster and catalogue after checkout and before paid setup."""
 
     def _validate() -> dict[str, object]:
         if (
             plan.repository is None
             or plan.models_config is None
             or plan.serving_recipes_config is None
-            or plan.witness_context_config is None
         ):
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
-                "bootstrap plan reached CONFIGURATION without its repository, roster, serving "
-                "catalogue, or declaration",
+                "bootstrap plan reached CONFIGURATION without its repository, roster, or serving "
+                "catalogue",
                 "Supply the complete bootstrap plan and start a new schema-v3 journal.",
             )
         try:
@@ -1414,19 +1393,13 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
             parsed_models, models_sha256 = parse_sealed_toml(
                 models_source, f"model roster {plan.models_config}"
             )
-            models = parse_models_config(parsed_models, source_path=plan.models_config)
-            validation = validate_witness_context_configuration(
-                models,
-                plan.witness_context_config,
-                shipped_config_root=plan.repository / "config",
-            )
+            parse_models_config(parsed_models, source_path=plan.models_config)
         except ContractError as error:
             raise BootstrapStepFailure(
                 BootstrapStep.CONFIGURATION,
-                f"witness roster/declaration validation failed: {error}",
-                "Repair the pinned roster/declaration selection. Use the fixture trio together, "
-                "the real trio together, or an operator-authored declaration for a custom roster; "
-                "then resume this journal before any environment or model work.",
+                f"model roster validation failed: {error}",
+                "Repair the pinned roster selection, then resume this journal before any "
+                "environment or model work.",
             ) from error
         placement = DEFAULT_POD_PLACEMENT_CONFIG_PATH.resolve()
         pinned = plan.repository.resolve() / "config" / "pod_placement.toml"
@@ -1480,10 +1453,6 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
             "schema": CONFIGURATION_RECEIPT_SCHEMA,
             "bindings": {
                 "models_config": {"path": str(plan.models_config), "sha256": models_sha256},
-                "witness_context_config": {
-                    "path": str(plan.witness_context_config),
-                    "sha256": validation.source_sha256,
-                },
                 "serving_recipes_config": {
                     "path": str(plan.serving_recipes_config),
                     "sha256": serving_sha256,
@@ -1493,7 +1462,6 @@ def _build_configuration_validation(plan: Plan) -> Callable[[], dict[str, object
                     "sha256": placement_sha256,
                 },
             },
-            "witness_context_validation": validation.to_record(),
         }
 
     return _validate

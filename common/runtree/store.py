@@ -46,6 +46,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Final
 
+from common import armarium_formats
 from common.chairs.models import is_hf_revision
 from common.chairs.receipts import receipt_record, validate_receipt
 from common.contracts.approval import (
@@ -77,7 +78,7 @@ from common.contracts.errors import (
     SchemaRefusal,
 )
 from common.contracts.identities import validate_run_id
-from common.contracts.stages import DOOR, writing_directory
+from common.contracts.stages import ARMARIUM, DOOR, writing_directory
 from common.corpus_register import empty_register, validate_register_bytes
 from common.durability import (
     HardLinkUnsupported,
@@ -125,7 +126,9 @@ _MAX_MANIFEST_WALK_ENTRIES: Final = 100_000
 # 128 MiB decoded-page bound in `pipeline/1_exemplar/image_formats.py`, and
 # below `MAX_FETCH_OBJECT_BYTES` in `operations/operator/surface.py`, since a
 # read ceiling above the fetch ceiling could never fire on fetched bytes.
-# `operations/operator/test_surface.py` pins that ordering.
+# `operations/operator/test_surface.py` pins that ordering.  The Armarium's blob
+# directory holds only the export archive, which is read under its own limit,
+# `MAX_EXPORT_ARCHIVE_BYTES` in `common/armarium_formats.py`.
 MAX_RECORD_READ_BYTES: Final = _MAX_MANIFEST_ARTIFACT_BYTES
 _MAX_TREE_READ_BYTES: Final = 192 * 1024 * 1024
 _DIRECTORY_OPEN_FLAGS: Final = (
@@ -801,13 +804,26 @@ class RunTree:
     def read_bytes(self, relative_path: str, *, max_bytes: int | None = None) -> bytes:
         """One file's bytes, under the blob-sized tree ceiling unless told otherwise.
 
+        The Armarium's blobs (its only blob is the export archive) are read
+        under the export archive limit instead.
+
         A caller that knows it is reading a JSON record rather than a page blob
         passes `max_bytes=MAX_RECORD_READ_BYTES`, so the bytes it is about to
         hand to `json.loads` -- which costs several times their size again in
         parsed objects -- are bounded by what a record can legitimately be and
         not by what an image can.
         """
-        return _read_bytes_bounded(self.resolve(relative_path), max_bytes=max_bytes)
+        path = self.resolve(relative_path)
+        if max_bytes is None:
+            # The Armarium stores no blob but its export archive (its `run.py`);
+            # any other blob put there would be read under the archive limit too.
+            archive_blobs = self.root / writing_directory(ARMARIUM) / BLOBS_DIR
+            max_bytes = (
+                armarium_formats.MAX_EXPORT_ARCHIVE_BYTES
+                if path.parent == archive_blobs
+                else _MAX_TREE_READ_BYTES
+            )
+        return _read_bytes_bounded(path, max_bytes=max_bytes)
 
     def _read_record_bytes(self, relative_path: str) -> bytes:
         """`read_bytes` under the record ceiling, for bytes about to be decoded as JSON."""

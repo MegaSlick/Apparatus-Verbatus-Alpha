@@ -42,7 +42,6 @@ when a second user needs it.
 | `decoding.py` | the run-sealed sampling and token bounds of every model reading, and the check that a call used them |
 | `armarium_formats.py` | the sealed choice of Armarium export projections |
 | `witness_adapters.py` | the declared witness-adapter names and scopes (the adapters themselves live in the Attestatores) |
-| `witness_context.py` | validation of the per-witness context declaration and roster identities |
 | `witness_regime.py` | the named or blinded witness labels, re-derivable by any downstream verifier |
 
 **Chairs and requests**

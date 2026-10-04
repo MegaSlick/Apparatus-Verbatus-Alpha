@@ -21,9 +21,10 @@ It builds on what exists once the cleanup pull requests have merged:
   a report on the volume with three side files beside it: liveness, timings (each stage's
   clock) and a transcript.
 
-**Not built yet (phase 0).** The finish estimate, the deadline-extension request and the
-deadline-at-risk check do not exist. They are planned for the core half of PR 8, on the
-pod side. Everything below that reads them says so and waits for that phase.
+**Phase 0, in part.** `pod_run` keeps the current stage's finish estimate in
+`pod-run-report-<run id>-estimate.json` beside its report and sends the deadline-at-risk
+notice (`operations/pod/finish_estimate.py`); the spend policy carries the soft and hard
+maximums. The deadline-extension request route does not exist yet.
 
 ## What it is for
 
@@ -134,8 +135,8 @@ Follows a pod run from the laptop without SSH.
 
 - **Inputs:** `--run-id`, optional `--interval <seconds>` (default 30) and
   `--timeout <seconds>` to return even if nothing changes.
-- **How it reads:** on each pass it fetches `pod_run`'s report, liveness and timings files
-  from the volume over S3, each as a whole object (they are small and rewritten in place,
+- **How it reads:** on each pass it fetches `pod_run`'s report, liveness, timings and
+  estimate files from the volume over S3, each as a whole object (they are small and rewritten in place,
   so a partial read would be meaningless). It prints a line when something changed.
 - **What it shows:** the stage running, pages done in it, how long each finished stage
   took, the liveness age, and the run's state. Once phase 0 exists it also shows the
@@ -195,7 +196,7 @@ partial.
   stage. `--preview` shows what would be written (exit 5).
 - **`preflight`** checks a submission locally before any pod is rented: every file
   decodes, size and resolution, the pagekit crop check, the data gate. `--for-pod` adds
-  the configuration trio, the spend policy, the storage keys (a read of the volume) and
+  the configuration pair, the spend policy, the storage keys (a read of the volume) and
   the guard's commit being on `main`. Exit 3 when pages are flagged. While the pagekit
   thresholds are uncalibrated, "no flags" is reported as "nothing found", never as "the
   crops are right".
@@ -551,11 +552,13 @@ sentences. The existing `run-held`, `export-partial` and `canary-alarm` become e
 
 Each phase leaves something usable on its own.
 
-### Phase 0: the pod-side estimate and extension request (not built)
+### Phase 0: the pod-side estimate and extension request
 
-Planned for the core half of PR 8: the per-stage finish estimate in `pod_run`'s liveness
-loop, the deadline-at-risk check and notification, and the extension request route. None
-of it exists today. Every later item that reads them says so.
+Built: the per-stage finish estimate in `pod_run`'s liveness loop, written to
+`-estimate.json`, and the deadline-at-risk check and notification, with the soft and hard
+maximums in `config/spend.toml`. Not built: the extension request route. The notice is
+written to the estimate file and the run report, not yet to an event log (phase 2), and
+`pod_run` takes the hourly price as `--hourly-usd` until it gets a budget input.
 
 ### Phase 1: what the first live run needs
 

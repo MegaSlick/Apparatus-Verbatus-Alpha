@@ -324,8 +324,6 @@ def stage_argv(run_root: Path, catalogue: Path, *, placement_tier: str | None) -
     argv += [
         "--witness-context",
         "named",
-        "--witness-context-config",
-        str(config / "witness_context.toml"),
         "--perlector-protocol-config",
         str(config / "perlector_protocol.toml"),
         "--perlector-audit-config",

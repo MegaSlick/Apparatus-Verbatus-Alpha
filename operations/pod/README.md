@@ -223,14 +223,13 @@ correct immediate close.
   `python -m operations.serving.qualify` renders review candidates for the measured tier;
   it never edits the catalogue.
 - **Configuration is one selection.** `--serving-recipes-config` defaults to the
-  fixture-only `config/serving_recipes.toml`. A real launch names `config/models-real.toml`,
-  `config/serving_recipes_real.toml` and `config/witness_context-real.toml` together. The
-  journaled `CONFIGURATION` step, after checkout and before anything is synced, fetched or
-  served, matches each role's shipped witness declaration to its source and binds the four
-  config paths and seals into its receipt. A resume with a changed selection fails there
-  (restore it or start a new journal); a journal whose receipt is
-  `pod-bootstrap-configuration.v1` bound raw file bytes and is refused by schema. A custom roster needs an operator-authored
-  declaration. The placement table is always the checkout's own `config/pod_placement.toml`,
+  fixture-only `config/serving_recipes.toml`. A real launch names `config/models-real.toml`
+  and `config/serving_recipes_real.toml` together. The journaled `CONFIGURATION` step,
+  after checkout and before anything is synced, fetched or served, parses the roster, the
+  catalogue and the placement table and binds the three config paths and seals into its
+  receipt. A resume with a changed selection fails there (restore it or start a new
+  journal); a journal whose receipt is an earlier `pod-bootstrap-configuration` version is
+  refused by schema. The placement table is always the checkout's own `config/pod_placement.toml`,
   the one the stages seal; `CONFIGURATION` refuses any other resolved path, a symlink out
   included.
 - **CUDA compatibility.** Before the uv install, `CUDA_COMPAT` records `nvidia-smi`'s
@@ -267,7 +266,7 @@ python -m operations.pod.pod_run <run flags> -- <bootstrap_main argv>
 The argv after `--` goes through `bootstrap_main`'s own `prepare`/`run_bootstrap`, so every
 bootstrap refusal, probe, scrub and deadline applies. After a green journal it runs
 `pipeline/orchestrator/run.py` with the pod's interpreter: run root `<volume>/runs` (or
-`--run-root`, inside the volume), submission inside the volume, the config trio the
+`--run-root`, inside the volume), submission inside the volume, the config pair the
 bootstrap checked and measured, and `--data-gate-policy` inside the repository. Its
 `pod-run-report.v1` at the launch-bound `--report-path` moves through `bootstrapping`,
 `running`, then `complete`, `held`, `halted`, `failed`, `bootstrap-red` or `refused`.
@@ -392,6 +391,32 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   commit that created the run; a resume at another commit shows here. (Binding the commit
   into the run authority would refuse every resume after a fix.)
 - `-hold.json` — the hold line after a finished run.
+- `-estimate.json` — the current stage's finish estimate, rewritten each liveness tick
+  (`finish_estimate.py`): pages done of pages total for the first page-counted stage
+  (Door to Perlector) with no seal, and its pace since `pod_run` first saw it, once at
+  least five pages and ten minutes have passed. The Attestatores total counts only the
+  roster's page witnesses. It is that stage's finish only, never the run's; the stages
+  after it are not counted. When that finish plus 20 minutes to bring results home passes
+  the deadline that ends the pod, it records a `deadline-at-risk` notice and, with
+  `--notify`, sends it as a `decision`. That deadline is the guard's `deadline-<pod id>`,
+  read each tick the way the guard reads it (a value that is not epoch seconds within a
+  week is ignored, recorded, and the last valid one stands); with none ever read, the
+  bootstrap's hard deadline; under the pod timer, the timer's hard deadline, which no
+  file moves. The notice names the spend policy's soft and hard maximums as the launch sealed them
+  into the pod's environment, or, for a pod launched without them, the checkout's
+  `config/spend.toml` by its SHA-256 (the pod's creation time is not known here, so it
+  states them rather than an instant), the finish
+  and deadline with how far off they are, the extra time and its cost at the hourly price
+  (`--hourly-usd`, or a pod-timer launch's `VERBATUS_POD_HOURLY_USD` plus
+  `VERBATUS_VOLUME_ONGOING_HOURLY_USD`, the launch-time estimate before create, which the
+  notice names as such; "unknown" without either), and, for a guard
+  deadline, one command that moves it to the projected end. Under the pod timer it says
+  the deadline cannot be extended by hand. It is sent once for each deadline value; a new
+  value the lead writes re-arms it. A send that did not arrive (or found no guard topic
+  yet) is recorded and retried on later ticks, three attempts in all. Nothing here moves
+  the deadline. The run report's `deadline_watch` keeps every notice, every ignored
+  deadline file value, and any failure to write or compute the estimate; a failed tick
+  is also written to the estimate file.
 
 These are best-effort, so a lost stopwatch never abandons or holds a completed run. The
 report audits them at close (`records_at_close`, `records_missing`); a missing transcript
@@ -418,8 +443,9 @@ line and the notification outcome in its run report. If the orchestrator ran but
 usable stop record (`read_stop_record`), whether it sounded the alarm is unknown. The
 report then names why in `stop_record_problem` and `detail`, and such a run is never
 `complete`: a complete exit is recorded as `held`, which returns at once like any run
-that held before its export. Without `--notify` the line is
-recorded and nothing is sent. `notify.sh` reads its topic only from `NTFY_TOPIC` or the
+that held before its export. The deadline-at-risk notice (`-estimate.json` above) is
+another `decision` sent the same way (`notify_deadline_at_risk_from_guard`). Without
+`--notify` each line is recorded and nothing is sent. `notify.sh` reads its topic only from `NTFY_TOPIC` or the
 repository's `private/ntfy.conf`, which a pod does not have, so `pod_run` reads the
 guard's topic file (`/workspace/private/.pod_guard/ntfy_topic`, below) and passes it as
 `NTFY_TOPIC` in that one notification command's environment, beside only `PATH` and the
@@ -692,6 +718,8 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   --submission-manifest $V/submission-manifest.json \
   --mechanics-qualification \
   --no-hold \
+  --notify \
+  --hourly-usd <the card's price per hour plus the volume's> \
   -- \
   --volume-mount-path $V \
   --report-path $V/bootstrap-report-$RUN.json \
@@ -702,10 +730,13 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   --store-root $V/model-store \
   --models-config $R/config/models-real.toml \
   --serving-recipes-config $R/config/serving_recipes_real.toml \
-  --witness-context-config $R/config/witness_context-real.toml \
   > $V/pod-run-$RUN.out 2>&1 < /dev/null &
 ```
 
+- **`--hourly-usd`** names the price the pod was rented at, so the deadline-at-risk notice
+  can say what running past the deadline costs; `--notify` sends that notice (and the
+  systemic alarm) to the phone once the guard's ping is armed (`-estimate.json` above).
+  Drop `--notify` if no phone should be paged.
 - **No selection: the full auto run.** It stops at a held Recensor, before Archetypus
   and Armarium, as `--models big` does; a first proof run should reach the Armarium.
 - **`--store-root`** names the model store on the volume. If the weights were
@@ -729,6 +760,7 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
 ```sh
 cat $V/pod-run-report-$RUN.json          # state: bootstrapping, running, then the outcome
 cat $V/pod-run-report-$RUN-liveness.json # last_seen should keep moving while it runs
+cat $V/pod-run-report-$RUN-estimate.json # this stage finishes about ...; at_risk
 tail -f $V/pod-run-report-$RUN-transcript.log
 tail -f $V/pod-run-$RUN.out              # the bootstrap's own output as well
 tail -f $V/.pod_guard/guard.log
@@ -772,6 +804,7 @@ verbatus fetch-run --run-id <run id> --into <local root> \
   --evidence-key pod-run-report-<run id>-transcript.log \
   --evidence-key pod-run-report-<run id>-liveness.json \
   --evidence-key pod-run-report-<run id>-timings.json \
+  --evidence-key pod-run-report-<run id>-estimate.json \
   --evidence-key bootstrap-report-<run id>.json \
   --evidence-key bootstrap-journal-<run id>.json \
   --evidence-key pod-run-<run id>.out \

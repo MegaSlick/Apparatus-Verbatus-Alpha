@@ -55,7 +55,6 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         mechanics_qualification=False,
         perlector_concurrency=None,
         witness_context="named",
-        witness_context_config=ROOT / "config" / "witness_context.toml",
         perlector_protocol_config=ROOT / "config" / "perlector_protocol.toml",
         perlector_audit_config=ROOT / "config" / "perlector_audit.toml",
         corpus_register=None,

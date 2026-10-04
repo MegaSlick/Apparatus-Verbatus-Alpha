@@ -37,6 +37,8 @@ from synthetic_sources import (
 )
 
 import common.imaging as common_imaging
+from common import armarium_formats
+from common.armarium_formats import ArmariumFormats
 from common.chairs import load_models_toml
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import (
@@ -129,11 +131,7 @@ DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
 def _fixture_models():
-    """Load the declared fixture roster for real-binding tests.
-
-    `_real_bindings` validates witness-context identities, so its doubles must
-    expose the same ChairIdentity records the fixture declaration addresses.
-    """
+    """Load the declared fixture roster for real-binding tests."""
     return load_models_toml(ROOT / "config" / "models.toml")
 
 
@@ -222,7 +220,9 @@ def truncated_animated_gif() -> bytes:
     return data[: descriptors[1] + 9]
 
 
-def open_door(tmp_path, sources, *, run_id="r1", ingress=None, register_bytes=None):
+def open_door(
+    tmp_path, sources, *, run_id="r1", ingress=None, register_bytes=None, embed_pixels=False
+):
     """A real tree/context writing the door's own artifacts."""
     tree = RunTree.create(
         tmp_path / "runs",
@@ -266,6 +266,7 @@ def open_door(tmp_path, sources, *, run_id="r1", ingress=None, register_bytes=No
         adapter_revision=RECIPES[DOOR],
         args=None,
         registry=None,
+        armarium_formats=ArmariumFormats(("jsonl",), embed_pixels),
     )
 
 
@@ -954,6 +955,60 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
         for item in tree.build_manifest(DOOR)["artifacts"]
         if item["kind"] == "duplicate-report"
     ] == []
+
+
+def _admitted_colour_page(tmp_path, *, embed_pixels: bool):
+    page = png(40, 30, color_type=2)
+    files = {"colour.png": page}
+    sources = expand_sources(
+        [{"relative_path": "colour.png", "sha256": digest_bytes(page), "bytes": len(page)}],
+        reader(files),
+    )
+    tree, context = open_door(tmp_path, sources, embed_pixels=embed_pixels)
+    admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
+    return page, tree, context, admitted
+
+
+def test_a_colour_export_that_could_never_be_sealed_is_refused_at_the_door(tmp_path, monkeypatch):
+    """With pixels embedded the export carries the page and its crops. A colour
+    page's crops cost three bytes per pixel, so a limit its crops would pass at one
+    byte per pixel is refused before any reading starts."""
+    page, tree, context, admitted = _admitted_colour_page(tmp_path, embed_pixels=True)
+    limit = armarium_formats.estimated_embedded_export_bytes([(len(page), 40, 30, 1)])
+    assert armarium_formats.estimated_embedded_export_bytes([(len(page), 40, 30, 3)]) > limit
+    whole_page_crop = common_imaging.crop_png(page, {"x": 0, "y": 0, "w": 40, "h": 30})
+    assert len(whole_page_crop) > 40 * 30 * 2, "a colour crop is stored at three bytes a pixel"
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", limit)
+
+    with pytest.raises(ContractError, match=f"{limit}-byte export archive limit"):
+        door._finish_door_run(context, admitted)
+    kinds = {item["kind"] for item in tree.build_manifest(DOOR)["artifacts"]}
+    assert "stage-seal" not in kinds
+
+
+@pytest.mark.parametrize(("embed_pixels", "limit"), [(True, 10**6), (False, 1)])
+def test_an_export_within_the_archive_limit_or_without_pixels_passes_the_door(
+    tmp_path, monkeypatch, embed_pixels, limit
+):
+    _page, _tree, context, admitted = _admitted_colour_page(tmp_path, embed_pixels=embed_pixels)
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", limit)
+    assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
+
+
+def test_a_door_without_a_sealed_format_choice_is_refused_not_waved_through(tmp_path):
+    files = {"one.png": png(4, 3)}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
+            for path, payload in files.items()
+        ],
+        reader(files),
+    )
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
+    context.armarium_formats = None
+    with pytest.raises(ContractError, match="no sealed Armarium format selection"):
+        door._finish_door_run(context, admitted)
 
 
 def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicate_refusal(

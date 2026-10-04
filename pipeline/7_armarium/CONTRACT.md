@@ -108,6 +108,12 @@ The bundle is a ZIP written with every member stored (never compressed) and fixe
 metadata, with `EXPORT_MANIFEST.json` first. It is deterministic for given inputs,
 except that bytes 96-99 of `acts.sqlite` hold the writing library's SQLite version.
 
+The whole archive is bounded by its own limit, `MAX_EXPORT_ARCHIVE_BYTES`
+(`common/armarium_formats.py`), not by the single-page blob ceiling: every run-tree
+read of it (input verification, the completion seal, `bundle.py`) uses that limit, and
+an archive above it is refused before it is stored. The Door refuses a run whose embedded export
+is estimated above it (`pipeline/1_exemplar/CONTRACT.md`).
+
 The formats are the run's sealed selection, `config/formats.toml`
 (`common/armarium_formats.py`): any of `text-bundle`, `acts-database`, `jsonl` and
 `review-items`, and `embed_pixels`. The selection is sealed into the run's
