@@ -37,6 +37,7 @@ from .advance import (
 )
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .ingest import ingest
+from .prepare import prepare as prepare_pages
 from .records import DescriptorStore, ReceiptStore
 from .review import ReadOnlyRun
 from .surface import DEFAULT_FIXTURE, RESUME_TO_STAGE, OperatorSurface, bounded_tail
@@ -532,6 +533,27 @@ def build_parser() -> PlainParser:
         help="canonical cluster-confirmation file; omit when confirming no cluster",
     )
 
+    prepare = verbs.add_parser(
+        "prepare",
+        help="prepare page images from a folder of scans, and the triage manifest that has "
+        "the Door cut the same pages from the original scans",
+    )
+    prepare.add_argument("--scans", type=Path, required=True, help="folder of scans; only read")
+    prepare.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="folder for the prepared pages and the triage manifest; a second run over it "
+        "continues the same project and keeps every correction",
+    )
+    prepare.add_argument(
+        "--overrides", type=Path, help="a pagekit-overrides.v1 file of corrections to apply"
+    )
+    prepare.add_argument(
+        "--corpus-id",
+        help="corpus identity for the triage manifest (default: the scans folder's name)",
+    )
+
     run = verbs.add_parser("run", help="run or resume a recorded fixture or real submission")
     run.add_argument("--run-id", required=True, help="a short name for this run")
     run.add_argument(
@@ -555,6 +577,17 @@ def build_parser() -> PlainParser:
         "--submission-manifest", type=Path, help="self-hashed ledger for the real folder"
     )
     run.add_argument("--data-gate-policy", type=Path, help="approved-storage policy for real input")
+    run.add_argument(
+        "--triage-decision-manifest",
+        type=Path,
+        help="triage decisions for the real folder, such as the one `verbatus prepare` writes: "
+        "the Door cuts each page from its original scan as they say",
+    )
+    run.add_argument(
+        "--triage-producer-recipe",
+        type=Path,
+        help="the producer recipe written beside that triage decision manifest",
+    )
     run.add_argument(
         "--models-config",
         type=Path,
@@ -898,6 +931,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 workspace=workspace,
                 printer=_print,
             )
+        elif args.verb == "prepare":
+            prepare_pages(
+                scans=args.scans,
+                out=args.out,
+                overrides=args.overrides,
+                corpus_id=args.corpus_id,
+                workspace=workspace,
+                printer=_print,
+            )
         elif args.verb == "run":
             surface.run(
                 run_id=args.run_id,
@@ -906,6 +948,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 submission_folder=args.submission_folder,
                 submission_manifest=args.submission_manifest,
                 data_gate_policy=args.data_gate_policy,
+                triage_decision_manifest=args.triage_decision_manifest,
+                triage_producer_recipe=args.triage_producer_recipe,
                 models_config=args.models_config,
                 serving_recipes_config=args.serving_recipes_config,
                 from_stage=args.from_stage,
@@ -1510,8 +1554,8 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, upload, run, fetch-run, watch, export, status, spend, "
-        "review, decide, advance, backup, or clear-leftovers."
+        "Choose one word: prepare, ingest, triage, upload, run, fetch-run, watch, export, "
+        "status, spend, review, decide, advance, backup, or clear-leftovers."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1542,6 +1586,21 @@ def _interactive_arguments() -> list[str]:
             )
             return []
         return ["upload", "--source", source, "--manifest-out", manifest_out]
+    if verb == "prepare":
+        _print("You can drag a folder from Finder into this window instead of typing its path.")
+        scans = _ask_path("Folder of scans to prepare")
+        out = _ask_path("Folder for the prepared pages (a new one, or the one used last time)")
+        if not scans or not out:
+            _print(
+                "Prepare needs the folder of scans and a folder for the prepared pages. "
+                "One was left blank, so nothing changed."
+            )
+            return []
+        arguments = ["prepare", "--scans", scans, "--out", out]
+        overrides = _ask_path("Overrides file with corrections (leave blank for none)")
+        if overrides:
+            arguments.extend(("--overrides", overrides))
+        return arguments
     if verb == "ingest":
         source = _ask("Folder containing the submitted master files")
         output_dir = _ask("Existing empty approved folder for the ready-to-submit records")
@@ -1779,6 +1838,17 @@ def _ask(label: str, *, default: str | None = None) -> str:
     except EOFError:
         answer = ""
     return answer or (default or "")
+
+
+def _ask_path(label: str) -> str:
+    """A path typed or dragged in: a dragged path arrives quoted, or with each space
+    escaped by a backslash, which the shell would have removed."""
+    answer = _ask(label)
+    if len(answer) >= 2 and answer[0] == answer[-1] and answer[0] in "'\"":
+        return answer[1:-1]
+    if "\\" in answer and not Path(answer).expanduser().exists():
+        return re.sub(r"\\(.)", r"\1", answer)
+    return answer
 
 
 def _typed_decide_confirmation(phrase: str) -> str | None:

@@ -1,0 +1,262 @@
+"""pagekit's page geometry as triage rows: the Door's page, rendered from the original
+scan by `common.imaging.render_triage_derivative`, holds pagekit's page where the
+mapping says, and loses none of its ink. Synthetic pages only."""
+
+from __future__ import annotations
+
+import io
+import json
+from collections import deque
+from pathlib import Path
+
+import pytest
+from PIL import Image, ImageDraw
+
+from common.contracts import triage as triage_manifest
+from common.imaging import render_triage_derivative
+from operations.triage.pagekit_geometry import (
+    GUTTER,
+    ROTATED,
+    door_affine,
+    make_manifest,
+    make_row,
+    map_pages,
+)
+from pagekit.geometry import Chain, apply
+from pagekit.output import execute
+from pagekit.prepare import plan
+
+INK, PAPER = 20, 215
+
+
+def _scan(folder: Path, size, dots, name="scan.png") -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    image = Image.new("L", size, PAPER)
+    draw = ImageDraw.Draw(image)
+    for x, y in dots:
+        draw.rectangle((x - 5, y - 5, x + 5, y + 5), fill=INK)
+    path = folder / name
+    image.save(path, dpi=(300, 300))
+    return path
+
+
+def _prepare(tmp_path: Path, scan: Path, overrides: list[dict]):
+    fixes = tmp_path / "fixes.json"
+    for entry in overrides:
+        entry["source"] = scan.relative_to(tmp_path).as_posix()
+    fixes.write_text(json.dumps({"schema": "pagekit-overrides.v1", "overrides": overrides}))
+    prepared = plan([scan], tmp_path / "out", overrides_path=fixes)
+    execute(prepared)
+    pages = prepared.pages
+    mapped = map_pages([page.chain for page in pages], pages[0].steps["split"]["value"])
+    return pages, mapped
+
+
+def _door(scan: Path, part: dict) -> Image.Image:
+    data, _ = render_triage_derivative(scan.read_bytes(), page_index=0, part=part)
+    return Image.open(io.BytesIO(data))
+
+
+def _blobs(image: Image.Image) -> list[tuple[float, float, int]]:
+    """Centre (continuous coordinates) and size of each dark blob."""
+    image = image.convert("L")
+    width, height = image.size
+    pixels = image.load()
+    seen: set[tuple[int, int]] = set()
+    found = []
+    for y in range(height):
+        for x in range(width):
+            if pixels[x, y] >= 100 or (x, y) in seen:
+                continue
+            queue, points = deque([(x, y)]), []
+            seen.add((x, y))
+            while queue:
+                px, py = queue.popleft()
+                points.append((px, py))
+                for nx, ny in ((px + 1, py), (px - 1, py), (px, py + 1), (px, py - 1)):
+                    if (
+                        0 <= nx < width
+                        and 0 <= ny < height
+                        and (nx, ny) not in seen
+                        and pixels[nx, ny] < 100
+                    ):
+                        seen.add((nx, ny))
+                        queue.append((nx, ny))
+            if len(points) >= 20:
+                found.append(
+                    (
+                        sum(p[0] for p in points) / len(points) + 0.5,
+                        sum(p[1] for p in points) / len(points) + 0.5,
+                        len(points),
+                    )
+                )
+    return found
+
+
+@pytest.mark.parametrize("turns", [0, 1, 2, 3])
+def test_a_page_with_no_skew_is_cut_exactly_as_pagekit_cut_it(tmp_path, turns):
+    dots = [(150, 160), (520, 140), (330, 600), (140, 880), (560, 860)]
+    scan = _scan(tmp_path / "scans", (700, 1000), dots)
+    box = [60, 70, 640, 930] if turns % 2 == 0 else [70, 60, 930, 640]
+    pages, mapped = _prepare(
+        tmp_path,
+        scan,
+        [
+            {"step": "orientation", "value": turns},
+            {"step": "content_box", "page": 1, "value": box},
+            {"step": "margin", "page": 1, "value": 0},
+        ],
+    )
+    (page,), (door_page,) = pages, mapped
+    assert door_page.notes == ()
+    assert (
+        door_page.part["rotation"]["rotation_millidegrees"] == [0, 90_000, 180_000, -90_000][turns]
+    )
+    door = _door(scan, door_page.part)
+    with Image.open(tmp_path / "out" / page.output_name) as prepared:
+        assert door.size == prepared.size
+        assert door_page.pagekit_box_in_door == (0, 0, *prepared.size)
+        assert door.tobytes() == prepared.convert("L").tobytes()
+
+
+def _ink(image: Image.Image, x: float, y: float, reach: int = 8) -> int:
+    """How much ink lies within `reach` of (x, y): the darkness below paper, summed,
+    which interpolation keeps where a thresholded pixel count would not."""
+    grey = image.convert("L")
+    left, top = round(x) - reach, round(y) - reach
+    window = grey.crop((left, top, left + 2 * reach, top + 2 * reach))
+    return sum(max(0, PAPER - level) * count for level, count in enumerate(window.histogram()))
+
+
+def _matched(door_blobs, pagekit_blobs, offset):
+    pairs = []
+    for x, y, size in pagekit_blobs:
+        nearest = min(
+            door_blobs, key=lambda b: (b[0] - offset[0] - x) ** 2 + (b[1] - offset[1] - y) ** 2
+        )
+        pairs.append(((x, y, size), nearest))
+    return pairs
+
+
+@pytest.mark.parametrize(("turns", "skew"), [(1, 1.5), (3, -2.0), (0, 0.8), (2, -0.7)])
+def test_a_turned_skewed_cropped_page_lands_where_pagekit_put_it(tmp_path, turns, skew):
+    dots = [(130, 130), (570, 130), (350, 500), (130, 870), (570, 870), (300, 300)]
+    scan = _scan(tmp_path / "scans", (700, 1000), dots)
+    # The crop runs 14 px outside the outermost dots, in the levelled page's pixels, so
+    # a Door page that lost any of pagekit's crop would lose part of a dot.
+    levelled = Chain.build((700, 1000), turns, {"pages": 1}, 0, 0.0, skew)
+    centres = levelled.forward([(x + 0.5, y + 0.5) for x, y in dots])
+    box = [
+        round(min(x for x, _ in centres)) - 14,
+        round(min(y for _, y in centres)) - 14,
+        round(max(x for x, _ in centres)) + 14,
+        round(max(y for _, y in centres)) + 14,
+    ]
+    pages, mapped = _prepare(
+        tmp_path,
+        scan,
+        [
+            {"step": "orientation", "value": turns},
+            {"step": "skew", "page": 1, "value": skew},
+            {"step": "content_box", "page": 1, "value": box},
+            {"step": "margin", "page": 1, "value": 0},
+        ],
+    )
+    (page,), (door_page,) = pages, mapped
+    rotation = door_page.part["rotation"]["rotation_millidegrees"]
+    assert rotation % 90_000 != 0
+    assert [note.code for note in door_page.notes] == [ROTATED]
+    door = _door(scan, door_page.part)
+    assert door.size == door_page.door_size
+    with Image.open(tmp_path / "out" / page.output_name) as opened:
+        prepared = opened.copy()
+    pagekit_blobs = _blobs(prepared)
+    assert len(pagekit_blobs) == len(dots)
+    door_blobs = _blobs(door)
+    # No ink lost: every dot pagekit's page holds is on the Door's page, whole.
+    for (x, y, _size), (dx, dy, _door_size) in _matched(
+        door_blobs, pagekit_blobs, door_page.pagekit_box_in_door[:2]
+    ):
+        assert abs(dx - door_page.pagekit_box_in_door[0] - x) < 0.5
+        assert abs(dy - door_page.pagekit_box_in_door[1] - y) < 0.5
+        assert _ink(door, dx, dy) == pytest.approx(_ink(prepared, x, y), rel=0.03)
+    # The Door's map from the scan agrees with where the dots really are.
+    to_door, _ = door_affine(door_page.part)
+    for (x, y), (dx, dy) in zip(
+        sorted(dots), sorted(apply(to_door, [(x + 0.5, y + 0.5) for x, y in dots])), strict=True
+    ):
+        assert min((bx - dx) ** 2 + (by - dy) ** 2 for bx, by, _ in door_blobs) < 0.25, (x, y)
+
+
+def test_a_leaning_split_with_overlap_drops_no_ink_across_the_frames_pages(tmp_path):
+    # Ink across the gutter, in the band both of pagekit's pages keep past the cut.
+    dots = [(x, y) for x in (120, 560, 610, 640, 670, 700, 740, 1280) for y in (120, 500, 880)]
+    scan = _scan(tmp_path / "scans", (1400, 1000), dots, name="spread.png")
+    pages, mapped = _prepare(
+        tmp_path,
+        scan,
+        [
+            {"step": "split", "value": {"pages": 2, "cut": [[620, 0], [680, 1000]]}},
+            # The left page's own crop stops short of the bottom, where the right page
+            # still reaches past the straight split into the left page's region.
+            {"step": "content_box", "page": 1, "value": [0, 0, 500, 400]},
+            {"step": "margin", "page": 1, "value": 0},
+            {"step": "skew", "page": 2, "value": 0.9},
+        ],
+    )
+    assert [note.code for note in mapped[0].notes] == [GUTTER]
+    assert [note.code for note in mapped[1].notes] == [ROTATED, GUTTER]
+    row = make_row(
+        corpus_id="synthetic",
+        source_sha256=pages[0].source.sha256,
+        frame=pages[0].source.size,
+        pages=mapped,
+        revision="0.1.0",
+        confidence=0,
+        human_override=True,
+    )
+    manifest = make_manifest("synthetic", [row])
+    assert triage_manifest.validate_manifest(manifest) is manifest  # regions partition
+    assert row["actor"] == {"kind": "producer", "identity": "pagekit", "revision": "0.1.0"}
+    assert {part["colour_mode"] for part in row["split"]["parts"]} == {"keep"}
+    # Every dot either of pagekit's pages shows is, whole, on one of the Door's pages.
+    shown_dots = set()
+    for page in pages:
+        with Image.open(tmp_path / "out" / page.output_name) as prepared:
+            to_source = page.chain.output_to_source()
+            for x, y, _size in _blobs(prepared):
+                ((sx, sy),) = apply(to_source, [(x, y)])
+                shown_dots.add(
+                    min(dots, key=lambda d: (d[0] + 0.5 - sx) ** 2 + (d[1] + 0.5 - sy) ** 2)
+                )
+    assert {(640, 500), (670, 500), (700, 500), (640, 880)} <= shown_dots
+    assert mapped[0].part["region"]["w"] == 650  # the cut's middle: (640, 880) is left of it
+    on_door = set()
+    for door_page in mapped:
+        door = _door(scan, door_page.part)
+        to_door, _ = door_affine(door_page.part)
+        found = _blobs(door)
+        for dot in shown_dots:
+            ((dx, dy),) = apply(to_door, [(dot[0] + 0.5, dot[1] + 0.5)])
+            if any(
+                (bx - dx) ** 2 + (by - dy) ** 2 < 0.25 and size >= 100 for bx, by, size in found
+            ):
+                on_door.add(dot)
+    assert on_door == shown_dots
+
+
+def test_a_quarter_turned_spread_splits_the_scan_across_its_other_axis(tmp_path):
+    scan = _scan(tmp_path / "scans", (1000, 1400), [(500, 300), (500, 1100)], name="side.png")
+    _pages, mapped = _prepare(
+        tmp_path,
+        scan,
+        [
+            {"step": "orientation", "value": 1},
+            {"step": "split", "value": {"pages": 2, "cut": [[700, 0], [700, 1000]]}},
+        ],
+    )
+    regions = [page.part["region"] for page in mapped]
+    # One clockwise turn puts the upright left page at the bottom of the scan.
+    assert [(r["x"], r["w"]) for r in regions] == [(0, 1000), (0, 1000)]
+    assert regions[0]["y"] == regions[1]["h"] and regions[1]["y"] == 0
+    assert {page.part["rotation"]["rotation_millidegrees"] for page in mapped} == {90_000}

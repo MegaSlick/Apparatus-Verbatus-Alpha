@@ -103,6 +103,35 @@ at the Designator, exit 2**, naming the record detector chair `'secondary_propos
 gate, Door, Exemplar and ink map on this Mac. On Linux all six images passed: 8-bit
 grey, none bilevel or 16-bit; pages 3112x4440 at 600 DPI, spreads 3864x3056 and 3672x2744.
 
+### Prepared pages from the spreads (free)
+
+To have the spreads split, levelled and cropped before any model reads them, prepare
+them first and let the Door cut each page from its original:
+
+```sh
+verbatus prepare --scans private/rg-spreads --out private/rg-spreads-prepared
+```
+
+It prints how many pages need review. Check each flagged page (pagekit's `review.html`
+in the output folder when pagekit makes one; until then the `.tif` pages and
+`pagekit-prepare.json`), put corrections in an overrides file and run it again with
+`--overrides FILE` until the pages are right. Read `triage-notes.txt` for the pages the
+Door will cut differently from pagekit. Then seal and check at the Door with the triage
+manifest:
+
+```sh
+verbatus upload --source private/rg-spreads \
+  --manifest-out private/rg-spreads-prepared/submission-manifest.json
+verbatus run --run-id local-rg-spreads --submission-folder private/rg-spreads \
+  --submission-manifest private/rg-spreads-prepared/submission-manifest.json \
+  --triage-decision-manifest private/rg-spreads-prepared/triage-decision-manifest.json \
+  --triage-producer-recipe private/rg-spreads-prepared/triage-producer-recipe.json
+```
+
+The run is expected to stop at the Designator, as above, with one page per prepared
+page. On the pod, `pod_run` takes the same two flags with paths on the volume; how the
+two files reach the volume is to confirm, since `upload` sends only the sealed scans.
+
 ## 5. Send the pages to the volume and prove the way home (free of GPU time)
 
 ```sh

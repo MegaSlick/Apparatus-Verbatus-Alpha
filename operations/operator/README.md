@@ -20,17 +20,18 @@ Two words reach a RunPod network volume:
 - `fetch-run` brings back a pod-written run tree and the launch evidence you name; it never
   fetches the uploaded images or their manifest.
 
-## The fourteen words
+## The fifteen words
 
-Ten things this tool can do, in the order a normal run uses them, plus three you can run
+Eleven things this tool can do, in the order a normal run uses them, plus three you can run
 any time to check on things and one that tidies up.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
+| `prepare` | Prepares page images from a folder of scans with pagekit, and writes the triage manifest that has the Door cut the same pages from the original scans. | No — it runs on this computer and only reads the scans. |
 | `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
 | `triage` | Shows the review queue `ingest` produced — each candidate with its evidence and proxy image — and records your accept or decline against it. | No — podless and offline. It shows and it records; it never opens a master and never decides for you. The double-click window shows the queue only; a decision is recorded from the command line. |
 | `upload` | Sends your images to storage. | No rented machine is needed — do it first if you like. With `--network-volume`, the volume itself costs money for as long as it exists, pod or no pod. |
-| `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. A real chair selection is the pair `--models-config config/models-real.toml` and `--serving-recipes-config config/serving_recipes_real.toml`; both are sealed into the run and one without the other is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
+| `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. `--triage-decision-manifest` and `--triage-producer-recipe` add the page geometry `prepare` writes. A real chair selection is the pair `--models-config config/models-real.toml` and `--serving-recipes-config config/serving_recipes_real.toml`; both are sealed into the run and one without the other is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
 | `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. You have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
 | `review` | Opens one run tree read-only, before or after export, and says which stages ran, what each act's latest reading and review say, which acts are held and why, the page and crop images behind them, and the one supported next action. `--json` prints the whole projection instead. | No. It only reads the run tree. |
@@ -42,8 +43,9 @@ any time to check on things and one that tidies up.
 | `clear-leftovers` | Lists what an interrupted publication left under one folder you name (a run tree, a volume mount or an export folder): `.<name>.tmp-<id>` files and `.<name>.publishing-<id>` folders. `--apply` removes them; run it only when nothing is writing to that folder. | No. It follows no symbolic link inside the folder, and refuses one as the folder's own last name; it touches no other name, and leaves alone any file, or any folder whose content, changed within the last hour. |
 | `spend show` | Shows the reviewed pod spending policy: its ceilings, hard-stop balance floor and alert threshold. | No — it reads the policy only; it does not contact a provider or edit the policy. |
 
-**The normal order.** `ingest` and `upload` need no rented machine, so do them first:
-`ingest` the submitted folder, work its queue with `triage`, `upload` the images.
+**The normal order.** `prepare`, `ingest` and `upload` need no rented machine, so do
+them first: `prepare` the scans and check its pages, `ingest` the submitted folder, work
+its queue with `triage`, `upload` the images.
 
 - **On this computer:** `run`, then `export` and `backup`.
 - **On a pod:** the pod runs `python -m operations.pod.pod_run`, which writes its tree to
@@ -57,6 +59,60 @@ to pass a sealed boundary, and `status` whenever you are unsure what this tool h
 proof material from the workspace, and refuse (`not-a-checkout`) when the folder they run
 in, or the one named with `--workspace`, lacks the `pipeline/`, `config/` or `proof/` they
 need. The other words never read those and run from anywhere.
+
+## `prepare`: page images and the Door's geometry from a folder of scans
+
+```sh
+verbatus prepare --scans private/parish-a/scans --out private/parish-a/prepared \
+    [--overrides private/parish-a/fixes.json] [--corpus-id parish-a]
+```
+
+The double-click window asks for the two folders (you can drag them in from Finder) and
+an optional corrections file. It runs pagekit (`pagekit/README.md`, "Preparing pages")
+over the scans and writes, in the output folder:
+
+- one lossless TIFF per page, pagekit's manifest `pagekit-prepare.json` and its project
+  file, and pagekit's review sheet `review.html` once pagekit makes one;
+- `triage-decision-manifest.json`: the same decisions as triage rows over the
+  **original** scans (actor `producer`, identity `pagekit`, revision pagekit's
+  version, colour mode always `keep`), and `triage-producer-recipe.json` beside it,
+  which the Door requires with producer rows;
+- `triage-notes.txt`: each page the Door will cut differently from pagekit, and why.
+
+It then says how many pages need review, where to look, and the exact commands to run
+next. The prepared TIFFs are for looking at and reuse; they never enter a run. The Door
+reads the triage manifest, keeps each scan whole as the page's `parent_frame`, and cuts
+the page from it, so every reading still traces to the scan.
+
+- **What the Door cannot copy exactly.** A quarter turn, a crop and a straight cut are
+  exact. A small skew is turned in the same single step, but triage cannot crop after
+  turning or fill with paper, so the Door's page keeps a little more of the scan around
+  pagekit's page, with black corners. A cut that leans, or pagekit's overlap past the
+  cut, becomes a straight split of the scan: what lies past it is on the facing page.
+  Nothing pagekit kept is dropped. `triage-notes.txt` lists each case.
+- **Corrections are kept.** Run it again over the same output folder: pagekit continues
+  its project, keeps every value set by hand, and recomputes only what changed. Give
+  corrections with `--overrides FILE` (`pagekit/README.md`, "Corrections").
+- **Ctrl-C leaves the output folder as it was.** pagekit writes all its files or none,
+  and the triage documents are written after it, each whole.
+- **pagekit's detectors are used as soon as pagekit connects them.** Until then each
+  step takes a neutral default, and every page is flagged for review.
+- **The Door reads only approved storage**, `private/` in this checkout, so keep both
+  folders there; it also refuses a scans folder holding a file the manifest does not
+  cover, such as a `.DS_Store`. `prepare` warns about both.
+- Like `ingest`, the scans are decoded in a separate process that holds no credential.
+
+To check the result at the Door on this computer, seal the scans and run with the
+triage manifest, as `prepare` prints:
+
+```sh
+verbatus upload --source private/parish-a/scans \
+    --manifest-out private/parish-a/prepared/submission-manifest.json
+verbatus run --run-id prepared-check --submission-folder private/parish-a/scans \
+    --submission-manifest private/parish-a/prepared/submission-manifest.json \
+    --triage-decision-manifest private/parish-a/prepared/triage-decision-manifest.json \
+    --triage-producer-recipe private/parish-a/prepared/triage-producer-recipe.json
+```
 
 ## `ingest`: prepare a folder before the Door
 

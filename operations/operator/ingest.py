@@ -120,7 +120,7 @@ def ingest(
     raise OperatorError(ErrorCode.INGEST_UNRESOLVED, detail=detail)
 
 
-def _deny_same_user_inspection() -> None:
+def _deny_same_user_inspection(code: ErrorCode = ErrorCode.INGEST_REFUSED) -> None:
     """On Linux, stop a same-user process reading this one's environment or memory.
 
     A non-dumpable process's `/proc/<pid>` entries belong to root and it cannot
@@ -132,8 +132,8 @@ def _deny_same_user_inspection() -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(_PR_SET_DUMPABLE, 0, 0, 0, 0) != 0:
         raise OperatorError(
-            ErrorCode.INGEST_REFUSED,
-            detail="this process could not be made non-dumpable before the ingest child ran "
+            code,
+            detail="this process could not be made non-dumpable before the child ran "
             f"(errno {ctypes.get_errno()}); nothing was written",
         )
 

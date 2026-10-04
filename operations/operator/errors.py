@@ -51,6 +51,9 @@ class ErrorCode(StrEnum):
     INGEST_REFUSED = "ingest-refused"
     INGEST_UNRESOLVED = "ingest-unresolved"
     TRIAGE_REFUSED = "triage-refused"
+    PREPARE_REFUSED = "prepare-refused"
+    PREPARE_INTERRUPTED = "prepare-interrupted"
+    PREPARE_INCOMPLETE = "prepare-incomplete"
     NOT_A_CHECKOUT = "not-a-checkout"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
@@ -257,6 +260,25 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Ingest did not return a checked ready-folder record.",
         "No pod was started or billed, but immutable ingest records may have been written before the interruption.",
         "Do not reuse or remove the output folder. Preserve it and the saved detail, inspect its records, then use a new empty approved folder when retrying.",
+    ),
+    ErrorCode.PREPARE_REFUSED: ErrorCopy(
+        "The pages could not be prepared.",
+        "The output folder was left as it was, and the scans were only read.",
+        "Read the reason below, correct the named folder, scan or overrides file, then run "
+        "`verbatus prepare` again; this is safe.",
+    ),
+    ErrorCode.PREPARE_INTERRUPTED: ErrorCopy(
+        "Page preparation was stopped before it finished.",
+        "The output folder was left as it was, and the scans were only read.",
+        "Run the same `verbatus prepare` command again when you are ready; it continues the "
+        "same project and keeps every correction.",
+    ),
+    ErrorCode.PREPARE_INCOMPLETE: ErrorCopy(
+        "The prepared pages were written, but the triage manifest for the Door may not have been.",
+        "Do not submit with a triage manifest from this output folder yet: it may be from an "
+        "earlier run. The scans were only read.",
+        "Run the same `verbatus prepare` command again; it reuses the pages and corrections "
+        "and writes the manifest.",
     ),
     ErrorCode.TRIAGE_REFUSED: ErrorCopy(
         "Triage could not safely record or show that review step.",
