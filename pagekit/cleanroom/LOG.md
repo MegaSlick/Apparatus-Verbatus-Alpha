@@ -487,3 +487,24 @@ record".
   brief 0023. Saved before it was sent.
 - **Brief 0031 done:** commit 4617b6f on `work/pk-integrate`. Leak scan no hits. Merged
   into `work/pagekit-prepare`; the pagekit suite passes under the check script's settings.
+
+## 0028 — Outside reading-side documents received; host exposure recorded
+
+- **Received** at 2026-10-04T15:23Z from the lead, from outside ChatGPT reading-side
+  sessions, and saved in `workbench/cleanroom-quarantine/` (git-ignored, never committed):
+  - `63910cd1-PageKit-Reconciliation-Review.md`, 25858 bytes, sha256
+    5f6e776d9cda0ee75a20d71778d79c7e7040630c8b64476fca19524b6ebb6645;
+  - `68d24890-PageKit-Reconciled-Intake-Candidate.md`, 17902 bytes, sha256
+    809c4ef938d5309a003879d6952658b8d1acb7ee5a1a57a7f2671fb73ac43f5c.
+- **Departure from step 3 of "Outside reading-side sessions":** the documents were
+  attached to the host's conversation, which loaded their full text, so the host read
+  both before quarantine and before the report check. The host did not forward them to
+  any build-side agent.
+- **What the host saw:** no source code, no code blocks and no description of another
+  program's internals. The only mentions of the excluded program are the metadata of the
+  lead's own four hand-prepared TIFF pages (size, grey 8-bit, LZW, 600 dpi tag). The
+  documents state that their authors' earlier research packets carry mixed exposure.
+- **Report check:** both refused (no reader-brief digest, free-form sections, file paths),
+  as working notes usually are. Nothing has been admitted into `findings/`.
+- **Pending the lead's decision:** whether a reading-side agent should distil them into
+  finding reports through the quarantine route. Until then no spec or brief draws on them.
