@@ -101,7 +101,8 @@ def test_prepare_writes_pages_and_a_triage_manifest_the_door_accepts(tmp_path, c
     ]
     assert "Prepared 3 page(s) from 2 scan(s)" in printed
     assert "Pages to review: 3 of 3." in printed
-    assert "1 page(s): the Door's page is turned by a small angle" in printed
+    assert "The Door will cut 3 page(s) from the original scans, 1 as pagekit cut them" in printed
+    assert "2 page(s): the frame is split along a straight line" in printed
     assert f"--triage-decision-manifest '{out / 'triage-decision-manifest.json'}'" in printed
     assert f"--submission-folder '{scans}'" in printed
 
@@ -111,7 +112,19 @@ def test_prepare_writes_pages_and_a_triage_manifest_the_door_accepts(tmp_path, c
         assert row["human_override"] is True and row["mode"] == "semi"
         assert {part["colour_mode"] for part in row["split"]["parts"]} == {"keep"}
     leaf = rows[submit.walk_folder(scans)[0]["sha256"]]
-    assert leaf["split"]["parts"][0]["rotation"]["rotation_millidegrees"] == 88_750
+    assert leaf["split"]["operation_order"] == "region-crop-rotate-crop"
+    (part,) = leaf["split"]["parts"]
+    assert part["rotation"]["rotation_millidegrees"] == 88_750
+    # The fill is the paper colour pagekit filled its own page with.
+    pagekit_pages = json.loads((out / "pagekit-prepare.json").read_text())["pages"]
+    leaf_fill = next(
+        page["geometry"]["fill"]["colour"]
+        for page in pagekit_pages
+        if page["source"]["name"] == "leaf one.png"
+    )
+    assert part["fill"] == {"levels": [leaf_fill]}
+    with Image.open(out / "leaf one_p1.tif") as prepared:
+        assert (part["post_crop_box"]["w"], part["post_crop_box"]["h"]) == prepared.size
 
     # The Door reads the two documents as written, and fans each scan out to its pages.
     decided, _clusters, _digests = door.load_triage_decisions(

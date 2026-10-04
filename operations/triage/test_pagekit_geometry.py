@@ -16,7 +16,6 @@ from common.contracts import triage as triage_manifest
 from common.imaging import render_triage_derivative
 from operations.triage.pagekit_geometry import (
     GUTTER,
-    ROTATED,
     door_affine,
     make_manifest,
     make_row,
@@ -46,9 +45,11 @@ def _prepare(tmp_path: Path, scan: Path, overrides: list[dict]):
         entry["source"] = scan.relative_to(tmp_path).as_posix()
     fixes.write_text(json.dumps({"schema": "pagekit-overrides.v1", "overrides": overrides}))
     prepared = plan([scan], tmp_path / "out", overrides_path=fixes)
-    execute(prepared)
+    manifest = execute(prepared)
     pages = prepared.pages
-    mapped = map_pages([page.chain for page in pages], pages[0].steps["split"]["value"])
+    # pagekit's own paper colour, as its manifest records it.
+    fills = [[entry["geometry"]["fill"]["colour"]] for entry in manifest["pages"]]
+    mapped = map_pages([page.chain for page in pages], pages[0].steps["split"]["value"], fills)
     return pages, mapped
 
 
@@ -97,17 +98,18 @@ def _blobs(image: Image.Image) -> list[tuple[float, float, int]]:
 def test_a_page_with_no_skew_is_cut_exactly_as_pagekit_cut_it(tmp_path, turns):
     dots = [(150, 160), (520, 140), (330, 600), (140, 880), (560, 860)]
     scan = _scan(tmp_path / "scans", (700, 1000), dots)
-    box = [60, 70, 640, 930] if turns % 2 == 0 else [70, 60, 930, 640]
+    # The margin carries pagekit's crop past the scan's edge, where it shows paper.
+    box = [10, 20, 690, 980] if turns % 2 == 0 else [20, 10, 980, 690]
     pages, mapped = _prepare(
         tmp_path,
         scan,
         [
             {"step": "orientation", "value": turns},
             {"step": "content_box", "page": 1, "value": box},
-            {"step": "margin", "page": 1, "value": 0},
         ],
     )
     (page,), (door_page,) = pages, mapped
+    assert page.chain.crop_box[0] < 0, "the crop no longer reaches past the scan"
     assert door_page.notes == ()
     assert (
         door_page.part["rotation"]["rotation_millidegrees"] == [0, 90_000, 180_000, -90_000][turns]
@@ -165,11 +167,13 @@ def test_a_turned_skewed_cropped_page_lands_where_pagekit_put_it(tmp_path, turns
     (page,), (door_page,) = pages, mapped
     rotation = door_page.part["rotation"]["rotation_millidegrees"]
     assert rotation % 90_000 != 0
-    assert [note.code for note in door_page.notes] == [ROTATED]
+    assert door_page.notes == ()
     door = _door(scan, door_page.part)
-    assert door.size == door_page.door_size
     with Image.open(tmp_path / "out" / page.output_name) as opened:
         prepared = opened.copy()
+    # Cut tight: pagekit's page, placed to within half a pixel.
+    assert door.size == door_page.door_size == prepared.size
+    assert all(abs(value) <= 0.5 for value in door_page.pagekit_box_in_door[:2])
     pagekit_blobs = _blobs(prepared)
     assert len(pagekit_blobs) == len(dots)
     door_blobs = _blobs(door)
@@ -186,6 +190,26 @@ def test_a_turned_skewed_cropped_page_lands_where_pagekit_put_it(tmp_path, turns
         sorted(dots), sorted(apply(to_door, [(x + 0.5, y + 0.5) for x, y in dots])), strict=True
     ):
         assert min((bx - dx) ** 2 + (by - dy) ** 2 for bx, by, _ in door_blobs) < 0.25, (x, y)
+
+
+@pytest.mark.parametrize(("turns", "skew"), [(0, 2.0), (1, -1.5)])
+def test_a_skewed_pages_margin_is_pagekits_paper_never_black(tmp_path, turns, skew):
+    scan = _scan(tmp_path / "scans", (500, 700), [])
+    pages, mapped = _prepare(
+        tmp_path,
+        scan,
+        [{"step": "orientation", "value": turns}, {"step": "skew", "page": 1, "value": skew}],
+    )
+    (page,), (door_page,) = pages, mapped
+    door = _door(scan, door_page.part)
+    with Image.open(tmp_path / "out" / page.output_name) as prepared:
+        assert door.size == prepared.size
+        # The levelled page's corners lie beyond the scan: pagekit and the Door fill them
+        # with the same recorded paper level.
+        for corner in ((0, 0), (door.width - 1, 0), (0, door.height - 1)):
+            assert door.getpixel(corner) == prepared.getpixel(corner) == PAPER
+    assert door_page.part["fill"] == {"levels": [PAPER]}
+    assert door.getextrema()[0] > 150, "black reached the Door's page"
 
 
 def test_a_leaning_split_with_overlap_drops_no_ink_across_the_frames_pages(tmp_path):
@@ -205,7 +229,7 @@ def test_a_leaning_split_with_overlap_drops_no_ink_across_the_frames_pages(tmp_p
         ],
     )
     assert [note.code for note in mapped[0].notes] == [GUTTER]
-    assert [note.code for note in mapped[1].notes] == [ROTATED, GUTTER]
+    assert [note.code for note in mapped[1].notes] == [GUTTER]
     row = make_row(
         corpus_id="synthetic",
         source_sha256=pages[0].source.sha256,

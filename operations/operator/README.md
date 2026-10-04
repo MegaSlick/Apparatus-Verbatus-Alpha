@@ -84,12 +84,13 @@ next. The prepared TIFFs are for looking at and reuse; they never enter a run. T
 reads the triage manifest, keeps each scan whole as the page's `parent_frame`, and cuts
 the page from it, so every reading still traces to the scan.
 
-- **What the Door cannot copy exactly.** A quarter turn, a crop and a straight cut are
-  exact. A small skew is turned in the same single step, but triage cannot crop after
-  turning or fill with paper, so the Door's page keeps a little more of the scan around
-  pagekit's page, with black corners. A cut that leans, or pagekit's overlap past the
-  cut, becomes a straight split of the scan: what lies past it is on the facing page.
-  Nothing pagekit kept is dropped. `triage-notes.txt` lists each case.
+- **What the Door cannot copy exactly.** Rows use the triage order with a crop after
+  rotation and a recorded fill, so a quarter turn, a skew, a crop and pagekit's paper
+  margin are all reproduced: a page with no skew exactly, a skewed one to within half a
+  pixel. A cut that leans, or pagekit's overlap past the cut, becomes a straight split
+  of the scan: what lies past it is on the facing page, and each Door page also holds
+  the facing page's sliver in its half, so nothing pagekit kept is dropped. A shrunk
+  page keeps the scan's resolution at the Door. `triage-notes.txt` lists each case.
 - **Corrections are kept.** Run it again over the same output folder: pagekit continues
   its project, keeps every value set by hand, and recomputes only what changed. Give
   corrections with `--overrides FILE` (`pagekit/README.md`, "Corrections").

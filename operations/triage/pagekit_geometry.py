@@ -2,20 +2,25 @@
 
 pagekit makes each page through one affine chain: a quarter turn, the page's polygon
 on its side of a cut (which may lean, and is kept an overlap past it), a rotation
-about the page's centre, a crop, and an optional shrink. A triage part is a
-rectangular region of the frame (the parts' regions partition it), a crop inside the
-region, a clockwise rotation about the crop's centre onto an expanded canvas filled
-black (`common.imaging.TRIAGE_APPLY_RECIPE`), and a colour mode.
+about the page's centre, a crop, and an optional shrink, with everything outside the
+page's polygon filled with the page's paper colour. A triage part of the second
+operation order (`region-crop-rotate-crop`) is a rectangular region of the frame (the
+parts' regions partition it), a crop inside the region, a clockwise rotation about
+the crop's centre onto an expanded canvas, a crop of that canvas, and the level that
+fills it beyond the scan (`common.imaging.triage_apply_recipe`).
 
 Both rotations are rigid, so the quarter turn and the skew fold into one triage
-rotation of ``90 * turns - skew`` degrees clockwise, and a page with no skew is cut
-exactly. Triage cannot crop after rotating, cut along anything but a straight line of
-the frame, give a pixel to two pages, fill with paper or shrink. For those this module
-takes the nearest geometry that loses no ink: each page's crop is the smallest
-axis-aligned box of the original holding every source pixel pagekit's page shows,
-and of a split frame, every such pixel that falls in that page's region, so that
-across the frame's pages nothing pagekit kept is dropped. Each difference this makes
-is returned as a note in plain words.
+rotation of ``90 * turns - skew`` degrees clockwise. The first crop is the smallest
+box of the original holding every source pixel pagekit's page shows; the crop after
+rotation is pagekit's own page, to the nearest whole pixel, and the fill is pagekit's
+paper colour. A page with no skew is therefore cut exactly, and a skewed one to within
+half a pixel.
+
+What triage still cannot say is a cut that is not straight along the frame, a pixel
+given to two pages, and a shrink. For a split frame, each page's first crop holds
+every pixel either page shows inside that page's region, so across the frame's pages
+nothing pagekit kept is dropped; what lies past the straight split is on the facing
+page. Each such difference is returned as a note in plain words.
 
 Coordinates are continuous, as in `pagekit.geometry`: pixel (i, j) covers
 [i, i+1) x [j, j+1). An affine (a, b, c, d, e, f) maps (x, y) to
@@ -30,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Final
 
 from common.contracts import triage as triage_manifest
+from common.imaging import triage_page_to_frame
 from pagekit.geometry import Chain, apply, quarter_turn, upright_size
 
 Point = tuple[float, float]
@@ -44,15 +50,9 @@ _EPSILON: Final = 1e-6
 # A difference of at most half a pixel is not worth telling a person about.
 _NOTEWORTHY_PX: Final = 0.5
 
-ROTATED: Final = "rotated"
 GUTTER: Final = "gutter"
 SHRUNK: Final = "shrunk"
 NOTE_SUMMARIES: Final = {
-    ROTATED: (
-        "the Door's page is turned by a small angle in one step, but triage cannot crop "
-        "after turning: it keeps a little more of the scan around pagekit's page, with "
-        "black corners where pagekit's are paper colour"
-    ),
     GUTTER: (
         "the frame is split along a straight line, but pagekit's cut leans or keeps an "
         "overlap: what lies past the line is on the facing page's Door page"
@@ -67,7 +67,7 @@ class MappingError(ValueError):
 
 @dataclass(frozen=True)
 class PageNote:
-    code: str  # ROTATED, GUTTER or SHRUNK
+    code: str  # GUTTER or SHRUNK
     text: str
 
 
@@ -103,38 +103,11 @@ def _invert(m: Affine) -> Affine:
     return (e / det, -b / det, (b * f - c * e) / det, -d / det, a / det, (c * d - a * f) / det)
 
 
-def _pillow_expand_rotation(
-    width: int, height: int, counterclockwise_degrees: float
-) -> tuple[Affine, tuple[int, int]]:
-    """The map from a rotated canvas back to its input, and the canvas size, exactly as
-    `Image.rotate(angle, expand=True)` computes them (including its rounding)."""
-    angle = -math.radians(counterclockwise_degrees % 360.0)
-    cos, sin = round(math.cos(angle), 15), round(math.sin(angle), 15)
-    matrix = [cos, sin, 0.0, -sin, cos, 0.0]
-
-    def transform(x: float, y: float) -> tuple[float, float]:
-        a, b, c, d, e, f = matrix
-        return a * x + b * y + c, d * x + e * y + f
-
-    centre_x, centre_y = width / 2, height / 2
-    matrix[2], matrix[5] = transform(-centre_x, -centre_y)
-    matrix[2] += centre_x
-    matrix[5] += centre_y
-    corners = [transform(x, y) for x, y in ((0, 0), (width, 0), (width, height), (0, height))]
-    new_width = math.ceil(max(x for x, _ in corners)) - math.floor(min(x for x, _ in corners))
-    new_height = math.ceil(max(y for _, y in corners)) - math.floor(min(y for _, y in corners))
-    matrix[2], matrix[5] = transform(-(new_width - width) / 2, -(new_height - height) / 2)
-    return tuple(matrix), (new_width, new_height)  # type: ignore[return-value]
-
-
 def door_affine(part: dict[str, Any]) -> tuple[Affine, tuple[int, int]]:
     """The map from the original frame to the Door's page for one triage part, and the
     page's size, as `common.imaging.render_triage_derivative` renders it."""
-    region, crop = part["region"], part["crop_box"]
-    clockwise = part["rotation"]["rotation_millidegrees"] / 1000
-    to_frame, size = _pillow_expand_rotation(crop["w"], crop["h"], -clockwise)
-    origin = (1.0, 0.0, -(region["x"] + crop["x"]), 0.0, 1.0, -(region["y"] + crop["y"]))
-    return _compose(_invert(to_frame), origin), size
+    post = part["post_crop_box"]
+    return _invert(triage_page_to_frame(part)), (post["w"], post["h"])
 
 
 def _signed_area(polygon: Sequence[Point]) -> float:
@@ -254,14 +227,18 @@ def _beyond(polygon: list[Point], region: dict[str, int], axis: int) -> float:
     return max(0.0, start - min(values), max(values) - end)
 
 
-def map_pages(chains: Sequence[Chain], split: dict[str, Any]) -> list[MappedPage]:
+def map_pages(
+    chains: Sequence[Chain], split: dict[str, Any], fills: Sequence[Sequence[int]]
+) -> list[MappedPage]:
     """The triage part of each page of one source, from pagekit's chains, in page order.
 
-    `split` is pagekit's split value for the source. Every page's colour mode is
-    `keep`: the Door stores pagekit's source modes losslessly, and no page is converted.
+    `split` is pagekit's split value for the source, and `fills` each page's paper
+    colour as sample levels in the master's own mode (`fill_levels`). Every page's
+    colour mode is `keep`: the Door stores pagekit's source modes losslessly, and no
+    page is converted.
     """
-    if not chains or len(chains) != split["pages"]:
-        raise MappingError("one chain is needed for each page of the split")
+    if not chains or len(chains) != split["pages"] or len(fills) != len(chains):
+        raise MappingError("one chain and one fill are needed for each page of the split")
     if len({(chain.source_size, chain.turns) for chain in chains}) != 1:
         raise MappingError("the pages of one source disagree on its size or quarter turn")
     shown = [_shown(chain) for chain in chains]
@@ -289,17 +266,51 @@ def map_pages(chains: Sequence[Chain], split: dict[str, Any]) -> list[MappedPage
             "w": crop["w"],
             "h": crop["h"],
         }
-        part = triage_manifest.make_part(
+        unplaced = triage_manifest.make_part(
             {key: region[key] for key in ("x", "y", "w", "h")},
             crop_box,
             rotation,
             colour_mode="keep",
+            post_crop_box={"x": 0, "y": 0, "w": 1, "h": 1},
+            fill=list(fills[index]),
+        )
+        # pagekit's page on the rotated canvas, cut out to the nearest pixel, together
+        # with whatever of the facing page this region holds, so none of it is dropped.
+        to_canvas = _invert(triage_page_to_frame(unplaced))
+        page_corners = apply(
+            _compose(to_canvas, chain.output_to_source()),
+            _rectangle(0, 0, *chain.output_size),
+        )
+        left = round(min(x for x, _ in page_corners))
+        top = round(min(y for _, y in page_corners))
+        if chain.scale == (1.0, 1.0):
+            right, bottom = left + chain.output_size[0], top + chain.output_size[1]
+        else:
+            right = round(max(x for x, _ in page_corners))
+            bottom = round(max(y for _, y in page_corners))
+        facing = [
+            point
+            for other, polygon in enumerate(held)
+            if other != index
+            for point in apply(to_canvas, polygon)
+        ]
+        if facing:
+            left = min(left, math.floor(min(x for x, _ in facing) + _EPSILON))
+            top = min(top, math.floor(min(y for _, y in facing) + _EPSILON))
+            right = max(right, math.ceil(max(x for x, _ in facing) - _EPSILON))
+            bottom = max(bottom, math.ceil(max(y for _, y in facing) - _EPSILON))
+        part = triage_manifest.make_part(
+            unplaced["region"],
+            unplaced["crop_box"],
+            rotation,
+            colour_mode="keep",
+            post_crop_box={"x": left, "y": top, "w": right - left, "h": bottom - top},
+            fill=list(fills[index]),
         )
         to_door, door_size = door_affine(part)
-        output_width, output_height = chain.output_size
         corners = apply(
             _compose(to_door, chain.output_to_source()),
-            _rectangle(0, 0, output_width, output_height),
+            _rectangle(0, 0, *chain.output_size),
         )
         box = (
             min(x for x, _ in corners),
@@ -307,16 +318,6 @@ def map_pages(chains: Sequence[Chain], split: dict[str, Any]) -> list[MappedPage
             max(x for x, _ in corners),
             max(y for _, y in corners),
         )
-        if rotation % 90_000:
-            notes.append(
-                PageNote(
-                    ROTATED,
-                    f"turned {rotation / 1000:g} degrees clockwise in one step; the Door's "
-                    f"page is {door_size[0]} x {door_size[1]} px with black corners, and "
-                    f"pagekit's {output_width} x {output_height} px page starts at "
-                    f"({box[0]:.1f}, {box[1]:.1f})",
-                )
-            )
         if len(chains) > 1:
             past = _beyond(shown[index], region, axis)
             facing = max(
@@ -348,6 +349,27 @@ def map_pages(chains: Sequence[Chain], split: dict[str, Any]) -> list[MappedPage
     return mapped
 
 
+def fill_levels(paper: int | Sequence[int], master_mode: str, palette: Sequence[int] | None):
+    """pagekit's paper colour (grey, or RGB for colour and palette masters) as a triage
+    fill: sample levels in the master's own mode."""
+    levels = [paper] if isinstance(paper, int) else list(paper)
+    if master_mode == "1":
+        return [255 if levels[0] >= 128 else 0]
+    if master_mode == "P":
+        if palette is None:
+            raise MappingError("a palette master carries no palette")
+        entries = [palette[index : index + 3] for index in range(0, len(palette) - 2, 3)]
+        return [
+            min(
+                range(len(entries)),
+                key=lambda index: sum(
+                    (a - b) ** 2 for a, b in zip(entries[index], levels, strict=True)
+                ),
+            )
+        ]
+    return levels
+
+
 def make_row(
     *,
     corpus_id: str,
@@ -367,7 +389,10 @@ def make_row(
         corpus_id=corpus_id,
         source_frame_sha256=source_sha256,
         frame={"width": frame[0], "height": frame[1]},
-        split=triage_manifest.make_split([page.part for page in pages]),
+        split=triage_manifest.make_split(
+            [page.part for page in pages],
+            operation_order=triage_manifest.SPLIT_OPERATION_ORDER_V2,
+        ),
         re_shoot_cluster_id=None,
         confidence=confidence,
         mode="semi" if human_override else "auto",

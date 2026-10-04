@@ -70,19 +70,17 @@ confirmed clusters are recorded in the register, but a run reads one capture per
 ## pagekit's geometry
 
 `pagekit_geometry.map_pages` turns pagekit's chain for each page of one scan (quarter
-turn, page polygon, rotation about the page's centre, crop, shrink) into triage parts.
-The quarter turn and the skew fold into one clockwise rotation of `90 * turns - skew`
-degrees, so a page with no skew is cut exactly. Where triage cannot say what pagekit
-did, the part is the nearest one that loses no ink, and a note says why:
+turn, page polygon, rotation about the page's centre, crop, shrink) into triage parts
+of the second operation order, `region-crop-rotate-crop`. The quarter turn and the skew
+fold into one clockwise rotation of `90 * turns - skew` degrees; the first crop is the
+smallest box of the scan holding everything pagekit's page shows; the crop after
+rotation is pagekit's page to the nearest pixel; and the fill is pagekit's paper
+colour, in the scan's own mode. A page with no skew is cut exactly, a skewed one to
+within half a pixel. Where triage still cannot say what pagekit did, the part is the
+nearest one that loses no ink, and a note says why:
 
-- **Rotated** (skew not zero): triage rotates onto an expanded canvas and cannot crop
-  after, so the crop is the smallest box of the scan holding everything pagekit's page
-  shows, and the Door's page has black corners where pagekit's are paper colour.
 - **Gutter** (two pages): the regions must partition the scan, so the scan is split
   along a straight line through the middle of pagekit's cut. pagekit's overlap and the
-  lean of its cut fall on one side of it; each page's crop holds everything either page
+  lean of its cut fall on one side of it; each page's crops hold everything either page
   shows inside its region, so across the scan nothing pagekit kept is dropped.
 - **Shrunk**: the Door's page keeps the scan's resolution.
-
-A crop after rotation and a recorded paper fill would remove the first difference;
-that needs a new version of the triage contract and the Door's apply recipe.

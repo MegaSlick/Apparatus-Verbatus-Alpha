@@ -272,7 +272,11 @@ def _plan(request: dict[str, Any]) -> Prepared:
     for source_pages in by_source.values():
         source = source_pages[0].source
         steps = [page.steps for page in source_pages]
-        mapped = map_pages([page.chain for page in source_pages], steps[0]["split"]["value"])
+        mapped = map_pages(
+            [page.chain for page in source_pages],
+            steps[0]["split"]["value"],
+            _fills(source, source_pages, planned.settings),
+        )
         human = any(
             entry["origin"] in ("manual", "locked") for page in steps for entry in page.values()
         )
@@ -310,6 +314,26 @@ def _plan(request: dict[str, Any]) -> Prepared:
     prepared.recipe = instrument.producer_recipe(instrument.load_config())
     _check_folder(prepared, set(rows))
     return prepared
+
+
+def _fills(source: Any, pages: list[Any], settings: dict[str, Any]) -> list[list[int]]:
+    """Each page's paper colour, measured as pagekit measures the fill of its own page,
+    as sample levels in the scan's stored mode."""
+    from PIL import Image
+
+    from operations.triage.pagekit_geometry import fill_levels
+    from pagekit.geometry import paper_colour
+
+    image = source.open()
+    palette = None
+    if source.mode == "P":
+        with Image.open(source.path) as stored:
+            palette = stored.getpalette()
+    long_side = settings["paper_estimate_long_side_px"]["value"]
+    return [
+        fill_levels(paper_colour(image, page.chain, long_side)[0], source.mode, palette)
+        for page in pages
+    ]
 
 
 def _confidence(pages: list[Any]) -> int:
@@ -381,7 +405,7 @@ def _notes(prepared: Prepared) -> list[str]:
     ]
     differing = [page for page in prepared.pages if page["door"].notes]
     if not differing:
-        lines.append("Every page is cut exactly as pagekit cut it.")
+        lines.append("Every page is cut as pagekit cut it (a skewed page to within half a pixel).")
     for page in differing:
         lines.append(f"{page['output']} (from {page['scan']}, page {page['page']}):")
         lines += [f"  - {note.text}" for note in page["door"].notes]
@@ -431,7 +455,8 @@ def summary(prepared: Prepared) -> list[str]:
     exact = [page for page in pages if not page["door"].notes]
     lines.append(
         f"Triage manifest for the Door: {out / TRIAGE_MANIFEST_NAME}. The Door will cut "
-        f"{len(pages)} page(s) from the original scans, {len(exact)} exactly as pagekit did."
+        f"{len(pages)} page(s) from the original scans, {len(exact)} as pagekit cut them "
+        "(a skewed page to within half a pixel)."
     )
     counts = Counter(note.code for page in pages for note in page["door"].notes)
     for code, count in sorted(counts.items()):
