@@ -8,15 +8,23 @@ advances, so a test waits on what the guard did rather than on seconds passing.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 import pytest
+
+# pod_guard.sh and the command pod_start_command.sh prints run only on the Linux pod, and
+# these tests run them under GNU date, touch and sleep. The laptop half, which a Mac runs
+# too, is test_pod_start_command.py.
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="pod_guard.sh and the printed start command run only on the Linux pod",
+)
 
 HERE = Path(__file__).parent
 GUARD = HERE / "pod_guard.sh"
@@ -169,14 +177,6 @@ def test_a_failed_gpu_query_counts_as_busy(pod):
     stub.write_text("#!/bin/sh\nexit 1\n")
     run_guard(env, "0.001")
     assert "approved time is up" in log_of(state)
-
-
-def test_the_start_command_refuses_a_malformed_hours_value(pod):
-    env, _, _ = pod
-    result = subprocess.run(
-        ["sh", str(START_COMMAND), "1.2.3", "0" * 40], env=env, capture_output=True
-    )
-    assert result.returncode == 2
 
 
 def run_guard(env, hours):
@@ -736,79 +736,6 @@ def test_the_guard_s_deadline_never_passes_the_hard_maximum(pod):
     deadline = state / "deadline-testpod"
     run_until(argv, env, deadline.exists)
     assert int(deadline.read_text()) <= printed_at + 7200 - 120
-
-
-@pytest.mark.parametrize(
-    ("sealed", "hours"),
-    [(None, "3.01"), (None, "4"), ("3600", "1.5")],
-    ids=["checkout-just-over", "checkout-4h", "sealed"],
-)
-def test_the_start_command_refuses_hours_past_the_hard_maximum(pod, sealed, hours):
-    env, _, _ = pod
-    env.pop("VERBATUS_HARD_MAX_SECONDS", None)
-    if sealed is not None:
-        env["VERBATUS_HARD_MAX_SECONDS"] = sealed
-    result = subprocess.run(
-        ["sh", str(START_COMMAND), hours, "0" * 40], env=env, capture_output=True, text=True
-    )
-    assert result.returncode == 2
-    assert "hard maximum" in result.stderr
-    assert result.stdout == ""
-
-
-def test_the_start_command_accepts_the_hard_maximum_itself(pod):
-    env, _, _ = pod
-    env.pop("VERBATUS_HARD_MAX_SECONDS", None)
-    result = subprocess.run(
-        ["sh", str(START_COMMAND), "3", "0" * 40], env=env, capture_output=True, text=True
-    )
-    assert result.returncode == 0, result.stderr
-
-
-@pytest.mark.parametrize("policy", [None, 'hard_max_seconds = "10800"\n', "state = 1\n"])
-def test_the_start_command_refuses_when_the_hard_maximum_cannot_be_read(pod, tmp_path, policy):
-    env, _, _ = pod
-    env.pop("VERBATUS_HARD_MAX_SECONDS", None)
-    checkout = tmp_path / "checkout"
-    (checkout / "operations" / "pod").mkdir(parents=True)
-    script = checkout / "operations" / "pod" / "pod_start_command.sh"
-    shutil.copy(START_COMMAND, script)
-    if policy is not None:
-        (checkout / "config").mkdir()
-        (checkout / "config" / "spend.toml").write_text(policy)
-    result = subprocess.run(
-        ["sh", str(script), "1", "0" * 40], env=env, capture_output=True, text=True
-    )
-    assert result.returncode == 2
-    assert "hard maximum" in result.stderr and result.stdout == ""
-
-
-@pytest.mark.parametrize("sealed", ["", "abc", "0", " 10800", "1_0800"])
-def test_the_start_command_refuses_an_unusable_sealed_hard_maximum(pod, sealed):
-    env, _, _ = pod
-    env["VERBATUS_HARD_MAX_SECONDS"] = sealed
-    result = subprocess.run(
-        ["sh", str(START_COMMAND), "1", "0" * 40], env=env, capture_output=True, text=True
-    )
-    assert result.returncode == 2
-    assert "VERBATUS_HARD_MAX_SECONDS" in result.stderr and result.stdout == ""
-
-
-def test_the_guard_keeps_its_records_under_the_volume_mount_the_bootstrap_requires():
-    from operations.pod.models import POD_VOLUME_MOUNT_PATH
-
-    expected = f"{POD_VOLUME_MOUNT_PATH}/.pod_guard"
-    env = {key: value for key, value in os.environ.items() if key != "POD_GUARD_DIR"}
-    printed = subprocess.run(
-        ["sh", str(START_COMMAND), "1", "0" * 40], env=env, capture_output=True, text=True
-    ).stdout
-    assert f"${{POD_GUARD_DIR:-{expected}}}; export POD_GUARD_DIR=$d;" in printed
-    assert f"dir=${{POD_GUARD_DIR:-{expected}}}" in GUARD.read_text()
-    policy = json.loads((HERE.parents[1] / "config" / "data_handling_policy.json").read_text())
-    assert POD_VOLUME_MOUNT_PATH in policy["storage_roots"]
-    from operations.pod import pod_run
-
-    assert expected == f"{POD_VOLUME_MOUNT_PATH}/{pod_run.POD_GUARD_DIRECTORY}"
 
 
 def test_a_guard_fetched_from_an_older_commit_still_uses_the_start_command_s_directory(
