@@ -332,3 +332,20 @@ record".
   "detected" from the setting, confidence 1, evidence naming the setting, and no flag.
   Change the README if needed, and note it as a decision against the spec's wording in
   your commit message."
+
+## 0018 — Spec 0006 written; brief 0018 done; brief 0020 issued
+
+- **Spec 0006** (`specs/0006-grey-tone-view.md`): a gentle grey view for the readers that
+  see a page in grey, written by the host from findings 0023, 0024, 0025, 0030 and 0032,
+  the papers they cite, and a published study of preprocessing for vision-language
+  readers of historical handwriting (Farazi et al., 2026, arXiv:2608.22366). The same
+  commit added output defaults to spec 0005: lossless TIFF, the source colour mode
+  kept, no shrinking by default. The host drew the readers' needs from the main
+  project's own code and public model documentation, through a research agent that
+  read no pagekit code and no GPL page-processing source.
+- **Brief 0018 (skew and boxes) done:** commits 58663f1, cb5241e, 88e29c3 and 11c1cb1
+  on `work/pk-skew`. The leak scan found no hits in 84 files. The agent reported it saw
+  no ScanTailor or other GPL source.
+- **Brief 0020:** `briefs/0020-build-tone-view.md` (sha256
+  f41843953ca62b3a264f68540239ebbd8d13554aa8606682626e34cb885f3760), for a fresh
+  build-side agent running Claude Fable 5.1, saved before it started.
