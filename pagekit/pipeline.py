@@ -31,7 +31,7 @@ hand with what it finds; only a confident answer (no flags) that differs by more
 the step's `compare_*` setting is reported.
 
 The grey tone view of spec 0006 is reached only through `make_tone_view`, the hook
-`prepare --tone-view` calls; it needs `pagekit/tone.py`, which this copy may not have yet.
+`prepare --tone-view` calls, which uses `pagekit/tone.py`'s `tone` and `tiff_bytes`.
 """
 
 from __future__ import annotations
@@ -374,15 +374,22 @@ def tone_view_available() -> bool:
     return importlib.util.find_spec(TONE_MODULE) is not None
 
 
-def make_tone_view(page: Image.Image) -> tuple[Image.Image, dict[str, Any]]:
-    """THE TONE-VIEW HOOK: the grey tone view of a prepared page, and its record.
+def make_tone_view(
+    page: Image.Image, dpi: tuple[float, float] | None
+) -> tuple[Image.Image, dict[str, Any], bytes]:
+    """THE TONE-VIEW HOOK: the grey tone view of a prepared page, its record, and its
+    file bytes.
 
-    It calls `tone_view(image)` in `pagekit/tone.py`, which spec 0006 describes as taking
-    a page image and returning a grey image of the same size with a record. If that
-    module names its function differently, this hook is the one place to change.
+    It calls `tone(image)` in `pagekit/tone.py` (spec 0006), with the page's resolution
+    set on the image so the view's millimetre settings hold, and makes the file with
+    tone.py's own deterministic writer, `tiff_bytes`.
     """
     module = importlib.import_module(TONE_MODULE)
-    view, record = module.tone_view(page)
+    image = page.copy()
+    image.info.pop("dpi", None)
+    if dpi is not None:
+        image.info["dpi"] = tuple(dpi)
+    view, record = module.tone(image)
     if view.size != page.size or view.mode != "L":
         raise ValueError("the tone view must be a grey image the size of the page")
-    return view, record
+    return view, record, module.tiff_bytes(view, None if dpi is None else list(dpi))

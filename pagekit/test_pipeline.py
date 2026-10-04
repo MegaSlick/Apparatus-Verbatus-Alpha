@@ -4,13 +4,13 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import html
 import io
 import json
 import re
 import shutil
 import sys
-import types
 from pathlib import Path
 
 import pytest
@@ -377,26 +377,73 @@ def test_measure_reports_right_wrong_and_review_counts_against_a_gold_file(
     assert "is not in the prepared batch" in capsys.readouterr().err
 
 
-def test_the_tone_view_hook_is_refused_without_tone_py_and_used_with_it(
-    tmp_path, monkeypatch, capsys
-):
+def _written_sources(folder: Path) -> Path:
+    """Three small pages with writing: grey, colour, and grey with no resolution."""
+    folder.mkdir(parents=True)
+    grey = pages.page(size=(400, 560), seed=7, margin=(40, 50, 40, 50))
+    grey.save(folder / "g.png", dpi=DPI)
+    colour = Image.merge("RGB", (grey, grey, grey.point(lambda level: round(level * 0.85))))
+    colour.save(folder / "c.png", dpi=DPI)
+    pages.page(size=(400, 560), seed=8, margin=(40, 50, 40, 50)).save(folder / "n.png")
+    return folder
+
+
+def test_prepare_tone_view_writes_one_deterministic_view_beside_each_page(tmp_path, monkeypatch):
+    from pagekit.tone import tiff_bytes, tone
+
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    source = _written_sources(tmp_path / "src")
+    first, second = tmp_path / "out", tmp_path / "again"
+    for out in (first, second):
+        assert main(["prepare", str(source), "--output", str(out), "--tone-view"]) == 1
+    manifest = json.loads((first / MANIFEST_NAME).read_text())
+    assert len(manifest["pages"]) == 3
+    for page in manifest["pages"]:
+        view = page["tone_view"]
+        name = page["output"]["name"]
+        assert view["name"] == name.replace(".tif", "_tone.tif")
+        assert view["name"] != name and (first / view["name"]).is_file()
+        record = view["record"]
+        assert record["schema"] == "pagekit-tone-view.v1"
+        assert record["settings"] and len(record["settings_sha256"]) == 64
+        # The bytes are tone.py's own writer's, from tone.py's own view of the page.
+        with Image.open(first / name) as prepared:
+            prepared.load()
+            image = prepared.copy()
+        if page["output"]["resolution"] is None:
+            image.info.pop("dpi", None)
+        else:
+            image.info["dpi"] = tuple(page["output"]["resolution"])
+        expected, _ = tone(image)
+        data = (first / view["name"]).read_bytes()
+        assert data == tiff_bytes(expected, page["output"]["resolution"])
+        assert view["sha256"] == hashlib.sha256(data).hexdigest()
+    names = sorted(path.name for path in first.iterdir())
+    assert names == sorted(path.name for path in second.iterdir())
+    for name in names:  # identical bytes on repeat, views included
+        assert (first / name).read_bytes() == (second / name).read_bytes(), name
+
+
+def test_a_tone_view_never_takes_the_name_of_a_prepared_page_or_a_source(tmp_path, monkeypatch):
+    from pagekit.project import PrepareError
+
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    source = _plain_sources(tmp_path / "src", 2)
+    prepared = plan([source], tmp_path / "out", tone_view=True)
+    prepared.pages[1].output_name = "p00_p1_tone.tif"  # where page 1's view would go
+    with pytest.raises(PrepareError, match="tone view"):
+        execute(prepared)
+    assert not (tmp_path / "out").exists()
+
+
+def test_tone_view_is_refused_where_tone_py_is_missing(tmp_path, monkeypatch, capsys):
     source = _plain_sources(tmp_path / "src", 1)
     out = tmp_path / "out"
     monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
-    monkeypatch.delitem(sys.modules, "pagekit.tone", raising=False)
-    monkeypatch.setattr("importlib.util.find_spec", lambda name, *a: None)
+    monkeypatch.setattr("pagekit.pipeline.tone_view_available", lambda: False)
     assert main(["prepare", str(source), "--output", str(out), "--tone-view"]) == 2
     assert "tone view is not built" in capsys.readouterr().err
     assert not out.exists()
-
-    fake = types.ModuleType("pagekit.tone")
-    fake.tone_view = lambda image: (image.convert("L"), {"rule": "test"})
-    monkeypatch.setitem(sys.modules, "pagekit.tone", fake)
-    assert main(["prepare", str(source), "--output", str(out), "--tone-view"]) == 1
-    (page,) = json.loads((out / MANIFEST_NAME).read_text())["pages"]
-    assert page["tone_view"]["name"] == "p00_p1_tone.tif"
-    assert page["tone_view"]["record"] == {"rule": "test"}
-    assert (out / "p00_p1_tone.tif").is_file()
 
 
 def test_png_and_shrinking_are_available_by_setting(tmp_path, monkeypatch):
@@ -419,3 +466,130 @@ def test_every_thresholds_file_ships_with_the_package():
     with (here / "pyproject.toml").open("rb") as handle:
         shipped = set(tomllib.load(handle)["tool"]["setuptools"]["package-data"]["pagekit"])
     assert {path.name for path in here.glob("thresholds*.toml")} <= shipped
+
+
+def _odd_page(mode: str) -> Image.Image:
+    """A noisy page whose deflate strips (256 rows each) end on an odd byte in all."""
+    import random
+    import zlib
+
+    for seed in range(200):
+        rng = random.Random(seed)
+        width, height = 97 + seed, 300
+        bands = len(mode)
+        raw = bytes(rng.randrange(120, 136) for _ in range(width * height * bands))
+        total = sum(
+            len(zlib.compress(raw[row * width * bands : (row + 256) * width * bands], 6))
+            for row in range(0, height, 256)
+        )
+        if total & 1:
+            return Image.frombytes(mode, (width, height), raw)
+    raise AssertionError("no page gave an odd strip")
+
+
+_WRITE_IN_A_PROCESS = """
+import hashlib, sys
+from PIL import Image
+from pagekit.output import encode
+mode, width, height, path = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+image = Image.frombytes(mode, (width, height), open(path, "rb").read())
+dpi = None if sys.argv[5] == "none" else (300.0, 300.0)
+sys.stdout.write(encode(image, "tiff", dpi).hex())
+"""
+
+
+@pytest.mark.parametrize("mode", ["L", "RGB"])
+@pytest.mark.parametrize("dpi", ["300", "none"])
+def test_a_prepared_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_path, mode, dpi):
+    import subprocess
+
+    from pagekit.output import encode
+    from pagekit.tone import tiff_bytes
+
+    image = _odd_page(mode)
+    raw = tmp_path / "pixels.raw"
+    raw.write_bytes(image.tobytes())
+    root = Path(__file__).resolve().parent.parent
+    written = []
+    for _ in range(2):  # two separate processes
+        result = subprocess.run(
+            [sys.executable, "-c", _WRITE_IN_A_PROCESS, mode, *map(str, image.size), raw, dpi],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        written.append(bytes.fromhex(result.stdout))
+    assert written[0] == written[1]
+    data = written[0]
+    # The directory is word-aligned after the odd strip, and the pad byte is zero.
+    directory = int.from_bytes(data[4:8], "little")
+    assert directory % 2 == 0 and data[directory - 1] == 0
+    with Image.open(io.BytesIO(data)) as page:
+        assert page.mode == mode and page.tobytes() == image.tobytes()
+        assert page.info["compression"] == "tiff_adobe_deflate"
+        if dpi == "none":
+            assert "dpi" not in page.info
+        else:
+            assert page.info["dpi"] == (300.0, 300.0)
+    expected_dpi = None if dpi == "none" else (300.0, 300.0)
+    assert data == encode(image, "tiff", expected_dpi)
+    if mode == "L":  # the same writer as the tone view's
+        assert data == tiff_bytes(image, None if expected_dpi is None else list(expected_dpi))
+
+
+def test_each_manifest_entry_carries_the_sha256_of_its_decoded_pixels(tmp_path, monkeypatch):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    source = _written_sources(tmp_path / "src")
+    out = tmp_path / "out"
+    for fmt in ("tiff", "png"):
+        assert main(["prepare", str(source), "--output", str(out), "--format", fmt]) == 1
+        for page in json.loads((out / MANIFEST_NAME).read_text())["pages"]:
+            with Image.open(out / page["output"]["name"]) as image:
+                pixels = hashlib.sha256(image.tobytes()).hexdigest()
+                assert page["output"]["pixels_sha256"] == pixels
+                assert image.mode == page["output"]["mode"]
+                if page["source"]["name"] == "n.png":  # no resolution: none written
+                    assert "dpi" not in image.info
+
+
+def test_dpi_gives_a_resolution_to_sources_that_carry_none(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    folder = tmp_path / "src"
+    folder.mkdir()
+    Image.new("L", (600, 800), 220).save(folder / "none.png")
+    Image.new("L", (600, 800), 220).save(folder / "own.png", dpi=(200, 200))
+    out = tmp_path / "out"
+
+    def resolution_of(name: str) -> tuple[dict, list[str], dict]:
+        manifest = json.loads((out / MANIFEST_NAME).read_text())
+        (page,) = [p for p in manifest["pages"] if p["source"]["name"] == name]
+        flags = [flag["reason"] for flag in page["flags"] if flag["step"] == "resolution"]
+        return page["source_resolution"], flags, page
+
+    # Without it the flag says how to give one.
+    assert main(["prepare", str(folder), "--output", str(out)]) == 1
+    stored, flags, page = resolution_of("none.png")
+    assert stored["origin"] == "missing"
+    (reason,) = flags
+    assert "--dpi" in reason and "resolution" in reason
+    assert page["geometry"]["steps"][3]["size_after"] == [600, 800]  # margins were 0 px
+
+    assert main(["prepare", str(folder), "--output", str(out), "--dpi", "300"]) == 1
+    stored, flags, page = resolution_of("none.png")
+    assert stored == {"value": [300.0, 300.0], "origin": "override", "file_value": None}
+    assert flags == []
+    assert page["output"]["resolution"] == [300.0, 300.0]
+    with Image.open(out / page["output"]["name"]) as image:
+        assert image.info["dpi"] == (300.0, 300.0)
+    # The file's own resolution is kept; --dpi is only for sources with none.
+    stored, _, _ = resolution_of("own.png")
+    assert stored == {"value": [200.0, 200.0], "origin": "file", "file_value": [200.0, 200.0]}
+    # It is kept in the project like any override, so a later run keeps it.
+    assert main(["prepare", str(folder), "--output", str(out)]) == 1
+    assert resolution_of("none.png")[0]["origin"] == "override"
+    # A value that cannot be a scan resolution is refused, and nothing changes.
+    before = {path.name: path.read_bytes() for path in out.iterdir()}
+    assert main(["prepare", str(folder), "--output", str(out), "--dpi", "5"]) == 2
+    assert "--dpi" in capsys.readouterr().err
+    assert {path.name: path.read_bytes() for path in out.iterdir()} == before

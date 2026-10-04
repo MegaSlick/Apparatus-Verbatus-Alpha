@@ -25,10 +25,11 @@ from typing import Any
 from PIL import Image
 
 from pagekit import __version__
+from pagekit._tiff import tiff_bytes
 from pagekit.answer import STEPS
 from pagekit.geometry import paper_colour, render
 from pagekit.prepare import PagePlan, Plan
-from pagekit.project import canonical_json
+from pagekit.project import PrepareError, canonical_json
 from pagekit.review import REVIEW_NAME, page_preview, source_preview
 from pagekit.review import build as build_review
 
@@ -37,15 +38,18 @@ MANIFEST_NAME = "pagekit-prepare.json"
 
 
 def encode(image: Image.Image, output_format: str, dpi: tuple[float, float] | None) -> bytes:
-    """The image as lossless file bytes, with its resolution when known."""
+    """The image as lossless file bytes, with its resolution when known and none when not.
+
+    TIFF is written by pagekit._tiff, not Pillow's writer, which can leave an unset pad
+    byte before the directory (so a re-run could differ) and claims 1 dpi when given
+    none."""
+    if output_format != "png":
+        return tiff_bytes(image, dpi)
     options: dict[str, Any] = {}
     if dpi is not None:
         options["dpi"] = dpi
     buffer = io.BytesIO()
-    if output_format == "png":
-        image.save(buffer, "PNG", **options)
-    else:
-        image.save(buffer, "TIFF", compression="tiff_adobe_deflate", **options)
+    image.save(buffer, "PNG", **options)
     return buffer.getvalue()
 
 
@@ -64,6 +68,7 @@ def _page_entry(page: PagePlan, image: Image.Image, data: bytes, fill, fill_meth
             "name": page.output_name,
             "sha256": hashlib.sha256(data).hexdigest(),
             "bytes": len(data),
+            "pixels_sha256": hashlib.sha256(image.tobytes()).hexdigest(),
             "format": fmt,
             "mode": image.mode,
             "size": list(image.size),
@@ -127,6 +132,8 @@ def execute(plan: Plan) -> dict[str, Any]:
     Every file is made first as a temporary file beside its target. Only when all of
     them exist are they moved into place, so a failure leaves the folder as it was.
     """
+    if plan.tone_view:
+        _check_tone_names(plan)
     values = {name: entry["value"] for name, entry in plan.settings.items()}
     fmt = values["output_format"]
     created = [
@@ -189,15 +196,38 @@ def execute(plan: Plan) -> dict[str, Any]:
     return manifest
 
 
+def tone_view_name(page: PagePlan) -> str:
+    return f"{Path(page.output_name).stem}_tone.tif"
+
+
+def _check_tone_names(plan: Plan) -> None:
+    """Refuse, before anything is written, a tone view that would land on a prepared
+    page or a source."""
+    pages = {page.output_name for page in plan.pages}
+    sources = {page.source.path for page in plan.pages}
+    for page in plan.pages:
+        target = plan.output_dir / tone_view_name(page)
+        if target.name in pages or target.resolve() in sources:
+            raise PrepareError(
+                f"the tone view of {page.output_name} would be written over "
+                f"{target.name}, a prepared page or a source; nothing was written"
+            )
+
+
 def _tone_view(plan: Plan, page: PagePlan, image: Image.Image, staged) -> dict[str, Any]:
     """Stage the grey tone view of a prepared page beside it; its manifest entry."""
     from pagekit.pipeline import make_tone_view
 
-    view, record = make_tone_view(image)
-    data = encode(view, "tiff", page.output_dpi)
-    name = f"{Path(page.output_name).stem}_tone.tif"
+    view, record, data = make_tone_view(image, page.output_dpi)
+    name = tone_view_name(page)
     _stage(plan.output_dir / name, data, staged)
-    return {"name": name, "sha256": hashlib.sha256(data).hexdigest(), "record": record}
+    return {
+        "name": name,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "bytes": len(data),
+        "pixels_sha256": hashlib.sha256(view.tobytes()).hexdigest(),
+        "record": record,
+    }
 
 
 def manifest_path(output_dir: Path) -> Path:

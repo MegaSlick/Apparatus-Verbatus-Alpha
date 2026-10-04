@@ -101,7 +101,8 @@ complete. Sources are a folder (its `.png`, `.tif`, `.tiff`, `.jpg` and `.jpeg` 
 or a list of files; they are only read. Nothing is ever written inside a source folder.
 
 Options: `--project FILE` and `--overrides FILE` (below), `--report-stale`,
-`--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, and
+`--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, `--dpi N`
+for sources that carry no resolution (see Resolution), and
 `--tone-view` (below). Exit status is 0 when no page is flagged, 1 when any page needs
 review and 2 when the input cannot be used (and then nothing is written).
 
@@ -230,7 +231,11 @@ given to the run is refused; with no sources given, the project's own are used.
 
 Millimetre settings (overlap, margin, allowance) need the scan resolution. A resolution
 missing from the file, or outside the plausible range, with no override in the project
-is a flag, never a silent default: those settings are then applied as 0 px. Unequal
+is a flag, never a silent default: those settings are then applied as 0 px, and the
+flag says how to give it. `--dpi 300` gives every source that carries no resolution
+300 dots per inch; it is stored in the project with origin `override`, so later runs
+keep it, and a source's own resolution is never replaced by it. A value outside the
+plausible range is refused. A resolution line in the overrides file sets one source. Unequal
 axes are flagged and converted per axis; the page is not resampled to equal axes.
 
 ### Geometry and output
@@ -253,12 +258,16 @@ Otsu's threshold inside the page, measured on a reduced working copy.
 Pages are written losslessly, TIFF with deflate compression (the default) or PNG
 (`output_format`), as `<source stem>_p<page>.tif` (or `.png`); greyscale stays
 greyscale and colour stays colour, and the file carries its resolution (the source's,
-or the shrunk value).
+or the shrunk value; none when the source has none). TIFF files are written by
+pagekit's own writer (`pagekit/_tiff.py`, shared with the tone view), so the same
+pixels always give the same bytes.
 
 ### The manifest
 
 `OUTPUT/pagekit-prepare.json`, schema `pagekit-prepare.v1`, closed: for each page the
-source's name and sha256; the output's name, sha256, byte size, format, mode, pixel size
+source's name and sha256; the output's name, sha256, byte size, the sha256 of its
+decoded pixels (`pixels_sha256`, which holds whatever the file format), format, mode,
+pixel size
 and resolution; the source resolution and its origin; the geometry chain as plain
 parameters, with both composed affine maps (source to output and back) and the fill
 colour; every step's value with origin, confidence, evidence and flags; the flags; and
@@ -276,10 +285,12 @@ maps points and polygons both ways.
 
 ### The grey tone view
 
-`--tone-view` also writes the grey tone view of spec 0006 beside each page, as
-`<page>_tone.tif`, and records it in the manifest. It needs `pagekit/tone.py`. Where
-that is not yet part of pagekit, `--tone-view` stops with a plain message and writes
-nothing; the one place it is called is `make_tone_view` in `pagekit/pipeline.py`.
+`--tone-view` also writes the grey tone view of spec 0006 (`pagekit/tone.py`) beside
+each page, as `<page>_tone.tif`, made by tone.py from the prepared page and written by
+its own deterministic TIFF writer. The manifest records each view's name, sha256 and
+the tone record with its settings. A view is never written over a prepared page or a
+source: pagekit stops first and writes nothing. The view is for the readers that need
+grey; the prepared page itself is unchanged.
 
 ### Measuring success
 
@@ -330,7 +341,6 @@ lists them.
 
 - Every setting is an unmeasured guess until a hand-checked set of real pages is run
   through `measure`.
-- The tone view needs `pagekit/tone.py`.
 - Output files of pages that no longer exist (a spread re-split into one page) are
   left in the output folder and listed under `stale_outputs`; pagekit never deletes.
 - EXIF orientation tags are ignored: sources are taken in their stored pixel grid.
