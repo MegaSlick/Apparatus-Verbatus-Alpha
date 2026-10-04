@@ -340,3 +340,61 @@ def crossing_case(
         target.line(points, fill=fill, width=stroke, joint="curve")
     line = ((float(gutter), 0.0), (float(gutter), float(height - 1)))
     return SpreadCase(image, 2, line, "crossing", dpi), mask
+
+
+SHEET_KINDS = ("hand_columns", "print_columns", "map")
+
+
+def sheet_case(kind: str, dpi: int = 150, seed: int = 1) -> SpreadCase:
+    """One landscape sheet (420 by 297 mm) of unbroken paper, with nothing in its middle:
+    two columns of handwriting or of print with a 30 mm gap between them, or a map whose
+    middle is empty. Its truth is one page (no gutter)."""
+    from pagekit._orient_testpages import _PRINT_WORDS, _type_glyph
+
+    rng = random.Random(f"sheet-{kind}-{dpi}-{seed}")
+    width, height = _mm(dpi, 420), _mm(dpi, 297)
+    image = Image.new("L", (width, height), PAPER)
+    draw = ImageDraw.Draw(image)
+    margin, half_gap = _mm(dpi, 20), _mm(dpi, 15)
+    middle = width // 2
+    boxes = (
+        (margin, margin, middle - half_gap, height - margin),
+        (middle + half_gap, margin, width - margin, height - margin),
+    )
+    if kind == "hand_columns":
+        for i, box in enumerate(boxes):
+            _write(draw, box, seed + i, dpi)
+    elif kind == "print_columns":
+        size = 10 / 72 * dpi
+        xh, stroke = max(3, round(0.47 * size)), max(1, round(size / 15))
+        for x0, y0, x1, y1 in boxes:
+            base = y0 + round(size)
+            while base <= y1:
+                x = x0
+                while True:
+                    word = rng.choice(_PRINT_WORDS)
+                    if x + len(word) * 0.8 * xh > x1:
+                        break
+                    for ch in word:
+                        x += _type_glyph(draw, ch, x, base, xh, stroke, 30, True)
+                    x += round(0.6 * xh)
+                base += round(1.3 * size)
+    elif kind == "map":
+        stroke = max(1, round(2 * dpi / 150))
+        for x0, y0, x1, y1 in boxes:
+            for _ in range(14):
+                points = [(rng.randint(x0, x1), rng.randint(y0, y1))]
+                for _ in range(8):
+                    px, py = points[-1]
+                    points.append(
+                        (
+                            min(x1, max(x0, px + rng.randint(-60, 60) * dpi // 150)),
+                            min(y1, max(y0, py + rng.randint(-60, 60) * dpi // 150)),
+                        )
+                    )
+                draw.line(points, fill=60, width=stroke)
+            _write(draw, (x0, y0, x1, y0 + _mm(dpi, 40)), seed + 7, dpi, lines=2)
+            _write(draw, (x0, y1 - _mm(dpi, 30), x1, y1), seed + 8, dpi, lines=2)
+    else:
+        raise ValueError(f"unknown sheet {kind!r}")
+    return SpreadCase(image, 1, None, kind, dpi)
