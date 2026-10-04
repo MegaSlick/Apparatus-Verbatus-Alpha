@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import random
 
-from PIL import Image, ImageChops, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 PAPER = 228
 INK_LEVEL = 45
@@ -220,4 +220,93 @@ def cursive_spread(seed: int = 11, *, lean: float = 0.4) -> Image.Image:
         draw.rectangle((x, y, x + 3, y + 3), fill=120)
     frame.paste(left, (border, border))
     frame.paste(right, (border + width, border))
+    return frame
+
+
+_PRINT_WORDS = (
+    "le dit jour par devant nous notaire royal au bailliage et en presence des temoins "
+    "soussignes fut present messire jean baptiste de la fontaine seigneur du lieu lequel a "
+    "reconnu avoir vendu cede quitte et transporte une piece de terre labourable situee au "
+    "terroir de saint pierre contenant environ deux arpents tenant au chemin royal"
+).split()
+
+
+def _type_glyph(draw, ch, x, base, xh, stroke, ink, serif):
+    """One letter of drawn type: bowls, stems, an e with its crossbar, ascenders to 1.55
+    x-heights and descenders to 0.55 below; serifs are short bars at a stem's ends,
+    wider at the foot. Returns the advance."""
+    width = round(0.62 * xh) if ch not in "mw" else round(1.0 * xh)
+    top = base - xh
+
+    def stem(x0, y0, y1):
+        draw.rectangle((x0, y0, x0 + stroke - 1, y1), fill=ink)
+        if serif:
+            draw.rectangle((x0 - 2 * stroke, y1 - stroke + 1, x0 + 3 * stroke - 1, y1), fill=ink)
+            draw.rectangle((x0 - 2 * stroke, y0, x0 + stroke - 1, y0 + stroke - 1), fill=ink)
+
+    if ch in "cosgpqdbe":
+        draw.ellipse((x, top, x + width, base), outline=ink, width=stroke)
+    if ch == "e":
+        mid = top + xh // 2
+        draw.rectangle((x, mid - stroke // 2 - 1, x + width, mid + stroke // 2 - 1), fill=ink)
+    if ch == "a":
+        draw.arc((x, top, x + width, top + xh), 200, 340, fill=ink, width=stroke)
+        draw.ellipse((x, top + xh // 2 - 1, x + width, base), outline=ink, width=stroke)
+        stem(x + width, top + xh // 4, base)
+    if ch in "bdfhklt":
+        stem(x + (width if ch == "d" else 0), base - round(1.55 * xh), base)
+    if ch in "gjpqy":
+        stem(x + (0 if ch == "p" else width), top, base + round(0.55 * xh))
+    if ch in "nmhru":
+        stem(x, top, base)
+        draw.arc((x, top, x + width, top + xh), 180, 360, fill=ink, width=stroke)
+        if ch != "r":
+            stem(x + width, top + xh // 3, base)
+        if ch == "m":
+            stem(x + width // 2, top + xh // 3, base)
+    if ch in "ivwxz":
+        stem(x + width // 2, top, base)
+        if ch == "i":
+            dot = top - xh // 2
+            draw.rectangle(
+                (x + width // 2, dot - stroke, x + width // 2 + stroke - 1, dot), fill=ink
+            )
+    return width + max(1, round(0.18 * xh))
+
+
+def printed_page(
+    dpi: int = 150, points: float = 9, seed: int = 1, *, serif: bool = True
+) -> Image.Image:
+    """An A4 page of small justified-width printed type drawn letter by letter (no font
+    files): at 150 dpi and 9 pt the x-height is about 8 px, and the x-band's top and
+    bottom rows, the e crossbars and the serifs are its densest rows."""
+    rng = random.Random(seed)
+    width, height = round(8.27 * dpi), round(11.69 * dpi)
+    image = Image.new("L", (width, height), 230)
+    draw = ImageDraw.Draw(image)
+    size = points / 72 * dpi
+    xh = max(3, round(0.47 * size))
+    stroke = max(1, round(size / 15))
+    margin = round(20 / 25.4 * dpi)
+    base = margin + round(size)
+    while base + round(0.3 * size) <= height - margin:
+        x = margin
+        while True:
+            word = rng.choice(_PRINT_WORDS)
+            if x + len(word) * 0.8 * xh > width - margin:
+                break
+            for ch in word:
+                x += _type_glyph(draw, ch, x, base, xh, stroke, 30, serif)
+            x += round(0.6 * xh)
+        base += round(1.25 * size)
+    return image.filter(ImageFilter.GaussianBlur(dpi / 500))
+
+
+def printed_spread(dpi: int = 300, points: float = 9, seed: int = 1, *, serif: bool = False):
+    """Two printed pages side by side on a dark backdrop, the right one a little lower."""
+    left = printed_page(dpi, points, seed, serif=serif)
+    right = printed_page(dpi, points, seed + 1, serif=serif)
+    frame = Image.new("L", (2 * left.width + 120, left.height + 140), 25)
+    frame.paste(left, (60, 60))
+    frame.paste(right, (60 + left.width, 80))
     return frame

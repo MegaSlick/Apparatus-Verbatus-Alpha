@@ -3,6 +3,8 @@ material."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from PIL import Image, ImageDraw, ImageOps
 
@@ -11,6 +13,7 @@ from pagekit._orient_ink import (
     TOO_LITTLE_INK,
     DetectorError,
     load_settings,
+    setting_values,
     settings_measured,
 )
 from pagekit._orient_testpages import (
@@ -18,13 +21,17 @@ from pagekit._orient_testpages import (
     cursive_page,
     cursive_spread,
     page,
+    printed_page,
+    printed_spread,
     turned,
     write_block,
 )
 from pagekit.orient import (
     POSSIBLY_NEGATIVE,
+    UNCERTAIN_CORE_BAND,
     UNCERTAIN_DIRECTION,
     UNCERTAIN_UPDOWN,
+    _updown,
     detect_orientation,
 )
 
@@ -265,5 +272,80 @@ def test_ascender_cue_decides_when_the_baseline_cue_is_silent():
     write_block(ImageDraw.Draw(image), (100, 120, 900, 1280), seed=2, joined=False, descenders=0.0)
     upright = detect_orientation(image)
     assert upright["value"] == 0 and upright["flags"] == []
-    assert "baseline against x-line +0.0" in upright["evidence"]
+    assert re.search(r"baseline against x-line [+-]0\.0", upright["evidence"])
     assert detect_orientation(turned(image, 2))["value"] == 2
+
+
+# --- Small printed type (follow-up to brief 0028: confident wrong half turns) ----------
+
+
+def _right_or_flagged(result: dict, expected: int) -> bool:
+    return result["value"] == expected and not result["flags"] or bool(result["flags"])
+
+
+@pytest.mark.parametrize(
+    ("dpi", "points", "seed", "serif"),
+    [(150, 9, s, True) for s in range(3)]
+    + [(150, 8, 2, True), (150, 9, 0, False), (300, 7, 0, True), (300, 7, 1, False)],
+)
+@pytest.mark.parametrize("quarter_turns", [0, 2])
+def test_small_printed_type_is_never_turned_wrong_without_a_flag(
+    dpi, points, seed, serif, quarter_turns
+):
+    """At an x-height of 6 to 8 px in the working copy, the x-band of printed type has
+    dense top and bottom rows and a dense e crossbar with sparser rows between, so a
+    core band found with one share for the whole strip splits each line in pieces."""
+    image = turned(printed_page(dpi, points, seed, serif=serif), quarter_turns)
+    result = detect_orientation(image)
+    assert _right_or_flagged(result, (4 - quarter_turns) % 4), result["evidence"]
+
+
+@pytest.mark.parametrize(
+    ("dpi", "points", "serif"), [(300, 7, True), (300, 7, False), (150, 9, True)]
+)
+@pytest.mark.parametrize("quarter_turns", [0, 2])
+def test_small_printed_spread_is_never_turned_wrong_without_a_flag(
+    dpi, points, serif, quarter_turns
+):
+    image = turned(printed_spread(dpi, points, seed=1, serif=serif), quarter_turns)
+    result = detect_orientation(image)
+    assert _right_or_flagged(result, (4 - quarter_turns) % 4), result["evidence"]
+
+
+def _updown_score(result: dict) -> float:
+    match = re.search(r"up-down score ([+-][0-9.]+)", result["evidence"])
+    assert match, result["evidence"]
+    return float(match.group(1))
+
+
+@pytest.mark.parametrize("image", [page(), cursive_page(seed=12)], ids=["page", "cursive"])
+def test_up_down_score_changes_sign_under_a_half_turn(image):
+    """The score of a frame is exactly minus the score of its half turn; the turned
+    input differs from the frame only by its reduction, so the two answers agree to
+    within a few percent."""
+    upright = _updown_score(detect_orientation(image))
+    flipped = _updown_score(detect_orientation(turned(image, 2)))
+    assert upright > 0 > flipped
+    assert abs(upright + flipped) <= 0.05 * abs(upright)
+
+
+def test_up_down_score_of_a_frame_is_antisymmetric_exactly():
+    ink = Image.new("L", (1000, 1400), 0)
+    sample = page().point(lambda level: 255 if level < 128 else 0)
+    ink.paste(sample)
+    value = setting_values()
+    forward = _updown(ink, value)["score"]
+    backward = _updown(ink.transpose(Image.Transpose.ROTATE_180), value)["score"]
+    assert forward == pytest.approx(-backward, abs=1e-9)
+
+
+@pytest.mark.parametrize("quarter_turns", [0, 2])
+def test_up_down_vote_that_changes_sign_with_the_core_band_is_flagged(quarter_turns):
+    """On this small sans page the estimates run from strongly upside down to strongly
+    upright as the core band share and strip width vary: the vote measures where the
+    core band is put more than the page, so the answer is uncertain even though the
+    median happens to be right."""
+    result = detect_orientation(turned(printed_page(150, 9, 0, serif=False), quarter_turns))
+    assert result["value"] == 0
+    assert result["flags"] == [UNCERTAIN_CORE_BAND]
+    assert result["confidence"] < 0.2
