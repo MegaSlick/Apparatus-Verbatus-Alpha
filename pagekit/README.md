@@ -13,8 +13,10 @@ python -m pagekit check --master scan.tif --crop 120,90,2480,3400 [--crop ...] \
     [--split-x 2510] [--min-short-side-px 1200] --json
 ```
 
-Crop boxes are `x0,y0,x1,y1` in the master's stored pixel grid (no EXIF rotation),
-right and bottom exclusive. Exit status is 0 when nothing is flagged, 1 when the page
+Crop boxes are `x0,y0,x1,y1` in the master's pixel grid as the image library (Pillow)
+opens the file's bytes, right and bottom exclusive: the stored pixels, except for a
+carrier Pillow turns upright by its orientation tag as it opens it (a TIFF, today); see
+"The orientation tag" below. Exit status is 0 when nothing is flagged, 1 when the page
 should go to review and 2 when the inputs cannot be checked. Any failure to read the
 master is exit 2, including an image mode pagekit does not handle: a 16-bit greyscale
 (`I;16`) master is refused loudly rather than reduced to 8 bits unseen. Without `--json` the
@@ -118,14 +120,44 @@ order, it finds:
 2. **pages and cut**: one page or a two-page spread, and where to cut it (the cut may
    lean);
 3. for each page, **skew**: the small angle that levels its lines;
-4. for each page, the **page box** (where the paper is) and then the **content box**
-   (everything to keep, notes and signatures included, or none for a blank page);
-5. the **margin** around the content, then one resampling of the original into the
-   prepared page.
+4. only when cropping is on (below): for each page, the **page box** (where the paper
+   is) and then the **content box** (everything to keep, notes and signatures
+   included, or none for a blank page), and the **margin** around the content;
+5. one resampling of the original into the prepared page.
+
+**Cropping is off by default** (spec 0008): pagekit's first job is to preserve the
+original and split it left and right. Each page is then its whole side of the cut
+(with the overlap), upright and levelled, on a canvas that holds the whole levelled
+side, with nothing of the source cut away; the margin does not apply (padding still
+does, when set). `--crop page` crops to the page box; `--crop content` to the content
+box plus the margin, exactly as before; an overrides line
+`{"source": ..., "step": "crop", "page": 1, "value": "content"}` (or `"page"`, `"none"`)
+sets one page; and a page or content box set by hand turns cropping on for that page.
+The page-box and content-box detectors do not run when cropping is off, unless the
+`crop_detectors_when_off` setting is 1: then they report in the evidence what they
+would have cut, and never change the page. The manifest's `applied` says, for each
+page, which steps were applied and the crop; the review sheet says "Cropping: ..." on
+every page.
 
 A blank page is still written, as an image of its paper, so the sequence of pages stays
 complete. Sources are a folder (its `.png`, `.tif`, `.tiff`, `.jpg` and `.jpeg` files)
-or a list of files; they are only read. Nothing is ever written inside a source folder.
+or a list of files; they are only read. Nothing is ever written inside a source folder,
+and a run never changes a source file's bytes or its modification time (a test pins
+it).
+
+### The stage cache
+
+`prepare` also writes a stage cache, by default the folder `pagekit-cache` beside the
+output folder (`--cache DIR` to put it elsewhere, never inside a source folder;
+`--no-cache` for none). For each source, in a folder named by its sha256: the source as
+opened (after any orientation tag), the upright frame with the cut drawn, and for each
+page its side of the cut and the levelled page, as full-resolution lossless TIFF and
+small PNG previews; with cropping on, the levelled page with its page box and content
+box drawn. `index.json` lists the entries, each keyed by the source's sha256 and the
+inputs hash and value of the step that made it, so a re-run with nothing changed
+writes nothing and a changed step rewrites only its own entries. The review sheet links
+to each preview. The cache is for looking only: no prepared page is ever made from it,
+so it can be deleted at any time and the next run rebuilds it.
 
 Options: `--project FILE` and `--overrides FILE` (below), `--report-stale`,
 `--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, `--dpi N`
@@ -167,10 +199,26 @@ after it. The transform is the first link of the geometry chain (an `orientation
 step, only when a tag is applied), so the point maps still lead back to the stored
 pixels. Prepared pages carry no orientation tag, so no reader turns them again.
 
+**Which grid.** pagekit works on each source exactly as Pillow opens the file's bytes,
+the grid every other tool that opens the scan with Pillow sees; the manifest's
+`source_size` and the point maps refer to that grid. Pillow turns some carriers upright
+by their tag as it opens them and drops the tag (TIFF, with Pillow 12.3); others it
+leaves as stored (PNG, JPEG). pagekit reads the tag before loading and finds out, file
+by file, whether Pillow applied it: the tag is gone after loading, or, for tags 5 to 8,
+the loaded size is the transposed size the file's own header gives. If Pillow applied
+it, the record says "applied on open by the image library" and the chain adds nothing;
+if not, the chain applies it once as its first link. So a tag is applied exactly once
+whatever Pillow does, now or in a later version. The record's `applied_by` says who
+(`image library on open` or `chain`) and `grid` which grid the chain starts from. (With
+Pillow 12.3, opening an uncompressed TIFF with a tag of 5 to 8 by its path, rather than
+from its bytes, gives an image sized as stored; pagekit always opens the bytes.)
+
 A tag outside the eight values is flagged and the source taken as stored. Whether to
 trust tags is the `trust_orientation_tag` setting (default 1, trust); for one source,
 an overrides line `{"source": ..., "step": "tag_trust", "value": false}` ignores its
-tag, the orientation evidence says so, and later runs keep it. The manifest's
+tag, the orientation evidence says so, and later runs keep it. For a carrier Pillow
+turned on open, an untrusted tag means undoing that turn, so the source is taken as
+stored; the record's `grid` then says `stored pixels`. The manifest's
 `orientation_tag` and the project's record name the value found, whether it is trusted
 and applied, and the transform.
 
@@ -191,16 +239,30 @@ exact. Otherwise the `grey_rule` setting (or `--grey-rule`) decides: `luminance`
 (the ITU-R BT.601 weights, 0.299 red + 0.587 green + 0.114 blue), or one channel,
 `red`, `green` or `blue`; the conversion is then a reviewed one.
 
-Before a colour page is made grey, pagekit measures its colour: the chroma of each
-pixel (largest minus smallest channel) on a reduced copy, against the chroma noise of
-the page's own plain paper. If marks stand clearly above that noise
-(`colour_chroma_margin`) over at least `colour_min_area_mm2`, the page is flagged ("this
+Before a colour page is made grey, pagekit measures its colour on the written page
+only (its margin box, within the page box; a coloured backdrop or a colour target
+beside the paper does not count): the chroma of each pixel (largest minus smallest
+channel) on a copy at `colour_working_dpi`, against the chroma noise of the page's own
+plain paper, taken from its most neutral part (the median plus `colour_noise_spread`
+times the median absolute deviation, so a pale wash over part of the paper does not
+raise it). Coloured pixels are opened by a square as wide as `colour_thinnest_mm`
+(at least two pixels), which drops stray specks and keeps ruling and other lines that
+wide. If marks stand clearly above the noise (`colour_chroma_margin`) over at least
+`colour_min_area_mm2`, the page is flagged ("this
 page holds colour that grey would remove", naming where) and kept in colour, unless grey
 was set by hand or locked for it, in which case it is grey and the flag stays. Colour
 that is only sensor noise does not count. The manifest's `output_mode` records the mode
 written, the choice and who made it, the rule, whether it was exact, and the colour
 measure; the review sheet shows the same with lines to keep the page as scanned or to
 force grey.
+
+What the colour check does not detect: colour fainter than `colour_chroma_margin`
+above the paper's noise; coloured lines thinner than `colour_thinnest_mm`; a colour
+covering more than half of the paper, which reads as the paper's own tint; and
+differences between inks that are less saturated than the paper itself. Black and
+brown inks on yellowed paper are not compared with each other, so in grey they may
+merge into one level; when the difference between such inks matters, keep the page in
+source mode.
 
 ### Padding apart from the margin
 
@@ -393,8 +455,9 @@ parameters, with both composed affine maps (source to output and back) and the f
 colour; every step's value with origin, confidence, evidence and flags; the flags; and
 the verdict, `review` or `no_flags`. `batch` holds the volume-wide comparison: for each
 measurement the number of pages, whether it was compared, the median, the spread and how
-many pages were flagged. `review` names the review sheet. Spec 0007 adds, for each page, `orientation_tag`, `output_mode`
-and `density` (null unless set), and in `geometry` the `margin_box` and `regions`; with
+many pages were flagged. `review` names the review sheet. Spec 0007 adds, for each page, `orientation_tag`, `output_mode`,
+`density` (null unless set) and `upright_resolution` (the usable resolution of the
+upright frame, in the axes the tag and the turns give, before any shrinking), and in `geometry` the `margin_box` and `regions`; with
 no tag, no grey choice and no padding every earlier value is unchanged.
 `skipped` lists the source
 files that could not be used, each with `name`, `path` (from the project file's folder),

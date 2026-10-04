@@ -82,6 +82,10 @@ UNCERTAIN_UNIFORM = (
     "orientation uncertain: nearly all marks share one size (figures or capitals), with no "
     "ascenders or descenders and no runs of writing to orient by"
 )
+UNCERTAIN_FIGURE_TILES = (
+    "orientation uncertain: a large share of the writing is figures or capitals of one "
+    "size, with no ascenders or descenders of their own to orient by"
+)
 POSSIBLY_NEGATIVE = (
     "possibly a negative (light writing on a dark ground); orientation not decided from it"
 )
@@ -139,10 +143,10 @@ def _tile_scores(
     value: dict[str, Any],
     marks: list[Mark] | None = None,
     offset: tuple[int, int] = (0, 0),
-) -> tuple[list[float], int]:
+) -> tuple[list[float], int, set[int]]:
     """ln(row sharpness / column sharpness) for each square tile that holds writing
-    (ink share within the tile limits), and how many tiles of uniform marks were left
-    out. Inside a tile of writing the row profile alternates lines and gaps while the
+    (ink share within the tile limits), how many tiles of uniform marks were left out,
+    and the ids of the marks in them. Inside a tile of writing the row profile alternates lines and gaps while the
     column profile is flat; tiles of margin, gutter, page edges or dark masses are left
     out, so their structure does not pull the score. Tiles whose marks nearly all share
     one size (figures in columns, which stack as exactly along a column as along a
@@ -162,6 +166,7 @@ def _tile_scores(
     tiny = 1e-6
     scores = []
     uniform = 0
+    left_out: set[int] = set()
     for j in range(down):
         for i in range(across):
             x, y = left + i * size, top + j * size
@@ -175,11 +180,12 @@ def _tile_scores(
                 and _uniform_share(inside, value) >= value["same_size_share"]
             ):
                 uniform += 1
+                left_out.update(id(m) for m in inside)
                 continue
             rows = _peakedness(profile(tile, along_x=False))
             columns = _peakedness(profile(tile, along_x=True))
             scores.append(math.log((rows + tiny) / (columns + tiny)))
-    return scores, uniform
+    return scores, uniform, left_out
 
 
 def _direction(
@@ -193,7 +199,7 @@ def _direction(
     The profile cue is the median over tiles of writing; when too few tiles hold
     writing it falls back to the profiles of the whole content. `dissent` is the share
     of voting tiles whose own vote is against the median."""
-    tiles, uniform = _tile_scores(ink, value, marks, offset)
+    tiles, uniform, left_out = _tile_scores(ink, value, marks, offset)
     rows = _peakedness(profile(ink, along_x=False))
     columns = _peakedness(profile(ink, along_x=True))
     tiny = 1e-9
@@ -212,6 +218,8 @@ def _direction(
         "profile": profile_score,
         "tiles": len(tiles) if len(tiles) >= value["min_tiles"] else 0,
         "uniform_tiles": uniform,
+        "voting_tiles": len(tiles),
+        "left_out": left_out,
         "dissent": dissent,
         "rows": rows,
         "columns": columns,
@@ -502,6 +510,23 @@ def detect_orientation(
             f"way, so neither the line direction nor up and down is decided; {DEFAULT_NOTE}.",
             [UNCERTAIN_UNIFORM],
         )
+    uniform_tiles = direction["uniform_tiles"]
+    tile_share = uniform_tiles / max(1, uniform_tiles + direction["voting_tiles"])
+    if tile_share >= value["uniform_tile_share"]:
+        return answer(
+            0,
+            UNCERTAIN_SCALE * 0.25,
+            f"Lines run {lines} the frame ({profiles}), but {tile_share:.0%} of the tiles "
+            "holding writing are figures or capitals of one size, which carry their own lean "
+            f"between upright and upside down; {DEFAULT_NOTE}.",
+            [UNCERTAIN_FIGURE_TILES],
+        )
+    if direction["left_out"]:
+        # The marks of the one-size tiles vote neither on the line direction nor here.
+        kept = [m for m in marks if id(m) not in direction["left_out"]]
+        frame = paint(kept, ink.size).crop(box)
+        if base == 1:
+            frame = frame.transpose(Image.Transpose.ROTATE_270)
     updown = _updown(frame, value)
     vote = updown["score"]
     updown_confidence = strength(abs(vote), value["updown_min_score"])

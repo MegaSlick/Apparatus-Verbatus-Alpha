@@ -644,3 +644,54 @@ record".
 - **Brief 0037 done:** commit e7c0922 on `work/pk-integrate`. Leak scan no hits. Merged into
   `work/pagekit-prepare`; the pin compares decoded pixels and regenerated its data from
   2d10a14.
+
+## 0036 — Third held-out re-test; follow-up brief 0038
+
+- **Re-test** of 7d4b148 and cdd6dd9: no regression; figure pages 10 wrong to 0; band
+  strokes 71 missed flags to 0; one handwritten account page, flagged before, is now a
+  wrong half turn because figure tiles still vote up or down.
+- **Follow-up brief:** `briefs/0038-build-orientation-figure-tiles-updown.md` (sha256
+  6ed5bf8bad155d6d373bcf6f333f22fd63dda1eab5c28467d41b916115379aea), to the agent of
+  brief 0017. Saved before it was sent.
+
+## 0037 — Review of the spec 0007 build; follow-up brief 0039
+
+- **Independent review** of 191878f by a fresh agent bound by the clean-room rule (it saw
+  no GPL source and read no findings): defaults, padding, density, re-runs and determinism
+  held up; a TIFF's orientation tag was applied twice because the image library turns TIFFs
+  on load; the colour check looked at the whole scanned frame, so a coloured backdrop or
+  target refused grey on the page; thin and pale colour could go undetected.
+- **Follow-up brief:** `briefs/0039-build-tag-twice-and-colour-scope.md` (sha256
+  2f5acac512b82069a55911d707453f7e886e60c59145ffca2c8eee230c7681d5), to the agent of
+  brief 0023. Saved before it was sent.
+- **Correction brief:** `briefs/0040-build-tag-correction.md` (sha256
+  6bb69ded51e611bcbe116a7ab098736ae87bdc087a5a5d46de4636fbb25e0577), to the same agent:
+  the main pipeline opens scans through the same image library, so pagekit keeps the grid
+  as the library opens it and applies a tag only when the library has not, rather than
+  undoing the library's turn. Saved before it was sent.
+- **Brief 0038 done:** commit cb623d0 on `work/pk-split`. Leak scan no hits. Merged into
+  `work/pagekit-prepare`. One-size tiles no longer vote up or down; a page whose writing
+  tiles are a third or more one-size is flagged.
+
+## 0038 — Lead's direction: split first, cropping off by default; spec 0008; brief 0041
+
+- **The lead decided** that pagekit should preserve the original, focus on splitting left
+  and right, keep the page-box and content-box crops as a later feature off by default, and
+  keep a cache of each step's image for inspection.
+- **Spec 0008** (`specs/0008-split-first-defaults-and-stage-cache.md`): those defaults and
+  the stage cache, with the rule that no output is ever made from a cache image.
+- **Brief:** `briefs/0041-build-split-first-and-cache.md` (sha256
+  80d71ffb4f044a5f69318d857f0386635256573cf07553f1034376d2652b06db), to the agent of
+  brief 0023, after briefs 0039 and 0040. Saved before it was sent.
+- **Brief 0038 re-test:** no regression; two synthetic account pages that were already
+  wrong remain wrong without a flag; 17 pages that were right are now flagged.
+- **Follow-up brief:** `briefs/0042-build-split-hardening.md` (sha256
+  ebe09a921dcddc97dc0dc3935e814fea91c60f2ba7bcb60b13b13bb34889d7da), to the agent of
+  brief 0017: harden the split over a wide range of spreads, and the remaining account-page
+  case. Saved before it was sent.
+- **Briefs 0039, 0040 and 0041 done:** commits ed88e7d, baa9fd5 and 6b2d7f7 on
+  `work/pk-integrate`. Leak scan no hits in 177 files. Merged into `work/pagekit-prepare`.
+  The source grid is the image as the library opens the file's bytes; the colour check
+  measures only the written page; cropping is off by default; the stage cache is written
+  beside the output. The builder reported that the library turns some uncompressed tagged
+  TIFFs differently when opened by path than from bytes.

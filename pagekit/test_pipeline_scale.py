@@ -205,7 +205,9 @@ def test_a_tilted_quarter_turned_page_at_high_and_odd_dpi_is_prepared_right(
     detectors["orientation"] = Detector(
         "test.orientation/1", lambda context: Answer(turns, 1.0, "Given.", ())
     )
-    (page,) = plan([folder], tmp_path / "out", detectors=detectors).pages
+    (page,) = plan(
+        [folder], tmp_path / "out", detectors=detectors, settings_overrides={"crop": "content"}
+    ).pages
     assert page.steps["skew"]["value"] == pytest.approx(angle, abs=0.25)
     found = page.steps["content_box"]["value"]
     grid = page.chain.levelled_size

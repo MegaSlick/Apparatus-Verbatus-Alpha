@@ -274,6 +274,11 @@ def _step_block(step: str, entry: dict[str, Any], source_ref: str, page: int | N
     )
 
 
+_CROP_WORDS = {
+    "none": "off (the whole levelled side of the cut is kept; turn it on with --crop)",
+    "page": "to the page box",
+    "content": "to the content box, with the margin",
+}
 _MODE_SET_BY = {
     "default": "the default",
     "run": "chosen for this batch",
@@ -391,13 +396,40 @@ def _batch_table(batch: dict[str, Any]) -> str:
     )
 
 
+def _setting_options(settings: dict[str, dict[str, Any]]) -> list[str]:
+    """The command-line options that repeat this run's settings, so a correction run
+    prepares every page as this run did."""
+    value = {name: entry["value"] for name, entry in settings.items()}
+    given = {name for name, entry in settings.items() if entry["source"] == "override"}
+    options: list[str] = []
+    if "crop" in given:
+        options += ["--crop", value["crop"]]
+    if "output_format" in given:
+        options += ["--format", value["output_format"]]
+    if "max_output_dpi" in given:
+        options += ["--max-dpi", f"{value['max_output_dpi']:g}"]
+    if "grey_rule" in given:
+        options += ["--grey-rule", value["grey_rule"]]
+    if "padding_mm" in given and value["padding_mm"] > 0:
+        options += ["--padding", f"{value['padding_mm']:g}mm"]
+    if "padding_px" in given and value["padding_px"] > 0:
+        options += ["--padding", f"{value['padding_px']}px"]
+    if "stage_cache" in given and not value["stage_cache"]:
+        options += ["--no-cache"]
+    if "stage_cache_folder" in given and value["stage_cache_folder"]:
+        options += ["--cache", value["stage_cache_folder"]]
+    return options
+
+
 def correction_command(plan: Any) -> str:
     """The shell command that applies `overrides.json` in the output folder.
 
     It uses absolute paths and the Python that ran prepare, and names the folder that
     holds pagekit as PYTHONPATH for that one command, so it works from any folder,
     whether or not pagekit is installed and whatever PYTHONSAFEPATH says. It is one line
-    for macOS and Linux shells (sh, bash, zsh); the Windows form is for later."""
+    for macOS and Linux shells (sh, bash, zsh); the Windows form is for later. It
+    repeats the run's own settings (crop, format, shrinking, grey rule, padding,
+    cache)."""
     home = Path(__file__).resolve().parent.parent
     words = [
         sys.executable,
@@ -411,6 +443,7 @@ def correction_command(plan: Any) -> str:
     ]
     if plan.project_path != plan.output_dir / "pagekit-project.json":
         words += ["--project", str(plan.project_path)]
+    words += _setting_options(plan.settings)
     return f"PYTHONPATH={shlex.quote(str(home))} " + " ".join(shlex.quote(word) for word in words)
 
 
@@ -517,6 +550,18 @@ def build(plan: Any, entries: list[dict[str, Any]], previews: dict[str, Any]) ->
                 )
             )
         parts.append(f'<div class="previews">{"".join(figures)}</div>')
+        stage_links = previews.get("cache", {}).get(first.source.sha256, [])
+        if stage_links:
+            names = {"opened": "as opened", "upright": "upright, with the cut"}
+            items = []
+            for link in stage_links:
+                label = names.get(link["stage"]) or f"page {link['page']} {link['stage']}"
+                items.append(f'<a href="{_escape(link["href"])}">{_escape(label)}</a>')
+            parts.append(
+                '<p class="fix">Each step\'s image (in the stage cache, for looking only): '
+                + " · ".join(items)
+                + "</p>"
+            )
 
         parts.append("<h3>The whole image</h3>")
         entry = entries[indexes[0]]
@@ -544,6 +589,8 @@ def build(plan: Any, entries: list[dict[str, Any]], previews: dict[str, Any]) ->
         for index, page in zip(indexes, pages, strict=True):
             entry = entries[index]
             parts.append(f"<h3>Page {page.number}: {_escape(page.output_name)}</h3>")
+            crop = page.applied.get("crop", "content")
+            parts.append(f"<p>Cropping: {_escape(_CROP_WORDS[crop])}</p>")
             page_shown = set(shown)
             for step in PAGE_STEPS:
                 parts.append(_step_block(step, entry["steps"][step], ref, page.number))
