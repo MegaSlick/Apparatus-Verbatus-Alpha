@@ -131,8 +131,18 @@ Options: `--project FILE` and `--overrides FILE` (below), `--report-stale`,
 `--format tiff|png`, `--max-dpi N` to shrink pages above that resolution, `--dpi N`
 for sources that carry no resolution (see Resolution), and
 `--tone-view` (below). Exit status is 0 when no page is flagged, 1 when any page needs
-review and 2 when the input cannot be used (and then nothing is written). Every source
-is checked first, and one message names every file that cannot be used and why.
+review or any source file was skipped, and 2 when the command cannot run at all (and
+then nothing is written).
+
+A source file that cannot be used (unreadable, cut short, not an image, or in a mode
+or depth pagekit does not read, such as 16-bit grey or CMYK) is skipped, not fatal:
+the other scans are prepared as usual, and the skipped file is named with a plain
+reason in the command's output, at the top of the review sheet and in the manifest's
+`skipped`. It gets no page and no new project entry, so the next run tries it again
+(and a file the project already knew keeps its values meanwhile). Exit status 2 is kept
+for what stops the whole run: no usable source at all (every bad file is named in one
+message), an output folder inside a source folder, an output folder that cannot be
+written, an unreadable project or overrides file, or an invalid option.
 
 When pagekit is not sure of a step, it says so with a flag and the page goes to review;
 it never guesses silently. If a step fails on one page, that page gets a flag naming the
@@ -307,7 +317,10 @@ parameters, with both composed affine maps (source to output and back) and the f
 colour; every step's value with origin, confidence, evidence and flags; the flags; and
 the verdict, `review` or `no_flags`. `batch` holds the volume-wide comparison: for each
 measurement the number of pages, whether it was compared, the median, the spread and how
-many pages were flagged. `review` names the review sheet. `stale_outputs` lists the output files of pages
+many pages were flagged. `review` names the review sheet. `skipped` lists the source
+files that could not be used, each with `name`, `path` (from the project file's folder),
+`sha256` (null when the file cannot be read) and `reason`; they have no pages.
+`stale_outputs` lists the output files of pages
 that no longer exist, which are left in place, never deleted. Like the crop check it reports `thresholds`,
 `thresholds_measured` and `thresholds_note`. The same project gives byte-identical
 images and manifest.
@@ -383,7 +396,7 @@ lists them.
 - EXIF orientation tags are ignored: sources are taken in their stored pixel grid.
 - Source modes handled: greyscale, colour, bilevel (written as greyscale) and palette
   (written as greyscale when every colour it uses is a grey, else as colour). Others,
-  such as 16-bit greyscale, are refused.
+  such as 16-bit greyscale or CMYK, are skipped with a reason (above).
 
 ## Airlock
 

@@ -487,3 +487,53 @@ record".
   brief 0023. Saved before it was sent.
 - **Brief 0031 done:** commit 4617b6f on `work/pk-integrate`. Leak scan no hits. Merged
   into `work/pagekit-prepare`; the pagekit suite passes under the check script's settings.
+
+## 0028 — Outside reading-side documents received; host exposure recorded
+
+- **Received** at 2026-10-04T15:23Z from the lead, from outside ChatGPT reading-side
+  sessions, and saved in `workbench/cleanroom-quarantine/` (git-ignored, never committed):
+  - `63910cd1-PageKit-Reconciliation-Review.md`, 25858 bytes, sha256
+    5f6e776d9cda0ee75a20d71778d79c7e7040630c8b64476fca19524b6ebb6645;
+  - `68d24890-PageKit-Reconciled-Intake-Candidate.md`, 17902 bytes, sha256
+    809c4ef938d5309a003879d6952658b8d1acb7ee5a1a57a7f2671fb73ac43f5c.
+- **Departure from step 3 of "Outside reading-side sessions":** the documents were
+  attached to the host's conversation, which loaded their full text, so the host read
+  both before quarantine and before the report check. The host did not forward them to
+  any build-side agent.
+- **What the host saw:** no source code, no code blocks and no description of another
+  program's internals. The only mentions of the excluded program are the metadata of the
+  lead's own four hand-prepared TIFF pages (size, grey 8-bit, LZW, 600 dpi tag). The
+  documents state that their authors' earlier research packets carry mixed exposure.
+- **Report check:** both refused (no reader-brief digest, free-form sections, file paths),
+  as working notes usually are. Nothing has been admitted into `findings/`.
+- **Pending the lead's decision:** whether a reading-side agent should distil them into
+  finding reports through the quarantine route. Until then no spec or brief draws on them.
+- **Brief 0030 done:** commits 0c7f995 and 852c217 on `work/pk-split`. Leak scan no
+  hits. Merged into `work/pagekit-prepare` (fd3041a); the suite passes under the check
+  script's settings. Since the builder checked its work on the reviewer's set, that
+  reviewer is re-testing on a new held-out set.
+- **Correction to the entry above:** the lead attached the two documents as files, as the
+  host had asked; the host then read them on receipt. The exposure was the host's handling,
+  not the lead's. The lead has since approved distillation by a reading-side agent.
+
+## 0029 — Unusable sources are skipped, not fatal; follow-up brief 0032
+
+- **The lead decided** that one unusable source file must not stop a batch. The host
+  changed spec 0002: such a file is skipped and named with its reason in the manifest, the
+  review sheet and the output, with exit status 1; exit status 2 stays for problems that
+  stop the whole run.
+- **Follow-up brief:** `briefs/0032-build-skip-unusable-sources.md` (sha256
+  9001e468ff317016a552d8166fdb0c7b0eb105b6f05a5b5dea4f187ee022a0c3), to the agent of
+  brief 0023. Saved before it was sent.
+
+## 0030 — Reading side: distil the two outside documents into finding reports
+
+- **Who:** a fresh reading-side agent, started after this entry was committed.
+- **Brief:** `briefs/0033-read-outside-documents.md` (sha256
+  bd3e1c50d4f2819416114fdebe2da7d245b3d9485f5f30c6a1589476880d56c2).
+- **Outcome:** recorded in a later entry once the host has run the report check on each
+  report.
+- **Brief 0032 done:** commit 54b960e on `work/pk-integrate`. Leak scan no hits. Merged
+  into `work/pagekit-prepare`; the suite passes under the check script's settings. The
+  host corrected spec 0002's wording: a missing output folder is created as before; only
+  one that cannot be created or written stops the run.

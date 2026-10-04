@@ -123,13 +123,15 @@ def _prepare(arguments: argparse.Namespace) -> int:
             tone_view=arguments.tone_view,
             source_dpi=arguments.dpi,
         )
+        for entry in prepared.skipped:
+            print(f"skipped {entry['name']}: {entry['reason']}")
         if arguments.report_stale:
             for item in prepared.stale:
                 page = "" if item["page"] is None else f" page {item['page']}"
                 print(f"{item['source']}{page} {item['step']}: {item['why']}")
             if not prepared.stale:
                 print("nothing is stale")
-            return 1 if prepared.stale else 0
+            return 1 if prepared.stale or prepared.skipped else 0
         manifest = execute(prepared)
     except (PrepareError, OSError) as error:
         print(f"pagekit: {error}", file=sys.stderr)
@@ -142,13 +144,15 @@ def _prepare(arguments: argparse.Namespace) -> int:
         for flag in page["flags"]:
             print(f"  [{flag['step']}] {flag['reason']}")
     flagged = sum(1 for page in manifest["pages"] if page["flags"])
+    skipped = len(manifest["skipped"])
     print(
-        f"{len(manifest['pages'])} page(s) prepared, {flagged} to look at. "
-        f"Open {prepared.output_dir / REVIEW_NAME} to see them."
+        f"{len(manifest['pages'])} page(s) prepared, {flagged} to look at"
+        + (f", {skipped} source file(s) skipped" if skipped else "")
+        + f". Open {prepared.output_dir / REVIEW_NAME} to see them."
     )
     if not manifest["thresholds_measured"]:
         print(f"note: {manifest['thresholds_note']}")
-    return 1 if flagged else 0
+    return 1 if flagged or skipped else 0
 
 
 def _measure(arguments: argparse.Namespace) -> int:

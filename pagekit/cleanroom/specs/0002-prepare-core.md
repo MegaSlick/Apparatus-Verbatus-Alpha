@@ -145,8 +145,18 @@ each default is recorded with origin detected, confidence 0 and a flag saying th
 was not run. It accepts a folder of source images or a list of files, an output folder,
 an optional project file to continue from, an optional overrides file, and
 `--report-stale` to list stale steps without running. Exit status: 0 when no page is
-flagged, 1 when any page needs review, 2 when the input cannot be used (nothing is
-written in that case). The existing `check` command is unchanged.
+flagged, 1 when any page needs review or any source was skipped, 2 when the command
+cannot run at all (nothing is written in that case). The existing `check` command is
+unchanged.
+
+A source file that cannot be used (unreadable, truncated, not an image, or in a colour
+mode or depth pagekit does not support) is skipped, not fatal: the other sources are
+prepared as usual, and the skipped file is named with a plain reason in the manifest, at
+the top of the review sheet and in the command's output. It produces no page and no
+project entry, so a later run tries it again. Exit status 2 is kept for problems that
+stop the whole run: no usable source at all, an output folder that cannot be created or written,
+an output folder inside the source folder, an unreadable project or overrides file, or an
+invalid option.
 
 ## Settings
 
@@ -179,7 +189,11 @@ slice can call each detector in step order, store its answer, and run the chain.
 - `--report-stale` lists stale steps and writes nothing.
 - A missing resolution with no override is a flag, not a default.
 - A blank page is written as an image of the paper.
-- Unusable input is exit status 2 and writes nothing. A source image is never changed.
+- An unusable source file among usable ones is skipped, named with its reason in the
+  manifest, the review sheet and the output, and gives exit status 1; the usable sources
+  are prepared. A run with no usable source, or with an output folder that cannot be created or
+  written, or an unreadable project or overrides file, is exit status 2 and writes nothing. A source image is never
+  changed.
 
 ## Not in this slice
 

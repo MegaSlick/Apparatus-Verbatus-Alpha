@@ -31,6 +31,18 @@ status = "UNMEASURED"
 meaning = "Mean thickness in working px at or below which a long mark that is not axis-aligned still counts as a line and is masked."
 
 # --- Orientation ------------------------------------------------------------------------
+# Checked on (none of this is a measurement on a labelled collection):
+# - pagekit's own synthetic pages (test_orient.py): looped-letter pages, dense cursive
+#   pages and spreads with show-through and gutters, drawn small printed type (serif and
+#   sans, 150 and 300 dpi) and printed spreads, dot grids, symmetric writing;
+# - an independent reviewer's synthetic set (brief 0028 follow-up): pen hands from
+#   1.2 to 8 mm x-height at 150 to 600 dpi, rendered serif, sans and italic type from
+#   7 to 14 pt at 150 to 600 dpi, two-column print, printed and handwritten spreads,
+#   sparse pages, a form, ledgers and margin notes turned a quarter;
+# - the lead's two real register spreads (dense 17th and 18th century French cursive),
+#   run locally only.
+# The strip widths, core-band shares and the 1600 px working size were chosen on these;
+# a page kind outside them is unmeasured.
 
 [orient_long_side_px]
 value = 1600
@@ -68,9 +80,34 @@ status = "UNMEASURED"
 meaning = "Rows whose ink is below this share of the busiest row separate lines of writing."
 
 [core_share]
-value = 0.6
+value = 0.5
 status = "UNMEASURED"
-meaning = "The core band of a line runs from its first to its last row at or above this share of the line's busiest row; ink above and below it is ascender and descender mass."
+meaning = "The core band of a line runs from its first to its last row at or above this share of that line's own busiest row; ink above and below it is ascender and descender mass. The middle of three estimates."
+
+[core_share_low]
+value = 0.35
+status = "UNMEASURED"
+meaning = "The lowest of the three core-band shares at which the up-down score is estimated."
+
+[core_share_high]
+value = 0.65
+status = "UNMEASURED"
+meaning = "The highest of the three core-band shares at which the up-down score is estimated."
+
+[strip_line_floor_share]
+value = 0.15
+status = "UNMEASURED"
+meaning = "Rows of a strip below this share of its busy level (90th percentile of its rows) separate lines."
+
+[line_split_share]
+value = 0.5
+status = "UNMEASURED"
+meaning = "A run of rows is split into two lines at an inner minimum below this share of the lower of the peaks on its two sides."
+
+[updown_guard_score]
+value = 1.0
+status = "UNMEASURED"
+meaning = "An up-down estimate of the opposite sign to the median, at or beyond this many standard errors, makes the answer uncertain: the vote then depends on where the core band is put."
 
 [min_lines]
 value = 8
@@ -116,6 +153,11 @@ meaning = "Fewest tiles of writing for the tile median to be used; with fewer, t
 value = 48
 status = "UNMEASURED"
 meaning = "Width in working px of the vertical strips in which each line's ascender and baseline cues are measured."
+
+[orient_strip_px_wide]
+value = 64
+status = "UNMEASURED"
+meaning = "A second strip width at which the up-down score is estimated as well."
 
 [strip_min_ink]
 value = 0.03
@@ -283,6 +325,11 @@ meaning = "Widest strip of a neighbouring page, as a share of the frame width, l
 value = 2
 status = "UNMEASURED"
 meaning = "Writing within this many working px of the frame edge counts as cut off by it."
+
+[backdrop_min_thickness_px]
+value = 5
+status = "UNMEASURED"
+meaning = "Size in working px of the square erosion a mark joined to a dark band must survive to be excused as backdrop or shadow; wider than a pen stroke, so a flourish touching the band still counts as writing across the cut."
 
 [overlap_mm]
 value = 5.0
