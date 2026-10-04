@@ -11,6 +11,7 @@ first written in full as a temporary file beside its target; only then are they 
 moved into place, and if any move fails the earlier ones are put back. A failure at any
 point leaves the output folder and the project file as they were. Outputs of pages that
 no longer exist are never deleted; the manifest lists them under stale_outputs.
+Source files that could not be used are listed under skipped, with their reasons.
 """
 
 from __future__ import annotations
@@ -169,6 +170,7 @@ def execute(plan: Plan) -> dict[str, Any]:
             "schema": MANIFEST_SCHEMA,
             "tool": {"name": "pagekit", "version": __version__},
             "pages": entries,
+            "skipped": plan.skipped,
             "stale_outputs": plan.stale_outputs,
             "batch": plan.batch,
             "review": REVIEW_NAME,

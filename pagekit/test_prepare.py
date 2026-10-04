@@ -387,23 +387,35 @@ def test_a_blank_page_is_written_as_an_image_of_the_paper(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "case", ["corrupt", "empty folder", "inside source", "16-bit", "missing project", "bad project"]
+    "case",
+    [
+        "only corrupt",
+        "empty folder",
+        "inside source",
+        "only 16-bit",
+        "missing project",
+        "bad project",
+        "bad overrides",
+    ],
 )
 def test_unusable_input_is_exit_2_and_writes_nothing(tmp_path, capsys, case):
     good = _source(tmp_path / "src")
     out = tmp_path / "out"
     arguments = [str(good), "--output", str(out)]
-    if case == "corrupt":
+    if case == "only corrupt":  # no usable source at all (one among good ones is skipped)
         (tmp_path / "src" / "broken.png").write_bytes(b"not a png")
-        arguments = [str(tmp_path / "src"), "--output", str(out)]
+        arguments = [str(tmp_path / "src" / "broken.png"), "--output", str(out)]
     elif case == "empty folder":
         (tmp_path / "empty").mkdir()
         arguments = [str(tmp_path / "empty"), "--output", str(out)]
     elif case == "inside source":
         arguments = [str(good), "--output", str(tmp_path / "src" / "out")]
-    elif case == "16-bit":
+    elif case == "only 16-bit":
         Image.new("I;16", (300, 300), 4000).save(tmp_path / "src" / "deep.png")
-        arguments = [str(tmp_path / "src"), "--output", str(out)]
+        arguments = [str(tmp_path / "src" / "deep.png"), "--output", str(out)]
+    elif case == "bad overrides":
+        (tmp_path / "fix.json").write_text("{not json")
+        arguments += ["--overrides", str(tmp_path / "fix.json")]
     elif case == "missing project":
         arguments += ["--project", str(tmp_path / "nope.json")]
     elif case == "bad project":

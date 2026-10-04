@@ -288,6 +288,23 @@ def _other_block(title: str, reasons: list[str], extra: str = "") -> str:
     )
 
 
+def _skipped_block(skipped: list[dict[str, Any]]) -> str:
+    """The source files that could not be used, named with the reason, or nothing."""
+    if not skipped:
+        return ""
+    items = "".join(
+        f"<li><b>{_escape(entry['name'])}</b> ({_escape(entry['path'])}): "
+        f"{_escape(entry['reason'])}</li>"
+        for entry in skipped
+    )
+    return (
+        '<section class="box"><h2>Files not prepared</h2>'
+        f"<p>{len(skipped)} source file(s) could not be used and were skipped. They have no "
+        "pages here; fix or replace them and run pagekit again, and they will be tried "
+        f'again.</p><ul class="flags">{items}</ul></section>'
+    )
+
+
 def _contents(cards: list) -> str:
     """A short table of every source, in the sheet's order, linking to its section."""
     rows = []
@@ -392,6 +409,7 @@ def build(plan: Any, entries: list[dict[str, Any]], previews: dict[str, Any]) ->
         f"<p>{len(cards)} source image(s), {total_pages} prepared page(s). "
         f"<b>{flagged_pages} page(s) from {flagged_sources} source image(s) need a look</b>; "
         "they are listed first, the most flagged first.</p>",
+        _skipped_block(plan.skipped),
         _contents(cards),
         '<section class="box"><h2>Before you trust this sheet</h2>',
         (
