@@ -957,37 +957,41 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
     ] == []
 
 
-@pytest.mark.parametrize(
-    ("embed_pixels", "limit_over_estimate", "refused"),
-    [(True, -1, True), (True, 0, False), (False, None, False)],
-)
-def test_an_export_estimated_past_the_archive_limit_is_refused_at_the_door(
-    tmp_path, monkeypatch, embed_pixels, limit_over_estimate, refused
-):
-    """With pixels embedded, the export carries every page and its crops; a run
-    whose export could never be sealed is refused before any page is read."""
-    files = {"one.png": png(40, 30), "two.png": png(30, 40)}
+def _admitted_colour_page(tmp_path, *, embed_pixels: bool):
+    page = png(40, 30, color_type=2)
+    files = {"colour.png": page}
     sources = expand_sources(
-        [
-            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
-            for path, payload in files.items()
-        ],
+        [{"relative_path": "colour.png", "sha256": digest_bytes(page), "bytes": len(page)}],
         reader(files),
     )
     tree, context = open_door(tmp_path, sources, embed_pixels=embed_pixels)
     admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
-    # A one-frame raster is sealed as its own bytes; its crops at a byte per pixel.
-    estimate = sum(len(payload) for payload in files.values()) + 2 * 40 * 30
-    limit = 1 if limit_over_estimate is None else estimate + limit_over_estimate
+    return page, tree, context, admitted
+
+
+def test_a_colour_export_that_could_never_be_sealed_is_refused_at_the_door(tmp_path, monkeypatch):
+    """With pixels embedded the export carries the page and its crops. A colour
+    page's crop alone costs three bytes per pixel, so a limit the page and one
+    whole-page crop already pass is refused before any reading starts."""
+    page, tree, context, admitted = _admitted_colour_page(tmp_path, embed_pixels=True)
+    limit = len(page) + 40 * 30
+    whole_page_crop = common_imaging.crop_png(page, {"x": 0, "y": 0, "w": 40, "h": 30})
+    assert len(page) + len(whole_page_crop) > limit
     monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", limit)
 
-    if refused:
-        with pytest.raises(ContractError, match=f"{limit}-byte export archive limit"):
-            door._finish_door_run(context, admitted)
-        kinds = {item["kind"] for item in tree.build_manifest(DOOR)["artifacts"]}
-        assert "stage-seal" not in kinds
-    else:
-        assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
+    with pytest.raises(ContractError, match=f"{limit}-byte export archive limit"):
+        door._finish_door_run(context, admitted)
+    kinds = {item["kind"] for item in tree.build_manifest(DOOR)["artifacts"]}
+    assert "stage-seal" not in kinds
+
+
+@pytest.mark.parametrize(("embed_pixels", "limit"), [(True, 10**6), (False, 1)])
+def test_an_export_within_the_archive_limit_or_without_pixels_passes_the_door(
+    tmp_path, monkeypatch, embed_pixels, limit
+):
+    _page, _tree, context, admitted = _admitted_colour_page(tmp_path, embed_pixels=embed_pixels)
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", limit)
+    assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
 
 
 def test_a_door_without_a_sealed_format_choice_is_refused_not_waved_through(tmp_path):

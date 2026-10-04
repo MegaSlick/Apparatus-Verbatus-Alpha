@@ -815,6 +815,8 @@ class RunTree:
         """
         path = self.resolve(relative_path)
         if max_bytes is None:
+            # The Armarium stores no blob but its export archive (its `run.py`);
+            # any other blob put there would be read under the archive limit too.
             archive_blobs = self.root / writing_directory(ARMARIUM) / BLOBS_DIR
             max_bytes = (
                 armarium_formats.MAX_EXPORT_ARCHIVE_BYTES
