@@ -29,6 +29,17 @@ for a step whose detector raises an error: the error is caught for that page alo
 recorded as a flag naming the step and the error, and the batch carries on. One bad
 page never stops a batch, and never passes without a flag.
 
+## Output defaults
+
+- Prepared pages are written as lossless TIFF by default (PNG stays available by
+  setting). They are meant to be made once and reused many times, uploaded and
+  downloaded, so no lossy format is ever offered.
+- The colour mode of the source is kept: a colour scan gives a colour page, a grey scan
+  a grey page. pagekit never converts a page to black and white for output.
+- Pages keep the source resolution. Shrinking is only by explicit setting, never by
+  default, since every reader resizes to its own budget and a lossless master should
+  keep everything.
+
 ## Volume-wide checks
 
 After every page has its values, compare each page's skew, content-box size and
