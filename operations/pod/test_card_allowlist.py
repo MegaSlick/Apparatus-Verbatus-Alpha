@@ -66,6 +66,10 @@ def policy(*, max_hourly: str) -> SpendPolicy:
         shutdown_poll_interval_seconds=1,
         shutdown_deadline_seconds=8,
         billing_cutoff_margin_seconds=3600,
+        soft_max_seconds=86_400,
+        hard_max_seconds=86_400,
+        soft_max_cost_usd=Decimal("1000.00"),
+        hard_max_cost_usd=Decimal("1000.00"),
     )
 
 

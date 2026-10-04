@@ -21,9 +21,10 @@ It builds on what exists once the cleanup pull requests have merged:
   a report on the volume with three side files beside it: liveness, timings (each stage's
   clock) and a transcript.
 
-**Not built yet (phase 0).** The finish estimate, the deadline-extension request and the
-deadline-at-risk check do not exist. They are planned for the core half of PR 8, on the
-pod side. Everything below that reads them says so and waits for that phase.
+**Phase 0, in part.** `pod_run` keeps the current stage's finish estimate in
+`pod-run-report-<run id>-estimate.json` beside its report and sends the deadline-at-risk
+notice (`operations/pod/finish_estimate.py`); the spend policy carries the soft and hard
+maximums. The deadline-extension request route does not exist yet.
 
 ## What it is for
 
@@ -134,8 +135,8 @@ Follows a pod run from the laptop without SSH.
 
 - **Inputs:** `--run-id`, optional `--interval <seconds>` (default 30) and
   `--timeout <seconds>` to return even if nothing changes.
-- **How it reads:** on each pass it fetches `pod_run`'s report, liveness and timings files
-  from the volume over S3, each as a whole object (they are small and rewritten in place,
+- **How it reads:** on each pass it fetches `pod_run`'s report, liveness, timings and
+  estimate files from the volume over S3, each as a whole object (they are small and rewritten in place,
   so a partial read would be meaningless). It prints a line when something changed.
 - **What it shows:** the stage running, pages done in it, how long each finished stage
   took, the liveness age, and the run's state. Once phase 0 exists it also shows the
@@ -551,11 +552,13 @@ sentences. The existing `run-held`, `export-partial` and `canary-alarm` become e
 
 Each phase leaves something usable on its own.
 
-### Phase 0: the pod-side estimate and extension request (not built)
+### Phase 0: the pod-side estimate and extension request
 
-Planned for the core half of PR 8: the per-stage finish estimate in `pod_run`'s liveness
-loop, the deadline-at-risk check and notification, and the extension request route. None
-of it exists today. Every later item that reads them says so.
+Built: the per-stage finish estimate in `pod_run`'s liveness loop, written to
+`-estimate.json`, and the deadline-at-risk check and notification, with the soft and hard
+maximums in `config/spend.toml`. Not built: the extension request route. The notice is
+written to the estimate file and the run report, not yet to an event log (phase 2), and
+`pod_run` takes the hourly price as `--hourly-usd` until it gets a budget input.
 
 ### Phase 1: what the first live run needs
 
@@ -564,6 +567,11 @@ of it exists today. Every later item that reads them says so.
 2. `watch` for a pod run: polls the report, liveness and timings files over S3 with
    whole-object reads. Its estimate line depends on phase 0; until then it shows stage
    timings and says no estimate exists.
+
+   Built so far: `watch` over copies of those four files already on this computer, with
+   the estimate, deadline, soft and hard maximums, spend (from a lease when given) and the
+   last notice, once or every `--interval` seconds; stale copies are said to be stale.
+   Not yet built: the S3 reads, `--json` and the state exit codes.
 3. `--json`, the result envelope and the exit codes on both.
 
 The lead starts the pod by the hand route, follows it with `watch`, and extends it, if

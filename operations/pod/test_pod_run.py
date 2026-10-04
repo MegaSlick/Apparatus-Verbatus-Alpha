@@ -1423,6 +1423,152 @@ def test_a_run_with_no_systemic_alarm_sends_no_decision(tmp_path: Path) -> None:
     assert "systemic" not in _report(ws)
 
 
+@dataclass
+class PacedRunner(RecordedRunner):
+    """An orchestrator whose Perlector finishes five pages of a hundred every ten minutes."""
+
+    clock: Clock = field(default_factory=Clock)
+
+    def __call__(self, argv, *, cwd, env, transcript, liveness, interval_seconds):  # type: ignore[no-untyped-def]
+        run = Path(argv[argv.index("--run-root") + 1]) / argv[argv.index("--run-id") + 1]
+        records = run / "4_perlector" / "artifacts" / "page-accounting"
+        records.mkdir(parents=True)
+        (run / "run.json").write_text(
+            json.dumps({"source_manifest": [{}] * 100, "witness_chairs": ["a"]}), "utf-8"
+        )
+        pages = 10
+
+        def paced(pid: int, alive: bool) -> None:
+            nonlocal pages
+            for page in range(pages):
+                (records / f"art_{page}.json").write_text(
+                    json.dumps({"subject_id": f"pg_{page}", "outcome": "read"}), "utf-8"
+                )
+            liveness(pid, alive)
+            pages += 5
+            self.clock.sleep(600)
+
+        return super().__call__(
+            argv,
+            cwd=cwd,
+            env=env,
+            transcript=transcript,
+            liveness=paced,
+            interval_seconds=interval_seconds,
+        )
+
+
+@pytest.mark.parametrize(
+    ("flags", "rates", "hourly", "source"),
+    [
+        (("--hourly-usd", "1.99"), {}, "1.99", "--hourly-usd"),
+        (
+            (),
+            {"VERBATUS_POD_HOURLY_USD": "1.99", "VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.06"},
+            "2.05",
+            "VERBATUS_POD_HOURLY_USD plus VERBATUS_VOLUME_ONGOING_HOURLY_USD",
+        ),
+    ],
+    ids=["flag", "pod-timer-rates"],
+)
+def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    flags: tuple[str, ...],
+    rates: dict[str, str],
+    hourly: str,
+    source: str,
+) -> None:
+    ws = _prepared(tmp_path)
+    (ws.repository / "config" / "spend.toml").write_bytes(
+        (ROOT / "config" / "spend.toml").read_bytes()
+    )
+    clock = Clock()
+    _first_process(tmp_path, monkeypatch, "pod123")
+    _guard_deadline(ws, int(clock.now().timestamp()) + 3600)
+    (ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic").write_text("guard-topic\n", "utf-8")
+    notify = NotifyRecorder()
+
+    code = main(
+        _run_argv(ws, extra=("--notify", *flags)),
+        environ=_environ(clock, lifetime=4.0, extra=rates),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=PacedRunner(ticks=3, clock=clock),
+        notify_runner=notify.factory,
+    )
+
+    assert code == EXIT_COMPLETE
+    [call] = notify.calls
+    assert call[2] == "decision" and "deadline at risk" in call[3]
+    assert "soft max 4 h / $2.00" in call[3] and "deadline-pod123" in call[3]
+    report = _report(ws)
+    estimate = json.loads(Path(report["estimate_path"]).read_text(encoding="utf-8"))
+    assert estimate["deadline_source"] == "the pod guard's deadline"
+    assert estimate["estimate"]["stage"] == "perlector"
+    [notice] = report["deadline_watch"]["notices"]
+    assert notice["delivered"] is True
+    assert (estimate["hourly_usd"], estimate["hourly_usd_source"]) == (hourly, source)
+    assert "mv $G/deadline.new $G/deadline-pod123" in call[3]
+
+
+def test_a_finish_estimate_that_fails_never_stops_the_run_and_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+
+    def broken(self: object) -> None:
+        raise RuntimeError("unreadable tree")
+
+    monkeypatch.setattr(pod_run.finish_estimate.RunTreeProgress, "sample", broken)
+
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(ticks=2),
+    )
+
+    assert code == EXIT_COMPLETE
+    watch = _report(ws)["deadline_watch"]
+    assert watch["tick_failures"] == 2
+    assert "unreadable tree" in watch["last_tick_failure"]
+
+
+@pytest.mark.parametrize(
+    ("rates", "reason"),
+    [
+        ({"VERBATUS_POD_HOURLY_USD": "1.99"}, "VERBATUS_VOLUME_ONGOING_HOURLY_USD missing"),
+        ({"VERBATUS_VOLUME_ONGOING_HOURLY_USD": "0.06"}, "VERBATUS_POD_HOURLY_USD missing"),
+        ({}, None),
+    ],
+)
+def test_a_half_set_pod_timer_rate_is_named_not_dropped(
+    rates: dict[str, str], reason: str | None
+) -> None:
+    plan = SimpleNamespace(hourly_usd=None)
+
+    assert pod_run._hourly_price(plan, rates) == (None, reason)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("price", ["abc", "0", "-1.00", "NaN"])
+def test_an_hourly_price_that_is_not_a_positive_decimal_is_refused(
+    tmp_path: Path, price: str
+) -> None:
+    ws = _prepared(tmp_path)
+
+    exit_code, runner = _refused(ws, _run_argv(ws, extra=("--hourly-usd", price)))
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    report = json.loads((ws.volume / "pod-run-report.json").read_text("utf-8"))
+    assert "--hourly-usd" in report["reason"]
+
+
 @pytest.mark.parametrize(
     ("stop", "holding"),
     [(True, True), (False, False), (None, False), ("[1]", False)],
@@ -2838,6 +2984,7 @@ def test_the_sibling_suffixes_launch_derives_are_the_ones_pod_run_actually_write
         plan.liveness_path.name.removeprefix(report.stem),
         plan.timing_journal_path.name.removeprefix(report.stem),
         plan.transcript_path.name.removeprefix(report.stem),
+        plan.estimate_path.name.removeprefix(report.stem),
     }
 
     nested = json.dumps(["python", "-m", pod_run.__name__, "--report-path", str(report)])
@@ -2906,6 +3053,7 @@ def test_every_launch_bound_record_is_derived_from_the_sealed_start_command() ->
         f"pod-run-report-{token}-liveness.json",
         f"pod-run-report-{token}-timings.json",
         f"pod-run-report-{token}-transcript.log",
+        f"pod-run-report-{token}-estimate.json",
     )
 
 
@@ -3318,6 +3466,7 @@ def test_a_launch_receipt_for_another_run_is_refused_rather_than_used(tmp_path: 
         f"pod-run-report-{token}-liveness.json",
         f"pod-run-report-{token}-timings.json",
         f"pod-run-report-{token}-transcript.log",
+        f"pod-run-report-{token}-estimate.json",
     )
 
 

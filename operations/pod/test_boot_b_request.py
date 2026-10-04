@@ -58,6 +58,10 @@ def configured(**overrides: object) -> SpendPolicy:
         "shutdown_poll_interval_seconds": 1,
         "shutdown_deadline_seconds": 5,
         "billing_cutoff_margin_seconds": 3600,
+        "soft_max_seconds": 86_400,
+        "hard_max_seconds": 86_400,
+        "soft_max_cost_usd": Decimal("1000.00"),
+        "hard_max_cost_usd": Decimal("1000.00"),
     }
     fields.update(overrides)
     return SpendPolicy(**fields)  # type: ignore[arg-type]

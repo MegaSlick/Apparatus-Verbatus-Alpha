@@ -21,12 +21,16 @@ from .models import (
 )
 from .shutdown import BILLING_RECONCILIATION_ATTEMPTS, BILLING_RECONCILIATION_RETRY_SECONDS
 
-SPEND_SCHEMA = "pod-spend.v3"
+SPEND_SCHEMA = "pod-spend.v4"
 
 RETIRED_SPEND_SCHEMAS = {
     "pod-spend.v2": (
         "a configured pod-spend.v2 policy predates the required "
         "account_balance_alert_usd warning threshold"
+    ),
+    "pod-spend.v3": (
+        "a configured pod-spend.v3 policy predates the required soft and hard pod budget "
+        "maximums (soft_max_seconds, hard_max_seconds, soft_max_cost_usd, hard_max_cost_usd)"
     ),
 }
 """Schemas this loader once accepted, and what changed under each name.
@@ -111,6 +115,13 @@ class SpendPolicy:
     ``"50.00"`` floor is unverified and must be checked
     against RunPod before a live run. ``account_balance_alert_usd`` is a higher
     warning threshold: it never blocks a paid action.
+
+    ``soft_max_*`` and ``hard_max_*`` are a pod's default budget, in time from
+    creation and in metered cost; whichever is reached first counts. The guard's
+    deadline sits at the soft maximum, so the launch ceilings
+    (``hard_lifetime_seconds``, ``max_estimated_metered_cost_usd``) may not pass
+    it: time past the soft maximum is an extension only the lead makes, and the
+    hard maximum bounds what an extension may reach.
     """
 
     state: str
@@ -124,6 +135,10 @@ class SpendPolicy:
     shutdown_poll_interval_seconds: int | None = None
     shutdown_deadline_seconds: int | None = None
     billing_cutoff_margin_seconds: int | None = None
+    soft_max_seconds: int | None = None
+    hard_max_seconds: int | None = None
+    soft_max_cost_usd: Decimal | None = None
+    hard_max_cost_usd: Decimal | None = None
 
     @property
     def configured(self) -> bool:
@@ -142,6 +157,10 @@ class SpendPolicy:
             self.shutdown_poll_interval_seconds,
             self.shutdown_deadline_seconds,
             self.billing_cutoff_margin_seconds,
+            self.soft_max_seconds,
+            self.hard_max_seconds,
+            self.soft_max_cost_usd,
+            self.hard_max_cost_usd,
         )
         if not self.configured:
             if any(value is not None for value in values):
@@ -180,9 +199,30 @@ class SpendPolicy:
             ("laptop heartbeat timeout", self.laptop_heartbeat_timeout_seconds),
             ("shutdown poll interval", self.shutdown_poll_interval_seconds),
             ("shutdown deadline", self.shutdown_deadline_seconds),
+            ("soft maximum seconds", self.soft_max_seconds),
+            ("hard maximum seconds", self.hard_max_seconds),
         ):
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise SpendRefusal(f"{label} must be a positive integer")
+        object.__setattr__(
+            self, "soft_max_cost_usd", as_decimal(self.soft_max_cost_usd, "soft maximum cost")
+        )
+        object.__setattr__(
+            self, "hard_max_cost_usd", as_decimal(self.hard_max_cost_usd, "hard maximum cost")
+        )
+        if self.soft_max_cost_usd <= 0:
+            raise SpendRefusal("soft maximum cost must be positive")
+        if self.soft_max_seconds > self.hard_max_seconds:
+            raise SpendRefusal("soft maximum seconds cannot exceed the hard maximum seconds")
+        if self.soft_max_cost_usd > self.hard_max_cost_usd:
+            raise SpendRefusal("soft maximum cost cannot exceed the hard maximum cost")
+        # The launch ceilings arm the guard's deadline, which sits at the soft
+        # maximum; a launch ceiling past it would let a pod run beyond the soft
+        # maximum with no extension.
+        if self.hard_lifetime_seconds > self.soft_max_seconds:
+            raise SpendRefusal("hard lifetime cannot exceed the soft maximum seconds")
+        if self.max_estimated_metered_cost_usd > self.soft_max_cost_usd:
+            raise SpendRefusal("max estimated metered cost cannot exceed the soft maximum cost")
         if self.laptop_heartbeat_timeout_seconds >= self.hard_lifetime_seconds:
             raise SpendRefusal("laptop heartbeat timeout must be shorter than hard lifetime")
         if self.shutdown_poll_interval_seconds > self.shutdown_deadline_seconds:
@@ -390,6 +430,10 @@ def load_spend_policy_bytes(data: bytes, *, source: str | Path = "<bytes>") -> S
         "shutdown_poll_interval_seconds",
         "shutdown_deadline_seconds",
         "billing_cutoff_margin_seconds",
+        "soft_max_seconds",
+        "hard_max_seconds",
+        "soft_max_cost_usd",
+        "hard_max_cost_usd",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -414,6 +458,10 @@ def load_spend_policy_bytes(data: bytes, *, source: str | Path = "<bytes>") -> S
             shutdown_poll_interval_seconds=raw.get("shutdown_poll_interval_seconds"),
             shutdown_deadline_seconds=raw.get("shutdown_deadline_seconds"),
             billing_cutoff_margin_seconds=raw.get("billing_cutoff_margin_seconds"),
+            soft_max_seconds=raw.get("soft_max_seconds"),
+            hard_max_seconds=raw.get("hard_max_seconds"),
+            soft_max_cost_usd=_decimal_text(raw.get("soft_max_cost_usd"), "soft_max_cost_usd"),
+            hard_max_cost_usd=_decimal_text(raw.get("hard_max_cost_usd"), "hard_max_cost_usd"),
         )
     except (TypeError, ValueError, SpendRefusal) as error:
         if isinstance(error, SpendRefusal):
@@ -582,6 +630,8 @@ def require_confirmation(value: str | None, expected: str) -> None:
 
 
 def _decimal_text(value: object, label: str) -> Decimal:
+    if value is None:
+        raise SpendRefusal(f"configured spend policy is missing {label}")
     if not isinstance(value, str):
         raise SpendRefusal(f"{label} must be a decimal string, not a TOML number")
     return as_decimal(value, label)

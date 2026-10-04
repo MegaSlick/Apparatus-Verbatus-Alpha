@@ -741,7 +741,7 @@ def test_a_final_record_write_failure_on_the_refusal_path_is_named_not_raised(
 
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(['schema = "pod-spend.v3"', 'state = "unconfigured"', ""]),
+        "\n".join(['schema = "pod-spend.v4"', 'state = "unconfigured"', ""]),
         encoding="utf-8",
     )
 

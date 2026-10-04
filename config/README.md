@@ -154,7 +154,14 @@ hourly price (`max_hourly_usd`) and for the estimated cost through the hard life
 (`max_estimated_metered_cost_usd`), the `hard_lifetime_seconds`, a bounded
 `billing_cutoff_margin_seconds`, the laptop heartbeat and the shutdown polling and
 deadline, an observed `account_balance_floor_usd` hard reserve and a higher
-`account_balance_alert_usd` notification threshold. A paid action reads the available
+`account_balance_alert_usd` notification threshold. It also sets a pod's default budget:
+`soft_max_seconds` and `soft_max_cost_usd`, `hard_max_seconds` and `hard_max_cost_usd`,
+fixed values in time from creation and in metered cost, whichever is reached first. The
+guard's deadline sits at the soft maximum, so the loader refuses a soft value above its
+hard one and a `hard_lifetime_seconds` or `max_estimated_metered_cost_usd` above the soft
+maximum. `pod_run` sends one `deadline-at-risk` notice ahead of time, when a stage's
+projected finish passes the deadline that ends the pod; going on past the soft maximum is
+an extension only the lead makes, and the hard maximum bounds it. A paid action reads the available
 balance through the provider's explicitly configured source and refuses when that source
 is unavailable or the action would breach the reserve. The `$50.00` floor is a policy
 value, not a balance observation, until checked against RunPod before a live run. The loader refuses an unknown or missing key. The policy does not
