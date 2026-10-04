@@ -564,7 +564,10 @@ class _Runner:
         self.image_loader = image_loader
         self.cache: dict[Any, Any] = {}
         self.source_dpi: float | None = None  # --dpi, for sources that carry none
-        self.tag = 1  # the orientation tag applied to the source being settled
+        self.tag = 1  # the orientation tag the chain applies to the source being settled
+        # The tag applied (whoever applied it) and the grid the chain starts from, for a
+        # source with a tag; part of every step's inputs. None for a source without one.
+        self.grid: dict[str, Any] | None = None
         self.run_mode: str | None = None  # this run's output mode choice, if one was made
         # {(source, step, page): sentence} added to that step's evidence in the manifest.
         self.notes: dict[tuple[str, str, int | None], str] = {}
@@ -585,8 +588,8 @@ class _Runner:
         reads = {name: self.values[name] for name in detector.settings}
         for name in detector.files:
             reads[f"file {name}"] = file_digest(name)
-        if self.tag != 1:  # only when applied, so a source with no tag reads as before
-            reads["orientation_tag"] = self.tag
+        if self.grid is not None:  # only for a tagged source, so others read as before
+            reads["orientation_tag"] = self.grid
         if step in PAGE_STEPS or step == "split":
             reads["overlap_mm"] = self.values["overlap_mm"]
             reads["resolution"] = None if resolution is None else list(resolution)
@@ -810,6 +813,7 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         source, old, overrides.get(("tag_trust", None)), values
     )
     runner.tag = tag
+    runner.grid = grid_key(tag_record)
     if tag_note:
         runner.notes[(source.relative, "orientation", None)] = tag_note
     # The millimetre settings work in the tagged frame. The file's resolution is for its
@@ -1155,6 +1159,19 @@ def _tagged_dpi(resolution, tag: int):
         return resolution
     swapped = (resolution[1], resolution[0])
     return list(swapped) if isinstance(resolution, list) else swapped
+
+
+def grid_key(record: dict[str, Any]) -> dict[str, Any] | None:
+    """What a source's tag did to the grid every step works on: the tag applied and by
+    whom, and whether the grid is the stored pixels. None when the source has no tag."""
+    if record["found"] in (None, 1):
+        return None
+    return {
+        "tag": record["found"],
+        "applied": record["applied"],
+        "applied_by": record["applied_by"],
+        "grid": record["grid"],
+    }
 
 
 def _tag_trust(old, override: Override | None, values) -> tuple[bool, str]:

@@ -30,6 +30,7 @@ from PIL import Image, ImageDraw
 
 from pagekit._tiff import tiff_bytes
 from pagekit.geometry import apply_tag, paper_colour, render, upright_image
+from pagekit.prepare import grid_key
 from pagekit.project import digest, write_atomic
 
 INDEX_NAME = "index.json"
@@ -69,7 +70,7 @@ def plan_entries(pages: list[Any]) -> dict[str, list[dict[str, Any]]]:
         tag = first.chain.tag
         steps = first.steps
         entries = [
-            _entry("opened", None, None, None, sha, _key(sha, "opened", tag), True),
+            _entry("opened", None, None, None, sha, _key(sha, "opened", grid_key(first.tag)), True),
             _entry(
                 "upright",
                 None,
