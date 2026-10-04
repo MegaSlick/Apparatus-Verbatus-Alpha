@@ -232,3 +232,19 @@ def test_noise_page_finishes_quickly():
     answer = detect_skew(noise, (DPI, DPI))
     assert time.monotonic() - start < 5
     assert answer["value"] == 0 and answer["flags"]
+
+
+def test_ends_of_an_inked_block_do_not_make_noise_peak_at_zero():
+    # Fails without the taper: a block of random pixels (scored directly, so the noise
+    # guard does not stop it first) otherwise scores highest at 0 degrees because of its
+    # straight top and bottom.
+    from pagekit import _box_common as common
+    from pagekit import skew
+
+    rng = random.Random(3)
+    size = (900, 400)
+    block = Image.frombytes("L", size, rng.randbytes(size[0] * size[1]))
+    ink = block.point(lambda v: 1 if v > 127 else 0).convert("F")
+    settings = common.values(common.load_thresholds())
+    found = skew.profile_search(ink, settings, lag=3, widen=False)
+    assert found["ratio"] < settings["skew_score_margin"]
