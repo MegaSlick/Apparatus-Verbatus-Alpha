@@ -58,8 +58,13 @@ def prepare(
     corpus_id: str | None,
     workspace: Path,
     printer: Callable[[str], None],
+    state_dir: Path | None = None,
 ) -> None:
-    """Prepare `scans` into `out` in a credential-free child process."""
+    """Prepare `scans` into `out` in a credential-free child process.
+
+    `state_dir`, the operator's state folder, is named in the commands printed next:
+    the run keeps its tree there, and the Door accepts it only inside approved storage.
+    """
 
     from .ingest import _deny_same_user_inspection
     from .surface import credential_free_environment
@@ -70,6 +75,7 @@ def prepare(
         "out": str(_absolute(out, workspace)),
         "overrides": None if overrides is None else str(_absolute(overrides, workspace)),
         "corpus_id": corpus_id if corpus_id is not None else scans_path.name,
+        "state_dir": None if state_dir is None else str(_absolute(state_dir, workspace)),
     }
     try:
         _check_request(request)
@@ -229,6 +235,7 @@ class Prepared:
         self.out = Path(request["out"])
         self.corpus_id = request["corpus_id"]
         self.overrides = request.get("overrides")
+        self.state_dir = request.get("state_dir")
         self.plan = plan
         self.pages = pages  # one entry per prepared page, in pagekit's order
         self.manifest: dict[str, Any] = {}
@@ -511,12 +518,17 @@ def summary(prepared: Prepared) -> list[str]:
         f"--triage-decision-manifest {_quoted(out / TRIAGE_MANIFEST_NAME)} "
         f"--triage-producer-recipe {_quoted(out / TRIAGE_RECIPE_NAME)}"
     )
+    verbatus = (
+        "verbatus"
+        if prepared.state_dir is None
+        else f"verbatus --state-dir {_quoted(Path(prepared.state_dir))}"
+    )
     lines += [
         "When the pages are right, seal the scans with the triage documents and let the "
         "Door check them on this computer:",
-        f"  verbatus upload --source {_quoted(prepared.scans)} --manifest-out "
+        f"  {verbatus} upload --source {_quoted(prepared.scans)} --manifest-out "
         f"{_quoted(manifest)} {triage_flags}",
-        f"  verbatus run --run-id prepared-check --submission-folder {_quoted(prepared.scans)} "
+        f"  {verbatus} run --run-id prepared-check --submission-folder {_quoted(prepared.scans)} "
         f"--submission-manifest {_quoted(manifest)} {triage_flags}",
         "For a pod run, upload the same way with --sealed-manifest and --network-volume; "
         "LIVE_READINESS.md says how the pod's run reads the triage documents.",

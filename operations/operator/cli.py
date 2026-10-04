@@ -953,6 +953,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 corpus_id=args.corpus_id,
                 workspace=workspace,
                 printer=_print,
+                state_dir=state,
             )
         elif args.verb == "run":
             surface.run(

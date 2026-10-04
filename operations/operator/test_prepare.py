@@ -107,6 +107,7 @@ def test_prepare_writes_pages_and_a_triage_manifest_the_door_accepts(tmp_path, c
     assert "2 page(s): the frame is split along a straight line" in printed
     assert f"--triage-decision-manifest '{out / 'triage-decision-manifest.json'}'" in printed
     assert f"--submission-folder '{scans}'" in printed
+    assert f"verbatus --state-dir {tmp_path / 'state'} run --run-id" in printed
 
     rows = _rows(out)
     for row in rows.values():
