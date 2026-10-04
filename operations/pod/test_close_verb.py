@@ -390,7 +390,7 @@ def test_close_refuses_an_unconfigured_spend_policy(
     drill = live_drill(build_drill)
     drill.starter.stop_all()
     unconfigured = tmp_path / "unconfigured.toml"
-    unconfigured.write_text('schema = "pod-spend.v3"\nstate = "unconfigured"\n', encoding="utf-8")
+    unconfigured.write_text('schema = "pod-spend.v4"\nstate = "unconfigured"\n', encoding="utf-8")
 
     exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys, spend=unconfigured)
 
@@ -422,7 +422,7 @@ def test_close_refuses_an_unreadable_spend_policy_as_go_and_look(
     drill = live_drill(build_drill)
     drill.starter.stop_all()
     damaged = tmp_path / "damaged-spend.toml"
-    damaged.write_text('schema = "pod-spend.v3"\n[ceilings\n', encoding="utf-8")
+    damaged.write_text('schema = "pod-spend.v4"\n[ceilings\n', encoding="utf-8")
 
     exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys, spend=damaged)
 
@@ -628,7 +628,7 @@ def test_every_close_refusal_leaves_a_durable_record(
     drill = live_drill(build_drill)
     drill.starter.stop_all()
     unconfigured = tmp_path / "unconfigured.toml"
-    unconfigured.write_text('schema = "pod-spend.v3"\nstate = "unconfigured"\n', encoding="utf-8")
+    unconfigured.write_text('schema = "pod-spend.v4"\nstate = "unconfigured"\n', encoding="utf-8")
 
     exit_code, record = run_close(drill, tmp_path, monkeypatch, capsys, spend=unconfigured)
 

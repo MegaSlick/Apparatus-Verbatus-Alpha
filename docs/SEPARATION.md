@@ -57,6 +57,7 @@ for a script to read.
 | `GLOSSARY.md` | PRODUCT | |
 | `GOVERNANCE.md` | PRODUCT | |
 | `LICENSE` | PRODUCT | |
+| `LIVE_READINESS.md` | HISTORY | runbook for alpha's first paid run |
 | `PRINCIPLES.md` | PRODUCT | |
 | `README.md` | PRODUCT | |
 | `SECURITY.md` | PRODUCT | private vulnerability reporting |

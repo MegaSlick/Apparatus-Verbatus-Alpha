@@ -20,10 +20,10 @@ Two words reach a RunPod network volume:
 - `fetch-run` brings back a pod-written run tree and the launch evidence you name; it never
   fetches the uploaded images or their manifest.
 
-## The thirteen words
+## The fourteen words
 
-Ten things this tool can do, in the order a normal run uses them, plus two you can run any
-time to check on things and one that tidies up.
+Ten things this tool can do, in the order a normal run uses them, plus three you can run
+any time to check on things and one that tidies up.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
@@ -38,6 +38,7 @@ time to check on things and one that tidies up.
 | `advance` | Appends the project lead's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record is permanent and never retracted. |
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded publication temporaries in the snapshot. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
+| `watch` | Shows a pod run's stage, pages, finish estimate, deadline and spend from copies of its report files on this computer, once or every N seconds. | No — it reads local files only; it contacts no provider or volume and writes nothing. |
 | `clear-leftovers` | Lists what an interrupted publication left under one folder you name (a run tree, a volume mount or an export folder): `.<name>.tmp-<id>` files and `.<name>.publishing-<id>` folders. `--apply` removes them; run it only when nothing is writing to that folder. | No. It follows no symbolic link inside the folder, and refuses one as the folder's own last name; it touches no other name, and leaves alone any file, or any folder whose content, changed within the last hour. |
 | `spend show` | Shows the reviewed pod spending policy: its ceilings, hard-stop balance floor and alert threshold. | No — it reads the policy only; it does not contact a provider or edit the policy. |
 
@@ -325,6 +326,55 @@ says the screen is the only record.
 recorded**, so it cannot drift from what is on file. Each run shows its id, root, state,
 failure or hold reasons, last output lines, the `verbatus review` line and its record path;
 exports, fetches, uploads, backups and `unexpected` records show what they touched.
+
+## `watch`: follow a pod run from this computer
+
+```sh
+verbatus watch --run-id <run id> --receipts <folder> [--lease <lease file>] [--interval 60]
+```
+
+`watch` reads copies of `pod_run`'s report and its `-liveness`, `-timings` and `-estimate`
+siblings (`pod-run-report-<run id>.json` and so on, the hand route's names; `--report` names
+the report when it is called something else). It reads only the folder you name: it does
+not fetch them, contact the volume or a provider, or write anything. Getting fresh copies
+onto this computer is a separate step. After the run, `fetch-run`'s evidence keys bring
+them home into `<local root>/evidence/`. During the run, `fetch-run` compares rather than
+replaces, so copy the four files yourself (for example `scp` from the pod) into a folder
+each time; reading them over S3 from `watch` itself is the next step.
+
+It shows, in a few short lines:
+
+- **STALE** first, loudly, while the run is still going: the liveness copy and the
+  estimate copy are each judged on their own time (`last_seen`, `updated_at`) against
+  `--stale-minutes` (default 2) by this computer's clock. A stale estimate's stage, finish
+  and deadline lines say the time they were true. An ended run is never called stale.
+- The report's state (and exit code, hold and detail once it ended), the stage and pages
+  done of total, and "this stage finishes about …" — the current stage only; later stages
+  are not counted. With no estimate it says `unknown` and why: a failing estimate says
+  "the estimate is failing" with its last error, and a failed estimate write is counted.
+  An ended run shows no stage estimate.
+- **An ended run whose pod is kept up** (`held_to_hard_deadline`) says the pod is still
+  billing until the hard deadline, and counts spend to now.
+- The deadline and the time left, with its source, whether it can be extended by hand,
+  and `AT RISK` when the estimate passes it. With no deadline in the estimate it shows the
+  bootstrap's hard deadline from the report and says why. It cannot tell whether the guard
+  is armed, and says so; deadline-file values the pod ignored are listed.
+- The soft and hard maximums, from the estimate file (the budget the pod read).
+- Spend, set against the soft and hard maximums: with `--lease`, the pod and volume rate
+  from the verified lease since the pod was created; without it, `at least` pod_run's
+  `--hourly-usd` since pod_run started. A lease whose seal does not verify is named and
+  not used.
+- The last notice `pod_run` recorded, and whether it was delivered; each finished stage
+  invocation's duration, with unreadable timings lines counted; the liveness age.
+
+Without `--interval` it shows once. With `--interval N` it reads again every N seconds,
+prints only when a copy changed or turned stale, reads once more after a pause when a
+copy did not parse (it may have been caught mid-copy), and stops when the report says the run
+ended or after `--timeout`. Ctrl+C stops it. A missing or another run's report is refused
+(`watch-unreadable`); a missing or unreadable sibling is named as a note.
+
+Not built yet: reading the files over S3 itself, `--json`, and the design's run states and
+exit codes (`docs/design/control-surface.md`).
 
 ## Phone notifications
 

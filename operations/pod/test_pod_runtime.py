@@ -6926,6 +6926,15 @@ def test_an_unconfigured_spend_policy_refuses_both_paid_paths_end_to_end(tmp_pat
         ({"billing_cutoff_margin_seconds": "3601"}, "must be between 0 and 3600 seconds"),
         ({"hard_lifetime_seconds": None}, "missing a required ceiling"),
         ({"currency": '"EUR"'}, "currency must be USD"),
+        ({"soft_max_seconds": "25000"}, "soft maximum seconds cannot exceed"),
+        ({"soft_max_cost_usd": '"3.50"'}, "soft maximum cost cannot exceed"),
+        ({"hard_max_seconds": None}, "missing a required ceiling"),
+        ({"hard_max_cost_usd": None}, "missing hard_max_cost_usd"),
+        ({"soft_max_cost_usd": "2.00"}, "decimal string, not a TOML number"),
+        ({"soft_max_seconds": "0"}, "soft maximum seconds must be a positive integer"),
+        ({"hard_lifetime_seconds": "18000"}, "hard lifetime cannot exceed the soft maximum"),
+        ({"max_estimated_metered_cost_usd": '"2.50"'}, "cannot exceed the soft maximum cost"),
+        ({"schema": '"pod-spend.v3"'}, "soft and hard pod budget maximums"),
     ],
 )
 def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
@@ -6934,7 +6943,7 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
     from .spend import load_spend_policy
 
     base: dict[str, str | None] = {
-        "schema": '"pod-spend.v3"',
+        "schema": '"pod-spend.v4"',
         "state": '"configured"',
         "currency": '"USD"',
         "max_hourly_usd": '"1.00"',
@@ -6946,6 +6955,10 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
         "shutdown_poll_interval_seconds": "1",
         "shutdown_deadline_seconds": "5",
         "billing_cutoff_margin_seconds": "3600",
+        "soft_max_seconds": "14400",
+        "hard_max_seconds": "21600",
+        "soft_max_cost_usd": '"2.00"',
+        "hard_max_cost_usd": '"3.00"',
     }
     base.update(mutation)
     path = tmp_path / "spend.toml"
@@ -7050,7 +7063,7 @@ def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceilin
     detail = str(refusal.value)
     assert "retired" in detail
     assert "account_balance_alert_usd" in detail
-    assert "pod-spend.v3" in detail
+    assert "pod-spend.v4" in detail
     assert "missing a required ceiling" not in detail
 
 
@@ -7059,7 +7072,7 @@ def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path
 
     path = tmp_path / "spend.toml"
     path.write_text(
-        'schema = "pod-spend.v3"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
+        'schema = "pod-spend.v4"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
         encoding="utf-8",
     )
 
