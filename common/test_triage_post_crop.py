@@ -186,6 +186,33 @@ def _centres(page: Image.Image):
     ids=["first-order", "second-order"],
 )
 def test_a_point_on_the_sealed_page_maps_back_to_its_master(part):
+    _maps_back(part, tolerance=0.5)
+
+
+@pytest.mark.parametrize("rotation", [90_000, -90_000, 180_000, 0])
+@pytest.mark.parametrize("crop_height", [170, 171])
+@pytest.mark.parametrize("second_order", [False, True], ids=["first-order", "second-order"])
+def test_a_quarter_turned_page_maps_back_exactly_whatever_its_crop_parity(
+    rotation, crop_height, second_order
+):
+    """Pillow transposes a quarter turn; the map must be that transpose, exact, also when
+    the crop's width and height differ by an odd number."""
+    extra = (
+        {"post_crop_box": {"x": -3, "y": 2, "w": 190, "h": 185}, "fill": [230]}
+        if second_order
+        else {}
+    )
+    part = triage.make_part(
+        {"x": 100, "y": 0, "w": 200, "h": 200},
+        {"x": 10, "y": 15, "w": 180, "h": crop_height},
+        rotation,
+        colour_mode="keep",
+        **extra,
+    )
+    _maps_back(part, tolerance=0.01)
+
+
+def _maps_back(part, *, tolerance):
     dots = [(150, 40), (170, 160), (230, 100), (260, 50)]
     master = _png(_dots(Image.new("L", (300, 200), 230), dots))
 
@@ -196,7 +223,7 @@ def test_a_point_on_the_sealed_page_maps_back_to_its_master(part):
     for centre in centres:
         x, y = triage_point_to_frame(part, centre)
         nearest = min(dots, key=lambda dot: (dot[0] + 0.5 - x) ** 2 + (dot[1] + 0.5 - y) ** 2)
-        assert abs(nearest[0] + 0.5 - x) < 0.5 and abs(nearest[1] + 0.5 - y) < 0.5
+        assert abs(nearest[0] + 0.5 - x) < tolerance and abs(nearest[1] + 0.5 - y) < tolerance
 
 
 def _contract(part, master):

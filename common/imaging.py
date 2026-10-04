@@ -1285,9 +1285,19 @@ def _rotation_canvas(
     """The map from `Image.rotate(angle, expand=True)`'s canvas back to its input, and
     the canvas size, with Pillow's own arithmetic and rounding.
 
-    Pillow's quarter-turn fast paths transpose; this matrix gives the same mapping
-    for them, since the rounded sine and cosine are exact there.
+    At 0, 90, 180 and 270 degrees Pillow copies or transposes instead of resampling,
+    so the map there is that exact transpose. The general matrix would differ from it
+    by half a pixel when the width and height differ by an odd number.
     """
+    angle = angle_degrees % 360.0
+    if angle == 0:
+        return (1.0, 0.0, 0.0, 0.0, 1.0, 0.0), (width, height)
+    if angle == 90:
+        return (0.0, -1.0, float(width), 1.0, 0.0, 0.0), (height, width)
+    if angle == 180:
+        return (-1.0, 0.0, float(width), 0.0, -1.0, float(height)), (width, height)
+    if angle == 270:
+        return (0.0, 1.0, 0.0, -1.0, 0.0, float(height)), (height, width)
     radians = -math.radians(angle_degrees % 360.0)
     cos, sin = round(math.cos(radians), 15), round(math.sin(radians), 15)
     a, b, d, e = cos, sin, -sin, cos

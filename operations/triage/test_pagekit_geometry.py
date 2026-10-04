@@ -94,12 +94,14 @@ def _blobs(image: Image.Image) -> list[tuple[float, float, int]]:
     return found
 
 
+@pytest.mark.parametrize("size", [(700, 1000), (703, 1000), (700, 1001), (701, 999)])
 @pytest.mark.parametrize("turns", [0, 1, 2, 3])
-def test_a_page_with_no_skew_is_cut_exactly_as_pagekit_cut_it(tmp_path, turns):
+def test_a_page_with_no_skew_is_cut_exactly_as_pagekit_cut_it(tmp_path, turns, size):
     dots = [(150, 160), (520, 140), (330, 600), (140, 880), (560, 860)]
-    scan = _scan(tmp_path / "scans", (700, 1000), dots)
+    scan = _scan(tmp_path / "scans", size, dots)
     # The margin carries pagekit's crop past the scan's edge, where it shows paper.
-    box = [10, 20, 690, 980] if turns % 2 == 0 else [20, 10, 980, 690]
+    width, height = size if turns % 2 == 0 else size[::-1]
+    box = [10, 20, width - 10, height - 20]
     pages, mapped = _prepare(
         tmp_path,
         scan,
