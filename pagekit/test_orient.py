@@ -22,6 +22,7 @@ from pagekit._orient_testpages import (
     cursive_page,
     cursive_spread,
     figure_page,
+    hand_account_page,
     notes_page,
     page,
     printed_page,
@@ -33,6 +34,7 @@ from pagekit.orient import (
     POSSIBLY_NEGATIVE,
     UNCERTAIN_CORE_BAND,
     UNCERTAIN_DIRECTION,
+    UNCERTAIN_FIGURE_TILES,
     UNCERTAIN_UNIFORM,
     UNCERTAIN_UPDOWN,
     _guarded,
@@ -469,3 +471,51 @@ def test_block_turned_a_quarter_as_large_as_the_text_leaves_the_direction_open(q
     assert result["value"] == 0
     assert result["flags"] == [UNCERTAIN_DIRECTION]
     assert "vote against the median" in result["evidence"]
+
+
+# --- Handwritten account pages (follow-up to brief 0036) --------------------------------
+
+
+def _score_or_none(result: dict):
+    match = re.search(r"up-down score ([+-][0-9.]+)", result["evidence"])
+    return float(match.group(1)) if match else None
+
+
+@pytest.mark.parametrize("seed", [1, 2, 3])
+@pytest.mark.parametrize("dpi", [150, 300])
+def test_one_size_figures_do_not_vote_on_up_and_down(seed, dpi):
+    """Handwritten words that lean upright (more ascenders than descenders) beside six
+    columns of one-size figures with tails below the line. Tiles of the figures are left
+    out of the line direction; their marks must be left out of the up-down strips too,
+    or the tails pull the vote toward upside down (to about -1.1 here before)."""
+    image = hand_account_page(
+        dpi, seed, words_share=0.5, columns=6, extenders=(0.2, 0.15), tails="2345679"
+    )
+    score = _score_or_none(detect_orientation(image))
+    assert score is None or score > -0.3
+
+
+@pytest.mark.parametrize("dpi", [150, 300])
+@pytest.mark.parametrize("words_share", [0.25, 0.35, 0.5])
+@pytest.mark.parametrize("columns", [4, 6])
+def test_handwritten_account_page_is_never_turned_wrong_without_a_flag(dpi, words_share, columns):
+    image = hand_account_page(
+        dpi, 1, words_share=words_share, columns=columns, extenders=(0.2, 0.15), tails="2345679"
+    )
+    for quarter_turns in range(4):
+        result = detect_orientation(turned(image, quarter_turns))
+        assert _right_or_flagged(result, (4 - quarter_turns) % 4), (
+            quarter_turns,
+            result["evidence"],
+        )
+
+
+def test_page_mostly_of_one_size_figure_tiles_is_flagged_and_a_page_of_few_is_not():
+    """With words across a quarter of the width beside six figure columns, about half the
+    tiles holding writing are one-size tiles (45%): flagged. With words across half the
+    width beside four columns, about a fifth (20%): not flagged for that reason. Fails
+    if uniform_tile_share is set at 0.19 or below, or above 0.45."""
+    many = detect_orientation(hand_account_page(300, 1, words_share=0.25, columns=6))
+    assert many["flags"] == [UNCERTAIN_FIGURE_TILES]
+    few = detect_orientation(hand_account_page(300, 1, words_share=0.5, columns=4))
+    assert UNCERTAIN_FIGURE_TILES not in few["flags"]
