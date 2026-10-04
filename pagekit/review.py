@@ -20,6 +20,8 @@ import html
 import io
 import json
 import os
+import shlex
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -305,6 +307,28 @@ def _batch_table(batch: dict[str, Any]) -> str:
     )
 
 
+def correction_command(plan: Any) -> str:
+    """The shell command that applies `overrides.json` in the output folder.
+
+    It uses absolute paths and the Python that ran prepare, and changes to the folder
+    that holds pagekit, so it works from any folder whether or not pagekit is installed
+    (macOS and Linux shells)."""
+    home = Path(__file__).resolve().parent.parent
+    words = [
+        sys.executable,
+        "-m",
+        "pagekit",
+        "prepare",
+        "--output",
+        str(plan.output_dir),
+        "--overrides",
+        str(plan.output_dir / "overrides.json"),
+    ]
+    if plan.project_path != plan.output_dir / "pagekit-project.json":
+        words += ["--project", str(plan.project_path)]
+    return f"cd {shlex.quote(str(home))} && " + " ".join(shlex.quote(word) for word in words)
+
+
 def build(plan: Any, entries: list[dict[str, Any]], previews: dict[str, Any]) -> str:
     """The review sheet's HTML for `plan`, its manifest page `entries` (same order as
     `plan.pages`) and `previews` ({"sources": {relative: preview}, "pages": [preview]})."""
@@ -362,9 +386,10 @@ def build(plan: Any, entries: list[dict[str, Any]], previews: dict[str, Any]) ->
         "list, with a comma between lines:</p>",
         '<pre>{"schema": "pagekit-overrides.v1", "overrides": [\n'
         "  ...the lines you copied, separated by commas...\n]}</pre>",
-        "<p>Then, from this folder, run pagekit again. It keeps every other value and redoes "
-        "only what depends on your change:</p>",
-        "<pre>python -m pagekit prepare --output . --overrides overrides.json</pre>",
+        "<p>Then run pagekit again by pasting this command into a terminal; it works from "
+        "any folder. It keeps every other value and redoes only what depends on your "
+        "change:</p>",
+        f'<pre class="command">{_escape(correction_command(plan))}</pre>',
         "<p>On the previews: "
         f'<span class="key" style="background:rgb{CUT_COLOUR}"></span>cut between pages '
         f'<span class="key" style="background:rgb{PAGE_BOX_COLOUR}"></span>page box (the paper) '

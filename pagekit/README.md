@@ -75,6 +75,29 @@ is not proof the crop is right.
 - No crop is proposed or corrected. Detection of page edges, content boxes, deskew and
   dewarping are later slices.
 
+## Installing and running (macOS and Linux)
+
+pagekit needs Python 3.12 or later and Pillow, nothing else. In a terminal:
+
+```sh
+python3 --version                       # 3.12 or later
+python3 -m venv ~/pagekit-env           # once: a private Python for pagekit
+~/pagekit-env/bin/python -m pip install Pillow
+```
+
+Then run it from the folder that holds the `pagekit` folder (in this repository, its
+top folder):
+
+```sh
+cd /path/to/the/folder/that/holds/pagekit
+~/pagekit-env/bin/python -m pagekit prepare ~/scans/ --output ~/prepared/
+```
+
+Inside this repository, its own environment works the same way:
+`.venv/bin/python -m pagekit ...` from the repository's top folder. "No module named
+pagekit" means the command was run from another folder; `cd` to the folder that holds
+`pagekit` first. The correction command on the review sheet does this for you.
+
 ## Preparing pages
 
 ```sh
@@ -141,11 +164,9 @@ settings are not yet measured: until they are, a flag means "look at this page" 
 flag is not proof that the page is right.
 
 To correct a page from the sheet: copy the line under the step, change the value, put
-it in `overrides.json` in the output folder, and run, from that folder:
-
-```sh
-python -m pagekit prepare --output . --overrides overrides.json
-```
+it in `overrides.json` in the output folder, and paste the command the sheet prints
+into a terminal. It is written with full paths and the Python that made the sheet, so
+it works from any folder, and only what depends on the change is redone.
 
 ### Pages unlike the rest of the batch
 

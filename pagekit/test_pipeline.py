@@ -9,7 +9,6 @@ import html
 import io
 import json
 import re
-import shutil
 import sys
 from pathlib import Path
 
@@ -126,7 +125,13 @@ def test_outputs_are_lossless_tiff_in_the_source_mode_at_the_source_resolution(p
 def test_the_same_input_gives_byte_identical_outputs_manifest_and_review(prepared):
     first = _snapshot(prepared["out"])
     assert REVIEW_NAME in first and MANIFEST_NAME in first
-    assert first == _snapshot(prepared["again"])
+    again = _snapshot(prepared["again"])
+    # The review sheet's correction command names its own output folder; otherwise a
+    # second folder holds the same bytes.
+    review = first.pop(REVIEW_NAME).replace(bytes(prepared["out"]), b"OUT")
+    assert again.pop(REVIEW_NAME).replace(bytes(prepared["again"]), b"OUT") == review
+    assert first == again
+    first = _snapshot(prepared["again"])
     # A re-run on the project it wrote keeps every value and gives the same bytes.
     assert main(["prepare", str(prepared["src"]), "--output", str(prepared["again"])]) == 1
     assert _snapshot(prepared["again"]) == first
@@ -183,12 +188,20 @@ def _values(project: dict) -> dict:
     return found
 
 
+def _command(text: str) -> str:
+    (command,) = re.findall(r'<pre class="command">([^<]+)</pre>', text)
+    return html.unescape(command)
+
+
 def test_an_override_line_pasted_into_an_overrides_file_changes_exactly_that_step(
-    prepared, monkeypatch
+    prepared, tmp_path
 ):
-    # A copy beside the output folder, so the project's "../src" paths still hold.
+    import os
+    import subprocess
+
+    # A folder beside the first output, prepared from the same sources.
     target = prepared["root"] / "corrected"
-    shutil.copytree(prepared["out"], target)
+    assert main(["prepare", str(prepared["src"]), "--output", str(target)]) == 1
     project = json.loads((target / PROJECT_NAME).read_text())
     before = _values(project)
     text = (target / REVIEW_NAME).read_text(encoding="utf-8")
@@ -199,8 +212,15 @@ def test_an_override_line_pasted_into_an_overrides_file_changes_exactly_that_ste
     (target / "overrides.json").write_text(
         '{"schema": "pagekit-overrides.v1", "overrides": [\n' + json.dumps(line) + "\n]}"
     )
-    monkeypatch.chdir(target)  # the command the sheet gives, run where it says
-    assert main(["prepare", "--output", ".", "--overrides", "overrides.json"]) == 1
+    # The command exactly as the sheet prints it, run by a shell in another folder, with
+    # no PYTHONPATH: pagekit is not installed here.
+    environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    result = subprocess.run(
+        _command(text), shell=True, cwd=elsewhere, env=environment, capture_output=True, text=True
+    )
+    assert result.returncode == 1, result.stderr
     after = _values(json.loads((target / PROJECT_NAME).read_text()))
     key = ("../src/a_upright.png", 1, "content_box")
     assert after.pop(key) == ([100, 100, 700, 900], "manual")
@@ -421,7 +441,10 @@ def test_prepare_tone_view_writes_one_deterministic_view_beside_each_page(tmp_pa
     names = sorted(path.name for path in first.iterdir())
     assert names == sorted(path.name for path in second.iterdir())
     for name in names:  # identical bytes on repeat, views included
-        assert (first / name).read_bytes() == (second / name).read_bytes(), name
+        one, two = (first / name).read_bytes(), (second / name).read_bytes()
+        if name == REVIEW_NAME:  # its correction command names its own folder
+            one, two = one.replace(bytes(first), b"OUT"), two.replace(bytes(second), b"OUT")
+        assert one == two, name
 
 
 def test_a_tone_view_never_takes_the_name_of_a_prepared_page_or_a_source(tmp_path, monkeypatch):
