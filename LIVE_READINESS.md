@@ -49,6 +49,19 @@ balance.
 
 ## 2. Set up the Mac (free)
 
+**The Mac needs macOS 13 (Ventura) or later**, Intel or Apple silicon. The PDF library
+(pypdfium2) ships wheels only for macOS 13 and later; on an older macOS the install falls
+back to an untested build from source. Check first:
+
+```sh
+sw_vers -productVersion; uname -m    # 13.0 or later; x86_64 (Intel) or arm64 (Apple silicon)
+```
+
+git needs the Xcode Command Line Tools (`xcode-select --install`; the first `git clone`
+offers them too). Their `python3` is 3.9, too old for this repository: run Python only
+as `uv run …` or `.venv/bin/python …`, never a bare `python` or `python3`. uv builds
+`.venv` on Python 3.12 (`.python-version`), downloading it if the Mac has none.
+
 In Terminal, from a fresh clone. uv must be exactly 0.12.1 (installer line: to confirm).
 
 ```sh
@@ -78,14 +91,14 @@ Linux CI runs these; only a Mac run proves them on macOS.
 Each command below exits 0 when it passes and non-zero when anything fails.
 
 - **F10, the uv guard.** Expected: all pass, including the `sh` and `bash-posix` cases.
-  `python -m pytest .githooks/test_ci_workflow.py -k "path_entry"`
+  `.venv/bin/python -m pytest .githooks/test_ci_workflow.py -k "path_entry"`
 - **F11, tests leave real state alone.** Expected: the `find` prints nothing.
   ```sh
   touch /tmp/before-tests && sh .githooks/check-all.sh
   find ~/.local/state ~/Library -newer /tmp/before-tests -iname '*verbatus*' 2>/dev/null
   ```
 - **F12, the golden pins.** Expected: passes, so the HAPPY and REVIEW pins are the same
-  on the Mac as on Linux. `python -m pytest pipeline/orchestrator/test_orchestrator_acceptance.py`
+  on the Mac as on Linux. `.venv/bin/python -m pytest pipeline/orchestrator/test_orchestrator_acceptance.py`
 
 ## 4. Check the pages on the Mac (free)
 

@@ -4,9 +4,16 @@
 Double-click [Verbatus.command](Verbatus.command) and answer one question at a time. The
 program always tells you what happened, what it means, and what to do next.
 
-If you would rather type, `python3 -m operations.operator.entry <word>` from the project
-folder, or `verbatus <word>` once the project is installed, runs the same code.
+If you would rather type, `.venv/bin/python -m operations.operator.entry <word>` from the
+project folder, or `verbatus <word>` once the project is installed, runs the same code.
 `verbatus <word> --help` lists every flag.
+
+**On a Mac:** macOS 13 (Ventura) or later, Intel or Apple silicon; the PDF library
+(pypdfium2) has no wheels for older versions. `sw_vers -productVersion; uname -m` shows
+both. git needs the Xcode Command Line Tools (`xcode-select --install`). Their `python3`
+is 3.9, too old here, so run Python only as `uv run …` or `.venv/bin/python …`, never a
+bare `python` or `python3`; `uv sync --frozen --group test --group audit` builds `.venv` on
+Python 3.12.
 
 ## Read this first: what this is today
 
