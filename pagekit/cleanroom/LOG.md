@@ -464,3 +464,15 @@ record".
   core tests failing; 34649a8 repairs them). Leak scan no hits in 124 files. Merged into
   `work/pagekit-prepare` (786571d); the combined suite passes. A re-run on the lead's
   spreads with `--tone-view` wrote each page and its grey view as lossless TIFF.
+
+## 0026 — Generalisation review of orientation; follow-up brief 0030
+
+- **Independent review** of 99ebaa6 and ee56315 by a fresh agent bound by the clean-room
+  rule (it saw no GPL source), on pages from its own generator: handwriting much
+  improved and both real spreads right in all four turns, but small printed type gave
+  confident wrong half turns with no flag, because the up-down vote depended on one
+  core-band share fitted to cursive; and a pen stroke crossing the fold beside the
+  backdrop band lost its overhang flag.
+- **Follow-up brief:** `briefs/0030-build-orientation-print-and-overhang.md` (sha256
+  afe2dda85b5c7dd68558dcfed143927a3c37786a20526762a7d30cce4858d0ae), to the agent of
+  brief 0017. Saved before it was sent.
