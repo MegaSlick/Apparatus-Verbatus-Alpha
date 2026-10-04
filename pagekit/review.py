@@ -331,9 +331,10 @@ def _batch_table(batch: dict[str, Any]) -> str:
 def correction_command(plan: Any) -> str:
     """The shell command that applies `overrides.json` in the output folder.
 
-    It uses absolute paths and the Python that ran prepare, and changes to the folder
-    that holds pagekit, so it works from any folder whether or not pagekit is installed
-    (macOS and Linux shells)."""
+    It uses absolute paths and the Python that ran prepare, and names the folder that
+    holds pagekit as PYTHONPATH for that one command, so it works from any folder,
+    whether or not pagekit is installed and whatever PYTHONSAFEPATH says. It is one line
+    for macOS and Linux shells (sh, bash, zsh); the Windows form is for later."""
     home = Path(__file__).resolve().parent.parent
     words = [
         sys.executable,
@@ -347,7 +348,7 @@ def correction_command(plan: Any) -> str:
     ]
     if plan.project_path != plan.output_dir / "pagekit-project.json":
         words += ["--project", str(plan.project_path)]
-    return f"cd {shlex.quote(str(home))} && " + " ".join(shlex.quote(word) for word in words)
+    return f"PYTHONPATH={shlex.quote(str(home))} " + " ".join(shlex.quote(word) for word in words)
 
 
 def build(plan: Any, entries: list[dict[str, Any]], previews: dict[str, Any]) -> str:

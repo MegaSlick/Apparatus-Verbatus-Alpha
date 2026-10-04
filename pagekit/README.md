@@ -95,8 +95,12 @@ cd /path/to/the/folder/that/holds/pagekit
 
 Inside this repository, its own environment works the same way:
 `.venv/bin/python -m pagekit ...` from the repository's top folder. "No module named
-pagekit" means the command was run from another folder; `cd` to the folder that holds
-`pagekit` first. The correction command on the review sheet does this for you.
+pagekit" means the command was run from another folder, or with `PYTHONSAFEPATH` set
+(which leaves the current folder off Python's import path). Either `cd` to the folder
+that holds `pagekit` (without `PYTHONSAFEPATH`), or name it for the one command, which
+works from anywhere:
+`PYTHONPATH=/path/to/the/folder/that/holds/pagekit ~/pagekit-env/bin/python -m pagekit ...`.
+The correction command on the review sheet is written this way.
 
 ## Preparing pages
 
@@ -168,8 +172,10 @@ flag is not proof that the page is right.
 
 To correct a page from the sheet: copy the line under the step, change the value, put
 it in `overrides.json` in the output folder, and paste the command the sheet prints
-into a terminal. It is written with full paths and the Python that made the sheet, so
-it works from any folder, and only what depends on the change is redone.
+into a terminal. It is one line, written with full paths, the Python that made the
+sheet and `PYTHONPATH=` set to the folder that holds pagekit, so it works from any
+folder (also where `PYTHONSAFEPATH` is set), and only what depends on the change is
+redone. It is for macOS and Linux shells; a Windows form is not written yet.
 
 ### Pages unlike the rest of the batch
 
