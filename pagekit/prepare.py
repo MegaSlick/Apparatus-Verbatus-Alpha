@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
 from pagekit import __version__
 from pagekit.answer import PAGE_STEPS, SOURCE_STEPS, STEPS, Answer, AnswerError, validate_answer
@@ -92,17 +92,48 @@ def _grey_palette(image: Image.Image) -> bool:
     return True
 
 
+class SourceError(PrepareError):
+    """One source file cannot be used; `reason` says why in plain words. The run skips
+    it and carries on with the others."""
+
+    def __init__(self, path: Path, reason: str):
+        super().__init__(f"{path.name}: {reason}")
+        self.path = path
+        self.reason = reason
+
+
+# Plain names for the modes pagekit does not read.
+_MODE_WORDS = {
+    "I;16": "16-bit grey",
+    "I;16B": "16-bit grey",
+    "I;16L": "16-bit grey",
+    "I;16N": "16-bit grey",
+    "I": "32-bit grey",
+    "F": "floating-point grey",
+    "CMYK": "CMYK (printing) colour",
+    "LA": "grey with transparency",
+    "RGBA": "colour with transparency",
+    "PA": "palette with transparency",
+    "YCbCr": "YCbCr colour",
+    "LAB": "Lab colour",
+    "HSV": "HSV colour",
+}
+
+
 def _decode(data: bytes, path: Path) -> Image.Image:
     """The decoded source in L or RGB. Bilevel and grey-palette images become grey,
-    colour-palette images colour; nothing is resampled."""
+    colour-palette images colour; nothing is resampled. SourceError when it cannot be
+    used."""
     try:
         with Image.open(io.BytesIO(data)) as image:
             if getattr(image, "n_frames", 1) != 1:
-                raise PrepareError(f"{path.name}: it holds more than one page; give one per file")
+                raise SourceError(path, "it holds more than one page; give one page per file")
             if image.mode not in _KEPT_MODES:
-                raise PrepareError(
-                    f"{path.name}: its image mode {image.mode} is not one pagekit reads "
-                    "(8-bit grey, colour, bilevel or palette); save it as 8-bit grey or colour"
+                words = _MODE_WORDS.get(image.mode, f"mode {image.mode}")
+                raise SourceError(
+                    path,
+                    f"its image is {words}, which pagekit does not read (it reads 8-bit grey, "
+                    "colour, bilevel and palette images); save it as 8-bit grey or colour",
                 )
             image.load()
             if image.mode == "1":
@@ -110,14 +141,20 @@ def _decode(data: bytes, path: Path) -> Image.Image:
             if image.mode == "P":
                 return image.convert("L" if _grey_palette(image) else "RGB")
             return image.copy()
-    except PrepareError:
+    except SourceError:
         raise
-    except Exception as error:  # any decoder failure means the source cannot be used
-        kind = type(error).__name__
-        raise PrepareError(
-            f"{path.name}: not an image pagekit can read (it may be damaged, empty or of "
-            f"another kind; {kind})"
+    except UnidentifiedImageError as error:
+        raise SourceError(
+            path, "not an image pagekit can read (it may be damaged, empty or of another kind)"
         ) from error
+    except Exception as error:  # any decoder failure means the source cannot be used
+        if "truncated" in str(error).lower():
+            reason = "the image is cut short (the file is truncated); copy or scan it again"
+        else:
+            reason = (
+                f"the image cannot be decoded (the file may be damaged; {type(error).__name__})"
+            )
+        raise SourceError(path, reason) from error
 
 
 def _file_dpi(image: Image.Image) -> tuple[float, float] | None:
@@ -136,7 +173,7 @@ def read_source(path: Path, project_folder: Path) -> Source:
         data = path.read_bytes()
     except OSError as error:
         reason = error.strerror or type(error).__name__
-        raise PrepareError(f"{path.name}: the file cannot be read ({reason})") from error
+        raise SourceError(path, f"the file cannot be read ({reason})") from error
     image = _decode(data, path)
     with Image.open(io.BytesIO(data)) as stored:
         mode, dpi = stored.mode, _file_dpi(stored)
@@ -308,6 +345,8 @@ class Plan:
     stale_outputs: list[str]  # outputs of pages that no longer exist, left in place
     batch: dict[str, Any] = field(default_factory=dict)  # the volume-wide checks
     tone_view: bool = False  # also write the grey tone view of spec 0006 beside each page
+    # Source files that cannot be used: name, path, sha256 (None if unreadable), reason.
+    skipped: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _gather_inputs(inputs: list[Path]) -> list[Path]:
@@ -780,6 +819,27 @@ def _page_chain(source, number, values, usable, stored, settings):
     return chain, flags, output_dpi
 
 
+def _skipped(path: Path, project_folder: Path, reason: str) -> dict[str, Any]:
+    try:
+        sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        sha256 = None
+    return {
+        "name": path.name,
+        "path": Path(os.path.relpath(path, project_folder)).as_posix(),
+        "sha256": sha256,
+        "reason": reason,
+    }
+
+
+def _names_skipped(override: Override, skipped, folder: Path, project_folder: Path) -> bool:
+    """Whether `override` names a source skipped in this run."""
+    if SHA256.fullmatch(override.source):
+        return any(entry["sha256"] == override.source for entry in skipped)
+    wanted = (folder / override.source).resolve()
+    return any((project_folder / entry["path"]).resolve() == wanted for entry in skipped)
+
+
 def _match_override(override: Override, sources: list[Source], folder: Path) -> Source:
     if SHA256.fullmatch(override.source):
         matches = [source for source in sources if source.sha256 == override.source]
@@ -857,19 +917,23 @@ def plan(
                 f"pagekit never writes inside a source folder, and {path.parent} holds "
                 f"{path.name}; choose an output folder and project file elsewhere"
             )
-    sources, problems = [], []
-    for path in paths:  # every source is checked before stopping, so all are named at once
+    # A source that cannot be used is skipped, not fatal: it gets no page and no new
+    # project entry, so a later run tries it again. Only a run with none usable stops.
+    sources, skipped = [], []
+    for path in paths:
         try:
             sources.append(read_source(path, project_folder))
-        except PrepareError as error:
-            problems.append(str(error))
-    if problems:
+        except SourceError as error:
+            skipped.append(_skipped(path, project_folder, error.reason))
+    if not sources:
         raise PrepareError(
-            f"{len(problems)} of {len(paths)} source image(s) cannot be used, so nothing "
-            "was written:\n  " + "\n  ".join(problems)
+            "no source image can be used, so nothing was written:\n  "
+            + "\n  ".join(f"{entry['name']}: {entry['reason']}" for entry in skipped)
         )
+    skipped_paths = {(project_folder / entry["path"]).resolve() for entry in skipped}
 
     old_entries: dict[str, dict[str, Any]] = {}
+    kept_entries: list[dict[str, Any]] = []
     if old_project is not None:
         by_path = {entry["path"]: entry for entry in old_project["sources"]}
         by_sha: dict[str, list[dict[str, Any]]] = {}
@@ -883,6 +947,14 @@ def plan(
             if entry is not None and entry["path"] not in used:
                 used.add(entry["path"])
                 old_entries[source.relative] = entry
+        # A skipped source keeps what the project held for it, untouched, so its
+        # corrections are not lost while it cannot be read.
+        kept_entries = [
+            entry
+            for path, entry in by_path.items()
+            if path not in used and (project_folder / path).resolve() in skipped_paths
+        ]
+        used |= {entry["path"] for entry in kept_entries}
         missing = sorted(set(by_path) - used)
         if missing:
             raise PrepareError(
@@ -896,6 +968,8 @@ def plan(
     if overrides_path is not None:
         overrides_path = Path(overrides_path).resolve()
         for override in load_overrides(overrides_path):
+            if _names_skipped(override, skipped, overrides_path.parent, project_folder):
+                continue  # kept in the file, applied once the source can be read
             source = _match_override(override, sources, overrides_path.parent)
             key = (override.step, override.page)
             if key in overrides[source.relative]:
@@ -942,7 +1016,7 @@ def plan(
         "schema": PROJECT_SCHEMA,
         "tool": {"name": "pagekit", "version": __version__},
         "settings": settings,
-        "sources": sorted(entries, key=lambda entry: entry["path"]),
+        "sources": sorted(entries + kept_entries, key=lambda entry: entry["path"]),
     }
     stale_outputs = sorted(
         dropped["output"]
@@ -965,4 +1039,5 @@ def plan(
         stale_outputs,
         batch,
         tone_view,
+        skipped,
     )

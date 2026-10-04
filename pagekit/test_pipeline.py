@@ -8,6 +8,7 @@ import hashlib
 import html
 import io
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -772,26 +773,124 @@ def test_measure_wraps_orientation_errors_and_measures_the_cut_across_the_page(t
     assert measure(zero, gold)["steps"]["orientation"]["error_largest"] == 1
 
 
-def test_every_unusable_source_is_named_in_one_message_and_nothing_is_written(
+BAD_FILES = {
+    "broken.png": "not an image",
+    "cut.jpg": "cut short",
+    "deep.png": "16-bit",
+    "cmyk.tif": "CMYK",
+}
+
+
+def _mixed_folder(folder: Path, good: bool = True) -> Path:
+    """Two good pages (if `good`), a text file named .png, a truncated JPEG, a 16-bit
+    grey page and a CMYK page."""
+    folder.mkdir(parents=True)
+    if good:
+        for index in (1, 2):
+            page = pages.page(size=(300, 400), seed=20 + index, margin=(30, 40, 30, 40))
+            page.save(folder / f"good{index}.png", dpi=DPI)
+    (folder / "broken.png").write_bytes(b"this is not an image")
+    buffer = io.BytesIO()
+    pages.page(size=(300, 400), seed=30).convert("RGB").save(buffer, "JPEG", quality=90)
+    (folder / "cut.jpg").write_bytes(buffer.getvalue()[: len(buffer.getvalue()) // 2])
+    Image.new("I;16", (200, 300), 4000).save(folder / "deep.png")
+    Image.new("CMYK", (200, 300), (0, 10, 30, 5)).save(folder / "cmyk.tif", dpi=DPI)
+    return folder
+
+
+def test_unusable_sources_are_skipped_named_everywhere_and_the_rest_prepared(
     tmp_path, monkeypatch, capsys
 ):
     monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
-    folder = tmp_path / "src"
-    folder.mkdir()
-    Image.new("L", (200, 300), 220).save(folder / "good.png", dpi=DPI)
-    (folder / "broken.png").write_bytes(b"this is not an image")
-    Image.new("I;16", (200, 300), 4000).save(folder / "deep.png")
-    (folder / "empty.jpg").write_bytes(b"")
+    folder = _mixed_folder(tmp_path / "src")
+    out = tmp_path / "out"
+    assert main(["prepare", str(folder), "--output", str(out)]) == 1
+    printed = capsys.readouterr().out
+    manifest = json.loads((out / MANIFEST_NAME).read_text())
+    assert [page["output"]["name"] for page in manifest["pages"]] == [
+        "good1_p1.tif",
+        "good2_p1.tif",
+    ]
+    skipped = {entry["name"]: entry for entry in manifest["skipped"]}
+    assert sorted(skipped) == sorted(BAD_FILES)
+    review = (out / REVIEW_NAME).read_text(encoding="utf-8")
+    top = review[: review.index("<h2>Sources</h2>")]
+    for name, word in BAD_FILES.items():
+        reason = skipped[name]["reason"]
+        assert word in reason and "0x" not in reason and "BytesIO" not in reason
+        assert skipped[name]["path"] == f"../src/{name}"
+        assert html.escape(reason) in top and name in top  # before the list of sources
+        assert f"{name}: {reason}" in printed
+    project = json.loads((out / PROJECT_NAME).read_text())
+    assert [source["path"] for source in project["sources"]] == [
+        "../src/good1.png",
+        "../src/good2.png",
+    ]
+    assert not any(name.startswith(("broken", "cut", "deep", "cmyk")) for name in os.listdir(out))
+
+
+def test_a_folder_of_only_unusable_sources_is_exit_2_and_writes_nothing(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    folder = _mixed_folder(tmp_path / "src", good=False)
     out = tmp_path / "out"
     assert main(["prepare", str(folder), "--output", str(out)]) == 2
     error = capsys.readouterr().err
-    assert error.count("pagekit:") == 1  # one message
-    for name in ("broken.png", "deep.png", "empty.jpg"):
+    assert error.count("pagekit:") == 1 and "no source image can be used" in error
+    for name in BAD_FILES:
         assert name in error
-    assert "good.png" not in error
-    assert "BytesIO" not in error and "0x" not in error
-    assert "nothing was written" in error
     assert not out.exists()
+
+
+def test_a_skipped_source_is_tried_again_and_the_others_keep_their_values(tmp_path, monkeypatch):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    folder = _mixed_folder(tmp_path / "src")
+    out = tmp_path / "out"
+    fix = tmp_path / "fix.json"
+    entry = {"source": "src/good1.png", "step": "skew", "page": 1, "value": 1.5}
+    fix.write_text(json.dumps({"schema": "pagekit-overrides.v1", "overrides": [entry]}))
+    assert main(["prepare", str(folder), "--output", str(out), "--overrides", str(fix)]) == 1
+    before = {s["path"]: s for s in json.loads((out / PROJECT_NAME).read_text())["sources"]}
+    pages.page(size=(300, 400), seed=40).save(folder / "broken.png", dpi=DPI)  # replaced
+    assert main(["prepare", str(folder), "--output", str(out)]) == 1  # three still skipped
+    manifest = json.loads((out / MANIFEST_NAME).read_text())
+    assert sorted(entry["name"] for entry in manifest["skipped"]) == [
+        "cmyk.tif",
+        "cut.jpg",
+        "deep.png",
+    ]
+    assert "broken_p1.tif" in [page["output"]["name"] for page in manifest["pages"]]
+    after = {s["path"]: s for s in json.loads((out / PROJECT_NAME).read_text())["sources"]}
+    assert sorted(after) == ["../src/broken.png", "../src/good1.png", "../src/good2.png"]
+    for path in ("../src/good1.png", "../src/good2.png"):
+        assert after[path] == before[path]  # values, origins and inputs all kept
+    skew = after["../src/good1.png"]["pages"][0]["steps"]["skew"]
+    assert (skew["value"], skew["origin"]) == (1.5, "manual")
+
+
+def test_the_manifest_stays_closed_with_its_documented_skipped_field(tmp_path, monkeypatch):
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+    folder = _mixed_folder(tmp_path / "src")
+    out = tmp_path / "out"
+    assert main(["prepare", str(folder), "--output", str(out)]) == 1
+    manifest = json.loads((out / MANIFEST_NAME).read_text())
+    assert set(manifest) == {
+        "schema",
+        "tool",
+        "pages",
+        "skipped",
+        "stale_outputs",
+        "batch",
+        "review",
+        "thresholds",
+        "thresholds_measured",
+        "thresholds_note",
+    }
+    for entry in manifest["skipped"]:
+        assert set(entry) == {"name", "path", "sha256", "reason"}
+    readme = (Path(__file__).parent / "README.md").read_text(encoding="utf-8")
+    assert "`skipped`" in readme
 
 
 def test_a_grey_palette_source_gives_a_grey_page_and_a_colour_one_a_colour_page(
