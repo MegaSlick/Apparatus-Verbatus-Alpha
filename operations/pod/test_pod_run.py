@@ -4182,9 +4182,12 @@ def test_the_run_tree_mark_moves_on_stage_writes_and_not_on_engine_logs(tmp_path
 
 @pytest.mark.parametrize("flag", ["--help", "-h"])
 def test_help_prints_the_usage_of_both_halves_and_runs_nothing(flag: str) -> None:
+    # The pod runs this from the checkout, whose root is then on the path; the gate's
+    # PYTHONSAFEPATH keeps the working directory off it, so the root is named here.
     result = subprocess.run(
         [sys.executable, "-m", "operations.pod.pod_run", flag],
         cwd=ROOT,
+        env={**os.environ, "PYTHONPATH": str(ROOT)},
         capture_output=True,
         text=True,
         check=False,
