@@ -1,0 +1,44 @@
+# Settings for `python -m pagekit prepare`. Every value here is a starting guess. None
+# has been calibrated on real pages, so each carries status = "UNMEASURED" and the
+# manifest says thresholds_measured = false until every one is measured and its status
+# changed to "MEASURED".
+
+[overlap_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "How far, in millimetres, each page of a split spread keeps past the cut, so a stroke crossing the fold appears whole on at least one page."
+
+[margin_mm]
+value = 5.0
+status = "UNMEASURED"
+meaning = "The margin, in millimetres, added around the content box when no margin is set by hand."
+
+[margin_allowance_mm]
+value = 2.0
+status = "UNMEASURED"
+meaning = "How far, in millimetres, the margin may run past the page box before it is clamped."
+
+[min_plausible_dpi]
+value = 150
+status = "UNMEASURED"
+meaning = "The lowest resolution, in dots per inch on either axis, accepted from a source file without an override."
+
+[max_plausible_dpi]
+value = 1200
+status = "UNMEASURED"
+meaning = "The highest resolution, in dots per inch on either axis, accepted from a source file without an override."
+
+[max_output_dpi]
+value = 0
+status = "UNMEASURED"
+meaning = "Pages whose resolution is above this are shrunk to it by area averaging; 0 keeps the source resolution. Pages are never enlarged."
+
+[paper_estimate_long_side_px]
+value = 800
+status = "UNMEASURED"
+meaning = "Long side, in pixels, of the reduced working copy the paper colour is measured on."
+
+[output_format]
+value = "png"
+status = "UNMEASURED"
+meaning = "The lossless image format of prepared pages: png, or tiff with deflate compression."
