@@ -51,7 +51,9 @@ meaning = "Mean thickness in working px at or below which a long mark that is no
 #   blocks that must stay open, 41% and above);
 # - pagekit's own handwritten account pages (brief 0036 follow-up): handwritten words
 #   across a quarter to a half of the width beside four or six columns of handwritten
-#   figures, some with tails below the line, 150 and 300 dpi, all four turns;
+#   figures, some with tails below the line, some joined into one mark per amount,
+#   line spacing 0.6 to 2.4, 150 and 300 dpi, all four turns; and pages of writing over
+#   rows of separate figures across the full width;
 # - the lead's two real register spreads (dense 17th and 18th century French cursive),
 #   run locally only.
 # The strip widths, core-band shares and the 1600 px working size were chosen on these;
@@ -161,6 +163,26 @@ meaning = "Share of the voting tiles of writing whose own vote is against the me
 value = 0.33
 status = "UNMEASURED"
 meaning = "Share of the tiles holding writing that are left out as one-size tiles (figures or capitals) at or above which orientation is flagged, not decided. On pagekit's pages: text, cursive and notes pages 0 to 0.01; handwritten account pages 0.07 to 0.54 (0.07 to 0.19 at 150 dpi, 0.20 to 0.54 at 300 dpi); printed account pages about 0.5."
+
+[narrow_run_share]
+value = 0.15
+status = "UNMEASURED"
+meaning = "A run of content along one axis (from the projected mark boxes) no wider than this share of the content's extent is narrow: a column of items, or a line of writing seen sideways."
+
+[mixed_narrow_share]
+value = 0.3
+status = "UNMEASURED"
+meaning = "With at least this share of the ink in narrow runs and mixed_wide_share in wide runs along one axis, the page is a block of writing beside columns of items, and only the block votes on orientation."
+
+[mixed_wide_share]
+value = 0.15
+status = "UNMEASURED"
+meaning = "Least share of the ink in wide runs for an axis to count as mixed (see mixed_narrow_share)."
+
+[columns_ink_share]
+value = 0.5
+status = "UNMEASURED"
+meaning = "On a mixed axis, a share of the ink in narrow columns of items at or above which orientation is flagged, not decided. On pagekit's pages: text, print, cursive and spreads 0 (no mixed axis); notes turned a quarter 0.20 (not mixed); handwritten account pages with joined figures 0.37 to 0.63 (words across a half down to a fifth of the width); printed account pages about 0.41."
 
 [tile_min_marks]
 value = 6
