@@ -653,3 +653,14 @@ record".
 - **Follow-up brief:** `briefs/0038-build-orientation-figure-tiles-updown.md` (sha256
   6ed5bf8bad155d6d373bcf6f333f22fd63dda1eab5c28467d41b916115379aea), to the agent of
   brief 0017. Saved before it was sent.
+
+## 0037 — Review of the spec 0007 build; follow-up brief 0039
+
+- **Independent review** of 191878f by a fresh agent bound by the clean-room rule (it saw
+  no GPL source and read no findings): defaults, padding, density, re-runs and determinism
+  held up; a TIFF's orientation tag was applied twice because the image library turns TIFFs
+  on load; the colour check looked at the whole scanned frame, so a coloured backdrop or
+  target refused grey on the page; thin and pale colour could go undetected.
+- **Follow-up brief:** `briefs/0039-build-tag-twice-and-colour-scope.md` (sha256
+  2f5acac512b82069a55911d707453f7e886e60c59145ffca2c8eee230c7681d5), to the agent of
+  brief 0023. Saved before it was sent.
