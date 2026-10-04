@@ -360,3 +360,16 @@ record".
 - **Follow-up brief:** `briefs/0021-build-split-review-fixes.md` (sha256
   70d72ffec61605e6dfecee2a62386e8eff96b851ad4032d5f81659ef3c4e0160), sent to the agent of
   brief 0017.
+
+## 0020 — Core fixes done and merged; review of skew and the boxes; follow-up brief 0022
+
+- **Brief 0019 done:** commits efce9d8 and fa4038c on `work/pk-core`. The leak scan
+  found no hits. The host merged `work/pk-core` into `work/pagekit-prepare` (cbe73f5).
+- **Independent review of skew and the boxes** by a fresh agent bound by the clean-room
+  rule (it saw no GPL source): skew is accurate, but in four ways legible writing could
+  fall outside the page box or the content box without a flag (faint ink beside dark
+  ink, uneven lighting and gutter shadow on the page box, writing inside a border-joined
+  dark area, a small mark at the paper edge at low resolution).
+- **Follow-up brief:** `briefs/0022-build-skew-review-fixes.md` (sha256
+  7338768933221b2ff8cb114702a00f249b367647d53d73b085efffa93a807bcd), sent to the agent of
+  brief 0018.
