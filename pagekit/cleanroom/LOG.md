@@ -402,3 +402,13 @@ record".
   brief 0020; `briefs/0025-build-skew-regression-fixes.md` (sha256
   f67a91369193bf7eb22f141614abe8975448b44c437ceb79ea18b510cb3d9d23), sent to the agent of
   brief 0018. Both saved before they were sent.
+
+## 0023 — Prepare pipeline built and merged; review running
+
+- **Brief 0023 done:** commits 21d0db9, 2d4f714, 7e5f52d, 61d9309 and 5166f20 on
+  `work/pk-integrate`. The agent confirmed the brief's sha256 before starting and
+  reported it saw no ScanTailor or other GPL source. Leak scan no hits in 114 files.
+  Merged into `work/pagekit-prepare` (8c0a2cb); the combined pagekit suite passes.
+- **First run on the lead's two sample spreads**, locally (the images stay outside the
+  repository): both splits correct, pages upright, all writing kept; every page flagged.
+  An independent review of the pipeline, bound by the clean-room rule, is running.
