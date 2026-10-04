@@ -63,6 +63,10 @@ UNCERTAIN_DIRECTION = (
     "orientation uncertain: whether the lines run across or down is too close to call"
 )
 UNCERTAIN_UPDOWN = "orientation uncertain: whether the page is upright or upside down is too weak"
+# An uncertain step has confidence below 0.5; scaled by this, an uncertain answer
+# reports below 0.2, because its 0 turns is a default, not a finding.
+UNCERTAIN_SCALE = 0.4
+DEFAULT_NOTE = "left at 0 turns as a default, not a finding, so its confidence is scaled below 0.2"
 POSSIBLY_NEGATIVE = (
     "possibly a negative (light writing on a dark ground); orientation not decided from it"
 )
@@ -225,8 +229,8 @@ def detect_orientation(
     if abs(score) < margin:
         return answer(
             0,
-            across_confidence,
-            f"Lines across or down too close to call ({profiles}); left at 0 turns.",
+            UNCERTAIN_SCALE * across_confidence,
+            f"Lines across or down too close to call ({profiles}); {DEFAULT_NOTE}.",
             [UNCERTAIN_DIRECTION],
         )
     if score > 0:
@@ -245,9 +249,9 @@ def detect_orientation(
     if abs(vote) < value["updown_min_vote"]:
         return answer(
             0,
-            confidence,
+            UNCERTAIN_SCALE * confidence,
             f"Lines run {lines} the frame ({profiles}), but the {cues} is too weak to tell "
-            "upright from upside down; left at 0 turns.",
+            f"upright from upside down; {DEFAULT_NOTE}.",
             [UNCERTAIN_UPDOWN],
         )
     turns = base if vote > 0 else (base + 2) % 4

@@ -75,7 +75,8 @@ def test_grid_of_dots_is_uncertain_and_left_at_zero_turns():
     _assert_shape(result)
     assert result["value"] == 0
     assert result["flags"] == [UNCERTAIN_DIRECTION]
-    assert result["confidence"] < SETTING_CONFIDENCE
+    assert result["confidence"] < 0.2
+    assert "default, not a finding" in result["evidence"]
 
 
 def test_symmetric_writing_is_uncertain_up_or_down_and_says_which_part():
@@ -91,6 +92,7 @@ def test_symmetric_writing_is_uncertain_up_or_down_and_says_which_part():
     result = detect_orientation(image)
     assert result["value"] == 0
     assert result["flags"] == [UNCERTAIN_UPDOWN]
+    assert result["confidence"] < 0.2
     assert "Lines run across" in result["evidence"]
 
 
