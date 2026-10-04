@@ -11,7 +11,7 @@ from PIL import Image, ImageChops, ImageDraw
 
 from pagekit._orient_ink import ANSWER_KEYS, TOO_LITTLE_INK, DetectorError
 from pagekit._orient_testpages import PAPER, page, spread, turned, write_block
-from pagekit._split_testspreads import KINDS, single_page_case, spread_case
+from pagekit._split_testspreads import KINDS, crossing_case, single_page_case, spread_case
 from pagekit.split import detect_split
 
 DPI = (300, 300)
@@ -20,6 +20,9 @@ VALUE_KEYS = {"pages", "cut", "method", "part", "neighbour"}
 
 def _check(image: Image.Image, **kwargs) -> dict:
     kwargs.setdefault("dpi", DPI)
+    # These tests were written against a 5 mm overlap; the core's own setting
+    # (thresholds_prepare.toml) is used only when a test leaves this out on purpose.
+    kwargs.setdefault("overlap_mm", 5.0)
     result = detect_split(image, **kwargs)
     assert tuple(result) == ANSWER_KEYS
     assert set(result["value"]) == VALUE_KEYS
@@ -426,11 +429,15 @@ def test_proportions_against_the_evidence_lower_the_confidence():
     assert tall["value"]["pages"] == 2
     assert "suggest 1" in tall["evidence"]
     assert tall["confidence"] == pytest.approx(wide["confidence"] * 0.8, abs=0.002)
-    single = page()
-    portrait = _check(single)
-    landscape = _check(single, dpi=(150, 300))
-    assert "suggest 2" in landscape["evidence"]
-    assert landscape["confidence"] == pytest.approx(portrait["confidence"] * 0.8, abs=0.002)
+    # A single page on a wide pale backdrop: its writing spans less than half the
+    # frame, so the one-page answer stands (no flag) with the factor applied.
+    frame = Image.new("L", (2000, 1400), 200)
+    frame.paste(page((900, 1300)), (550, 50))
+    wide_single = _check(frame)
+    tall_single = _check(frame, dpi=(600, 300))
+    assert "suggest 2" in wide_single["evidence"] and "suggest 1" in tall_single["evidence"]
+    assert wide_single["flags"] == [] and tall_single["flags"] == []
+    assert wide_single["confidence"] == pytest.approx(tall_single["confidence"] * 0.8, abs=0.002)
 
 
 def test_note_overhanging_from_the_right_is_flagged_by_its_left_reach():
@@ -548,7 +555,7 @@ def _a4_spread_with_band_stroke(dpi: int, below_mm: float) -> Image.Image:
 def test_stroke_running_just_under_the_band_and_joined_to_it_still_crosses_the_cut(dpi):
     """2 mm under the band the stroke is only a few working px from it, but it is a
     pen stroke across the fold, not the band's ragged edge: its overhang is checked."""
-    result = detect_split(_a4_spread_with_band_stroke(dpi, 2.0), dpi=(dpi, dpi))
+    result = detect_split(_a4_spread_with_band_stroke(dpi, 2.0), dpi=(dpi, dpi), overlap_mm=5.0)
     _two_pages(result, "fold")
     assert len(result["flags"]) == 1
     assert "more than the 5 mm overlap" in result["flags"][0]
@@ -728,3 +735,49 @@ def test_faint_gutter_shadow_inside_the_gap_places_a_gap_cut_at_600_dpi():
     middle (pulled by ragged line ends)."""
     outcomes = _run_case(spread_case("low_contrast_gutter", 600, 2))
     assert all(outcome != "wrong" for outcome, _ in outcomes), outcomes
+
+
+# --- Follow-up to brief 0042: P1 two pages made one, P2 slanted strokes lost ------------
+
+
+@pytest.mark.parametrize("dpi", [150, 300])
+def test_flourish_across_a_wide_gap_does_not_make_two_pages_one_silently(dpi):
+    """A 28 mm gutter with no fold line and no shadow, crossed by one flourish: the
+    flourish's box bridges the gap. Two pages, or a flag; never one page silently."""
+    case, _ = crossing_case(dpi, curved=True, fold_line=False)
+    result = detect_split(case.image, dpi=(dpi, dpi), overlap_mm=3.0)
+    assert result["value"]["pages"] == 2 or result["flags"], result["evidence"]
+
+
+@pytest.mark.parametrize("dpi", [150, 300, 600])
+@pytest.mark.parametrize(
+    ("slope", "curved"),
+    [(0.0, False), (0.3, False), (1.0, False), (0.0, True)],
+    ids=["level", "slope-0.3", "slope-1", "curved"],
+)
+@pytest.mark.parametrize("rising", [True, False], ids=["rising", "falling"])
+def test_stroke_across_a_fold_line_is_counted_and_flagged(dpi, slope, curved, rising):
+    """A stroke from 30 mm left to 12 mm right of a thin fold line reaches past the
+    3 mm overlap on both sides: it cannot be whole on either page, so it must be
+    counted as crossing the cut and flagged, whatever its slope."""
+    case, _ = crossing_case(dpi, slope=slope, rising=rising, curved=curved)
+    result = detect_split(case.image, dpi=(dpi, dpi), overlap_mm=3.0)
+    assert result["value"]["pages"] == 2
+    assert "no ink mark crosses the cut" not in result["evidence"]
+    assert any("whole on neither page" in flag for flag in result["flags"]), result["evidence"]
+
+
+def test_overlap_comes_from_the_core_settings_when_not_given():
+    """One source of truth: without an overlap the split uses the preparation core's
+    overlap_mm from thresholds_prepare.toml, and its own settings hold none."""
+    import tomllib
+    from pathlib import Path
+
+    from pagekit._orient_ink import load_settings
+
+    here = Path(__file__).with_name("thresholds_prepare.toml")
+    core = tomllib.loads(here.read_text())["overlap_mm"]["value"]
+    assert "overlap_mm" not in load_settings()
+    image, _ = _stroke_case(core + 1.0)
+    result = detect_split(image, dpi=DPI)
+    assert f"more than the {core:g} mm overlap" in result["flags"][0]
