@@ -76,7 +76,9 @@ over the scans and writes, in the output folder:
 - `triage-decision-manifest.json`: the same decisions as triage rows over the
   **original** scans (actor `producer`, identity `pagekit`, revision pagekit's
   version, colour mode always `keep`), and `triage-producer-recipe.json` beside it,
-  which the Door requires with producer rows;
+  pagekit's own producer recipe (`pagekit-producer-recipe.v1`: its revision, a digest of
+  its settings and the detector behind each step), which the Door requires with
+  producer rows;
 - `triage-notes.txt`: each page the Door will cut differently from pagekit, and why.
 
 It then says how many pages need review, where to look, and the exact commands to run

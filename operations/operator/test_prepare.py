@@ -144,6 +144,17 @@ def test_prepare_writes_pages_and_a_triage_manifest_the_door_accepts(tmp_path, c
     with pytest.raises(Exception, match="no triage producer recipe"):
         door.load_triage_decisions(out / "triage-decision-manifest.json", None, None)
 
+    # pagekit's rows are declared by pagekit's own recipe, not the instrument's.
+    recipe = json.loads((out / "triage-producer-recipe.json").read_text())
+    assert recipe["schema"] == "pagekit-producer-recipe.v1"
+    assert recipe["producer"]["identity"] == "pagekit"
+    from operations.triage import instrument
+
+    instrument_recipe = tmp_path / "instrument-recipe.json"
+    instrument_recipe.write_text(json.dumps(instrument.producer_recipe(instrument.load_config())))
+    with pytest.raises(Exception, match="duplicate-detection instrument's"):
+        door.load_triage_decisions(out / "triage-decision-manifest.json", None, instrument_recipe)
+
 
 def test_a_second_run_reuses_the_project_and_keeps_the_corrections(tmp_path, capsys):
     _scans(tmp_path / "my scans")

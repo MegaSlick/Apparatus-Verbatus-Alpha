@@ -40,7 +40,12 @@ Optional inputs:
 - **Triage documents** (`common.contracts.triage`): a decision manifest that splits,
   crops, rotates and converts submitted frames, its re-shoot cluster records, and the
   producer recipe. Every submitted frame needs a row; rows for frames outside this
-  submission are allowed.
+  submission are allowed. A manifest with producer rows needs the recipe of the
+  producer that made them: the duplicate-detection instrument's
+  (`triage-producer-recipe.v2`, `operations/triage/instrument.py`) or pagekit's
+  (`pagekit-producer-recipe.v1`, `operations/triage/pagekit_recipe.py`), which every
+  producer row must match in identity, revision and operation order. pagekit's rows
+  under the instrument's recipe are refused.
 - **Corpus register** (`common/corpus_register.py`): sealed into the run as a snapshot.
 
 The folder must hold exactly the ledgered files; an extra file stops the Door before a

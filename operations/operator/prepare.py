@@ -241,16 +241,17 @@ class Prepared:
 
 
 def _plan(request: dict[str, Any]) -> Prepared:
-    from operations.triage import instrument
     from operations.triage.pagekit_geometry import (
         MappingError,
         make_manifest,
         make_row,
         map_pages,
     )
+    from operations.triage.pagekit_recipe import make_recipe
     from pagekit import __version__ as pagekit_version
     from pagekit.prepare import plan
     from pagekit.project import PrepareError, load_settings
+    from pagekit.project import digest as settings_digest
 
     scans = Path(request["scans"])
     if not scans.is_dir():
@@ -311,7 +312,18 @@ def _plan(request: dict[str, Any]) -> Prepared:
             )
     prepared = Prepared(request, planned, pages)
     prepared.manifest = make_manifest(request["corpus_id"], list(rows.values()))
-    prepared.recipe = instrument.producer_recipe(instrument.load_config())
+    methods: dict[str, set[str]] = {}
+    for page in planned.pages:
+        for step, entry in page.steps.items():
+            if entry.get("method"):
+                methods.setdefault(step, set()).add(entry["method"])
+    prepared.recipe = make_recipe(
+        revision=pagekit_version,
+        settings_sha256=settings_digest(
+            {name: entry["value"] for name, entry in planned.settings.items()}
+        ),
+        detector_methods=methods,
+    )
     _check_folder(prepared, set(rows))
     return prepared
 

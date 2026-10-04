@@ -27,7 +27,10 @@ manifest_row_sha256     digest of every other field
 There is no winner or canonical field: triage never chooses among captures.
 
 `actor.kind` is `human`, `model`, `scantailor` or `producer`; a human's `revision` is
-null, every other actor names its resolved revision. `actor` and `human_override` are
+null, every other actor names its resolved revision. Producer rows reach the Door with their
+producer's recipe: the duplicate-detection instrument's, or pagekit's
+(`pagekit-producer-recipe.v1`), which names pagekit's revision, the operation order and
+a digest of pagekit's settings, and must match every producer row. `actor` and `human_override` are
 independent: a person correcting a tool's crop is a tool actor with `human_override`
 true.
 

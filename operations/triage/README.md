@@ -10,6 +10,7 @@ its own output into a link between frames: only a confirmation a person supplies
 | `instrument.py`, `instrument.toml` | Co-visibility candidate evidence for pairs of frames |
 | `producer.py` | Decision-manifest rows, cluster records and corpus-register appends |
 | `paths.py` | Canonical relative-path checks for the producer's file arguments |
+| `pagekit_recipe.py` | `pagekit-producer-recipe.v1`, the producer recipe that declares pagekit's rows at the Door |
 | `pagekit_geometry.py` | Decision-manifest rows that cut pagekit's prepared pages from the original scans (used by `verbatus prepare`) |
 
 ## The instrument
