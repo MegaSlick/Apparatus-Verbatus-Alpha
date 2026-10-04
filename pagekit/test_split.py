@@ -11,7 +11,14 @@ from PIL import Image, ImageChops, ImageDraw
 
 from pagekit._orient_ink import ANSWER_KEYS, TOO_LITTLE_INK, DetectorError
 from pagekit._orient_testpages import PAPER, page, spread, turned, write_block
-from pagekit._split_testspreads import KINDS, crossing_case, single_page_case, spread_case
+from pagekit._split_testspreads import (
+    KINDS,
+    SHEET_KINDS,
+    crossing_case,
+    sheet_case,
+    single_page_case,
+    spread_case,
+)
 from pagekit.split import detect_split
 
 DPI = (300, 300)
@@ -73,12 +80,15 @@ def test_spread_with_soft_shadow_is_cut_in_the_valley():
 
 
 def test_spread_with_no_fold_is_cut_in_the_gap():
+    """Two pages and a cut in the gap. The paper here runs unbroken across the gap (no
+    line, shadow, tone step or edge), so the answer is also flagged for review, as the
+    host decided after brief 0045: an empty band alone may be the middle of one sheet."""
     result = _check(spread(gutter=(920, 1080)))
     cut = _two_pages(result, "gap")
     assert result["value"]["part"] is None
     for y in (0, 700, 1399):
         assert 870 < _x_at(cut, y) < 1080
-    assert result["flags"] == []
+    assert len(result["flags"]) == 1 and EMPTY_BAND in result["flags"][0]
 
 
 def test_leaning_fold_gives_a_leaning_cut_on_the_drawn_line():
@@ -781,3 +791,32 @@ def test_overlap_comes_from_the_core_settings_when_not_given():
     image, _ = _stroke_case(core + 1.0)
     result = detect_split(image, dpi=DPI)
     assert f"more than the {core:g} mm overlap" in result["flags"][0]
+
+
+# --- One sheet with an empty middle (follow-up to brief 0045) ---------------------------
+
+EMPTY_BAND = "two pages decided from an empty band alone"
+
+
+@pytest.mark.parametrize("dpi", [150, 300])
+@pytest.mark.parametrize("kind", SHEET_KINDS)
+def test_one_sheet_with_an_empty_middle_is_two_pages_flagged_in_every_turn(kind, dpi):
+    """A landscape sheet of unbroken paper with two columns (handwritten or printed),
+    or a map, and nothing in the middle: only an empty band suggests two pages. The
+    answer stays two pages with the cut in the band, and is flagged for review."""
+    case = sheet_case(kind, dpi)
+    for quarter_turns in range(4):
+        result = detect_split(
+            turned(case.image, quarter_turns), turns=(4 - quarter_turns) % 4, dpi=(dpi, dpi)
+        )
+        assert result["value"]["pages"] == 2
+        assert any(EMPTY_BAND in flag for flag in result["flags"]), result["evidence"]
+
+
+@pytest.mark.parametrize("seed", [1, 2], ids=["usual", "hard"])
+@pytest.mark.parametrize("kind", KINDS)
+def test_spread_with_a_gutter_cue_is_not_flagged_as_an_empty_band(kind, seed):
+    """Every spread kind whose gutter shows something (a line, a shadow, a faint shadow,
+    a step in paper tone) is not sent to review by the empty-band rule."""
+    result = detect_split(spread_case(kind, 150, seed).image, dpi=(150, 150))
+    assert not any(EMPTY_BAND in flag for flag in result["flags"]), result["evidence"]

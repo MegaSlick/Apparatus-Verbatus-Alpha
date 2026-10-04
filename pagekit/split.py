@@ -789,6 +789,7 @@ def detect_split(
                 f"the gap between the pages leans {value['lean_max_deg']:g} degrees, the "
                 "most a cut may lean, or more; the cut may not follow it"
             )
+        paper_break = False
         faint = None
         if valley is None and valley_depth >= value["faint_shadow_depth"]:
             faint, _, _ = _valley(
@@ -801,6 +802,7 @@ def detect_split(
             # A shadow too faint to be a fold by itself still marks where the gutter
             # is inside the gap.
             line = faint
+            paper_break = True
             evidence.append(
                 f"a faint shadow {valley_depth:.0f} grey levels deep inside the gap places the cut"
             )
@@ -808,6 +810,7 @@ def detect_split(
             # Where the two pages' paper differs in tone, the step between them is
             # where they meet; the gap's middle is pulled by ragged line ends.
             line = _Line(float(tone_step), line.y_mid, 0.0, gap.width)
+            paper_break = True
             evidence.append(
                 f"a step in paper tone at x={full_x(tone_step)} inside the gap places the cut"
             )
@@ -827,6 +830,18 @@ def detect_split(
         evidence.append(reason)
         confidence = strength(gap.width, value["min_gap_share"] * width)
         cut, method, part = line, "gap", None
+        # An edge in the paper inside the gap (a dark band or a thin line, as where two
+        # pages or a page edge meet) also breaks the paper.
+        if any(gap.start <= (a + b) / 2 <= gap.end for a, b in band_columns) or any(
+            gap.start - tolerance <= ln.x_mid <= gap.end + tolerance for ln in lines
+        ):
+            paper_break = True
+        if not paper_break:
+            flags.append(
+                "two pages decided from an empty band alone; the paper runs unbroken across "
+                "it (no fold line, no shadow, no change in tone or edge); check whether this "
+                "is one sheet"
+            )
 
     if cut is not None:
         if prior_pages != 2:
