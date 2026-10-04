@@ -217,15 +217,15 @@ def measure(prepared: Path, gold_path: Path) -> dict[str, Any]:
             raise PrepareError(f"the answer file's source {wanted!r} {problem} the prepared batch")
         pages = sorted(by_source[matches[0]], key=lambda page: page["page"])
         first = pages[0]
-        resolution = first["source_resolution"]["value"]
         turns = first["steps"]["orientation"]["value"]
-        if resolution is None:
+        # The upright frame's resolution, as prepare recorded it: the tag (whoever
+        # applied it) and the turns are already in its axes.
+        upright = first.get("upright_resolution")
+        if upright is None:
             dpi = (300.0, 300.0)
             notes.append(f"{wanted}: no resolution, so millimetres assume 300 dpi")
         else:
-            if Chain.from_dict(first["geometry"]).tag in (5, 6, 7, 8):
-                resolution = (resolution[1], resolution[0])  # the tag swaps the axes
-            dpi = (resolution[1], resolution[0]) if turns % 2 else tuple(resolution)
+            dpi = tuple(upright)
         steps = first["steps"]
         if entry.get("orientation") is not None:
             error = abs(turns - entry["orientation"])

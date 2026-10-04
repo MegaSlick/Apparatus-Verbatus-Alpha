@@ -47,10 +47,11 @@ _PAGE_KEYS = {"page", "output", "steps"}
 # Keys added by spec 0007; a project written before it does not hold them.
 _SOURCE_OPTIONAL = frozenset({"orientation_tag"})
 _TAG_KEYS = {"found", "trusted", "trust_origin", "applied", "transform"}
+_TAG_OPTIONAL = frozenset({"applied_by", "grid"})
 # Corrections that are not steps: for the whole source, and per page.
 SOURCE_SETTINGS = ("resolution", "tag_trust")
-PAGE_SETTINGS = ("output_mode", "density")
-_PAGE_OPTIONAL = frozenset({"output_mode", "density"})
+PAGE_SETTINGS = ("output_mode", "density", "crop")
+_PAGE_OPTIONAL = frozenset({"output_mode", "density", "crop"})
 _MODE_KEYS = {"value", "set_by", "evidence"}
 _RECORD_KEYS = {
     "value",
@@ -101,6 +102,12 @@ def load_settings(overrides: dict[str, Any] | None = None) -> dict[str, dict[str
     for name in _POSITIVE:
         if not value[name] > 0:
             raise PrepareError(f"setting {name!r} must be more than 0")
+    if value["crop"] not in ("none", "page", "content"):
+        raise PrepareError("crop must be none, page or content")
+    if value["crop_detectors_when_off"] not in (0, 1) or value["stage_cache"] not in (0, 1):
+        raise PrepareError("crop_detectors_when_off and stage_cache are 1 (on) or 0 (off)")
+    if value["cache_preview_long_side_px"] < 32:
+        raise PrepareError("cache_preview_long_side_px must be at least 32")
     if value["padding_mm"] < 0 or value["padding_px"] < 0:
         raise PrepareError("padding must not be negative")
     if value["padding_mm"] > 0 and value["padding_px"] > 0:
@@ -109,9 +116,13 @@ def load_settings(overrides: dict[str, Any] | None = None) -> dict[str, dict[str
         raise PrepareError("padding_px must be a whole number of pixels")
     if value["grey_rule"] not in ("luminance", "red", "green", "blue"):
         raise PrepareError("grey_rule must be luminance, red, green or blue")
-    if not 0 < value["colour_paper_percentile"] <= 1:
-        raise PrepareError("colour_paper_percentile must be more than 0 and at most 1")
-    for name in ("colour_working_dpi", "colour_chroma_margin", "colour_min_area_mm2"):
+    for name in (
+        "colour_working_dpi",
+        "colour_chroma_margin",
+        "colour_min_area_mm2",
+        "colour_noise_spread",
+        "colour_thinnest_mm",
+    ):
         if not value[name] > 0:
             raise PrepareError(f"setting {name!r} must be more than 0")
     if value["trust_orientation_tag"] not in (0, 1):
@@ -247,7 +258,7 @@ def _closed(data: Any, keys: set[str], where: str, optional: frozenset = frozens
 
 
 def _check_tag(data: Any, where: str) -> None:
-    _closed(data, _TAG_KEYS, where)
+    _closed(data, _TAG_KEYS, where, _TAG_OPTIONAL)
     found = data["found"]
     if found is not None and (isinstance(found, bool) or not isinstance(found, int)):
         raise PrepareError(f"{where}: found is the tag's whole-number value or null")
@@ -330,6 +341,14 @@ def validate_project(data: Any) -> dict[str, Any]:
             _closed(page, _PAGE_KEYS, f"{where} page {number}", _PAGE_OPTIONAL)
             if "output_mode" in page:
                 _check_mode(page["output_mode"], f"{where} page {number} output_mode")
+            if "crop" in page:
+                _closed(page["crop"], _MODE_KEYS, f"{where} page {number} crop")
+                if page["crop"]["value"] not in ("none", "page", "content") or page["crop"][
+                    "set_by"
+                ] not in ("manual", "locked"):
+                    raise PrepareError(
+                        f"{where} page {number} crop: none, page or content, by hand"
+                    )
             if "density" in page:
                 try:
                     _resolution(page["density"])
@@ -463,6 +482,10 @@ def _setting_value(step: str, value: Any) -> Any:
         return _resolution(value)
     if step == "density":
         return _resolution(value)
+    if step == "crop":
+        if value not in ("none", "page", "content"):
+            raise AnswerError("crop is none (keep the whole side), page or content")
+        return value
     if step == "output_mode":
         if value not in ("source", "grey"):
             raise AnswerError("output_mode is source (as scanned) or grey")

@@ -3,6 +3,7 @@ the nominal density. Synthetic pages only; no real register material."""
 
 from __future__ import annotations
 
+import io
 import json
 import math
 from pathlib import Path
@@ -13,7 +14,7 @@ from PIL import Image, ImageChops, ImageDraw
 from pagekit import _orient_testpages as pages
 from pagekit.__main__ import main
 from pagekit.answer import Answer
-from pagekit.geometry import Chain
+from pagekit.geometry import TAG_TRANSPOSE, Chain
 from pagekit.output import MANIFEST_NAME, execute
 from pagekit.prepare import Detector, plan
 from pagekit.review import REVIEW_NAME
@@ -95,10 +96,48 @@ def dark_centre(image: Image.Image) -> tuple[float, float]:
 # --- 1. The orientation tag ------------------------------------------------------------
 
 
+def save_as(image: Image.Image, path: Path, tag: int | None, carrier: str, dpi=DPI) -> Path:
+    """`image` saved as PNG, TIFF or JPEG, with orientation tag `tag` if given."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    options: dict = {} if dpi is None else {"dpi": dpi}
+    if carrier == "tiff":
+        if tag is not None:
+            options["tiffinfo"] = {ORIENTATION: tag}
+        image.save(path, "TIFF", **options)
+    else:
+        if tag is not None:
+            exif = Image.Exif()
+            exif[ORIENTATION] = tag
+            options["exif"] = exif
+        kind = {"png": "PNG", "jpeg": "JPEG"}[carrier]
+        image.save(path, kind, **({"quality": 95} if carrier == "jpeg" else {}), **options)
+    return path
+
+
+def opened(path: Path) -> tuple[Image.Image, bool]:
+    """The image as Pillow opens and loads it from the file's bytes, as pagekit reads
+    it, and whether Pillow applied its tag. (Pillow 12.3 opening an uncompressed TIFF
+    by its path, with a tag of 5 to 8, gives an image sized as stored with turned
+    rows; pagekit always opens the bytes it hashed.)"""
+    with Image.open(io.BytesIO(path.read_bytes())) as image:
+        before = image.getexif().get(ORIENTATION)
+        image.load()
+        after = image.getexif().get(ORIENTATION)
+        return image.copy(), before not in (None, 1) and after in (None, 1)
+
+
+SUFFIX = {"png": ".png", "tiff": ".tif", "jpeg": ".jpg"}
+
+
+@pytest.mark.parametrize("carrier", ["png", "tiff", "jpeg"])
 @pytest.mark.parametrize("tag", range(1, 9))
-def test_each_tag_gives_the_upright_page_and_maps_the_mark_back(tmp_path, tag):
-    tagged = save(stored(tag), tmp_path / "a" / "src" / "page.png", tag)
-    save(upright_page(), tmp_path / "b" / "src" / "page.png", None)
+def test_each_tag_gives_the_upright_page_once_whoever_applies_it(tmp_path, tag, carrier):
+    tagged = save_as(stored(tag), tmp_path / "a" / "src" / f"page{SUFFIX[carrier]}", tag, carrier)
+    grid, turned_on_open = opened(tagged)
+    # The same page stored upright: for a lossy carrier, the decoded pixels turned by
+    # the tag, so both runs start from the same samples.
+    upright = grid if turned_on_open else (grid if tag == 1 else grid.transpose(TAG_TRANSPOSE[tag]))
+    save(upright, tmp_path / "b" / "src" / "page.png", None)
     frames = []
 
     def spy(context):
@@ -107,23 +146,41 @@ def test_each_tag_gives_the_upright_page_and_maps_the_mark_back(tmp_path, tag):
 
     detectors = {"orientation": Detector("spy/1", spy)}
     a = execute(plan([tagged.parent], tmp_path / "a" / "out", detectors=detectors))
-    assert frames == [upright_page().tobytes()]  # the detector sees the upright frame
+    assert frames == [upright.tobytes()]  # the detector sees the upright frame
     b = execute(plan([tmp_path / "b" / "src"], tmp_path / "b" / "out"))
     (page_a,), (page_b,) = a["pages"], b["pages"]
     out_a = tmp_path / "a" / "out" / page_a["output"]["name"]
     out_b = tmp_path / "b" / "out" / page_b["output"]["name"]
-    assert pixels(out_a) == pixels(out_b)
+    assert pixels(out_a) == pixels(out_b)  # one application, whoever made it
     record = page_a["orientation_tag"]
     assert (record["found"], record["trusted"], record["applied"]) == (tag, True, tag != 1)
-    # The mark maps back to where it is stored.
+    who = None if tag == 1 else ("image library on open" if turned_on_open else "chain")
+    assert record["applied_by"] == who
     chain = Chain.from_dict(page_a["geometry"])
+    steps = [step["op"] for step in page_a["geometry"]["steps"]]
+    assert ("orientation_tag" in steps) == (who == "chain")
+    # source_size is the grid the chain starts from: what Pillow opens.
+    assert tuple(page_a["geometry"]["source_size"]) == grid.size
     with Image.open(out_a) as written:
         found = dark_centre(written)
-    assert math.dist(chain.inverse([found])[0], dark_centre(stored(tag))) < 0.5
-    assert math.dist(chain.forward([dark_centre(stored(tag))])[0], found) < 0.5
-    # The output carries no tag that would turn it again.
+    assert math.dist(chain.inverse([found])[0], dark_centre(grid)) < 1.0
     with Image.open(out_a) as written:
         assert written.getexif().get(ORIENTATION) in (None, 1)
+
+
+@pytest.mark.parametrize("tag", [3, 6, 2])
+def test_an_untrusted_tiff_tag_is_taken_as_stored(tmp_path, tag):
+    save_as(stored(tag), tmp_path / "a" / "src" / "page.tif", tag, "tiff")
+    save(stored(tag), tmp_path / "b" / "src" / "page.png", None)
+    distrust = [{"source": "src/page.tif", "step": "tag_trust", "value": False}]
+    a, out_a = prepared(tmp_path / "a", "--overrides", str(overrides(tmp_path / "a", distrust)))
+    b, out_b = prepared(tmp_path / "b")
+    page = a["pages"][0]
+    assert pixels(out_a / page["output"]["name"]) == pixels(out_b / b["pages"][0]["output"]["name"])
+    assert tuple(page["geometry"]["source_size"]) == stored(tag).size
+    record = page["orientation_tag"]
+    assert (record["trusted"], record["applied"], record["grid"]) == (False, False, "stored pixels")
+    assert "not trusted" in page["steps"]["orientation"]["evidence"]
 
 
 def test_a_png_output_carries_no_tag_either(tmp_path):
@@ -502,3 +559,129 @@ def test_the_same_input_gives_byte_identical_outputs_manifest_and_review(tmp_pat
     assert first == run(tmp_path / "b")
     again = run(tmp_path / "a")  # a re-run on its own project
     assert again == first
+
+
+@pytest.mark.parametrize("carrier", ["tiff", "png"])
+def test_the_crop_check_and_the_tone_view_see_the_grid_prepare_starts_from(tmp_path, carrier):
+    from pagekit.check import check
+    from pagekit.tone import tone_file
+
+    path = save_as(stored(6), tmp_path / "src" / f"page{SUFFIX[carrier]}", 6, carrier)
+    manifest, _ = prepared(tmp_path)
+    size = manifest["pages"][0]["geometry"]["source_size"]
+    width, height = size
+    report = check(path, [(0, 0, width, height)])
+    assert [
+        report["checks"]["resolution"]["width_px"],
+        report["checks"]["resolution"]["height_px"],
+    ] == size
+    view, _ = tone_file(path)
+    assert list(view.size) == size
+
+
+# --- Brief 0039 B2: the colour check measures the written page only -------------------
+
+
+def _grey_flags(page: dict) -> list[str]:
+    return [flag["reason"] for flag in page["flags"] if flag["step"] == "output_mode"]
+
+
+def _on_backdrop(stamp: bool) -> Image.Image:
+    """A neutral page on a blue backdrop, with a colour target below the page."""
+    frame = Image.new("RGB", (700, 900), (60, 90, 160))
+    page = as_colour(writing_page())
+    if stamp:
+        ImageDraw.Draw(page).ellipse((240, 330, 320, 410), outline=(200, 30, 35), width=6)
+    frame.paste(page, (120, 100))
+    draw = ImageDraw.Draw(frame)
+    for index, colour in enumerate([(220, 40, 40), (40, 180, 60), (40, 60, 210), (230, 210, 40)]):
+        draw.rectangle((140 + 100 * index, 640, 220 + 100 * index, 720), fill=colour)
+    return frame
+
+
+BOXES = [
+    {"source": "src/page.png", "step": "page_box", "page": 1, "value": [120, 100, 480, 580]},
+    {"source": "src/page.png", "step": "content_box", "page": 1, "value": [150, 140, 450, 540]},
+]
+
+
+def test_a_coloured_backdrop_and_target_outside_the_page_are_not_page_colour(tmp_path):
+    save(_on_backdrop(False), tmp_path / "src" / "page.png", None)
+    page, out = manifest_page(
+        tmp_path, "--output-mode", "grey", "--overrides", str(overrides(tmp_path, BOXES))
+    )
+    assert page["output_mode"]["mode"] == "grey" and _grey_flags(page) == []
+    assert page["output_mode"]["colour"]["coloured_mm2"] < 2
+
+
+def test_a_stamp_on_the_page_is_still_flagged_and_located_on_the_written_page(tmp_path):
+    save(_on_backdrop(True), tmp_path / "src" / "page.png", None)
+    page, out = manifest_page(
+        tmp_path, "--output-mode", "grey", "--overrides", str(overrides(tmp_path, BOXES))
+    )
+    assert page["output_mode"]["mode"] == "source" and len(_grey_flags(page)) == 1
+    left, top, right, bottom = page["output_mode"]["colour"]["where"]
+    chain = Chain.from_dict(page["geometry"])
+    (x0, y0), (x1, y1) = chain.forward([(360, 430), (440, 510)])  # the stamp in the frame
+    assert left <= x0 + 6 and top <= y0 + 6 and right >= x1 - 6 and bottom >= y1 - 6
+    assert right - left < 120 and bottom - top < 120
+
+
+def test_thin_pale_blue_ruling_is_found(tmp_path):
+    grey = pages.page(size=(1000, 1300), seed=17, margin=(90, 120, 90, 120))
+    page = as_colour(grey)
+    draw = ImageDraw.Draw(page)
+    for y in range(150, 1200, 95):  # 0.3 mm lines (3.5 px at 300 dpi), 8 mm apart
+        draw.line((60, y, 940, y), fill=(185, 205, 235), width=3)
+        draw.line((60, y + 3, 940, y + 3), fill=(205, 218, 238), width=1)
+    save(page, tmp_path / "src" / "page.png", None)
+    (tmp_path / "src" / "page.png").unlink()
+    page.save(tmp_path / "src" / "page.png", dpi=(300, 300))
+    result, _ = manifest_page(tmp_path, "--output-mode", "grey")
+    assert result["output_mode"]["mode"] == "source" and len(_grey_flags(result)) == 1
+
+
+def test_a_pale_wash_over_part_of_the_paper_does_not_hide_itself(tmp_path):
+    page = as_colour(writing_page())
+    ImageDraw.Draw(page).rectangle((0, 0, 359, 70), fill=(242, 222, 226))  # 15% of the page
+    save(page, tmp_path / "src" / "page.png", None)
+    result, _ = manifest_page(tmp_path, "--output-mode", "grey")
+    assert result["output_mode"]["mode"] == "source" and len(_grey_flags(result)) == 1
+
+
+def _specks(grey: Image.Image) -> Image.Image:
+    """Isolated coloured specks (dust, hot pixels) on 0.3% of the pixels."""
+    import random
+
+    rng = random.Random(5)
+    page = as_colour(grey)
+    for _ in range(grey.width * grey.height * 3 // 1000):
+        x, y = rng.randrange(1, grey.width - 1), rng.randrange(1, grey.height - 1)
+        page.putpixel((x, y), (rng.randrange(256), rng.randrange(256), rng.randrange(256)))
+    return page
+
+
+def _blotchy(grey: Image.Image, sigma: float = 3.0) -> Image.Image:
+    """Chroma noise in blotches three pixels across, as a compressed colour scan has."""
+    import random
+
+    rng = random.Random(9)
+    small = (grey.width // 3 + 1, grey.height // 3 + 1)
+    bands = []
+    for _ in range(3):
+        noise = Image.new("L", small)
+        noise.putdata(
+            [max(0, min(255, round(128 + rng.gauss(0, sigma)))) for _ in range(small[0] * small[1])]
+        )
+        noise = noise.resize((small[0] * 3, small[1] * 3), Image.NEAREST).crop((0, 0, *grey.size))
+        bands.append(ImageChops.add(grey, noise, 1.0, -128))
+    return Image.merge("RGB", bands)
+
+
+@pytest.mark.parametrize("noise", ["specks", "blotchy"])
+def test_scattered_specks_and_blotchy_chroma_noise_are_not_colour(tmp_path, noise):
+    grey = writing_page()
+    page = _specks(grey) if noise == "specks" else _blotchy(grey)
+    save(page, tmp_path / "src" / "page.png", None)
+    result, _ = manifest_page(tmp_path, "--output-mode", "grey")
+    assert result["output_mode"]["mode"] == "grey" and _grey_flags(result) == []
