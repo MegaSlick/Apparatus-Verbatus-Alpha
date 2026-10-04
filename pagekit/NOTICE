@@ -9,5 +9,10 @@ developers; no code from them is used.
 
 The ink threshold follows N. Otsu, "A Threshold Selection Method from Gray-Level
 Histograms", IEEE Transactions on Systems, Man, and Cybernetics, SMC-9(1):62-66, 1979.
+It is used again by `prepare` to find the paper class when estimating the paper colour.
+
+The page polygon on each side of a cut is clipped with one step of the method in
+I. E. Sutherland and G. W. Hodgman, "Reentrant Polygon Clipping", Communications of the
+ACM, 17(1):32-42, 1974.
 
 Built on Pillow (MIT-CMU licence): https://python-pillow.org

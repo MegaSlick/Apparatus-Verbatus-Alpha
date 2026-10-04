@@ -20,4 +20,4 @@ pagekit = "pagekit.__main__:main"
 version = { attr = "pagekit.__version__" }
 
 [tool.setuptools.package-data]
-pagekit = ["thresholds.toml"]
+pagekit = ["thresholds.toml", "thresholds_prepare.toml"]
