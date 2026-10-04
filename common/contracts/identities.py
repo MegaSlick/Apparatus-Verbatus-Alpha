@@ -42,7 +42,10 @@ _PREFIXES: Final = {
 # Typed by an operator and safe as a directory name on macOS and Linux alike.
 _RUN_ID_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
-_ID_PATTERN: Final = re.compile(r"^(pg|act|ppg|pac|rgn|att|art)_[0-9a-f]{%d}$" % _DIGEST_CHARS)
+# Every prefix `derive` can mint, so `verify` never refuses an identity it could derive.
+_ID_PATTERN: Final = re.compile(
+    r"^(%s)_[0-9a-f]{%d}$" % ("|".join(_PREFIXES.values()), _DIGEST_CHARS)
+)
 
 
 def validate_run_id(run_id: Any) -> str:
