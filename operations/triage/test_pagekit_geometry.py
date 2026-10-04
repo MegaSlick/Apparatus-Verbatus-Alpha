@@ -412,3 +412,30 @@ def test_padding_past_the_doors_limit_is_refused_at_prepare(tmp_path):
     scan = _scan(tmp_path / "scans", (400, 500), [(150, 160)])
     with pytest.raises(MappingError, match="post-crop"):
         _prepare(tmp_path, scan, [], settings={"padding_px": 120})
+
+
+@pytest.mark.parametrize("tag", [3, 6, 8])
+def test_a_tagged_tiff_scan_is_cut_by_the_door_as_pagekit_cut_it(tmp_path, tag):
+    """Pillow turns a TIFF upright as it opens it, and the Door and the Exemplar open
+    masters through Pillow, so the Door's frame is that turned one. The row must
+    describe the same frame (its size is checked against it at the Door) and its page
+    must be pagekit's."""
+    dots = [(150, 160), (520, 140), (330, 600), (140, 880)]
+    folder = tmp_path / "scans"
+    folder.mkdir()
+    image = Image.new("L", (703, 1000), PAPER)
+    draw = ImageDraw.Draw(image)
+    for x, y in dots:
+        draw.rectangle((x - 5, y - 5, x + 5, y + 5), fill=INK)
+    exif = Image.Exif()
+    exif[0x0112] = tag
+    scan = folder / "scan.tif"
+    image.save(scan, dpi=(300, 300), exif=exif, compression="tiff_adobe_deflate")
+    pages, mapped = _prepare(tmp_path, scan, [])
+    (page,), (door_page,) = pages, mapped
+    with Image.open(scan) as opened:
+        assert page.chain.source_size == opened.size, "the row's frame is not the Door's"
+    door = _door(scan, door_page.part)
+    with Image.open(tmp_path / "out" / page.output_name) as prepared:
+        assert door.size == prepared.size
+        assert door.tobytes() == prepared.convert("L").tobytes()
