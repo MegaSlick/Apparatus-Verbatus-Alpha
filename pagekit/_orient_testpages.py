@@ -411,3 +411,71 @@ def figure_page(
                 x += _figure(draw, digit, x, base, tall, stroke, style)
         base += round(spacing * tall)
     return image.filter(ImageFilter.GaussianBlur(dpi / 500))
+
+
+def account_page(
+    dpi: int = 300,
+    seed: int = 1,
+    *,
+    style: str = "plain",
+    serif: bool = True,
+    spacing: float = 1.3,
+    words_first: bool = True,
+    points: float = 10,
+) -> Image.Image:
+    """A printed account page: a column of words (an entry or a name per line) beside
+    three columns of right-aligned amounts, lines `spacing` times the type size apart.
+    The words come first (left) or between the first and second amounts."""
+    rng = random.Random(seed)
+    width, height = round(8.27 * dpi), round(11.69 * dpi)
+    image = Image.new("L", (width, height), 232)
+    draw = ImageDraw.Draw(image)
+    scratch = ImageDraw.Draw(Image.new("L", (1, 1)))
+    size = points / 72 * dpi
+    xh = max(3, round(0.47 * size))
+    tall = round(0.7 * size)
+    stroke = max(1, round(size / 15))
+    margin = round(20 / 25.4 * dpi)
+    usable = width - 2 * margin
+    word_width = round(0.42 * usable)
+    amount_width = (usable - word_width) // 3
+    slots = ["words", "amount", "amount", "amount"]
+    if not words_first:
+        slots = ["amount", "words", "amount", "amount"]
+    base = margin + round(size)
+    while base <= height - margin:
+        x = margin
+        for slot in slots:
+            if slot == "words":
+                cursor = x + round(0.3 * size)
+                while True:
+                    word = rng.choice(_PRINT_WORDS)
+                    if cursor + len(word) * 0.8 * xh > x + word_width - round(0.6 * size):
+                        break
+                    if rng.random() < 0.15:
+                        break
+                    for ch in word:
+                        cursor += _type_glyph(draw, ch, cursor, base, xh, stroke, 30, serif)
+                    cursor += round(0.6 * xh)
+                x += word_width
+            else:
+                text = f"{rng.randint(1, 10 ** rng.randint(1, 4))}{rng.randint(0, 99):02d}"
+                total = sum(_figure(scratch, d, 0, tall, tall, stroke, style) for d in text)
+                cursor = x + amount_width - total - round(0.5 * size)
+                for digit in text:
+                    cursor += _figure(draw, digit, cursor, base, tall, stroke, style)
+                x += amount_width
+        base += round(spacing * size)
+    return image.filter(ImageFilter.GaussianBlur(dpi / 500))
+
+
+def notes_page(seed: int = 5, *, notes_width: int = 300) -> Image.Image:
+    """A page of writing (lines across) with a margin column of notes written a quarter
+    turn to it, `notes_width` px wide down the left side."""
+    image = Image.new("L", (1240, 1754), PAPER)
+    write_block(ImageDraw.Draw(image), (notes_width + 120, 120, 1180, 1650), seed)
+    strip = Image.new("L", (1400, notes_width), 255)
+    write_block(ImageDraw.Draw(strip), (0, 20, 1400, notes_width - 20), seed + 9)
+    canvas = Image.new("L", image.size, 255)
+    canvas.paste(strip.transpose(Image.Transpose.ROTATE_90), (60, 180))
+    return ImageChops.darker(image, canvas)

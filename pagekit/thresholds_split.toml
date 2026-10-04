@@ -43,6 +43,12 @@ meaning = "Mean thickness in working px at or below which a long mark that is no
 #   three styles (monospaced with footed 1, proportional, rounder), five columns,
 #   right-aligned and ragged, line spacing 1.2, 1.6 and 2.4 figure heights, 150 and
 #   300 dpi, all four turns (all flagged, none decided);
+# - pagekit's own account pages (brief 0034 follow-up): a column of drawn words beside
+#   three columns of right-aligned figures, three figure styles with serif or sans
+#   words, spacing 1.3, 1.6 and 2.0, words left or between the amounts, 150 and 300
+#   dpi, all four turns; and pages with margin notes turned a quarter, 200 to 560 px
+#   wide (the tile-dissent level sits between the widest notes decided, 35%, and the
+#   blocks that must stay open, 41% and above);
 # - the lead's two real register spreads (dense 17th and 18th century French cursive),
 #   run locally only.
 # The strip widths, core-band shares and the 1600 px working size were chosen on these;
@@ -142,6 +148,16 @@ meaning = "Share of marks within same_size_tolerance of the median height (or wi
 value = 0.15
 status = "UNMEASURED"
 meaning = "Relative distance from the median mark height (or width) within which a mark counts as the same size."
+
+[tile_dissent_share]
+value = 0.38
+status = "UNMEASURED"
+meaning = "Share of the voting tiles of writing whose own vote is against the median line direction above which the direction is flagged, not decided. On pagekit's pages: text and cursive 0 to 0.16, margin notes turned a quarter 0.22 and 0.35 (decided right), account pages mixing words with figure columns up to 0.42 before tiles of one-size marks were left out (0.09 after)."
+
+[tile_min_marks]
+value = 6
+status = "UNMEASURED"
+meaning = "Fewest marks a tile must hold for the same-size test to be applied to it; a tile of mostly one size (figures in columns) then does not vote on the line direction."
 
 [orient_tile_px]
 value = 96
@@ -343,7 +359,12 @@ meaning = "Writing within this many working px of the frame edge counts as cut o
 [backdrop_min_thickness_px]
 value = 5
 status = "UNMEASURED"
-meaning = "Size in working px of the square opening that separates the thick part (backdrop, shadow, a blot) of a mark joined to a dark band; only that part is excused from writing across the cut. Thin pieces at least three times this long that reach away from the band are a pen stroke and still count; shorter ones and fringes within this distance of the band edge do not."
+meaning = "Size in working px of the square opening that separates the thick part (backdrop, shadow, a blot) of a mark joined to a dark band; only that part is excused from writing across the cut. Thin pieces at least three times this long are a pen stroke and still count, unless they touch the band's edge along most of their length (fringe_touch_share), which makes them the band's own ragged edge; a dropped piece that crosses the cut by more than the overlap is flagged."
+
+[fringe_touch_share]
+value = 0.6
+status = "UNMEASURED"
+meaning = "Share of its length along which a thin piece left beside a dark band must touch the band's edge (within touch_px) to count as the band's own ragged edge rather than a pen stroke running just under it."
 
 [overlap_mm]
 value = 5.0
