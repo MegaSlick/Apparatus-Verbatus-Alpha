@@ -134,14 +134,19 @@ status = "UNMEASURED"
 meaning = "How a page chosen grey is made from a colour source whose channels differ: luminance (0.299 R + 0.587 G + 0.114 B), red, green or blue. A source with equal channels takes the common channel, exactly."
 
 [colour_working_dpi]
-value = 100
+value = 200
 status = "UNMEASURED"
 meaning = "Resolution of the reduced copy of a page on which its colour is measured before it is made grey."
 
-[colour_paper_percentile]
-value = 0.99
+[colour_noise_spread]
+value = 3.0
 status = "UNMEASURED"
-meaning = "The share of the page's plain paper whose chroma (largest minus smallest channel) is taken as its colour noise."
+meaning = "The paper's colour noise is its median chroma (largest minus smallest channel) plus this many times its median absolute deviation, scaled to a standard deviation; taken from the most neutral paper, so a pale colour over part of the page does not hide itself."
+
+[colour_thinnest_mm]
+value = 0.25
+status = "UNMEASURED"
+meaning = "The narrowest coloured line, in millimetres, the colour check keeps; narrower specks are taken as noise."
 
 [colour_chroma_margin]
 value = 12

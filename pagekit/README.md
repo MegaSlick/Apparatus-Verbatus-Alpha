@@ -209,16 +209,30 @@ exact. Otherwise the `grey_rule` setting (or `--grey-rule`) decides: `luminance`
 (the ITU-R BT.601 weights, 0.299 red + 0.587 green + 0.114 blue), or one channel,
 `red`, `green` or `blue`; the conversion is then a reviewed one.
 
-Before a colour page is made grey, pagekit measures its colour: the chroma of each
-pixel (largest minus smallest channel) on a reduced copy, against the chroma noise of
-the page's own plain paper. If marks stand clearly above that noise
-(`colour_chroma_margin`) over at least `colour_min_area_mm2`, the page is flagged ("this
+Before a colour page is made grey, pagekit measures its colour on the written page
+only (its margin box, within the page box; a coloured backdrop or a colour target
+beside the paper does not count): the chroma of each pixel (largest minus smallest
+channel) on a copy at `colour_working_dpi`, against the chroma noise of the page's own
+plain paper, taken from its most neutral part (the median plus `colour_noise_spread`
+times the median absolute deviation, so a pale wash over part of the paper does not
+raise it). Coloured pixels are opened by a square as wide as `colour_thinnest_mm`
+(at least two pixels), which drops stray specks and keeps ruling and other lines that
+wide. If marks stand clearly above the noise (`colour_chroma_margin`) over at least
+`colour_min_area_mm2`, the page is flagged ("this
 page holds colour that grey would remove", naming where) and kept in colour, unless grey
 was set by hand or locked for it, in which case it is grey and the flag stays. Colour
 that is only sensor noise does not count. The manifest's `output_mode` records the mode
 written, the choice and who made it, the rule, whether it was exact, and the colour
 measure; the review sheet shows the same with lines to keep the page as scanned or to
 force grey.
+
+What the colour check does not detect: colour fainter than `colour_chroma_margin`
+above the paper's noise; coloured lines thinner than `colour_thinnest_mm`; a colour
+covering more than half of the paper, which reads as the paper's own tint; and
+differences between inks that are less saturated than the paper itself. Black and
+brown inks on yellowed paper are not compared with each other, so in grey they may
+merge into one level; when the difference between such inks matters, keep the page in
+source mode.
 
 ### Padding apart from the margin
 
@@ -411,8 +425,9 @@ parameters, with both composed affine maps (source to output and back) and the f
 colour; every step's value with origin, confidence, evidence and flags; the flags; and
 the verdict, `review` or `no_flags`. `batch` holds the volume-wide comparison: for each
 measurement the number of pages, whether it was compared, the median, the spread and how
-many pages were flagged. `review` names the review sheet. Spec 0007 adds, for each page, `orientation_tag`, `output_mode`
-and `density` (null unless set), and in `geometry` the `margin_box` and `regions`; with
+many pages were flagged. `review` names the review sheet. Spec 0007 adds, for each page, `orientation_tag`, `output_mode`,
+`density` (null unless set) and `upright_resolution` (the usable resolution of the
+upright frame, in the axes the tag and the turns give, before any shrinking), and in `geometry` the `margin_box` and `regions`; with
 no tag, no grey choice and no padding every earlier value is unchanged.
 `skipped` lists the source
 files that could not be used, each with `name`, `path` (from the project file's folder),

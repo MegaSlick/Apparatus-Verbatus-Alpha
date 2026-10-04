@@ -577,3 +577,111 @@ def test_the_crop_check_and_the_tone_view_see_the_grid_prepare_starts_from(tmp_p
     ] == size
     view, _ = tone_file(path)
     assert list(view.size) == size
+
+
+# --- Brief 0039 B2: the colour check measures the written page only -------------------
+
+
+def _grey_flags(page: dict) -> list[str]:
+    return [flag["reason"] for flag in page["flags"] if flag["step"] == "output_mode"]
+
+
+def _on_backdrop(stamp: bool) -> Image.Image:
+    """A neutral page on a blue backdrop, with a colour target below the page."""
+    frame = Image.new("RGB", (700, 900), (60, 90, 160))
+    page = as_colour(writing_page())
+    if stamp:
+        ImageDraw.Draw(page).ellipse((240, 330, 320, 410), outline=(200, 30, 35), width=6)
+    frame.paste(page, (120, 100))
+    draw = ImageDraw.Draw(frame)
+    for index, colour in enumerate([(220, 40, 40), (40, 180, 60), (40, 60, 210), (230, 210, 40)]):
+        draw.rectangle((140 + 100 * index, 640, 220 + 100 * index, 720), fill=colour)
+    return frame
+
+
+BOXES = [
+    {"source": "src/page.png", "step": "page_box", "page": 1, "value": [120, 100, 480, 580]},
+    {"source": "src/page.png", "step": "content_box", "page": 1, "value": [150, 140, 450, 540]},
+]
+
+
+def test_a_coloured_backdrop_and_target_outside_the_page_are_not_page_colour(tmp_path):
+    save(_on_backdrop(False), tmp_path / "src" / "page.png", None)
+    page, out = manifest_page(
+        tmp_path, "--output-mode", "grey", "--overrides", str(overrides(tmp_path, BOXES))
+    )
+    assert page["output_mode"]["mode"] == "grey" and _grey_flags(page) == []
+    assert page["output_mode"]["colour"]["coloured_mm2"] < 2
+
+
+def test_a_stamp_on_the_page_is_still_flagged_and_located_on_the_written_page(tmp_path):
+    save(_on_backdrop(True), tmp_path / "src" / "page.png", None)
+    page, out = manifest_page(
+        tmp_path, "--output-mode", "grey", "--overrides", str(overrides(tmp_path, BOXES))
+    )
+    assert page["output_mode"]["mode"] == "source" and len(_grey_flags(page)) == 1
+    left, top, right, bottom = page["output_mode"]["colour"]["where"]
+    chain = Chain.from_dict(page["geometry"])
+    (x0, y0), (x1, y1) = chain.forward([(360, 430), (440, 510)])  # the stamp in the frame
+    assert left <= x0 + 6 and top <= y0 + 6 and right >= x1 - 6 and bottom >= y1 - 6
+    assert right - left < 120 and bottom - top < 120
+
+
+def test_thin_pale_blue_ruling_is_found(tmp_path):
+    grey = pages.page(size=(1000, 1300), seed=17, margin=(90, 120, 90, 120))
+    page = as_colour(grey)
+    draw = ImageDraw.Draw(page)
+    for y in range(150, 1200, 95):  # 0.3 mm lines (3.5 px at 300 dpi), 8 mm apart
+        draw.line((60, y, 940, y), fill=(185, 205, 235), width=3)
+        draw.line((60, y + 3, 940, y + 3), fill=(205, 218, 238), width=1)
+    save(page, tmp_path / "src" / "page.png", None)
+    (tmp_path / "src" / "page.png").unlink()
+    page.save(tmp_path / "src" / "page.png", dpi=(300, 300))
+    result, _ = manifest_page(tmp_path, "--output-mode", "grey")
+    assert result["output_mode"]["mode"] == "source" and len(_grey_flags(result)) == 1
+
+
+def test_a_pale_wash_over_part_of_the_paper_does_not_hide_itself(tmp_path):
+    page = as_colour(writing_page())
+    ImageDraw.Draw(page).rectangle((0, 0, 359, 70), fill=(242, 222, 226))  # 15% of the page
+    save(page, tmp_path / "src" / "page.png", None)
+    result, _ = manifest_page(tmp_path, "--output-mode", "grey")
+    assert result["output_mode"]["mode"] == "source" and len(_grey_flags(result)) == 1
+
+
+def _specks(grey: Image.Image) -> Image.Image:
+    """Isolated coloured specks (dust, hot pixels) on 0.3% of the pixels."""
+    import random
+
+    rng = random.Random(5)
+    page = as_colour(grey)
+    for _ in range(grey.width * grey.height * 3 // 1000):
+        x, y = rng.randrange(1, grey.width - 1), rng.randrange(1, grey.height - 1)
+        page.putpixel((x, y), (rng.randrange(256), rng.randrange(256), rng.randrange(256)))
+    return page
+
+
+def _blotchy(grey: Image.Image, sigma: float = 3.0) -> Image.Image:
+    """Chroma noise in blotches three pixels across, as a compressed colour scan has."""
+    import random
+
+    rng = random.Random(9)
+    small = (grey.width // 3 + 1, grey.height // 3 + 1)
+    bands = []
+    for _ in range(3):
+        noise = Image.new("L", small)
+        noise.putdata(
+            [max(0, min(255, round(128 + rng.gauss(0, sigma)))) for _ in range(small[0] * small[1])]
+        )
+        noise = noise.resize((small[0] * 3, small[1] * 3), Image.NEAREST).crop((0, 0, *grey.size))
+        bands.append(ImageChops.add(grey, noise, 1.0, -128))
+    return Image.merge("RGB", bands)
+
+
+@pytest.mark.parametrize("noise", ["specks", "blotchy"])
+def test_scattered_specks_and_blotchy_chroma_noise_are_not_colour(tmp_path, noise):
+    grey = writing_page()
+    page = _specks(grey) if noise == "specks" else _blotchy(grey)
+    save(page, tmp_path / "src" / "page.png", None)
+    result, _ = manifest_page(tmp_path, "--output-mode", "grey")
+    assert result["output_mode"]["mode"] == "grey" and _grey_flags(result) == []

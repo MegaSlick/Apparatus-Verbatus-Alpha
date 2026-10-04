@@ -110,9 +110,13 @@ def load_settings(overrides: dict[str, Any] | None = None) -> dict[str, dict[str
         raise PrepareError("padding_px must be a whole number of pixels")
     if value["grey_rule"] not in ("luminance", "red", "green", "blue"):
         raise PrepareError("grey_rule must be luminance, red, green or blue")
-    if not 0 < value["colour_paper_percentile"] <= 1:
-        raise PrepareError("colour_paper_percentile must be more than 0 and at most 1")
-    for name in ("colour_working_dpi", "colour_chroma_margin", "colour_min_area_mm2"):
+    for name in (
+        "colour_working_dpi",
+        "colour_chroma_margin",
+        "colour_min_area_mm2",
+        "colour_noise_spread",
+        "colour_thinnest_mm",
+    ):
         if not value[name] > 0:
             raise PrepareError(f"setting {name!r} must be more than 0")
     if value["trust_orientation_tag"] not in (0, 1):

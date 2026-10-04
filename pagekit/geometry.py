@@ -606,6 +606,12 @@ def _polygon_mask(size: tuple[int, int], polygon: list[Point]) -> Image.Image:
     return mask
 
 
+def polygon_mask(size: tuple[int, int], polygon: list[Point]) -> Image.Image:
+    """255 on every pixel whose centre lies inside the convex `polygon` (half-open, as
+    the chain's own masks are), else 0."""
+    return _polygon_mask(size, polygon)
+
+
 def render(source: Image.Image, chain: Chain, fill: int | tuple[int, ...]) -> Image.Image:
     """The prepared page made from `source` (the original, decoded) in one resampling.
 

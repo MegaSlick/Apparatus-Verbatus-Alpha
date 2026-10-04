@@ -45,9 +45,11 @@ from pagekit.geometry import (
     TAG_WORDS,
     Chain,
     GeometryError,
+    apply,
     apply_tag,
     margin_box,
     paper_colour,
+    polygon_mask,
     render,
     tagged_size,
 )
@@ -424,6 +426,9 @@ class PagePlan:
     tag: dict[str, Any] = field(default_factory=dict)  # the orientation tag's record
     mode: dict[str, Any] = field(default_factory=dict)  # the output mode (spec 0007)
     density: dict[str, Any] | None = None  # a nominal density set by hand, if any
+    # The usable resolution (x, y) of the upright frame and the levelled page, before
+    # any shrinking, in the axes the tag and the turns give; None when there is none.
+    upright_resolution: list[float] | None = None
 
 
 @dataclass
@@ -833,7 +838,7 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         pages.append(page_entry)
         if runner.dry:
             continue
-        chain, chain_flags, output_dpi = _page_chain(
+        chain, chain_flags, output_dpi, upright_resolution = _page_chain(
             source, number, page_earlier, usable, stored_frame, values, tag
         )
         all_steps = {}
@@ -877,6 +882,7 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
                 tag_record,
                 mode,
                 density,
+                None if upright_resolution is None else list(upright_resolution),
             )
         )
     entry = {
@@ -1001,7 +1007,27 @@ def _output_mode(source, number, values, usable, record, chain, runner, tag):
     )
     fill, _ = paper_colour(image, frame, settings["paper_estimate_long_side_px"])
     small = render(image, frame, fill)
-    found = colour_evidence(small, _MM_PER_INCH / (max(dpi) * scale), settings)
+    # Only the written page counts: the margin box, within the page box. A backdrop or
+    # a colour target beside the paper is not colour on the page.
+    margin = chain.crop_box
+    page_box = values["page_box"]
+    inner = (
+        max(margin[0], page_box[0]),
+        max(margin[1], page_box[1]),
+        min(margin[2], page_box[2]),
+        min(margin[3], page_box[3]),
+    )
+    if inner[2] <= inner[0] or inner[3] <= inner[1]:
+        inner = margin
+    corners = [
+        (inner[0], inner[1]),
+        (inner[2], inner[1]),
+        (inner[2], inner[3]),
+        (inner[0], inner[3]),
+    ]
+    outline = frame.forward(chain.inverse(apply(chain.levelled_to_output(), corners)))
+    written = polygon_mask(small.size, outline)
+    found = colour_evidence(small, _MM_PER_INCH / (max(dpi) * scale), settings, written)
     where = None
     if found["box"] is not None:
         x0, y0, x1, y1 = found["box"]
@@ -1193,7 +1219,7 @@ def _page_chain(source, number, values, usable, stored, settings, tag: int = 1):
     output_dpi = None
     if declared is not None:
         output_dpi = (declared[0] * chain.scale[0], declared[1] * chain.scale[1])
-    return chain, flags, output_dpi
+    return chain, flags, output_dpi, upright_dpi
 
 
 def _skipped(path: Path, project_folder: Path, reason: str) -> dict[str, Any]:
