@@ -569,3 +569,40 @@ def test_the_creation_instant_is_read_from_the_start_command_s_stamp(tmp_path: P
     assert pod_created_at(tmp_path, "pod123") == T0
     (guard / "created-pod123").write_text("garbage\n", encoding="ascii")
     assert pod_created_at(tmp_path, "pod123") is None
+
+
+@pytest.mark.parametrize("text", ["9" * 30, "99999999999999999"])
+def test_an_out_of_range_creation_stamp_is_unknown_not_a_failed_tick(
+    tmp_path: Path, text: str
+) -> None:
+    guard = tmp_path / ".pod_guard"
+    guard.mkdir()
+    (guard / "created-pod123").write_text(f"{text}\n", encoding="ascii")
+    assert pod_created_at(tmp_path, "pod123") is None
+
+
+def test_the_week_warning_judges_the_capped_extension_it_offers() -> None:
+    """A stage projected weeks out is offered only the hard maximum, which the guard
+    accepts; the warning would wrongly say it ignores that."""
+    estimator = FinishEstimator()
+    estimator.update(StageProgress(PERLECTOR, done=10, total=100_000), T0)
+    estimate = estimator.update(
+        StageProgress(PERLECTOR, done=15, total=100_000), T0 + timedelta(minutes=10)
+    )
+    assert estimate is not None and estimate.finishes_at is not None
+    now = T0 + timedelta(minutes=10)
+    assert estimate.finishes_at > now + timedelta(days=7)
+    message = deadline_at_risk_message(
+        run_id="run-1",
+        pod_id="pod123",
+        estimate=estimate,
+        deadline=Deadline(T0 + timedelta(hours=2), "the pod guard's deadline", extendable=True),
+        budget=BUDGET,
+        budget_problem=None,
+        hourly_usd=Decimal("2.00"),
+        now=now,
+        created_at=T0,
+    )
+    cap = int((T0 + timedelta(hours=6)).timestamp())
+    assert f"echo {cap} > $G/deadline.new" in message
+    assert "more than a week out" not in message

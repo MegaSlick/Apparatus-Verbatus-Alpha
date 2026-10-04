@@ -718,6 +718,11 @@ def test_the_mac_job_runs_both_chips_outside_the_required_check():
     assert len(paths) == 6
     for path in paths:
         assert (ROOT / path).exists(), path
-    script = subset.replace(".venv/bin/python -m pytest", 'echo "$NTFY_TOPIC"; true')
-    result = run_shell(script, ROOT)
-    assert result.returncode == 0 and result.stdout.strip(), result.stderr
+    # The interpreter is replaced by a recorder of its arguments, so the test sees exactly
+    # what pytest would be asked to do: run these paths, nothing narrower.
+    recorder = """sh -c 'printf "%s\\n" "$NTFY_TOPIC" "$@"' recorder"""
+    result = run_shell(subset.replace(".venv/bin/python", recorder), ROOT)
+    assert result.returncode == 0, result.stderr
+    topic, *argv = result.stdout.splitlines()
+    assert topic
+    assert argv == ["-m", "pytest", "-p", "xdist", "-n", "3", "--dist", "loadfile", *paths]

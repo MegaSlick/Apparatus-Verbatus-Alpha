@@ -25,11 +25,15 @@ maximum from creation. Nothing on that route checks the hourly price or the cost
 lead's approval in the session is the limit that counts there, inside this budget.
 
 **The plan inside it.** Nothing has been timed on a real pod, so these are planning
-figures. Costs are $1.99/h plus the volume's hourly price (to confirm in the console).
+figures. Costs are the card's hourly price ($1.99/h; the drill's A5000 $0.27/h) plus the
+volume's hourly price (to confirm in the console). The windows run from container start,
+so the image pull before it adds a few minutes to each. The backstop deletes a pod an
+hour after its deadline and never later than 3 h from creation, so only a drill whose
+deadline was moved out could reach the 3 h cap ($0.81 + volume).
 
 | Launch | Card | Window | Most it can cost |
 |---|---|---|---|
-| Guard drill | RTX A5000 | 1 h | about $0.55 (the backstop may add an hour) |
+| Guard drill | RTX A5000 | 1 h | $0.27 + volume if the guard works; at most $0.54 + volume (2 h) if it fails, when the backstop deletes an hour after the 1 h deadline |
 | Run 1: 4 prepared pages | RTX PRO 6000 | 2 h, extendable to 3 h | about $3.98 + volume; $5.97 + volume extended |
 | Run 2: 2 original spreads | RTX PRO 6000 | 2 h, extendable to 3 h | about $3.98 + volume; $5.97 + volume extended |
 | Run 3: a slightly larger set | RTX PRO 6000 | 2 h, extendable to 3 h | about $3.98 + volume; $5.97 + volume extended |

@@ -429,7 +429,11 @@ def pod_created_at(volume_mount: Path, pod_id: str) -> datetime | None:
         return None
     if not (text.isascii() and text.isdigit()):
         return None
-    return datetime.fromtimestamp(int(text), UTC)
+    try:
+        return datetime.fromtimestamp(int(text), UTC)
+    except (OverflowError, OSError, ValueError):
+        # Digits past what the platform's clock can hold say nothing about creation.
+        return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -566,6 +570,8 @@ def deadline_at_risk_message(
         route = "No pod id is known here: extend by the route in operations/pod/README.md"
     else:
         suggested = math.ceil(projected.timestamp() / 60) * 60
+        # The epoch the offered command writes, which the week check judges.
+        offered: int | None = suggested
         # The one mount path the bootstrap accepts, so the route names it as the lead sees it.
         guard = f"{POD_VOLUME_MOUNT_PATH}/{POD_GUARD_DIRECTORY}"
 
@@ -593,18 +599,20 @@ def deadline_at_risk_message(
                     f"SSH): {command(suggested)}"
                 )
             elif cap <= deadline.at.timestamp():
+                offered = None
                 route = (
                     f"The projected end passes {limit}, and the deadline already reaches "
                     "it: the budget allows no extension, so this stage will not finish on "
                     "this pod"
                 )
             else:
+                offered = cap
                 route = (
                     f"The projected end passes {limit}: this stage will not finish within "
                     "the budget. To extend only as far as the hard maximum (the lead only, "
                     f"over SSH): {command(cap)}"
                 )
-        if suggested > now.timestamp() + GUARD_HORIZON_SECONDS:
+        if offered is not None and offered > now.timestamp() + GUARD_HORIZON_SECONDS:
             route += " (more than a week out: the guard would ignore it)"
     return (
         f"run {run_id}: deadline at risk. Stage {estimate.stage} alone ends about "
