@@ -508,3 +508,7 @@ record".
   as working notes usually are. Nothing has been admitted into `findings/`.
 - **Pending the lead's decision:** whether a reading-side agent should distil them into
   finding reports through the quarantine route. Until then no spec or brief draws on them.
+- **Brief 0030 done:** commits 0c7f995 and 852c217 on `work/pk-split`. Leak scan no
+  hits. Merged into `work/pagekit-prepare` (fd3041a); the suite passes under the check
+  script's settings. Since the builder checked its work on the reviewer's set, that
+  reviewer is re-testing on a new held-out set.
