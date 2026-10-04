@@ -151,6 +151,7 @@ def _layout(marks: list[Mark], box: tuple[int, int, int, int], value: dict[str, 
             for i in range(max(a, low), min(b, high)):
                 covered[i - low] = True
         narrow = 0
+        narrow_runs = 0
         wide_marks: list[Mark] = []
         for a, b in runs_of(covered):
             inside = [
@@ -160,12 +161,17 @@ def _layout(marks: list[Mark], box: tuple[int, int, int, int], value: dict[str, 
             ]
             if b - a <= value["narrow_run_share"] * extent:
                 narrow += sum(m.count for m in inside)
+                narrow_runs += 1
             else:
                 wide_marks += inside
         narrow_share = narrow / total
         wide_share = sum(m.count for m in wide_marks) / total
+        # Many narrow runs are lines of writing (a seal or lines that merge making the
+        # wide run), not a few columns of items beside a block.
         mixed = (
-            narrow_share >= value["mixed_narrow_share"] and wide_share >= value["mixed_wide_share"]
+            narrow_share >= value["mixed_narrow_share"]
+            and wide_share >= value["mixed_wide_share"]
+            and narrow_runs <= value["max_item_columns"]
         )
         if mixed and narrow_share > best[0]:
             best = (narrow_share, wide_marks)

@@ -552,3 +552,23 @@ def test_page_mostly_of_narrow_columns_is_flagged_and_one_with_a_large_block_is_
     few = detect_orientation(hand_account_page(150, 2, words_share=0.35, columns=6, joined=True))
     assert UNCERTAIN_COLUMNS not in few["flags"]
     assert "narrow columns" not in few["evidence"]
+
+
+def _seal_page() -> Image.Image:
+    image = page()
+    ImageDraw.Draw(image).ellipse((650, 1150, 900, 1380), fill=60)
+    return image
+
+
+@pytest.mark.parametrize("which", ["seal", "spread"])
+@pytest.mark.parametrize("quarter_turns", [0, 1])
+def test_ordinary_writing_is_not_read_as_narrow_columns(which, quarter_turns):
+    """A page of writing with a wax seal (a broad mark that makes a wide run of its
+    own), and a spread with lines of writing running across the gutter: their lines are
+    narrow runs of words lying along the run, not columns of items, so the columns
+    rule must not flag them."""
+    from pagekit._split_testspreads import spread_case
+
+    image = _seal_page() if which == "seal" else spread_case("writing_across", 150, 2).image
+    result = detect_orientation(turned(image, quarter_turns))
+    assert UNCERTAIN_COLUMNS not in result["flags"], result["evidence"]

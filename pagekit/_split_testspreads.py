@@ -289,3 +289,54 @@ def single_page_case(dpi: int = 150, seed: int = 1) -> SpreadCase:
     frame = Image.new("L", (round(2.1 * page_w), height + _mm(dpi, 10)), 205)
     frame.paste(image, (round(0.55 * page_w), _mm(dpi, 5)))
     return SpreadCase(frame, 1, None, "single_page", dpi)
+
+
+def crossing_case(
+    dpi: int = 300,
+    *,
+    slope: float = 0.0,
+    rising: bool = True,
+    curved: bool = False,
+    fold_line: bool = True,
+    gutter_mm: float = 28.0,
+    seed: int = 1,
+) -> tuple[SpreadCase, Image.Image]:
+    """A spread with one pen stroke crossing the gutter, and a mask of that stroke.
+
+    The pages' writing stops `gutter_mm / 2` short of the gutter on each side. With
+    `fold_line` a thin fold line marks the gutter; without it there is no line and no
+    shadow, only the gap. The stroke runs from 30 mm left of the gutter to 12 mm right
+    of it, straight with the given `slope` (rising to the right, or falling), or as a
+    curved flourish."""
+    left_w = right_w = _mm(dpi, 140)
+    height = _mm(dpi, 200)
+    width = left_w + right_w
+    gutter = left_w
+    image = Image.new("L", (width, height), PAPER)
+    draw = ImageDraw.Draw(image)
+    margin, inner = _mm(dpi, 15), _mm(dpi, gutter_mm / 2)
+    _write(draw, (margin, margin, gutter - inner, height - margin), seed, dpi)
+    _write(draw, (gutter + inner, margin, width - margin, height - margin), seed + 1, dpi)
+    if fold_line:
+        draw.line((gutter, 0, gutter, height - 1), fill=70, width=max(1, _mm(dpi, 0.3)))
+    mask = Image.new("L", (width, height), 0)
+    stroke = max(2, _mm(dpi, 0.5))
+    x0, x1 = gutter - _mm(dpi, 30), gutter + _mm(dpi, 12)
+    y_mid = height // 2
+    sign = -1 if rising else 1
+    if curved:
+        points = []
+        for i in range(41):
+            t = i / 40
+            x = x0 + (x1 - x0) * t
+            y = y_mid + sign * _mm(dpi, 10) * math.sin(math.pi * t)
+            points.append((x, y))
+    else:
+        points = [
+            (x0, y_mid - sign * slope * (x1 - x0) / 2),
+            (x1, y_mid + sign * slope * (x1 - x0) / 2),
+        ]
+    for target, fill in ((draw, 40), (ImageDraw.Draw(mask), 255)):
+        target.line(points, fill=fill, width=stroke, joint="curve")
+    line = ((float(gutter), 0.0), (float(gutter), float(height - 1)))
+    return SpreadCase(image, 2, line, "crossing", dpi), mask

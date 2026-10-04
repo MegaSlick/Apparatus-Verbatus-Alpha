@@ -46,7 +46,9 @@ All settings are unmeasured guesses (``thresholds_split.toml``).
 from __future__ import annotations
 
 import math
+import tomllib
 from dataclasses import dataclass
+from pathlib import Path
 from statistics import median
 from typing import Any
 
@@ -108,6 +110,12 @@ class _Gap:
         return self.end - self.start
 
 
+def _core_overlap_mm() -> float:
+    """The preparation core's overlap past a cut, from its settings file (spec 0002)."""
+    with (Path(__file__).with_name("thresholds_prepare.toml")).open("rb") as handle:
+        return float(tomllib.load(handle)["overlap_mm"]["value"])
+
+
 def _count(marks: int) -> str:
     return "1 ink mark crosses" if marks == 1 else f"{marks} ink marks cross"
 
@@ -129,8 +137,25 @@ def _dark_bands(flags: list[bool], narrowest: int) -> list[tuple[int, int]]:
     return [(a, b) for a, b in runs_of(flags) if b - a >= narrowest]
 
 
+def _shear_coverage(binary: Image.Image, slope: float, y_mid: float) -> bytes:
+    """Coverage (0 to 255) of each column after shearing the lines of lean `slope` to
+    vertical."""
+    width, height = binary.size
+    sheared = binary.transform(
+        (width, height),
+        Image.Transform.AFFINE,
+        (1, slope, -slope * y_mid, 0, 1, 0),
+        resample=Image.Resampling.NEAREST,
+    )
+    return sheared.resize((width, 1), Image.Resampling.BOX).tobytes()
+
+
 def _line_candidates(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]):
-    """Best covering near-vertical thin line through each column, and its coverage."""
+    """Best covering near-vertical thin line through each column, and its coverage.
+
+    The search is coarse to fine: every column is scored at leans lean_coarse_step_deg
+    apart, and the columns that stand out are scored again, in a window around them,
+    at lean_step_deg apart within one coarse step of their best lean."""
     width, _ = work.size
     r0, r1 = rows
     height = r1 - r0
@@ -140,23 +165,36 @@ def _line_candidates(work: Image.Image, rows: tuple[int, int], value: dict[str, 
     contrast = value["fold_line_contrast"]
     binary = tophat.point(lambda level: INK if level >= contrast else 0).crop((0, r0, width, r1))
     y_mid = height / 2
-    steps = int(value["lean_max_deg"] / value["lean_step_deg"] + 1e-9)
-    order = sorted(range(-steps, steps + 1), key=lambda i: (abs(i), i))
+    coarse = value["lean_coarse_step_deg"]
+    steps = int(value["lean_max_deg"] / coarse + 1e-9)
     best = [0] * width
-    best_slope = [0.0] * width
-    for i in order:
-        slope = math.tan(math.radians(i * value["lean_step_deg"]))
-        sheared = binary.transform(
-            (width, height),
-            Image.Transform.AFFINE,
-            (1, slope, -slope * y_mid, 0, 1, 0),
-            resample=Image.Resampling.NEAREST,
-        )
-        coverage = sheared.resize((width, 1), Image.Resampling.BOX).tobytes()
+    best_angle = [0.0] * width
+    for i in sorted(range(-steps, steps + 1), key=lambda i: (abs(i), i)):
+        angle = i * coarse
+        coverage = _shear_coverage(binary, math.tan(math.radians(angle)), y_mid)
         for x, level in enumerate(coverage):
             if level > best[x]:
-                best[x], best_slope[x] = level, slope
-    return [b / 255 for b in best], best_slope, r0 + y_mid
+                best[x], best_angle[x] = level, angle
+    inner = size // 2 + 1
+    excess = _excess([b / 255 for b in best], inner, max(inner + 2, value["fold_background_px"]))
+    pad = math.ceil(y_mid * math.tan(math.radians(coarse))) + 2
+    fine = value["lean_step_deg"]
+    for start, end in runs_of([e >= 0.5 * value["fold_min_excess"] for e in excess]):
+        centre = max(range(start, end), key=lambda x: best[x])
+        a, b = max(0, start - pad), min(width, end + pad)
+        window = binary.crop((a, 0, b, height))
+        n = int(coarse / fine + 1e-9)
+        for k in range(-n, n + 1):
+            angle = best_angle[centre] + k * fine
+            if abs(angle) > value["lean_max_deg"] + 1e-9:
+                continue
+            coverage = _shear_coverage(window, math.tan(math.radians(angle)), y_mid)
+            for offset, level in enumerate(coverage):
+                x = a + offset
+                if level > best[x]:
+                    best[x], best_angle[x] = level, angle
+    slopes = [math.tan(math.radians(angle)) for angle in best_angle]
+    return [b / 255 for b in best], slopes, r0 + y_mid
 
 
 def _excess(coverage: list[float], inner: int, outer: int) -> list[float]:
@@ -213,14 +251,25 @@ def _valley_in(levels: list[float], lo: int, hi: int, reach: int):
     return best_x, best_depth
 
 
-def _valley(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]):
+def _bright(work: Image.Image, value: dict[str, Any]) -> Image.Image:
+    """The working copy with pen strokes removed by a brightening filter."""
+    return work.filter(ImageFilter.MaxFilter(value["valley_ink_filter_px"] | 1))
+
+
+def _valley(
+    work: Image.Image,
+    rows: tuple[int, int],
+    value: dict[str, Any],
+    bright_full: Image.Image | None = None,
+):
     """The fold shadow as a line, its depth in grey levels (line None if too weak), and
     the line at the shadow's steep edge when the shadow falls on one side only (else
     None)."""
     width, _ = work.size
     r0, r1 = rows
-    size = value["valley_ink_filter_px"] | 1
-    bright = work.filter(ImageFilter.MaxFilter(size)).crop((0, r0, width, r1))
+    bright = (bright_full if bright_full is not None else _bright(work, value)).crop(
+        (0, r0, width, r1)
+    )
     window = max(1, round(value["valley_smooth_share"] * width))
     reach = max(1, round(value["valley_reach_share"] * width))
     band = math.ceil(value["edge_band_share"] * width)
@@ -272,14 +321,20 @@ def _valley(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]):
     return line, depth, edged
 
 
-def _tone_step(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]) -> float | None:
+def _tone_step(
+    work: Image.Image,
+    rows: tuple[int, int],
+    value: dict[str, Any],
+    bright_full: Image.Image | None = None,
+) -> float | None:
     """Where the paper's brightness steps from one level to another between the edge
     bands (two pages of different tone meeting), at the steepest column; None when no
     step reaches tone_step_min grey levels."""
     width, _ = work.size
     r0, r1 = rows
-    size = value["valley_ink_filter_px"] | 1
-    bright = work.filter(ImageFilter.MaxFilter(size)).crop((0, r0, width, r1))
+    bright = (bright_full if bright_full is not None else _bright(work, value)).crop(
+        (0, r0, width, r1)
+    )
     levels = _smooth([float(v) for v in profile(bright, along_x=True)], 3)
     reach = max(2, round(value["valley_reach_share"] * width / 2))
     band = math.ceil(value["edge_band_share"] * width)
@@ -299,12 +354,15 @@ def _tone_step(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]) 
     return float(max(candidates, key=lambda i: abs(levels[i] - levels[i - 1])))
 
 
-def _gaps(marks: list[Mark], width: int, value: dict[str, Any]):
-    """Candidate gaps between runs of content (each with its balance)."""
-    covered = [False] * width
+def _gaps(marks: list[Mark], width: int, value: dict[str, Any], bridging: int = 0):
+    """Candidate gaps between runs of content (each with its balance). A column counts
+    as content when more than `bridging` marks cover it, so a gap crossed by a few
+    marks (a flourish whose box spans the gutter) can still be found."""
+    depth = [0] * width
     for mark in marks:
         for x in range(mark.x0, mark.x1):
-            covered[x] = True
+            depth[x] += 1
+    covered = [d > bridging for d in depth]
     runs = runs_of(covered)
     debris = value["edge_debris_share"] * width
     while runs and runs[0][1] - runs[0][0] < debris:
@@ -544,11 +602,13 @@ def detect_split(
 
     `dpi` is the source's resolution (x, y) before turning; when absent it is read from
     the image. `overlap_mm` is the preparation core's overlap past a cut; when absent
+    it is read from the core's own settings file, thresholds_prepare.toml, the one
+    source of truth for it;
     the setting of the same name is used."""
     if turns not in _TURNS:
         raise DetectorError(f"turns {turns!r} is not 0, 1, 2 or 3")
     value = setting_values(settings)
-    overlap = value["overlap_mm"] if overlap_mm is None else float(overlap_mm)
+    overlap = _core_overlap_mm() if overlap_mm is None else float(overlap_mm)
     grey = grey_of(image)
     full_w, full_h = grey.size[::-1] if turns % 2 else grey.size
     work = working_copy(grey, value["split_long_side_px"])
@@ -601,8 +661,9 @@ def detect_split(
     folds = [ln for ln in lines if edge_band <= ln.x_mid <= width - edge_band]
     edge_lines = [ln for ln in lines if ln not in folds]
     fold_line = min(folds, key=lambda ln: (abs(ln.x_mid - width / 2), -ln.strength), default=None)
-    valley, valley_depth, valley_edge = _valley(work, (r0, r1), value)
-    tone_step = _tone_step(work, (r0, r1), value)
+    bright = _bright(work, value)
+    valley, valley_depth, valley_edge = _valley(work, (r0, r1), value, bright)
+    tone_step = _tone_step(work, (r0, r1), value, bright)
 
     # Content marks, with straight marks and every found line masked.
     content = mask_straight_marks(content, value["long_mark_share"])
@@ -626,6 +687,16 @@ def detect_split(
         )
     gaps, runs = _gaps(marks, width, value)
     balanced = [g for g in gaps if g.balance >= value["min_balance"]]
+    clear = balanced  # gaps no mark crosses: the only ones that confirm a fold
+    bridged = False
+    if not balanced:
+        # A few marks (up to the number a fold may have crossing it) may bridge the
+        # gap between the pages: look again with their boxes discounted.
+        wider, _ = _gaps(marks, width, value, value["fold_max_crossings"])
+        balanced = [g for g in wider if g.balance >= value["min_balance"]]
+        bridged = bool(balanced)
+        if bridged:
+            gaps = wider
     tolerance = value["agree_tolerance_share"] * width
 
     # The proportions prior.
@@ -668,9 +739,9 @@ def detect_split(
     confidence = 0.0
     if fold is not None:
         fold_x = fold.x_at(fold.y_mid)
-        agreeing = [g for g in balanced if g.start - tolerance <= fold_x <= g.end + tolerance]
-        if balanced and not agreeing:
-            gap = max(balanced, key=lambda g: g.width)
+        agreeing = [g for g in clear if g.start - tolerance <= fold_x <= g.end + tolerance]
+        if clear and not agreeing:
+            gap = max(clear, key=lambda g: g.width)
             return disagree(
                 f"a fold {part} at x={full_x(fold_x)} and a content gap at "
                 f"x={full_x(gap.middle)} disagree"
@@ -707,7 +778,12 @@ def detect_split(
     elif balanced:
         gap = max(balanced, key=lambda g: (g.width, -abs(g.middle - width / 2)))
         at_limit: list[float] = []
-        line = _fit_gap(gap, marks, value, at_limit)
+        fitting = marks
+        if bridged:
+            # The few marks that bridge the gap do not bound it: fit the cut to the two
+            # pages' writing, and let the overhang check judge the bridging marks.
+            fitting = [m for m in marks if m.x1 <= gap.start or m.x0 >= gap.end]
+        line = _fit_gap(gap, fitting, value, at_limit)
         if at_limit:
             flags.append(
                 f"the gap between the pages leans {value['lean_max_deg']:g} degrees, the "
@@ -716,7 +792,7 @@ def detect_split(
         faint = None
         if valley is None and valley_depth >= value["faint_shadow_depth"]:
             faint, _, _ = _valley(
-                work, (r0, r1), {**value, "valley_min_depth": value["faint_shadow_depth"]}
+                work, (r0, r1), {**value, "valley_min_depth": value["faint_shadow_depth"]}, bright
             )
         if (
             faint is not None
@@ -737,7 +813,9 @@ def detect_split(
             )
         reason = (
             f"a content gap {gap.width * sx:.0f} px wide at x={full_x(gap.middle)} "
-            f"(balance {gap.balance:.2f}) and no fold"
+            f"(balance {gap.balance:.2f}"
+            + (", crossed by a few marks" if bridged else "")
+            + ") and no fold"
         )
         if prior_pages == 1:
             return answer(
@@ -899,6 +977,14 @@ def detect_split(
         one_side = "left"
     elif min(m.x0 for m in marks) >= middle - tolerance:
         one_side = "right"
+    extent = (max(m.x1 for m in marks) - min(m.x0 for m in marks)) / width
+    if prior_pages == 2 and not one_side and extent >= value["spread_content_share"] and not weak:
+        confidence = min(confidence, 0.4)
+        flags.append(
+            f"page count uncertain: the proportions suggest two pages and the writing spans "
+            f"{extent:.0%} of the width, but no fold, shadow or gap decides; it may be a "
+            "spread whose gutter shows nothing"
+        )
     if prior_pages == 2 and one_side:
         confidence = min(confidence, 0.4)
         flags.append(
