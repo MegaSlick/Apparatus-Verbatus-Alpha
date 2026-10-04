@@ -39,6 +39,84 @@ status = "UNMEASURED"
 meaning = "Long side, in pixels, of the reduced working copy the paper colour is measured on."
 
 [output_format]
-value = "png"
+value = "tiff"
 status = "UNMEASURED"
-meaning = "The lossless image format of prepared pages: png, or tiff with deflate compression."
+meaning = "The lossless image format of prepared pages: tiff with deflate compression (the default), or png. No lossy format is offered."
+
+# --- Connecting the detectors (spec 0005) -------------------------------------------
+
+[detector_working_dpi]
+value = 150
+status = "UNMEASURED"
+meaning = "Resolution of the reduced copy of a levelled page that the page-box and content-box detectors are given; at least their own working resolutions (50 and 100 dpi), so they decide as on the original."
+
+[unknown_dpi_assumed]
+value = 300
+status = "UNMEASURED"
+meaning = "Resolution the detectors measure a page at when the source has no usable resolution. The page is flagged for its resolution either way."
+
+[compare_skew_deg]
+value = 1.0
+status = "UNMEASURED"
+meaning = "How far, in degrees, a confident detected skew may differ from one set by hand before the difference is reported in the evidence."
+
+[compare_cut_mm]
+value = 5.0
+status = "UNMEASURED"
+meaning = "How far, in millimetres, a confident detected cut may lie from one set by hand before the difference is reported in the evidence."
+
+[compare_box_mm]
+value = 5.0
+status = "UNMEASURED"
+meaning = "How far, in millimetres, any side of a confident detected page or content box may lie from one set by hand before the difference is reported in the evidence."
+
+# --- Volume-wide checks (finding 0011) ----------------------------------------------
+
+[volume_min_pages]
+value = 8
+status = "UNMEASURED"
+meaning = "The fewest pages with a measurement for the batch to be compared on it; a smaller batch is not compared."
+
+[volume_outlier_distance]
+value = 4.0
+status = "UNMEASURED"
+meaning = "How many spreads from the batch median a page's measurement must lie to be flagged. The spread is 1.4826 times the median absolute deviation, held at least at its floor."
+
+[volume_skew_floor_deg]
+value = 0.25
+status = "UNMEASURED"
+meaning = "The smallest spread, in degrees, used for skew, so a very even batch does not flag tiny differences."
+
+[volume_size_floor_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "The smallest spread, in millimetres, used for the content box's width and height."
+
+[volume_margin_floor_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "The smallest spread, in millimetres, used for the margins between the page box and the content box."
+
+# --- The review sheet ---------------------------------------------------------------
+
+[preview_long_side_px]
+value = 480
+status = "UNMEASURED"
+meaning = "Long side, in pixels, of the reduced previews embedded in review.html. Previews are never full size."
+
+# --- Measuring against a hand-checked answer file (finding 0035) --------------------
+
+[measure_skew_tolerance_deg]
+value = 0.3
+status = "UNMEASURED"
+meaning = "A detected skew within this many degrees of the hand-checked one counts as right in `measure`."
+
+[measure_cut_tolerance_mm]
+value = 2.0
+status = "UNMEASURED"
+meaning = "A detected cut whose top and bottom lie within this many millimetres of the hand-checked cut counts as right in `measure`."
+
+[measure_box_tolerance_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "A detected content box whose every side lies within this many millimetres of the hand-checked box counts as right in `measure`."

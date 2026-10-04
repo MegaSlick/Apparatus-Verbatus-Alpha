@@ -22,6 +22,13 @@ from pagekit.project import PrepareError, canonical_json
 MARK = (600.0, 750.0)  # in the source; upright (250, 600) after one quarter turn
 
 
+@pytest.fixture(autouse=True)
+def _neutral_detectors(monkeypatch):
+    """These tests pin the core of spec 0002 with its neutral defaults, through the
+    command as well; the connected detectors are tested in test_pipeline.py."""
+    monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
+
+
 def _source(
     folder: Path,
     name="spread.png",
@@ -196,17 +203,18 @@ def test_a_re_run_with_unchanged_inputs_is_byte_identical(tmp_path):
     assert main([*command, "--overrides", str(overrides)]) == 1
     assert _snapshot(out) == first
     assert sorted(first) == [
-        "colour_p1.png",
+        "colour_p1.tif",
         MANIFEST_NAME,
         PROJECT_NAME,
-        "spread_p1.png",
-        "spread_p2.png",
+        "review.html",
+        "spread_p1.tif",
+        "spread_p2.tif",
     ]
     assert (
         _digest(source)
         == hashlib.sha256((tmp_path / "src" / "spread.png").read_bytes()).hexdigest()
     )
-    with Image.open(out / "colour_p1.png") as colour, Image.open(out / "spread_p1.png") as grey:
+    with Image.open(out / "colour_p1.tif") as colour, Image.open(out / "spread_p1.tif") as grey:
         assert colour.mode == "RGB" and grey.mode == "L"
 
 
@@ -487,8 +495,11 @@ def test_a_detector_is_called_once_its_answer_stored_and_reused(tmp_path):
     def broken(context):
         return {"value": 0.5, "confidence": 2, "evidence": "Too sure.", "flags": []}
 
-    with pytest.raises(PrepareError, match="refuses"):
-        plan([source], tmp_path / "other", detectors={"skew": Detector("bad/1", broken)})
+    # A refused answer fails that page alone (spec 0005): neutral default and a flag.
+    page = plan([source], tmp_path / "other", detectors={"skew": Detector("bad/1", broken)})
+    (refused,) = page.pages
+    assert refused.steps["skew"]["value"] == 0.0 and refused.steps["skew"]["confidence"] == 0
+    assert any("refuses" in flag["reason"] for flag in refused.flags if flag["step"] == "skew")
 
 
 def test_continuing_needs_every_source_the_project_holds(tmp_path):
@@ -499,7 +510,7 @@ def test_continuing_needs_every_source_the_project_holds(tmp_path):
     with pytest.raises(PrepareError, match="b.png"):
         plan([first], out)
     # With no sources named, the project's own are used.
-    assert [page.output_name for page in plan(None, out).pages] == ["a_p1.png", "b_p1.png"]
+    assert [page.output_name for page in plan(None, out).pages] == ["a_p1.tif", "b_p1.tif"]
 
 
 # Review fixes (brief 0019)
@@ -553,15 +564,15 @@ def test_hand_set_values_of_a_dropped_page_are_kept_flagged_and_restored(tmp_pat
         entry = _project(out)["sources"][0]
         assert [page["page"] for page in entry["pages"]] == [1]
         (dropped,) = entry["dropped_pages"]
-        assert dropped["page"] == 2 and dropped["output"] == "spread_p2.png"
+        assert dropped["page"] == 2 and dropped["output"] == "spread_p2.tif"
         assert dropped["steps"]["skew"]["value"] == 1.0
         assert set(dropped["steps"]) == {"skew"}  # detected values are not kept
         manifest = _manifest(out)
         reasons = [flag["reason"] for flag in manifest["pages"][0]["flags"]]
         assert any("Page 2" in reason and "dropped_pages" in reason for reason in reasons)
         # The left-over output is listed as stale and not deleted.
-        assert manifest["stale_outputs"] == ["spread_p2.png"]
-        assert (out / "spread_p2.png").is_file()
+        assert manifest["stale_outputs"] == ["spread_p2.tif"]
+        assert (out / "spread_p2.tif").is_file()
         assert main(command) == 1
     # Splitting again restores the hand-set value, on the inputs it was set on.
     assert (
@@ -610,7 +621,7 @@ def test_an_output_path_that_cannot_be_replaced_changes_nothing(tmp_path, capsys
     out = tmp_path / "out"
     command = ["prepare", str(source), "--output", str(out)]
     assert main(command) == 1
-    (out / "spread_p2.png").mkdir()  # in the way of the second page
+    (out / "spread_p2.tif").mkdir()  # in the way of the second page
     before = _snapshot(out)
     names = sorted(path.name for path in out.iterdir())
     split = _overrides(tmp_path, spread_entries())
