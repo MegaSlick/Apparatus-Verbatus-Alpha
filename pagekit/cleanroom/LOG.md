@@ -600,3 +600,15 @@ record".
   - `findings/0065-development-calibration-evaluation.md`: ab21645c88121f078c1b0a7f2fdb1965df03a73709344d4fb2c69357e6b55020
   - `findings/0066-review-scope-policy.md`: 01b962ce40de12180d956e94c8822bea293ccdecf4d57a9a1f7d4a4ef9a37ab7
   - `findings/0067-simple-controls-advanced-record.md`: 5b64b005deb8c67012a26249c13786ab6179049f6bfebdeb5eabdc8c0c5a5fd2
+
+## 0033 — Spec 0007 written; brief 0035 issued
+
+- **Spec 0007** (`specs/0007-orientation-tag-grey-page-padding.md`): the orientation tag
+  applied once, a reviewed grey main page with an exact path for equal-channel sources and
+  a colour-evidence check, padding apart from the margin, and density ratio kept. Written
+  by the host from findings 0036 to 0039, 0045, 0049, 0056 and 0057. Defaults leave what a
+  reader receives unchanged; the default margin is left as it is pending the lead's
+  decision.
+- **Brief:** `briefs/0035-build-tag-grey-padding.md` (sha256
+  6801b6788c3e905fb22feed54a4dccc7eb2bb87a43dd0754ad59e99784d6fd45), to the agent of
+  brief 0023. Saved before it was sent.
