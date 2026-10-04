@@ -537,3 +537,95 @@ record".
   into `work/pagekit-prepare`; the suite passes under the check script's settings. The
   host corrected spec 0002's wording: a missing output folder is created as before; only
   one that cannot be created or written stops the run.
+
+## 0031 — Held-out re-test of orientation; follow-up brief 0034
+
+- **Independent re-test** of 0c7f995 and 852c217 on a new held-out set of 74 pages the
+  builder had not seen: small-print half turns gone; no regression; wrong-without-flag
+  runs 42 under the old code, 12 now, all on pages of printed figures only, which the
+  old code also got wrong. The overhang fix could still excuse a pen stroke touching a
+  thick mark. The sign guard is 1.0 standard errors everywhere, untested at its boundary.
+- **Follow-up brief:** `briefs/0034-build-orientation-figures-and-overhang.md` (sha256
+  85d65656c9baaadb1dda822a473bafa296e2ee20412065278a35d36e6c009f11), to the agent of
+  brief 0017. Saved before it was sent.
+
+## 0032 — The reading side's reports checked, read and accepted
+
+- **Who:** a fresh reading-side agent ran brief 0033 after an earlier agent stopped on a
+  permission refusal; the lead then approved reading pagekit's README and specs. The
+  agent's task message gave it only the brief's path and sha256.
+- **What came back:** 35 files in the local quarantine folder; the agent's reply listed
+  only their names and sha256 digests, which matched the files.
+- **Check before reading:** 34 finding reports and one index. 32 reports passed every
+  rule. Two were refused and deleted unread: `0026-colour-profiles-modes.md` (sha256
+  0593168ba85410fc480891f797cdc526f576238c24826e7dfa3f311bc4fc7c9e; a line-number
+  reference) and `0031-platform-qualification.md` (sha256
+  74c200d23d319970e2d73abc3152c914178e620eb2db9b78281629b268012f20; an identifier shape).
+  The index (sha256 b004da9e2c5d2c1749f53a00752a4e4c50a82c1991c7f629258b3128a643724a)
+  failed only the template-structure rules.
+- **Host's reading:** the host read the index and all 32 passing reports. They describe
+  requirements and published or general methods in plain words, with pagekit's current
+  behaviour from its README and specs; none describes another program's code or internals.
+- **Accepted** into `findings/` as 0036 to 0067 (reader brief sha256
+  bd3e1c50d4f2819416114fdebe2da7d245b3d9485f5f30c6a1589476880d56c2):
+  - `findings/0036-reviewed-grey-main-page.md`: 61ea156f51c5a365b6793ab20ca0d2a1236b6fb3fd086706194dd6c570de31ef
+  - `findings/0037-grey-loses-colour-evidence.md`: 34dc84ce7c6045d8f382f28ab38b7a1d423011ff5cd98f018aadec9102785134
+  - `findings/0038-equal-channel-colour-files.md`: 757cb259e157db3d9c81f9a3f2512efda056d14c508fb4cc62f922c816843fc7
+  - `findings/0039-collection-grey-profile.md`: 31cbd661e521ca2e021bd0739a5e5e26760b7bf50e152100b4ce94af1f1b8e69
+  - `findings/0040-simple-manual-tone.md`: 58dae6c145ebef2908cd8d47278b612f71b109ee1155400eb07a91e189b52f89
+  - `findings/0041-manual-editing-first.md`: bf8596b8065a15c5a76a5d6208ece355fc9cca329e00a73f13073b1d24f4c7f7
+  - `findings/0042-detector-abstention.md`: d7152ada7157dc0dc64ebdc81473c6218c50b7b48766d9e7f9443a579abefbb9
+  - `findings/0043-review-outcomes-next-action.md`: 562e9ad435f19fd3ec947210ac9431712cf0366d01392543847ee9b7d66e91a1
+  - `findings/0044-review-from-final-candidate.md`: 6ab3be5ae516a4e4ca72b8348db0c5097588bfe998eb89286a5be3687097f814
+  - `findings/0045-decoded-export-verification.md`: 080bd7d8ca3e7b8f7361ad8aceb4b396f7a2c20964e142a6e311c7b482be9787
+  - `findings/0046-canonical-raster-identity.md`: 385d2e9e624e86512e6b83cbddcb51e0da249c0a184df81d5cec90b25eb7aafd
+  - `findings/0047-lossless-export-profile.md`: 307ef57840355fbcf74d603a258003f3c4cff0a86a30545cc3abfc8d00f5afa9
+  - `findings/0048-atomic-publication.md`: d9a62e127be4a2eee3a3147996588d0819bce03752ea1e3d19f1fdcf68640404
+  - `findings/0049-density-pixel-aspect.md`: b29cdd2c8c4c811ac3e1b53070026f1c2efbf30e8ec38dc9652e109f40aa933d
+  - `findings/0050-source-scale-explicit-smaller.md`: 22fdfeebe52dab9fe3ebe59417c7c465fc8b47f4077674155b7c0fd0a9ef1c5e
+  - `findings/0051-resource-limits.md`: 629147d8145b1c97163f024c5846e76ea3418bac905c08aaca6f197350d7a45c
+  - `findings/0052-uncertain-arrangements.md`: 085970671bcbcbd94a924817c1d3ce280298fca4926992fbdcdd3e92630e4173
+  - `findings/0053-recaptures.md`: 06c1b481d54c703cfbdc65de432089d15e2eabad413644fb645b5ac813d4646a
+  - `findings/0054-source-limited-loss.md`: 73d5139a2f3a2f1397cd94e290de93dfd55fd637d402a4290fdce7d18cee50d9
+  - `findings/0055-preservation-checks.md`: 960b48bed5ffb8413a7e6b1edddbdc2c21325eacf1ba45faaa818d2e3c46311a
+  - `findings/0056-margins-and-padding.md`: c32e7229c38c6dfb5a101e5916f426507c53f7f8484585658cb97f6a1d275f22
+  - `findings/0057-metadata-orientation.md`: a58cc806b1935e4b944f1f35297a3f677bfbf0d51400a76d16b67f2a7742649d
+  - `findings/0058-coordinate-spaces.md`: 8b2afbfb703cf52956d8849a069ab0a34b35fc3303f735776c2983ce579fe219
+  - `findings/0059-uniform-scale-canvas.md`: c0907f787d4ff15227c9a162410ed94afe8917704ab2313c55e9756ee74b3d65
+  - `findings/0060-interpolation-support-fill.md`: 97a4434241856a9e393d62ed2128bfdeac939b1e89085df8b49ab909eab2ff47
+  - `findings/0061-source-identity-order.md`: f1f326653af4290124c302224c3dcbde121da0adcb2a67f59196c0d132c2abf0
+  - `findings/0062-locks-revisions-scope.md`: 3deae1483bbdc6eabf620087ce432b3ac2c2af1b36cffce0e3c156c881c38bad
+  - `findings/0063-shared-headless-operations.md`: 4e8c346b188f90faacd20d011b0d91a5f22ba62ba90aeab64676d5bc9fb0aa35
+  - `findings/0064-proposal-authority-access.md`: 5ed21566c3181e16329037cea1e7dff18545a17207809cad14622e232aa020ec
+  - `findings/0065-development-calibration-evaluation.md`: ab21645c88121f078c1b0a7f2fdb1965df03a73709344d4fb2c69357e6b55020
+  - `findings/0066-review-scope-policy.md`: 01b962ce40de12180d956e94c8822bea293ccdecf4d57a9a1f7d4a4ef9a37ab7
+  - `findings/0067-simple-controls-advanced-record.md`: 5b64b005deb8c67012a26249c13786ab6179049f6bfebdeb5eabdc8c0c5a5fd2
+
+## 0033 — Spec 0007 written; brief 0035 issued
+
+- **Spec 0007** (`specs/0007-orientation-tag-grey-page-padding.md`): the orientation tag
+  applied once, a reviewed grey main page with an exact path for equal-channel sources and
+  a colour-evidence check, padding apart from the margin, and density ratio kept. Written
+  by the host from findings 0036 to 0039, 0045, 0049, 0056 and 0057. Defaults leave what a
+  reader receives unchanged; the default margin is left as it is pending the lead's
+  decision.
+- **Brief:** `briefs/0035-build-tag-grey-padding.md` (sha256
+  6801b6788c3e905fb22feed54a4dccc7eb2bb87a43dd0754ad59e99784d6fd45), to the agent of
+  brief 0023. Saved before it was sent.
+- **Brief 0034 done:** commits fc5226f and 39f511b on `work/pk-split`. Leak scan no hits.
+  Merged into `work/pagekit-prepare`. The builder did not run the reviewer's generator,
+  so its held-out set stays unseen; the reviewer is re-running it.
+
+## 0034 — Second held-out re-test; follow-up brief 0036
+
+- **Re-test** of fc5226f and 39f511b on the reviewer's held-out set: wrong-without-flag
+  runs 12 to 0; no regression; 7 pages right before are now flagged. Two narrower cases
+  remain: a printed account page mixing words and figure columns, and a pen stroke running
+  along the backdrop band.
+- **Follow-up brief:** `briefs/0036-build-orientation-tables-and-band-strokes.md` (sha256
+  08f0717868d3e2855ceb780c5270e3bdc27d229ca39073eeb92f3d6306d0c020), to the agent of
+  brief 0017. Saved before it was sent.
+- **Brief 0035 done:** commits 514e6f0, 490444e, abb602c, 45ba2cc and f94a0d6 on
+  `work/pk-integrate`. Leak scan no hits in 168 files. Merged into `work/pagekit-prepare`.
+  A test pins that defaults leave prepared pages and manifest values unchanged. An
+  independent review is running.

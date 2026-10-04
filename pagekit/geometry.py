@@ -4,8 +4,14 @@ Coordinates are continuous: pixel (i, j) covers [i, i+1) x [j, j+1), so its cent
 (i + 0.5, j + 0.5); x runs right and y runs down. Pillow's affine transform uses the
 same convention, which the tests pin.
 
-The chain for one page has five parts, applied in this order:
+The chain for one page has these parts, applied in this order:
 
+0. **orientation tag** (only when a source's tag is applied, spec 0007): the transform
+   the file's orientation tag names, exact (no resampling), giving the tagged frame. The
+   eight values of the Exif orientation tag are: 1 as stored; 2 mirrored left to right,
+   (x, y) to (W - x, y); 3 a half turn, (W - x, H - y); 4 mirrored top to bottom,
+   (x, H - y); 5 transposed, (y, x); 6 a quarter turn clockwise, (H - y, x); 7
+   transversed, (H - y, W - x); 8 a quarter turn counterclockwise, (y, W - x).
 1. **quarter turn**: q quarter turns clockwise of the W x H source. For q = 1 a point
    (x, y) goes to (H - y, x); for q = 2 to (W - x, H - y); for q = 3 to (y, W - x).
    This gives the upright frame.
@@ -20,8 +26,11 @@ The chain for one page has five parts, applied in this order:
    top-left corner.
 5. **scale**: multiplied by sx and sy, each at most 1, which are the output size over
    the margin box size.
+6. **padding** (only when set, spec 0007): the page moved right and down by the left
+   and top padding, on a canvas larger by the padding on each side, filled with the
+   paper colour; the scale is unchanged.
 
-All five are affine, so the whole chain is one affine map, stored both ways in the
+All are affine, so the whole chain is one affine map, stored both ways in the
 manifest. The prepared image is made from the original source through that one map in
 a single resampling: an exact crop when there is no rotation, Pillow's bicubic
 interpolation when there is, and area averaging when the page is shrunk.
@@ -35,7 +44,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from PIL import Image, ImageDraw
@@ -51,6 +60,26 @@ CONVENTION = (
 )
 _TRANSPOSE = {1: Image.Transpose.ROTATE_270, 2: Image.Transpose.ROTATE_180}
 _TRANSPOSE[3] = Image.Transpose.ROTATE_90
+# The orientation tag's transforms (spec 0007), as Pillow transposes and in words.
+TAG_TRANSPOSE = {
+    2: Image.Transpose.FLIP_LEFT_RIGHT,
+    3: Image.Transpose.ROTATE_180,
+    4: Image.Transpose.FLIP_TOP_BOTTOM,
+    5: Image.Transpose.TRANSPOSE,
+    6: Image.Transpose.ROTATE_270,
+    7: Image.Transpose.TRANSVERSE,
+    8: Image.Transpose.ROTATE_90,
+}
+TAG_WORDS = {
+    1: "none (as stored)",
+    2: "mirrored left to right",
+    3: "a half turn",
+    4: "mirrored top to bottom",
+    5: "transposed (mirrored across the main diagonal)",
+    6: "a quarter turn clockwise",
+    7: "transversed (mirrored across the other diagonal)",
+    8: "a quarter turn counterclockwise",
+}
 
 
 class GeometryError(ValueError):
@@ -89,6 +118,41 @@ def _translate(dx: float, dy: float) -> Affine:
     return (1.0, 0.0, dx, 0.0, 1.0, dy)
 
 
+def tagged_size(size: tuple[int, int], tag: int) -> tuple[int, int]:
+    """The size of the frame after the orientation tag's transform."""
+    width, height = size
+    return (height, width) if tag in (5, 6, 7, 8) else (width, height)
+
+
+def tag_affine(size: tuple[int, int], tag: int) -> Affine:
+    """Stored pixels to the tagged frame for orientation tag `tag` (1 to 8)."""
+    width, height = (float(side) for side in size)
+    maps = {
+        1: (1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+        2: (-1.0, 0.0, width, 0.0, 1.0, 0.0),
+        3: (-1.0, 0.0, width, 0.0, -1.0, height),
+        4: (1.0, 0.0, 0.0, 0.0, -1.0, height),
+        5: (0.0, 1.0, 0.0, 1.0, 0.0, 0.0),
+        6: (0.0, -1.0, height, 1.0, 0.0, 0.0),
+        7: (0.0, -1.0, height, -1.0, 0.0, width),
+        8: (0.0, 1.0, 0.0, -1.0, 0.0, width),
+    }
+    if tag not in maps:
+        raise GeometryError(f"an orientation tag is 1 to 8, not {tag}")
+    return maps[tag]
+
+
+def apply_tag(image: Image.Image, tag: int) -> Image.Image:
+    """The stored image in its tagged frame: an exact transpose, no resampling."""
+    return image if tag == 1 else image.transpose(TAG_TRANSPOSE[tag])
+
+
+def upright_image(source: Image.Image, tag: int, turns: int) -> Image.Image:
+    """The stored image after its tag and `turns` quarter turns clockwise, exactly."""
+    frame = apply_tag(source, tag)
+    return frame.transpose(_TRANSPOSE[turns]) if turns else frame
+
+
 def upright_size(size: tuple[int, int], turns: int) -> tuple[int, int]:
     width, height = size
     return (height, width) if turns % 2 else (width, height)
@@ -119,6 +183,29 @@ def _clip(polygon: list[Point], inside, cross) -> list[Point]:
             kept.append(current)
         elif inside(previous):
             kept.append(cross(previous, current))
+    return kept
+
+
+def clip_to_box(polygon: Sequence[Point], box: Sequence[float]) -> list[Point]:
+    """The part of a convex `polygon` inside `box` (left, top, right, bottom), by four
+    steps of Sutherland and Hodgman's method."""
+    left, top, right, bottom = box
+    edges = [
+        (lambda p: p[0] >= left, 0, left),
+        (lambda p: p[0] <= right, 0, right),
+        (lambda p: p[1] >= top, 1, top),
+        (lambda p: p[1] <= bottom, 1, bottom),
+    ]
+    kept = [tuple(point) for point in polygon]
+    for inside, axis, limit in edges:
+        if not kept:
+            break
+
+        def cross(start: Point, end: Point, axis=axis, limit=limit) -> Point:
+            t = (limit - start[axis]) / (end[axis] - start[axis])
+            return (start[0] + t * (end[0] - start[0]), start[1] + t * (end[1] - start[1]))
+
+        kept = _clip(kept, inside, cross)
     return kept
 
 
@@ -244,6 +331,74 @@ class Chain:
     crop_box: tuple[int, int, int, int]  # in the levelled grid
     scale: tuple[float, float]
     output_size: tuple[int, int]
+    tag: int = 1  # the orientation tag applied first (spec 0007); 1 is none
+    padding: tuple[int, int, int, int] = (0, 0, 0, 0)  # left, top, right, bottom, pixels
+
+    @property
+    def canvas_size(self) -> tuple[int, int]:
+        """The size of the written page: the scaled margin box plus the padding."""
+        left, top, right, bottom = self.padding
+        return (self.output_size[0] + left + right, self.output_size[1] + top + bottom)
+
+    @property
+    def content_box(self) -> tuple[int, int, int, int]:
+        """Where the scaled margin box lies on the canvas."""
+        left, top = self.padding[0], self.padding[1]
+        return (left, top, left + self.output_size[0], top + self.output_size[1])
+
+    def regions(self) -> dict[str, Any]:
+        """Which parts of the written page are photographed source and which are fill,
+        and the margin box in the levelled grid and in stored source pixels."""
+        left, top, right, bottom = self.padding
+        width, height = self.canvas_size
+        content = self.content_box
+        photographed = clip_to_box(apply(self.upright_to_output(), self.polygon), content)
+        crop = self.crop_box
+        corners = [(crop[0], crop[1]), (crop[2], crop[1]), (crop[2], crop[3]), (crop[0], crop[3])]
+        source_corners = self.inverse(apply(self.levelled_to_output(), corners))
+        return {
+            "regions": {
+                "canvas": [0, 0, width, height],
+                "padding": {"left": left, "top": top, "right": right, "bottom": bottom},
+                "content": list(content),
+                "photographed": [list(point) for point in photographed],
+                "fill": (
+                    "every other pixel of the canvas: the padding, and any part of the "
+                    "content area outside the photographed polygon (past the source's "
+                    "edge or the cut), in the page's paper colour"
+                ),
+            },
+            "margin_box": {
+                "levelled": list(crop),
+                "source": [list(point) for point in source_corners],
+            },
+        }
+
+    def levelled_to_output(self) -> Affine:
+        """The levelled grid to the written page: crop, scale and padding."""
+        return (
+            self.scale[0],
+            0.0,
+            self.padding[0] - self.crop_box[0] * self.scale[0],
+            0.0,
+            self.scale[1],
+            self.padding[1] - self.crop_box[1] * self.scale[1],
+        )
+
+    @property
+    def frame_size(self) -> tuple[int, int]:
+        """The source's size after the orientation tag."""
+        return tagged_size(self.source_size, self.tag)
+
+    @property
+    def upright_size(self) -> tuple[int, int]:
+        return upright_size(self.frame_size, self.turns)
+
+    def source_to_upright(self) -> Affine:
+        """Stored source pixels to the upright frame: the tag, then the quarter turns."""
+        return _compose(
+            quarter_turn(self.frame_size, self.turns), tag_affine(self.source_size, self.tag)
+        )
 
     @classmethod
     def build(
@@ -256,14 +411,20 @@ class Chain:
         angle: float,
         crop_box: Sequence[int] | None = None,
         scale: float = 1.0,
+        tag: int = 1,
+        padding: Sequence[int] = (0, 0, 0, 0),
     ) -> Chain:
-        """The chain for page `page`. With no crop box, the whole levelled grid.
+        """The chain for page `page`. With no crop box, the whole levelled grid. `tag`
+        is the orientation tag applied before everything else (1: none).
 
         `scale` above 1 is refused: pagekit never upsamples.
         """
         if not 0 < scale <= 1:
             raise GeometryError(f"scale {scale} is refused: outputs are never upsampled")
-        upright = upright_size(source_size, turns)
+        tag_affine(source_size, tag)  # refuses a tag outside 1 to 8
+        if len(padding) != 4 or any(int(side) != side or side < 0 for side in padding):
+            raise GeometryError(f"padding {list(padding)} must be four whole numbers of pixels")
+        upright = upright_size(tagged_size(source_size, tag), turns)
         polygon = page_polygon(upright, split, page, overlap_px)
         box = frame_box(polygon, upright)
         grid = levelled_size((box[2] - box[0], box[3] - box[1]), angle)
@@ -282,6 +443,8 @@ class Chain:
             crop_box=crop,
             scale=(output[0] / crop_width, output[1] / crop_height),
             output_size=output,
+            tag=tag,
+            padding=tuple(int(side) for side in padding),
         )
 
     def upright_to_output(self) -> Affine:
@@ -298,11 +461,18 @@ class Chain:
             self.levelled_size[0] / 2 - self.crop_box[0],
             self.levelled_size[1] / 2 - self.crop_box[1],
         )
-        scaled = (self.scale[0], 0.0, 0.0, 0.0, self.scale[1], 0.0)
+        scaled = (
+            self.scale[0],
+            0.0,
+            float(self.padding[0]),
+            0.0,
+            self.scale[1],
+            float(self.padding[1]),
+        )
         return _compose(scaled, _compose(placed, _compose(turned, centred)))
 
     def source_to_output(self) -> Affine:
-        return _compose(self.upright_to_output(), quarter_turn(self.source_size, self.turns))
+        return _compose(self.upright_to_output(), self.source_to_upright())
 
     def output_to_source(self) -> Affine:
         return _invert(self.source_to_output())
@@ -318,14 +488,26 @@ class Chain:
     def to_dict(self) -> dict[str, Any]:
         """The chain as plain parameters, readable without pagekit."""
         frame = self.frame_box
+        steps: list[dict[str, Any]] = []
+        if self.tag != 1:  # only when a tag is applied, so a chain without one is unchanged
+            steps.append(
+                {
+                    "op": "orientation_tag",
+                    "tag": self.tag,
+                    "transform": TAG_WORDS[self.tag],
+                    "affine": list(tag_affine(self.source_size, self.tag)),
+                    "size_after": list(self.frame_size),
+                }
+            )
         return {
             "convention": CONVENTION,
             "source_size": list(self.source_size),
-            "steps": [
+            "steps": steps
+            + [
                 {
                     "op": "quarter_turn",
                     "turns_clockwise": self.turns,
-                    "size_after": list(upright_size(self.source_size, self.turns)),
+                    "size_after": list(self.upright_size),
                 },
                 {
                     "op": "page_polygon",
@@ -352,7 +534,18 @@ class Chain:
                     "factor": list(self.scale),
                     "size_after": list(self.output_size),
                 },
-            ],
+            ]
+            + (
+                [
+                    {
+                        "op": "pad",
+                        "left_top_right_bottom": list(self.padding),
+                        "size_after": list(self.canvas_size),
+                    }
+                ]
+                if any(self.padding)  # only when set, so a chain without it is unchanged
+                else []
+            ),
             "affine_source_to_output": list(self.source_to_output()),
             "affine_output_to_source": list(self.output_to_source()),
         }
@@ -360,7 +553,9 @@ class Chain:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Chain:
         """The chain back from `to_dict`, for mapping points from a manifest."""
-        turn, polygon, rotate, crop, scale = data["steps"]
+        steps = {step["op"]: step for step in data["steps"]}
+        turn, polygon, rotate = steps["quarter_turn"], steps["page_polygon"], steps["rotate"]
+        crop, scale = steps["crop"], steps["scale"]
         return cls(
             source_size=tuple(data["source_size"]),
             turns=turn["turns_clockwise"],
@@ -371,6 +566,10 @@ class Chain:
             crop_box=tuple(crop["box"]),
             scale=tuple(scale["factor"]),
             output_size=tuple(scale["size_after"]),
+            tag=steps.get("orientation_tag", {"tag": 1})["tag"],
+            padding=tuple(
+                steps.get("pad", {"left_top_right_bottom": (0, 0, 0, 0)})["left_top_right_bottom"]
+            ),
         )
 
 
@@ -419,9 +618,15 @@ def render(source: Image.Image, chain: Chain, fill: int | tuple[int, ...]) -> Im
     """
     if source.size != chain.source_size:
         raise GeometryError("the source is not the size the chain was built for")
+    if any(chain.padding):
+        # The page as without padding, then placed on a canvas of the paper colour.
+        page = render(source, replace(chain, padding=(0, 0, 0, 0)), fill)
+        canvas = Image.new(page.mode, chain.canvas_size, fill)
+        canvas.paste(page, chain.padding[:2])
+        return canvas
     shrunk = chain.scale != (1.0, 1.0)
     if chain.angle == 0:
-        upright = source.transpose(_TRANSPOSE[chain.turns]) if chain.turns else source
+        upright = upright_image(source, chain.tag, chain.turns)
         fx, fy = chain.frame_box[0], chain.frame_box[1]
         region = (
             fx + chain.crop_box[0],
@@ -489,11 +694,9 @@ def paper_colour(
     width, height = source.size
     reduce_by = max(1.0, max(width, height) / max(1, long_side))
     small_size = (max(1, round(width / reduce_by)), max(1, round(height / reduce_by)))
-    small = source.resize(small_size, Image.Resampling.BOX)
-    if chain.turns:
-        small = small.transpose(_TRANSPOSE[chain.turns])
-    sx = small.size[0] / upright_size(source.size, chain.turns)[0]
-    sy = small.size[1] / upright_size(source.size, chain.turns)[1]
+    small = upright_image(source.resize(small_size, Image.Resampling.BOX), chain.tag, chain.turns)
+    sx = small.size[0] / chain.upright_size[0]
+    sy = small.size[1] / chain.upright_size[1]
     mask = _polygon_mask(small.size, [(x * sx, y * sy) for x, y in chain.polygon])
     grey = small.convert("L") if small.mode != "L" else small
     histogram = grey.histogram(mask)

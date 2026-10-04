@@ -58,6 +58,8 @@ def measure_page(page: Any) -> dict[str, float]:
     dpi = page.resolution["value"]
     if dpi is None:
         return found
+    if page.chain.tag in (5, 6, 7, 8):  # the orientation tag swaps the axes
+        dpi = (dpi[1], dpi[0])
     turns = steps["orientation"]["value"]
     dpi_x, dpi_y = (dpi[1], dpi[0]) if turns % 2 else (dpi[0], dpi[1])
     mm_x, mm_y = _MM_PER_INCH / dpi_x, _MM_PER_INCH / dpi_y

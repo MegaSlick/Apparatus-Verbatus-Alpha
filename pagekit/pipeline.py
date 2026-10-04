@@ -174,11 +174,11 @@ def _scale_up(box: list[int], factor: int, limit: tuple[int, int]) -> list[int]:
 
 
 def _orientation(context: StepContext) -> Answer:
-    return _answer(detect_orientation(context.image()))
+    return _answer(detect_orientation(context.frame()))
 
 
 def _split(context: StepContext) -> Answer:
-    image = context.image()
+    image = context.frame()
     turns = context.values["orientation"]
     if context.resolution is None:
         # The core found the file's resolution missing or implausible: the detector must
@@ -192,7 +192,7 @@ def _split(context: StepContext) -> Answer:
     if detail["pages"] == 2:
         value = {"pages": 2, "cut": [list(point) for point in detail["cut"]]}
         for page in (0, 1):  # a cut that cannot make two pages is an error, not a value
-            Chain.build(context.source.size, turns, value, page, 0.0, 0.0)
+            Chain.build(context.source.size, turns, value, page, 0.0, 0.0, tag=context.tag)
     else:
         value = {"pages": 1}
     extra = ""
@@ -275,7 +275,7 @@ def _compare_split(manual: dict, found: Answer, context: StepContext) -> str | N
     if manual["pages"] == 1:
         return None
     turns = context.values["orientation"]
-    height = context.source.size[0 if turns % 2 else 1]
+    height = context.frame_size[0 if turns % 2 else 1]
     (dpi_x, _), _ = _upright_dpi(context)
     apart = max(
         abs(_x_at(found.value["cut"], y) - _x_at(manual["cut"], y)) for y in (0.0, float(height))

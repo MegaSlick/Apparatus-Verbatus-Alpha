@@ -69,6 +69,23 @@ def _parser() -> argparse.ArgumentParser:
         help="shrink pages above this resolution to it (default: keep the source resolution)",
     )
     preparer.add_argument(
+        "--output-mode",
+        choices=("source", "grey"),
+        help="the mode of the prepared pages of the sources in this run: source (as "
+        "scanned) or grey; kept for them on later runs (default: source)",
+    )
+    preparer.add_argument(
+        "--grey-rule",
+        choices=("luminance", "red", "green", "blue"),
+        help="how a colour page chosen grey is made grey (default: luminance)",
+    )
+    preparer.add_argument(
+        "--padding",
+        metavar="N(mm|px)",
+        help="blank paper colour added around each finished page, for example 4mm or "
+        "20px (default: none); the margin is separate",
+    )
+    preparer.add_argument(
         "--dpi",
         type=float,
         help="the resolution, in dots per inch, of sources that carry none "
@@ -111,6 +128,23 @@ def _prepare(arguments: argparse.Namespace) -> int:
         settings["output_format"] = arguments.format
     if arguments.max_dpi is not None:
         settings["max_output_dpi"] = arguments.max_dpi
+    if arguments.grey_rule is not None:
+        settings["grey_rule"] = arguments.grey_rule
+    if arguments.padding is not None:
+        text = arguments.padding.strip().lower()
+        try:
+            if text.endswith("mm"):
+                settings["padding_mm"] = float(text[:-2])
+            elif text.endswith("px"):
+                settings["padding_px"] = int(text[:-2])
+            else:
+                raise ValueError
+        except ValueError:
+            print(
+                f"pagekit: --padding is a number with mm or px, such as 4mm or 20px, not {arguments.padding!r}",
+                file=sys.stderr,
+            )
+            return 2
     try:
         prepared = plan(
             arguments.sources,
@@ -122,6 +156,7 @@ def _prepare(arguments: argparse.Namespace) -> int:
             dry=arguments.report_stale,
             tone_view=arguments.tone_view,
             source_dpi=arguments.dpi,
+            output_mode=arguments.output_mode,
         )
         for entry in prepared.skipped:
             print(f"skipped {entry['name']}: {entry['reason']}")

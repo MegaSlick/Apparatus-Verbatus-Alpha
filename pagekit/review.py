@@ -29,7 +29,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from pagekit.answer import PAGE_STEPS, SOURCE_STEPS
-from pagekit.geometry import apply, quarter_turn, upright_size
+from pagekit.geometry import apply, upright_image
 
 REVIEW_NAME = "review.html"
 # Colours that stay apart for most kinds of colour blindness.
@@ -46,6 +46,7 @@ _STEP_NAMES = {
     "margin": "Margin",
     "resolution": "Resolution",
     "batch": "Compared with the batch",
+    "orientation_tag": "Orientation tag in the file",
 }
 _ORIGIN_WORDS = {
     "detected": "found by pagekit",
@@ -57,11 +58,6 @@ _TURNS = {
     1: "one quarter turn clockwise",
     2: "a half turn",
     3: "three quarter turns clockwise",
-}
-_TRANSPOSE = {
-    1: Image.Transpose.ROTATE_270,
-    2: Image.Transpose.ROTATE_180,
-    3: Image.Transpose.ROTATE_90,
 }
 
 
@@ -89,9 +85,8 @@ def page_preview(page: Image.Image, long_side: int) -> dict[str, Any]:
 def _to_upright(page_plan: Any, points: list[tuple[float, float]]) -> list[tuple[float, float]]:
     """Points in the page's levelled grid, in the upright frame of its source."""
     chain = page_plan.chain
-    crop, scale = chain.crop_box, chain.scale
-    output = [((x - crop[0]) * scale[0], (y - crop[1]) * scale[1]) for x, y in points]
-    return apply(quarter_turn(chain.source_size, chain.turns), chain.inverse(output))
+    output = apply(chain.levelled_to_output(), points)
+    return apply(chain.source_to_upright(), chain.inverse(output))
 
 
 def _corners(box: list[int]) -> list[tuple[float, float]]:
@@ -104,9 +99,9 @@ def source_preview(source: Image.Image, pages: list[Any], long_side: int) -> dic
     content boxes of its pages drawn on it."""
     first = pages[0]
     turns = first.steps["orientation"]["value"]
-    upright = source.transpose(_TRANSPOSE[turns]) if turns else source
+    upright = upright_image(source, first.chain.tag, turns)
     small = _reduced(upright, long_side).convert("RGB")
-    width, height = upright_size(source.size, turns)
+    width, height = first.chain.upright_size
     sx, sy = small.width / width, small.height / height
     draw = ImageDraw.Draw(small)
     line = max(2, round(max(small.size) / 200))
@@ -276,6 +271,57 @@ def _step_block(step: str, entry: dict[str, Any], source_ref: str, page: int | N
         "overrides file:</p>"
         f'<pre class="override" data-step="{step}" data-page="{"" if page is None else page}">'
         f"{_escape(line)}</pre></section>"
+    )
+
+
+_MODE_SET_BY = {
+    "default": "the default",
+    "run": "chosen for this batch",
+    "manual": "set by hand",
+    "locked": "set by hand and locked",
+}
+
+
+def _mode_block(mode: dict[str, Any], flags: list[str], source_ref: str, page: int) -> str:
+    """The page's output mode: what was chosen and by whom, what was written, the grey
+    rule and whether the conversion was exact, any colour flag, and override lines."""
+    written = "grey" if mode["mode"] == "grey" else "as scanned (source mode)"
+    rows = [
+        ("Written", written),
+        ("Chosen", f"{mode['chosen']} ({_MODE_SET_BY[mode['set_by']]})"),
+    ]
+    if mode["chosen"] == "grey":
+        rows.append(("Grey rule", mode["rule_words"]))
+        rows.append(
+            (
+                "Conversion",
+                "exact: every pixel had equal channels, so the common channel was kept"
+                if mode["exact"]
+                else "reviewed: the channels differ, so the rule changes values",
+            )
+        )
+    if mode["colour"] is not None:
+        colour = mode["colour"]
+        rows.append(
+            (
+                "Colour",
+                f"{colour['coloured_mm2']:g} mm² above the paper's chroma noise "
+                f"({colour['paper_chroma_noise']} levels; threshold "
+                f"{colour['chroma_threshold']})",
+            )
+        )
+    cells = "".join(f"<dt>{_escape(name)}</dt><dd>{_escape(text)}</dd>" for name, text in rows)
+    lines = "".join(
+        f'<pre class="override" data-step="output_mode" data-page="{page}">'
+        f"{_escape(_override_line(source_ref, 'output_mode', page, value))}</pre>"
+        for value in ("source", "grey")
+    )
+    return (
+        f'<section class="step{" flagged" if flags else ""}"><h4>Output mode</h4>'
+        f"<dl>{cells}</dl>{_flags_list(flags)}"
+        '<p class="fix">To keep this page as scanned, or to make it grey whatever its '
+        "colour, add one of these lines to the overrides file:</p>"
+        f"{lines}</section>"
     )
 
 
@@ -502,6 +548,9 @@ def build(plan: Any, entries: list[dict[str, Any]], previews: dict[str, Any]) ->
             for step in PAGE_STEPS:
                 parts.append(_step_block(step, entry["steps"][step], ref, page.number))
                 page_shown |= {(step, reason) for reason in entry["steps"][step]["flags"]}
+            mode_flags = [f["reason"] for f in page.flags if f["step"] == "output_mode"]
+            parts.append(_mode_block(entry["output_mode"], mode_flags, ref, page.number))
+            page_shown |= {("output_mode", reason) for reason in mode_flags}
             others: dict[str, list[str]] = {}
             for flag in page.flags:
                 key = (flag["step"], flag["reason"])

@@ -39,6 +39,10 @@ meaning = "Mean thickness in working px at or below which a long mark that is no
 #   1.2 to 8 mm x-height at 150 to 600 dpi, rendered serif, sans and italic type from
 #   7 to 14 pt at 150 to 600 dpi, two-column print, printed and handwritten spreads,
 #   sparse pages, a form, ledgers and margin notes turned a quarter;
+# - pagekit's own figure-only pages (brief 0030 follow-up): lining figures drawn in
+#   three styles (monospaced with footed 1, proportional, rounder), five columns,
+#   right-aligned and ragged, line spacing 1.2, 1.6 and 2.4 figure heights, 150 and
+#   300 dpi, all four turns (all flagged, none decided);
 # - the lead's two real register spreads (dense 17th and 18th century French cursive),
 #   run locally only.
 # The strip widths, core-band shares and the 1600 px working size were chosen on these;
@@ -129,6 +133,16 @@ value = 2.5
 status = "UNMEASURED"
 meaning = "Up-down score (strip agreement in standard errors plus the weighted ragged-edge cue) needed to decide upright against upside down; at this score the up-down confidence is 0.5."
 
+[same_size_share]
+value = 0.85
+status = "UNMEASURED"
+meaning = "Share of marks within same_size_tolerance of the median height (or width) at or above which the page is figures or capitals only and orientation is flagged, not decided. Writing and running text on pagekit's test pages reach 0.36 to 0.62; pages of lining figures reach 1.0."
+
+[same_size_tolerance]
+value = 0.15
+status = "UNMEASURED"
+meaning = "Relative distance from the median mark height (or width) within which a mark counts as the same size."
+
 [orient_tile_px]
 value = 96
 status = "UNMEASURED"
@@ -165,7 +179,7 @@ status = "UNMEASURED"
 meaning = "Least ink share for a strip to vote on upright against upside down."
 
 [min_strips]
-value = 6
+value = 10
 status = "UNMEASURED"
 meaning = "Fewest voting strips for the strip cues to count."
 
@@ -329,7 +343,7 @@ meaning = "Writing within this many working px of the frame edge counts as cut o
 [backdrop_min_thickness_px]
 value = 5
 status = "UNMEASURED"
-meaning = "Size in working px of the square erosion a mark joined to a dark band must survive to be excused as backdrop or shadow; wider than a pen stroke, so a flourish touching the band still counts as writing across the cut."
+meaning = "Size in working px of the square opening that separates the thick part (backdrop, shadow, a blot) of a mark joined to a dark band; only that part is excused from writing across the cut. Thin pieces at least three times this long that reach away from the band are a pen stroke and still count; shorter ones and fringes within this distance of the band edge do not."
 
 [overlap_mm]
 value = 5.0

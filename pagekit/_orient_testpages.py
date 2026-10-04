@@ -32,10 +32,12 @@ def write_block(
     descenders: float = 0.1,
     centred: bool = False,
     joined: bool = True,
+    narrow: int = 0,
 ) -> None:
     """Lines of writing inside `box`, left-aligned at its left edge (or centred in it).
     `ascenders` and `descenders` are the shares of letters carrying one; `joined`
-    links the letters of a word at the baseline."""
+    links the letters of a word at the baseline; `narrow` makes letters up to that many
+    px narrower than the advance, varying from letter to letter."""
     rng = random.Random(seed)
     x0, y0, x1, y1 = box
     top = y0
@@ -58,7 +60,14 @@ def write_block(
             for i, roll in enumerate(rolls):
                 lx = wx + shift + i * letter
                 draw.ellipse(
-                    (lx, baseline - core, lx + letter - 2, baseline), outline=ink, width=stroke
+                    (
+                        lx,
+                        baseline - core,
+                        lx + letter - 2 - int(roll * 997) % (narrow + 1),
+                        baseline,
+                    ),
+                    outline=ink,
+                    width=stroke,
                 )
                 if i and joined:
                     draw.line((lx - 3, baseline - 1, lx + 2, baseline - 1), fill=ink, width=stroke)
@@ -310,3 +319,95 @@ def printed_spread(dpi: int = 300, points: float = 9, seed: int = 1, *, serif: b
     frame.paste(left, (60, 60))
     frame.paste(right, (60 + left.width, 80))
     return frame
+
+
+def _figure(draw, digit: str, x: int, base: int, height: int, stroke: int, style: str) -> int:
+    """One lining figure drawn from strokes, `height` px tall standing on `base`.
+    Styles: "mono" (every figure the same advance, a footed 1), "plain" (proportional,
+    no serifs) and "round" (proportional, rounder bowls). Returns the advance."""
+    proportional = style != "mono"
+    width = round(0.55 * height)
+    if proportional and digit == "1":
+        width = round(0.32 * height)
+    top, mid = base - height, base - height // 2
+    ink = 30
+    w = width
+    kw = {"fill": ink, "width": stroke}
+    if digit == "0":
+        draw.ellipse((x, top, x + w, base), outline=ink, width=stroke)
+    elif digit == "1":
+        draw.line((x + w // 2, top, x + w // 2, base), **kw)
+        draw.line((x + w // 2, top, x, top + height // 5), **kw)
+        if style == "mono":
+            draw.line((x, base, x + w, base), **kw)
+    elif digit == "2":
+        draw.arc((x, top, x + w, mid + height // 6), 180, 20, **kw)
+        draw.line((x + w, mid - height // 8, x, base), **kw)
+        draw.line((x, base, x + w, base), **kw)
+    elif digit == "3":
+        draw.arc((x, top, x + w, mid), 200, 90, **kw)
+        draw.arc((x, mid, x + w, base), 270, 160, **kw)
+    elif digit == "4":
+        draw.line((x + 3 * w // 4, base, x + 3 * w // 4, top), **kw)
+        draw.line((x + 3 * w // 4, top, x, base - height // 3), **kw)
+        draw.line((x, base - height // 3, x + w, base - height // 3), **kw)
+    elif digit == "5":
+        draw.line((x + w, top, x + w // 6, top), **kw)
+        draw.line((x + w // 6, top, x + w // 6, mid), **kw)
+        draw.arc((x, mid - height // 10, x + w, base), 200, 160, **kw)
+    elif digit == "6":
+        draw.arc((x, top, x + 2 * w, base + height // 2), 180, 260, **kw)
+        draw.ellipse((x, mid - height // 10, x + w, base), outline=ink, width=stroke)
+    elif digit == "7":
+        draw.line((x, top, x + w, top), **kw)
+        draw.line((x + w, top, x + w // 3, base), **kw)
+    elif digit == "8":
+        draw.ellipse((x + w // 10, top, x + w - w // 10, mid), outline=ink, width=stroke)
+        draw.ellipse((x, mid, x + w, base), outline=ink, width=stroke)
+    else:
+        draw.ellipse((x, top, x + w, mid + height // 10), outline=ink, width=stroke)
+        draw.arc((x - w, top - height // 2, x + w, base), 0, 80, **kw)
+    if style == "round" and digit in "069":
+        draw.ellipse(
+            (x + w // 4, mid - height // 8, x + 3 * w // 4, mid + height // 8),
+            outline=ink,
+            width=max(1, stroke // 2),
+        )
+    return width + max(2, round(0.18 * height))
+
+
+def figure_page(
+    dpi: int = 300,
+    seed: int = 1,
+    *,
+    style: str = "mono",
+    spacing: float = 1.6,
+    aligned: bool = True,
+    columns: int = 5,
+    points: float = 10,
+) -> Image.Image:
+    """An A4 page of printed figures only, in `columns` columns: amounts with two
+    decimals, right-aligned (figures stacked exactly) or left-aligned with ragged
+    lengths, lines `spacing` times the figure height apart."""
+    rng = random.Random(seed)
+    width, height = round(8.27 * dpi), round(11.69 * dpi)
+    image = Image.new("L", (width, height), 232)
+    draw = ImageDraw.Draw(image)
+    tall = round(0.7 * points / 72 * dpi)
+    stroke = max(1, round(tall / 9))
+    margin = round(20 / 25.4 * dpi)
+    column_width = (width - 2 * margin) // columns
+    base = margin + tall
+    while base <= height - margin:
+        for c in range(columns):
+            text = f"{rng.randint(1, 10 ** rng.randint(2, 5))}{rng.randint(0, 99):02d}"
+            advance = [
+                _figure(ImageDraw.Draw(Image.new("L", (1, 1))), d, 0, tall, tall, stroke, style)
+                for d in text
+            ]
+            total = sum(advance)
+            x = margin + c * column_width + (column_width - total - tall if aligned else tall // 2)
+            for digit in text:
+                x += _figure(draw, digit, x, base, tall, stroke, style)
+        base += round(spacing * tall)
+    return image.filter(ImageFilter.GaussianBlur(dpi / 500))
