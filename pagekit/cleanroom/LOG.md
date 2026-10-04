@@ -412,3 +412,24 @@ record".
 - **First run on the lead's two sample spreads**, locally (the images stay outside the
   repository): both splits correct, pages upright, all writing kept; every page flagged.
   An independent review of the pipeline, bound by the clean-room rule, is running.
+
+## 0024 — Fixes merged; first real-page findings; follow-up briefs 0026 to 0028
+
+- **Brief 0025 done:** commit 352a671 on `work/pk-skew`. Leak scan no hits. Merged into
+  `work/pagekit-prepare` (34d5d86); the combined suite passes. On the lead's two spreads,
+  faint-mark flags fell from 1317 to 15 on the first page.
+- **Brief 0024 done:** commits 8a01a53 and 2131539 on `work/pk-tone`. Leak scan no hits.
+  The host's merge conflicted in code (`pagekit/__main__.py`), so the host aborted it and
+  gave the merge to a build-side agent.
+- **Real-page findings** from the host's local run on the lead's spreads (the images stay
+  outside the repository): both splits right, every page upright, all writing kept; a page
+  tilted about 2.5 degrees left unlevelled because its two estimates differed by 0.6; the
+  book's board edge and page-edge stack kept in the page box; every page flagged for
+  orientation and for discarded ink.
+- **Follow-up briefs:** `briefs/0026-build-integrate-tone-merge.md` (sha256
+  1e137aaab7c94de06c05355ebe92a315105608555da86b65c2891b732cceddb5), to the agent of brief
+  0023; `briefs/0027-build-skew-real-pages.md` (sha256
+  3f759d37ceaf85be653903ae05fcf85f0d510ead219fddbdc2f4da2a6c890922), to the agent of brief
+  0018; `briefs/0028-build-orientation-real-pages.md` (sha256
+  6562ca00a4b274ea09f216f5b8e66b06737daf2eb563ba156639991cc941b3ab), to the agent of brief
+  0017. All saved before they were sent.
