@@ -78,7 +78,9 @@ for review or partial, which includes an act refused inside an otherwise finishe
 **Real pages** need a Linux GPU machine running vLLM and the real model configuration,
 which is two files given together: `--models-config config/models-real.toml` and
 `--serving-recipes-config config/serving_recipes_real.toml`. Always give both: the
-operator's `run` and the orchestrator both refuse one without the other before anything
+operator's `run` and the orchestrator refuse either one alone, and on the pod `pod_run`
+refuses any roster but the fixture `config/models.toml` without its catalogue (only that
+roster falls back to `config/serving_recipes.toml`), each before any stage or model fetch
 starts.
 [operations/operator/README.md](operations/operator/README.md) describes a run, and the
 RunPod tooling is in `operations/pod/`. Input can be most raster images, multi-page TIFF, HEIC

@@ -173,8 +173,13 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   > $V/pod-run-$RUN.out 2>&1 < /dev/null &
 ```
 
-- The real configuration is these **two files, always together**; one without the
-  other is refused before anything starts.
+- The real configuration is these **two files, always together**. Here, on the pod,
+  `pod_run` always needs `--models-config`, and refuses any roster other than the
+  fixture `config/models.toml` when `--serving-recipes-config` is missing; it does
+  so while reading the plan, before the boot or any model fetch. Only the fixture
+  roster is given a catalogue by default, the fixture `config/serving_recipes.toml`.
+  `verbatus run` and the orchestrator itself refuse either file given without the
+  other.
 - `--hourly-usd` must be a positive decimal. It lets the deadline-at-risk notice say
   what running past the deadline costs; `--notify` sends that notice (and the systemic
   alarm) to the phone. Drop `--notify` if no phone should be paged.
