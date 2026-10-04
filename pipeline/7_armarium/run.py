@@ -1322,6 +1322,40 @@ def require_doubt_hold(row: dict, text: str, layer: dict, limit_bp: int) -> None
         )
 
 
+def require_page_doubt_holds(context, rows: list[dict], limit_bp: int) -> None:
+    """Every reading on a page over the sealed page doubt limit must carry the page hold.
+
+    Each page is recounted over its counted readings' Perlectiones exactly as the
+    Perlector counted it (`page_path.page_doubt`), so a page hold that was skipped
+    stops the export instead of passing quietly.
+    """
+    by_page: dict[int, list[dict]] = {}
+    for row in rows:
+        if row["perlectio_ref"] is not None:
+            by_page.setdefault(row["page_ordinal"], []).append(row)
+    for ordinal, readings in sorted(by_page.items()):
+        plans = []
+        for row in readings:
+            payload = context.tree.read_artifact_reference(
+                row["perlectio_ref"], stage=PERLECTOR, kind="perlectio", subject_id=row["act_id"]
+            )["payload"]
+            layer = from_page_perlectio(payload)
+            plans.append({"text": payload["text"], "assessment": layer})
+        if not doubt_exceeds(page_path.page_doubt(plans), limit_bp):
+            continue
+        unheld = [
+            row["act_key"]
+            for row in readings
+            if page_path.PAGE_DOUBT_SHARE_HIGH not in row["hold_codes"]
+        ]
+        if unheld:
+            raise FatalAccounting(
+                f"page {ordinal} is more doubtful or unread than the sealed limit of {limit_bp} "
+                f"basis points, but {', '.join(unheld)} never held "
+                f"{page_path.PAGE_DOUBT_SHARE_HIGH!r} for a person to decide"
+            )
+
+
 def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
     """Export the run: acts, the other layer, page rows, and the page accounting."""
     # Before anything is published, so a decision no review applied refuses cleanly.
@@ -1348,6 +1382,14 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
         if row["class"] == PAGE_REFUSED_CLASS:
             _require_refused_in_census(row, census)
     rows = reviewed_rows(rows)
+    # The sealed doubt limits, read when a counted reading has a Perlectio to recount.
+    doubt_policy = (
+        require_page_accounting_policy(context, context.page_accounting_config_path)
+        if any(row["perlectio_ref"] is not None for row in rows)
+        else None
+    )
+    if doubt_policy is not None:
+        require_page_doubt_holds(context, rows, doubt_policy.max_page_doubt_share_bp)
     reviews = current_page_reviews(context, rows)
     links = continuation_links(context, rows)
     testimonia = current_page_testimonia(context)
@@ -1360,8 +1402,6 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
     continuation_flags: dict[str, list[str]] = {}
     projected_acts: list[dict] = []
     projected_others: list[dict] = []
-    # The sealed act doubt limit, read at the first delivered reading.
-    doubt_limit_bp: int | None = None
     delivered: list[dict] = []
     non_delivered: list[dict] = []
     canary_acts: list[dict] = []
@@ -1418,11 +1458,12 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 except SchemaRefusal as error:
                     refusal = f"the established reading's provenance was refused: {error}"
                 else:
-                    if doubt_limit_bp is None:
-                        doubt_limit_bp = require_page_accounting_policy(
-                            context, context.page_accounting_config_path
-                        ).max_act_doubt_share_bp
-                    require_doubt_hold(row, payload["text"], payload["uncertainty"], doubt_limit_bp)
+                    require_doubt_hold(
+                        row,
+                        payload["text"],
+                        payload["uncertainty"],
+                        doubt_policy.max_act_doubt_share_bp,
+                    )
                     entry.update(
                         {
                             "text": payload["text"],

@@ -149,10 +149,13 @@ act `no-autopsia`.
   readable text holds `entry-no-readable-text`.
 - The doubt share (`common.reading_annotations.doubt_count`) is the share of an
   entry's non-whitespace characters inside an uncertain span, each gap counted as one
-  unread character. An entry over the sealed `[doubt] max_act_doubt_share_bp` of
-  `config/page_accounting.toml` holds `doubt-share-high`; when a reading's entries
-  together are over `max_page_doubt_share_bp`, every entry holds
-  `page-doubt-share-high`, a page-wide hold. Both limits are provisional and
+  unread character (a provisional weight). Marks that do not parse count every
+  character unread, and an entry with nothing read counts as one unread character.
+  An entry over the sealed `[doubt] max_act_doubt_share_bp` of
+  `config/page_accounting.toml` holds `doubt-share-high`. When every entry the page
+  publishes, its first reading's and a counted re-ask's together, is over
+  `max_page_doubt_share_bp`, each holds `page-doubt-share-high`, a page-wide hold,
+  decided before any act record is published. Both limits are provisional and
   unmeasured, so a reading cannot pass by marking everything doubtful.
 - `truncation` classifies the entry `complete`, `truncated` or `unknown` from the
   engine's stop word and three computed signals, with every term of the length signal

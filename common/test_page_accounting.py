@@ -1922,13 +1922,13 @@ def test_an_act_wrapping_columns_is_classified_over_its_lines_area_only():
     assert plans[0]["union_box_px"] == bx(100, 100, 900, 650)
 
 
-def _doubt_holds(*texts: str) -> list[list[str]]:
-    """Each entry's doubt holds when a two-column page is read as `texts`, one line each."""
+def _doubt_plans(*texts: str) -> list[dict]:
+    """The entry plans of a two-column page read as `texts`, one line each."""
     case = two_columns([[f"L{n}"] for n in range(1, len(texts) + 1)])
     answer = copy.deepcopy(case["reading"]["answer"])
     for act, text in zip(answer["acts"], texts, strict=True):
         act["text"] = text
-    plans = page_path.entry_plans(
+    return page_path.entry_plans(
         answer,
         {**case["feed"], "page_size": {"w": WIDTH, "h": HEIGHT}, "page_render": None},
         page_id="pg_0123456789abcdef",
@@ -1936,8 +1936,18 @@ def _doubt_holds(*texts: str) -> list[list[str]]:
         truncation_policy={truncation.LENGTH_FLOOR_FIELD: 1, truncation.LEGIBLE_PAGE_FIELD: 1},
         accounting_policy=POLICY,
     )
+
+
+def _doubt_codes(plans: list[dict]) -> list[list[str]]:
     doubt = {page_path.DOUBT_SHARE_HIGH, page_path.PAGE_DOUBT_SHARE_HIGH}
     return [sorted(doubt & set(plan["reading_holds"])) for plan in plans]
+
+
+def _doubt_holds(*texts: str) -> list[list[str]]:
+    """Each entry's doubt holds when the page publishes exactly these entries."""
+    plans = _doubt_plans(*texts)
+    page_path.hold_doubtful_page(plans, POLICY)
+    return _doubt_codes(plans)
 
 
 def test_an_entry_or_a_page_mostly_doubtful_or_unread_is_held():
@@ -1958,6 +1968,43 @@ def test_an_entry_or_a_page_mostly_doubtful_or_unread_is_held():
         ["doubt-share-high", "page-doubt-share-high"],
         ["page-doubt-share-high"],
     ]
+
+
+def test_the_page_share_is_over_every_entry_the_page_publishes_re_ask_included():
+    """A first reading at 19% stays clear alone; its re-ask's 80% entry takes the page to 42%.
+
+    The page hold is decided once over the entries the page publishes, so a
+    first-reading entry cannot escape it because the doubt arrived on re-ask.
+    """
+    clean, half, mostly = (
+        "a" * 100,
+        "[[" + "b" * 30 + "]]" + "c" * 30,
+        "[[" + "d" * 80 + "]]" + "e" * 20,
+    )
+    plans = _doubt_plans(clean, half, mostly)
+    assert _doubt_codes(plans) == [[], ["doubt-share-high"], ["doubt-share-high"]]
+    first = copy.deepcopy(plans[:2])
+    page_path.hold_doubtful_page(first, POLICY)
+    assert _doubt_codes(first) == [[], ["doubt-share-high"]]
+    page_path.hold_doubtful_page(plans, POLICY)
+    assert all("page-doubt-share-high" in codes for codes in _doubt_codes(plans))
+
+
+def test_unanchorable_or_wholly_unread_entries_count_as_unread_on_the_page():
+    """Marks that do not parse, or an entry that is only `[[?]]`, are no certainty.
+
+    "Jean [[Roy" is 9 characters whose doubt cannot be anchored: all unread, so with
+    "Le deux mai" the page is 9 of 18. Four `[[?]]` entries are one unread
+    character each, 4 of 11 beside "Jean Roy".
+    """
+    assert _doubt_holds("Jean [[Roy", "Le deux mai")[1] == ["page-doubt-share-high"]
+    assert _doubt_holds("[[?]]", "[[?]]", "[[?]]", "[[?]]", "Jean Roy")[4] == [
+        "page-doubt-share-high"
+    ]
+    # A page of nothing but unread entries is wholly unread, and no count is ever empty.
+    assert _doubt_holds("[[?]]", " ") == [["page-doubt-share-high"]] * 2
+    with pytest.raises(ContractError, match="no characters"):
+        page_path.annotations.doubt_exceeds((0, 0), POLICY.max_page_doubt_share_bp)
 
 
 def test_interleaved_blocks_are_cited_one_by_one_and_lend_no_area():

@@ -748,9 +748,9 @@ def entry_plans(
     `duplicate-region`, and `no-autopsia` when no page image was shown) and the
     reading's (`doubt-marks-malformed`, `reading-incomplete`,
     `entry-no-readable-text`, and `doubt-share-high` over the sealed `[doubt]`
-    limit). When all of the answer's entries together are over the page limit,
-    every entry also holds `page-doubt-share-high`. The page accounting reads the
-    truncations from here, before any act record exists.
+    limit). The page limit is decided over every entry the page publishes
+    (`hold_doubtful_page`). The page accounting reads the truncations from here,
+    before any act record exists.
 
     An operator re-read is given `superseded`, the entry plans the page counted
     before it. When it does not read each of their acts as one act of its own
@@ -768,8 +768,6 @@ def entry_plans(
     reading_attempt = page_reading_attempt(page_id, attempt)
     autopsia = feed["page_render"] is not None
     plans = []
-    # Each entry's (doubtful or unread, out of), summed for the page's limit.
-    doubts: list[tuple[int, int]] = []
     for entry in answer_entries(answer, feed, accounting_policy, named):
         act, union = entry["act"], entry["union_box_px"]
         act_class = READING_CLASS if union is not None else UNPLACED_CLASS
@@ -795,11 +793,15 @@ def entry_plans(
             reading_holds.append(READING_INCOMPLETE)
         if not text.strip():
             reading_holds.append(ENTRY_NO_READABLE_TEXT)
-        doubt = annotations.doubt_count(text, assessment)
-        doubts.append(doubt)
-        # An entry with no readable text is held by its own rule above.
-        if text.strip() and annotations.doubt_exceeds(
-            doubt, accounting_policy.max_act_doubt_share_bp
+        # An entry with no readable text, or marks that do not parse, is held by
+        # its own rule above.
+        if (
+            text.strip()
+            and assessment["state"] == annotations.ASSESSMENT_ASSESSED
+            and annotations.doubt_exceeds(
+                annotations.doubt_count(text, assessment),
+                accounting_policy.max_act_doubt_share_bp,
+            )
         ):
             reading_holds.append(DOUBT_SHARE_HIGH)
         plans.append(
@@ -825,14 +827,29 @@ def entry_plans(
                 "autopsia": autopsia,
             }
         )
-    page_doubt = (sum(d for d, _ in doubts), sum(n for _, n in doubts))
-    if plans and annotations.doubt_exceeds(page_doubt, accounting_policy.max_page_doubt_share_bp):
-        for plan in plans:
-            plan["reading_holds"].append(PAGE_DOUBT_SHARE_HIGH)
     if superseded is not None and not superseded_acts_kept(superseded, plans):
         for plan in plans:
             plan["reading_holds"].append(SUPERSEDED_ACT_NOT_READ)
     return plans
+
+
+def page_doubt(plans: list[Mapping[str, Any]]) -> tuple[int, int]:
+    """`(doubtful or unread, out of)` over a page's entry plans together."""
+    counts = [annotations.doubt_count(plan["text"], plan["assessment"]) for plan in plans]
+    return sum(count[0] for count in counts), sum(count[1] for count in counts)
+
+
+def hold_doubtful_page(
+    plans: list[dict[str, Any]], policy: page_accounting.PageAccountingPolicy
+) -> None:
+    """Hold every plan `page-doubt-share-high` when the page's entries together are over the limit.
+
+    Given every entry the page publishes act records for, first reading and
+    counted re-ask together, once, before any of them is published.
+    """
+    if plans and annotations.doubt_exceeds(page_doubt(plans), policy.max_page_doubt_share_bp):
+        for plan in plans:
+            plan["reading_holds"].append(PAGE_DOUBT_SHARE_HIGH)
 
 
 def superseded_acts_kept(

@@ -2578,6 +2578,8 @@ def _verify_page_reading(
         codes = _problem_codes(payload.get("problems"), f"{what}'s current page reading")
         accounting_ref, reask_ref, named = index.ref(last), None, None
         by_reading = {payload["attempt_ordinal"]: (payload, reading_ref)}
+    # As the Perlector did, over every entry the page publishes, before its records.
+    page_path.hold_doubtful_page(act_plans, index.accounting_policy)
     row = {
         "page_id": page_id,
         "page_ordinal": ordinal,

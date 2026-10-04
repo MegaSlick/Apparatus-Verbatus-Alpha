@@ -194,7 +194,9 @@ two).
   the package's own literals. The Perlector holds a reading, and every reading of a
   page, over the sealed `[doubt]` limits (`pipeline/4_perlector/CONTRACT.md`); the
   export refuses a delivered act over the act limit that was never held
-  `doubt-share-high`, so only a person's decision delivers one. The page record
+  `doubt-share-high`, and recounts each page over its counted readings'
+  Perlectiones as the Perlector did, refusing a page over the page limit with a
+  reading not held `page-doubt-share-high`, so only a person's decision delivers one. The page record
   counts delivered acts only, so it can be lower than the share the page was held on.
 
 ### `sources.json`

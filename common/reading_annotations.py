@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from typing import Any, Final
 
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.uncertainty import PAGE_READ_LECTIO, is_trailing_offset, validate
 
 # The reader's own doubt report. `assessed`: the reader was asked and its spans and
@@ -206,12 +206,21 @@ BASIS_POINTS: Final = 10_000
 
 
 def doubt_count(text: str, layer: dict[str, Any]) -> tuple[int, int]:
-    """`(doubtful or unread, out of)` for one reading, from its spans and gaps.
+    """`(doubtful or unread, out of)` for one reading, from its doubt report or layer.
 
     Counted in the text's non-whitespace characters: each one inside an uncertain
     span is doubtful. A gap is zero-width, so how much ink it stands for was never
-    measured; each counts as one unread character, on both sides of the share.
+    measured; each counts as one unread character on both sides of the share, a
+    provisional weight the lead has yet to set. Marks that could not be anchored
+    say nothing is certain, so every character is unread, and a reading with
+    nothing read is at least one unread character. A person's correction carries
+    no machine doubt and counts as read.
     """
+    # A doubt report carries `state`; a canonical layer carries it in `assessment`.
+    state = layer["state"] if "state" in layer else layer["assessment"]["state"]
+    read = sum(1 for character in text if not character.isspace())
+    if state == ASSESSMENT_MALFORMED:
+        return max(read, 1), max(read, 1)
     doubtful = {
         offset
         for span in layer["uncertain_spans"]
@@ -219,17 +228,20 @@ def doubt_count(text: str, layer: dict[str, Any]) -> tuple[int, int]:
         if not text[offset].isspace()
     }
     gaps = len(layer["gaps"])
-    read = sum(1 for character in text if not character.isspace())
+    if read + gaps == 0:
+        return 1, 1
     return len(doubtful) + gaps, read + gaps
 
 
 def doubt_exceeds(count: tuple[int, int], limit_bp: int) -> bool:
-    """Whether more than `limit_bp` basis points of `count` are doubtful or unread.
+    """Whether more than `limit_bp` basis points of `count` are doubtful or unread, exactly.
 
-    Compared exactly, in integers; a reading with nothing read counts as all unread.
+    `doubt_count` never counts nothing, so a count of nothing is a caller's error.
     """
     doubtful, out_of = count
-    return out_of == 0 or doubtful * BASIS_POINTS > limit_bp * out_of
+    if out_of <= 0:
+        raise ContractError("a doubt share over no characters has no meaning")
+    return doubtful * BASIS_POINTS > limit_bp * out_of
 
 
 def doubt_mark_offsets(raw: str) -> tuple[list[int | None], list[int | None]]:
