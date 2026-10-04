@@ -13,7 +13,14 @@ from pagekit._orient_ink import (
     load_settings,
     settings_measured,
 )
-from pagekit._orient_testpages import PAPER, page, turned, write_block
+from pagekit._orient_testpages import (
+    PAPER,
+    cursive_page,
+    cursive_spread,
+    page,
+    turned,
+    write_block,
+)
 from pagekit.orient import (
     POSSIBLY_NEGATIVE,
     UNCERTAIN_DIRECTION,
@@ -184,15 +191,17 @@ def test_ascender_cue_alone_decides_centred_writing():
     assert detect_orientation(turned(image, 2))["value"] == 2
 
 
-def test_ragged_edge_cue_outweighs_a_hand_with_more_descenders():
+def test_ragged_edge_cue_when_switched_on_outweighs_a_hand_with_more_descenders():
     """A hand with descenders and no ascenders turns the core-band cue against the
-    truth; the ragged right edge still carries the vote."""
+    truth. The ragged-edge cue is off by default (registers justify their lines); with
+    its weight set, it carries the vote."""
     image = Image.new("L", (1000, 1400), PAPER)
     write_block(ImageDraw.Draw(image), (100, 120, 900, 1280), seed=2, ascenders=0.0, descenders=0.3)
-    upright = detect_orientation(image)
+    with_ragged = {"ragged_score_weight": 12.0}
+    upright = detect_orientation(image, with_ragged)
     assert upright["value"] == 0
-    assert "from ascenders against descenders -" in upright["evidence"]
-    assert detect_orientation(turned(image, 2))["value"] == 2
+    assert "ascenders against descenders -" in upright["evidence"]
+    assert detect_orientation(turned(image, 2), with_ragged)["value"] == 2
 
 
 def test_page_on_a_backdrop_that_is_most_of_the_frame_is_not_a_negative():
@@ -225,3 +234,36 @@ def test_textured_dark_border_is_trimmed_before_scoring(quarter_turns):
     result = detect_orientation(turned(_textured_backdrop_frame(), quarter_turns))
     assert result["value"] == (4 - quarter_turns) % 4
     assert result["flags"] == []
+
+
+# --- Dense old cursive (follow-up to brief 0021: every real page was flagged) ----------
+
+
+@pytest.mark.parametrize("quarter_turns", [0, 1, 2, 3])
+def test_dense_cursive_spread_with_gutter_and_show_through_is_oriented(quarter_turns):
+    """Two facing pages of close cursive whose ascenders and descenders reach the next
+    line, with flourishes, a signature, show-through, a gutter shadow, page-edge stacks
+    and a dark backdrop; their lines are out of step and lean apart. Whole-frame
+    profiles see little difference between rows and columns here."""
+    result = detect_orientation(turned(cursive_spread(), quarter_turns))
+    assert result["value"] == (4 - quarter_turns) % 4
+    assert result["flags"] == []
+    assert result["confidence"] > SETTING_CONFIDENCE
+
+
+@pytest.mark.parametrize("quarter_turns", [0, 1, 2, 3])
+def test_dense_cursive_page_with_gutter_strip_is_oriented(quarter_turns):
+    result = detect_orientation(turned(cursive_page(seed=12), quarter_turns))
+    assert result["value"] == (4 - quarter_turns) % 4
+    assert result["flags"] == []
+
+
+def test_ascender_cue_decides_when_the_baseline_cue_is_silent():
+    """Unjoined round letters have edges as sharp at the x-line as at the baseline, so
+    only ascenders tell upright from upside down."""
+    image = Image.new("L", (1000, 1400), PAPER)
+    write_block(ImageDraw.Draw(image), (100, 120, 900, 1280), seed=2, joined=False, descenders=0.0)
+    upright = detect_orientation(image)
+    assert upright["value"] == 0 and upright["flags"] == []
+    assert "baseline against x-line +0.0" in upright["evidence"]
+    assert detect_orientation(turned(image, 2))["value"] == 2

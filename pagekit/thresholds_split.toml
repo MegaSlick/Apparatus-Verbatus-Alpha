@@ -33,9 +33,9 @@ meaning = "Mean thickness in working px at or below which a long mark that is no
 # --- Orientation ------------------------------------------------------------------------
 
 [orient_long_side_px]
-value = 800
+value = 1600
 status = "UNMEASURED"
-meaning = "Long side in px of the orientation detector's working copy; enough to keep the gaps between lines several px tall."
+meaning = "Long side in px of the orientation detector's working copy; enough to keep the gaps between lines of small cursive several px tall on a two-page frame."
 
 [edge_dark_share]
 value = 0.9
@@ -53,9 +53,9 @@ status = "UNMEASURED"
 meaning = "Ratio by which one direction's combined score must beat the other's for the line direction to be trusted; at this ratio the direction confidence is 0.5."
 
 [shape_weight]
-value = 0.5
+value = 0.0
 status = "UNMEASURED"
-meaning = "Weight of the mark-shape cue (marks wider than tall against taller than wide) next to the profile cue when choosing the line direction."
+meaning = "Weight of the mark-shape cue (marks wider than tall against taller than wide) next to the profile cue when choosing the line direction. 0 by default: in cursive with long ascenders and descenders that join neighbouring lines, marks are more often taller than wide, so the cue points the wrong way."
 
 [shape_ratio]
 value = 1.5
@@ -68,29 +68,74 @@ status = "UNMEASURED"
 meaning = "Rows whose ink is below this share of the busiest row separate lines of writing."
 
 [core_share]
-value = 0.5
+value = 0.6
 status = "UNMEASURED"
 meaning = "The core band of a line runs from its first to its last row at or above this share of the line's busiest row; ink above and below it is ascender and descender mass."
 
 [min_lines]
-value = 3
+value = 8
 status = "UNMEASURED"
-meaning = "Fewest lines of writing the ragged-edge cue needs before it votes."
+meaning = "Fewest lines, separated by gaps across the whole width, the ragged-edge cue needs before it votes."
 
 [ascender_weight]
 value = 0.5
 status = "UNMEASURED"
-meaning = "Weight of the ascender-against-descender cue in the up-down vote; the ragged-edge cue gets the rest."
+meaning = "Weight of the ascender-against-descender cue in each strip's vote; the baseline-sharpness cue gets the rest."
 
 [ragged_min_spread_share]
 value = 0.02
 status = "UNMEASURED"
 meaning = "Spread of line starts and ends, as a share of the text width, below which the ragged-edge cue is weakened in proportion."
 
-[updown_min_vote]
-value = 0.15
+[updown_min_score]
+value = 2.5
 status = "UNMEASURED"
-meaning = "Strength of the up-down vote, from -1 to 1, needed to decide upright against upside down; at this strength the up-down confidence is 0.5."
+meaning = "Up-down score (strip agreement in standard errors plus the weighted ragged-edge cue) needed to decide upright against upside down; at this score the up-down confidence is 0.5."
+
+[orient_tile_px]
+value = 96
+status = "UNMEASURED"
+meaning = "Side in working px of the square tiles in which row and column sharpness are compared; a few lines of writing tall."
+
+[tile_min_ink]
+value = 0.03
+status = "UNMEASURED"
+meaning = "Least ink share for a tile to count as writing."
+
+[tile_max_ink]
+value = 0.35
+status = "UNMEASURED"
+meaning = "Greatest ink share for a tile to count as writing; denser tiles are gutter, page edge or dark mass."
+
+[min_tiles]
+value = 6
+status = "UNMEASURED"
+meaning = "Fewest tiles of writing for the tile median to be used; with fewer, the whole content's profiles are compared."
+
+[orient_strip_px]
+value = 48
+status = "UNMEASURED"
+meaning = "Width in working px of the vertical strips in which each line's ascender and baseline cues are measured."
+
+[strip_min_ink]
+value = 0.03
+status = "UNMEASURED"
+meaning = "Least ink share for a strip to vote on upright against upside down."
+
+[min_strips]
+value = 6
+status = "UNMEASURED"
+meaning = "Fewest voting strips for the strip cues to count."
+
+[strip_vote_sd_floor]
+value = 0.05
+status = "UNMEASURED"
+meaning = "Smallest standard deviation assumed for the strip votes, so that a few identical votes do not count as overwhelming agreement."
+
+[ragged_score_weight]
+value = 0.0
+status = "UNMEASURED"
+meaning = "Weight of the ragged-edge cue (from -1 to 1) in the up-down score, in standard errors of strip agreement. 0 by default: registers justify their lines with line-end fillers and push entry starts into the margin, so the cue can point the wrong way."
 
 [negative_dark_share]
 value = 0.5
