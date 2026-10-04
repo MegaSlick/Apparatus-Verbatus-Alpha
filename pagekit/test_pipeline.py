@@ -494,13 +494,17 @@ from pagekit.output import encode
 mode, width, height, path = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
 image = Image.frombytes(mode, (width, height), open(path, "rb").read())
 dpi = None if sys.argv[5] == "none" else (300.0, 300.0)
-sys.stdout.write(encode(image, "tiff", dpi).hex())
+if sys.argv[6] == "tone":  # the tone view's own writer
+    from pagekit.tone import tiff_bytes
+    sys.stdout.write(tiff_bytes(image, None if dpi is None else list(dpi)).hex())
+else:
+    sys.stdout.write(encode(image, "tiff", dpi).hex())
 """
 
 
-@pytest.mark.parametrize("mode", ["L", "RGB"])
+@pytest.mark.parametrize(("mode", "writer"), [("L", "prepare"), ("RGB", "prepare"), ("L", "tone")])
 @pytest.mark.parametrize("dpi", ["300", "none"])
-def test_a_prepared_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_path, mode, dpi):
+def test_a_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_path, mode, writer, dpi):
     import subprocess
 
     from pagekit.output import encode
@@ -513,7 +517,16 @@ def test_a_prepared_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_p
     written = []
     for _ in range(2):  # two separate processes
         result = subprocess.run(
-            [sys.executable, "-c", _WRITE_IN_A_PROCESS, mode, *map(str, image.size), raw, dpi],
+            [
+                sys.executable,
+                "-c",
+                _WRITE_IN_A_PROCESS,
+                mode,
+                *map(str, image.size),
+                raw,
+                dpi,
+                writer,
+            ],
             cwd=root,
             capture_output=True,
             text=True,
