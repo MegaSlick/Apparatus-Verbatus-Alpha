@@ -21,6 +21,7 @@ from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.outcomes import ArmariumCategory
 from common.contracts.stages import ARCHETYPUS, ARMARIUM, CONIECTOR, DOOR, EXEMPLAR, INK_MAP
+from common.reading_annotations import read_doubt_marks
 from common.reconstruction import load_reconstruction_policy
 from common.reconstruction_records import PLAN_KIND, plan_payload
 from common.residual_ink import (
@@ -82,7 +83,7 @@ class _RecordingContext:
         self.fixture = {"fixture_id": "synthetic-terminal-guard-v0"}
         self.scenario = "synthetic-terminal-guard"
         self.config_digest = "a" * 64
-        self.run = {"source_manifest": []}
+        self.run = {"source_manifest": [], "self_hash": "d" * 64}
         self.registry = SimpleNamespace(config=object())
         self.required_configs: list[tuple[str, str]] = []
         self.witness_chairs: list[str] = []
@@ -109,6 +110,10 @@ class _RecordingContext:
             review_config=config / "review.toml",
         )
         self.perlector_audit_config_path = config / "perlector_audit.toml"
+        self.page_accounting_config_path = config / "page_accounting.toml"
+        # Every synthetic row's Perlectio reads "Jean Roy" with no doubt unless a
+        # test stores another under the row's reference.
+        self.perlectiones: dict[str, dict] = {}
         # Read for the [truncation] provenance the not-measured geometry row discloses.
         self.perlector_protocol_config_path = self.args.perlector_protocol_config
         # Mirror the real context's named point-of-use seals.  The terminal
@@ -127,6 +132,7 @@ class _RecordingContext:
             "alignment": read_sealed_toml(self.args.alignment_config, "config")[1],
             "reconstruction": load_reconstruction_policy(self.args.reconstruction_config).sha256,
             "review": read_sealed_toml(self.args.review_config, "config")[1],
+            "page-accounting": read_sealed_toml(self.page_accounting_config_path, "config")[1],
         }
         # The Coniector plans no call over this synthetic run; the export proves its one plan.
         self.coniector_plan = {
@@ -222,6 +228,9 @@ class _RecordingContext:
             # This run stores no operator review decision.
             review_decision_records=lambda: [],
             read_run=lambda: self.run,
+            read_artifact_reference=lambda reference, **_where: {
+                "payload": self.perlectiones.get(reference["relative_path"], _perlectio("Jean Roy"))
+            },
         )
 
     def publish(self, **record) -> None:
@@ -385,6 +394,45 @@ def _reading_row(act_id: str, act_key: str, page_ordinal: int) -> dict:
     }
 
 
+def _perlectio(raw: str) -> dict:
+    """The text and doubt fields of a Perlectio that read `raw`."""
+    text, report = read_doubt_marks(raw)
+    return {
+        "text": text,
+        "uncertain_spans": report["uncertain_spans"],
+        "gaps": report["gaps"],
+        "uncertainty_assessment": report,
+    }
+
+
+def test_a_page_over_the_doubt_limit_exports_only_if_every_reading_on_it_was_held(monkeypatch):
+    """The export recounts each page as the Perlector does: "Jean Roy fils" all doubtful
+    beside "Jean Roy" is 11 of 18, so both readings must carry the page hold."""
+    armarium = load_stage("7_armarium")
+
+    def run(hold_codes: list[str]) -> None:
+        context = _RecordingContext()
+        context.perlectiones["synthetic/perlectio/doubtful.json"] = _perlectio("[[Jean Roy fils]]")
+        rows = [_reading_row("doubtful", "p1:1", 1), _reading_row("clean", "p1:2", 1)]
+        for row in rows:
+            row["hold_codes"] = hold_codes
+        _stub_page_export(monkeypatch, armarium, context, rows, ArmariumCategory.HELD_FOR_REVIEW)
+        monkeypatch.setattr(armarium, "ink_map_page_rows", lambda *_args: [])
+        monkeypatch.setattr(
+            armarium,
+            "build_armarium_bundle",
+            lambda *_args: SimpleNamespace(
+                data=b"synthetic bundle",
+                manifest={"self_hash": "c" * 64, "claims": {"status": "partial"}},
+            ),
+        )
+        assert armarium.main() == EXIT_HELD
+
+    with pytest.raises(FatalAccounting, match="page-doubt-share-high"):
+        run([])
+    run(["page-doubt-share-high"])
+
+
 def _stub_page_export(monkeypatch, armarium, context, rows: list[dict], category) -> None:
     """Reach the page export's terminal accounting with `rows`, each reviewed into `category`.
 
@@ -449,6 +497,7 @@ def test_only_sealed_canary_readings_leave_the_bundle_and_real_canary_named_path
             {"ordinal": 1, "relative_path": "canary/x.jpg", "ledger_sha256": "a" * 64},
             {"ordinal": 2, "relative_path": "bird.jpg", "ledger_sha256": "c" * 64},
         ],
+        "self_hash": "d" * 64,
     }
     rows = [_reading_row("real", "p1:1", 1), _reading_row("bird", "p2:1", 2)]
     _stub_page_export(monkeypatch, armarium, context, rows, ArmariumCategory.HELD_FOR_REVIEW)

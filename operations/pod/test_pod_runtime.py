@@ -6652,11 +6652,11 @@ def test_the_shipped_spend_policy_carries_the_reviewed_ceilings() -> None:
     policy = _shipped_spend_policy()
 
     assert policy.configured
-    assert policy.max_hourly_usd == Decimal("0.50")
-    assert policy.max_estimated_metered_cost_usd == Decimal("2.00")
+    assert policy.max_hourly_usd == Decimal("2.10")
+    assert policy.max_estimated_metered_cost_usd == Decimal("5.00")
     assert policy.account_balance_floor_usd == Decimal("50.00")
     assert policy.account_balance_alert_usd == Decimal("75.00")
-    assert policy.hard_lifetime_seconds == 14400
+    assert policy.hard_lifetime_seconds == 7200
     assert policy.laptop_heartbeat_timeout_seconds == 900
     assert policy.shutdown_poll_interval_seconds == 30
     assert policy.shutdown_deadline_seconds == 900
@@ -6664,34 +6664,39 @@ def test_the_shipped_spend_policy_carries_the_reviewed_ceilings() -> None:
 
 
 @pytest.mark.parametrize(
-    ("gpu_type_id", "admitted"),
+    ("gpu_type_id", "volume_hourly_usd", "admitted"),
     [
-        ("NVIDIA RTX A5000", True),
-        ("NVIDIA A40", True),
-        # The next reviewed card up the price list.
-        ("NVIDIA RTX 6000 Ada Generation", False),
+        ("NVIDIA RTX A5000", "0.11", True),
+        ("NVIDIA A40", "0.11", True),
+        ("NVIDIA RTX 6000 Ada Generation", "0.11", True),
+        # The dearest reviewed card, at exactly the hourly ceiling and one cent past it.
+        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "0.11", True),
+        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "0.12", False),
     ],
 )
-def test_the_shipped_spend_policy_admits_the_cards_it_names_and_refuses_the_next_one_up(
-    gpu_type_id: str, admitted: bool
+def test_the_shipped_spend_policy_admits_every_reviewed_card_and_refuses_a_cent_past_its_ceiling(
+    gpu_type_id: str, volume_hourly_usd: str, admitted: bool
 ) -> None:
-    """The cards spend.toml says its hourly ceiling admits, priced by the reviewed table,
-    beside the largest volume rate it allows for ($0.06/h)."""
+    """Every card the reviewed table prices is admitted, for the whole hard lifetime,
+    beside the largest volume rate spend.toml says its hourly ceiling allows for
+    ($0.11/h); a cent more is refused. No reviewed card is priced above the ceiling."""
     from .spend import assess_spend
 
     now = datetime(2026, 10, 1, tzinfo=timezone.utc)
     table = load_placement_table(Path(__file__).resolve().parents[2] / "config/pod_placement.toml")
     estimate = PodEstimate(
         pod_hourly_usd=table.price_for(gpu_type_id),
-        volume_hourly_usd=Decimal("0.06"),
+        volume_hourly_usd=Decimal(volume_hourly_usd),
         source="reviewed placement table",
         observed_at=now,
     )
 
+    policy = _shipped_spend_policy()
     assessment = assess_spend(
-        _shipped_spend_policy(),
+        policy,
         estimate,
-        requested_deadline=now + timedelta(hours=1),
+        # The whole hard lifetime, so the cost ceiling is held to it too.
+        requested_deadline=now + timedelta(seconds=policy.hard_lifetime_seconds),
         now=now,
         balance_observation=AccountBalanceObservation("1000.00", now, "test balance"),
     )

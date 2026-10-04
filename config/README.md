@@ -15,7 +15,7 @@ The knobs. One question per file, each answerable without reading code.
 | `pod_placement.toml` | planning-only GPU resource tiers, dtype floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | the default serving catalogue: fixture rows only, used unless `--serving-recipes-config` selects another file |
 | `serving_recipes_real.toml` | locked but unproven vLLM profiles for the real chairs, the CPU rows of the Designator's two detectors (the record detector in-process, Surya as a subprocess), and explicit `unsupported` rows where no engine fits; selected with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
-| `formats.toml` | which Armarium export projections are written and whether verified pixels are embedded |
+| `formats.toml` | which Armarium export projections are written, whether verified pixels are embedded, and whether rows carry the run's lot |
 | `perlector_protocol.toml` | what one whole-page reading is shown (`[feed]`), the page render's edges (`[page_context]`), and the truncation instrument's length floor and legibility gate (`[truncation]`) |
 | `alignment.toml` | the step budget of the Perlector's dissent comparisons |
 | `corpus_frame.toml` | how many pages one run (one shard of a corpus) may hold |
@@ -159,7 +159,9 @@ guard's deadline sits at the soft maximum, so the loader refuses a soft value ab
 hard one and a `hard_lifetime_seconds` or `max_estimated_metered_cost_usd` above the soft
 maximum. `pod_run` sends one `deadline-at-risk` notice ahead of time, when a stage's
 projected finish passes the deadline that ends the pod; going on past the soft maximum is
-an extension only the lead makes, and the hard maximum bounds it. A paid action reads the available
+an extension only the lead makes, and the hard maximum bounds it. The committed values are
+the lead's budget: `max_hourly_usd` $2.10, `max_estimated_metered_cost_usd` $5.00, a soft
+maximum of 2 h or $5.00 and a hard maximum of 3 h or $7.00. A paid action reads the available
 balance through the provider's explicitly configured source and refuses when that source
 is unavailable or the action would breach the reserve. The `$50.00` floor is a policy
 value, not a balance observation, until checked against RunPod before a live run. The loader refuses an unknown or missing key. The policy does not

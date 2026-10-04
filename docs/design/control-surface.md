@@ -567,6 +567,11 @@ written to the estimate file and the run report, not yet to an event log (phase 
 2. `watch` for a pod run: polls the report, liveness and timings files over S3 with
    whole-object reads. Its estimate line depends on phase 0; until then it shows stage
    timings and says no estimate exists.
+
+   Built so far: `watch` over copies of those four files already on this computer, with
+   the estimate, deadline, soft and hard maximums, spend (from a lease when given) and the
+   last notice, once or every `--interval` seconds; stale copies are said to be stale.
+   Not yet built: the S3 reads, `--json` and the state exit codes.
 3. `--json`, the result envelope and the exit codes on both.
 
 The lead starts the pod by the hand route, follows it with `watch`, and extends it, if

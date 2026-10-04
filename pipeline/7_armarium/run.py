@@ -59,6 +59,7 @@ from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import verify_self_hash  # noqa: E402
 from common.contracts.envelope import read_verified  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
+from common.contracts.identities import lot_id  # noqa: E402
 from common.contracts.outcomes import (  # noqa: E402
     CONTINUATION_FLAGS,
     ArmariumCategory,
@@ -114,6 +115,7 @@ from common.page_testimonia import (  # noqa: E402
     declared_page_witness_chairs,
     shown_page_witnesses,
 )
+from common.reading_annotations import doubt_count, doubt_exceeds  # noqa: E402
 from common.reconstruction_records import verified_reconstructions  # noqa: E402
 from common.residual_ink import (  # noqa: E402
     INK_NOT_MEASURABLE,
@@ -1302,6 +1304,58 @@ def systemic_review_basis(context) -> dict | None:
     return {key: share[key] for key in ("held_pages", "pages", "max_held_page_share")}
 
 
+def require_doubt_hold(row: dict, text: str, layer: dict, limit_bp: int) -> None:
+    """A delivered reading over the sealed act doubt limit must have been held for it.
+
+    The Perlector holds such an entry `doubt-share-high`, so it is delivered only
+    when a person's decision released it. One delivered without that hold means a
+    reading too doubtful to pass quietly passed quietly, and the export stops.
+    """
+    if (
+        doubt_exceeds(doubt_count(text, layer), limit_bp)
+        and page_path.DOUBT_SHARE_HIGH not in row["hold_codes"]
+    ):
+        raise FatalAccounting(
+            f"the delivered reading {row['act_key']} is more doubtful or unread than the "
+            f"sealed limit of {limit_bp} basis points, but was never held "
+            f"{page_path.DOUBT_SHARE_HIGH!r} for a person to decide"
+        )
+
+
+def require_page_doubt_holds(context, rows: list[dict], limit_bp: int) -> None:
+    """Every reading on a page over the sealed page doubt limit must carry the page hold.
+
+    Each page is recounted over its counted readings' Perlectiones exactly as the
+    Perlector counted it (`page_path.page_doubt`), so a page hold that was skipped
+    stops the export instead of passing quietly.
+    """
+    by_page: dict[int, list[dict]] = {}
+    for row in rows:
+        if row["perlectio_ref"] is not None:
+            by_page.setdefault(row["page_ordinal"], []).append(row)
+    for ordinal, readings in sorted(by_page.items()):
+        plans = []
+        for row in readings:
+            payload = context.tree.read_artifact_reference(
+                row["perlectio_ref"], stage=PERLECTOR, kind="perlectio", subject_id=row["act_id"]
+            )["payload"]
+            layer = from_page_perlectio(payload)
+            plans.append({"text": payload["text"], "assessment": layer})
+        if not doubt_exceeds(page_path.page_doubt(plans), limit_bp):
+            continue
+        unheld = [
+            row["act_key"]
+            for row in readings
+            if page_path.PAGE_DOUBT_SHARE_HIGH not in row["hold_codes"]
+        ]
+        if unheld:
+            raise FatalAccounting(
+                f"page {ordinal} is more doubtful or unread than the sealed limit of {limit_bp} "
+                f"basis points, but {', '.join(unheld)} never held "
+                f"{page_path.PAGE_DOUBT_SHARE_HIGH!r} for a person to decide"
+            )
+
+
 def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> int:
     """Export the run: acts, the other layer, page rows, and the page accounting."""
     # Before anything is published, so a decision no review applied refuses cleanly.
@@ -1328,6 +1382,14 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
         if row["class"] == PAGE_REFUSED_CLASS:
             _require_refused_in_census(row, census)
     rows = reviewed_rows(rows)
+    # The sealed doubt limits, read when a counted reading has a Perlectio to recount.
+    doubt_policy = (
+        require_page_accounting_policy(context, context.page_accounting_config_path)
+        if any(row["perlectio_ref"] is not None for row in rows)
+        else None
+    )
+    if doubt_policy is not None:
+        require_page_doubt_holds(context, rows, doubt_policy.max_page_doubt_share_bp)
     reviews = current_page_reviews(context, rows)
     links = continuation_links(context, rows)
     testimonia = current_page_testimonia(context)
@@ -1396,6 +1458,12 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 except SchemaRefusal as error:
                     refusal = f"the established reading's provenance was refused: {error}"
                 else:
+                    require_doubt_hold(
+                        row,
+                        payload["text"],
+                        payload["uncertainty"],
+                        doubt_policy.max_act_doubt_share_bp,
+                    )
                     entry.update(
                         {
                             "text": payload["text"],
@@ -1565,6 +1633,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 if review_basis is None
                 else {item["act_id"]: sorted(set(item["hold_codes"])) for item in delivered}
             ),
+            lot=lot_id(context.run["self_hash"]) if formats.lot else None,
         ),
         formats,
         context.tree.read_bytes,

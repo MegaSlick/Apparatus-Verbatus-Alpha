@@ -15,6 +15,8 @@ content address binds the toolchain as well as the data.
 from __future__ import annotations
 
 import copy
+import csv
+import io
 import json
 import os
 import re
@@ -74,6 +76,7 @@ from common.contracts.canonical import (
     self_hash,
 )
 from common.contracts.errors import ContractError, SchemaRefusal
+from common.contracts.identities import is_lot
 from common.contracts.outcomes import (
     CONFIRMED_NO_ACT_PAGE_REASON,
     CONTINUATION_FLAGS,
@@ -103,6 +106,7 @@ from common.correction import (
     PROVENANCE_FIELDS as CORRECTION_PROVENANCE_FIELDS,
 )
 from common.imaging import dimensions
+from common.reading_annotations import diplomatic_display, doubt_count
 from common.residual_ink import INK_NOT_MEASURABLE, coverage_flag
 from common.review_policy import parse_share
 
@@ -118,15 +122,16 @@ ARMARIUM_ARCHIVE_NAME: Final = "armarium-export.zip"
 # whole (`common.stage.reading_acts`), and carries its `other` readings, a
 # labelled layer beside the acts, each page's accounting, and its acts counted by
 # the reading they came from (`reask`).
-EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v12"
+EXPORT_MANIFEST_SCHEMA: Final = "armarium-export-manifest.v13"
 # The act row and SQLite ids move with the row shape, so a consumer keying on the
 # id never reads an old shape out of a new row.
-ACT_RECORD_SCHEMA: Final = "armarium-act.v6"
+ACT_RECORD_SCHEMA: Final = "armarium-act.v7"
 _ACT_RECORD_FIELDS: Final = frozenset(
     {
         "schema",
         "act_id",
         "act_key",
+        "lot",
         "category",
         "canonical_clean_text",
         "canonical_text_sha256",
@@ -149,12 +154,12 @@ _ACT_RECORD_FIELDS: Final = frozenset(
 )
 # Every held or refused reading, act or other, named by `kind`; the act partition
 # is `acts.jsonl`'s row count, never this file's.
-REVIEW_ITEM_SCHEMA: Final = "armarium-review-item.v2"
+REVIEW_ITEM_SCHEMA: Final = "armarium-review-item.v3"
 _REVIEW_ITEM_FIELDS: Final = frozenset(
-    {"schema", "act_id", "act_key", "kind", "category", "reason", "evidence_refs"}
+    {"schema", "act_id", "act_key", "lot", "kind", "category", "reason", "evidence_refs"}
 )
-_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v6"
-_SQLITE_USER_VERSION: Final = 6
+_SQLITE_SCHEMA: Final = "armarium-acts-sqlite.v7"
+_SQLITE_USER_VERSION: Final = 7
 # The reading an act came from: its page's first reading, the one
 # re-ask of its page, or an operator re-read a person's page re-ask asked for,
 # which superseded the page's earlier readings. A row standing for a page with
@@ -171,13 +176,14 @@ SOURCES_SCHEMA: Final = "armarium-sources.v6"
 # The `other` readings of a page-read run travel in their own member, never in
 # `acts.jsonl`: that file is one row per counted act, and its row count is the act
 # partition a consumer reconciles against.
-OTHER_READING_SCHEMA: Final = "armarium-other-reading.v2"
+OTHER_READING_SCHEMA: Final = "armarium-other-reading.v3"
 OTHER_READINGS_MEMBER: Final = "other.jsonl"
 _OTHER_READING_FIELDS: Final = frozenset(
     {
         "schema",
         "act_id",
         "act_key",
+        "lot",
         "kind",
         "page_ordinal",
         "category",
@@ -243,7 +249,31 @@ _UNCERTAINTY_AVAILABLE: Final = "canonical-unicode-codepoint-offsets"
 # An act with no established text, or a package with no literal-text format, has
 # no offsets to anchor to.
 _UNCERTAINTY_NOT_APPLICABLE: Final = "not-applicable"
-_LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl")
+_LITERAL_TEXT_FORMATS: Final = ("text-bundle", "acts-database", "jsonl", "csv")
+# The flat projection: one row per act, UTF-8 with a byte-order mark so a
+# spreadsheet reads the accents, CRLF rows as RFC 4180 writes them.
+CSV_MEMBER: Final = "acts.csv"
+_CSV_BOM: Final = b"\xef\xbb\xbf"
+_CSV_COLUMNS: Final = (
+    "act_key",
+    "act_id",
+    "lot",
+    "category",
+    "reason",
+    "reading",
+    "text_status",
+    "canonical_clean_text",
+    "diplomatic_text",
+    "canonical_text_sha256",
+    "uncertainty_json",
+    "doubtful_or_unread",
+    "out_of",
+)
+# A spreadsheet runs a cell starting with one of these as a formula. Such a cell,
+# and one already starting with the escape, is written with one leading `'`,
+# which the reader removes, so every other format keeps the reading unchanged.
+_CSV_FORMULA_STARTS: Final = ("=", "+", "-", "@", "\t", "\r")
+_CSV_ESCAPE: Final = "'"
 # Reading keys are `p<page>:<n>` with unpadded ordinals, so a string sort puts
 # page 10 before page 2. A page's row with no reading (`p<page>:blank`) follows
 # its numbered readings; any other key sorts as a string after every page.
@@ -343,6 +373,9 @@ class ArmariumProjection:
     # The model's reading of each delivered reading a person corrected
     # (`run.model_reading_row`), shown beside the person's text.
     model_readings: tuple[dict[str, Any], ...] = ()
+    # The run's lot (`identities.lot_id`), set exactly when the sealed formats say
+    # `lot = true`; every row and the manifest's `run` block carry it.
+    lot: str | None = None
 
 
 @dataclass(frozen=True)
@@ -475,6 +508,8 @@ def build_armarium_bundle(
     """
     ink_map_rows = _validate_projection(projection)
     _validate_projection_region_bindings(projection)
+    _require_lot(projection.lot, formats.lot, subject="the projection")
+    lot = projection.lot
     # Derived once and handed to every writer that states them.
     edge_hold_pages = _edge_hold_pages_from_validated_rows(ink_map_rows)
     other_outcomes = _other_outcomes(projection.other_readings)
@@ -558,6 +593,7 @@ def build_armarium_bundle(
                 coniector_rows,
                 operator_rows,
                 model_readings,
+                lot,
             )
         )
     if "acts-database" in formats.formats:
@@ -565,9 +601,12 @@ def build_armarium_bundle(
             projection.acts,
             {row["act_id"]: row["label"] for row in operator_rows},
             _database_run_metadata(_manifest_run_binding(projection), ledger),
+            lot,
         )
+    if "csv" in formats.formats:
+        members[CSV_MEMBER] = _acts_csv_bytes(projection.acts, lot)
     if "jsonl" in formats.formats:
-        members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts))
+        members["acts.jsonl"] = _jsonl_bytes(_act_json_records(projection.acts, lot))
         if coniector_rows:
             members[CONIECTOR_MEMBER] = _jsonl_bytes(list(coniector_rows))
         if operator_rows:
@@ -577,11 +616,11 @@ def build_armarium_bundle(
                 [model_reading_record(model_readings[act_id]) for act_id in sorted(model_readings)]
             )
         members[OTHER_READINGS_MEMBER] = _jsonl_bytes(
-            _other_json_records(projection.other_readings)
+            _other_json_records(projection.other_readings, lot)
         )
     if "review-items" in formats.formats:
         members["review-items.jsonl"] = _jsonl_bytes(
-            _review_records(projection.acts, projection.other_readings)
+            _review_records(projection.acts, projection.other_readings, lot)
         )
     members.update(embedded)
     members.update(embedded_crops)
@@ -689,6 +728,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
         raise SchemaRefusal("the extracted package members disagree with EXPORT_MANIFEST.json")
 
     formats = _manifest_formats(manifest)
+    _require_lot(run.get("lot"), formats.lot, subject="the manifest run binding")
     sources = _load_sources(root)
     _verify_source_references(sources["pages"], root)
     _verify_region_references(sources, root)
@@ -705,6 +745,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
         root, manifest, formats, sources
     )
     _verify_page_layers(root, manifest, formats, sources)
+    _verify_doubt_share_claim(root, manifest, formats)
     _verify_continuation_joins(root, formats, sources)
     # The operator rows and the model readings beside corrected ones, read once
     # for both layers that hold readings to them.
@@ -717,6 +758,8 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     # Last, so every input the writer is fed has been checked on its own.
     if "text-bundle" in formats.formats:
         _verify_text_bundle_rendering(root, manifest, sources)
+    if "csv" in formats.formats:
+        _verify_csv_rendering(root, manifest, sources)
     verification = {}
     if search_fold_verification is not None:
         verification["search_fold"] = search_fold_verification
@@ -1008,8 +1051,8 @@ _MANIFEST_FIELDS: Final = frozenset(
     }
 )
 # Two closed shapes: a manifest naming both identities or neither is refused.
-_MANIFEST_RUN_FIELDS_FIXTURE: Final = frozenset({"fixture_id", "scenario", "config_digest"})
-_MANIFEST_RUN_FIELDS_REAL: Final = frozenset({"submission_id", "scenario", "config_digest"})
+_MANIFEST_RUN_FIELDS_FIXTURE: Final = frozenset({"fixture_id", "scenario", "config_digest", "lot"})
+_MANIFEST_RUN_FIELDS_REAL: Final = frozenset({"submission_id", "scenario", "config_digest", "lot"})
 _MANIFEST_MEMBER_FIELDS: Final = frozenset({"path", "sha256", "bytes"})
 _MANIFEST_CLAIM_FIELDS: Final = frozenset(
     {
@@ -1027,6 +1070,7 @@ _MANIFEST_CLAIM_FIELDS: Final = frozenset(
         "other_readings",
         "page_accounting",
         "reask",
+        "doubt_share",
     }
 )
 _ACT_PARTITION_CLAIM_FIELDS: Final = frozenset(
@@ -1371,6 +1415,8 @@ def _literal_projection(root: Path, name: str) -> dict[str, tuple]:
         return _database_literals(root / "acts.sqlite")
     if name == "jsonl":
         return _jsonl_literals(root / "acts.jsonl")
+    if name == "csv":
+        return _csv_literals(root / CSV_MEMBER)
     # A new literal format with no branch here would otherwise be skipped and
     # reported identical.
     raise SchemaRefusal(f"projection identity has no comparison built for literal format {name!r}")
@@ -2879,7 +2925,22 @@ def _manifest_run_binding(projection: ArmariumProjection) -> dict[str, str]:
         identity = {"submission_id": projection.submission_id}
     else:
         identity = {"fixture_id": projection.fixture_id}
-    return {**identity, "scenario": projection.scenario, "config_digest": projection.config_digest}
+    return {
+        **identity,
+        "scenario": projection.scenario,
+        "config_digest": projection.config_digest,
+        "lot": projection.lot,
+    }
+
+
+def _require_lot(lot: object, enabled: bool, *, subject: str) -> None:
+    """A lot exactly when the sealed formats turn it on, and then a well-formed one."""
+    if enabled and not is_lot(lot):
+        raise SchemaRefusal(
+            f"{subject} carries no well-formed lot, and the sealed formats ask for one"
+        )
+    if not enabled and lot is not None:
+        raise SchemaRefusal(f"{subject} carries a lot, and the sealed formats turn lots off")
 
 
 def _verify_region_page_binding(
@@ -2990,11 +3051,12 @@ def _text_bundle_members(
     coniector_rows: tuple[dict[str, Any], ...] = (),
     operator_rows: tuple[dict[str, Any], ...] = (),
     model_readings: dict[str, dict[str, Any]] | None = None,
+    lot: str | None = None,
 ) -> dict[str, bytes]:
     """Write one readable file for every cited source folder.
 
-    Each file opens with the run's status (the terminal `ledger`'s) and how many
-    of its readings were delivered, and ends with a text-free `## NOT DELIVERED`
+    Each file opens with the run's status (the terminal `ledger`'s), its lot when
+    the run has one, and how many of its readings were delivered, and ends with a text-free `## NOT DELIVERED`
     section for every unresolved page or unsealed source in the folder and every
     reading on its pages that was not delivered, so a partial run never reads as
     complete. The verifier renders every file again with this function and
@@ -3066,6 +3128,7 @@ def _text_bundle_members(
                 ledger["status"],
                 len(records) + len(other_groups[folder]),
                 len(not_delivered[folder]),
+                lot,
             ),
             "",
         ]
@@ -3085,6 +3148,11 @@ def _text_bundle_members(
                     f"canonical_text_sha256: {canonical_text_sha256(act[CANONICAL_TEXT_FIELD])}",
                     "canonical_clean_text:",
                     json.dumps(act[CANONICAL_TEXT_FIELD], ensure_ascii=False),
+                    "diplomatic:",
+                    json.dumps(
+                        diplomatic_display(act[CANONICAL_TEXT_FIELD], act["uncertainty"]),
+                        ensure_ascii=False,
+                    ),
                     "uncertainty:",
                     json.dumps(act["uncertainty"], ensure_ascii=False, sort_keys=True),
                     f"text_status: {act['text_status']}",
@@ -3162,11 +3230,14 @@ def _unresolved_page_section(row: dict[str, Any]) -> list[str]:
 _NOT_DELIVERED_PREFIX: Final = "## NOT DELIVERED "
 
 
-def _folder_status_lines(status: str, delivered: int, not_delivered: int) -> list[str]:
-    """A text-bundle file's opening lines: the run's status and this folder's count."""
+def _folder_status_lines(
+    status: str, delivered: int, not_delivered: int, lot: str | None
+) -> list[str]:
+    """A text-bundle file's opening lines: the run's status, its lot and this folder's count."""
     said = "" if status == "complete" else " (EXPORT_MANIFEST.json claims.partial_reasons says why)"
     return [
         f"run-status: {status}{said}",
+        *([f"lot: {lot}"] if lot is not None else []),
         f"folder-readings: {delivered} delivered, {not_delivered} not delivered",
     ]
 
@@ -3287,6 +3358,7 @@ def _verify_text_bundle_rendering(
             tuple(shown[tuple(act_ids)] for act_ids in sources["reconstructions"] or ()),
             tuple(sources[OPERATOR_SOURCES_FIELD] or ()),
             {model["act_id"]: model for model in sources[MODEL_READINGS_FIELD] or ()},
+            manifest["run"]["lot"],
         )
     except (KeyError, TypeError) as error:
         raise SchemaRefusal(
@@ -3331,6 +3403,8 @@ def _other_section(
         f"other_text_sha256: {canonical_text_sha256(literal)}",
         "other_text:",
         json.dumps(literal, ensure_ascii=False),
+        "other_diplomatic:",
+        json.dumps(diplomatic_display(literal, other["uncertainty"]), ensure_ascii=False),
         "other_uncertainty:",
         json.dumps(other["uncertainty"], ensure_ascii=False, sort_keys=True),
         f"other_text_status: {other['text_status']}",
@@ -3389,13 +3463,15 @@ def _text_bundle_other_records(
             literal = _decode_json(
                 _section_field(block, position + 2, ""), "a text-bundle other text is not JSON"
             )
-            _section_field(block, position + 3, "other_uncertainty:")
+            # The diplomatic line is derived; rendering the file again checks it.
+            _section_field(block, position + 3, "other_diplomatic:")
+            _section_field(block, position + 5, "other_uncertainty:")
             uncertainty = _decode_json(
-                _section_field(block, position + 4, ""),
+                _section_field(block, position + 6, ""),
                 "a text-bundle other uncertainty layer is not JSON",
             )
-            status = _section_field(block, position + 5, "other_text_status: ")
-            end = position + 6
+            status = _section_field(block, position + 7, "other_text_status: ")
+            end = position + 8
             if end < len(block) and block[end].startswith(OPERATOR_LABEL_LINE):
                 # Its lines are the operator row's own (`_verify_operator_layer`).
                 end = block_end(block, end)
@@ -3635,6 +3711,7 @@ def _acts_database_bytes(
     acts: tuple[dict[str, Any], ...],
     operator_labels: dict[str, str],
     run_metadata: dict[str, str],
+    lot: str | None,
 ) -> bytes:
     """The acts table, its search layer and its metadata.
 
@@ -3664,7 +3741,7 @@ def _acts_database_bytes(
                 sorted(metadata.items()),
             )
             for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
-                row = _database_row(act, operator_labels.get(act["act_id"]))
+                row = _database_row(act, operator_labels.get(act["act_id"]), lot)
                 connection.execute(
                     f"INSERT INTO acts({', '.join(row)}) VALUES ({', '.join('?' for _ in row)})",
                     tuple(row.values()),
@@ -3751,7 +3828,9 @@ def _readings_by_kind(
     return sorted(paired, key=lambda item: act_key_sort_key(item[0]["act_key"]))
 
 
-def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, Any]:
+def _database_row(
+    act: dict[str, Any], operator_label: str | None, lot: str | None
+) -> dict[str, Any]:
     """One `acts` table row, by column; text-derived columns are null without text.
 
     `operator_label` is the act's operator row's label ("released by operator",
@@ -3762,6 +3841,7 @@ def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, 
     delivered = fields[CANONICAL_TEXT_FIELD] is not None
     return {
         **_row_head(act),
+        "lot": lot,
         CANONICAL_TEXT_FIELD: fields[CANONICAL_TEXT_FIELD],
         "canonical_text_sha256": fields["canonical_text_sha256"],
         **{
@@ -3777,13 +3857,14 @@ def _database_row(act: dict[str, Any], operator_label: str | None) -> dict[str, 
     }
 
 
-def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+def _act_json_records(acts: tuple[dict[str, Any], ...], lot: str | None) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
         records.append(
             {
                 "schema": ACT_RECORD_SCHEMA,
                 **_row_head(act),
+                "lot": lot,
                 **_text_fields(act),
                 "uncertainty_status": _uncertainty_status(act),
                 **_act_evidence(act),
@@ -3794,7 +3875,9 @@ def _act_json_records(acts: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
     return records
 
 
-def _other_json_records(others: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+def _other_json_records(
+    others: tuple[dict[str, Any], ...], lot: str | None
+) -> list[dict[str, Any]]:
     """`other.jsonl`: one row per other reading, text only when it was delivered."""
     records: list[dict[str, Any]] = []
     for other in sorted(others, key=lambda item: act_key_sort_key(item["act_key"])):
@@ -3802,6 +3885,7 @@ def _other_json_records(others: tuple[dict[str, Any], ...]) -> list[dict[str, An
             {
                 "schema": OTHER_READING_SCHEMA,
                 **_row_head(other),
+                "lot": lot,
                 "kind": "other",
                 "page_ordinal": other["page_ordinal"],
                 **_text_fields(other),
@@ -3833,19 +3917,143 @@ def _export_reason(act: dict[str, Any]) -> str | None:
 
 
 def _review_records(
-    acts: tuple[dict[str, Any], ...], others: tuple[dict[str, Any], ...]
+    acts: tuple[dict[str, Any], ...], others: tuple[dict[str, Any], ...], lot: str | None
 ) -> list[dict[str, Any]]:
     """Every held or refused reading, in reading order, its `kind` act or other."""
     return [
         {
             "schema": REVIEW_ITEM_SCHEMA,
             **_row_head(reading),
+            "lot": lot,
             "kind": kind,
             "evidence_refs": reading.get("evidence_refs", []),
         }
         for reading, kind in _readings_by_kind(acts, others)
         if reading["category"] in _REVIEW_CATEGORIES
     ]
+
+
+def _csv_cell(value: str | None) -> str:
+    """One CSV cell: empty for null, and a formula start neutralised by `_CSV_ESCAPE`."""
+    if value is None:
+        return ""
+    if value.startswith((*_CSV_FORMULA_STARTS, _CSV_ESCAPE)):
+        return _CSV_ESCAPE + value
+    return value
+
+
+def _csv_value(cell: str) -> str:
+    """The value one CSV cell stands for: `_csv_cell` undone."""
+    return cell.removeprefix(_CSV_ESCAPE)
+
+
+def _acts_csv_bytes(acts: tuple[dict[str, Any], ...], lot: str | None) -> bytes:
+    """`acts.csv`: one flat row per act in reading order, text columns empty without text.
+
+    The verifier renders it again with this function from what it has already
+    checked and requires the same bytes.
+    """
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer, lineterminator="\r\n")
+    writer.writerow(_CSV_COLUMNS)
+    for act in sorted(acts, key=lambda item: act_key_sort_key(item["act_key"])):
+        fields = _text_fields(act)
+        delivered = fields[CANONICAL_TEXT_FIELD] is not None
+        doubt = (
+            doubt_count(fields[CANONICAL_TEXT_FIELD], fields["uncertainty"]) if delivered else None
+        )
+        row = {
+            **_row_head(act),
+            "lot": lot,
+            "reading": act["reading"],
+            "text_status": fields["text_status"],
+            CANONICAL_TEXT_FIELD: fields[CANONICAL_TEXT_FIELD],
+            "diplomatic_text": (
+                diplomatic_display(fields[CANONICAL_TEXT_FIELD], fields["uncertainty"])
+                if delivered
+                else None
+            ),
+            "canonical_text_sha256": fields["canonical_text_sha256"],
+            "uncertainty_json": canonical_text(fields["uncertainty"]) if delivered else None,
+            "doubtful_or_unread": None if doubt is None else str(doubt[0]),
+            "out_of": None if doubt is None else str(doubt[1]),
+        }
+        writer.writerow([_csv_cell(row[column]) for column in _CSV_COLUMNS])
+    return _CSV_BOM + buffer.getvalue().encode("utf-8")
+
+
+def _csv_records(path: Path) -> list[dict[str, str]]:
+    """Every row of `acts.csv` by column, each cell's escape removed."""
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise SchemaRefusal("the acts CSV cannot be read") from error
+    if not data.startswith(_CSV_BOM):
+        raise SchemaRefusal("the acts CSV does not open with its UTF-8 byte-order mark")
+    try:
+        text = data[len(_CSV_BOM) :].decode("utf-8")
+        # No cell is longer than the member, so the field limit never cuts one.
+        csv.field_size_limit(max(csv.field_size_limit(), len(text) + 1))
+        rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
+    except (UnicodeDecodeError, csv.Error) as error:
+        raise SchemaRefusal("the acts CSV is not one readable UTF-8 CSV table") from error
+    if not rows or tuple(rows[0]) != _CSV_COLUMNS:
+        raise SchemaRefusal("the acts CSV does not carry exactly this build's columns")
+    if any(len(row) != len(_CSV_COLUMNS) for row in rows[1:]):
+        raise SchemaRefusal("an acts CSV row does not carry one cell per column")
+    return [
+        {column: _csv_value(cell) for column, cell in zip(_CSV_COLUMNS, row, strict=True)}
+        for row in rows[1:]
+    ]
+
+
+def _csv_literals(path: Path) -> dict[str, tuple]:
+    """Each delivered act's literal, hash, uncertainty layer and status, as `acts.csv` gives them."""
+    records: dict[str, tuple] = {}
+    for row in _csv_records(path):
+        if row["category"] != ArmariumCategory.DELIVERED.value:
+            continue
+        act_id, literal, digest = (
+            row["act_id"],
+            row[CANONICAL_TEXT_FIELD],
+            row["canonical_text_sha256"],
+        )
+        if not act_id or digest != canonical_text_sha256(literal) or act_id in records:
+            raise SchemaRefusal("an acts CSV literal identity or hash is invalid")
+        uncertainty = _decode_json(
+            row["uncertainty_json"], "an acts CSV uncertainty layer is not JSON"
+        )
+        _require_damage_record(row["text_status"], uncertainty, literal, subject="acts CSV row")
+        records[act_id] = (
+            literal,
+            digest,
+            validate_uncertainty(uncertainty, literal),
+            row["text_status"],
+        )
+    return records
+
+
+def _verify_csv_rendering(root: Path, manifest: dict[str, Any], sources: dict[str, Any]) -> None:
+    """`acts.csv` is exactly what this build writes for the package.
+
+    The writer is fed the act outcomes and readings of `sources.json`, the
+    manifest's lot and each delivered act's literal and layer as the CSV gives
+    them (hash- and damage-checked), so no other row, cell or order passes.
+    """
+    literals = _csv_literals(root / CSV_MEMBER)
+    readings = {row["act_id"]: row["reading"] for row in sources["act_readings"]}
+    acts = []
+    for act_id, outcome in _act_outcome_sources(sources).items():
+        act = {**outcome, "reading": readings.get(act_id), CANONICAL_TEXT_FIELD: None}
+        if outcome["category"] == ArmariumCategory.DELIVERED.value:
+            if act_id not in literals:
+                raise SchemaRefusal(f"the acts CSV does not deliver {act_id}")
+            act[CANONICAL_TEXT_FIELD], _digest, act["uncertainty"], _status = literals[act_id]
+        acts.append(act)
+    if (root / CSV_MEMBER).read_bytes() != _acts_csv_bytes(tuple(acts), manifest["run"]["lot"]):
+        raise SchemaRefusal(
+            "the acts CSV is not exactly what this build writes for the package's own accounting"
+        )
 
 
 def _jsonl_bytes(records: list[dict[str, Any]]) -> bytes:
@@ -4094,6 +4302,7 @@ _ACTS_DATABASE_DDL: Final = """
                     act_id TEXT PRIMARY KEY NOT NULL,
                     act_key TEXT UNIQUE NOT NULL,
                     category TEXT NOT NULL,
+                    lot TEXT,
                     canonical_clean_text TEXT,
                     canonical_text_sha256 TEXT,
                     provenance_json TEXT,
@@ -4612,6 +4821,15 @@ def _export_manifest(
                 _act_readings(projection.acts),
                 [row["ordinal"] for row in projection.page_accounting],
             ),
+            "doubt_share": _doubt_share_claim(
+                {
+                    act["act_id"]: (act[CANONICAL_TEXT_FIELD], act["uncertainty"])
+                    for act in projection.acts
+                    if act["category"] == ArmariumCategory.DELIVERED.value
+                },
+                {act["act_id"]: act["act_key"] for act in projection.acts},
+                measured=bool(_literal_formats_in(formats.formats)),
+            ),
         },
         "aggregate": projection.aggregate,
         "aggregate_basis": projection.aggregate_basis,
@@ -4624,6 +4842,79 @@ def _export_manifest(
     }
     manifest["self_hash"] = self_hash(manifest)
     return manifest
+
+
+_DOUBT_SHARE_DENOMINATOR: Final = (
+    "each delivered act's established text: its non-whitespace characters, each "
+    "zero-width gap counted as one unread character, and a reading with nothing read "
+    "as one unread character"
+)
+_DOUBT_SHARE_MEASURED: Final = "measured"
+_DOUBT_SHARE_NOT_APPLICABLE: Final = "not-applicable-no-literal-format"
+
+
+def _doubt_share_claim(
+    texts: dict[str, tuple[str, Any]], act_keys: dict[str, str], *, measured: bool
+) -> dict[str, Any]:
+    """How much of each delivered act, and of each page's delivered acts, is doubtful or unread.
+
+    `texts` is each delivered act's literal and layer. A package with no literal
+    format carries no text to recount, so it states that rather than numbers.
+    """
+    acts: list[dict[str, Any]] = []
+    pages: dict[int, list[int]] = defaultdict(lambda: [0, 0])
+    if measured:
+        for act_id in sorted(texts, key=lambda item: act_key_sort_key(act_keys[item])):
+            doubtful, out_of = doubt_count(*texts[act_id])
+            page = _key_page(act_keys[act_id])
+            acts.append(
+                {
+                    "act_id": act_id,
+                    "act_key": act_keys[act_id],
+                    "page_ordinal": page,
+                    "doubtful_or_unread": doubtful,
+                    "out_of": out_of,
+                }
+            )
+            if page is not None:
+                pages[page][0] += doubtful
+                pages[page][1] += out_of
+    return {
+        "denominator": _DOUBT_SHARE_DENOMINATOR,
+        "status": _DOUBT_SHARE_MEASURED if measured else _DOUBT_SHARE_NOT_APPLICABLE,
+        "acts": acts,
+        "pages": [
+            {"ordinal": ordinal, "doubtful_or_unread": counts[0], "out_of": counts[1]}
+            for ordinal, counts in sorted(pages.items())
+        ],
+    }
+
+
+def _verify_doubt_share_claim(
+    root: Path, manifest: dict[str, Any], formats: ArmariumFormats
+) -> None:
+    """The doubt-share claim, recounted from a literal format's own text and layers.
+
+    Every literal format gives the same reading (`_compare_literal_projections`),
+    so the first one selected stands for all.
+    """
+    literal_formats = [name for name in _LITERAL_TEXT_FORMATS if name in formats.formats]
+    texts = (
+        {
+            act_id: (record[0], record[2])
+            for act_id, record in _literal_projection(root, literal_formats[0]).items()
+        }
+        if literal_formats
+        else {}
+    )
+    act_keys = _manifest_act_keys(manifest, _manifest_act_categories(manifest))
+    if set(texts) - set(act_keys):
+        raise SchemaRefusal("a literal format delivers an act the manifest does not partition")
+    expected = _doubt_share_claim(texts, act_keys, measured=bool(literal_formats))
+    if manifest["claims"]["doubt_share"] != expected:
+        raise SchemaRefusal(
+            "the manifest's doubt share is not what the package's own readings count"
+        )
 
 
 def _zip_bytes(members: dict[str, bytes]) -> bytes:
@@ -4763,6 +5054,8 @@ def _required_format_members(
         required["acts-database"] = {"acts.sqlite"}
     if "jsonl" in formats.formats:
         required["jsonl"] = {"acts.jsonl"}
+    if "csv" in formats.formats:
+        required["csv"] = {CSV_MEMBER}
     if "review-items" in formats.formats:
         required["review-items"] = {"review-items.jsonl"}
     return required
@@ -5280,6 +5573,8 @@ def _verify_page_layers(
                 for field in ("act_key", "page_ordinal", "category", "reason", "text_status")
             ):
                 raise SchemaRefusal("other.jsonl does not retain an other reading's exact outcome")
+            if row["lot"] != manifest["run"]["lot"]:
+                raise SchemaRefusal("other.jsonl does not carry the manifest's lot on every row")
             if act_id in delivered and (
                 canonical_text(row["provenance"]) != canonical_text(citations[act_id]["provenance"])
                 or canonical_text(row["source_regions"])
@@ -5429,6 +5724,7 @@ def _jsonl_act_records(
         )
         records[act_id] = {
             "act_key": act_key,
+            "lot": record.get("lot"),
             "category": category,
             "evidence": _act_evidence(record),
             "provenance": record.get("provenance"),
@@ -5503,7 +5799,7 @@ def _database_act_records(
         "SELECT act_id, act_key, category, canonical_clean_text, canonical_text_sha256, "
         "provenance_json, source_regions_json, evidence_json, reason, "
         "uncertainty_json, uncertainty_status, text_status, reading, operator_label, "
-        "approval_ref FROM acts",
+        "approval_ref, lot FROM acts",
         "the acts database cannot be read for product accounting",
     )
     records: dict[str, dict[str, Any]] = {}
@@ -5524,6 +5820,7 @@ def _database_act_records(
         reading,
         operator_label,
         approval_ref,
+        lot,
     ) in rows:
         if (
             not _is_nonempty_str(act_id)
@@ -5568,6 +5865,7 @@ def _database_act_records(
         )
         records[act_id] = {
             "act_key": act_key,
+            "lot": lot,
             "category": category,
             "evidence": decoded[2],
             "provenance": decoded[0],
@@ -5610,6 +5908,7 @@ def _review_item_records(path: Path) -> dict[str, dict[str, str]]:
         _verify_evidence_refs(evidence_refs, subject="a review-items JSONL row")
         records[act_id] = {
             "act_key": act_key,
+            "lot": record["lot"],
             "kind": record["kind"],
             "category": category,
             "reason": reason,
@@ -5627,10 +5926,17 @@ def _verify_exact_product_outcomes(
     outcomes: dict[str, dict[str, Any]],
     *,
     subject: str,
+    lot: str | None,
 ) -> None:
-    """Preserve terminal categories and their recorded reasons, never just their count."""
+    """Preserve terminal categories and their recorded reasons, never just their count.
+
+    Every row carries the manifest's `lot`, so a row copied out of the package still
+    names its run.
+    """
     if set(records) != set(outcomes):
         raise SchemaRefusal(f"the {subject} does not reconcile to source act outcomes")
+    if any(record["lot"] != lot for record in records.values()):
+        raise SchemaRefusal(f"the {subject} does not carry the manifest's lot on every row")
     for act_id, record in records.items():
         outcome = outcomes[act_id]
         if (
@@ -5894,7 +6200,9 @@ def _verify_product_accounting(
             raise SchemaRefusal(
                 "the acts database does not reconcile to the manifest act partition"
             )
-        _verify_exact_product_outcomes(database_records, outcomes, subject="acts database")
+        _verify_exact_product_outcomes(
+            database_records, outcomes, subject="acts database", lot=manifest["run"]["lot"]
+        )
         _verify_product_readings(database_records, readings, subject="acts database")
         _verify_exact_delivered_citations(
             database_records, citations, act_keys, subject="acts database"
@@ -5909,7 +6217,9 @@ def _verify_product_accounting(
         jsonl_records = _jsonl_act_records(root / "acts.jsonl", sources["regions"])
         if _product_categories(jsonl_records) != expected:
             raise SchemaRefusal("the acts JSONL does not reconcile to the manifest act partition")
-        _verify_exact_product_outcomes(jsonl_records, outcomes, subject="acts JSONL")
+        _verify_exact_product_outcomes(
+            jsonl_records, outcomes, subject="acts JSONL", lot=manifest["run"]["lot"]
+        )
         _verify_product_readings(jsonl_records, readings, subject="acts JSONL")
         _verify_exact_delivered_citations(jsonl_records, citations, act_keys, subject="acts JSONL")
     if "review-items" in formats.formats:
@@ -5935,6 +6245,7 @@ def _verify_product_accounting(
             review_records,
             {act_id: outcome for act_id, (_kind, outcome) in expected_review.items()},
             subject="review-items JSONL",
+            lot=manifest["run"]["lot"],
         )
     return search_fold_verification, operator_labels
 

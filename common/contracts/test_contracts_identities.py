@@ -173,6 +173,14 @@ def test_verify_accepts_an_identity_that_recomputes():
     identities.verify(page, "page", identities.page_bindings(ORIGIN, WHOLE))
 
 
+def test_verify_accepts_every_kind_derive_can_mint():
+    for kind in identities._PREFIXES:
+        bindings = {"fact": kind}
+        identities.verify(identities.derive(kind, bindings), kind, bindings)
+    lot = identities.lot_id("d" * 64)
+    identities.verify(lot, "lot", {"run_self_hash": "d" * 64})
+
+
 def test_verify_refuses_an_identity_whose_bindings_were_altered():
     """This is what makes identity checkable rather than trusted: an artifact that
     arrived with a good-looking id but edited bindings is refused at the boundary."""

@@ -27,7 +27,7 @@ from typing import Any, Final
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import SchemaRefusal
 from common.correction import ORIGINAL_LABEL
-from common.reading_annotations import read_doubt_marks
+from common.reading_annotations import bracket_doubt_marks, read_doubt_marks
 from common.reconstruction_records import LABEL, MAKER_FIELDS, MAKER_MODEL, MAKER_PERSON
 
 CONIECTOR_MEMBER: Final = "coniector.jsonl"
@@ -132,6 +132,35 @@ def maker_text(maker: Mapping[str, Any]) -> str:
     return f"model, chair {maker['chair']} ({name}@{revision})"
 
 
+RECONSTRUCTION_OPEN: Final = "⟨"
+RECONSTRUCTION_CLOSE: Final = "⟩"
+
+
+def with_reconstructions(row: Mapping[str, Any]) -> str:
+    """The "with reconstructions" view of a made row: each departure as `⟨word⟩`.
+
+    The row's diplomatic pieces with every departure spliced in between angle
+    brackets, and every doubt mark left shown as a reader is shown it
+    (`[illegible]`, `[reading?]`). It is only ever shown inside the row's labelled
+    block, never as the established text.
+    """
+    if not all(isinstance(departure.get("reconstruction"), str) for departure in row["departures"]):
+        raise SchemaRefusal("a reconstruction departure does not name its reconstruction")
+    marked = _splice(
+        "\n".join(row["diplomatic_raw_pieces"]),
+        [
+            {
+                **departure,
+                "reconstruction": RECONSTRUCTION_OPEN
+                + departure["reconstruction"]
+                + RECONSTRUCTION_CLOSE,
+            }
+            for departure in row["departures"]
+        ],
+    )
+    return bracket_doubt_marks(marked)
+
+
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
@@ -155,6 +184,8 @@ def reconstruction_lines(row: Mapping[str, Any]) -> list[str]:
         lines += [
             "reconstruction_text:",
             _json(row["reconstruction_text"]),
+            "with_reconstructions:",
+            _json(with_reconstructions(row)),
             "reconstruction_departures:",
             _json(
                 [

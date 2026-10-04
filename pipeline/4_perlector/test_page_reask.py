@@ -773,3 +773,32 @@ def test_a_re_ask_the_accounting_does_not_count_adds_no_act(recovers, tmp_path, 
     assert "reask-unread" in _accounting(tree[0], 1, 2)["payload"]["holds"]
     assert all("reading_attempt" not in r["payload"] for r in _records(tree[0], "act-region"))
     assert len(_on_page(tree[0], "perlectio", 1)) == 1
+
+
+def test_the_page_doubt_hold_counts_the_first_reading_and_its_re_ask_together(
+    recovers, tmp_path, monkeypatch
+):
+    """Page 1's first reading alone is 5 of 29 doubtful, under the page limit; its
+    re-ask read with 20 of 33 doubtful takes the page to 25 of 62, over it. Every
+    Perlectio the page publishes, first reading and re-ask alike, holds the page."""
+    tree = _copy(recovers, tmp_path)
+    shutil.rmtree(tree[0] / "r" / "4_perlector")
+    original = page_path.fixture_reask_answer
+
+    def doubtful(context, ordinal, *, planned):
+        row = original(context, ordinal, planned=planned)
+        if row is None:
+            return row
+        text = "SYNTHETIC ACT TWO delta epsilon zeta eta"
+        return {
+            **row,
+            "answer": row["answer"].replace(text, "[[SYNTHETIC ACT TWO delta]]" + text[23:]),
+        }
+
+    monkeypatch.setattr(page_path, "fixture_reask_answer", doubtful)
+    assert _stage(tree, "reask-recovers", monkeypatch) == 0
+    readings = _on_page(tree[0], "perlectio", 1)
+    assert sorted(r["payload"].get("reading_attempt", 1) for r in readings) == [1, 2]
+    assert all(page_path.PAGE_DOUBT_SHARE_HIGH in r["payload"]["holds"] for r in readings), [
+        r["payload"]["holds"] for r in readings
+    ]

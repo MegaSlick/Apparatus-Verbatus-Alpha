@@ -6,8 +6,11 @@ from itertools import pairwise
 import pytest
 
 from common.contracts.errors import SchemaRefusal
-from common.contracts.uncertainty import PAGE_READ_LECTIO, validate
+from common.contracts.uncertainty import PAGE_READ_LECTIO, corrected_layer, validate
 from common.reading_annotations import (
+    bracket_doubt_marks,
+    diplomatic_display,
+    doubt_exceeds,
     doubt_mark_offsets,
     malformed_assessment,
     read_doubt_marks,
@@ -186,3 +189,30 @@ def test_a_span_that_cannot_be_written_as_a_mark_is_refused():
 def test_a_malformed_doubt_report_is_refused_by_name(report):
     with pytest.raises(SchemaRefusal):
         render_doubt_marks("text", report)
+
+
+@pytest.mark.parametrize(
+    "raw, shown",
+    [
+        ("Jean [[?]] [[Martin|Morin]], fils", "Jean [illegible] [Martin?], fils"),
+        ("[[?]][[Pierre]] Roy", "[illegible][Pierre?] Roy"),
+        ("no doubt here", "no doubt here"),
+    ],
+)
+def test_the_diplomatic_text_brackets_only_where_the_ink_is_doubtful(raw, shown):
+    text, assessment = read_doubt_marks(raw)
+    assert diplomatic_display(text, _stored_layer(assessment)) == shown
+    assert bracket_doubt_marks(raw) == shown
+
+
+def test_a_reading_with_no_machine_doubt_report_is_shown_as_it_is():
+    assert diplomatic_display("Jean [Martin]", corrected_layer()) == "Jean [Martin]"
+    whole = _stored_layer(read_doubt_marks("x")[1]) | {
+        "gaps": [{"position": "whole-act", "start": 0, "end": 0, "witness_evidence": []}]
+    }
+    assert diplomatic_display("", whole) == "[illegible]"
+
+
+def test_a_doubt_share_exactly_at_the_limit_is_not_over_it():
+    assert not doubt_exceeds((1, 2), 5000)
+    assert doubt_exceeds((1, 2), 4999)

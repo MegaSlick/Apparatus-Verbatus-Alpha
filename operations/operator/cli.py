@@ -28,6 +28,7 @@ from operations.pod.transfer import normalize_transfer_prefix
 
 from . import notify_bridge, review_text
 from . import spend as spend_view
+from . import watch as watch_view
 from .advance import (
     UnsealedBoundaryRefusal,
     boundary_summary,
@@ -166,6 +167,16 @@ def record_unexpected(
     return OperatorError(
         ErrorCode.UNEXPECTED, detail=f"Saved unexpected receipt: {receipt}. {described}"
     )
+
+
+def _positive_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number above zero")
+    return value
 
 
 def _first_line(text: str) -> str:
@@ -637,6 +648,49 @@ def build_parser() -> PlainParser:
     )
 
     verbs.add_parser("status", help="read saved receipts only; it never contacts a provider")
+    watch = verbs.add_parser(
+        "watch",
+        help="follow a pod run from saved copies of its report files; it writes nothing and "
+        "contacts no provider or volume",
+    )
+    watch.add_argument("--run-id", required=True, help="the run pod_run is running")
+    where = watch.add_mutually_exclusive_group(required=True)
+    where.add_argument(
+        "--receipts",
+        type=Path,
+        metavar="FOLDER",
+        help="the folder holding copies of pod-run-report-<run id>.json and its -liveness, "
+        "-timings and -estimate siblings (the hand route's names)",
+    )
+    where.add_argument(
+        "--report", type=Path, help="the copy of the pod-run report, when it has another name"
+    )
+    watch.add_argument(
+        "--lease",
+        type=Path,
+        help="the pod's saved lease, for its creation time and hourly rates; without it spend "
+        "is counted from pod_run's start and its --hourly-usd",
+    )
+    watch.add_argument(
+        "--stale-minutes",
+        type=_positive_int,
+        default=watch_view.STALE_MINUTES_DEFAULT,
+        help="call the copies stale when the newest pod record is older than this "
+        f"(default {watch_view.STALE_MINUTES_DEFAULT})",
+    )
+    watch.add_argument(
+        "--interval",
+        type=_positive_int,
+        metavar="SECONDS",
+        help="read again every this many seconds and show each change, until the run ends; "
+        "without it, show once",
+    )
+    watch.add_argument(
+        "--timeout",
+        type=_positive_int,
+        metavar="SECONDS",
+        help="with --interval, stop after this long even if the run is still going",
+    )
     spend = verbs.add_parser(
         "spend", help="show the reviewed spending policy's ceilings, floor and alert threshold"
     )
@@ -884,6 +938,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             surface.export(run_id=args.run_id, run_root=args.run_root)
         elif args.verb == "status":
             surface.status()
+        elif args.verb == "watch":
+            if args.timeout is not None and args.interval is None:
+                raise OperatorError(ErrorCode.INVALID_COMMAND, detail="--timeout needs --interval")
+            report = args.report or watch_view.report_path_for(args.run_id, args.receipts)
+            try:
+                watch_view.watch(
+                    args.run_id,
+                    report,
+                    lease_path=args.lease,
+                    stale_minutes=args.stale_minutes,
+                    interval=args.interval,
+                    timeout=args.timeout,
+                    printer=_print,
+                )
+            except KeyboardInterrupt:
+                # Stopping a follow is the normal way out, not a failure.
+                _print("Stopped watching; nothing was changed.")
         elif args.verb == "spend":
             policy = args.policy or workspace / "config" / "spend.toml"
             for line in spend_view.show(policy):
@@ -1439,7 +1510,8 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, upload, run, fetch-run, export, status, spend, review, decide, advance, backup, or clear-leftovers."
+        "Choose one word: ingest, triage, upload, run, fetch-run, watch, export, status, spend, "
+        "review, decide, advance, backup, or clear-leftovers."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1608,6 +1680,20 @@ def _interactive_arguments() -> list[str]:
             )
             if prefix:
                 arguments.extend(("--evidence-prefix", prefix))
+        return arguments
+    if verb == "watch":
+        run_id = _ask("The run ID pod_run is running")
+        receipts = _ask("Folder holding the saved copies of that run's report files")
+        if not run_id or not receipts:
+            _print(
+                "Watch needs a run ID and the folder holding the saved report copies. "
+                "One was left blank, so nothing changed."
+            )
+            return []
+        arguments = ["watch", "--run-id", run_id, "--receipts", receipts]
+        lease = _ask("The pod's saved lease file (leave blank to count spend from the run's start)")
+        if lease:
+            arguments.extend(("--lease", lease))
         return arguments
     if verb == "export":
         return ["export"]

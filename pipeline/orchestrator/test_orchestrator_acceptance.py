@@ -103,8 +103,8 @@ FIXTURE = "synthetic-two-page-v0"
 # the reconstructor's receipt.
 HAPPY_SNAPSHOT_FILES = 141
 REVIEW_SNAPSHOT_FILES = 132
-HAPPY_RUN_TREE_DIGEST = "c8c54d0bdf129920f66a0af9f9f54cefdf2d515dff5974de2db48d0d75be9eca"
-REVIEW_RUN_TREE_DIGEST = "c769a74e45e891ccbeef2026fc6a7a54c62b9d76030b31a2115a472bc9d8a32e"
+HAPPY_RUN_TREE_DIGEST = "00a6338d093d51c34b1f2bc89a6713f307183b1e2d10413977bdeaa3473efba6"
+REVIEW_RUN_TREE_DIGEST = "05b81165e2c7575972ec798d6e8c83421971b96032a765ad08f8dc509c119ade"
 
 
 def orchestrate_to_export(
@@ -904,7 +904,7 @@ def _armarium_bundle_semantics(data: bytes) -> tuple[str, dict[str, str]] | None
             manifest = json.loads(manifest_data)
             if (
                 not isinstance(manifest, dict)
-                or manifest.get("schema") != "armarium-export-manifest.v12"
+                or manifest.get("schema") != "armarium-export-manifest.v13"
                 or canonical_bytes(manifest) != manifest_data
                 or manifest.get("self_hash") != self_hash(manifest)
             ):
@@ -1436,7 +1436,7 @@ def _write_acceptance_bundle_tree(root: Path, database_data: bytes, damage=None)
     """
     members = {"acts.sqlite": database_data, "acts.jsonl": b'{"act_id":"a1"}\n'}
     package_manifest = {
-        "schema": "armarium-export-manifest.v12",
+        "schema": "armarium-export-manifest.v13",
         "members": [
             {"path": name, "sha256": digest_bytes(content), "bytes": len(content)}
             for name, content in sorted(members.items())

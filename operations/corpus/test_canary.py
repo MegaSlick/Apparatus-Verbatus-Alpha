@@ -42,6 +42,7 @@ def _bundle(members=None):
         ("sources.json", canonical_bytes({"reconstructions": [["other"], ["other", "act"]]})),
         ("other.jsonl", canonical_bytes({"act_id": "act"}) + b"\n"),
         ("text/_source_root/readings.txt", b"## OTHER act (not an act)\nother-id: act\n"),
+        ("acts.csv", b"\xef\xbb\xbfact_key,act_id\r\np1:1,act\r\n"),
     ],
 )
 def test_bundle_inspection_finds_canary_identity_without_reference_text(member, contents):

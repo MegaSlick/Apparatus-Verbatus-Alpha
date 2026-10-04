@@ -10,13 +10,13 @@ the internal `export` artifact the Armarium publishes: its `delivered[i]["text"]
 field must be byte-identical to, and therefore hash-identical to, the Archetypus
 record's own `text` and `text_hash`.
 
-Rendered displays (brackets, sigla) are not built by any stage yet — spec 10
-names that as the Armarium's future business at export time — so the
-render -> strip -> hash round-trip half of test 4 is proven separately, as a
+The bracketed reader's view is derived at export from the uncertainty layer and
+verified by rendering it again (`pipeline/7_armarium/test_armarium_export.py`);
+the render -> strip -> hash round-trip half of test 4 is proven separately, as a
 schema-sufficiency demonstration, in `pipeline/6_archetypus/test_annotations.py`.
 
 What this does **not** itself prove: that every *packaged* literal-text format
-(text-bundle, acts-database, jsonl) carries the same characters. All three ship
+(text-bundle, acts-database, jsonl, csv) carries the same characters. All four ship
 today as members inside the single `export` artifact kind, so a guard keyed on
 artifact *kind* would never see a new one land (F090) — this module's own guard
 used to be keyed that way and could not fire. The guard below instead reads the
@@ -124,7 +124,7 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
     bundle_bytes = tree.read_bytes(export["bundle"]["reference"]["relative_path"])
     with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as archive:
         packaged_manifest = json.loads(archive.read("EXPORT_MANIFEST.json"))
-    expected_formats = {"text-bundle", "acts-database", "jsonl", "review-items"}
+    expected_formats = {"text-bundle", "acts-database", "jsonl", "csv", "review-items"}
     produced_formats = set(packaged_manifest["formats"]["formats"])
     assert produced_formats == expected_formats, (
         f"the exported bundle selects formats {sorted(produced_formats)}; a new format "

@@ -674,8 +674,9 @@ runpodctl pod create \
   --docker-args "$(sh operations/pod/pod_start_command.sh <hours> <sha>)"
 ```
 
-`<hours>` is the approved window: the guard deletes the pod at that deadline whatever the
-run is doing, and an hour later the backstop deletes it even if the guard never started.
+`<hours>` is the approved window, at most the soft maximum in `config/spend.toml` (2 h in
+the lead's budget): the guard deletes the pod at that deadline whatever the run is doing,
+and an hour later the backstop deletes it even if the guard never started.
 `runpodctl pod get <pod id>` shows the SSH details.
 
 ### On the pod, over SSH
@@ -1237,9 +1238,9 @@ shape the create gate refuses. Its `docker_start_cmd` nests `pod_run`'s argv and
 literal `--`, `bootstrap_main`'s, each with its own `--report-path`; the gate binds the
 launch token into both and the nested `--journal` and refuses two halves naming one file.
 
-**What these boots need from the project lead:** `config/spend.toml` values and the GPU
-class; the S3 access and secret keys in the launching shell; separate in-session permission
-for Boot A and for Boot B; and confirmation of the two-boot split.
+**What these boots need from the project lead:** the GPU class (`config/spend.toml`
+carries the lead's budget); the S3 access and secret keys in the launching shell; separate
+in-session permission for Boot A and for Boot B; and confirmation of the two-boot split.
 
 ## If your task seems to need one
 

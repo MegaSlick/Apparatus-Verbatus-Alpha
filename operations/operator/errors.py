@@ -37,6 +37,7 @@ class ErrorCode(StrEnum):
     EXPORT_UNSEALED = "export-unsealed"
     STATUS_EMPTY = "status-empty"
     STATUS_UNREADABLE = "status-unreadable"
+    WATCH_UNREADABLE = "watch-unreadable"
     CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
     CONSOLE_PROJECTION_UNREADABLE = "console-projection-unreadable"
     ADVANCE_REFUSED = "advance-refused"
@@ -191,6 +192,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "A saved operator record could not be read safely.",
         "Status did not guess what the record meant or contact a provider.",
         "Preserve that record for review and repair or replace it before continuing; this is safe.",
+    ),
+    ErrorCode.WATCH_UNREADABLE: ErrorCopy(
+        "Watch could not read this run's saved pod-run report.",
+        "Nothing was shown as current; watch changed nothing and contacted no provider or volume.",
+        "Copy the run's pod-run report and its siblings from the volume into one folder on this computer, then run `verbatus watch` again; this is safe.",
     ),
     ErrorCode.CONSOLE_TREE_UNREADABLE: ErrorCopy(
         "Verbatus could not read the selected run tree safely.",

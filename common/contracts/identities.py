@@ -36,12 +36,16 @@ _PREFIXES: Final = {
     "region": "rgn",
     "attempt": "att",
     "artifact": "art",
+    "lot": "lot",
 }
 
 # Typed by an operator and safe as a directory name on macOS and Linux alike.
 _RUN_ID_PATTERN: Final = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
-_ID_PATTERN: Final = re.compile(r"^(pg|act|ppg|pac|rgn|att|art)_[0-9a-f]{%d}$" % _DIGEST_CHARS)
+# Every prefix `derive` can mint, so `verify` never refuses an identity it could derive.
+_ID_PATTERN: Final = re.compile(
+    r"^(%s)_[0-9a-f]{%d}$" % ("|".join(_PREFIXES.values()), _DIGEST_CHARS)
+)
 
 
 def validate_run_id(run_id: Any) -> str:
@@ -81,6 +85,21 @@ def verify(identity: Any, kind: str, bindings: dict[str, Any]) -> None:
             f"(recomputed {expected}); the identity or the bindings were altered "
             "after it was derived"
         )
+
+
+_LOT_PATTERN: Final = re.compile(r"^lot_[0-9a-f]{%d}$" % _DIGEST_CHARS)
+
+
+def lot_id(run_self_hash: Any) -> str:
+    """The run's lot: a short id every exported row carries, bound to run.json's self-hash."""
+    if not is_sha256(run_self_hash):
+        raise IdentityRefusal("a lot is derived from run.json's sha256 self-hash")
+    return derive("lot", {"run_self_hash": run_self_hash})
+
+
+def is_lot(value: Any) -> bool:
+    """Shape only: whether `value` reads as a lot."""
+    return isinstance(value, str) and bool(_LOT_PATTERN.match(value))
 
 
 def is_well_formed(identity: Any) -> bool:

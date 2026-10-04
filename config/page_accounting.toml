@@ -146,3 +146,18 @@ max_shared_share_bp = 5000
 # fifty characters to claim a column, so a folio number on a column-sized box
 # places nothing. Starting value; to be measured on the proof run.
 max_unit_area_per_character_bp = 100
+
+[doubt]
+# PROVISIONAL and UNMEASURED: the lead decides both values. They stop a reading
+# from passing quietly by marking everything doubtful. A reading's doubt share is
+# its doubtful or unread share: non-whitespace characters inside an uncertain
+# span, with each zero-width gap counted as one unread character
+# (`common/reading_annotations.py::doubt_count`), compared in basis points.
+#
+# An entry with more than this share doubtful or unread is held
+# `doubt-share-high`. Provisional: 20%.
+max_act_doubt_share_bp = 2000
+
+# Every entry of a page reading is held `page-doubt-share-high` when more than
+# this share of all its entries together is doubtful or unread. Provisional: 30%.
+max_page_doubt_share_bp = 3000

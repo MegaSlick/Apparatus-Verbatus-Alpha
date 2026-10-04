@@ -44,6 +44,14 @@ from .spend import load_spend_policy
 ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_SPEND = ROOT / "config" / "spend.toml"
 T0 = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
+# The budget `config/spend.toml` ships.
+SHIPPED_BUDGET = Budget(
+    soft_max_seconds=7_200,
+    hard_max_seconds=10_800,
+    soft_max_cost_usd=Decimal("5.00"),
+    hard_max_cost_usd=Decimal("7.00"),
+)
+# An explicit budget for the notice tests, independent of the shipped file.
 BUDGET = Budget(
     soft_max_seconds=14_400,
     hard_max_seconds=21_600,
@@ -58,7 +66,7 @@ BUDGET = Budget(
 def test_the_shipped_policy_carries_the_default_budget() -> None:
     policy = load_spend_policy(SHIPPED_SPEND)
 
-    assert Budget.from_policy(policy) == BUDGET
+    assert Budget.from_policy(policy) == SHIPPED_BUDGET
     # The guard is armed from the launch ceilings, at the soft maximum, never past it.
     assert policy.hard_lifetime_seconds == policy.soft_max_seconds
     assert policy.max_estimated_metered_cost_usd == policy.soft_max_cost_usd
@@ -69,7 +77,7 @@ def test_a_sealed_budget_value_that_is_not_a_positive_number_leaves_the_budget_u
     bad: str,
 ) -> None:
     sealed = load_spend_policy(SHIPPED_SPEND).budget_environment()
-    assert sealed_budget(sealed) == (BUDGET, None)
+    assert sealed_budget(sealed) == (SHIPPED_BUDGET, None)
 
     for name in sealed:
         assert sealed_budget({**sealed, name: bad}) == (None, f"unusable {name}"), bad
