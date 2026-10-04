@@ -9,9 +9,18 @@ connected takes a neutral default, recorded as detected with confidence 0 and a 
 The margin is a setting, not a detection: unless set by hand it is `margin_mm`, recorded
 as detected with confidence 1 and no flag.
 
-Detectors are built in other slices. A detector is a `Detector`: a method name with a
-version, the settings it reads (part of every value's inputs hash) and a function that
-takes a `StepContext` and returns an `Answer`. Pass them to `plan` by step name.
+A detector is a `Detector`: a method name with a version, the settings it reads (part
+of every value's inputs hash), a function that takes a `StepContext` and returns an
+`Answer`, and optionally a function that compares a value set by hand with what the
+detector finds. Pass them to `plan` by step name; `pagekit.pipeline.DETECTORS` connects
+the detectors of specs 0003 and 0004.
+
+A detector that raises an error, or gives an answer pagekit refuses, fails for that page
+alone (spec 0005): the step takes its neutral default with confidence 0 and a flag naming
+the step and the error, and the batch carries on. A value set by hand is never detected
+again, but when its detector can compare, it runs, and a confident answer far from the
+hand-set value is reported in the evidence the manifest and review sheet show (never in
+the project file, never as a change and never as a flag).
 
 Nothing is written until the whole batch has been read and every value settled, so an
 input that cannot be used stops the run with nothing written (PrepareError).
@@ -130,6 +139,7 @@ class StepContext:
     values: dict[str, Any]  # the earlier steps' values for this page
     settings: dict[str, Any]  # every setting's value
     _image: Callable[[], Image.Image] = field(repr=False, default=None)
+    cache: dict[Any, Any] = field(repr=False, default_factory=dict)  # shared per source
 
     def image(self) -> Image.Image:
         """The decoded original source. Never change it and never write it out."""
@@ -174,6 +184,9 @@ class Detector:
     method: str
     run: Callable[[StepContext], Answer | dict[str, Any]]
     settings: tuple[str, ...] = ()
+    # (value set by hand, the detector's answer, context) -> a sentence when they differ
+    # by more than the step's comparison setting, else None.
+    compare: Callable[[Any, Answer, StepContext], str | None] | None = None
 
 
 def _neutral(step: str, description: str, value: Callable[[StepContext], Any], reads=()):
@@ -186,6 +199,16 @@ def _neutral(step: str, description: str, value: Callable[[StepContext], Any], r
         return Answer(value(context), 0.0, f"Neutral default: {description}.", (flag,))
 
     return Detector(f"pagekit.neutral-default.{step}/1", run, tuple(reads))
+
+
+_NEUTRAL_WORDS = {
+    "orientation": "no quarter turn",
+    "split": "one page",
+    "skew": "no skew",
+    "page_box": "the whole levelled page",
+    "content_box": "the whole page box",
+    "margin": "the margin setting",
+}
 
 
 def _whole_grid(context: StepContext) -> list[int]:
@@ -252,6 +275,8 @@ class Plan:
     settings: dict[str, dict[str, Any]]
     stale: list[dict[str, Any]]
     stale_outputs: list[str]  # outputs of pages that no longer exist, left in place
+    batch: dict[str, Any] = field(default_factory=dict)  # the volume-wide checks
+    tone_view: bool = False  # also write the grey tone view of spec 0006 beside each page
 
 
 def _gather_inputs(inputs: list[Path]) -> list[Path]:
@@ -306,11 +331,15 @@ class _Runner:
         self.overrides = overrides  # {(step, page): Override}
         self.dry = dry
         self.image_loader = image_loader
+        self.cache: dict[Any, Any] = {}
         self.stale: list[dict[str, Any]] = []
+        # {(source relative path, step, page): sentence} for hand-set values a confident
+        # detection disagrees with.
+        self.comparisons: dict[tuple[str, str, int | None], str] = {}
 
     def _reads(self, step: str, resolution) -> dict[str, Any]:
         reads = {name: self.values[name] for name in self.detectors[step].settings}
-        if step in PAGE_STEPS:
+        if step in PAGE_STEPS or step == "split":
             reads["overlap_mm"] = self.values["overlap_mm"]
             reads["resolution"] = None if resolution is None else list(resolution)
         return reads
@@ -343,6 +372,7 @@ class _Runner:
             )
             if self.dry and (old is None or _without_flags(old) != _without_flags(new)):
                 self._note(source, step, page, f"{override.where} sets it ({origin})")
+            self._compare(source, step, page, earlier, resolution, new["value"])
             return new, False
         if old is not None and old["origin"] in ("manual", "locked"):
             changes = input_changes(old["inputs"], inputs)
@@ -370,6 +400,7 @@ class _Runner:
                     f"set by hand ({old['origin']}); may be flagged once "
                     f"{', '.join(sorted(uncertain))} is recomputed",
                 )
+            self._compare(source, step, page, earlier, resolution, kept["value"])
             return kept, False
         detector = self.detectors[step]
         if (
@@ -397,27 +428,69 @@ class _Runner:
                 reason = "will be recomputed: " + "; ".join(changes)
             self._note(source, step, page, reason)
             return old, True
-        context = StepContext(
-            step, page, source, resolution, dict(earlier), self.values, self.image_loader
-        )
+        context = self._context(source, step, page, earlier, resolution)
+        method = detector.method
         try:
             answer = validate_answer(step, detector.run(context))
-        except AnswerError as error:
-            raise PrepareError(
-                f"{source.relative}: the {step} detector {detector.method} gave an answer "
-                f"pagekit refuses: {error}"
-            ) from error
+        except PrepareError:
+            raise  # the source itself cannot be used (changed while running): stop
+        except Exception as error:  # one page's failure is a flag on that page, never a stop
+            answer, method = _failed(step, detector, error, context)
         new = record(
             answer.value,
             "detected",
             answer.confidence,
             answer.evidence,
             list(answer.flags),
-            detector.method,
+            method,
             inputs,
             inputs_hash,
         )
         return new, False
+
+    def _context(self, source, step, page, earlier, resolution) -> StepContext:
+        return StepContext(
+            step,
+            page,
+            source,
+            resolution,
+            dict(earlier),
+            self.values,
+            self.image_loader,
+            self.cache,
+        )
+
+    def _compare(self, source, step, page, earlier, resolution, value) -> None:
+        """Run the step's detector beside a hand-set value and keep any large difference."""
+        detector = self.detectors[step]
+        if self.dry or detector.compare is None:
+            return
+        context = self._context(source, step, page, earlier, resolution)
+        try:
+            answer = validate_answer(step, detector.run(context))
+            sentence = detector.compare(value, answer, context)
+        except Exception:  # comparing is advice; a failure to compare changes nothing
+            return
+        if sentence:
+            self.comparisons[(source.relative, step, page)] = sentence
+
+
+def _failed(step: str, detector: Detector, error: Exception, context: StepContext):
+    """The neutral default for a step whose detector failed, with a flag saying so."""
+    neutral = NEUTRAL_DETECTORS[step]
+    value = neutral.run(context).value
+    if isinstance(error, AnswerError):
+        what = f"gave an answer pagekit refuses ({error})"
+    else:
+        what = f"stopped with an error ({type(error).__name__}: {error})"
+    description = _NEUTRAL_WORDS[step]
+    flag = (
+        f"The {step.replace('_', ' ')} step could not be measured on this page: its detector "
+        f"{what}. The neutral default ({description}) was used instead; look at this page."
+    )
+    evidence = f"Neutral default ({description}) after the detector {detector.method} failed."
+    method = f"{neutral.method} after {detector.method} failed"
+    return Answer(value, 0.0, evidence, (flag,)), method
 
 
 def _without_flags(entry: dict[str, Any]) -> dict[str, Any]:
@@ -559,7 +632,17 @@ def _run_source(source, old, overrides, runner: _Runner, base, extension, output
         chain, chain_flags, output_dpi = _page_chain(
             source, number, page_earlier, usable, stored, values
         )
-        all_steps = {**steps, **page_steps}
+        all_steps = {}
+        for step, entry in {**steps, **page_steps}.items():
+            key = (source.relative, step, None if step in SOURCE_STEPS else number)
+            sentence = runner.comparisons.get(key)
+            # The project keeps the person's own evidence; the manifest and the review
+            # sheet also say where a confident detection disagrees.
+            all_steps[step] = (
+                entry
+                if sentence is None
+                else {**entry, "evidence": f"{entry['evidence']} {sentence}"}
+            )
         flags = [{"step": "resolution", "reason": reason} for reason in source_flags]
         flags += [{"step": "split", "reason": reason} for reason in split_flags]
         for step in STEPS:
@@ -649,13 +732,24 @@ def plan(
     detectors: Mapping[str, Detector] | None = None,
     settings_overrides: dict[str, Any] | None = None,
     dry: bool = False,
+    tone_view: bool = False,
 ) -> Plan:
     """Read every source, settle every step value and plan every output, writing nothing.
 
     With no project file named, `output_dir/pagekit-project.json` is continued from if
     it exists, so a re-run never loses a correction. With `dry`, no detector runs and
-    the plan holds only the list of stale steps and why.
+    the plan holds only the list of stale steps and why. Once every page has its values,
+    the volume-wide checks (pagekit.volume) compare each page with the rest of the batch.
+    With `tone_view`, the grey tone view of spec 0006 is written beside each page.
     """
+    if tone_view and not dry:
+        from pagekit.pipeline import tone_view_available
+
+        if not tone_view_available():
+            raise PrepareError(
+                "the grey tone view is not built into this copy of pagekit yet "
+                "(pagekit/tone.py is missing), so it cannot be written; run without it"
+            )
     settings = load_settings(settings_overrides)
     values = {name: entry["value"] for name, entry in settings.items()}
     unknown = sorted(set(detectors or {}) - set(STEPS))
@@ -734,6 +828,7 @@ def plan(
 
         runner.overrides = overrides[source.relative]
         runner.image_loader = load
+        runner.cache = cache
         result = _run_source(
             source,
             old_entries.get(source.relative),
@@ -759,4 +854,19 @@ def plan(
         for dropped in entry["dropped_pages"]
         if (output_dir / dropped["output"]).is_file()
     )
-    return Plan(output_dir, project_path, project, pages, settings, runner.stale, stale_outputs)
+    batch: dict[str, Any] = {}
+    if not dry:
+        from pagekit.volume import check_batch
+
+        batch = check_batch(pages, values)
+    return Plan(
+        output_dir,
+        project_path,
+        project,
+        pages,
+        settings,
+        runner.stale,
+        stale_outputs,
+        batch,
+        tone_view,
+    )
