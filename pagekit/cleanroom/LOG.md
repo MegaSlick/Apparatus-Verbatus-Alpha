@@ -459,3 +459,8 @@ record".
   host's re-run all four pages are upright with no orientation flag and the gutter
   overhang flag is gone. Because some settings were chosen on these two spreads, an
   independent review of generalisation is running.
+- **Brief 0029 done:** commits 12ad0c5, f18f334, 0d03860, 42dbc38, ffee5a9, cb0607c,
+  7aa8578, 595f661 and 34649a8 on `work/pk-integrate` (595f661 was committed with two
+  core tests failing; 34649a8 repairs them). Leak scan no hits in 124 files. Merged into
+  `work/pagekit-prepare` (786571d); the combined suite passes. A re-run on the lead's
+  spreads with `--tone-view` wrote each page and its grey view as lossless TIFF.
