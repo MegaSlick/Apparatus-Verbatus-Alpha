@@ -213,12 +213,16 @@ def test_an_override_line_pasted_into_an_overrides_file_changes_exactly_that_ste
         '{"schema": "pagekit-overrides.v1", "overrides": [\n' + json.dumps(line) + "\n]}"
     )
     # The command exactly as the sheet prints it, run by a shell in another folder, with
-    # no PYTHONPATH: pagekit is not installed here.
+    # no PYTHONPATH and with PYTHONSAFEPATH set (as CI and some shells do): pagekit is
+    # not installed, and the current folder is never on the import path.
     environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
+    environment["PYTHONSAFEPATH"] = "1"
+    command = _command(text)
+    assert command.startswith("PYTHONPATH=") and "\n" not in command  # one line to copy
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     result = subprocess.run(
-        _command(text), shell=True, cwd=elsewhere, env=environment, capture_output=True, text=True
+        command, shell=True, cwd=elsewhere, env=environment, capture_output=True, text=True
     )
     assert result.returncode == 1, result.stderr
     after = _values(json.loads((target / PROJECT_NAME).read_text()))
@@ -528,6 +532,7 @@ else:
 @pytest.mark.parametrize(("mode", "writer"), [("L", "prepare"), ("RGB", "prepare"), ("L", "tone")])
 @pytest.mark.parametrize("dpi", ["300", "none"])
 def test_a_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_path, mode, writer, dpi):
+    import os
     import subprocess
 
     from pagekit.output import encode
@@ -537,6 +542,8 @@ def test_a_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_path, mode
     raw = tmp_path / "pixels.raw"
     raw.write_bytes(image.tobytes())
     root = Path(__file__).resolve().parent.parent
+    # The child imports pagekit through PYTHONPATH, whatever PYTHONSAFEPATH says.
+    environment = {**os.environ, "PYTHONPATH": str(root)}
     written = []
     for _ in range(2):  # two separate processes
         result = subprocess.run(
@@ -551,6 +558,7 @@ def test_a_tiff_with_an_odd_strip_is_identical_from_two_processes(tmp_path, mode
                 writer,
             ],
             cwd=root,
+            env=environment,
             capture_output=True,
             text=True,
             check=True,
