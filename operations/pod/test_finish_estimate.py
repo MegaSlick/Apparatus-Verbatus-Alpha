@@ -64,7 +64,7 @@ def test_the_shipped_policy_carries_the_default_budget() -> None:
     assert policy.max_estimated_metered_cost_usd == policy.soft_max_cost_usd
 
 
-@pytest.mark.parametrize("bad", ["abc", "0", "-1", "NaN", "Infinity"])
+@pytest.mark.parametrize("bad", ["abc", "0", "-1", "NaN", "Infinity", " 2", "2 ", "1_0", " 1_0 "])
 def test_a_sealed_budget_value_that_is_not_a_positive_number_leaves_the_budget_unknown(
     bad: str,
 ) -> None:
@@ -72,8 +72,22 @@ def test_a_sealed_budget_value_that_is_not_a_positive_number_leaves_the_budget_u
     assert sealed_budget(sealed) == (BUDGET, None)
 
     for name in sealed:
-        budget, problem = sealed_budget({**sealed, name: bad})
-        assert budget is None and problem and problem.startswith("unusable"), (name, bad)
+        assert sealed_budget({**sealed, name: bad}) == (None, f"unusable {name}"), bad
+
+
+@pytest.mark.parametrize(
+    ("soft", "hard", "value"),
+    [
+        ("VERBATUS_SOFT_MAX_SECONDS", "VERBATUS_HARD_MAX_SECONDS", "999999"),
+        ("VERBATUS_SOFT_MAX_COST_USD", "VERBATUS_HARD_MAX_COST_USD", "999.00"),
+    ],
+)
+def test_a_sealed_soft_maximum_above_its_hard_maximum_leaves_the_budget_unknown(
+    soft: str, hard: str, value: str
+) -> None:
+    sealed = load_spend_policy(SHIPPED_SPEND).budget_environment()
+
+    assert sealed_budget({**sealed, soft: value}) == (None, f"unusable {soft} above {hard}")
 
 
 # --- the estimate --------------------------------------------------------------------
