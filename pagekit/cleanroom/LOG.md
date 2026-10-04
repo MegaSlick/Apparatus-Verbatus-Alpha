@@ -476,3 +476,12 @@ record".
 - **Follow-up brief:** `briefs/0030-build-orientation-print-and-overhang.md` (sha256
   afe2dda85b5c7dd68558dcfed143927a3c37786a20526762a7d30cce4858d0ae), to the agent of
   brief 0017. Saved before it was sent.
+
+## 0027 — CI on the pagekit pull request; follow-up brief 0031
+
+- The pull request carrying pagekit failed CI: under the check script's settings
+  (PYTHONSAFEPATH=1, PYTHONPATH unset) a child Python started by a test could not import
+  pagekit, and neither could the correction command the review sheet prints.
+- **Follow-up brief:** `briefs/0031-build-ci-safepath.md` (sha256
+  9b37693b1c9533cd468d1c7b2fb816e8583ff3819d34e1730b9d906fec5195f1), to the agent of
+  brief 0023. Saved before it was sent.
