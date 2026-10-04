@@ -1,0 +1,16 @@
+# Brief 0034: figure-only pages; the overhang check's thin remainder
+
+- Role: build side.
+- Issued by the host session at 2026-10-04T15:53:24Z, as a follow-up message to the build-side agent of the named brief.
+- sha256 of the brief (the bytes after the marker line below, to the end of this file):
+  85d65656c9baaadb1dda822a473bafa296e2ee20412065278a35d36e6c009f11
+- Saved by the host before the message was sent.
+
+----- brief below this line, exactly as sent -----
+Follow-up to brief 0030, same worktree (work/pk-split), same rules (clean-room rule, allowed paths, checks, commit trailers, stop conditions all unchanged). First merge work/pagekit-prepare (it has moved). The reviewer re-tested your fix on a new held-out set of 74 pages you have not seen: the small-print half turns are gone, nothing that was right or flagged before now comes out wrong, wrong-without-flag runs fell from 42 (old code) to 12, and both real spreads stay right. Two things remain. For each, add a failing synthetic test first, then fix. Report the head, what each test proved, and the counts on your own new test pages.
+
+F1. A page of printed figures only turns the wrong way with no flag. Example: monospaced figures in five columns, line spacing 1.6 times the figure height, at 300 dpi; upright gives one quarter turn at confidence 0.61, because figures in columns stack exactly, so the tile measure says lines run down. With loose spacing in a proportional font, it gives a wrong half turn from only eight voting strips. Across fonts, spacing and alignment the reviewer saw 40 of 162 runs wrong without a flag (44 under the old code), so this predates your work, but pagekit must never guess silently. Fix it so such pages are flagged, not decided: for example, flag the up-down decision when there is almost no ascender or descender mass, or when nearly all marks share one height; flag the across-or-down decision when the evidence comes from aligned columns rather than from runs of writing; and require more voting strips than six. Build your own figure-only pages (several fonts drawn by pagekit's own test code, tight and loose spacing, aligned and ragged columns, 150 and 300 dpi, all four turns); every run must be right or flagged. Do not use the reviewer's generator for this one, so its set stays held out.
+F2. An overhanging pen stroke is still excused when it touches something thick (split.py around 613): any part of a mark that survives the erosion excuses the whole mark, so a 5 px pen flourish across the fold that touches a small backdrop bump, or ends in an ink blot, overhangs by about 10 mm with no flag (the old code flagged both). Fix: separate the thick part with a morphological opening, excuse only that thick part, and check the overhang on the thin remainder. Tests: a flourish touching a small backdrop bump, a flourish ending in a blot, and your backdrop-wedge case still excused.
+F3. The sign guard (1.0 standard errors, orient.py around 319) is not tested at its boundary: the guard test passes at any value from 0.5 to 10. Add a test that fails if the guard is loosened or tightened materially.
+
+Keep the settings record in thresholds_split.toml up to date with the page kinds checked.

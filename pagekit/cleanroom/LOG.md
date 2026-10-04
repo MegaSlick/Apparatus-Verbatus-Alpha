@@ -537,3 +537,14 @@ record".
   into `work/pagekit-prepare`; the suite passes under the check script's settings. The
   host corrected spec 0002's wording: a missing output folder is created as before; only
   one that cannot be created or written stops the run.
+
+## 0031 — Held-out re-test of orientation; follow-up brief 0034
+
+- **Independent re-test** of 0c7f995 and 852c217 on a new held-out set of 74 pages the
+  builder had not seen: small-print half turns gone; no regression; wrong-without-flag
+  runs 42 under the old code, 12 now, all on pages of printed figures only, which the
+  old code also got wrong. The overhang fix could still excuse a pen stroke touching a
+  thick mark. The sign guard is 1.0 standard errors everywhere, untested at its boundary.
+- **Follow-up brief:** `briefs/0034-build-orientation-figures-and-overhang.md` (sha256
+  85d65656c9baaadb1dda822a473bafa296e2ee20412065278a35d36e6c009f11), to the agent of
+  brief 0017. Saved before it was sent.
