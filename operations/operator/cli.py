@@ -1510,7 +1510,8 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, upload, run, fetch-run, export, status, spend, review, decide, advance, backup, or clear-leftovers."
+        "Choose one word: ingest, triage, upload, run, fetch-run, watch, export, status, spend, "
+        "review, decide, advance, backup, or clear-leftovers."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1679,6 +1680,20 @@ def _interactive_arguments() -> list[str]:
             )
             if prefix:
                 arguments.extend(("--evidence-prefix", prefix))
+        return arguments
+    if verb == "watch":
+        run_id = _ask("The run ID pod_run is running")
+        receipts = _ask("Folder holding the saved copies of that run's report files")
+        if not run_id or not receipts:
+            _print(
+                "Watch needs a run ID and the folder holding the saved report copies. "
+                "One was left blank, so nothing changed."
+            )
+            return []
+        arguments = ["watch", "--run-id", run_id, "--receipts", receipts]
+        lease = _ask("The pod's saved lease file (leave blank to count spend from the run's start)")
+        if lease:
+            arguments.extend(("--lease", lease))
         return arguments
     if verb == "export":
         return ["export"]

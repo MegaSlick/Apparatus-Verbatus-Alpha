@@ -2566,6 +2566,44 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
     ]
 
 
+def test_interactive_watch_asks_for_the_run_the_receipts_and_an_optional_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answers = iter(("watch", "brought-home", "/local/receipts", "/local/lease.json"))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    assert cli._interactive_arguments() == [
+        "watch",
+        "--run-id",
+        "brought-home",
+        "--receipts",
+        "/local/receipts",
+        "--lease",
+        "/local/lease.json",
+    ]
+
+    answers = iter(("watch", "brought-home", "/local/receipts", ""))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    assert cli._interactive_arguments() == [
+        "watch",
+        "--run-id",
+        "brought-home",
+        "--receipts",
+        "/local/receipts",
+    ]
+
+
+@pytest.mark.parametrize("blank", [1, 2])
+def test_interactive_watch_explains_a_blank_required_answer(
+    blank: int, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    given = ["watch", "brought-home", "/local/receipts", ""]
+    given[blank] = ""
+    answers = iter(given)
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    assert cli._interactive_arguments() == []
+    assert "Watch needs a run ID and the folder" in capsys.readouterr().out
+
+
 def test_interactive_fetch_run_needs_no_evidence_key_at_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
