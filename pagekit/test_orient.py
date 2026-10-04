@@ -172,3 +172,54 @@ def test_settings_are_all_unmeasured_and_unknown_overrides_are_refused():
         load_settings({"no_such_setting": 1})
     with pytest.raises(DetectorError):
         load_settings({"direction_margin": "high"})
+
+
+def test_ascender_cue_alone_decides_centred_writing():
+    """Centred lines leave the ragged-edge cue nothing; ascenders decide."""
+    image = Image.new("L", (1000, 1400), PAPER)
+    write_block(ImageDraw.Draw(image), (100, 120, 900, 1280), seed=2, centred=True)
+    assert detect_orientation(image)["value"] == 0
+    assert detect_orientation(turned(image, 2))["value"] == 2
+
+
+def test_ragged_edge_cue_outweighs_a_hand_with_more_descenders():
+    """A hand with descenders and no ascenders turns the core-band cue against the
+    truth; the ragged right edge still carries the vote."""
+    image = Image.new("L", (1000, 1400), PAPER)
+    write_block(ImageDraw.Draw(image), (100, 120, 900, 1280), seed=2, ascenders=0.0, descenders=0.3)
+    upright = detect_orientation(image)
+    assert upright["value"] == 0
+    assert "from ascenders against descenders -" in upright["evidence"]
+    assert detect_orientation(turned(image, 2))["value"] == 2
+
+
+def test_page_on_a_backdrop_that_is_most_of_the_frame_is_not_a_negative():
+    """The dark class is most of the frame here, so only the erosion test tells the
+    broad light page from thin light strokes."""
+    frame = Image.new("L", (1800, 2200), 25)
+    frame.paste(page(), (400, 400))
+    result = detect_orientation(frame)
+    assert result["value"] == 0
+    assert result["flags"] == []
+
+
+def _textured_backdrop_frame() -> Image.Image:
+    """A page between two dark backdrop bands with a pattern of small light holes: the
+    holes break every long straight run, so only the dark-border trim removes the
+    bands."""
+    frame = Image.new("L", (1500, 1400), PAPER)
+    frame.paste(page(), (250, 0))
+    draw = ImageDraw.Draw(frame)
+    for left in (0, 1250):
+        draw.rectangle((left, 0, left + 249, 1399), fill=30)
+        for y in range(0, 1400, 20):
+            for x in range(left + (y // 20 % 2) * 7, left + 250, 20):
+                draw.rectangle((x, y, x + 3, y + 3), fill=PAPER)
+    return frame
+
+
+@pytest.mark.parametrize("quarter_turns", [0, 1, 2, 3])
+def test_textured_dark_border_is_trimmed_before_scoring(quarter_turns):
+    result = detect_orientation(turned(_textured_backdrop_frame(), quarter_turns))
+    assert result["value"] == (4 - quarter_turns) % 4
+    assert result["flags"] == []

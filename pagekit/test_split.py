@@ -346,3 +346,99 @@ def test_spread_with_one_blank_page_and_no_fold_is_flagged():
     assert "possible spread with a blank page" in result["flags"][0]
     mirrored = _check(image.transpose(Image.Transpose.FLIP_LEFT_RIGHT))
     assert "possible spread with a blank page" in mirrored["flags"][0]
+
+
+# --- Tests that each fail under one mutation the review found unguarded ---------------
+
+
+def test_fold_line_and_shadow_valley_in_different_places_disagree():
+    image = _fold(spread(gutter=(920, 1080)), 1000)
+    shade = Image.new("L", (2000, 1))
+    shade.putdata(
+        [round(255 * (1 - 0.35 * math.exp(-(((x - 1400) / 45) ** 2) / 2))) for x in range(2000)]
+    )
+    result = _check(ImageChops.multiply(image, shade.resize(image.size)))
+    assert result["value"]["pages"] == 1
+    assert len(result["flags"]) == 1
+    assert "shadow valley" in result["flags"][0] and "disagree" in result["flags"][0]
+
+
+def test_line_in_the_edge_band_is_never_a_fold():
+    image = Image.new("L", (2000, 1400), PAPER)
+    draw = ImageDraw.Draw(image)
+    write_block(draw, (400, 120, 1900, 1280), seed=3)
+    draw.line((200, 0, 200, 1399), fill=50, width=4)
+    result = _check(image)
+    assert result["value"]["pages"] == 1
+    assert result["value"]["cut"] is None
+
+
+def test_frame_of_rules_only_is_too_little_ink_after_masking():
+    image = Image.new("L", (2000, 1400), PAPER)
+    draw = ImageDraw.Draw(image)
+    for y in range(100, 1300, 48):
+        draw.line((60, y, 1940, y), fill=60, width=3)
+    result = _check(image)
+    assert result["value"]["pages"] == 1
+    assert result["confidence"] == 0.0
+    assert result["flags"] == [TOO_LITTLE_INK]
+
+
+def test_rule_across_the_gutter_touching_the_writing_is_masked():
+    """A rule running across both pages, with letters sitting on it, would join the two
+    pages' writing into one mark and close the gap if it were not masked."""
+    image = spread(gutter=(920, 1080))
+    baseline = 120 + 13 + 14 + 48 * 10
+    ImageDraw.Draw(image).line((40, baseline, 1960, baseline), fill=60, width=3)
+    result = _check(image)
+    cut = _two_pages(result, "gap")
+    assert 870 < _x_at(cut, 700) < 1080
+
+
+def test_note_crossing_a_leaning_fold_is_kept_and_counted():
+    """A leaning fold is not caught by the axis-aligned mask; masking along the found
+    line is what keeps a note crossing it as its own mark."""
+    image = _fold(spread(), 980, 1025)
+    draw = ImageDraw.Draw(image)
+    draw.line((880, 700, 1020, 700), fill=45, width=4)
+    draw.ellipse((880, 686, 900, 700), outline=45, width=3)
+    result = _check(image)
+    _two_pages(result, "fold")
+    assert "1 ink mark crosses the cut (kept mostly on the left side)" in result["evidence"]
+
+
+def test_widest_balanced_gap_is_preferred():
+    image = Image.new("L", (2000, 1400), PAPER)
+    draw = ImageDraw.Draw(image)
+    write_block(draw, (100, 120, 700, 1280), seed=3, ragged=(0.99, 1.0))
+    write_block(draw, (780, 120, 900, 1280), seed=4, ragged=(0.99, 1.0))
+    write_block(draw, (1100, 120, 1900, 1280), seed=5, ragged=(0.99, 1.0))
+    result = _check(image)
+    cut = _two_pages(result, "gap")
+    assert 900 < _x_at(cut, 700) < 1100
+
+
+def test_proportions_against_the_evidence_lower_the_confidence():
+    image = _fold(spread(), 1000)
+    wide = _check(image)
+    tall = _check(image, dpi=(300, 150))
+    assert tall["value"]["pages"] == 2
+    assert "suggest 1" in tall["evidence"]
+    assert tall["confidence"] == pytest.approx(wide["confidence"] * 0.8, abs=0.002)
+    single = page()
+    portrait = _check(single)
+    landscape = _check(single, dpi=(150, 300))
+    assert "suggest 2" in landscape["evidence"]
+    assert landscape["confidence"] == pytest.approx(portrait["confidence"] * 0.8, abs=0.002)
+
+
+def test_note_overhanging_from_the_right_is_flagged_by_its_left_reach():
+    image = _fold(spread(), 1000)
+    draw = ImageDraw.Draw(image)
+    draw.line((1000 - 160, 700, 1120, 700), fill=45, width=4)
+    draw.ellipse((1100, 686, 1120, 700), outline=45, width=3)
+    draw.line((1040, 690, 1120, 690), fill=45, width=4)
+    result = _check(image)
+    _two_pages(result, "fold")
+    assert "kept mostly on the right side" in result["evidence"]
+    assert len(result["flags"]) == 1 and "more than the 5 mm overlap" in result["flags"][0]
