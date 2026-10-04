@@ -213,24 +213,33 @@ def _long_runs(buffer: bytes, width: int, height: int, min_length: int, gap: int
     return mask
 
 
+def _ink_near(ink, mask, width: int, height: int, y: int, columns: range, rows: int) -> bool:
+    """Whether unmasked ink lies in `columns` within `rows` rows of row `y`."""
+    for row in range(max(0, y - rows), min(height, y + rows + 1)):
+        base = row * width
+        for x in columns:
+            if ink[base + x] == INK and not (mask is not None and mask[base + x]):
+                return True
+    return False
+
+
 def _bridge(ink: bytes, mask: bytearray, width: int, height: int, reach: int) -> None:
     """Unmask spans of a row where ink outside the mask lies just before and just after
-    the span: writing that crosses a line keeps its crossing stroke."""
+    the span, in the same row or up to two rows away (a slanting stroke meets the two
+    sides of a line at different rows): writing that crosses a line keeps its crossing
+    stroke."""
+    crossing = []
     for y in range(height):
         base = y * width
         row = mask[base : base + width]
         for match in _MASK_RUN.finditer(row):
             start, end = match.span()
-            before = any(
-                ink[base + x] == INK and not mask[base + x]
-                for x in range(max(0, start - reach), start)
-            )
-            after = any(
-                ink[base + x] == INK and not mask[base + x]
-                for x in range(end, min(width, end + reach))
-            )
+            before = _ink_near(ink, mask, width, height, y, range(max(0, start - reach), start), 2)
+            after = _ink_near(ink, mask, width, height, y, range(end, min(width, end + reach)), 2)
             if before and after:
-                mask[base + start : base + end] = bytes(end - start)
+                crossing.append((base + start, base + end))
+    for start, end in crossing:
+        mask[start:end] = bytes(end - start)
 
 
 def mask_straight_marks(ink: Image.Image, share: float, gap: int = 1) -> Image.Image:
@@ -262,34 +271,39 @@ def mask_straight_marks(ink: Image.Image, share: float, gap: int = 1) -> Image.I
 def mask_along_line(
     ink: Image.Image, top: tuple[float, float], bottom: tuple[float, float], half: int
 ) -> Image.Image:
-    """Remove the ink of a near-vertical line through `top` and `bottom` (working px),
-    `half` px each side, except in rows where ink lies just outside the strip on both
-    sides (writing crossing the line)."""
+    """Remove the ink of a near-vertical line through `top` and `bottom` (working px).
+    In each row only the line's own run of ink is removed: the run, at most `half` px
+    from the line and at most 2 * half + 1 px wide, that holds the line there. A wider
+    run is writing crossing the line and is kept, and so is a narrow run with ink just
+    beyond it on both sides within two rows (a slanting stroke crossing the line)."""
     width, height = ink.size
     buffer = ink.tobytes()
     out = bytearray(buffer)
     (x0, y0), (x1, y1) = top, bottom
     span_y = (y1 - y0) or 1.0
+    widest = 2 * half + 1
     for y in range(height):
-        x = x0 + (x1 - x0) * (y - y0) / span_y
-        left = max(0, round(x) - half)
-        right = min(width, round(x) + half + 1)
-        if right <= left:
+        x = round(x0 + (x1 - x0) * (y - y0) / span_y)
+        base = y * width
+        near = [
+            c for c in range(max(0, x - half), min(width, x + half + 1)) if buffer[base + c] == INK
+        ]
+        if not near:
             continue
-        crossing = False
-        for dy in (-1, 0, 1):
-            row = y + dy
-            if not 0 <= row < height:
-                continue
-            base = row * width
-            before = any(buffer[base + c] == INK for c in range(max(0, left - 2), left))
-            after = any(buffer[base + c] == INK for c in range(right, min(width, right + 2)))
-            if before and after:
-                crossing = True
-                break
-        if not crossing:
-            base = y * width
-            out[base + left : base + right] = bytes(right - left)
+        seed = min(near, key=lambda c: abs(c - x))
+        a = seed
+        while a > 0 and buffer[base + a - 1] == INK:
+            a -= 1
+        b = seed + 1
+        while b < width and buffer[base + b] == INK:
+            b += 1
+        if b - a > widest:
+            continue
+        before = _ink_near(buffer, None, width, height, y, range(max(0, a - 2), a), 2)
+        after = _ink_near(buffer, None, width, height, y, range(b, min(width, b + 2)), 2)
+        if before and after:
+            continue
+        out[base + a : base + b] = bytes(b - a)
     return Image.frombytes("L", (width, height), bytes(out))
 
 

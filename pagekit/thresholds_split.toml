@@ -179,6 +179,11 @@ value = 0.15
 status = "UNMEASURED"
 meaning = "Least share of the ink in wide runs for an axis to count as mixed (see mixed_narrow_share)."
 
+[max_item_columns]
+value = 12
+status = "UNMEASURED"
+meaning = "Most narrow runs an axis may have for them to count as columns of items beside a block of writing; more are lines of writing (as when a seal or lines that merge make a wide run among them). On pagekit's pages: account pages 4 to 6 columns; pages of lines 20 and more."
+
 [columns_ink_share]
 value = 0.5
 status = "UNMEASURED"
@@ -287,6 +292,11 @@ meaning = "Grey levels of top-hat response at or above which a pixel belongs to 
 value = 6.0
 status = "UNMEASURED"
 meaning = "Largest lean from vertical, in degrees, searched for a fold line or accepted for a cut."
+
+[lean_coarse_step_deg]
+value = 0.5
+status = "UNMEASURED"
+meaning = "Step in degrees of the coarse near-vertical line search over every column; the columns that stand out are searched again at lean_step_deg. Checked on pagekit's spreads with fold lines upright and turned 2.5 to 4.5 degrees, at 150 to 600 dpi."
 
 [lean_step_deg]
 value = 0.1
@@ -398,6 +408,11 @@ value = 1.0
 status = "UNMEASURED"
 meaning = "Physical width over height at or above which the frame's proportions suggest a spread; a prior only."
 
+[spread_content_share]
+value = 0.6
+status = "UNMEASURED"
+meaning = "When the proportions suggest two pages, no cue decides and the writing spans at least this share of the frame's width, the one-page answer is flagged (a spread whose gutter shows nothing). On pagekit's pages: a single page on a wide frame spans about 0.37 to 0.45; spreads 0.8 and more."
+
 [prior_disagree_factor]
 value = 0.8
 status = "UNMEASURED"
@@ -422,8 +437,3 @@ meaning = "Size in working px of the square opening that separates the thick par
 value = 0.6
 status = "UNMEASURED"
 meaning = "Share of its length along which a thin piece left beside a dark band must touch the band's edge (within touch_px) to count as the band's own ragged edge rather than a pen stroke running just under it."
-
-[overlap_mm]
-value = 5.0
-status = "UNMEASURED"
-meaning = "Overlap past a cut, in millimetres, as in spec 0002; ink overhanging the cut further than this would be lost from one page. Must match the preparation core's overlap setting."
