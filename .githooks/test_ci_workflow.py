@@ -146,6 +146,24 @@ def test_ci_installs_pyprojects_uv_and_syncs_only_a_current_lock(install_stubs):
     assert "uv sync --frozen --group test --group audit" not in log.read_text()
 
 
+def test_the_pinned_python_is_one_ci_runs_and_never_replaces_a_leg_s_own():
+    """`.python-version` picks the interpreter uv creates `.venv` with on a Mac. CI tests
+    it, and every leg that syncs names its own matrix version, or uv would build the 3.14
+    leg's environment on the pinned 3.12."""
+    pinned = (ROOT / ".python-version").read_text(encoding="ascii").strip()
+    jobs = workflow()["jobs"]
+    assert pinned in jobs["test"]["strategy"]["matrix"]["python-version"]
+    syncing = [
+        step
+        for job in jobs.values()
+        for step in job.get("steps", [])
+        if "uv sync" in step.get("run", "")
+    ]
+    assert syncing
+    for step in syncing:
+        assert step.get("env", {}).get("UV_PYTHON") == "${{ matrix.python-version }}", step
+
+
 def gate_repo(tmp_path):
     """Stop after the early environment checks instead of entering the real suite."""
 

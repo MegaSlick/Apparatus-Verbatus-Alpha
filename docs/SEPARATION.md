@@ -51,6 +51,7 @@ for a script to read.
 | `.githooks/test_serving_audit.py` | PRODUCT | |
 | `.github/` | PRODUCT | CI, Dependabot, pull request template |
 | `.gitignore` | PRODUCT | drop the harness lines |
+| `.python-version` | PRODUCT | the interpreter uv picks on a Mac; one CI tests |
 | `.graphifyignore` | HARNESS | |
 | `AGENTS.md` | HARNESS | working rules for AI sessions |
 | `ARCHITECTURE.md` | PRODUCT | |

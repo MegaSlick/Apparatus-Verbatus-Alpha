@@ -73,7 +73,10 @@ jobs:
         # `uv lock --check` fails when uv.lock no longer matches pyproject.toml; the
         # `--frozen` sync skips that check, so it alone would install from a stale lock.
         # The uv version is read from pyproject.toml's `[tool.uv] required-version`,
-        # the declaration check-all.sh also reads.
+        # the declaration check-all.sh also reads. UV_PYTHON keeps this leg's version:
+        # otherwise uv would build `.venv` on `.python-version`'s.
+        env:
+          UV_PYTHON: ${{ matrix.python-version }}
         run: |
           required_uv_version=$(python -c '
           import tomllib
