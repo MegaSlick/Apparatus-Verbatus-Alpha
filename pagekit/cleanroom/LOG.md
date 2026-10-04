@@ -726,3 +726,7 @@ record".
 - **Follow-up brief:** `briefs/0045-build-split-gaps-and-slanted-strokes.md` (sha256
   10aa6fb7bb3bf97bb73683da64e7246d2f58ded4bc2b01623d4a51effe0c0794), to the agent of
   brief 0017. Saved before it was sent.
+- **Brief 0045 done:** commits fed9afa and c6832c0 on `work/pk-split` (fed9afa alone reads a
+  setting that arrives in c6832c0; the head is consistent and history was not rewritten).
+  Leak scan no hits. Merged into `work/pagekit-prepare`. Gaps crossed by a few marks count;
+  a likely spread that no cue decides is flagged; slanted strokes across a fold are counted.
