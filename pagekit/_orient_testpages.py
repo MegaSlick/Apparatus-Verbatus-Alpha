@@ -28,8 +28,12 @@ def write_block(
     stroke: int = 3,
     ink: int = INK_LEVEL,
     ragged: tuple[float, float] = (0.55, 1.0),
+    ascenders: float = 0.3,
+    descenders: float = 0.1,
+    centred: bool = False,
 ) -> None:
-    """Lines of writing inside `box`, left-aligned at its left edge."""
+    """Lines of writing inside `box`, left-aligned at its left edge (or centred in it).
+    `ascenders` and `descenders` are the shares of letters carrying one."""
     rng = random.Random(seed)
     x0, y0, x1, y1 = box
     top = y0
@@ -37,31 +41,37 @@ def write_block(
         baseline = top + rise + core
         end = x0 + (x1 - x0) * rng.uniform(*ragged)
         x = x0
+        words = []
         while True:
             letters = rng.randint(2, 8)
             if x + letters * letter > end:
                 break
-            for i in range(letters):
-                lx = x + i * letter
+            words.append((x, letters, [rng.random() for _ in range(letters)]))
+            x += letters * letter + rng.randint(12, 22)
+        shift = 0
+        if centred and words:
+            last_x, last_letters, _ = words[-1]
+            shift = (x0 + x1 - words[0][0] - (last_x + last_letters * letter)) // 2
+        for wx, _, rolls in words:
+            for i, roll in enumerate(rolls):
+                lx = wx + shift + i * letter
                 draw.ellipse(
                     (lx, baseline - core, lx + letter - 2, baseline), outline=ink, width=stroke
                 )
                 if i:
                     draw.line((lx - 3, baseline - 1, lx + 2, baseline - 1), fill=ink, width=stroke)
-                roll = rng.random()
-                if roll < 0.3:
+                if roll < ascenders:
                     draw.line(
                         (lx + letter - 3, baseline - core - rise, lx + letter - 3, baseline - 2),
                         fill=ink,
                         width=stroke,
                     )
-                elif roll < 0.4:
+                elif roll < ascenders + descenders:
                     draw.line(
                         (lx + 1, baseline - 2, lx + 1, baseline + rise),
                         fill=ink,
                         width=stroke,
                     )
-            x += letters * letter + rng.randint(12, 22)
         top += pitch
 
 

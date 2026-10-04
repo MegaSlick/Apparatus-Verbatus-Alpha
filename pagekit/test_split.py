@@ -4,6 +4,7 @@ register material."""
 from __future__ import annotations
 
 import math
+import random
 
 import pytest
 from PIL import Image, ImageChops, ImageDraw
@@ -257,3 +258,91 @@ def test_same_input_gives_the_same_answer():
 def test_bad_turns_are_refused():
     with pytest.raises(DetectorError):
         detect_split(page(), turns=4)
+
+
+# --- Review findings (brief 0021) -------------------------------------------------------
+
+
+def _ruled_page() -> Image.Image:
+    """Case A: a portrait single page with a ruled line down its middle, writing on both
+    sides of it running through it."""
+    image = page()
+    ImageDraw.Draw(image).line((500, 0, 500, 1399), fill=50, width=4)
+    return image
+
+
+def _ruled_landscape() -> Image.Image:
+    """Case B: a landscape single page whose writing runs across a ruled line."""
+    image = Image.new("L", (1800, 1300), PAPER)
+    draw = ImageDraw.Draw(image)
+    write_block(draw, (100, 100, 1700, 1200), seed=5)
+    draw.line((900, 0, 900, 1299), fill=50, width=4)
+    return image
+
+
+def test_rule_on_a_portrait_single_page_is_not_cut_as_a_fold():
+    result = _check(_ruled_page())
+    assert result["value"]["pages"] == 1
+    assert result["value"]["cut"] is None
+    assert len(result["flags"]) == 1
+
+
+def test_rule_crossed_by_writing_on_a_landscape_page_is_not_cut_as_a_fold():
+    result = _check(_ruled_landscape())
+    assert result["value"]["pages"] == 1
+    assert result["value"]["cut"] is None
+    assert any("crossed by" in flag for flag in result["flags"])
+
+
+def test_fold_line_alone_against_tall_proportions_goes_to_review():
+    """A clean line with no writing crossing it and no gap around it, in a portrait
+    frame: as with a gap alone, the proportions veto a cut on the line alone."""
+    image = Image.new("L", (1000, 1400), PAPER)
+    draw = ImageDraw.Draw(image)
+    write_block(draw, (60, 120, 490, 1280), seed=3, letter=8, ragged=(0.97, 1.0))
+    write_block(draw, (510, 120, 950, 1280), seed=4, letter=8, ragged=(0.97, 1.0))
+    draw.line((500, 0, 500, 1399), fill=50, width=4)
+    result = _check(image)
+    assert result["value"]["pages"] == 1
+    assert len(result["flags"]) == 1
+    assert "proportions suggest one page" in result["flags"][0]
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_binary_noise_is_never_a_confident_fold(seed):
+    rng = random.Random(seed)
+    noise = Image.new("L", (2000, 1400))
+    noise.putdata([PAPER if rng.random() < 0.5 else 40 for _ in range(2000 * 1400)])
+    result = _check(noise)
+    assert result["value"]["method"] != "fold"
+    assert result["value"]["pages"] == 1
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_dense_writing_is_not_a_fold_line_or_a_weak_one(seed):
+    image = Image.new("L", (2000, 1400), PAPER)
+    write_block(
+        ImageDraw.Draw(image),
+        (60, 60, 1940, 1340),
+        seed=seed,
+        pitch=30,
+        core=12,
+        rise=8,
+        letter=9,
+        ragged=(0.95, 1.0),
+    )
+    result = _check(image)
+    assert result["value"]["method"] != "fold"
+    assert not any("thin line" in flag for flag in result["flags"])
+    assert not any("neighbour" in flag for flag in result["flags"])
+
+
+def test_spread_with_one_blank_page_and_no_fold_is_flagged():
+    image = Image.new("L", (2000, 1400), PAPER)
+    write_block(ImageDraw.Draw(image), (100, 120, 920, 1280), seed=3)
+    result = _check(image)
+    assert result["value"]["pages"] == 1
+    assert len(result["flags"]) == 1
+    assert "possible spread with a blank page" in result["flags"][0]
+    mirrored = _check(image.transpose(Image.Transpose.FLIP_LEFT_RIGHT))
+    assert "possible spread with a blank page" in mirrored["flags"][0]

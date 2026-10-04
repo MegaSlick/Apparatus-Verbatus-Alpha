@@ -144,10 +144,20 @@ value = 0.2
 status = "UNMEASURED"
 meaning = "Share of the frame width at each side in which fold and gap candidates are ignored, since lines there are page or book edges."
 
-[fold_min_coverage]
-value = 0.6
+[fold_min_excess]
+value = 0.5
 status = "UNMEASURED"
-meaning = "Share of the page height a near-vertical thin line must cover to count as a fold."
+meaning = "Share of the page height by which a near-vertical thin line's coverage must exceed the median coverage of its neighbouring columns to count as a fold."
+
+[fold_background_px]
+value = 20
+status = "UNMEASURED"
+meaning = "Working px on each side of a column over which its neighbours' coverage is taken, beyond half the top-hat element."
+
+[fold_max_crossings]
+value = 3
+status = "UNMEASURED"
+meaning = "Most marks of writing with ink on both sides of a cut that a fold may have; more means the line is a rule or crease inside a page, and the frame goes to review."
 
 [fold_mask_half_px]
 value = 3

@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from statistics import median
 from typing import Any
 
 from PIL import Image, ImageChops, ImageFilter
@@ -158,18 +159,33 @@ def _line_candidates(work: Image.Image, rows: tuple[int, int], value: dict[str, 
     return [b / 255 for b in best], best_slope, r0 + y_mid
 
 
+def _excess(coverage: list[float], inner: int, outer: int) -> list[float]:
+    """Each column's coverage less the median coverage of its neighbours (from `inner`
+    to `outer` px away on both sides): only a line that stands out from its
+    surroundings scores, not writing or texture that covers every column alike."""
+    width = len(coverage)
+    out = []
+    for x in range(width):
+        around = coverage[max(0, x - outer) : max(0, x - inner + 1)]
+        around += coverage[min(width, x + inner) : min(width, x + outer + 1)]
+        out.append(coverage[x] - median(around) if around else 0.0)
+    return out
+
+
 def _lines(work: Image.Image, rows: tuple[int, int], value: dict[str, Any]):
-    """Lines covering at least the fold threshold, and the best coverage of any column
-    outside the edge bands (for weak cues)."""
+    """Lines standing out from their neighbours by at least the fold threshold, and the
+    best excess of any column outside the edge bands (for weak cues)."""
     coverage, slopes, y_mid = _line_candidates(work, rows, value)
     width = len(coverage)
+    inner = (value["fold_tophat_px"] | 1) // 2 + 1
+    excess = _excess(coverage, inner, max(inner + 2, value["fold_background_px"]))
     found: list[_Line] = []
-    for start, end in runs_of([c >= value["fold_min_coverage"] for c in coverage]):
-        x = max(range(start, end), key=lambda i: (coverage[i], -abs(i - width / 2)))
-        found.append(_Line(float(x), y_mid, slopes[x], coverage[x]))
+    for start, end in runs_of([e >= value["fold_min_excess"] for e in excess]):
+        x = max(range(start, end), key=lambda i: (excess[i], -abs(i - width / 2)))
+        found.append(_Line(float(x), y_mid, slopes[x], excess[x]))
     band = value["edge_band_share"] * width
-    inner = [c for x, c in enumerate(coverage) if band <= x <= width - band]
-    return found, max(inner, default=0.0)
+    middle = [e for x, e in enumerate(excess) if band <= x <= width - band]
+    return found, max(middle, default=0.0)
 
 
 def _smooth(values: list[float], window: int) -> list[float]:
@@ -300,9 +316,10 @@ def _fit_gap(gap: _Gap, marks: list[Mark], value: dict[str, Any]) -> _Line:
     return _Line(x_mid, y_mid, slope, gap.width)
 
 
-def _straddlers(marks: list[Mark], cut: _Line) -> list[tuple[str, float]]:
-    """For each mark crossing the cut: the side holding most of it and how far it
-    reaches past the cut into the other side, in working px."""
+def _straddlers(marks: list[Mark], cut: _Line, both_px: int) -> list[tuple[str, float, bool]]:
+    """For each mark crossing the cut: the side holding most of it, how far it reaches
+    past the cut into the other side (working px), and whether it has at least `both_px`
+    of ink on each side (writing running through the line rather than touching it)."""
     found = []
     for mark in marks:
         xs = (cut.x_at(mark.y0), cut.x_at(mark.y1))
@@ -317,7 +334,11 @@ def _straddlers(marks: list[Mark], cut: _Line) -> list[tuple[str, float]]:
             reach_right = max(reach_right, end - x)
             reach_left = max(reach_left, x - start)
         if left > 0 and right > 0:
-            found.append(("left", reach_right) if left >= right else ("right", reach_left))
+            both = min(left, right) >= both_px
+            if left >= right:
+                found.append(("left", reach_right, both))
+            else:
+                found.append(("right", reach_left, both))
     return found
 
 
@@ -493,10 +514,19 @@ def detect_split(
                 f"a fold {part} at x={full_x(fold_x)} and a content gap at "
                 f"x={full_x(gap.middle)} disagree"
             )
+        if not agreeing and prior_pages == 1:
+            reason = f"a fold {part} at x={full_x(fold_x)} with no content gap around it"
+            return answer(
+                one_page,
+                0.25,
+                f"Only {reason}, while {prior_text}; left as one page for review.",
+                [f"page count uncertain: only {reason}, and the proportions suggest one page"],
+            )
         if part == "line":
-            confidence = strength(fold.strength, value["fold_min_coverage"])
+            confidence = strength(fold.strength, value["fold_min_excess"])
             evidence.append(
-                f"a thin fold line covering {fold.strength:.0%} of the page height, leaning "
+                f"a thin fold line standing out from its neighbours over {fold.strength:.0%} "
+                f"of the page height, leaning "
                 f"{math.degrees(math.atan(fold.slope)):+.1f} degrees"
             )
             if valley:
@@ -534,10 +564,23 @@ def detect_split(
     if cut is not None:
         if prior_pages != 2:
             confidence *= value["prior_disagree_factor"]
-        straddling = _straddlers(marks, cut)
-        widest = max((reach for _, reach in straddling), default=0.0) * sx
+        straddling = _straddlers(marks, cut, value["speck_px"] * 2)
+        crossing = sum(1 for *_, both in straddling if both)
+        if crossing > value["fold_max_crossings"]:
+            reason = (
+                f"the {method} cut at x={full_x(cut.x_at(cut.y_mid))} is crossed by "
+                f"{crossing} marks of writing with ink on both sides, so it looks like a rule "
+                "or a crease inside a page, not a fold between pages"
+            )
+            return answer(
+                one_page,
+                0.2,
+                f"One page for review: {reason}; {prior_text}.",
+                [f"page count uncertain: {reason}"],
+            )
+        widest = max((reach for _, reach, _ in straddling), default=0.0) * sx
         if straddling:
-            sides = sorted({side for side, _ in straddling})
+            sides = sorted({side for side, _, _ in straddling})
             if resolution:
                 widest_mm = widest / resolution[0] * 25.4
                 evidence.append(
@@ -573,8 +616,10 @@ def detect_split(
     # One page. Weak cues send it to review.
     weak = []
     share = value["weak_cue_share"]
-    if line_best >= share * value["fold_min_coverage"]:
-        weak.append(f"a thin line covering {line_best:.0%} of the page height")
+    if line_best >= share * value["fold_min_excess"]:
+        weak.append(
+            f"a thin line standing out from its neighbours over {line_best:.0%} of the page height"
+        )
     if valley_depth >= share * value["valley_min_depth"]:
         weak.append(f"a shadow {valley_depth:.0f} grey levels deep")
     if gaps:
@@ -583,13 +628,25 @@ def detect_split(
             f"a content gap at x={full_x(gap.middle)} whose sides are unbalanced "
             f"({gap.balance:.2f})"
         )
-    ratio = max(line_best / value["fold_min_coverage"], valley_depth / value["valley_min_depth"])
+    ratio = max(line_best / value["fold_min_excess"], valley_depth / value["valley_min_depth"])
     confidence = max(0.0, min(1.0, 1 - 0.5 * ratio))
     if prior_pages != 1:
         confidence *= value["prior_disagree_factor"]
     if weak:
         confidence = min(confidence, 0.4)
         flags.append(f"page count uncertain: {'; '.join(weak)}, none strong enough to cut")
+    middle = width / 2
+    one_side = None
+    if max(m.x1 for m in marks) <= middle + tolerance:
+        one_side = "left"
+    elif min(m.x0 for m in marks) >= middle - tolerance:
+        one_side = "right"
+    if prior_pages == 2 and one_side:
+        confidence = min(confidence, 0.4)
+        flags.append(
+            f"possible spread with a blank page: all the writing lies on the {one_side} of "
+            "the middle and the proportions suggest two pages"
+        )
 
     result = dict(one_page)
     neighbour = _neighbour(marks, runs, edge_lines, band_columns, width, value)
