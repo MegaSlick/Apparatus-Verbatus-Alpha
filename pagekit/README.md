@@ -310,8 +310,11 @@ python -m pagekit measure --prepared prepared/ --gold answers.json [--json]
 ]}
 ```
 
-`source` is the file name or sha256; every other key is optional. The cut and the
-content boxes are in the pixels of the upright image; `null` is a blank page. For each
+`source` is the file name or sha256; every other key is optional. The cut is in the
+pixels of the upright image. Each content box is drawn on the upright image after
+turning it by that page's true skew about its centre, keeping its size (as an image
+editor levels a picture); `null` is a blank page. pagekit's box is mapped into that
+same grid before the two are compared. For each
 step it reports how many were right (within the `measure_*` tolerance and not flagged),
 wrong (outside it and not flagged: the errors that matter most, listed by name) and sent
 to review (flagged), with the size of the errors. It changes no setting. Exit status 0,

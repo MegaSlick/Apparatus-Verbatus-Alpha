@@ -652,3 +652,90 @@ def test_a_changed_settings_file_or_detector_code_recomputes_exactly_what_reads_
     assert ("orientation", None) not in stale and ("split", None) not in stale
     stale = _stale_after(monkeypatch, out, folder, "thresholds_split.toml")
     assert ("orientation", None) in stale and ("split", None) in stale
+
+
+def test_measure_scores_a_right_content_box_on_a_tilted_page_and_a_spreads_page_two(
+    prepared, tmp_path
+):
+    # The hand-checked boxes: the writing once the page is turned by its true skew about
+    # the image's centre, keeping its size, which for the tilted page is the level page
+    # it was drawn from; for the spread, the right page's writing (past the fold).
+    level = pages.page(seed=5)
+    tilted_box = list(level.point(lambda v: 255 if v < 128 else 0).getbbox())
+    spread = pages.spread(seed=4)
+    right = spread.crop((1010, 0, 2000, 1400)).point(lambda v: 255 if v < 128 else 0)
+    x0, y0, x1, y1 = right.getbbox()
+    gold = {
+        "schema": "pagekit-gold.v1",
+        "sources": [
+            {"source": "e_tilted.png", "skew": [2.0], "content_box": [tilted_box]},
+            {
+                "source": "d_spread.png",
+                "content_box": [None, [x0 + 1010, y0, x1 + 1010, y1]],
+                "skew": [0.0, 0.0],
+            },
+        ],
+    }
+    path = tmp_path / "gold.json"
+    path.write_text(json.dumps(gold))
+    report = measure(prepared["out"], path)
+    boxes_step = report["steps"]["content_box"]
+    # Page one of the spread is not blank, so it is wrong; the other two are right.
+    assert (boxes_step["right"], boxes_step["wrong"]) == (2, 1)
+    assert report["wrong_without_flag"] == ["d_spread.png page 1: content box"]
+    errors = report["errors"]["content_box"]
+    assert errors["e_tilted.png page 1"] < 1.0  # mm
+    assert errors["d_spread.png page 2"] < 1.0
+
+
+def _fake_batch(tmp_path: Path, image: Image.Image, dpi, detectors) -> Path:
+    folder = tmp_path / "src"
+    folder.mkdir(parents=True)
+    image.save(folder / "s.png", dpi=dpi)
+    out = tmp_path / "out"
+    execute(plan([folder], out, detectors=detectors))
+    return out
+
+
+def _gold_file(tmp_path: Path, entry: dict) -> Path:
+    path = tmp_path / "gold.json"
+    path.write_text(json.dumps({"schema": "pagekit-gold.v1", "sources": [entry]}))
+    return path
+
+
+def _given(step: str, value):
+    return Detector(f"test.{step}/1", lambda context: Answer(value, 0.9, "Given.", ()))
+
+
+def test_measure_wraps_orientation_errors_and_measures_the_cut_across_the_page(tmp_path):
+    # Stored sideways (1400 x 2000) at 300 x 150 dpi: upright it is 2000 x 1400 at
+    # 150 dpi across, so a cut 15 px off is 2.54 mm off.
+    image = Image.new("L", (1400, 2000), 220)
+    cut = [[1000.0, 0.0], [1000.0, 1399.0]]
+    out = _fake_batch(
+        tmp_path,
+        image,
+        (300, 150),
+        {
+            "orientation": _given("orientation", 1),
+            "split": _given("split", {"pages": 2, "cut": cut}),
+        },
+    )
+    gold = _gold_file(
+        tmp_path, {"source": "s.png", "orientation": 1, "cut": [[1015, 0], [1015, 1400]]}
+    )
+    steps = measure(out, gold)["steps"]
+    assert steps["orientation"]["right"] == 1
+    assert steps["cut"]["error_largest"] == pytest.approx(15 / 150 * 25.4, abs=0.01)
+    assert steps["cut"]["wrong"] == 1  # 2.54 mm is past the 2 mm tolerance
+    # A leaning true cut: the error is the larger gap, at the bottom.
+    gold = _gold_file(tmp_path, {"source": "s.png", "cut": [[1000, 0], [1006, 1399]]})
+    steps = measure(out, gold)["steps"]
+    assert steps["cut"]["error_largest"] == pytest.approx(6 / 150 * 25.4, abs=0.01)
+    assert steps["cut"]["right"] == 1
+    # Three quarter turns from one is two quarter turns off; from zero it is one.
+    gold = _gold_file(tmp_path, {"source": "s.png", "orientation": 3})
+    assert measure(out, gold)["steps"]["orientation"]["error_largest"] == 2
+    zero = _fake_batch(tmp_path / "zero", Image.new("L", (300, 400), 220), (150, 150), {})
+    gold = _gold_file(tmp_path / "zero", {"source": "s.png", "orientation": 3})
+    assert measure(zero, gold)["steps"]["orientation"]["error_largest"] == 1

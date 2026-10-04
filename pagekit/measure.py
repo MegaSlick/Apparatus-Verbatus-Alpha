@@ -14,26 +14,32 @@ source optional:
 `source` is the source's file name or its sha256. `orientation` is the quarter turns
 clockwise that make it upright; `pages` 1 or 2; `cut` two points of the true cut in the
 upright image's pixels; `skew` each page's angle in degrees counterclockwise; and
-`content_box` each page's box of everything to keep, `[left, top, right, bottom]` in the
-upright image's pixels, or null for a blank page.
+`content_box` each page's box of everything to keep, `[left, top, right, bottom]`, or
+null for a blank page. The box is drawn on the upright image after turning it by the
+page's true skew about the image's centre, keeping its size, as an image editor levels
+a picture; on a page with no skew that is simply the upright image.
 
 For each step pagekit's value is **right** when it matches within the step's
 `measure_*` tolerance and the step carries no flag, **wrong** when it does not and the
 step carries no flag (the case that matters most: a silent error), and **sent to review**
 when the step carries a flag, whatever its value. A value set by hand is counted apart.
-The size of each error is reported as well. A detected content box, which lies in the
-levelled page, is mapped back to the upright image and its bounding box compared. Nothing
-here changes any setting: it is how the settings will be measured.
+The size of each error is reported as well, in total and for each page (`errors`). A
+detected content box, which lies in pagekit's levelled grid, is mapped back to the
+upright image and turned by the true skew (the gold file's, or pagekit's own where the
+gold file gives none), so both boxes are compared in one grid. The cut is compared
+across the page, in the upright image's horizontal resolution. Nothing here changes any
+setting: it is how the settings will be measured.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from statistics import median
 from typing import Any
 
-from pagekit.geometry import Chain, apply, quarter_turn
+from pagekit.geometry import Chain, apply, quarter_turn, upright_size
 from pagekit.output import MANIFEST_NAME
 from pagekit.project import SHA256, PrepareError, load_settings
 
@@ -127,16 +133,31 @@ def _x_at(cut: list[list[float]], y: float) -> float:
     return x0 + (x1 - x0) * (y - y0) / (y1 - y0)
 
 
-def _upright_box(page: dict[str, Any], box: list[int]) -> list[float]:
-    """A levelled-page box as the bounding box of its corners in the upright image."""
+def _levelled_by_truth(page: dict[str, Any], box: list[int], true_skew: float) -> list[float]:
+    """A detected content box in the grid the hand-checked box is drawn in.
+
+    The detected box lies in the page's levelled grid. Its corners are mapped back to
+    the upright image, then turned by the true skew about the upright image's centre,
+    as a person levelling the image in an editor (keeping its size) would; there the
+    box of the corners is compared with the hand-drawn one. When the detected skew is
+    the true one, the corners come out square and the box is exact.
+    """
     chain = Chain.from_dict(page["geometry"])
     crop, scale = chain.crop_box, chain.scale
     left, top, right, bottom = box
     corners = [(left, top), (right, top), (right, bottom), (left, bottom)]
     output = [((x - crop[0]) * scale[0], (y - crop[1]) * scale[1]) for x, y in corners]
     upright = apply(quarter_turn(chain.source_size, chain.turns), chain.inverse(output))
-    xs = [x for x, _ in upright]
-    ys = [y for _, y in upright]
+    width, height = upright_size(chain.source_size, chain.turns)
+    centre_x, centre_y = width / 2, height / 2
+    radians = math.radians(true_skew)
+    cos, sin = math.cos(radians), math.sin(radians)
+    turned = []
+    for x, y in upright:  # counterclockwise by the skew, y down, as pagekit levels
+        dx, dy = x - centre_x, y - centre_y
+        turned.append((centre_x + dx * cos + dy * sin, centre_y - dx * sin + dy * cos))
+    xs = [x for x, _ in turned]
+    ys = [y for _, y in turned]
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
@@ -144,6 +165,7 @@ class _Tally:
     def __init__(self) -> None:
         self.counts = {step: {"right": 0, "wrong": 0, "review": 0, "by_hand": 0} for step in STEPS}
         self.errors: dict[str, list[float]] = {step: [] for step in STEPS}
+        self.by_item: dict[str, dict[str, float]] = {step: {} for step in STEPS}
         self.wrong: list[str] = []
 
     def add(self, step, where, step_entry, error, tolerance) -> None:
@@ -152,6 +174,7 @@ class _Tally:
             return
         if error is not None:
             self.errors[step].append(error)
+            self.by_item[step][where] = round(error, 3)
         if step_entry["flags"]:
             self.counts[step]["review"] += 1
         elif error is not None and error <= tolerance:
@@ -236,7 +259,10 @@ def measure(prepared: Path, gold_path: Path) -> dict[str, Any]:
                 if true_box is None or found is None:
                     error = 0.0 if true_box is None and found is None else None
                 else:
-                    box = _upright_box(page, found)
+                    true_skew = page["steps"]["skew"]["value"]
+                    if entry.get("skew") is not None and entry["skew"][index] is not None:
+                        true_skew = float(entry["skew"][index])
+                    box = _levelled_by_truth(page, found, true_skew)
                     per_mm = (dpi[0] / _MM_PER_INCH, dpi[1] / _MM_PER_INCH)
                     error = max(abs(box[i] - true_box[i]) / per_mm[i % 2] for i in range(4))
                 tally.add(
@@ -262,6 +288,7 @@ def measure(prepared: Path, gold_path: Path) -> dict[str, Any]:
         "sources": len(gold),
         "steps": steps,
         "wrong_without_flag": tally.wrong,
+        "errors": tally.by_item,
         "notes": notes,
         "thresholds_note": (
             "measure changes no setting; it reports how the current settings do on "
