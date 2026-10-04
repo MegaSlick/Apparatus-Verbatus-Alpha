@@ -402,8 +402,10 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   read each tick the way the guard reads it (a value that is not epoch seconds within a
   week is ignored, recorded, and the last valid one stands); with none ever read, the
   bootstrap's hard deadline; under the pod timer, the timer's hard deadline, which no
-  file moves. The notice names the spend policy's soft and hard maximums (the pod's
-  creation time is not known here, so it states them rather than an instant), the finish
+  file moves. The notice names the spend policy's soft and hard maximums as the launch sealed them
+  into the pod's environment, or, for a pod launched without them, the checkout's
+  `config/spend.toml` by its SHA-256 (the pod's creation time is not known here, so it
+  states them rather than an instant), the finish
   and deadline with how far off they are, the extra time and its cost at the hourly price
   (`--hourly-usd`, or a pod-timer launch's `VERBATUS_POD_HOURLY_USD` plus
   `VERBATUS_VOLUME_ONGOING_HOURLY_USD`; "unknown" without either), and, for a guard
