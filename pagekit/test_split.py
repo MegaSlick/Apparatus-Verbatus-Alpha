@@ -504,3 +504,69 @@ def test_pen_stroke_ending_in_a_blot_and_touching_the_band_still_counts_as_writi
     _two_pages(result, "fold")
     assert len(result["flags"]) == 1
     assert "more than the 5 mm overlap" in result["flags"][0]
+
+
+def _mm(dpi: int, value: float) -> int:
+    return round(value * dpi / 25.4)
+
+
+def _a4_spread_with_band_stroke(dpi: int, below_mm: float) -> Image.Image:
+    """An A4 spread with a fold, a 5 mm dark backdrop band along the top, a 3 x 3 mm
+    bump of backdrop 8 mm left of the fold, and a 0.6 mm pen stroke 33 mm long running
+    `below_mm` under the band across the fold, joined to the bump."""
+    width, height = 2 * _mm(dpi, 210), _mm(dpi, 297)
+    image = Image.new("L", (width, height), PAPER)
+    draw = ImageDraw.Draw(image)
+    middle = width // 2
+    band = _mm(dpi, 5)
+    margin, inner = _mm(dpi, 25), _mm(dpi, 10)
+    scale = dpi / 150
+    for left, right, seed in ((margin, middle - inner, 3), (middle + inner, width - margin, 4)):
+        write_block(
+            draw,
+            (left, band + margin, right, height - margin),
+            seed,
+            pitch=round(48 * scale),
+            core=round(14 * scale),
+            rise=round(13 * scale),
+            letter=round(10 * scale),
+            stroke=max(1, round(3 * scale)),
+        )
+    draw.line((middle, 0, middle, height - 1), fill=50, width=max(2, _mm(dpi, 0.4)))
+    draw.rectangle((0, 0, width - 1, band - 1), fill=30)
+    y = band + _mm(dpi, below_mm)
+    bump = _mm(dpi, 3)
+    at = middle - _mm(dpi, 8)
+    draw.rectangle((at - bump // 2, band - 1, at + bump // 2, band + bump), fill=30)
+    half = _mm(dpi, 33) // 2
+    draw.line((middle - half, y, middle + half, y), fill=40, width=max(1, _mm(dpi, 0.6)))
+    return image
+
+
+@pytest.mark.parametrize("dpi", [150, 300, 600])
+def test_stroke_running_just_under_the_band_and_joined_to_it_still_crosses_the_cut(dpi):
+    """2 mm under the band the stroke is only a few working px from it, but it is a
+    pen stroke across the fold, not the band's ragged edge: its overhang is checked."""
+    result = detect_split(_a4_spread_with_band_stroke(dpi, 2.0), dpi=(dpi, dpi))
+    _two_pages(result, "fold")
+    assert len(result["flags"]) == 1
+    assert "more than the 5 mm overlap" in result["flags"][0]
+
+
+def test_ragged_backdrop_edge_and_gutter_wedge_are_not_writing_across_the_cut():
+    """The pages' top edges curve down toward the binding, so the backdrop's lower edge
+    sinks gradually toward the gutter, and it is ragged (teeth a few px deep); at the
+    gutter the backdrop reaches down as a wedge with a thin crease tail along the fold,
+    as on a real register spread. None of it is writing across the cut."""
+    image = _fold(spread(gutter=(900, 1100)), 1000)
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((0, 0, 1999, 45), fill=30)
+    edge = [(x, 46 + round(12 * (1 - ((x - 1000) / 1000) ** 2))) for x in range(0, 2001, 8)]
+    draw.polygon([(0, 45), *edge, (2000, 45)], fill=30)
+    for x, y in edge:
+        draw.rectangle((x, y, x + 3, y + (x * 7) % 5), fill=30)
+    draw.polygon([(860, 50), (1140, 50), (1000, 100)], fill=30)
+    draw.line((1000, 100, 1000, 140), fill=30, width=3)
+    result = _check(image)
+    _two_pages(result, "fold")
+    assert result["flags"] == []

@@ -629,3 +629,18 @@ record".
   `work/pk-integrate`. Leak scan no hits in 168 files. Merged into `work/pagekit-prepare`.
   A test pins that defaults leave prepared pages and manifest values unchanged. An
   independent review is running.
+- **Brief 0036 done:** commits 7d4b148 and cdd6dd9 on `work/pk-split`. Leak scan no hits.
+  Merged into `work/pagekit-prepare` (2952d93). The builder flags thin dropped pieces that
+  cross the cut but not the excused thick backdrop itself, so the real spread's false flag
+  stays gone; the host accepted that. The reviewer is re-running its held-out set.
+
+## 0035 — Mac CI failure in the defaults pin; follow-up brief 0037
+
+- The Apple-silicon Mac CI job failed the defaults pin test: it pinned the file hash of a
+  synthetic source whose encoded bytes differ by platform.
+- **Follow-up brief:** `briefs/0037-build-platform-independent-pins.md` (sha256
+  411b6757aa638b12f4054476a8a3f07f01f3eec5f22fc9c00a4ef1b28fdd3c9f), to the agent of
+  brief 0023. Saved before it was sent.
+- **Brief 0037 done:** commit e7c0922 on `work/pk-integrate`. Leak scan no hits. Merged into
+  `work/pagekit-prepare`; the pin compares decoded pixels and regenerated its data from
+  2d10a14.

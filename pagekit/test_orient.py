@@ -18,9 +18,11 @@ from pagekit._orient_ink import (
 )
 from pagekit._orient_testpages import (
     PAPER,
+    account_page,
     cursive_page,
     cursive_spread,
     figure_page,
+    notes_page,
     page,
     printed_page,
     printed_spread,
@@ -416,3 +418,54 @@ def test_sign_guard_trips_at_one_standard_error_of_dissent(dissent, flagged):
     middle, disagree = _guarded(estimates, setting_values())
     assert middle > 0
     assert disagree is flagged
+
+
+# --- Account pages: words beside columns of figures (follow-up to brief 0034) -----------
+
+
+@pytest.mark.parametrize(
+    ("style", "serif"), [("mono", True), ("plain", False), ("round", True)], ids=str
+)
+@pytest.mark.parametrize(
+    ("dpi", "spacing", "words_first"),
+    [(300, 1.3, True), (150, 1.6, False), (300, 2.0, True)],
+    ids=["300-tight-words-left", "150-mid-words-between", "300-loose-words-left"],
+)
+def test_account_page_is_never_turned_wrong_without_a_flag(style, serif, dpi, spacing, words_first):
+    """A column of words beside three columns of right-aligned amounts: the words make
+    the page as a whole too varied for the figure rule, while tiles of figures, which
+    stack as exactly down a column as along a line, can outvote the words on the line
+    direction."""
+    image = account_page(
+        dpi,
+        seed=dpi + round(10 * spacing),
+        style=style,
+        serif=serif,
+        spacing=spacing,
+        words_first=words_first,
+    )
+    for quarter_turns in range(4):
+        result = detect_orientation(turned(image, quarter_turns))
+        assert _right_or_flagged(result, (4 - quarter_turns) % 4), (
+            quarter_turns,
+            result["evidence"],
+        )
+
+
+@pytest.mark.parametrize("quarter_turns", [0, 1, 2, 3])
+def test_margin_notes_turned_a_quarter_are_outvoted_and_the_page_decided(quarter_turns):
+    """About a third of the tiles of writing vote the other way here (notes 300 px
+    wide); the page is still decided. Fails if tile_dissent_share is set below 0.35."""
+    result = detect_orientation(turned(notes_page(8, notes_width=300), quarter_turns))
+    assert result["value"] == (4 - quarter_turns) % 4
+    assert result["flags"] == []
+
+
+@pytest.mark.parametrize("quarter_turns", [0, 1])
+def test_block_turned_a_quarter_as_large_as_the_text_leaves_the_direction_open(quarter_turns):
+    """With notes 500 px wide, 45% of the tiles vote the other way: the line direction
+    is flagged, not decided. Fails if tile_dissent_share is set at 0.45 or above."""
+    result = detect_orientation(turned(notes_page(8, notes_width=500), quarter_turns))
+    assert result["value"] == 0
+    assert result["flags"] == [UNCERTAIN_DIRECTION]
+    assert "vote against the median" in result["evidence"]
