@@ -116,21 +116,26 @@ It prints how many pages need review. Check each flagged page (pagekit's `review
 in the output folder when pagekit makes one; until then the `.tif` pages and
 `pagekit-prepare.json`), put corrections in an overrides file and run it again with
 `--overrides FILE` until the pages are right. Read `triage-notes.txt` for the pages the
-Door will cut differently from pagekit. Then seal and check at the Door with the triage
-manifest:
+Door will cut differently from pagekit. Then seal the scans with the triage documents
+and check them at the Door:
 
 ```sh
-verbatus upload --source private/rg-spreads \
-  --manifest-out private/rg-spreads-prepared/submission-manifest.json
+P=private/rg-spreads-prepared
+verbatus upload --source private/rg-spreads --manifest-out $P/submission-manifest.json \
+  --prefix spreads \
+  --triage-decision-manifest $P/triage-decision-manifest.json \
+  --triage-producer-recipe $P/triage-producer-recipe.json
 verbatus run --run-id local-rg-spreads --submission-folder private/rg-spreads \
-  --submission-manifest private/rg-spreads-prepared/submission-manifest.json \
-  --triage-decision-manifest private/rg-spreads-prepared/triage-decision-manifest.json \
-  --triage-producer-recipe private/rg-spreads-prepared/triage-producer-recipe.json
+  --submission-manifest $P/submission-manifest.json \
+  --triage-decision-manifest $P/triage-decision-manifest.json \
+  --triage-producer-recipe $P/triage-producer-recipe.json
 ```
 
-The run is expected to stop at the Designator, as above, with one page per prepared
-page. On the pod, `pod_run` takes the same two flags with paths on the volume; how the
-two files reach the volume is to confirm, since `upload` sends only the sealed scans.
+The upload refuses a triage manifest without a row for every sealed scan, before
+anything is sent. The run is expected to stop at the Designator, as above, with one
+page per prepared page. Step 5 sends the same three things to the volume, and step 7
+hands the two triage documents to the pod's run. Triage sent with a submission is never
+replaced: after a later correction, upload again under a new `--prefix`.
 
 ## 5. Send the pages to the volume and prove the way home (free of GPU time)
 
@@ -143,8 +148,19 @@ verbatus fetch-run --run-id s3-path-check --into /tmp/verbatus-s3-check \
 
 The upload writes `submission/` and `submission-manifest.json` on the volume. The fetch
 should refuse, naming `nothing is stored under 'runs/s3-path-check/'`: that proves the
-listing works. Any other error is fixed before renting. For the spreads later, seal
-`private/rg-spreads` the same way and upload with `--prefix spreads`.
+listing works. Any other error is fixed before renting. For the prepared spreads, send
+the sealed record with its triage documents:
+
+```sh
+P=private/rg-spreads-prepared
+verbatus upload --source private/rg-spreads --sealed-manifest $P/submission-manifest.json \
+  --prefix spreads --network-volume DATACENTER:VOLUME_ID \
+  --triage-decision-manifest $P/triage-decision-manifest.json \
+  --triage-producer-recipe $P/triage-producer-recipe.json
+```
+
+This writes `spreads/`, `spreads-manifest.json`, `spreads-triage-decision-manifest.json`
+and `spreads-triage-producer-recipe.json` on the volume.
 
 Pick the commit the pod will run: `git fetch origin && git rev-parse origin/main`. Use
 the full 40 characters as `<sha>` below.
@@ -226,7 +242,13 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   minutes passes the deadline, one notice goes to the phone, naming the soft and hard
   maximums, the extra time and its cost, and the command that moves the deadline. Nothing
   moves the deadline by itself; extending is the lead's call.
-- For the spreads, use `--submission-folder $V/spreads --submission-manifest $V/spreads-manifest.json`.
+- For the prepared spreads, use `--submission-folder $V/spreads
+  --submission-manifest $V/spreads-manifest.json
+  --triage-decision-manifest $V/spreads-triage-decision-manifest.json
+  --triage-producer-recipe $V/spreads-triage-producer-recipe.json`. The Door then cuts
+  each page from its original spread as `prepare` decided. (A request rendered with
+  `python -m operations.pod.boot_b_request --triage` names the same two files for the
+  default `submission` prefix.)
 - Use the same `--store-root` every time, so later pods reuse the downloaded weights.
 
 ## 8. Watch it from the Mac

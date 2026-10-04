@@ -223,6 +223,8 @@ class OperatorSurface:
         policy_path: str | Path | None = None,
         prefix: str = "submission",
         volume: VolumeSpec | None = None,
+        triage_decision_manifest: str | Path | None = None,
+        triage_producer_recipe: str | Path | None = None,
     ) -> Path:
         """Run the local submission door, then transfer only what it sealed."""
 
@@ -243,7 +245,14 @@ class OperatorSurface:
         except Exception as error:
             self._record_failure("upload", "submission-refused", str(error))
             raise OperatorError(ErrorCode.UPLOAD_REFUSED, detail=str(error)) from error
-        return self.upload(source, sealed_manifest=manifest_out, prefix=prefix, volume=volume)
+        return self.upload(
+            source,
+            sealed_manifest=manifest_out,
+            prefix=prefix,
+            volume=volume,
+            triage_decision_manifest=triage_decision_manifest,
+            triage_producer_recipe=triage_producer_recipe,
+        )
 
     def upload(
         self,
@@ -253,12 +262,19 @@ class OperatorSurface:
         prefix: str = "submission",
         volume: VolumeSpec | None = None,
         target: TransferTarget | None = None,
+        triage_decision_manifest: str | Path | None = None,
+        triage_producer_recipe: str | Path | None = None,
     ) -> Path:
         """Transfer only what the sealed submission record names; no pod is needed.
 
         The default target is the local fixture volume. `volume` names a real
         network volume, the one path here that leaves this computer, so the
         operator must name it and is told what will be contacted first.
+
+        A triage decision manifest and its producer recipe, given together, travel
+        beside the scans as `<prefix>-triage-decision-manifest.json` and
+        `<prefix>-triage-producer-recipe.json`, published before the submission's
+        own manifest marks the upload complete, and never replaced afterwards.
         """
 
         source_path = Path(source)
@@ -277,6 +293,23 @@ class OperatorSurface:
             prefix = normalize_transfer_prefix(prefix)
         except ValueError as error:
             raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
+        if (triage_decision_manifest is None) != (triage_producer_recipe is None):
+            raise OperatorError(
+                ErrorCode.INVALID_COMMAND,
+                detail="a triage decision manifest travels with its producer recipe; give "
+                "--triage-decision-manifest and --triage-producer-recipe together",
+            )
+        triage_documents: list[tuple[str, bytes, str]] = []
+        if triage_decision_manifest is not None:
+            try:
+                triage_documents = _triage_documents(
+                    prefix, Path(triage_decision_manifest), Path(triage_producer_recipe)
+                )
+            except OSError as error:
+                raise OperatorError(
+                    ErrorCode.UPLOAD_REFUSED,
+                    detail=f"a triage document could not be read: {error}",
+                ) from error
         fixture_only = volume is None and target is None
         if fixture_only:
             self.present("Upload uses the sealed submission record and the fixture volume.")
@@ -294,7 +327,9 @@ class OperatorSurface:
                 manifest_snapshot.write_bytes(manifest_bytes)
                 # Parse the snapshot before touching the target: a malformed
                 # ledger is a local refusal and must cause no remote access.
-                submission_door.load_manifest(manifest_snapshot)
+                ledger = submission_door.load_manifest(manifest_snapshot)
+                if triage_documents:
+                    _refuse_triage_not_covering(triage_documents[0][1], ledger)
                 manifest_key = f"{prefix}-manifest.json"
                 claim_key = f"{prefix}-manifest.sha256"
                 claim_bytes = f"{manifest_sha256}\n".encode("ascii")
@@ -311,6 +346,13 @@ class OperatorSurface:
                         f"target {claim_key!r} is permanently claimed by a different sealed "
                         "submission manifest; no image was written"
                     )
+                for key, data, sha256 in triage_documents:
+                    if _remote_state(store, key, data, sha256) == "other":
+                        raise _UploadManifestConflict(
+                            f"target {key!r} already holds different triage for this "
+                            "submission, and what a submission was sent with is never "
+                            "replaced; upload the corrected triage under a new --prefix"
+                        )
                 if _publish_if_absent(store, claim_key, claim_bytes, claim_sha256, claim) != "ours":
                     raise _UploadManifestConflict(
                         f"target {claim_key!r} was concurrently claimed by a different sealed "
@@ -323,6 +365,10 @@ class OperatorSurface:
                     prefix=prefix,
                     journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
                 ).resume()
+                for key, data, sha256 in triage_documents:
+                    state = _remote_state(store, key, data, sha256)
+                    if _publish_if_absent(store, key, data, sha256, state) != "ours":
+                        raise TransferFailure(f"target {key!r} did not verify after publication")
                 # Recheck: a manifest that appeared concurrently owns the prefix.
                 published = _remote_state(store, manifest_key, manifest_bytes, manifest_sha256)
                 if published == "other":
@@ -390,6 +436,14 @@ class OperatorSurface:
                 ),
                 "state": "complete" if transfer_complete else "nothing-to-transfer",
                 "submission_manifest_sha256": manifest_sha256,
+                "triage": (
+                    {
+                        "decision_manifest_sha256": triage_documents[0][2],
+                        "producer_recipe_sha256": triage_documents[1][2],
+                    }
+                    if triage_documents
+                    else None
+                ),
                 "volume": _volume_record(volume),
                 "transfer": report.to_record(),
                 "zero_gpu_hours": True,
@@ -2127,6 +2181,46 @@ def _read_sealed_manifest(path: Path) -> bytes:
     if len(data) > MAX_SEALED_MANIFEST_BYTES:
         raise OSError(f"the sealed submission record exceeds {MAX_SEALED_MANIFEST_BYTES} bytes")
     return data
+
+
+# The Door's own bound on one triage document.
+_MAX_TRIAGE_DOCUMENT_BYTES: Final = 64 * 1024 * 1024
+
+
+def _triage_documents(prefix: str, manifest: Path, recipe: Path) -> list[tuple[str, bytes, str]]:
+    """The two triage documents as (target key, bytes, sha256), refused when unreadable."""
+    documents = []
+    for suffix, path in (
+        ("triage-decision-manifest.json", manifest),
+        ("triage-producer-recipe.json", recipe),
+    ):
+        if path.stat().st_size > _MAX_TRIAGE_DOCUMENT_BYTES:
+            raise OSError(f"{path} is larger than a triage document may be")
+        data = path.read_bytes()
+        documents.append((f"{prefix}-{suffix}", data, hashlib.sha256(data).hexdigest()))
+    return documents
+
+
+def _refuse_triage_not_covering(data: bytes, ledger: dict[str, Any]) -> None:
+    """The triage manifest must be valid and hold a row for every sealed scan, as the
+    Door requires, so a pod is never started on triage it would refuse."""
+    from common.contracts import triage as triage_contract
+
+    try:
+        document = json.loads(data.decode("utf-8"))
+        triage_contract.validate_manifest(document)
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ContractError(f"the triage decision manifest is not valid: {error}") from error
+    covered = {row["source_frame_sha256"] for row in document["records"]}
+    missing = [
+        entry["relative_path"] for entry in ledger["files"] if entry["sha256"] not in covered
+    ]
+    if missing:
+        raise ContractError(
+            f"the triage decision manifest has no row for {len(missing)} sealed file(s) "
+            f"({', '.join(missing[:5])}); the Door would refuse the submission, so nothing "
+            "was sent. Run prepare again over exactly the sealed folder"
+        )
 
 
 def _remote_state(store: TransferTarget, key: str, data: bytes, sha256: str) -> str:

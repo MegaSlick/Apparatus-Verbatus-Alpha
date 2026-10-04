@@ -30,7 +30,7 @@ any time to check on things and one that tidies up.
 | `prepare` | Prepares page images from a folder of scans with pagekit, and writes the triage manifest that has the Door cut the same pages from the original scans. | No — it runs on this computer and only reads the scans. |
 | `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
 | `triage` | Shows the review queue `ingest` produced — each candidate with its evidence and proxy image — and records your accept or decline against it. | No — podless and offline. It shows and it records; it never opens a master and never decides for you. The double-click window shows the queue only; a decision is recorded from the command line. |
-| `upload` | Sends your images to storage. | No rented machine is needed — do it first if you like. With `--network-volume`, the volume itself costs money for as long as it exists, pod or no pod. |
+| `upload` | Sends your images to storage. With `--triage-decision-manifest` and `--triage-producer-recipe` (from `prepare`) it sends them beside the scans as `<prefix>-triage-decision-manifest.json` and `<prefix>-triage-producer-recipe.json`, for the pod's run to read; it refuses a manifest missing a row for a sealed scan, and never replaces triage a submission was sent with. | No rented machine is needed — do it first if you like. With `--network-volume`, the volume itself costs money for as long as it exists, pod or no pod. |
 | `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. `--triage-decision-manifest` and `--triage-producer-recipe` add the page geometry `prepare` writes. A real chair selection is the pair `--models-config config/models-real.toml` and `--serving-recipes-config config/serving_recipes_real.toml`; both are sealed into the run and one without the other is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
 | `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. You have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
@@ -105,12 +105,14 @@ the page from it, so every reading still traces to the scan.
   cover, such as a `.DS_Store`. `prepare` warns about both.
 - Like `ingest`, the scans are decoded in a separate process that holds no credential.
 
-To check the result at the Door on this computer, seal the scans and run with the
-triage manifest, as `prepare` prints:
+To check the result at the Door on this computer, seal the scans with the triage
+documents and run with them, as `prepare` prints:
 
 ```sh
 verbatus upload --source private/parish-a/scans \
-    --manifest-out private/parish-a/prepared/submission-manifest.json
+    --manifest-out private/parish-a/prepared/submission-manifest.json \
+    --triage-decision-manifest private/parish-a/prepared/triage-decision-manifest.json \
+    --triage-producer-recipe private/parish-a/prepared/triage-producer-recipe.json
 verbatus run --run-id prepared-check --submission-folder private/parish-a/scans \
     --submission-manifest private/parish-a/prepared/submission-manifest.json \
     --triage-decision-manifest private/parish-a/prepared/triage-decision-manifest.json \

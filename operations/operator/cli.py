@@ -502,6 +502,18 @@ def build_parser() -> PlainParser:
         ),
     )
 
+    upload.add_argument(
+        "--triage-decision-manifest",
+        type=Path,
+        help="a triage decision manifest, such as `verbatus prepare` writes, to send beside "
+        "the scans; it must hold a row for every sealed file",
+    )
+    upload.add_argument(
+        "--triage-producer-recipe",
+        type=Path,
+        help="the producer recipe written beside that triage decision manifest",
+    )
+
     ingest = verbs.add_parser(
         "ingest",
         help="prepare one folder for the Door: ledger, data gate, triage evidence, and confirmation",
@@ -911,6 +923,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     sealed_manifest=args.sealed_manifest,
                     prefix=args.prefix,
                     volume=volume,
+                    **_triage_upload(args),
                 )
             else:
                 surface.submit_and_upload(
@@ -919,6 +932,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     policy_path=args.policy,
                     prefix=args.prefix,
                     volume=volume,
+                    **_triage_upload(args),
                 )
         elif args.verb == "ingest":
             ingest(
@@ -1521,6 +1535,15 @@ def _decide_with_confirmation(
         raise OperatorError(ErrorCode.DECISION_REFUSED, detail=str(error)) from error
     for line in decide_module.report(prepared, reference):
         _print(line)
+
+
+def _triage_upload(args: argparse.Namespace) -> dict[str, Path]:
+    """The triage documents to send beside the scans, only when named."""
+    named = {
+        "triage_decision_manifest": args.triage_decision_manifest,
+        "triage_producer_recipe": args.triage_producer_recipe,
+    }
+    return {key: value for key, value in named.items() if value is not None}
 
 
 def _network_volume(value: str | None, *, verb: str) -> VolumeSpec | None:

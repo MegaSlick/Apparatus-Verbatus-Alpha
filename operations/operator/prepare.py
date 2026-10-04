@@ -503,13 +503,19 @@ def summary(prepared: Prepared) -> list[str]:
         "it continues the same project and keeps every earlier correction."
     )
     manifest = out / "submission-manifest.json"
-    lines += [
-        "When the pages are right, seal the scans and let the Door check them on this computer:",
-        f"  verbatus upload --source {_quoted(prepared.scans)} --manifest-out {_quoted(manifest)}",
-        f"  verbatus run --run-id prepared-check --submission-folder {_quoted(prepared.scans)} "
-        f"--submission-manifest {_quoted(manifest)} "
+    triage_flags = (
         f"--triage-decision-manifest {_quoted(out / TRIAGE_MANIFEST_NAME)} "
-        f"--triage-producer-recipe {_quoted(out / TRIAGE_RECIPE_NAME)}",
+        f"--triage-producer-recipe {_quoted(out / TRIAGE_RECIPE_NAME)}"
+    )
+    lines += [
+        "When the pages are right, seal the scans with the triage documents and let the "
+        "Door check them on this computer:",
+        f"  verbatus upload --source {_quoted(prepared.scans)} --manifest-out "
+        f"{_quoted(manifest)} {triage_flags}",
+        f"  verbatus run --run-id prepared-check --submission-folder {_quoted(prepared.scans)} "
+        f"--submission-manifest {_quoted(manifest)} {triage_flags}",
+        "For a pod run, upload the same way with --sealed-manifest and --network-volume; "
+        "LIVE_READINESS.md says how the pod's run reads the triage documents.",
     ]
     return lines
 

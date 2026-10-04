@@ -113,6 +113,7 @@ def render_boot_b_request(
     now: datetime | None = None,
     canary_folder: str | None = None,
     canary_manifest: str | None = None,
+    triage: bool = False,
 ) -> BootBRequest:
     """Render the real-run request, or a refusal when the policy cannot back one."""
 
@@ -156,6 +157,7 @@ def render_boot_b_request(
         hard_deadline=hard_deadline,
         canary_folder=canary_folder,
         canary_manifest=canary_manifest,
+        triage=triage,
     )
     # Rendered and then proven, in that order, on every call: what is printed
     # below is a shape the launcher's own validation has just accepted.
@@ -190,6 +192,7 @@ def pod_request(
     repository: str = BOOT_B_REPOSITORY_PATH,
     canary_folder: str | None = None,
     canary_manifest: str | None = None,
+    triage: bool = False,
 ) -> dict[str, object]:
     """The `cli.py create --request` JSON for the real run, placeholders where the project lead decides.
 
@@ -221,6 +224,15 @@ def pod_request(
         raise ValueError("canary folder and manifest must be named together")
     if canary_folder is not None:
         run_half += ["--canary-folder", canary_folder, "--canary-manifest", canary_manifest]
+    if triage:
+        # The triage documents `verbatus upload --triage-decision-manifest` put beside
+        # the submission on the volume, so the Door cuts each page as they say.
+        run_half += [
+            "--triage-decision-manifest",
+            f"{volume_mount_path}/submission-triage-decision-manifest.json",
+            "--triage-producer-recipe",
+            f"{volume_mount_path}/submission-triage-producer-recipe.json",
+        ]
     bootstrap_half = [
         "--volume-mount-path",
         volume_mount_path,
@@ -500,6 +512,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--canary-folder")
     parser.add_argument("--canary-manifest")
     parser.add_argument(
+        "--triage",
+        action="store_true",
+        help="hand the run the triage documents upload put beside the submission",
+    )
+    parser.add_argument(
         "--gpu-type",
         help="reviewed gpu_type_id to run on; omit for the cheapest reviewed card",
     )
@@ -520,6 +537,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             hard_deadline=args.hard_deadline,
             canary_folder=args.canary_folder,
             canary_manifest=args.canary_manifest,
+            triage=args.triage,
         )
     except (ValueError, SpendRefusal) as error:
         print(f"# Boot B run -- REFUSED\n\n{error}\n", end="")
