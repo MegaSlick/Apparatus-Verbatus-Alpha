@@ -27,7 +27,7 @@ sequence and to checkpoint. Its three jobs:
               disagree with them.
 
     python pipeline/orchestrator/run.py --fixture synthetic-two-page-v0 \\
-      --scenario <happy|review> --run-id <id> --run-root <dir>
+      --scenario <happy|page-review> --run-id <id> --run-root <dir>
 """
 
 import argparse
