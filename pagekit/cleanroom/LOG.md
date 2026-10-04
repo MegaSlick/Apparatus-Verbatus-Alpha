@@ -448,3 +448,8 @@ record".
   4e11e63 on `work/pk-integrate`. Leak scan no hits in 123 files. Merged into
   `work/pagekit-prepare` (d6d17b2); the combined suite passes. Prepared pages and tone
   views now share one deterministic TIFF writer.
+- **Brief 0027 done:** commit 5b5e7db on `work/pk-skew`. The agent read only numbers from
+  the lead's spreads, never viewed or sent them, and built every test from synthetic
+  pages. Leak scan no hits. Merged into `work/pagekit-prepare` (31fb320); the combined
+  suite passes. On the host's re-run, the page tilted about 2.5 degrees is levelled, the
+  page-edge stack is cut away, and the discarded-ink flag remains on one page of four.
