@@ -485,3 +485,5 @@ record".
 - **Follow-up brief:** `briefs/0031-build-ci-safepath.md` (sha256
   9b37693b1c9533cd468d1c7b2fb816e8583ff3819d34e1730b9d906fec5195f1), to the agent of
   brief 0023. Saved before it was sent.
+- **Brief 0031 done:** commit 4617b6f on `work/pk-integrate`. Leak scan no hits. Merged
+  into `work/pagekit-prepare`; the pagekit suite passes under the check script's settings.
