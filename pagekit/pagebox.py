@@ -20,9 +20,14 @@ A shadow along one side that does not fill the whole side is measured as the dep
 backdrop-like pixels on each scanline from that edge. A shadow of even depth covering
 most of the side is cut off the box; a shorter one is flagged and left in.
 
-Each strip a walked side cuts off is then searched for ink above speck size against its
-own surroundings; where there is any (writing under a gutter shadow, say), the side is
-moved back out to keep it and the page is flagged.
+The walk passes objects lying on the backdrop (a target, a ruler, a label) when
+backdrop resumes beyond them and no paper comes first. A side that is not walked but
+whose frame edge is much paler than the paper is flagged, not called free of backdrop.
+
+Each strip a walked side cuts off is then searched for strokes that stand out from the
+strip's own texture, are joined to the paper edge (directly or through a chain of such
+strokes) and are not part of a target or ruler. Where there are any (writing under a
+gutter shadow, say), the side is moved back out to keep them and the page is flagged.
 
 Page-frame detection after F. Shafait, J. van Beusekom, D. Keysers and T. M. Breuel,
 "Document cleanup using page frame detection", International Journal on Document
@@ -35,6 +40,7 @@ from __future__ import annotations
 
 import math
 import re
+from bisect import bisect_left, bisect_right
 from typing import Any
 
 from PIL import Image, ImageChops, ImageFilter
@@ -59,6 +65,9 @@ _READS = (
     "backdrop_min_contrast",
     "pale_backdrop_delta",
     "edge_run_mm",
+    "backdrop_object_mm",
+    "strip_noise_k",
+    "strip_reach_mm",
     "shadow_min_depth_mm",
     "shadow_min_share",
     "shadow_exclude_share",
@@ -79,15 +88,19 @@ def detect_page_box(
     note = common.unmeasured_note(thresholds, _READS)
     page = common.page_input(image, dpi, polygon, v)
     work = common.working_copy(page, v["pagebox_working_dpi"])
-    backdrop, paper, kinds = backdrop_map(work, v)
+    backdrop, paper, dark, kinds = backdrop_map(work, v)
     width, height = backdrop.size
     run = work.px(v["edge_run_mm"])
-    share = v["backdrop_line_share"]
-    pale = (paper, v["pale_backdrop_delta"], work.px(v["pale_step_mm"]), run)
+    # Outside the page's own area everything is dark backdrop.
+    grey = Image.composite(work.grey, Image.new("L", work.grey.size, 0), work.mask)
+    dark = max(dark, 0)
 
     box = (0, 0, width, height)
-    for _ in range(8):
-        found = _walk(backdrop, work.grey, box, share, run, pale)
+    paler = [False] * 4
+    for attempt in range(8):
+        found, side_paler = _walk(grey, box, dark, paper, v, work)
+        if attempt == 0:
+            paler = side_paler
         if found == box:
             break
         box = found
@@ -97,6 +110,13 @@ def detect_page_box(
         flags.append("No paper found: the frame looks like backdrop throughout.")
 
     walked = [box[0] > 0, box[1] > 0, box[2] < width, box[3] < height]
+    unsure = [paler[i] and not walked[i] for i in range(4)]
+    for index, side in enumerate(SIDES):
+        if unsure[index]:
+            flags.append(
+                f"The frame edge on the {side} side is much paler than the paper, but no "
+                "step to the paper was found; it may be a pale backdrop left in the box."
+            )
     box, shadows, shadow_flags = _shadows(backdrop, box, work, v)
     flags += shadow_flags
     for index, cut in enumerate(shadows):
@@ -131,6 +151,8 @@ def detect_page_box(
         elif walked[index]:
             depth = (box[index] if index < 2 else (width, height)[index - 2] - box[index]) * work.mm
             parts.append(f"{side} {depth:.0f} mm in")
+        elif unsure[index]:
+            parts.append(f"{side} kept at the frame edge, which is much paler than the paper")
         else:
             parts.append(f"{side} kept at the frame edge (no backdrop there)")
     evidence = (
@@ -145,7 +167,7 @@ def detect_page_box(
     return common.answer(value, confidence, evidence, flags)
 
 
-def backdrop_map(work: common.Work, v: dict[str, Any]) -> tuple[Image.Image, int, str]:
+def backdrop_map(work: common.Work, v: dict[str, Any]) -> tuple[Image.Image, int, int, str]:
     """255 where a pixel looks like dark backdrop, the paper's grey level, and a
     description. A pale backdrop is found by its step down to the paper, in `_walk`."""
     grey = work.grey
@@ -181,86 +203,103 @@ def backdrop_map(work: common.Work, v: dict[str, Any]) -> tuple[Image.Image, int
         kinds.append("anything outside the page's own area")
     marks = ImageChops.lighter(marks, outside)
     described = ", ".join(kinds) if kinds else "nothing distinct from the paper"
-    return marks, paper, f"backdrop-like pixels ({described}) against paper at grey {paper}"
+    return (
+        marks,
+        paper,
+        dark_level,
+        f"backdrop-like pixels ({described}) against paper at grey {paper}",
+    )
 
 
-def _edge(shares: list[float], share: float, run: int) -> int | None:
-    """Index where the run of backdrop lines ends and stays ended for `run` lines."""
-    paper = [s < share for s in shares]
-    streak = 0
-    for index in range(len(paper) - 1, -1, -1):
-        streak = streak + 1 if paper[index] else 0
-        paper[index] = streak  # number of paper lines from here inward
-    for index, streak in enumerate(paper):
-        if streak >= min(run, len(paper) - index):
-            return index
+def _line_stats(lines: list[bytes], dark: int, paper: int, v: dict[str, Any]):
+    """Per line, from the side inward: (dark share, pale share, paper-like share,
+    median); and whether the outer lines make a pale backdrop, and their level."""
+    ordered = [sorted(line) for line in lines]
+    length = len(lines[0]) if lines else 1
+    medians = [line[length // 2] for line in ordered]
+    plateau = sorted(medians[:3])[len(medians[:3]) // 2] if medians else 0
+    delta = v["pale_backdrop_delta"]
+    pale = math.ceil(plateau - delta / 2) if plateau >= paper + delta else 256
+    stats = []
+    for line, median in zip(ordered, medians, strict=True):
+        dark_share = bisect_right(line, dark) / length
+        pale_share = (length - bisect_left(line, pale)) / length if pale <= 255 else 0.0
+        stats.append((dark_share, pale_share, 1.0 - dark_share - pale_share, median))
+    return stats, plateau, pale <= 255
+
+
+def _side_edge(
+    stats: list, pale_side: bool, share: float, run: int, objects: int, step: int, delta: int
+):
+    """Lines of backdrop before the paper on one side, or None when every line is
+    backdrop.
+
+    A line is backdrop when at least `share` of it is dark backdrop or pale backdrop,
+    paper when most of it looks like neither, and otherwise part of something lying on
+    the backdrop (a target, a ruler, a label). Such an object is walked past when
+    backdrop resumes beyond it within `objects` lines and no paper line comes first,
+    so a minority of odd lines does not stop the walk (second review, R3). The edge is
+    the first line after which non-backdrop persists for `run` lines.
+
+    Leaving a pale backdrop, the level must fall by `delta` within `step` lines of the
+    last backdrop line: paper that brightens slowly toward one side drifts rather than
+    steps, and is never cut (brief 0022, B2)."""
+    count = len(stats)
+    kinds = []
+    for dark_share, pale_share, paperlike, _ in stats:
+        if dark_share >= share or pale_share >= share:
+            kinds.append("B")
+        elif paperlike >= 0.6:
+            kinds.append("P")
+        else:
+            kinds.append("O")
+    i = 0
+    while i < count:
+        if kinds[i] == "B":
+            i += 1
+            continue
+        ahead = kinds[i : i + objects]
+        if "B" in ahead and "P" not in ahead[: ahead.index("B")]:
+            i += ahead.index("B")  # an object on the backdrop, or a speck of dust
+            continue
+        if "B" in kinds[i : i + run]:
+            i += kinds[i : i + run].index("B")
+            continue
+        if i and pale_side and stats[i - 1][1] >= share:
+            later = stats[min(count - 1, i + step)][3]
+            if stats[i - 1][3] - later < delta:
+                return 0  # a drift, not a step
+        return i
     return None
 
 
-def _quartiles(region: Image.Image) -> tuple[list[int], list[int]]:
-    """The darker-quartile grey level of each column and of each row."""
-    width, height = region.size
-    rows = region.tobytes()
-    columns = region.transpose(Image.Transpose.TRANSPOSE).tobytes()
-    by_column = [sorted(columns[x * height : (x + 1) * height])[height // 4] for x in range(width)]
-    by_row = [sorted(rows[y * width : (y + 1) * width])[width // 4] for y in range(height)]
-    return by_column, by_row
-
-
-def _pale_step(levels: list[int], paper: int, delta: int, step: int, run: int) -> int:
-    """Lines of pale backdrop before the paper, or 0.
-
-    A pale backdrop is a uniform margin at least `delta` paler than the paper that
-    steps down to the paper within `step` lines and stays down for `run` lines. Paper
-    that brightens slowly toward one side drifts instead of stepping, so it is never
-    cut (brief 0022, B2)."""
-    if len(levels) < 4:
-        return 0
-    plateau = sorted(levels[:3])[1]
-    if plateau < paper + delta:
-        return 0
-    for j in range(1, len(levels)):
-        if levels[j] > plateau - delta / 2:
-            continue
-        if any(level < plateau - delta / 3 for level in levels[: max(1, j - step + 1)]):
-            return 0  # the margin drifted down before the step: a gradient
-        after = levels[j : j + run]
-        if all(level <= plateau - delta for level in after[1:]) and after:
-            return j
-        return 0
-    return 0
-
-
-def _walk(
-    backdrop: Image.Image,
-    grey: Image.Image,
-    box: tuple[int, int, int, int],
-    share: float,
-    run: int,
-    pale: tuple[int, int, int, int],
-):
+def _walk(grey: Image.Image, box, dark: int, paper: int, v: dict[str, Any], work: common.Work):
+    """One pass of the walk in from each side of `box`; also, per side, whether its
+    outer lines are much paler than the paper."""
     x0, y0, x1, y1 = box
-    region = backdrop.crop(box)
-    columns = common.profile(region, along_x=True)
-    rows = common.profile(region, along_x=False)
-    left = _edge(columns, share, run) or 0
-    right = _edge(columns[::-1], share, run) or 0
-    top = _edge(rows, share, run) or 0
-    bottom = _edge(rows[::-1], share, run) or 0
-    by_column, by_row = _quartiles(grey.crop(box))
-    left = max(left, _pale_step(by_column, *pale))
-    right = max(right, _pale_step(by_column[::-1], *pale))
-    top = max(top, _pale_step(by_row, *pale))
-    bottom = max(bottom, _pale_step(by_row[::-1], *pale))
-    found = (
-        x0 + (left or 0),
-        y0 + (top or 0),
-        x1 - (right or 0),
-        y1 - (bottom or 0),
-    )
+    region = grey.crop(box)
+    width, height = region.size
+    share = v["backdrop_line_share"]
+    run = work.px(v["edge_run_mm"])
+    objects = work.px(v["backdrop_object_mm"])
+    step = work.px(v["pale_step_mm"])
+    delta = v["pale_backdrop_delta"]
+    columns = region.transpose(Image.Transpose.TRANSPOSE).tobytes()
+    rows = region.tobytes()
+    by_column = [columns[x * height : (x + 1) * height] for x in range(width)]
+    by_row = [rows[y * width : (y + 1) * width] for y in range(height)]
+    edges = []
+    paler = []
+    for lines in (by_column, by_row, by_column[::-1], by_row[::-1]):
+        stats, plateau, pale_side = _line_stats(lines, dark, paper, v)
+        edge = _side_edge(stats, pale_side, share, run, objects, step, delta)
+        edges.append(edge or 0)
+        paler.append(plateau >= paper + delta)
+    left, top, right, bottom = edges
+    found = (x0 + left, y0 + top, x1 - right, y1 - bottom)
     if found[2] - found[0] < 1 or found[3] - found[1] < 1:
-        return box
-    return found
+        return box, paler
+    return found, paler
 
 
 def _depths(region: Image.Image) -> list[int]:
@@ -370,7 +409,15 @@ def _keep_ink_in_strips(
         grey = work.grey.crop(area)
         closed = grey.filter(ImageFilter.MaxFilter(size)).filter(ImageFilter.MinFilter(size))
         darker = ImageChops.subtract(closed, grey)
-        marks = darker.point(lambda d: 255 if d >= v["blank_contrast"] else 0)
+        # The bar is set by the strip's own texture: backdrop cloth or grain is not ink.
+        histogram = darker.histogram(work.mask.crop(area))
+        middle = common.median_level(histogram) or 0
+        spread_hist = [0] * 256
+        for level, number in enumerate(histogram):
+            spread_hist[abs(level - middle)] += number
+        spread = 1.4826 * (common.median_level(spread_hist) or 0)
+        bar = max(v["blank_contrast"], middle + v["strip_noise_k"] * spread)
+        marks = darker.point(lambda d, bar=bar: 255 if d >= bar else 0)
         marks = ImageChops.multiply(marks, work.mask.crop(area))
         if common.busy(marks, work, v) is not None:
             continue
@@ -379,6 +426,9 @@ def _keep_ink_in_strips(
             for p in common.components(marks)
             if p.area >= speck and not common.rule_shaped(p, rule_length, thickest, 10.0)
         ]
+        targets = _targets_in(grey, work, v)
+        parts = [p for p in parts if not any(_centre_inside(p, t) for t in targets)]
+        parts = _joined_to_paper(parts, side, grey.size, work.px(v["strip_reach_mm"]))
         found = common.union_box([p.box for p in parts])
         if found is None:
             continue
@@ -396,3 +446,61 @@ def _keep_ink_in_strips(
             result[3] = min(height, max(result[3], ink[3] + pad))
         kept.append((side, ink))
     return result, kept
+
+
+def _centre_inside(part: common.Component, box) -> bool:
+    cx, cy = (part.x0 + part.x1) / 2, (part.y0 + part.y1) / 2
+    return box[0] - 2 <= cx < box[2] + 2 and box[1] - 2 <= cy < box[3] + 2
+
+
+def _targets_in(grey: Image.Image, work: common.Work, v: dict[str, Any]) -> list:
+    """Boxes of target grids and rulers lying in a strip of backdrop: objects that
+    differ from the strip's backdrop by the blank contrast, either way, found by the
+    content box's own target finders."""
+    from pagekit.content import find_grids, find_rulers
+
+    level = common.median_level(grey.histogram()) or 0
+    contrast = v["blank_contrast"]
+    boxes = []
+    # Objects as a whole, and split into those a little and those far from the
+    # backdrop's level, so dark ticks printed on a mid-grey bar show as notches.
+    for low, high in ((contrast, 256), (contrast, 3 * contrast), (3 * contrast, 256)):
+        objects = grey.point(
+            lambda g, low=low, high=high: 255 if low <= abs(g - level) < high else 0
+        )
+        parts = common.components(objects)
+        boxes += [box for _, box, _, _ in find_grids(parts, None, work, v)]
+        boxes += [part.box for part in find_rulers(parts, work, v)]
+    return boxes
+
+
+def _joined_to_paper(parts: list, side: str, size: tuple[int, int], reach: int) -> list:
+    """The components within `reach` of the paper edge of the strip, directly or through
+    a chain of such components: writing joined to the paper, not marks on the backdrop
+    (second review, R2)."""
+    width, height = size
+
+    def to_paper(part: common.Component) -> int:
+        if side == "left":
+            return width - part.x1
+        if side == "right":
+            return part.x0
+        if side == "top":
+            return height - part.y1
+        return part.y0
+
+    chosen = [p for p in parts if to_paper(p) <= reach]
+    rest = [p for p in parts if to_paper(p) > reach]
+    grew = True
+    while grew and rest:
+        grew = False
+        for part in list(rest):
+            near = any(
+                max(part.x0 - c.x1, c.x0 - part.x1, part.y0 - c.y1, c.y0 - part.y1) <= reach
+                for c in chosen
+            )
+            if near:
+                chosen.append(part)
+                rest.remove(part)
+                grew = True
+    return chosen

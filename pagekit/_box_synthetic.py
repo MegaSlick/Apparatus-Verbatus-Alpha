@@ -150,3 +150,39 @@ def noisy(image: Image.Image, sigma: float = 6, seed: int = 3) -> Image.Image:
     )
     grain = small.resize(image.size, Image.NEAREST)
     return ImageChops.add(image, grain, 1.0, -128)
+
+
+def mottled(
+    image: Image.Image, sd: float, patch_mm: float, dpi: float, seed: int = 5
+) -> Image.Image:
+    """Paper mottling: smooth patches about `patch_mm` across, standard deviation `sd`."""
+    rng = random.Random(seed)
+    cell = max(1, round(patch_mm * dpi / 25.4))
+    grid = (max(2, image.width // cell + 2), max(2, image.height // cell + 2))
+    values = [rng.gauss(0, 1) for _ in range(grid[0] * grid[1])]
+    low = min(values)
+    span = (max(values) - low) or 1.0
+    small = Image.frombytes("L", grid, bytes(round((x - low) / span * 255) for x in values))
+    smooth = small.resize((grid[0] * cell, grid[1] * cell), Image.BICUBIC).crop((0, 0) + image.size)
+    from PIL import ImageStat
+
+    stat = ImageStat.Stat(smooth)
+    mean, spread = stat.mean[0], stat.stddev[0] or 1.0
+    offset = smooth.point(lambda v: max(0, min(255, round(128 + (v - mean) * sd / spread))))
+    return ImageChops.add(image, offset, 1.0, -128)
+
+
+def foxed(image: Image.Image, dpi: float, seed: int = 6, count: int = 12) -> Image.Image:
+    """Foxing: soft brown spots 2 to 5 mm across, 25 to 40 grey levels deep."""
+    from PIL import ImageFilter
+
+    rng = random.Random(seed)
+    spots = Image.new("L", image.size, 255)
+    draw = ImageDraw.Draw(spots)
+    for _ in range(count):
+        r = rng.uniform(1, 2.5) * dpi / 25.4
+        x, y = rng.uniform(r, image.width - r), rng.uniform(r, image.height - r)
+        depth = rng.randint(25, 40)
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=255 - depth)
+    spots = spots.filter(ImageFilter.GaussianBlur(dpi / 25.4 * 0.4))
+    return ImageChops.subtract(image, ImageChops.invert(spots))

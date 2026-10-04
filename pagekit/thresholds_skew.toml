@@ -36,10 +36,35 @@ value = 20
 status = "UNMEASURED"
 meaning = "Grey levels below the flattened paper that a mark must reach to be kept as faint ink; marks that never reach blank_contrast are kept and flagged."
 
+[faint_noise_k]
+value = 5.0
+status = "UNMEASURED"
+meaning = "The faint-ink level is at least this many robust standard deviations of the page's own paper noise below the paper median."
+
+[doubt_noise_k]
+value = 3.0
+status = "UNMEASURED"
+meaning = "Strokes this many robust standard deviations below the paper median (and at least half faint_contrast), outside the content box, are flagged as very faint."
+
+[dark_contrast]
+value = 80
+status = "UNMEASURED"
+meaning = "Grey levels below the paper median at which a mark is ink whatever its shape; a paler mark must be shaped like a pen stroke to widen the content box."
+
+[stroke_max_mm]
+value = 1.2
+status = "UNMEASURED"
+meaning = "Thickest pen stroke: a pale mark that survives an erosion by this square is a blotch, not a stroke."
+
+[stroke_min_length_mm]
+value = 2.5
+status = "UNMEASURED"
+meaning = "Shortest pale mark, along its longer side, that counts as a pen stroke."
+
 [edge_mark_mm2]
 value = 2.0
 status = "UNMEASURED"
-meaning = "A component touching the paper edge and left out as debris is flagged when its ink covers at least this many square millimetres (a small cross)."
+meaning = "A component left out as edge debris, or a pale blotch left out of the content box, is flagged when it covers at least this many square millimetres (a small cross)."
 
 [pale_step_mm]
 value = 3.0
@@ -191,6 +216,21 @@ meaning = "Grey levels above the paper at which a pixel counts as pale backdrop.
 value = 8.0
 status = "UNMEASURED"
 meaning = "The paper edge is where the run of backdrop lines ends and stays ended for this distance, so dust, tears and labels do not stop the walk."
+
+[backdrop_object_mm]
+value = 40.0
+status = "UNMEASURED"
+meaning = "An object lying on the backdrop (a target, a ruler, a label) is walked past when backdrop resumes beyond it within this distance and no paper comes first."
+
+[strip_noise_k]
+value = 6.0
+status = "UNMEASURED"
+meaning = "In a strip the walk cuts off, a dark stroke must stand this many robust standard deviations of the strip's own texture above its median, and at least blank_contrast, to count as ink."
+
+[strip_reach_mm]
+value = 5.0
+status = "UNMEASURED"
+meaning = "Ink in a cut strip counts only when it is within this distance of the paper edge, or of other such ink: writing joined to the paper, not marks on the backdrop."
 
 [shadow_min_depth_mm]
 value = 2.0

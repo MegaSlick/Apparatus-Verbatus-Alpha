@@ -377,3 +377,79 @@ def test_noise_page_finishes_quickly_and_is_flagged():
     assert time.monotonic() - start < 5
     assert any("noise" in flag for flag in answer["flags"])
     assert answer["value"] is not None  # when in doubt, keep everything
+
+
+# --- Second review (texture is not ink) ---------------------------------------------
+
+
+@cache
+def clean_300() -> tuple[Image.Image, list[int]]:
+    image = synth.page(seed=3, dpi=300, size_mm=(150, 200), margins_mm=(30, 30, 30, 30))
+    return image, detect_content_box(synth.noisy(image, sigma=2), (300, 300))["value"]
+
+
+def near(found: list[int], wanted: list[int], slack: int = 6) -> bool:
+    return all(abs(a - b) <= slack for a, b in zip(found, wanted, strict=True))
+
+
+def test_mottled_text_page_gives_the_clean_box_and_no_flag():
+    image, clean = clean_300()
+    answer = detect_content_box(synth.mottled(image, 5, 1.5, 300), (300, 300))
+    assert answer["flags"] == []
+    assert near(answer["value"], clean), (answer["value"], clean)
+
+
+@pytest.mark.parametrize("sd", [4, 5])
+def test_mottled_text_page_at_400_dpi_gives_no_flag(sd):
+    image = synth.page(seed=5, dpi=400, size_mm=(150, 200), margins_mm=(30, 30, 30, 30))
+    clean = detect_content_box(synth.noisy(image, sigma=2), (400, 400))["value"]
+    answer = detect_content_box(synth.mottled(image, sd, 1.5, 400, seed=5), (400, 400))
+    assert answer["flags"] == []
+    assert near(answer["value"], clean, 8), (answer["value"], clean)
+
+
+def test_strongly_mottled_text_page_does_not_spread_the_box():
+    image, clean = clean_300()
+    answer = detect_content_box(synth.mottled(image, 6.5, 2.0, 300, seed=8), (300, 300))
+    assert near(answer["value"], clean), (answer["value"], clean)
+
+
+def test_blank_mottled_page_is_blank():
+    blank = Image.new("L", clean_300()[0].size, synth.PAPER)
+    answer = detect_content_box(synth.mottled(blank, 5, 1.5, 300), (300, 300))
+    assert answer["value"] is None
+
+
+def test_foxed_page_keeps_its_box():
+    image, clean = clean_300()
+    answer = detect_content_box(synth.foxed(image, 300), (300, 300))
+    assert near(answer["value"], clean), (answer["value"], clean)
+
+
+def test_foxed_blank_page_is_blank():
+    blank = Image.new("L", clean_300()[0].size, synth.PAPER)
+    answer = detect_content_box(synth.foxed(blank, 300), (300, 300))
+    assert answer["value"] is None
+
+
+def test_very_faint_writing_outside_the_box_is_flagged():
+    # A 0.4 mm pen at contrast 15 beside ordinary writing used to vanish at 0.9.
+    image = text_page().copy()
+    note = Image.new("L", image.size, synth.PAPER)
+    synth.writing(
+        ImageDraw.Draw(note),
+        random.Random(7),
+        (mm(3), mm(60), mm(27), mm(100)),
+        DPI,
+        ink=synth.PAPER - 15,
+    )
+    answer = detect_content_box(synth.noisy(synth.darker(image, note), sigma=1.5), (DPI, DPI))
+    assert any("faint" in flag for flag in answer["flags"])
+
+
+def test_tape_near_the_edge_is_described_as_tape():
+    image = text_page().copy()
+    ImageDraw.Draw(image).rectangle((mm(8), mm(100), mm(11), mm(125)), fill=60)
+    answer = detect_content_box(synth.noisy(image), (DPI, DPI))
+    flags = [flag for flag in answer["flags"] if "tape" in flag]
+    assert flags and not any("touching" in flag for flag in flags)
