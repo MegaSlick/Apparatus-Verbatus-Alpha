@@ -349,3 +349,14 @@ record".
 - **Brief 0020:** `briefs/0020-build-tone-view.md` (sha256
   f41843953ca62b3a264f68540239ebbd8d13554aa8606682626e34cb885f3760), for a fresh
   build-side agent running Claude Fable 5.1, saved before it started.
+
+## 0019 — Review of orientation and the split; follow-up brief 0021
+
+- **Independent review** by a fresh agent bound by the clean-room rule (it read only
+  pagekit and its spec, and saw no GPL source): orientation gave no confident wrong
+  turn on any hard case; the split detector gave confident, unflagged wrong cuts on a
+  single page with a vertical rule, on dense texture, and on a spread with one blank
+  page.
+- **Follow-up brief:** `briefs/0021-build-split-review-fixes.md` (sha256
+  70d72ffec61605e6dfecee2a62386e8eff96b851ad4032d5f81659ef3c4e0160), sent to the agent of
+  brief 0017.
