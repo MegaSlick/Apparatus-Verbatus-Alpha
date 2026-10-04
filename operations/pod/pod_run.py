@@ -1841,8 +1841,9 @@ def main(
     notify_runner: RunnerFactory = environment_runner,
 ) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
-    run_half = raw_argv[: raw_argv.index("--")] if "--" in raw_argv else raw_argv
-    if HELP_FLAGS.intersection(run_half):
+    # Help only when asked for alone: inside a run's argv a stray -h is refused like any
+    # other unknown flag, so a launch never ends with a help page and exit 0.
+    if len(raw_argv) == 1 and raw_argv[0] in HELP_FLAGS:
         print(usage(), end="")
         return 0
     environment = os.environ if environ is None else environ
