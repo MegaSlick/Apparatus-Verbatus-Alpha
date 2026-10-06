@@ -13,8 +13,10 @@ if [ ! -f "$ingress" ]; then
   echo "  BLOCKED: $ingress is missing, so the commit message cannot be checked." >&2
   exit 1
 fi
+# An interpreter too old to run the check is said as such, never as a credential.
+python=$(sh "$(dirname "$0")/find-python.sh") || exit 1
 # Exit 1 is a credential, 2 an unrun check; `$?` after an `if` would be the if's.
-python3 "$ingress" --message-file "$message" >/dev/null
+"$python" "$ingress" --message-file "$message" >/dev/null
 status=$?
 if [ "$status" -ne 0 ]; then
   if [ "$status" -eq 1 ]; then
@@ -35,7 +37,7 @@ committer_ident=$(git var GIT_COMMITTER_IDENT 2>/dev/null) || committer_ident=""
 status=0
 if [ -n "$author_ident" ] || [ -n "$committer_ident" ]; then
   printf '%s\0%s\0' "$author_ident" "$committer_ident" |
-    python3 "$ingress" --ref-fields
+    "$python" "$ingress" --ref-fields
   status=$?
 fi
 if [ "$status" -ne 0 ]; then

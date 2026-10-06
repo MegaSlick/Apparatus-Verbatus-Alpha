@@ -34,8 +34,10 @@ class ErrorCode(StrEnum):
     EXPORT_FAILED = "export-failed"
     EXPORT_PARTIAL = "export-partial"
     EXPORT_UNRECONCILED = "export-unreconciled"
+    EXPORT_UNSEALED = "export-unsealed"
     STATUS_EMPTY = "status-empty"
     STATUS_UNREADABLE = "status-unreadable"
+    WATCH_UNREADABLE = "watch-unreadable"
     CONSOLE_TREE_UNREADABLE = "console-tree-unreadable"
     CONSOLE_PROJECTION_UNREADABLE = "console-projection-unreadable"
     ADVANCE_REFUSED = "advance-refused"
@@ -49,6 +51,9 @@ class ErrorCode(StrEnum):
     INGEST_REFUSED = "ingest-refused"
     INGEST_UNRESOLVED = "ingest-unresolved"
     TRIAGE_REFUSED = "triage-refused"
+    PREPARE_REFUSED = "prepare-refused"
+    PREPARE_INTERRUPTED = "prepare-interrupted"
+    PREPARE_INCOMPLETE = "prepare-incomplete"
     NOT_A_CHECKOUT = "not-a-checkout"
     INTERRUPTED = "interrupted"
     UNEXPECTED = "unexpected"
@@ -173,6 +178,14 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "source with the project lead; this is not a corrupted export, it is a record that cannot back "
         "up its own claim. Nothing was started or charged; this is safe.",
     ),
+    ErrorCode.EXPORT_UNSEALED: ErrorCopy(
+        "The run has an Armarium export record, but its completion seal is missing or does "
+        "not verify.",
+        "A record the Armarium never sealed, or one that changed after sealing, is not a "
+        "finished export, so no bundle was made and nothing was called complete.",
+        "Open the run tree read-only with `verbatus review`, which names the seal problem, and "
+        "check it with the project lead before running the Armarium again; this is safe.",
+    ),
     ErrorCode.STATUS_EMPTY: ErrorCopy(
         "There are no saved operator records to show.",
         "Status did not contact a provider or make a new record.",
@@ -182,6 +195,11 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "A saved operator record could not be read safely.",
         "Status did not guess what the record meant or contact a provider.",
         "Preserve that record for review and repair or replace it before continuing; this is safe.",
+    ),
+    ErrorCode.WATCH_UNREADABLE: ErrorCopy(
+        "Watch could not read this run's saved pod-run report.",
+        "Nothing was shown as current; watch changed nothing and contacted no provider or volume.",
+        "Copy the run's pod-run report and its siblings from the volume into one folder on this computer, then run `verbatus watch` again; this is safe.",
     ),
     ErrorCode.CONSOLE_TREE_UNREADABLE: ErrorCopy(
         "Verbatus could not read the selected run tree safely.",
@@ -242,6 +260,25 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "Ingest did not return a checked ready-folder record.",
         "No pod was started or billed, but immutable ingest records may have been written before the interruption.",
         "Do not reuse or remove the output folder. Preserve it and the saved detail, inspect its records, then use a new empty approved folder when retrying.",
+    ),
+    ErrorCode.PREPARE_REFUSED: ErrorCopy(
+        "The pages could not be prepared.",
+        "The output folder was left as it was, and the scans were only read.",
+        "Read the reason below, correct the named folder, scan or overrides file, then run "
+        "`verbatus prepare` again; this is safe.",
+    ),
+    ErrorCode.PREPARE_INTERRUPTED: ErrorCopy(
+        "Page preparation was stopped before it finished.",
+        "The output folder was left as it was, and the scans were only read.",
+        "Run the same `verbatus prepare` command again when you are ready; it continues the "
+        "same project and keeps every correction.",
+    ),
+    ErrorCode.PREPARE_INCOMPLETE: ErrorCopy(
+        "The prepared pages were written, but the triage manifest for the Door may not have been.",
+        "Do not submit with a triage manifest from this output folder yet: it may be from an "
+        "earlier run. The scans were only read.",
+        "Run the same `verbatus prepare` command again; it reuses the pages and corrections "
+        "and writes the manifest.",
     ),
     ErrorCode.TRIAGE_REFUSED: ErrorCopy(
         "Triage could not safely record or show that review step.",

@@ -112,6 +112,7 @@ from .shutdown import VerifiedShutdown
 from .spend import (
     CHALLENGE_BYTES,
     CONFIRMATION_PREFIX,
+    POD_BUDGET_ENVIRONMENT,
     SpendAssessment,
     SpendPolicy,
     confirmation_phrase,
@@ -2819,6 +2820,13 @@ def test_guarded_create_seals_dead_man_facts_into_the_creation_request(tmp_path:
     assert submitted.metadata["VERBATUS_POD_HOURLY_USD"] == "0.77"
     assert submitted.metadata["VERBATUS_VOLUME_ONGOING_HOURLY_USD"] == "0.05"
     assert submitted.metadata[BILLING_CUTOFF_MARGIN_ENV] == "3600"
+    # The budget that armed the pod, so the pod's deadline notice quotes it.
+    assert {name: submitted.metadata.get(name) for name in POD_BUDGET_ENVIRONMENT.values()} == {
+        "VERBATUS_SOFT_MAX_SECONDS": "86400",
+        "VERBATUS_HARD_MAX_SECONDS": "86400",
+        "VERBATUS_SOFT_MAX_COST_USD": "1000.00",
+        "VERBATUS_HARD_MAX_COST_USD": "1000.00",
+    }
 
 
 def test_default_runtime_refuses_paid_create_without_an_approved_controller_harness(
@@ -4998,12 +5006,10 @@ def _fixture_configuration_receipt() -> dict[str, object]:
             name: {"path": f"/fixture/{name}.toml", "sha256": "0" * 64}
             for name in (
                 "models_config",
-                "witness_context_config",
                 "serving_recipes_config",
                 "placement_config",
             )
         },
-        "witness_context_validation": {},
     }
 
 
@@ -6646,11 +6652,11 @@ def test_the_shipped_spend_policy_carries_the_reviewed_ceilings() -> None:
     policy = _shipped_spend_policy()
 
     assert policy.configured
-    assert policy.max_hourly_usd == Decimal("0.50")
-    assert policy.max_estimated_metered_cost_usd == Decimal("2.00")
+    assert policy.max_hourly_usd == Decimal("2.10")
+    assert policy.max_estimated_metered_cost_usd == Decimal("5.00")
     assert policy.account_balance_floor_usd == Decimal("50.00")
     assert policy.account_balance_alert_usd == Decimal("75.00")
-    assert policy.hard_lifetime_seconds == 14400
+    assert policy.hard_lifetime_seconds == 7200
     assert policy.laptop_heartbeat_timeout_seconds == 900
     assert policy.shutdown_poll_interval_seconds == 30
     assert policy.shutdown_deadline_seconds == 900
@@ -6658,34 +6664,39 @@ def test_the_shipped_spend_policy_carries_the_reviewed_ceilings() -> None:
 
 
 @pytest.mark.parametrize(
-    ("gpu_type_id", "admitted"),
+    ("gpu_type_id", "volume_hourly_usd", "admitted"),
     [
-        ("NVIDIA RTX A5000", True),
-        ("NVIDIA A40", True),
-        # The next reviewed card up the price list.
-        ("NVIDIA RTX 6000 Ada Generation", False),
+        ("NVIDIA RTX A5000", "0.11", True),
+        ("NVIDIA A40", "0.11", True),
+        ("NVIDIA RTX 6000 Ada Generation", "0.11", True),
+        # The dearest reviewed card, at exactly the hourly ceiling and one cent past it.
+        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "0.11", True),
+        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "0.12", False),
     ],
 )
-def test_the_shipped_spend_policy_admits_the_cards_it_names_and_refuses_the_next_one_up(
-    gpu_type_id: str, admitted: bool
+def test_the_shipped_spend_policy_admits_every_reviewed_card_and_refuses_a_cent_past_its_ceiling(
+    gpu_type_id: str, volume_hourly_usd: str, admitted: bool
 ) -> None:
-    """The cards spend.toml says its hourly ceiling admits, priced by the reviewed table,
-    beside the largest volume rate it allows for ($0.06/h)."""
+    """Every card the reviewed table prices is admitted, for the whole hard lifetime,
+    beside the largest volume rate spend.toml says its hourly ceiling allows for
+    ($0.11/h); a cent more is refused. No reviewed card is priced above the ceiling."""
     from .spend import assess_spend
 
     now = datetime(2026, 10, 1, tzinfo=timezone.utc)
     table = load_placement_table(Path(__file__).resolve().parents[2] / "config/pod_placement.toml")
     estimate = PodEstimate(
         pod_hourly_usd=table.price_for(gpu_type_id),
-        volume_hourly_usd=Decimal("0.06"),
+        volume_hourly_usd=Decimal(volume_hourly_usd),
         source="reviewed placement table",
         observed_at=now,
     )
 
+    policy = _shipped_spend_policy()
     assessment = assess_spend(
-        _shipped_spend_policy(),
+        policy,
         estimate,
-        requested_deadline=now + timedelta(hours=1),
+        # The whole hard lifetime, so the cost ceiling is held to it too.
+        requested_deadline=now + timedelta(seconds=policy.hard_lifetime_seconds),
         now=now,
         balance_observation=AccountBalanceObservation("1000.00", now, "test balance"),
     )
@@ -6926,6 +6937,15 @@ def test_an_unconfigured_spend_policy_refuses_both_paid_paths_end_to_end(tmp_pat
         ({"billing_cutoff_margin_seconds": "3601"}, "must be between 0 and 3600 seconds"),
         ({"hard_lifetime_seconds": None}, "missing a required ceiling"),
         ({"currency": '"EUR"'}, "currency must be USD"),
+        ({"soft_max_seconds": "25000"}, "soft maximum seconds cannot exceed"),
+        ({"soft_max_cost_usd": '"3.50"'}, "soft maximum cost cannot exceed"),
+        ({"hard_max_seconds": None}, "missing a required ceiling"),
+        ({"hard_max_cost_usd": None}, "missing hard_max_cost_usd"),
+        ({"soft_max_cost_usd": "2.00"}, "decimal string, not a TOML number"),
+        ({"soft_max_seconds": "0"}, "soft maximum seconds must be a positive integer"),
+        ({"hard_lifetime_seconds": "18000"}, "hard lifetime cannot exceed the soft maximum"),
+        ({"max_estimated_metered_cost_usd": '"2.50"'}, "cannot exceed the soft maximum cost"),
+        ({"schema": '"pod-spend.v3"'}, "soft and hard pod budget maximums"),
     ],
 )
 def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
@@ -6934,7 +6954,7 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
     from .spend import load_spend_policy
 
     base: dict[str, str | None] = {
-        "schema": '"pod-spend.v3"',
+        "schema": '"pod-spend.v4"',
         "state": '"configured"',
         "currency": '"USD"',
         "max_hourly_usd": '"1.00"',
@@ -6946,6 +6966,10 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
         "shutdown_poll_interval_seconds": "1",
         "shutdown_deadline_seconds": "5",
         "billing_cutoff_margin_seconds": "3600",
+        "soft_max_seconds": "14400",
+        "hard_max_seconds": "21600",
+        "soft_max_cost_usd": '"2.00"',
+        "hard_max_cost_usd": '"3.00"',
     }
     base.update(mutation)
     path = tmp_path / "spend.toml"
@@ -7050,7 +7074,7 @@ def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceilin
     detail = str(refusal.value)
     assert "retired" in detail
     assert "account_balance_alert_usd" in detail
-    assert "pod-spend.v3" in detail
+    assert "pod-spend.v4" in detail
     assert "missing a required ceiling" not in detail
 
 
@@ -7059,7 +7083,7 @@ def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path
 
     path = tmp_path / "spend.toml"
     path.write_text(
-        'schema = "pod-spend.v3"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
+        'schema = "pod-spend.v4"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
         encoding="utf-8",
     )
 

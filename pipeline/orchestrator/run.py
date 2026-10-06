@@ -27,7 +27,7 @@ sequence and to checkpoint. Its three jobs:
               disagree with them.
 
     python pipeline/orchestrator/run.py --fixture synthetic-two-page-v0 \\
-      --scenario <happy|review> --run-id <id> --run-root <dir>
+      --scenario <happy|page-review> --run-id <id> --run-root <dir>
 """
 
 import argparse
@@ -75,7 +75,6 @@ from common.stage import (  # noqa: E402
     DEFAULT_PERLECTOR_AUDIT_CONFIG_PATH,
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     DEFAULT_SERVING_RECIPES_CONFIG_PATH,
-    DEFAULT_WITNESS_CONTEXT_CONFIG_PATH,
     EXIT_COMPLETE,
     EXIT_FATAL,
     EXIT_HELD,
@@ -85,6 +84,7 @@ from common.stage import (  # noqa: E402
     boundary_advanced,
     current_stage_seal,
     load_fixture,
+    partial_real_configuration_refusal,
     require_sealed_config,
     run_sealed_config_digests,
     scenario_for,
@@ -274,6 +274,15 @@ class GpuSampler:
         }, None
 
 
+class _RealConfigurationFlag(argparse.Action):
+    """Store the value and record that this real-configuration flag was given."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        given = getattr(namespace, "real_configuration_given", ())
+        namespace.real_configuration_given = (*given, self.option_strings[0])
+
+
 def require_coherent_ingress_options(args: argparse.Namespace) -> None:
     if (getattr(args, "canary_folder", None) is None) != (
         getattr(args, "canary_manifest", None) is None
@@ -442,7 +451,6 @@ def invoke(program: str, args: argparse.Namespace) -> int:
     command += _argv(
         (
             ("--witness-context", args.witness_context),
-            ("--witness-context-config", args.witness_context_config),
             ("--perlector-protocol-config", args.perlector_protocol_config),
             ("--perlector-audit-config", args.perlector_audit_config),
         )
@@ -656,6 +664,7 @@ def main() -> int:
     parser.add_argument(
         "--models-config",
         default="config/models.toml",
+        action=_RealConfigurationFlag,
         help="the sealed model-chair roster and recipes for this run",
     )
     parser.add_argument("--cache-root", default=None)
@@ -679,6 +688,7 @@ def main() -> int:
     parser.add_argument(
         "--serving-recipes-config",
         default=str(DEFAULT_SERVING_RECIPES_CONFIG_PATH),
+        action=_RealConfigurationFlag,
         help="the sealed serving-profile catalogue for this run; the default is the "
         "fixture-only catalogue",
     )
@@ -773,11 +783,6 @@ def main() -> int:
         choices=WITNESS_CONTEXT_REGIMES,
         help="the run-level named/blinded toggle the Perlector's dossier is built under",
     )
-    parser.add_argument(
-        "--witness-context-config",
-        default=str(DEFAULT_WITNESS_CONTEXT_CONFIG_PATH),
-        help="the Perlector-owned factual witness-context declaration this run seals",
-    )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
         "--all",
@@ -809,6 +814,9 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    refusal = partial_real_configuration_refusal(getattr(args, "real_configuration_given", ()))
+    if refusal is not None:
+        raise ContractError(refusal)
     require_coherent_ingress_options(args)
     resolve_caller_paths(args)
     # Proved up front, not lazily from `_record_stage_timing`: a manual or semi

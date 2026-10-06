@@ -10,6 +10,8 @@ its own output into a link between frames: only a confirmation a person supplies
 | `instrument.py`, `instrument.toml` | Co-visibility candidate evidence for pairs of frames |
 | `producer.py` | Decision-manifest rows, cluster records and corpus-register appends |
 | `paths.py` | Canonical relative-path checks for the producer's file arguments |
+| `pagekit_recipe.py` | `pagekit-producer-recipe.v1`, the producer recipe that declares pagekit's rows at the Door |
+| `pagekit_geometry.py` | Decision-manifest rows that cut pagekit's prepared pages from the original scans (used by `verbatus prepare`) |
 
 ## The instrument
 
@@ -65,3 +67,26 @@ cluster records whole.
 
 Note that the Door currently refuses any submission containing a re-shoot cluster:
 confirmed clusters are recorded in the register, but a run reads one capture per leaf.
+
+## pagekit's geometry
+
+`pagekit_geometry.map_pages` turns pagekit's chain for each page of one scan (quarter
+turn, page polygon, rotation about the page's centre, crop, shrink) into triage parts
+of the second operation order, `region-crop-rotate-crop`. The quarter turn and the skew
+fold into one clockwise rotation of `90 * turns - skew` degrees; the first crop is the
+smallest box of the scan holding everything pagekit's page shows; the crop after
+rotation is pagekit's page to the nearest pixel; and the fill is pagekit's paper
+colour, in the scan's own mode. A page with no skew is cut exactly, a skewed one to
+within half a pixel on each axis (the crop after rotation starts on a whole pixel). Where triage still cannot say what pagekit did, the part is the
+nearest one that loses no ink, and a note says why:
+
+- **Gutter** (two pages): the regions must partition the scan, so the scan is split
+  along a straight line through the middle of pagekit's cut. pagekit's overlap and the
+  lean of its cut fall on one side of it; each page's crops hold everything either page
+  shows inside its region, so across the scan nothing pagekit kept is dropped.
+- **Shrunk**: the Door's page keeps the scan's resolution.
+
+A scan's orientation tag is read from pagekit's chain: one that turns the scan folds
+into the rotation; one that mirrors it is refused (`MappingError`), since triage has no
+mirror. pagekit's padding is part of the crop after rotation. `door_colour_mode` maps a
+grey page made by luminance to `grayscale` and refuses one made from a single channel.

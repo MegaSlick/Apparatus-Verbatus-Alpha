@@ -44,7 +44,12 @@ from common.runtree.store import (
     SERVING_LOGS_DIR,
     RunTree,
 )
-from common.stage import load_fixture
+from common.stage import (
+    REAL_CONFIGURATION_FLAGS,
+    load_fixture,
+    partial_real_configuration_refusal,
+    verify_final_seal,
+)
 from operations.pod.pod_run import DEFAULT_RUNS_DIRECTORY
 from operations.pod.transfer import (
     ChecksummedTransfer,
@@ -93,9 +98,10 @@ _RESUMED_BINDINGS: Final = frozenset(
         "--submission-folder",
         "--submission-manifest",
         "--data-gate-policy",
+        "--triage-decision-manifest",
+        "--triage-producer-recipe",
         "--models-config",
         "--serving-recipes-config",
-        "--witness-context-config",
     }
 )
 
@@ -123,9 +129,10 @@ MAX_FETCH_EVIDENCE_OBJECTS = 10_000
 receipts. Ten thousand is far past that and still bounds a listing that is not
 what this verb thinks it is."""
 MAX_FETCH_OBJECT_BYTES = 256 * 1024 * 1024
-"""One object's bound. A whole-page blob is the largest thing a run tree holds;
-the manifest walk already refuses an artifact above 64 MiB, and a quarter of a
-gigabyte is past any page this project has rendered."""
+"""One object's bound. A whole-page blob and the export archive are the largest
+things a run tree holds; the manifest walk already refuses an artifact above
+64 MiB, and a quarter of a gigabyte is past any page this project has rendered
+and at or above the export archive limit (`common/armarium_formats.py`)."""
 
 
 class _UploadManifestConflict(TransferFailure):
@@ -156,6 +163,14 @@ class RunOutcome:
     run_id: str
     aggregate: dict[str, Any]
     export_payload: dict[str, Any]
+
+
+class UnsealedExportError(ValueError):
+    """An Armarium export record not covered by a verified completion seal.
+
+    Its own type, so callers can tell a record that exists but is unsealed
+    from one that is absent or malformed.
+    """
 
 
 class UnreconciledActPartitionError(ValueError):
@@ -208,6 +223,8 @@ class OperatorSurface:
         policy_path: str | Path | None = None,
         prefix: str = "submission",
         volume: VolumeSpec | None = None,
+        triage_decision_manifest: str | Path | None = None,
+        triage_producer_recipe: str | Path | None = None,
     ) -> Path:
         """Run the local submission door, then transfer only what it sealed."""
 
@@ -228,7 +245,14 @@ class OperatorSurface:
         except Exception as error:
             self._record_failure("upload", "submission-refused", str(error))
             raise OperatorError(ErrorCode.UPLOAD_REFUSED, detail=str(error)) from error
-        return self.upload(source, sealed_manifest=manifest_out, prefix=prefix, volume=volume)
+        return self.upload(
+            source,
+            sealed_manifest=manifest_out,
+            prefix=prefix,
+            volume=volume,
+            triage_decision_manifest=triage_decision_manifest,
+            triage_producer_recipe=triage_producer_recipe,
+        )
 
     def upload(
         self,
@@ -238,12 +262,19 @@ class OperatorSurface:
         prefix: str = "submission",
         volume: VolumeSpec | None = None,
         target: TransferTarget | None = None,
+        triage_decision_manifest: str | Path | None = None,
+        triage_producer_recipe: str | Path | None = None,
     ) -> Path:
         """Transfer only what the sealed submission record names; no pod is needed.
 
         The default target is the local fixture volume. `volume` names a real
         network volume, the one path here that leaves this computer, so the
         operator must name it and is told what will be contacted first.
+
+        A triage decision manifest and its producer recipe, given together, travel
+        beside the scans as `<prefix>-triage-decision-manifest.json` and
+        `<prefix>-triage-producer-recipe.json`, published before the submission's
+        own manifest marks the upload complete, and never replaced afterwards.
         """
 
         source_path = Path(source)
@@ -262,6 +293,23 @@ class OperatorSurface:
             prefix = normalize_transfer_prefix(prefix)
         except ValueError as error:
             raise OperatorError(ErrorCode.INVALID_COMMAND, detail=str(error)) from error
+        if (triage_decision_manifest is None) != (triage_producer_recipe is None):
+            raise OperatorError(
+                ErrorCode.INVALID_COMMAND,
+                detail="a triage decision manifest travels with its producer recipe; give "
+                "--triage-decision-manifest and --triage-producer-recipe together",
+            )
+        triage_documents: list[tuple[str, bytes, str]] = []
+        if triage_decision_manifest is not None:
+            try:
+                triage_documents = _triage_documents(
+                    prefix, Path(triage_decision_manifest), Path(triage_producer_recipe)
+                )
+            except OSError as error:
+                raise OperatorError(
+                    ErrorCode.UPLOAD_REFUSED,
+                    detail=f"a triage document could not be read: {error}",
+                ) from error
         fixture_only = volume is None and target is None
         if fixture_only:
             self.present("Upload uses the sealed submission record and the fixture volume.")
@@ -279,7 +327,9 @@ class OperatorSurface:
                 manifest_snapshot.write_bytes(manifest_bytes)
                 # Parse the snapshot before touching the target: a malformed
                 # ledger is a local refusal and must cause no remote access.
-                submission_door.load_manifest(manifest_snapshot)
+                ledger = submission_door.load_manifest(manifest_snapshot)
+                if triage_documents:
+                    _refuse_triage_the_door_would(triage_documents, ledger)
                 manifest_key = f"{prefix}-manifest.json"
                 claim_key = f"{prefix}-manifest.sha256"
                 claim_bytes = f"{manifest_sha256}\n".encode("ascii")
@@ -296,6 +346,25 @@ class OperatorSurface:
                         f"target {claim_key!r} is permanently claimed by a different sealed "
                         "submission manifest; no image was written"
                     )
+                if triage_documents and (
+                    _remote_state(store, manifest_key, manifest_bytes, manifest_sha256) == "ours"
+                    and any(
+                        _remote_state(store, key, data, sha256) == "absent"
+                        for key, data, sha256 in triage_documents
+                    )
+                ):
+                    raise _UploadManifestConflict(
+                        f"target {manifest_key!r} already marks this submission complete "
+                        "without this triage, and a run may already have read it so; upload "
+                        "the scans with their triage under a new --prefix"
+                    )
+                for key, data, sha256 in triage_documents:
+                    if _remote_state(store, key, data, sha256) == "other":
+                        raise _UploadManifestConflict(
+                            f"target {key!r} already holds different triage for this "
+                            "submission, and what a submission was sent with is never "
+                            "replaced; upload the corrected triage under a new --prefix"
+                        )
                 if _publish_if_absent(store, claim_key, claim_bytes, claim_sha256, claim) != "ours":
                     raise _UploadManifestConflict(
                         f"target {claim_key!r} was concurrently claimed by a different sealed "
@@ -308,6 +377,10 @@ class OperatorSurface:
                     prefix=prefix,
                     journal_path=self.state_root / "transfer" / f"{manifest_sha256}.json",
                 ).resume()
+                for key, data, sha256 in triage_documents:
+                    state = _remote_state(store, key, data, sha256)
+                    if _publish_if_absent(store, key, data, sha256, state) != "ours":
+                        raise TransferFailure(f"target {key!r} did not verify after publication")
                 # Recheck: a manifest that appeared concurrently owns the prefix.
                 published = _remote_state(store, manifest_key, manifest_bytes, manifest_sha256)
                 if published == "other":
@@ -375,6 +448,14 @@ class OperatorSurface:
                 ),
                 "state": "complete" if transfer_complete else "nothing-to-transfer",
                 "submission_manifest_sha256": manifest_sha256,
+                "triage": (
+                    {
+                        "decision_manifest_sha256": triage_documents[0][2],
+                        "producer_recipe_sha256": triage_documents[1][2],
+                    }
+                    if triage_documents
+                    else None
+                ),
                 "volume": _volume_record(volume),
                 "transfer": report.to_record(),
                 "zero_gpu_hours": True,
@@ -713,9 +794,10 @@ class OperatorSurface:
         submission_folder: str | Path | None = None,
         submission_manifest: str | Path | None = None,
         data_gate_policy: str | Path | None = None,
+        triage_decision_manifest: str | Path | None = None,
+        triage_producer_recipe: str | Path | None = None,
         models_config: str | Path | None = None,
         serving_recipes_config: str | Path | None = None,
-        witness_context_config: str | Path | None = None,
         from_stage: str | None = None,
         to_stage: str | None = None,
     ) -> RunOutcome:
@@ -745,13 +827,16 @@ class OperatorSurface:
             submission_folder = recorded.get("--submission-folder")
             submission_manifest = recorded.get("--submission-manifest")
             data_gate_policy = recorded.get("--data-gate-policy")
+            triage_decision_manifest = recorded.get("--triage-decision-manifest")
+            triage_producer_recipe = recorded.get("--triage-producer-recipe")
             models_config = recorded.get("--models-config")
             serving_recipes_config = recorded.get("--serving-recipes-config")
-            witness_context_config = recorded.get("--witness-context-config")
         if submission_folder is None:
             for flag, value in (
                 ("--submission-manifest", submission_manifest),
                 ("--data-gate-policy", data_gate_policy),
+                ("--triage-decision-manifest", triage_decision_manifest),
+                ("--triage-producer-recipe", triage_producer_recipe),
             ):
                 if value is not None:
                     raise OperatorError(
@@ -761,7 +846,6 @@ class OperatorSurface:
         roster_argv = _roster_argv(
             models_config=models_config,
             serving_recipes_config=serving_recipes_config,
-            witness_context_config=witness_context_config,
         )
 
         run_root = self.state_root / "runs"
@@ -819,6 +903,8 @@ class OperatorSurface:
                 submission_folder=submission_folder,
                 submission_manifest=submission_manifest,
                 data_gate_policy=data_gate_policy,
+                triage_decision_manifest=triage_decision_manifest,
+                triage_producer_recipe=triage_producer_recipe,
             ),
             *roster_argv,
         ]
@@ -856,9 +942,10 @@ class OperatorSurface:
             "configuration": {
                 "models_config": _config_binding(models_config),
                 "serving_recipes_config": _config_binding(serving_recipes_config),
-                "witness_context_config": _config_binding(witness_context_config),
                 "submission_manifest": _config_binding(submission_manifest),
                 "data_gate_policy": _config_binding(data_gate_policy),
+                "triage_decision_manifest": _config_binding(triage_decision_manifest),
+                "triage_producer_recipe": _config_binding(triage_producer_recipe),
             },
         }
         # Written before the child starts, so a run killed by an uncatchable
@@ -1047,7 +1134,9 @@ class OperatorSurface:
     ) -> OperatorError:
         """Record why a finished run has no usable Armarium record; the refusal to raise."""
 
-        if completed.returncode == 3:
+        # An export record under a failed seal is not "held before the Armarium";
+        # it is reported as unreadable, with the seal's own refusal.
+        if completed.returncode == 3 and not isinstance(error, UnsealedExportError):
             # Held before the Armarium, so no export record exists. A held
             # Recensor's stop, with what it holds, is the orchestrator's own
             # report on stdout; any other hold's reason is its last stderr line.
@@ -1236,6 +1325,8 @@ class OperatorSurface:
                 self._require_reconciled_act_partition(export_payload)
         except UnreconciledActPartitionError as error:
             raise OperatorError(ErrorCode.EXPORT_UNRECONCILED, detail=str(error)) from error
+        except UnsealedExportError as error:
+            raise OperatorError(ErrorCode.EXPORT_UNSEALED, detail=str(error)) from error
         except Exception as error:
             raise OperatorError(ErrorCode.EXPORT_MISSING, detail=str(error)) from error
         exports_dir = self.state_root / "exports"
@@ -1243,6 +1334,7 @@ class OperatorSurface:
         try:
             exports_dir.mkdir(parents=True, exist_ok=True)
             self._write_base_armarium_bundle(run_root, recorded_id, staged)
+            self._require_export_unchanged(run_root, recorded_id, export_payload)
             digest = sha256_file(staged)
             # Content-addressed, so a later export never overwrites bytes an
             # earlier receipt vouches for.
@@ -1713,10 +1805,20 @@ class OperatorSurface:
             self.present(line)
 
     def _armarium_export(self, run_root: Path, run_id: str) -> dict[str, Any]:
+        # The export record the Armarium's completion seal witnessed: a record
+        # under an unsealed or altered boundary is not a completed export.
         tree = RunTree(run_root, run_id)
-        record = tree.read_artifact(
-            ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
-        )
+        try:
+            record = verify_final_seal(tree)
+        except ContractError as error:
+            export_path = tree.artifact_path(
+                ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None)
+            )
+            if not (tree.root / export_path).is_file():
+                raise
+            raise UnsealedExportError(
+                f"the Armarium export record is not covered by a verified completion seal: {error}"
+            ) from error
         payload = record.get("payload")
         if not isinstance(payload, dict) or not isinstance(payload.get("aggregate"), dict):
             raise ValueError("Armarium export record has no usable aggregate")
@@ -1728,6 +1830,24 @@ class OperatorSurface:
             if not isinstance(payload[member], list):
                 raise ValueError(f"Armarium export record's {member} is not a list")
         return payload
+
+    def _require_export_unchanged(
+        self, run_root: Path, run_id: str, export_payload: dict[str, Any]
+    ) -> None:
+        """Refuse a copy unless the seal still witnesses the export record it was checked under."""
+
+        try:
+            unchanged = self._armarium_export(run_root, run_id) == export_payload
+        except (ContractError, ValueError) as error:
+            raise OperatorError(
+                ErrorCode.EXPORT_UNSEALED,
+                detail=f"the Armarium completion seal no longer verifies after the copy: {error}",
+            ) from error
+        if not unchanged:
+            raise OperatorError(
+                ErrorCode.EXPORT_UNSEALED,
+                detail="the sealed Armarium export record changed while its evidence was copied",
+            )
 
     def _require_reconciled_act_partition(self, export_payload: dict[str, Any]) -> None:
         """Refuse a `complete` export unless every expected act appears exactly once.
@@ -2073,6 +2193,61 @@ def _read_sealed_manifest(path: Path) -> bytes:
     if len(data) > MAX_SEALED_MANIFEST_BYTES:
         raise OSError(f"the sealed submission record exceeds {MAX_SEALED_MANIFEST_BYTES} bytes")
     return data
+
+
+# The Door's own bound on one triage document.
+_MAX_TRIAGE_DOCUMENT_BYTES: Final = 64 * 1024 * 1024
+
+
+def _triage_documents(prefix: str, manifest: Path, recipe: Path) -> list[tuple[str, bytes, str]]:
+    """The two triage documents as (target key, bytes, sha256), refused when unreadable."""
+    documents = []
+    for suffix, path in (
+        ("triage-decision-manifest.json", manifest),
+        ("triage-producer-recipe.json", recipe),
+    ):
+        if path.stat().st_size > _MAX_TRIAGE_DOCUMENT_BYTES:
+            raise OSError(f"{path} is larger than a triage document may be")
+        data = path.read_bytes()
+        documents.append((f"{prefix}-{suffix}", data, hashlib.sha256(data).hexdigest()))
+    return documents
+
+
+def _refuse_triage_the_door_would(
+    documents: list[tuple[str, bytes, str]], ledger: dict[str, Any]
+) -> None:
+    """The Door's own checks, made before anything is sent, so a pod is never started on
+    triage it would refuse: a valid manifest, a valid producer recipe that declares its
+    rows, and a row for every sealed scan."""
+    from common.contracts import triage as triage_contract
+    from operations.triage.producer_recipes import (
+        refuse_rows_outside_recipe,
+        validate_recipe_document,
+    )
+
+    try:
+        document = json.loads(documents[0][1].decode("utf-8"))
+        recipe = json.loads(documents[1][1].decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as error:
+        raise ContractError(f"a triage document is not valid JSON: {error}") from error
+    if not isinstance(document, dict) or not isinstance(document.get("records"), list):
+        raise ContractError("the triage decision manifest has no records")
+    try:
+        triage_contract.validate_manifest(document)
+    except ValueError as error:
+        raise ContractError(f"the triage decision manifest is not valid: {error}") from error
+    validate_recipe_document(recipe)
+    refuse_rows_outside_recipe(recipe, document["records"])
+    covered = {row["source_frame_sha256"] for row in document["records"]}
+    missing = [
+        entry["relative_path"] for entry in ledger["files"] if entry["sha256"] not in covered
+    ]
+    if missing:
+        raise ContractError(
+            f"the triage decision manifest has no row for {len(missing)} sealed file(s) "
+            f"({', '.join(missing[:5])}); the Door would refuse the submission, so nothing "
+            "was sent. Run prepare again over exactly the sealed folder"
+        )
 
 
 def _remote_state(store: TransferTarget, key: str, data: bytes, sha256: str) -> str:
@@ -2423,6 +2598,8 @@ def _real_ingress_argv(
     submission_folder: str | Path | None,
     submission_manifest: str | Path | None,
     data_gate_policy: str | Path | None,
+    triage_decision_manifest: str | Path | None = None,
+    triage_producer_recipe: str | Path | None = None,
 ) -> list[str]:
     """Bind paths to the operator's cwd without hiding symlinks from the Door."""
     argv: list[str] = []
@@ -2430,6 +2607,8 @@ def _real_ingress_argv(
         ("--submission-folder", submission_folder),
         ("--submission-manifest", submission_manifest),
         ("--data-gate-policy", data_gate_policy),
+        ("--triage-decision-manifest", triage_decision_manifest),
+        ("--triage-producer-recipe", triage_producer_recipe),
     ):
         if value is not None:
             argv.extend((flag, str(Path(value).absolute())))
@@ -2440,35 +2619,31 @@ def _roster_argv(
     *,
     models_config: str | Path | None,
     serving_recipes_config: str | Path | None,
-    witness_context_config: str | Path | None,
 ) -> list[str]:
-    """The real-roster trio, forwarded together; a partial selection is refused.
+    """The real configuration, forwarded whole; a partial selection is refused.
 
-    The shipped witness context calls every chair a synthetic fixture, and the
-    Perlector is told that as fact; a real roster needs its own. The Door also
-    refuses this, but refusing here names the console's own flags.
+    The orchestrator refuses this too, but refusing here names the console's own
+    flags before anything starts.
     """
 
-    selected = (models_config, serving_recipes_config, witness_context_config)
-    if any(value is None for value in selected) and any(value is not None for value in selected):
-        raise OperatorError(
-            ErrorCode.INVALID_COMMAND,
-            detail=(
-                "--models-config, --serving-recipes-config and --witness-context-config "
-                "select one roster together (the chairs, the catalogue they are served "
-                "under, and the factual witness context the Perlector is told about them); "
-                "supply all three or none"
-            ),
+    selected = dict(
+        zip(
+            REAL_CONFIGURATION_FLAGS,
+            (models_config, serving_recipes_config),
+            strict=True,
         )
+    )
+    refusal = partial_real_configuration_refusal(
+        flag for flag, value in selected.items() if value is not None
+    )
+    if refusal is not None:
+        raise OperatorError(ErrorCode.INVALID_COMMAND, detail=refusal)
     if models_config is None:
         return []
     return [
-        "--models-config",
-        str(Path(models_config).absolute()),
-        "--serving-recipes-config",
-        str(Path(serving_recipes_config).absolute()),  # type: ignore[arg-type]
-        "--witness-context-config",
-        str(Path(witness_context_config).absolute()),  # type: ignore[arg-type]
+        argument
+        for flag, value in selected.items()
+        for argument in (flag, str(Path(value).absolute()))  # type: ignore[arg-type]
     ]
 
 

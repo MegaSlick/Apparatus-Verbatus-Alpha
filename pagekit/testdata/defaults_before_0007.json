@@ -1,0 +1,890 @@
+{
+ "pages": [
+  {
+   "flags": [
+    {
+     "reason": "The orientation step was not run: no detector for it is connected yet, so the neutral default (no quarter turn) was used.",
+     "step": "orientation"
+    },
+    {
+     "reason": "The split step was not run: no detector for it is connected yet, so the neutral default (one page) was used.",
+     "step": "split"
+    },
+    {
+     "reason": "The skew step was not run: no detector for it is connected yet, so the neutral default (no skew) was used.",
+     "step": "skew"
+    },
+    {
+     "reason": "The page_box step was not run: no detector for it is connected yet, so the neutral default (the whole levelled page) was used.",
+     "step": "page_box"
+    },
+    {
+     "reason": "The content_box step was not run: no detector for it is connected yet, so the neutral default (the whole page box) was used.",
+     "step": "content_box"
+    }
+   ],
+   "geometry": {
+    "affine_output_to_source": [
+     1.0,
+     -0.0,
+     -16.0,
+     -0.0,
+     1.0,
+     -16.0
+    ],
+    "affine_source_to_output": [
+     1.0,
+     0.0,
+     16.0,
+     0.0,
+     1.0,
+     16.0
+    ],
+    "convention": "Continuous pixel coordinates: pixel (i, j) covers [i, i+1) x [j, j+1), x right, y down. An affine [a, b, c, d, e, f] maps (x, y) to (a x + b y + c, d x + e y + f).",
+    "fill": {
+     "colour": [
+      228,
+      217,
+      228
+     ],
+     "method": "median of the light class (above Otsu's threshold) inside the page"
+    },
+    "source_size": [
+     400,
+     560
+    ],
+    "steps": [
+     {
+      "op": "quarter_turn",
+      "size_after": [
+       400,
+       560
+      ],
+      "turns_clockwise": 0
+     },
+     {
+      "frame_box": [
+       0,
+       0,
+       400,
+       560
+      ],
+      "op": "page_polygon",
+      "polygon": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        400.0,
+        0.0
+       ],
+       [
+        400.0,
+        560.0
+       ],
+       [
+        0.0,
+        560.0
+       ]
+      ],
+      "size_after": [
+       400,
+       560
+      ]
+     },
+     {
+      "centre": [
+       200.0,
+       280.0
+      ],
+      "degrees_counterclockwise": 0.0,
+      "op": "rotate",
+      "size_after": [
+       400,
+       560
+      ]
+     },
+     {
+      "box": [
+       -16,
+       -16,
+       416,
+       576
+      ],
+      "op": "crop",
+      "size_after": [
+       432,
+       592
+      ]
+     },
+     {
+      "factor": [
+       1.0,
+       1.0
+      ],
+      "op": "scale",
+      "size_after": [
+       432,
+       592
+      ]
+     }
+    ]
+   },
+   "output": {
+    "bytes": 4388,
+    "format": "tiff",
+    "mode": "RGB",
+    "name": "colour_p1.tif",
+    "pixels_sha256": "8fc2f14ce810f5e0337c4826701e9875e53cac9c53f3c2562310b5654e853fe3",
+    "resolution": [
+     200.0,
+     200.0
+    ],
+    "sha256": "7ff5037c0b71e2751399c7da1fe803fba516f336c68f8b2ebb563e8fb09cdd9e",
+    "size": [
+     432,
+     592
+    ]
+   },
+   "page": 1,
+   "source": {
+    "name": "colour.tif",
+    "sha256": "fd323c660788acbb2846353ddcd286b455bcd00961e735091ae0d1b78a789eeb"
+   },
+   "source_resolution": {
+    "file_value": [
+     200.0,
+     200.0
+    ],
+    "origin": "file",
+    "value": [
+     200.0,
+     200.0
+    ]
+   },
+   "steps": {
+    "content_box": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: the whole page box.",
+     "flags": [
+      "The content_box step was not run: no detector for it is connected yet, so the neutral default (the whole page box) was used."
+     ],
+     "origin": "detected",
+     "value": [
+      0,
+      0,
+      400,
+      560
+     ]
+    },
+    "margin": {
+     "confidence": 1.0,
+     "evidence": "From the margin_mm setting (5 mm).",
+     "flags": [],
+     "origin": "detected",
+     "value": 5.0
+    },
+    "orientation": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: no quarter turn.",
+     "flags": [
+      "The orientation step was not run: no detector for it is connected yet, so the neutral default (no quarter turn) was used."
+     ],
+     "origin": "detected",
+     "value": 0
+    },
+    "page_box": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: the whole levelled page.",
+     "flags": [
+      "The page_box step was not run: no detector for it is connected yet, so the neutral default (the whole levelled page) was used."
+     ],
+     "origin": "detected",
+     "value": [
+      0,
+      0,
+      400,
+      560
+     ]
+    },
+    "skew": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: no skew.",
+     "flags": [
+      "The skew step was not run: no detector for it is connected yet, so the neutral default (no skew) was used."
+     ],
+     "origin": "detected",
+     "value": 0.0
+    },
+    "split": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: one page.",
+     "flags": [
+      "The split step was not run: no detector for it is connected yet, so the neutral default (one page) was used."
+     ],
+     "origin": "detected",
+     "value": {
+      "pages": 1
+     }
+    }
+   },
+   "verdict": "review"
+  },
+  {
+   "flags": [
+    {
+     "reason": "The source carries no resolution and the project has no override for it, so the millimetre settings (overlap, margin, allowance) were applied as 0 px. Give the scan's resolution with --dpi (for example --dpi 300), or with a resolution line in the overrides file.",
+     "step": "resolution"
+    },
+    {
+     "reason": "The orientation step was not run: no detector for it is connected yet, so the neutral default (no quarter turn) was used.",
+     "step": "orientation"
+    },
+    {
+     "reason": "The split step was not run: no detector for it is connected yet, so the neutral default (one page) was used.",
+     "step": "split"
+    },
+    {
+     "reason": "The skew step was not run: no detector for it is connected yet, so the neutral default (no skew) was used.",
+     "step": "skew"
+    },
+    {
+     "reason": "The page_box step was not run: no detector for it is connected yet, so the neutral default (the whole levelled page) was used.",
+     "step": "page_box"
+    },
+    {
+     "reason": "The content_box step was not run: no detector for it is connected yet, so the neutral default (the whole page box) was used.",
+     "step": "content_box"
+    }
+   ],
+   "geometry": {
+    "affine_output_to_source": [
+     1.0,
+     -0.0,
+     0.0,
+     -0.0,
+     1.0,
+     0.0
+    ],
+    "affine_source_to_output": [
+     1.0,
+     0.0,
+     0.0,
+     0.0,
+     1.0,
+     0.0
+    ],
+    "convention": "Continuous pixel coordinates: pixel (i, j) covers [i, i+1) x [j, j+1), x right, y down. An affine [a, b, c, d, e, f] maps (x, y) to (a x + b y + c, d x + e y + f).",
+    "fill": {
+     "colour": 228,
+     "method": "median of the light class (above Otsu's threshold) inside the page"
+    },
+    "source_size": [
+     300,
+     420
+    ],
+    "steps": [
+     {
+      "op": "quarter_turn",
+      "size_after": [
+       300,
+       420
+      ],
+      "turns_clockwise": 0
+     },
+     {
+      "frame_box": [
+       0,
+       0,
+       300,
+       420
+      ],
+      "op": "page_polygon",
+      "polygon": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        300.0,
+        0.0
+       ],
+       [
+        300.0,
+        420.0
+       ],
+       [
+        0.0,
+        420.0
+       ]
+      ],
+      "size_after": [
+       300,
+       420
+      ]
+     },
+     {
+      "centre": [
+       150.0,
+       210.0
+      ],
+      "degrees_counterclockwise": 0.0,
+      "op": "rotate",
+      "size_after": [
+       300,
+       420
+      ]
+     },
+     {
+      "box": [
+       0,
+       0,
+       300,
+       420
+      ],
+      "op": "crop",
+      "size_after": [
+       300,
+       420
+      ]
+     },
+     {
+      "factor": [
+       1.0,
+       1.0
+      ],
+      "op": "scale",
+      "size_after": [
+       300,
+       420
+      ]
+     }
+    ]
+   },
+   "output": {
+    "bytes": 1718,
+    "format": "tiff",
+    "mode": "L",
+    "name": "nodpi_p1.tif",
+    "pixels_sha256": "2af003a6b91bbdaddfb033140178a7c41f8055f7940186f568341e21cf4138ec",
+    "resolution": null,
+    "sha256": "6a46f6ec6325c3c9eafb058459dcffb22cdf9301b9774997f03f499ce81a8b1a",
+    "size": [
+     300,
+     420
+    ]
+   },
+   "page": 1,
+   "source": {
+    "name": "nodpi.tif",
+    "sha256": "b7c09fb8dd2a9ed7a21c463a15a96f6d5f83d8d81d625d8cc8c48378433653ee"
+   },
+   "source_resolution": {
+    "file_value": null,
+    "origin": "missing",
+    "value": null
+   },
+   "steps": {
+    "content_box": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: the whole page box.",
+     "flags": [
+      "The content_box step was not run: no detector for it is connected yet, so the neutral default (the whole page box) was used."
+     ],
+     "origin": "detected",
+     "value": [
+      0,
+      0,
+      300,
+      420
+     ]
+    },
+    "margin": {
+     "confidence": 1.0,
+     "evidence": "From the margin_mm setting (5 mm).",
+     "flags": [],
+     "origin": "detected",
+     "value": 5.0
+    },
+    "orientation": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: no quarter turn.",
+     "flags": [
+      "The orientation step was not run: no detector for it is connected yet, so the neutral default (no quarter turn) was used."
+     ],
+     "origin": "detected",
+     "value": 0
+    },
+    "page_box": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: the whole levelled page.",
+     "flags": [
+      "The page_box step was not run: no detector for it is connected yet, so the neutral default (the whole levelled page) was used."
+     ],
+     "origin": "detected",
+     "value": [
+      0,
+      0,
+      300,
+      420
+     ]
+    },
+    "skew": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: no skew.",
+     "flags": [
+      "The skew step was not run: no detector for it is connected yet, so the neutral default (no skew) was used."
+     ],
+     "origin": "detected",
+     "value": 0.0
+    },
+    "split": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: one page.",
+     "flags": [
+      "The split step was not run: no detector for it is connected yet, so the neutral default (one page) was used."
+     ],
+     "origin": "detected",
+     "value": {
+      "pages": 1
+     }
+    }
+   },
+   "verdict": "review"
+  },
+  {
+   "flags": [
+    {
+     "reason": "The page_box step was not run: no detector for it is connected yet, so the neutral default (the whole levelled page) was used.",
+     "step": "page_box"
+    },
+    {
+     "reason": "The content_box step was not run: no detector for it is connected yet, so the neutral default (the whole page box) was used.",
+     "step": "content_box"
+    }
+   ],
+   "geometry": {
+    "affine_output_to_source": [
+     0.026176948307873156,
+     0.9996573249755574,
+     -39.53091457171162,
+     -0.9996573249755574,
+     0.026176948307873156,
+     2011.3216947768046
+    ],
+    "affine_source_to_output": [
+     0.026176948307873153,
+     -0.9996573249755573,
+     2011.6672637731913,
+     0.9996573249755573,
+     0.026176948307873153,
+     -13.13289572008172
+    ],
+    "convention": "Continuous pixel coordinates: pixel (i, j) covers [i, i+1) x [j, j+1), x right, y down. An affine [a, b, c, d, e, f] maps (x, y) to (a x + b y + c, d x + e y + f).",
+    "fill": {
+     "colour": 228,
+     "method": "median of the light class (above Otsu's threshold) inside the page"
+    },
+    "source_size": [
+     1400,
+     2000
+    ],
+    "steps": [
+     {
+      "op": "quarter_turn",
+      "size_after": [
+       2000,
+       1400
+      ],
+      "turns_clockwise": 1
+     },
+     {
+      "frame_box": [
+       0,
+       0,
+       1030,
+       1400
+      ],
+      "op": "page_polygon",
+      "polygon": [
+       [
+        0.0,
+        0.0
+       ],
+       [
+        1007.718725875722,
+        0.0
+       ],
+       [
+        1029.7344513939497,
+        1400.0
+       ],
+       [
+        0.0,
+        1400.0
+       ]
+      ],
+      "size_after": [
+       1030,
+       1400
+      ]
+     },
+     {
+      "centre": [
+       515.0,
+       700.0
+      ],
+      "degrees_counterclockwise": 1.5,
+      "op": "rotate",
+      "size_after": [
+       1067,
+       1427
+      ]
+     },
+     {
+      "box": [
+       -12,
+       -12,
+       1079,
+       1439
+      ],
+      "op": "crop",
+      "size_after": [
+       1091,
+       1451
+      ]
+     },
+     {
+      "factor": [
+       1.0,
+       1.0
+      ],
+      "op": "scale",
+      "size_after": [
+       1091,
+       1451
+      ]
+     }
+    ]
+   },
+   "output": {
+    "bytes": 206146,
+    "format": "tiff",
+    "mode": "L",
+    "name": "spread_p1.tif",
+    "pixels_sha256": "49238e16ec878fc30e6222b0a70e5ad79840a00b55fe5f520c76cd8293c2d11e",
+    "resolution": [
+     150.0,
+     150.0
+    ],
+    "sha256": "2155e562698cc88dbdb8b6c55dd7866c1d909205dc4a6fcd5f5de92977ed3516",
+    "size": [
+     1091,
+     1451
+    ]
+   },
+   "page": 1,
+   "source": {
+    "name": "spread.tif",
+    "sha256": "88c0b388d2d9b31442da033dad24b08fbaa8fa8afe4fef90ef4c3cd087551692"
+   },
+   "source_resolution": {
+    "file_value": [
+     150.0,
+     150.0
+    ],
+    "origin": "file",
+    "value": [
+     150.0,
+     150.0
+    ]
+   },
+   "steps": {
+    "content_box": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: the whole page box.",
+     "flags": [
+      "The content_box step was not run: no detector for it is connected yet, so the neutral default (the whole page box) was used."
+     ],
+     "origin": "detected",
+     "value": [
+      0,
+      0,
+      1067,
+      1427
+     ]
+    },
+    "margin": {
+     "confidence": 1.0,
+     "evidence": "From the margin_mm setting (5 mm).",
+     "flags": [],
+     "origin": "detected",
+     "value": 5.0
+    },
+    "orientation": {
+     "confidence": null,
+     "evidence": "Set by hand in fix.json.",
+     "flags": [],
+     "origin": "manual",
+     "value": 1
+    },
+    "page_box": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: the whole levelled page.",
+     "flags": [
+      "The page_box step was not run: no detector for it is connected yet, so the neutral default (the whole levelled page) was used."
+     ],
+     "origin": "detected",
+     "value": [
+      0,
+      0,
+      1067,
+      1427
+     ]
+    },
+    "skew": {
+     "confidence": null,
+     "evidence": "Set by hand in fix.json.",
+     "flags": [],
+     "origin": "manual",
+     "value": 1.5
+    },
+    "split": {
+     "confidence": null,
+     "evidence": "Set by hand in fix.json.",
+     "flags": [],
+     "origin": "manual",
+     "value": {
+      "cut": [
+       [
+        990,
+        0
+       ],
+       [
+        1012,
+        1399
+       ]
+      ],
+      "pages": 2
+     }
+    }
+   },
+   "verdict": "review"
+  },
+  {
+   "flags": [
+    {
+     "reason": "The skew step was not run: no detector for it is connected yet, so the neutral default (no skew) was used.",
+     "step": "skew"
+    }
+   ],
+   "geometry": {
+    "affine_output_to_source": [
+     0.0,
+     1.0,
+     60.0,
+     -1.0,
+     0.0,
+     998.0
+    ],
+    "affine_source_to_output": [
+     0.0,
+     -1.0,
+     998.0,
+     1.0,
+     0.0,
+     -60.0
+    ],
+    "convention": "Continuous pixel coordinates: pixel (i, j) covers [i, i+1) x [j, j+1), x right, y down. An affine [a, b, c, d, e, f] maps (x, y) to (a x + b y + c, d x + e y + f).",
+    "fill": {
+     "colour": 228,
+     "method": "median of the light class (above Otsu's threshold) inside the page"
+    },
+    "source_size": [
+     1400,
+     2000
+    ],
+    "steps": [
+     {
+      "op": "quarter_turn",
+      "size_after": [
+       2000,
+       1400
+      ],
+      "turns_clockwise": 1
+     },
+     {
+      "frame_box": [
+       972,
+       0,
+       2000,
+       1400
+      ],
+      "op": "page_polygon",
+      "polygon": [
+       [
+        972.2812741242777,
+        0.0
+       ],
+       [
+        2000.0,
+        0.0
+       ],
+       [
+        2000.0,
+        1400.0
+       ],
+       [
+        994.2969996425053,
+        1400.0
+       ]
+      ],
+      "size_after": [
+       1028,
+       1400
+      ]
+     },
+     {
+      "centre": [
+       514.0,
+       700.0
+      ],
+      "degrees_counterclockwise": 0.0,
+      "op": "rotate",
+      "size_after": [
+       1028,
+       1400
+      ]
+     },
+     {
+      "box": [
+       30,
+       60,
+       930,
+       1330
+      ],
+      "op": "crop",
+      "size_after": [
+       900,
+       1270
+      ]
+     },
+     {
+      "factor": [
+       1.0,
+       1.0
+      ],
+      "op": "scale",
+      "size_after": [
+       900,
+       1270
+      ]
+     }
+    ]
+   },
+   "output": {
+    "bytes": 15300,
+    "format": "tiff",
+    "mode": "L",
+    "name": "spread_p2.tif",
+    "pixels_sha256": "5fbcb02ed48b81d7515761e76be3b4edb42bcb73d75de4613f6fef5743c3bd52",
+    "resolution": [
+     150.0,
+     150.0
+    ],
+    "sha256": "3f2c7371ecead76fa8d77ad2b586e1953641be1169cb3457e39d94a1b26cb1bd",
+    "size": [
+     900,
+     1270
+    ]
+   },
+   "page": 2,
+   "source": {
+    "name": "spread.tif",
+    "sha256": "88c0b388d2d9b31442da033dad24b08fbaa8fa8afe4fef90ef4c3cd087551692"
+   },
+   "source_resolution": {
+    "file_value": [
+     150.0,
+     150.0
+    ],
+    "origin": "file",
+    "value": [
+     150.0,
+     150.0
+    ]
+   },
+   "steps": {
+    "content_box": {
+     "confidence": null,
+     "evidence": "Set by hand in fix.json.",
+     "flags": [],
+     "origin": "manual",
+     "value": [
+      60,
+      90,
+      900,
+      1300
+     ]
+    },
+    "margin": {
+     "confidence": 1.0,
+     "evidence": "From the margin_mm setting (5 mm).",
+     "flags": [],
+     "origin": "detected",
+     "value": 5.0
+    },
+    "orientation": {
+     "confidence": null,
+     "evidence": "Set by hand in fix.json.",
+     "flags": [],
+     "origin": "manual",
+     "value": 1
+    },
+    "page_box": {
+     "confidence": null,
+     "evidence": "Set by hand in fix.json.",
+     "flags": [],
+     "origin": "manual",
+     "value": [
+      5,
+      8,
+      990,
+      1390
+     ]
+    },
+    "skew": {
+     "confidence": 0.0,
+     "evidence": "Neutral default: no skew.",
+     "flags": [
+      "The skew step was not run: no detector for it is connected yet, so the neutral default (no skew) was used."
+     ],
+     "origin": "detected",
+     "value": 0.0
+    },
+    "split": {
+     "confidence": null,
+     "evidence": "Set by hand in fix.json.",
+     "flags": [],
+     "origin": "manual",
+     "value": {
+      "cut": [
+       [
+        990,
+        0
+       ],
+       [
+        1012,
+        1399
+       ]
+      ],
+      "pages": 2
+     }
+    }
+   },
+   "verdict": "review"
+  }
+ ],
+ "skipped": []
+}

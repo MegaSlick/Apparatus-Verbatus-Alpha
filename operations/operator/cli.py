@@ -28,6 +28,7 @@ from operations.pod.transfer import normalize_transfer_prefix
 
 from . import notify_bridge, review_text
 from . import spend as spend_view
+from . import watch as watch_view
 from .advance import (
     UnsealedBoundaryRefusal,
     boundary_summary,
@@ -36,6 +37,7 @@ from .advance import (
 )
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .ingest import ingest
+from .prepare import prepare as prepare_pages
 from .records import DescriptorStore, ReceiptStore
 from .review import ReadOnlyRun
 from .surface import DEFAULT_FIXTURE, RESUME_TO_STAGE, OperatorSurface, bounded_tail
@@ -166,6 +168,16 @@ def record_unexpected(
     return OperatorError(
         ErrorCode.UNEXPECTED, detail=f"Saved unexpected receipt: {receipt}. {described}"
     )
+
+
+def _positive_int(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a whole number above zero")
+    return value
 
 
 def _first_line(text: str) -> str:
@@ -490,6 +502,18 @@ def build_parser() -> PlainParser:
         ),
     )
 
+    upload.add_argument(
+        "--triage-decision-manifest",
+        type=Path,
+        help="a triage decision manifest, such as `verbatus prepare` writes, to send beside "
+        "the scans; it must hold a row for every sealed file",
+    )
+    upload.add_argument(
+        "--triage-producer-recipe",
+        type=Path,
+        help="the producer recipe written beside that triage decision manifest",
+    )
+
     ingest = verbs.add_parser(
         "ingest",
         help="prepare one folder for the Door: ledger, data gate, triage evidence, and confirmation",
@@ -521,6 +545,41 @@ def build_parser() -> PlainParser:
         help="canonical cluster-confirmation file; omit when confirming no cluster",
     )
 
+    prepare = verbs.add_parser(
+        "prepare",
+        help="prepare page images from a folder of scans, and the triage manifest that has "
+        "the Door cut the same pages from the original scans",
+    )
+    prepare.add_argument("--scans", type=Path, required=True, help="folder of scans; only read")
+    prepare.add_argument(
+        "--out",
+        type=Path,
+        required=True,
+        help="folder for the prepared pages and the triage manifest; a second run over it "
+        "continues the same project and keeps every correction",
+    )
+    prepare.add_argument(
+        "--overrides", type=Path, help="a pagekit-overrides.v1 file of corrections to apply"
+    )
+    prepare.add_argument(
+        "--crop",
+        choices=("none", "page", "content"),
+        help="crop pages: none (pagekit's default, each page its whole levelled side of the "
+        "cut), page (to the page box) or content (to the writing plus a margin)",
+    )
+    cache = prepare.add_mutually_exclusive_group()
+    cache.add_argument(
+        "--cache",
+        type=Path,
+        help="where pagekit's stage cache goes (default: pagekit-cache beside --out); never "
+        "inside the scans folder",
+    )
+    cache.add_argument("--no-cache", action="store_true", help="write no stage cache")
+    prepare.add_argument(
+        "--corpus-id",
+        help="corpus identity for the triage manifest (default: the scans folder's name)",
+    )
+
     run = verbs.add_parser("run", help="run or resume a recorded fixture or real submission")
     run.add_argument("--run-id", required=True, help="a short name for this run")
     run.add_argument(
@@ -545,26 +604,28 @@ def build_parser() -> PlainParser:
     )
     run.add_argument("--data-gate-policy", type=Path, help="approved-storage policy for real input")
     run.add_argument(
+        "--triage-decision-manifest",
+        type=Path,
+        help="triage decisions for the real folder, such as the one `verbatus prepare` writes: "
+        "the Door cuts each page from its original scan as they say",
+    )
+    run.add_argument(
+        "--triage-producer-recipe",
+        type=Path,
+        help="the producer recipe written beside that triage decision manifest",
+    )
+    run.add_argument(
         "--models-config",
         type=Path,
         help="the chair roster to seal into this run (config/models-real.toml for the real "
-        "chairs); always supplied with --serving-recipes-config and "
-        "--witness-context-config",
+        "chairs); always supplied with --serving-recipes-config",
     )
     run.add_argument(
         "--serving-recipes-config",
         type=Path,
         help="the serving catalogue the roster's chairs are served under "
         "(config/serving_recipes_real.toml with the real roster); always supplied with "
-        "--models-config and --witness-context-config",
-    )
-    run.add_argument(
-        "--witness-context-config",
-        type=Path,
-        help="the factual witness-context declaration the Perlector is told about this "
-        "roster's chairs (config/witness_context-real.toml with the real roster; the "
-        "default describes every chair as a synthetic fixture); always supplied with "
-        "--models-config and --serving-recipes-config",
+        "--models-config",
     )
 
     fetch_run = verbs.add_parser(
@@ -646,6 +707,49 @@ def build_parser() -> PlainParser:
     )
 
     verbs.add_parser("status", help="read saved receipts only; it never contacts a provider")
+    watch = verbs.add_parser(
+        "watch",
+        help="follow a pod run from saved copies of its report files; it writes nothing and "
+        "contacts no provider or volume",
+    )
+    watch.add_argument("--run-id", required=True, help="the run pod_run is running")
+    where = watch.add_mutually_exclusive_group(required=True)
+    where.add_argument(
+        "--receipts",
+        type=Path,
+        metavar="FOLDER",
+        help="the folder holding copies of pod-run-report-<run id>.json and its -liveness, "
+        "-timings and -estimate siblings (the hand route's names)",
+    )
+    where.add_argument(
+        "--report", type=Path, help="the copy of the pod-run report, when it has another name"
+    )
+    watch.add_argument(
+        "--lease",
+        type=Path,
+        help="the pod's saved lease, for its creation time and hourly rates; without it spend "
+        "is counted from pod_run's start and its --hourly-usd",
+    )
+    watch.add_argument(
+        "--stale-minutes",
+        type=_positive_int,
+        default=watch_view.STALE_MINUTES_DEFAULT,
+        help="call the copies stale when the newest pod record is older than this "
+        f"(default {watch_view.STALE_MINUTES_DEFAULT})",
+    )
+    watch.add_argument(
+        "--interval",
+        type=_positive_int,
+        metavar="SECONDS",
+        help="read again every this many seconds and show each change, until the run ends; "
+        "without it, show once",
+    )
+    watch.add_argument(
+        "--timeout",
+        type=_positive_int,
+        metavar="SECONDS",
+        help="with --interval, stop after this long even if the run is still going",
+    )
     spend = verbs.add_parser(
         "spend", help="show the reviewed spending policy's ceilings, floor and alert threshold"
     )
@@ -833,6 +937,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     sealed_manifest=args.sealed_manifest,
                     prefix=args.prefix,
                     volume=volume,
+                    **_triage_upload(args),
                 )
             else:
                 surface.submit_and_upload(
@@ -841,6 +946,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     policy_path=args.policy,
                     prefix=args.prefix,
                     volume=volume,
+                    **_triage_upload(args),
                 )
         elif args.verb == "ingest":
             ingest(
@@ -853,6 +959,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                 workspace=workspace,
                 printer=_print,
             )
+        elif args.verb == "prepare":
+            prepare_pages(
+                scans=args.scans,
+                out=args.out,
+                overrides=args.overrides,
+                corpus_id=args.corpus_id,
+                workspace=workspace,
+                printer=_print,
+                state_dir=state,
+                crop=args.crop,
+                cache=args.cache,
+                no_cache=args.no_cache,
+            )
         elif args.verb == "run":
             surface.run(
                 run_id=args.run_id,
@@ -861,9 +980,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 submission_folder=args.submission_folder,
                 submission_manifest=args.submission_manifest,
                 data_gate_policy=args.data_gate_policy,
+                triage_decision_manifest=args.triage_decision_manifest,
+                triage_producer_recipe=args.triage_producer_recipe,
                 models_config=args.models_config,
                 serving_recipes_config=args.serving_recipes_config,
-                witness_context_config=args.witness_context_config,
                 from_stage=args.from_stage,
                 to_stage=args.to_stage,
             )
@@ -894,6 +1014,23 @@ def main(argv: Sequence[str] | None = None) -> int:
             surface.export(run_id=args.run_id, run_root=args.run_root)
         elif args.verb == "status":
             surface.status()
+        elif args.verb == "watch":
+            if args.timeout is not None and args.interval is None:
+                raise OperatorError(ErrorCode.INVALID_COMMAND, detail="--timeout needs --interval")
+            report = args.report or watch_view.report_path_for(args.run_id, args.receipts)
+            try:
+                watch_view.watch(
+                    args.run_id,
+                    report,
+                    lease_path=args.lease,
+                    stale_minutes=args.stale_minutes,
+                    interval=args.interval,
+                    timeout=args.timeout,
+                    printer=_print,
+                )
+            except KeyboardInterrupt:
+                # Stopping a follow is the normal way out, not a failure.
+                _print("Stopped watching; nothing was changed.")
         elif args.verb == "spend":
             policy = args.policy or workspace / "config" / "spend.toml"
             for line in spend_view.show(policy):
@@ -1418,6 +1555,15 @@ def _decide_with_confirmation(
         _print(line)
 
 
+def _triage_upload(args: argparse.Namespace) -> dict[str, Path]:
+    """The triage documents to send beside the scans, only when named."""
+    named = {
+        "triage_decision_manifest": args.triage_decision_manifest,
+        "triage_producer_recipe": args.triage_producer_recipe,
+    }
+    return {key: value for key, value in named.items() if value is not None}
+
+
 def _network_volume(value: str | None, *, verb: str) -> VolumeSpec | None:
     """Read `DATACENTER:VOLUME_ID` without letting a typo become a raw traceback.
 
@@ -1449,7 +1595,8 @@ def _interactive_arguments() -> list[str]:
 
     _print("Verbatus")
     _print(
-        "Choose one word: ingest, triage, upload, run, fetch-run, export, status, spend, review, decide, advance, backup, or clear-leftovers."
+        "Choose one word: prepare, ingest, triage, upload, run, fetch-run, watch, export, "
+        "status, spend, review, decide, advance, backup, or clear-leftovers."
     )
     try:
         verb = input("What would you like to do? ").strip().lower()
@@ -1480,6 +1627,21 @@ def _interactive_arguments() -> list[str]:
             )
             return []
         return ["upload", "--source", source, "--manifest-out", manifest_out]
+    if verb == "prepare":
+        _print("You can drag a folder from Finder into this window instead of typing its path.")
+        scans = _ask_path("Folder of scans to prepare")
+        out = _ask_path("Folder for the prepared pages (a new one, or the one used last time)")
+        if not scans or not out:
+            _print(
+                "Prepare needs the folder of scans and a folder for the prepared pages. "
+                "One was left blank, so nothing changed."
+            )
+            return []
+        arguments = ["prepare", "--scans", scans, "--out", out]
+        overrides = _ask_path("Overrides file with corrections (leave blank for none)")
+        if overrides:
+            arguments.extend(("--overrides", overrides))
+        return arguments
     if verb == "ingest":
         source = _ask("Folder containing the submitted master files")
         output_dir = _ask("Existing empty approved folder for the ready-to-submit records")
@@ -1619,6 +1781,20 @@ def _interactive_arguments() -> list[str]:
             if prefix:
                 arguments.extend(("--evidence-prefix", prefix))
         return arguments
+    if verb == "watch":
+        run_id = _ask("The run ID pod_run is running")
+        receipts = _ask("Folder holding the saved copies of that run's report files")
+        if not run_id or not receipts:
+            _print(
+                "Watch needs a run ID and the folder holding the saved report copies. "
+                "One was left blank, so nothing changed."
+            )
+            return []
+        arguments = ["watch", "--run-id", run_id, "--receipts", receipts]
+        lease = _ask("The pod's saved lease file (leave blank to count spend from the run's start)")
+        if lease:
+            arguments.extend(("--lease", lease))
+        return arguments
     if verb == "export":
         return ["export"]
     if verb == "spend":
@@ -1703,6 +1879,17 @@ def _ask(label: str, *, default: str | None = None) -> str:
     except EOFError:
         answer = ""
     return answer or (default or "")
+
+
+def _ask_path(label: str) -> str:
+    """A path typed or dragged in: a dragged path arrives quoted, or with each space
+    escaped by a backslash, which the shell would have removed."""
+    answer = _ask(label)
+    if len(answer) >= 2 and answer[0] == answer[-1] and answer[0] in "'\"":
+        return answer[1:-1]
+    if "\\" in answer and not Path(answer).expanduser().exists():
+        return re.sub(r"\\(.)", r"\1", answer)
+    return answer
 
 
 def _typed_decide_confirmation(phrase: str) -> str | None:

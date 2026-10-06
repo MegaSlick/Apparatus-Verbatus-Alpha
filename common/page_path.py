@@ -156,6 +156,11 @@ NO_AUTOPSIA: Final = "no-autopsia"
 # Held on every entry of an operator re-read that does not read each act of the
 # reading it replaces as one act of its own (`superseded_acts_kept`).
 SUPERSEDED_ACT_NOT_READ: Final = "superseded-act-not-read"
+# An entry, or every entry of a page reading, with more of its text doubtful or
+# unread than the sealed page-accounting policy's `[doubt]` limits allow, so a
+# reading cannot pass by marking everything doubtful.
+DOUBT_SHARE_HIGH: Final = "doubt-share-high"
+PAGE_DOUBT_SHARE_HIGH: Final = "page-doubt-share-high"
 
 # The act classes an entry mints: placed on the page, or citing no placing id
 # (`page_accounting.placement_boxes`).
@@ -742,8 +747,10 @@ def entry_plans(
     not the rectangle around them), and its own holds: the region's (`reading-unplaced`,
     `duplicate-region`, and `no-autopsia` when no page image was shown) and the
     reading's (`doubt-marks-malformed`, `reading-incomplete`,
-    `entry-no-readable-text`). The page accounting reads the truncations from
-    here, before any act record exists.
+    `entry-no-readable-text`, and `doubt-share-high` over the sealed `[doubt]`
+    limit). The page limit is decided over every entry the page publishes
+    (`hold_doubtful_page`). The page accounting reads the truncations from here,
+    before any act record exists.
 
     An operator re-read is given `superseded`, the entry plans the page counted
     before it. When it does not read each of their acts as one act of its own
@@ -786,6 +793,17 @@ def entry_plans(
             reading_holds.append(READING_INCOMPLETE)
         if not text.strip():
             reading_holds.append(ENTRY_NO_READABLE_TEXT)
+        # An entry with no readable text, or marks that do not parse, is held by
+        # its own rule above.
+        if (
+            text.strip()
+            and assessment["state"] == annotations.ASSESSMENT_ASSESSED
+            and annotations.doubt_exceeds(
+                annotations.doubt_count(text, assessment),
+                accounting_policy.max_act_doubt_share_bp,
+            )
+        ):
+            reading_holds.append(DOUBT_SHARE_HIGH)
         plans.append(
             {
                 "act": act,
@@ -813,6 +831,25 @@ def entry_plans(
         for plan in plans:
             plan["reading_holds"].append(SUPERSEDED_ACT_NOT_READ)
     return plans
+
+
+def page_doubt(plans: list[Mapping[str, Any]]) -> tuple[int, int]:
+    """`(doubtful or unread, out of)` over a page's entry plans together."""
+    counts = [annotations.doubt_count(plan["text"], plan["assessment"]) for plan in plans]
+    return sum(count[0] for count in counts), sum(count[1] for count in counts)
+
+
+def hold_doubtful_page(
+    plans: list[dict[str, Any]], policy: page_accounting.PageAccountingPolicy
+) -> None:
+    """Hold every plan `page-doubt-share-high` when the page's entries together are over the limit.
+
+    Given every entry the page publishes act records for, first reading and
+    counted re-ask together, once, before any of them is published.
+    """
+    if plans and annotations.doubt_exceeds(page_doubt(plans), policy.max_page_doubt_share_bp):
+        for plan in plans:
+            plan["reading_holds"].append(PAGE_DOUBT_SHARE_HIGH)
 
 
 def superseded_acts_kept(
@@ -1006,7 +1043,7 @@ def _feed_render(
     protocol_config: Mapping[str, Any],
     page_id: str,
     ordinal: int,
-    retain: Callable[[bytes], dict[str, str]] | None,
+    retain: Callable[[bytes, str], dict[str, str]] | None,
 ):
     """The page image the sealed `page_image` switch shows, or `None` when it is off."""
     setting = protocol_config["feed"]["page_image"]
@@ -1034,7 +1071,7 @@ def page_feed_of(
     surya_census: dict[str, dict[str, Any]] | None,
     serving_recipe: str | None,
     fixture_placeholders: bool,
-    retain: Callable[[bytes], dict[str, str]] | None = None,
+    retain: Callable[[bytes, str], dict[str, str]] | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, str]]]:
     """One sealed page's `page-feed` payload, its page witnesses and its inputs.
 

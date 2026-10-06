@@ -26,7 +26,7 @@ import pytest
 from admission import RefusalReason, reason_code
 from door import SourceEntry, expand_sources, process_sources
 from image_formats import MAX_SOURCE_BYTES, validate_png
-from PIL import Image
+from PIL import Image, ImageDraw
 from synthetic_sources import (
     blank_pages_pdf,
     content_page_pdf,
@@ -37,6 +37,8 @@ from synthetic_sources import (
 )
 
 import common.imaging as common_imaging
+from common import armarium_formats
+from common.armarium_formats import ArmariumFormats
 from common.chairs import load_models_toml
 from common.contracts.approval import synthetic_fixture_ingress_record
 from common.contracts.canonical import (
@@ -129,11 +131,7 @@ DESIGNATOR_CLI = ROOT / "pipeline" / "2_designator" / "run.py"
 
 
 def _fixture_models():
-    """Load the declared fixture roster for real-binding tests.
-
-    `_real_bindings` validates witness-context identities, so its doubles must
-    expose the same ChairIdentity records the fixture declaration addresses.
-    """
+    """Load the declared fixture roster for real-binding tests."""
     return load_models_toml(ROOT / "config" / "models.toml")
 
 
@@ -222,7 +220,9 @@ def truncated_animated_gif() -> bytes:
     return data[: descriptors[1] + 9]
 
 
-def open_door(tmp_path, sources, *, run_id="r1", ingress=None, register_bytes=None):
+def open_door(
+    tmp_path, sources, *, run_id="r1", ingress=None, register_bytes=None, embed_pixels=False
+):
     """A real tree/context writing the door's own artifacts."""
     tree = RunTree.create(
         tmp_path / "runs",
@@ -266,6 +266,7 @@ def open_door(tmp_path, sources, *, run_id="r1", ingress=None, register_bytes=No
         adapter_revision=RECIPES[DOOR],
         args=None,
         registry=None,
+        armarium_formats=ArmariumFormats(("jsonl",), embed_pixels),
     )
 
 
@@ -954,6 +955,74 @@ def test_a_submission_with_no_duplicates_still_finishes_complete(tmp_path):
         for item in tree.build_manifest(DOOR)["artifacts"]
         if item["kind"] == "duplicate-report"
     ] == []
+
+
+def _admitted_colour_page(tmp_path, *, embed_pixels: bool):
+    page = png(40, 30, color_type=2)
+    files = {"colour.png": page}
+    sources = expand_sources(
+        [{"relative_path": "colour.png", "sha256": digest_bytes(page), "bytes": len(page)}],
+        reader(files),
+    )
+    tree, context = open_door(tmp_path, sources, embed_pixels=embed_pixels)
+    admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
+    return page, tree, context, admitted
+
+
+def test_a_colour_export_that_could_never_be_sealed_is_refused_at_the_door(tmp_path, monkeypatch):
+    """With pixels embedded the export carries the page and its crops. A colour
+    page's crops cost three bytes per pixel, so a limit its crops would pass at one
+    byte per pixel is refused before any reading starts."""
+    page, tree, context, admitted = _admitted_colour_page(tmp_path, embed_pixels=True)
+    limit = armarium_formats.estimated_embedded_export_bytes([(len(page), 40, 30, 1)])
+    assert armarium_formats.estimated_embedded_export_bytes([(len(page), 40, 30, 3)]) > limit
+    whole_page_crop = common_imaging.crop_png(page, {"x": 0, "y": 0, "w": 40, "h": 30})
+    assert len(whole_page_crop) > 40 * 30 * 2, "a colour crop is stored at three bytes a pixel"
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", limit)
+
+    with pytest.raises(ContractError, match=f"{limit}-byte export archive limit"):
+        door._finish_door_run(context, admitted)
+    kinds = {item["kind"] for item in tree.build_manifest(DOOR)["artifacts"]}
+    assert "stage-seal" not in kinds
+
+
+def test_the_export_estimate_allows_for_each_page_s_text_members():
+    """acts.csv and the other text members carry each page's transcriptions again, so a
+    page whose pixels cost almost nothing still counts the per-page text allowance."""
+    allowance = armarium_formats.TEXT_MEMBER_BYTES_PER_PAGE
+    assert allowance > 0
+    assert armarium_formats.estimated_embedded_export_bytes([(0, 1, 1, 1)] * 3) == 3 * (
+        armarium_formats.CROP_PAGE_COVERAGE * 2 + allowance
+    )
+
+
+@pytest.mark.parametrize(("embed_pixels", "within"), [(True, True), (False, False)])
+def test_an_export_within_the_archive_limit_or_without_pixels_passes_the_door(
+    tmp_path, monkeypatch, embed_pixels, within
+):
+    page, _tree, context, admitted = _admitted_colour_page(tmp_path, embed_pixels=embed_pixels)
+    # At exactly the estimate with pixels; with none, any limit at all.
+    limit = (
+        armarium_formats.estimated_embedded_export_bytes([(len(page), 40, 30, 3)]) if within else 1
+    )
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", limit)
+    assert door._finish_door_run(context, admitted) == EXIT_COMPLETE
+
+
+def test_a_door_without_a_sealed_format_choice_is_refused_not_waved_through(tmp_path):
+    files = {"one.png": png(4, 3)}
+    sources = expand_sources(
+        [
+            {"relative_path": path, "sha256": digest_bytes(payload), "bytes": len(payload)}
+            for path, payload in files.items()
+        ],
+        reader(files),
+    )
+    tree, context = open_door(tmp_path, sources)
+    admitted = process_sources(context, tree, sources, reader(files), pdf_settings=PDF_SETTINGS)
+    context.armarium_formats = None
+    with pytest.raises(ContractError, match="no sealed Armarium format selection"):
+        door._finish_door_run(context, admitted)
 
 
 def test_two_identical_corrupt_sources_raise_the_corruption_alarm_not_a_duplicate_refusal(
@@ -4712,3 +4781,121 @@ def test_triage_clusters_without_a_manifest_are_refused_at_the_real_door(tmp_pat
             extra=["--triage-clusters", str(clusters_path)],
         )
     assert not (approved / "runs").exists()
+
+
+def test_a_second_order_triage_row_is_cut_tight_on_its_fill_and_re_derives(tmp_path):
+    """A row with a post-crop and a fill: the Door seals the page under the second
+    recipe, records its post-crop and fill, and the Exemplar's re-derivation agrees."""
+    from common.exemplar_boundary import verify_triage_derivative
+
+    master_image = Image.new("L", (40, 30), 220)
+    ImageDraw.Draw(master_image).rectangle((15, 10, 25, 20), fill=20)
+    output = BytesIO()
+    master_image.save(output, format="PNG")
+    master = output.getvalue()
+    digest = digest_bytes(master)
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 40, "h": 30},
+        {"x": 2, "y": 2, "w": 36, "h": 26},
+        5_000,
+        colour_mode="keep",
+        post_crop_box={"x": -3, "y": 1, "w": 34, "h": 30},
+        fill=[220],
+    )
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256=digest,
+        frame={"width": 40, "height": 30},
+        split=door.triage_manifest.make_split(
+            [part], operation_order=door.triage_manifest.SPLIT_OPERATION_ORDER_V2
+        ),
+        re_shoot_cluster_id=None,
+        confidence=0,
+        mode="auto",
+        actor={"kind": "producer", "identity": "pagekit", "revision": "0.1.0"},
+        human_override=False,
+    )
+    sources = door.expand_sources(
+        [{"relative_path": "frame.png", "sha256": digest}],
+        reader({"frame.png": master}),
+        triage_rows={digest: row},
+    )
+    tree, context = open_door(tmp_path, sources)
+    process_sources(
+        context, tree, sources, reader({"frame.png": master}), pdf_settings=PDF_SETTINGS
+    )
+    record = admissions(tree)[1]
+    assert record["outcome"] == "admitted", record["payload"]
+    contract = record["payload"]["rendered_from"]["render_contract"]
+    derivative = contract["derivative_page"]
+    assert derivative["apply_recipe"]["schema"] == "triage-raster-apply-v2"
+    assert {"operation": "fill", "fill": {"levels": [220]}} in derivative["operations"]
+    assert contract["mode_transform"] == "triage-region-crop-rotate-crop-fill-convert"
+    assert (contract["width"], contract["height"]) == (34, 30)
+    sealed, _geometry = common_imaging.render_triage_derivative(master, page_index=0, part=part)
+    verify_triage_derivative(
+        contract,
+        master,
+        digest,
+        {"sha256": digest, "stored_at": "x", "source_frame_index": 0},
+        digest_bytes(sealed),
+    )
+
+
+def _pagekit_manifest_and_recipes(tmp_path, *, revision="0.1.0"):
+    """A manifest with one pagekit row, pagekit's recipe and the instrument's recipe."""
+    from operations.triage import instrument
+    from operations.triage.pagekit_recipe import make_recipe
+
+    part = door.triage_manifest.make_part(
+        {"x": 0, "y": 0, "w": 4, "h": 4},
+        {"x": 0, "y": 0, "w": 4, "h": 4},
+        0,
+        colour_mode="keep",
+        post_crop_box={"x": 0, "y": 0, "w": 4, "h": 4},
+        fill=[200],
+    )
+    row = door.triage_manifest.make_row(
+        corpus_id="parish-a",
+        source_frame_sha256="a" * 64,
+        frame={"width": 4, "height": 4},
+        split=door.triage_manifest.make_split(
+            [part], operation_order=door.triage_manifest.SPLIT_OPERATION_ORDER_V2
+        ),
+        re_shoot_cluster_id=None,
+        confidence=0,
+        mode="auto",
+        actor={"kind": "producer", "identity": "pagekit", "revision": revision},
+        human_override=False,
+    )
+    manifest = tmp_path / "triage-decision-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {"schema": "triage-decision-manifest-v1", "corpus_id": "parish-a", "records": [row]}
+        )
+    )
+    pagekit = tmp_path / "pagekit-recipe.json"
+    pagekit.write_text(
+        json.dumps(make_recipe(revision="0.1.0", settings_sha256="b" * 64, detector_methods={}))
+    )
+    instrument_recipe = tmp_path / "instrument-recipe.json"
+    instrument_recipe.write_text(json.dumps(instrument.producer_recipe(instrument.load_config())))
+    return manifest, pagekit, instrument_recipe
+
+
+def test_the_door_reads_pagekit_rows_under_pagekits_own_recipe(tmp_path):
+    manifest, pagekit, _instrument = _pagekit_manifest_and_recipes(tmp_path)
+    rows, _clusters, digests = door.load_triage_decisions(manifest, None, pagekit)
+    assert len(rows) == 1 and "triage-producer-recipe" in digests
+
+
+def test_the_door_refuses_a_pagekit_row_its_recipe_does_not_declare(tmp_path):
+    manifest, pagekit, _instrument = _pagekit_manifest_and_recipes(tmp_path, revision="0.2.0")
+    with pytest.raises(ContractError, match="does not declare the manifest's rows"):
+        door.load_triage_decisions(manifest, None, pagekit)
+
+
+def test_the_door_refuses_pagekit_rows_under_the_instruments_recipe(tmp_path):
+    manifest, _pagekit, instrument_recipe = _pagekit_manifest_and_recipes(tmp_path)
+    with pytest.raises(ContractError, match="duplicate-detection instrument's"):
+        door.load_triage_decisions(manifest, None, instrument_recipe)

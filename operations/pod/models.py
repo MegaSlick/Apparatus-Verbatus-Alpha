@@ -47,6 +47,7 @@ def run_report_paths(report: PurePosixPath) -> tuple[PurePosixPath, ...]:
             for name in ("hold", "liveness", "timings")
         ),
         report.with_name(f"{report.stem}-transcript.log"),
+        report.with_name(f"{report.stem}-estimate{report.suffix}"),
     )
 
 
@@ -815,7 +816,24 @@ class PendingCreateIntent:
         )
         self.recovery_request()
 
-    def recovery_request(self) -> PodCreateRequest:
+    def recovery_request(self, requested_at: datetime | None = None) -> PodCreateRequest:
+        """The non-creating launch-token lookup for this intent.
+
+        ``requested_at`` is an instant no later than the create's POST (the
+        pending lease's own creation); it lets a recovered pod whose record
+        cannot be read still be closed over a billing window that starts no
+        later than the pod did.
+        """
+
+        requested = (
+            {}
+            if requested_at is None
+            else {
+                "VERBATUS_REQUESTED_AT": require_utc(requested_at, "recovery requested_at")
+                .isoformat()
+                .replace("+00:00", "Z")
+            }
+        )
         return PodCreateRequest(
             name=self.name,
             gpu_type=self.gpu_type,
@@ -826,11 +844,13 @@ class PendingCreateIntent:
             hard_deadline=self.hard_deadline,
             repository_commit=self.repository_commit,
             template=self.template,
+            # No sealed budget keys on purpose: in `matches` they would refuse every recovered pod.
             metadata={
                 "VERBATUS_LAUNCH_TOKEN": self.launch_token,
                 "VERBATUS_POD_HOURLY_USD": str(self.pod_hourly_usd),
                 "VERBATUS_VOLUME_ONGOING_HOURLY_USD": str(self.volume_hourly_usd),
                 BILLING_CUTOFF_MARGIN_ENV: str(self.billing_cutoff_margin_seconds),
+                **requested,
             },
             recovery_only=True,
         )

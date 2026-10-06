@@ -12,11 +12,14 @@ from types import SimpleNamespace
 import pytest
 from armarium_export import verify_delivered_bundle, verify_export_bundle
 
+from common import armarium_formats
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import ContractError, FatalAccounting
 from common.contracts.identities import artifact_id
 from common.contracts.stages import ARCHETYPUS, ARMARIUM
+from common.runtree import store as runtree_store
 from common.runtree.store import RunTree
+from common.stage import EXIT_COMPLETE, EXIT_FATAL, run_stage
 from conftest import load_stage
 from conftest import rebind_stage_seal_artifact as _rebind_stage_seal
 
@@ -82,23 +85,93 @@ def _export(tree: RunTree) -> dict:
     )
 
 
-def test_run_bound_pixel_embedding_packages_page_and_crop_bytes(tmp_path):
-    formats = tmp_path / "formats.toml"
+@pytest.fixture(scope="module")
+def embedded_run(tmp_path_factory):
+    """A fixture run whose sealed format selection embeds page and crop bytes."""
+    root = tmp_path_factory.mktemp("embedded")
+    formats = root / "formats.toml"
     formats.write_text(
-        'schema = "armarium-formats.v1"\n'
+        'schema = "armarium-formats.v2"\n'
         'formats = ["text-bundle", "acts-database", "jsonl", "review-items"]\n'
-        "embed_pixels = true\n",
+        "embed_pixels = true\nlot = true\n",
         encoding="utf-8",
     )
-    root = tmp_path / "runs"
-    result = _orchestrate(root, "embedded", formats_config=formats)
+    result = _orchestrate(root / "runs", "embedded", formats_config=formats)
     assert result.returncode == 0, result.stderr
+    return root / "runs"
 
-    tree = RunTree(root, "embedded")
+
+def test_run_bound_pixel_embedding_packages_page_and_crop_bytes(tmp_path, embedded_run):
+    tree = RunTree(embedded_run, "embedded")
     reference = _export(tree)["payload"]["bundle"]["reference"]
     manifest = verify_export_bundle(tree.read_bytes(reference["relative_path"]), tmp_path / "clean")
     assert manifest["formats"]["embed_pixels"] is True
     assert manifest["claims"]["pixels"]["resolution_claim"].startswith("embedded pixels")
+
+
+def _rerun_armarium_in_process(monkeypatch, run_root: Path, formats: Path) -> int:
+    """Run the Armarium again in this process, so a lowered read ceiling reaches it."""
+    armarium = load_stage("7_armarium")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run.py",
+            *("--run-root", str(run_root), "--run-id", "embedded"),
+            *("--scenario", "page-unbroken", "--formats-config", str(formats)),
+        ],
+    )
+    return run_stage(armarium.main)
+
+
+def _archive_and_page_ceilings(monkeypatch, tree: RunTree) -> int:
+    """Lower the page ceiling to one byte below the archive, which is still above every
+    other file in the tree, and return the archive's size."""
+    archive = tree.resolve(_export(tree)["payload"]["bundle"]["reference"]["relative_path"])
+    size = archive.stat().st_size
+    others = [path for path in tree.root.rglob("*") if path.is_file() and path != archive]
+    assert max(path.stat().st_size for path in others) < size - 1
+    monkeypatch.setattr(runtree_store, "_MAX_TREE_READ_BYTES", size - 1)
+    return size
+
+
+def test_an_archive_above_the_page_ceiling_but_within_its_own_seals_and_publishes(
+    tmp_path, embedded_run, monkeypatch
+):
+    import bundle as bundle_module
+
+    root = tmp_path / "runs"
+    shutil.copytree(embedded_run, root, symlinks=True)
+    tree = RunTree(root, "embedded")
+    size = _archive_and_page_ceilings(monkeypatch, tree)
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", size)
+    shutil.rmtree(tree.root / "7_armarium")
+
+    assert (
+        _rerun_armarium_in_process(monkeypatch, root, embedded_run.parent / "formats.toml")
+        == EXIT_COMPLETE
+    )
+    out = tmp_path / "delivery"
+    bundle_module.publish(RunTree(root, "embedded"), out)
+    assert (out / "armarium-export.zip").stat().st_size == size
+
+
+def test_an_archive_over_its_ceiling_is_refused_by_name_before_it_is_stored(
+    tmp_path, embedded_run, monkeypatch, capsys
+):
+    root = tmp_path / "runs"
+    shutil.copytree(embedded_run, root, symlinks=True)
+    tree = RunTree(root, "embedded")
+    size = _archive_and_page_ceilings(monkeypatch, tree)
+    monkeypatch.setattr(armarium_formats, "MAX_EXPORT_ARCHIVE_BYTES", size - 1)
+    shutil.rmtree(tree.root / "7_armarium")
+
+    assert (
+        _rerun_armarium_in_process(monkeypatch, root, embedded_run.parent / "formats.toml")
+        == EXIT_FATAL
+    )
+    assert f"{size - 1}-byte export archive limit" in capsys.readouterr().err
+    assert not (tree.root / "7_armarium" / "blobs").exists()
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,201 @@
+# Settings for `python -m pagekit prepare`. Every value here is a starting guess. None
+# has been calibrated on real pages, so each carries status = "UNMEASURED" and the
+# manifest says thresholds_measured = false until every one is measured and its status
+# changed to "MEASURED".
+
+[overlap_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "How far, in millimetres, each page of a split spread keeps past the cut, so a stroke crossing the fold appears whole on at least one page."
+
+[margin_mm]
+value = 5.0
+status = "UNMEASURED"
+meaning = "The margin, in millimetres, added around the content box when no margin is set by hand."
+
+[margin_allowance_mm]
+value = 2.0
+status = "UNMEASURED"
+meaning = "How far, in millimetres, the margin may run past the page box before it is clamped."
+
+[min_plausible_dpi]
+value = 150
+status = "UNMEASURED"
+meaning = "The lowest resolution, in dots per inch on either axis, accepted from a source file without an override."
+
+[max_plausible_dpi]
+value = 1200
+status = "UNMEASURED"
+meaning = "The highest resolution, in dots per inch on either axis, accepted from a source file without an override."
+
+[max_output_dpi]
+value = 0
+status = "UNMEASURED"
+meaning = "Pages whose resolution is above this are shrunk to it by area averaging; 0 keeps the source resolution. Pages are never enlarged."
+
+[paper_estimate_long_side_px]
+value = 800
+status = "UNMEASURED"
+meaning = "Long side, in pixels, of the reduced working copy the paper colour is measured on."
+
+[output_format]
+value = "tiff"
+status = "UNMEASURED"
+meaning = "The lossless image format of prepared pages: tiff with deflate compression (the default), or png. No lossy format is offered."
+
+# --- Connecting the detectors (spec 0005) -------------------------------------------
+
+[detector_working_dpi]
+value = 150
+status = "UNMEASURED"
+meaning = "Resolution of the reduced copy of a levelled page that the page-box and content-box detectors are given; at least their own working resolutions (50 and 100 dpi), so they decide as on the original."
+
+[unknown_dpi_assumed]
+value = 300
+status = "UNMEASURED"
+meaning = "Resolution the detectors measure a page at when the source has no usable resolution. The page is flagged for its resolution either way."
+
+[compare_skew_deg]
+value = 1.0
+status = "UNMEASURED"
+meaning = "How far, in degrees, a confident detected skew may differ from one set by hand before the difference is reported in the evidence."
+
+[compare_cut_mm]
+value = 5.0
+status = "UNMEASURED"
+meaning = "How far, in millimetres, a confident detected cut may lie from one set by hand before the difference is reported in the evidence."
+
+[compare_box_mm]
+value = 5.0
+status = "UNMEASURED"
+meaning = "How far, in millimetres, any side of a confident detected page or content box may lie from one set by hand before the difference is reported in the evidence."
+
+# --- Volume-wide checks (finding 0011) ----------------------------------------------
+
+[volume_min_pages]
+value = 8
+status = "UNMEASURED"
+meaning = "The fewest pages with a measurement for the batch to be compared on it; a smaller batch is not compared."
+
+[volume_outlier_distance]
+value = 4.0
+status = "UNMEASURED"
+meaning = "How many spreads from the batch median a page's measurement must lie to be flagged. The spread is 1.4826 times the median absolute deviation, held at least at its floor."
+
+[volume_skew_floor_deg]
+value = 0.25
+status = "UNMEASURED"
+meaning = "The smallest spread, in degrees, used for skew, so a very even batch does not flag tiny differences."
+
+[volume_size_floor_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "The smallest spread, in millimetres, used for the content box's width and height."
+
+[volume_margin_floor_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "The smallest spread, in millimetres, used for the margins between the page box and the content box."
+
+# --- The review sheet ---------------------------------------------------------------
+
+[preview_long_side_px]
+value = 320
+status = "UNMEASURED"
+meaning = "Long side, in pixels, of the preview of each original embedded in review.html; each prepared page's preview is half that. Previews are never full size."
+
+# --- Measuring against a hand-checked answer file (finding 0035) --------------------
+
+[measure_skew_tolerance_deg]
+value = 0.3
+status = "UNMEASURED"
+meaning = "A detected skew within this many degrees of the hand-checked one counts as right in `measure`."
+
+[measure_cut_tolerance_mm]
+value = 2.0
+status = "UNMEASURED"
+meaning = "A detected cut whose top and bottom lie within this many millimetres of the hand-checked cut counts as right in `measure`."
+
+[measure_box_tolerance_mm]
+value = 3.0
+status = "UNMEASURED"
+meaning = "A detected content box whose every side lies within this many millimetres of the hand-checked box counts as right in `measure`."
+
+# --- Spec 0007: the orientation tag, a grey main page, padding --------------------
+
+[trust_orientation_tag]
+value = 1
+status = "UNMEASURED"
+meaning = "1 applies a file's orientation tag (Exif tag 274) before everything else; 0 takes every source as stored. A tag_trust line in the overrides file sets it for one source."
+
+[grey_rule]
+value = "luminance"
+status = "UNMEASURED"
+meaning = "How a page chosen grey is made from a colour source whose channels differ: luminance (0.299 R + 0.587 G + 0.114 B), red, green or blue. A source with equal channels takes the common channel, exactly."
+
+[colour_working_dpi]
+value = 200
+status = "UNMEASURED"
+meaning = "Resolution of the reduced copy of a page on which its colour is measured before it is made grey."
+
+[colour_noise_spread]
+value = 3.0
+status = "UNMEASURED"
+meaning = "The paper's colour noise is its median chroma (largest minus smallest channel) plus this many times its median absolute deviation, scaled to a standard deviation; taken from the most neutral paper, so a pale colour over part of the page does not hide itself."
+
+[colour_speck_mm2]
+value = 0.05
+status = "UNMEASURED"
+meaning = "A connected piece of colour smaller than this, in square millimetres, is a speck (dust, a stray pixel) and does not count; lines of any width, such as fine ruling, are larger and do."
+
+[colour_chroma_margin]
+value = 12
+status = "UNMEASURED"
+meaning = "How many levels of chroma above the paper's noise a pixel must be to count as coloured."
+
+[colour_min_area_mm2]
+value = 2.0
+status = "UNMEASURED"
+meaning = "The coloured area, in square millimetres (about a small mark), at which a page holds colour that grey would remove."
+
+[padding_mm]
+value = 0.0
+status = "UNMEASURED"
+meaning = "Blank paper colour added around each finished page, in millimetres, converted per axis with the resolution. Separate from the margin, which keeps photographed paper. 0 adds none."
+
+[padding_px]
+value = 0
+status = "UNMEASURED"
+meaning = "The same padding in output pixels; use this or padding_mm, not both. 0 adds none."
+
+# --- Spec 0008: split-first defaults and the stage cache --------------------------
+
+[crop]
+value = "none"
+status = "UNMEASURED"
+meaning = "Whether pages are cropped: none (the default: each page is its whole levelled side of the cut), page (to the page box) or content (to the content box plus the margin). A crop line in the overrides file sets one page."
+
+[crop_detectors_when_off]
+value = 0
+status = "UNMEASURED"
+meaning = "1 runs the page-box and content-box detectors even when cropping is off, to report in the evidence what they would have cut; they never change the page. 0 (the default) does not run them."
+
+[stage_cache]
+value = 1
+status = "UNMEASURED"
+meaning = "1 writes the stage cache: each step's image of each source and page, for looking only; 0 writes none."
+
+[stage_cache_full]
+value = 0
+status = "UNMEASURED"
+meaning = "1 also keeps full-resolution lossless images of the source as opened and of each page's side and levelled page in the stage cache; 0 (the default) keeps small previews only. The real images are made once, at output, from the original."
+
+[stage_cache_folder]
+value = ""
+status = "UNMEASURED"
+meaning = "Where the stage cache goes; empty means a folder named pagekit-cache beside the output folder. Never inside a source folder."
+
+[cache_preview_long_side_px]
+value = 320
+status = "UNMEASURED"
+meaning = "Long side, in pixels, of the previews in the stage cache."

@@ -56,9 +56,23 @@ def show(policy_path: str | Path) -> list[str]:
         f"(policy SHA-256 {policy_digest})",
         f"- Notification-only balance alert: ${policy.account_balance_alert_usd} "
         f"(policy SHA-256 {policy_digest})",
-        f"- Hard lifetime ceiling: {policy.hard_lifetime_seconds} seconds "
+        "- Launch lifetime (the deadline a launch sets at creation): "
+        f"{_duration(policy.hard_lifetime_seconds)} (policy SHA-256 {policy_digest})",
+        f"- Soft maximum: {_duration(policy.soft_max_seconds)} and "
+        f"${policy.soft_max_cost_usd}, whichever comes first; the guard's deadline sits here "
+        f"(policy SHA-256 {policy_digest})",
+        f"- Hard maximum: {_duration(policy.hard_max_seconds)} and "
+        f"${policy.hard_max_cost_usd}; an extension by the lead may not pass it "
         f"(policy SHA-256 {policy_digest})",
     ]
+
+
+def _duration(seconds: int | None) -> str:
+    """Seconds as the policy records them, with hours beside them for reading."""
+
+    if seconds is None:
+        return "unset"
+    return f"{seconds} seconds ({seconds / 3600:.3g} h)"
 
 
 def _recorded_text(value: str) -> str:

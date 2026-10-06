@@ -22,6 +22,9 @@ import pytest
 
 from common.contracts.approval import ApprovalRecordReference
 from common.contracts.canonical import canonical_bytes
+from common.contracts.errors import SchemaRefusal
+from common.contracts.identities import artifact_id
+from common.contracts.stages import ARMARIUM
 from operations.pod.transfer import TransferReport
 from operations.submit import gate
 from operations.submit import submit as submission_door
@@ -1169,7 +1172,15 @@ def test_cli_run_carries_real_ingress_options_to_the_operator_surface(
     assert observed["data_gate_policy"] == policy
 
 
-@pytest.mark.parametrize("orphan", ["submission_manifest", "data_gate_policy"])
+@pytest.mark.parametrize(
+    "orphan",
+    [
+        "submission_manifest",
+        "data_gate_policy",
+        "triage_decision_manifest",
+        "triage_producer_recipe",
+    ],
+)
 def test_run_refuses_a_real_ingress_control_without_a_submission_folder(
     tmp_path: Path, orphan: str
 ) -> None:
@@ -1238,6 +1249,26 @@ def test_real_ingress_paths_are_made_absolute_against_the_operators_own_cwd(
         elsewhere / "approved" / "submission-ledger.json"
     )
     assert _argv_value(command, "--data-gate-policy") == str(elsewhere / "data-gate-policy.json")
+
+
+def test_a_triage_manifest_reaches_the_door_beside_the_real_submission(tmp_path: Path) -> None:
+    """`verbatus prepare` hands the Door its geometry through these two flags."""
+
+    surface, observed = _recording_surface(tmp_path)
+    manifest = tmp_path / "prepared" / "triage-decision-manifest.json"
+    recipe = tmp_path / "prepared" / "triage-producer-recipe.json"
+
+    with pytest.raises(OperatorError):
+        surface.run(
+            run_id="prepared-real",
+            submission_folder=tmp_path / "scans",
+            triage_decision_manifest=manifest,
+            triage_producer_recipe=recipe,
+        )
+
+    command, _cwd = observed[0]
+    assert _argv_value(command, "--triage-decision-manifest") == str(manifest)
+    assert _argv_value(command, "--triage-producer-recipe") == str(recipe)
 
 
 @pytest.mark.hostile_local
@@ -1708,9 +1739,9 @@ def test_run_refuses_a_complete_aggregate_with_no_act_partition(
     import operations.operator.surface as surface_module
 
     monkeypatch.setattr(
-        surface_module.RunTree,
-        "read_artifact",
-        lambda self, stage, kind, identity: {
+        surface_module,
+        "verify_final_seal",
+        lambda _tree: {
             "payload": {
                 "aggregate": {"status": "complete", "reasons": []},
                 "pages": [{"ordinal": 1}],
@@ -1748,11 +1779,7 @@ def test_the_export_reader_refuses_non_list_members_before_any_receipt(
 
     payload = {"aggregate": {}, "pages": [], "delivered": [], "non_delivered": []}
     payload[member] = "not a list"
-    monkeypatch.setattr(
-        surface_module.RunTree,
-        "read_artifact",
-        lambda self, stage, kind, identity: {"payload": payload},
-    )
+    monkeypatch.setattr(surface_module, "verify_final_seal", lambda _tree: {"payload": payload})
     with pytest.raises(ValueError, match=f"{member} is not a list"):
         surface._armarium_export(tmp_path, "r1")
 
@@ -1768,11 +1795,7 @@ def test_the_export_reader_refuses_a_member_missing_entirely(
 
     payload = {"aggregate": {}, "pages": [], "delivered": [], "non_delivered": []}
     del payload[member]
-    monkeypatch.setattr(
-        surface_module.RunTree,
-        "read_artifact",
-        lambda self, stage, kind, identity: {"payload": payload},
-    )
+    monkeypatch.setattr(surface_module, "verify_final_seal", lambda _tree: {"payload": payload})
     with pytest.raises(ValueError, match=f"missing {member}"):
         surface._armarium_export(tmp_path, "r1")
 
@@ -2132,6 +2155,59 @@ def test_re_exporting_a_run_after_the_tree_changed_does_not_overwrite_the_first_
     assert first_receipt["sha256"] == hashlib.sha256(b"first export bytes").hexdigest()
     assert first_receipt["sha256"] == sha256_file(first_bundle)
     assert second_receipt["sha256"] == sha256_file(second_bundle)
+
+
+def test_export_refuses_a_run_whose_armarium_completion_seal_is_gone(tmp_path: Path) -> None:
+    """An export record under an unsealed Armarium is not a completed export to copy out."""
+
+    surface = _surface(tmp_path)
+    outcome = surface.run(run_id="unsealed-export-run", scenario="page-unbroken")
+    assert outcome.state == "complete"
+    armarium = outcome.run_root / outcome.run_id / "7_armarium"
+    (seal,) = (armarium / "artifacts" / "stage-seal").glob("*.json")
+    seal.unlink()
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id="unsealed-export-run")
+
+    assert refusal.value.code is ErrorCode.EXPORT_UNSEALED
+    assert "stage-seal" in str(refusal.value.detail)
+    exports = surface.state_root / "exports"
+    assert not exports.exists() or list(exports.iterdir()) == []
+
+
+@pytest.mark.parametrize("change", ("seal-refused", "record-replaced"))
+def test_export_refuses_a_seal_that_changed_while_the_evidence_was_copied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """The copied evidence must still be what the seal witnessed once the copy is done."""
+
+    surface = _surface(tmp_path)
+    surface.run(run_id="copy-window-run", scenario="page-unbroken")
+    real_verify = surface_module.verify_final_seal
+    calls = 0
+
+    def changes_after_the_first_check(tree):  # type: ignore[no-untyped-def]
+        nonlocal calls
+        calls += 1
+        record = real_verify(tree)
+        if calls == 1:
+            return record
+        if change == "seal-refused":
+            raise SchemaRefusal("simulated: armarium stage-seal no longer verifies")
+        return {**record, "payload": {**record["payload"], "scenario": "another"}}
+
+    monkeypatch.setattr(surface_module, "verify_final_seal", changes_after_the_first_check)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.export(run_id="copy-window-run")
+
+    assert calls == 2
+    assert refusal.value.code is ErrorCode.EXPORT_UNSEALED
+    exports = surface.state_root / "exports"
+    assert list(exports.iterdir()) == []
+    failure = surface.receipts.read(surface._descriptor_receipt("export"))["payload"]
+    assert failure["state"] != "complete"
 
 
 def test_export_refuses_a_symlink_at_an_existing_content_addressed_bundle(
@@ -2516,6 +2592,44 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
         "--evidence-key",
         "pod-transfer-journal.json",
     ]
+
+
+def test_interactive_watch_asks_for_the_run_the_receipts_and_an_optional_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    answers = iter(("watch", "brought-home", "/local/receipts", "/local/lease.json"))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    assert cli._interactive_arguments() == [
+        "watch",
+        "--run-id",
+        "brought-home",
+        "--receipts",
+        "/local/receipts",
+        "--lease",
+        "/local/lease.json",
+    ]
+
+    answers = iter(("watch", "brought-home", "/local/receipts", ""))
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    assert cli._interactive_arguments() == [
+        "watch",
+        "--run-id",
+        "brought-home",
+        "--receipts",
+        "/local/receipts",
+    ]
+
+
+@pytest.mark.parametrize("blank", [1, 2])
+def test_interactive_watch_explains_a_blank_required_answer(
+    blank: int, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    given = ["watch", "brought-home", "/local/receipts", ""]
+    given[blank] = ""
+    answers = iter(given)
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    assert cli._interactive_arguments() == []
+    assert "Watch needs a run ID and the folder" in capsys.readouterr().out
 
 
 def test_interactive_fetch_run_needs_no_evidence_key_at_all(
@@ -3106,25 +3220,22 @@ def test_repository_commit_lookup_is_bounded_and_names_a_timeout(
 # --- the run verb carries the real-roster pair, together or not at all --------
 
 
-def test_run_forwards_the_roster_trio_to_the_door_and_the_orchestrator(tmp_path: Path) -> None:
+def test_run_forwards_the_roster_pair_to_the_door_and_the_orchestrator(tmp_path: Path) -> None:
     surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
     roster = tmp_path / "config" / "models-real.toml"
     catalogue = tmp_path / "config" / "serving_recipes_real.toml"
-    witness_context = tmp_path / "config" / "witness_context-real.toml"
 
     with pytest.raises(OperatorError) as interrupted:
         surface.run(
             run_id="real-roster-run",
             models_config=roster,
             serving_recipes_config=catalogue,
-            witness_context_config=witness_context,
         )
 
     assert interrupted.value.code is ErrorCode.RUN_INTERRUPTED
     [(command, _cwd)] = observed
     assert _argv_value(command, "--models-config") == str(roster.absolute())
     assert _argv_value(command, "--serving-recipes-config") == str(catalogue.absolute())
-    assert _argv_value(command, "--witness-context-config") == str(witness_context.absolute())
 
 
 def test_run_without_a_roster_names_neither_flag(tmp_path: Path) -> None:
@@ -3135,18 +3246,14 @@ def test_run_without_a_roster_names_neither_flag(tmp_path: Path) -> None:
 
     [(command, _cwd)] = observed
     assert "--models-config" not in command and "--serving-recipes-config" not in command
-    assert "--witness-context-config" not in command
 
 
-@pytest.mark.parametrize(
-    "supplied", ["models_config", "serving_recipes_config", "witness_context_config"]
-)
+@pytest.mark.parametrize("supplied", ["models_config", "serving_recipes_config"])
 def test_run_refuses_part_of_a_roster_before_any_child_starts(
     tmp_path: Path, supplied: str
 ) -> None:
-    """One roster part without the others would seal the real chairs against the
-    fixture catalogue, or describe them to the Perlector with the fixture
-    declaration; the orchestrator digests all three together."""
+    """One half of the pair without the other would seal the real chairs against
+    the fixture catalogue, or the fixture chairs against the real one."""
 
     surface, observed = _recording_surface(tmp_path, faults=Faults(laptop_crash=True))
 
@@ -3154,11 +3261,11 @@ def test_run_refuses_part_of_a_roster_before_any_child_starts(
         surface.run(run_id="part-roster", **{supplied: tmp_path / "part.toml"})
 
     assert refusal.value.code is ErrorCode.INVALID_COMMAND
-    assert "supply all three or none" in str(refusal.value.detail)
+    assert "supply both or neither" in str(refusal.value.detail)
     assert not observed
 
 
-def test_cli_run_carries_the_roster_trio_to_the_operator_surface(
+def test_cli_run_carries_the_roster_pair_to_the_operator_surface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     observed: dict[str, object] = {}
@@ -3173,7 +3280,6 @@ def test_cli_run_carries_the_roster_trio_to_the_operator_surface(
     monkeypatch.setattr(cli, "OperatorSurface", ObservedSurface)
     roster = tmp_path / "models-real.toml"
     catalogue = tmp_path / "serving_recipes_real.toml"
-    witness_context = tmp_path / "witness_context-real.toml"
     # `run` is refused before dispatch on a workspace that is not a checkout;
     # this test is about the arguments reaching the surface.
     for resource in ("pipeline", "config", "proof"):
@@ -3191,15 +3297,12 @@ def test_cli_run_carries_the_roster_trio_to_the_operator_surface(
                 str(roster),
                 "--serving-recipes-config",
                 str(catalogue),
-                "--witness-context-config",
-                str(witness_context),
             ]
         )
         == 0
     )
     assert observed["models_config"] == roster
     assert observed["serving_recipes_config"] == catalogue
-    assert observed["witness_context_config"] == witness_context
 
 
 # --- fetch-run: the tree comes home digest-checked, never overwriting ---------
@@ -4257,10 +4360,13 @@ def test_the_tree_read_ceiling_stays_below_what_fetch_run_will_pull() -> None:
     record ceiling is the tighter of the two and must stay that way.
     """
 
+    from common.armarium_formats import MAX_EXPORT_ARCHIVE_BYTES
     from common.runtree import store as runtree_store
 
     assert runtree_store._MAX_TREE_READ_BYTES < surface_module.MAX_FETCH_OBJECT_BYTES
     assert runtree_store.MAX_RECORD_READ_BYTES <= runtree_store._MAX_TREE_READ_BYTES
+    # An export archive that seals must also come home.
+    assert MAX_EXPORT_ARCHIVE_BYTES <= surface_module.MAX_FETCH_OBJECT_BYTES
 
 
 def test_fetch_run_never_overwrites_a_local_file_that_differs(tmp_path: Path) -> None:
@@ -4485,13 +4591,11 @@ def test_every_run_receipt_carries_identity_configuration_commit_and_output(
     surface._armarium_export = _complete_export  # type: ignore[method-assign]
     roster = ROOT / "config" / "models-real.toml"
     catalogue = ROOT / "config" / "serving_recipes_real.toml"
-    witness_context = ROOT / "config" / "witness_context-real.toml"
 
     surface.run(
         run_id="documented-run",
         models_config=roster,
         serving_recipes_config=catalogue,
-        witness_context_config=witness_context,
     )
 
     started, finished = _run_receipts(surface, "documented-run")
@@ -4510,7 +4614,6 @@ def test_every_run_receipt_carries_identity_configuration_commit_and_output(
             "sha256": sha256_file(roster),
         }
         assert configuration["serving_recipes_config"]["sha256"] == sha256_file(catalogue)
-        assert configuration["witness_context_config"]["sha256"] == sha256_file(witness_context)
         assert configuration["submission_manifest"] is None
         commit = receipt["repository_commit"]
         assert (commit is None) != (receipt["repository_commit_unreadable"] is None)
@@ -4631,6 +4734,38 @@ def test_a_run_held_before_the_armarium_is_a_held_run_that_keeps_its_reason(
         ("decision", f"Verbatus run held-early is held and needs a decision: {reason}")
     ]
     assert f"  Hold reason: {reason}" in surface.status()
+
+
+def test_a_held_exit_over_an_export_record_whose_seal_fails_names_the_seal_not_a_hold(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An export record exists, so "held before the Armarium, no export yet" would be false."""
+
+    surface = _surface(tmp_path)
+    surface.runner = lambda *a, **k: subprocess.CompletedProcess(  # type: ignore[method-assign]
+        args=[], returncode=3, stdout="", stderr="armarium: held\n"
+    )
+    tree = surface_module.RunTree(surface.state_root / "runs", "unsealed-held")
+    export = tree.resolve(
+        tree.artifact_path(ARMARIUM, "export", artifact_id(ARMARIUM, "export", "export", None))
+    )
+    export.parent.mkdir(parents=True)
+    export.write_text("{}", encoding="utf-8")
+
+    def refuse(_tree):  # type: ignore[no-untyped-def]
+        raise SchemaRefusal("simulated: armarium stage-seal no longer verifies")
+
+    monkeypatch.setattr(surface_module, "verify_final_seal", refuse)
+
+    with pytest.raises(OperatorError) as failure:
+        surface.run(run_id="unsealed-held")
+
+    assert failure.value.code is ErrorCode.RUN_FAILED
+    detail = str(failure.value.detail)
+    assert "could not be read" in detail
+    assert "stage-seal no longer verifies" in detail
+    _started, ended = _run_receipts(surface, "unsealed-held")
+    assert ended["state"] == "armarium-record-unreadable"
 
 
 def test_an_interrupt_or_a_sigterm_during_the_run_leaves_a_resumable_receipt(
@@ -4801,7 +4936,8 @@ def test_export_with_a_run_id_uses_that_run_even_after_another_was_recorded(
 
     bundle = surface.export(run_id="older")
 
-    assert seen == [(surface.state_root / "older-runs", "older")]
+    # Read once to check it and once more after the copy, both from the named run.
+    assert seen == [(surface.state_root / "older-runs", "older")] * 2
     assert bundle.name.startswith("older-armarium-base-")
     with pytest.raises(OperatorError) as missing:
         surface.export(run_id="never-recorded")
@@ -4853,7 +4989,8 @@ def test_export_run_root_disambiguates_a_colliding_run_id(
 
     surface.export(run_id="dup", run_root=surface.state_root / "root-b")
 
-    assert seen == [(surface.state_root / "root-b", "dup")]
+    # Read once to check it and once more after the copy, both from the named run.
+    assert seen == [(surface.state_root / "root-b", "dup")] * 2
 
 
 def test_export_run_root_naming_no_matching_receipt_is_refused(tmp_path: Path) -> None:
@@ -5298,3 +5435,181 @@ def test_a_resume_range_names_both_ends_ends_at_the_export_and_needs_a_known_run
         ["run", "--run-id", "r", "--from", "recensor", "--to", "armarium"]
     )
     assert (parsed.from_stage, parsed.to_stage) == ("recensor", "armarium")
+
+
+def _triage_documents(
+    tmp_path: Path, source: Path, *, skip: str | None = None, actor: dict | None = None
+):
+    """A decision manifest with one whole-frame row per sealed page, and a recipe."""
+    from common.contracts import triage as triage_contract
+
+    rows = []
+    for page in sorted(source.iterdir()):
+        if page.name == skip:
+            continue
+        part = triage_contract.make_part(
+            {"x": 0, "y": 0, "w": 10, "h": 10},
+            {"x": 0, "y": 0, "w": 10, "h": 10},
+            0,
+            colour_mode="keep",
+        )
+        rows.append(
+            triage_contract.make_row(
+                corpus_id="synthetic",
+                source_frame_sha256=hashlib.sha256(page.read_bytes()).hexdigest(),
+                frame={"width": 10, "height": 10},
+                split=triage_contract.make_split([part]),
+                re_shoot_cluster_id=None,
+                confidence=0,
+                mode="auto",
+                actor=actor or {"kind": "human", "identity": "lead", "revision": None},
+                human_override=False,
+            )
+        )
+    manifest = tmp_path / "triage-decision-manifest.json"
+    manifest.write_bytes(
+        canonical_bytes(
+            {"schema": "triage-decision-manifest-v1", "corpus_id": "synthetic", "records": rows}
+        )
+    )
+    from operations.triage.pagekit_recipe import make_recipe
+
+    recipe = tmp_path / "triage-producer-recipe.json"
+    recipe.write_bytes(
+        canonical_bytes(
+            make_recipe(revision="0.1.0", settings_sha256="b" * 64, detector_methods={})
+        )
+    )
+    return manifest, recipe
+
+
+def test_upload_carries_the_triage_documents_beside_the_scans(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(tmp_path, source)
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    surface.upload(
+        source,
+        sealed_manifest=manifest,
+        target=store,
+        triage_decision_manifest=triage,
+        triage_producer_recipe=recipe,
+    )
+
+    # Published before the submission's own manifest, which marks the upload complete.
+    assert store.puts[-3:] == [
+        "submission-triage-decision-manifest.json",
+        "submission-triage-producer-recipe.json",
+        "submission-manifest.json",
+    ]
+    volume = tmp_path / "volume"
+    assert (volume / "submission-triage-decision-manifest.json").read_bytes() == (
+        triage.read_bytes()
+    )
+    assert (volume / "submission-triage-producer-recipe.json").read_bytes() == recipe.read_bytes()
+    payload = surface.receipts.read(surface._descriptor_receipt("upload"))["payload"]
+    assert payload["triage"] == {
+        "decision_manifest_sha256": hashlib.sha256(triage.read_bytes()).hexdigest(),
+        "producer_recipe_sha256": hashlib.sha256(recipe.read_bytes()).hexdigest(),
+    }
+
+
+def test_upload_refuses_a_triage_manifest_that_misses_a_sealed_scan(tmp_path: Path) -> None:
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(tmp_path, source, skip="page-two.bin")
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=store,
+            triage_decision_manifest=triage,
+            triage_producer_recipe=recipe,
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "has no row" in str(refusal.value.detail)
+    assert store.puts == []
+
+
+def test_upload_never_replaces_the_triage_documents_a_submission_was_sent_with(
+    tmp_path: Path,
+) -> None:
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(tmp_path, source)
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+    arguments = dict(sealed_manifest=manifest, target=store, triage_producer_recipe=recipe)
+    surface.upload(source, triage_decision_manifest=triage, **arguments)
+
+    corrected = json.loads(triage.read_text())
+    corrected["corpus_id"] = "renamed"
+    for row in corrected["records"]:
+        row["corpus_id"] = "renamed"
+        row.pop("manifest_row_sha256")
+        from common.contracts import triage as triage_contract
+
+        row.update(triage_contract.make_row(**row))
+    triage.write_bytes(canonical_bytes(corrected))
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(source, triage_decision_manifest=triage, **arguments)
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "--prefix" in str(refusal.value.detail)
+
+
+@pytest.mark.parametrize("problem", ["malformed recipe", "rows the recipe does not declare"])
+def test_upload_refuses_a_producer_recipe_the_door_would_refuse(tmp_path: Path, problem) -> None:
+    """The Door's own recipe checks run before anything is sent, so a pod is never
+    started on triage the Door would refuse."""
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(
+        tmp_path,
+        source,
+        actor={"kind": "producer", "identity": "operations.triage.producer", "revision": "r1"},
+    )
+    if problem == "malformed recipe":
+        recipe.write_bytes(b'{"schema":"pagekit-producer-recipe.v1"}')
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=store,
+            triage_decision_manifest=triage,
+            triage_producer_recipe=recipe,
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "producer recipe" in str(refusal.value.detail), refusal.value.detail
+    assert store.puts == []
+
+
+def test_upload_never_adds_triage_to_a_submission_already_marked_complete(
+    tmp_path: Path,
+) -> None:
+    """A pod may already have run the completed submission without triage."""
+    surface = _surface(tmp_path)
+    source, manifest = _manifest(tmp_path)
+    triage, recipe = _triage_documents(tmp_path, source)
+    store = LocalFixtureObjectStore(tmp_path / "volume")
+    surface.upload(source, sealed_manifest=manifest, target=store)
+
+    with pytest.raises(OperatorError) as refusal:
+        surface.upload(
+            source,
+            sealed_manifest=manifest,
+            target=store,
+            triage_decision_manifest=triage,
+            triage_producer_recipe=recipe,
+        )
+
+    assert refusal.value.code is ErrorCode.UPLOAD_REFUSED
+    assert "--prefix" in str(refusal.value.detail)
+    assert not (tmp_path / "volume" / "submission-triage-decision-manifest.json").exists()

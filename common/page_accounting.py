@@ -247,6 +247,8 @@ class PageAccountingPolicy:
     max_short_unit_distance_bp: int
     max_shared_share_bp: int
     max_unit_area_per_character_bp: int
+    max_act_doubt_share_bp: int
+    max_page_doubt_share_bp: int
     sha256: str
 
 
@@ -277,6 +279,8 @@ _POLICY_TABLES: Final = {
         "max_short_unit_distance_bp",
     ),
     "region": ("max_shared_share_bp", "max_unit_area_per_character_bp"),
+    # Read by `page_path.entry_plans`, which holds each entry and page over them.
+    "doubt": ("max_act_doubt_share_bp", "max_page_doubt_share_bp"),
 }
 _BASIS_POINT_FIELDS: Final = frozenset(
     {
@@ -286,6 +290,8 @@ _BASIS_POINT_FIELDS: Final = frozenset(
         "max_short_unit_distance_bp",
         "max_shared_share_bp",
         "max_unit_area_per_character_bp",
+        "max_act_doubt_share_bp",
+        "max_page_doubt_share_bp",
     }
 )
 

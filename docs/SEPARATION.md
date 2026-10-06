@@ -40,14 +40,18 @@ for a script to read.
 | `.githooks/check-static.sh` | PRODUCT | drop `session_end_pod_check.sh` from its list |
 | `.githooks/check_ingress.py` | PRODUCT | credential and path scan |
 | `.githooks/commit-msg` | PRODUCT | |
+| `.githooks/find-python.sh` | PRODUCT | the interpreter every hook runs its checks under |
 | `.githooks/install.sh` | PRODUCT | stop creating the `workbench/` folders |
 | `.githooks/pre-commit` | PRODUCT | |
 | `.githooks/pre-merge-commit` | PRODUCT | |
+| `.githooks/serving_audit.py` | PRODUCT | GPU serving inventory audit |
 | `.githooks/test_ci_workflow.py` | PRODUCT | |
 | `.githooks/test_hooks.py` | PRODUCT | |
 | `.githooks/test_ingress.py` | PRODUCT | |
+| `.githooks/test_serving_audit.py` | PRODUCT | |
 | `.github/` | PRODUCT | CI, Dependabot, pull request template |
 | `.gitignore` | PRODUCT | drop the harness lines |
+| `.python-version` | PRODUCT | the interpreter uv picks on a Mac; one CI tests |
 | `.graphifyignore` | HARNESS | |
 | `AGENTS.md` | HARNESS | working rules for AI sessions |
 | `ARCHITECTURE.md` | PRODUCT | |
@@ -57,6 +61,7 @@ for a script to read.
 | `GLOSSARY.md` | PRODUCT | |
 | `GOVERNANCE.md` | PRODUCT | |
 | `LICENSE` | PRODUCT | |
+| `LIVE_READINESS.md` | HISTORY | runbook for alpha's first paid run |
 | `PRINCIPLES.md` | PRODUCT | |
 | `README.md` | PRODUCT | |
 | `SECURITY.md` | PRODUCT | private vulnerability reporting |

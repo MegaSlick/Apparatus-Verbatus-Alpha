@@ -1,23 +1,53 @@
 """The sealed configuration surface for Armarium export projections.
 
 The manifest is always written; `KNOWN_FORMATS` are the projections Armarium
-can emit.
+can emit. `lot` says whether every row carries the run's lot
+(`common.contracts.identities.lot_id`).
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from common.contracts.errors import SchemaRefusal
+from common.contracts.errors import ContractError, SchemaRefusal
 from common.sealed_config import read_sealed_toml
 
-FORMAT_SCHEMA: Final = "armarium-formats.v1"
-KNOWN_FORMATS: Final = frozenset({"text-bundle", "acts-database", "jsonl", "review-items"})
+FORMAT_SCHEMA: Final = "armarium-formats.v2"
+KNOWN_FORMATS: Final = frozenset({"text-bundle", "acts-database", "jsonl", "csv", "review-items"})
 DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "formats.toml"
 )
+# The largest export archive a run may produce. The archive embeds pages and
+# crops when `embed_pixels` is true, so it may outgrow the single page-blob read
+# ceiling in `common/runtree/store.py`, which reads the Armarium's blobs under
+# this limit instead. It must stay at or below `MAX_FETCH_OBJECT_BYTES` in
+# `operations/operator/surface.py`, so an archive that seals can be fetched;
+# `operations/operator/test_surface.py` pins that. Every whole-archive read is
+# held in memory, so raising it raises peak memory at sealing and publication.
+MAX_EXPORT_ARCHIVE_BYTES: Final = 192 * 1024 * 1024
+# How many whole pages of crops the Door allows for each exported page. Only
+# delivered readings carry crops, one per reading: the bounding box of its
+# region. Two readings whose regions claim mostly the same ink are held
+# (`duplicate-region` in `common/page_accounting.py`), so delivered regions
+# barely overlap, but their bounding boxes can still intersect where readings
+# interleave (columns, marginalia). Twice the page area allows for that; it is
+# an allowance rather than a proof, so the Armarium still checks the real
+# archive before storing it.
+CROP_PAGE_COVERAGE: Final = 2
+# How many bytes of text members the Door allows for each exported page. Every
+# selected format (the text bundle, acts.csv, acts.jsonl, acts.sqlite, the review
+# items) and sources.json carry the page's transcriptions again, beside the other
+# readings and any model reading under a correction. The witnesses' answers for one
+# page are bounded at about 38,000 tokens together (`DECLARED_ANSWER_BOUND_TOKENS`
+# in `common/request_capacity.py`), about 150 KiB at four bytes a token; six or so
+# copies of that, with their per-reading fields, stay under 1 MiB. Like
+# `CROP_PAGE_COVERAGE` it is an allowance rather than a proof: the Armarium still
+# checks the real archive before storing it.
+TEXT_MEMBER_BYTES_PER_PAGE: Final = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -26,6 +56,7 @@ class ArmariumFormats:
 
     formats: tuple[str, ...]
     embed_pixels: bool
+    lot: bool = True
 
     def __post_init__(self) -> None:
         if (
@@ -41,12 +72,15 @@ class ArmariumFormats:
             raise SchemaRefusal(f"Armarium formats names unknown format(s) {unknown}")
         if not isinstance(self.embed_pixels, bool):
             raise SchemaRefusal("Armarium embed_pixels must be a boolean")
+        if not isinstance(self.lot, bool):
+            raise SchemaRefusal("Armarium lot must be a boolean")
 
     def to_record(self) -> dict[str, object]:
         return {
             "schema": FORMAT_SCHEMA,
             "formats": list(self.formats),
             "embed_pixels": self.embed_pixels,
+            "lot": self.lot,
         }
 
 
@@ -65,10 +99,10 @@ def armarium_formats_from_record(record: object, *, source: str = "record") -> A
     """
     if not isinstance(record, dict):
         raise SchemaRefusal(f"Armarium formats {source} is not an object")
-    required = {"schema", "formats", "embed_pixels"}
+    required = {"schema", "formats", "embed_pixels", "lot"}
     if set(record) != required:
         raise SchemaRefusal(
-            f"Armarium formats {source} must contain exactly schema, formats, and embed_pixels"
+            f"Armarium formats {source} must contain exactly schema, formats, embed_pixels and lot"
         )
     if record["schema"] != FORMAT_SCHEMA:
         raise SchemaRefusal(
@@ -77,7 +111,7 @@ def armarium_formats_from_record(record: object, *, source: str = "record") -> A
     formats = record["formats"]
     if not isinstance(formats, list):
         raise SchemaRefusal("Armarium formats must be a non-empty list of names")
-    return ArmariumFormats(tuple(formats), record["embed_pixels"])
+    return ArmariumFormats(tuple(formats), record["embed_pixels"], record["lot"])
 
 
 def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
@@ -88,3 +122,39 @@ def bind_armarium_formats(path: str | Path) -> tuple[str, ArmariumFormats]:
     """
     raw, digest = read_sealed_toml(path, "Armarium formats configuration")
     return digest, armarium_formats_from_record(raw, source=f"configuration {path}")
+
+
+def estimated_embedded_export_bytes(pages: Iterable[tuple[int, int, int, float]]) -> int:
+    """An upper estimate of an embedded export's size, from its sealed pages.
+
+    Each page is `(stored bytes, width, height, crop bytes per pixel)`: it is
+    carried as stored, its crops as `CROP_PAGE_COVERAGE` whole-page crops, each
+    an uncompressed PNG of one filter byte plus the packed pixels per row, and
+    its transcriptions in the text members as `TEXT_MEMBER_BYTES_PER_PAGE`.
+    The archive is written stored, never compressed, so members count at size.
+    """
+    return sum(
+        stored
+        + CROP_PAGE_COVERAGE * height * (1 + math.ceil(width * bytes_per_pixel))
+        + TEXT_MEMBER_BYTES_PER_PAGE
+        for stored, width, height, bytes_per_pixel in pages
+    )
+
+
+def require_within_export_archive_limit(size: int, *, what: str, embed_pixels: bool) -> None:
+    """Refuse an export archive of `size` bytes above the limit, naming `what` was measured."""
+    limit = MAX_EXPORT_ARCHIVE_BYTES
+    if size <= limit:
+        return
+    # The format choice is sealed into the run, so a run is never re-exported
+    # under another; the remedy is always a new run.
+    remedy = (
+        "start new runs over smaller parts of the submission, or a new run whose formats "
+        "configuration (config/formats.toml, or --formats-config) sets embed_pixels = false"
+        if embed_pixels
+        else "start new runs over smaller parts of the submission"
+    )
+    raise ContractError(
+        f"{what} is {size} bytes, above the {limit}-byte export archive limit, so it could "
+        f"never be sealed. Nothing was dropped: {remedy}"
+    )

@@ -774,15 +774,32 @@ def test_a_resealed_archetypus_other_than_the_stored_edit_is_refused_by_the_arma
 
 @pytest.fixture(scope="module")
 def unit_held(designated, tmp_path_factory) -> SimpleNamespace:  # noqa: F811
-    """The tree through the Recensor's first pass, p1:2 held only on its own reading:
-    doubt marks the reader could not parse, with no page hold."""
+    """The tree through the Recensor's first pass, p1:2 held on doubt marks the reader
+    could not parse. Its characters count as unread, which takes page 1 over the
+    page doubt limit too."""
+    return _held_on_p1_2(
+        designated, tmp_path_factory, "SYNTHETIC ACT TWO delta [[]] epsilon zeta eta"
+    )
+
+
+@pytest.fixture(scope="module")
+def doubt_unit_held(designated, tmp_path_factory) -> SimpleNamespace:  # noqa: F811
+    """p1:2 held only on its own reading: "zeta eta" doubtful is 7 of 34 characters, over
+    the act limit, while page 1 stays under the page limit."""
+    return _held_on_p1_2(
+        designated, tmp_path_factory, "SYNTHETIC ACT TWO delta epsilon [[zeta eta]]"
+    )
+
+
+def _held_on_p1_2(designated, tmp_path_factory, text: str) -> SimpleNamespace:  # noqa: F811
+    """The tree through the Recensor's first pass with p1:2 read as `text`."""
     work = tmp_path_factory.mktemp("unit-held")
     root = work / "runs"
     shutil.copytree(designated.run_root, root)
     read_by_live_witnesses(designated, root, work / "witnesses")
-    # No act runs across the page break, so nothing but p1:2 keeps the run partial.
+    # No act runs across the page break, so nothing on page 2 keeps the run partial.
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][1]["text"] = "SYNTHETIC ACT TWO delta [[]] epsilon zeta eta"
+    answer["acts"][1]["text"] = text
     answer["acts"][1]["continues_to_next_page"] = False
     second = json.loads(PAGE_ANSWERS[2])
     for act in second["acts"]:
@@ -804,9 +821,7 @@ def unit_held(designated, tmp_path_factory) -> SimpleNamespace:  # noqa: F811
     )
     tree = SimpleNamespace(root=root, catalogue=designated.catalogue)
     assert _run(tree, "pipeline/5_recensor/run.py").returncode == EXIT_HELD
-    review = _reviews(root)["p1:2"]
-    assert review["outcome"] == "held-for-review"
-    assert "doubt-marks-malformed" in review["payload"]["hold_codes"]
+    assert _reviews(root)["p1:2"]["outcome"] == "held-for-review"
     return tree
 
 
@@ -819,7 +834,10 @@ def test_an_edit_of_a_reading_with_malformed_doubt_marks_is_delivered(unit_held,
         decide.prepare_decision(
             RunTree(tree.root, RUN_ID), decision="release", unit="p1:2", reason="fine"
         )
+    codes = _reviews(tree.root)["p1:2"]["payload"]["hold_codes"]
+    assert {"doubt-marks-malformed", "page-doubt-share-high"} <= set(codes)
     _decide(tree.root, "p1:2", "edit", text=TEXTS["p1:2"])
+    _decide(tree.root, "p1", "no-missed-act")
     assert _recense(tree) == EXIT_COMPLETE
     _after_recensor(tree)
     bundle = _bundle(tree.root, tmp_path / "clean")
@@ -828,13 +846,14 @@ def test_an_edit_of_a_reading_with_malformed_doubt_marks_is_delivered(unit_held,
 
 
 def test_a_run_whose_only_decision_is_an_edit_of_a_unit_held_reading_is_complete(
-    unit_held, tmp_path
+    doubt_unit_held, tmp_path
 ):
     """A correction is no reason: with nothing else held, the aggregate is complete."""
-    tree = _copy(unit_held, tmp_path)
+    tree = _copy(doubt_unit_held, tmp_path)
     reviews = _reviews(tree.root)
     held = [key for key, review in reviews.items() if review["outcome"] == "held-for-review"]
     assert held == ["p1:2"], "only the edited unit is held, and only on its own reading"
+    assert reviews["p1:2"]["payload"]["hold_codes"] == ["doubt-share-high"]
     _decide(tree.root, "p1:2", "edit", text=TEXTS["p1:2"])
     assert _recense(tree) == EXIT_COMPLETE
     _after_recensor(tree)
@@ -861,3 +880,56 @@ def test_a_persons_text_with_doubt_mark_brackets_is_delivered_as_written(reading
     bundle = _bundle(tree.root, tmp_path / "clean")
     assert bundle["acts"]["p1:1"]["canonical_clean_text"] == written
     assert bundle["acts"]["p1:1"]["uncertainty"] == corrected_layer()
+
+
+@pytest.fixture(scope="module")
+def doubt_held(designated, tmp_path_factory) -> SimpleNamespace:  # noqa: F811
+    """The tree through the Recensor's first pass, page 2's one entry read wholly doubtful."""
+    work = tmp_path_factory.mktemp("doubt-held")
+    root = work / "runs"
+    shutil.copytree(designated.run_root, root)
+    read_by_live_witnesses(designated, root, work / "witnesses")
+    answer = json.loads(PAGE_ANSWERS[2])
+    answer["acts"][0]["text"] = "[[SYNTHETIC ACT TWO delta epsilon zeta eta]]"
+    reader = PageReaderWorld(
+        designated.catalogue, work / "reader", {1: PAGE_ANSWERS[1], 2: json.dumps(answer)}
+    )
+    assert (
+        run_in_process(
+            perlector,
+            root,
+            designated.catalogue,
+            placement_tier=TIER,
+            serving_factory=reader.factory,
+        )
+        == EXIT_COMPLETE
+    )
+    tree = SimpleNamespace(root=root, catalogue=designated.catalogue)
+    assert _run(tree, "pipeline/5_recensor/run.py").returncode == EXIT_HELD
+    return tree
+
+
+def test_a_doubt_held_reading_is_delivered_only_through_a_persons_release(doubt_held, tmp_path):
+    """Held by the Perlector and the Recensor on its own doubt and its page's, released by a
+    person, the reading exports with its doubt layer and passes the Armarium's recount."""
+    tree = _copy(doubt_held, tmp_path)
+    review = _reviews(tree.root)["p2:1"]
+    assert review["outcome"] == "held-for-review"
+    assert {"doubt-share-high", "page-doubt-share-high"} <= set(review["payload"]["hold_codes"])
+
+    _decide(tree.root, "p2:1", "release")
+    _decide(tree.root, "p2", "no-missed-act")
+    assert _recense(tree) == EXIT_COMPLETE
+    assert _reviews(tree.root)["p2:1"]["outcome"] == "accepted"
+    _after_recensor(tree)
+
+    bundle = _bundle(tree.root, tmp_path / "clean")
+    act = bundle["acts"]["p2:1"]
+    assert (act["category"], act["canonical_clean_text"]) == ("delivered", TEXTS["p1:2"])
+    assert act["uncertainty"]["uncertain_spans"]
+    [counted] = [
+        row
+        for row in bundle["manifest"]["claims"]["doubt_share"]["acts"]
+        if row["act_key"] == "p2:1"
+    ]
+    assert counted["doubtful_or_unread"] == counted["out_of"] == 34

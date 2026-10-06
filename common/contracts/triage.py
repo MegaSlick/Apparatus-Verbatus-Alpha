@@ -12,7 +12,15 @@ spread's two pages each want their own crop besides.
 cutting it, ``crop_box`` is half-open in that part's local pixel coordinates.
 The cropped pixels are then rotated clockwise about the crop's centre onto an
 expanded canvas. Pixel sampling, fill and encoding belong to the apply recipe
-(`common.imaging.TRIAGE_APPLY_RECIPE`), not to geometry defaults hidden here.
+(`common.imaging.triage_apply_recipe`), not to geometry defaults hidden here.
+
+A split names its operation order, which is also its version. Under
+``region-crop-rotate`` a part is exactly the four fields above and the canvas beyond
+the scan is the recipe's black. Under ``region-crop-rotate-crop`` a part also carries
+``post_crop_box``, a half-open rectangle in the rotated canvas's coordinates (it may
+reach past the canvas), and ``fill``, the sample levels, in the master's own mode,
+that every pixel of the result outside the rotated scan takes. So a deskewed page is
+cropped tight, and its margin can be paper rather than black.
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ from common.contracts.stages import (
     TRIAGE_ACTOR_KINDS,
     TRIAGE_MODES,
     TRIAGE_PART_FIELDS,
+    TRIAGE_PART_FIELDS_V2,
     TRIAGE_ROW_FIELDS,
 )
 
@@ -36,6 +45,15 @@ CLUSTER_SCHEMA: Final = "triage-re-shoot-cluster-v1"
 CONFIDENCE_ORDINALS: Final = range(0, 5)
 COLOUR_MODES: Final = ("keep", "grayscale", "rgb", "bitonal")
 SPLIT_OPERATION_ORDER: Final = "region-crop-rotate"
+SPLIT_OPERATION_ORDER_V2: Final = "region-crop-rotate-crop"
+SPLIT_OPERATION_ORDERS: Final = (SPLIT_OPERATION_ORDER, SPLIT_OPERATION_ORDER_V2)
+_PART_FIELDS: Final = {
+    SPLIT_OPERATION_ORDER: TRIAGE_PART_FIELDS,
+    SPLIT_OPERATION_ORDER_V2: TRIAGE_PART_FIELDS_V2,
+}
+# A post-crop may reach past its canvas, but not without limit: the render's pixel
+# bound refuses the area, and this refuses a coordinate no scan could need first.
+MAX_POST_CROP_COORDINATE: Final = 1_000_000
 MAX_MANIFEST_ROWS: Final = 1_000
 MAX_CLUSTER_RECORDS: Final = 1_000
 MAX_CLUSTER_MEMBERS: Final = 4_096
@@ -79,6 +97,33 @@ def _rectangle(
         or value["y"] + value["h"] > container["y"] + container["h"]
     ):
         raise SchemaRefusal(f"{what} lies outside {inside}")
+
+
+def _post_crop(value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != _RECTANGLE_FIELDS:
+        raise SchemaRefusal("triage post_crop_box must be a closed space/x/y/w/h rectangle")
+    if value["space"] != "rotated":
+        raise SchemaRefusal("triage post_crop_box must use rotated coordinates")
+    if not all(is_plain_int(value[key]) for key in ("x", "y", "w", "h")):
+        raise SchemaRefusal("triage post_crop_box has a non-integer coordinate")
+    if value["w"] <= 0 or value["h"] <= 0:
+        raise SchemaRefusal("triage post_crop_box is degenerate")
+    if any(abs(value[key]) > MAX_POST_CROP_COORDINATE for key in ("x", "y", "w", "h")):
+        raise SchemaRefusal("triage post_crop_box lies implausibly far from its canvas")
+
+
+def _fill(value: Any) -> None:
+    levels = value.get("levels") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"levels"}
+        or not isinstance(levels, list)
+        or not 1 <= len(levels) <= 4
+        or not all(is_plain_int(level) and 0 <= level <= 255 for level in levels)
+    ):
+        raise SchemaRefusal(
+            "triage fill must be a closed record of one to four sample levels in [0, 255]"
+        )
 
 
 def _rotation(value: Any) -> None:
@@ -127,16 +172,25 @@ def _validate_split(split: Any, frame: Mapping[str, int]) -> None:
         or not split["parts"]
     ):
         raise SchemaRefusal("triage split must be a non-empty closed operation_order/parts record")
-    if split["operation_order"] != SPLIT_OPERATION_ORDER:
-        raise SchemaRefusal(f"triage split operation_order must be {SPLIT_OPERATION_ORDER}")
+    if split["operation_order"] not in SPLIT_OPERATION_ORDERS:
+        raise SchemaRefusal(
+            f"triage split operation_order must be one of {', '.join(SPLIT_OPERATION_ORDERS)}"
+        )
+    fields = _PART_FIELDS[split["operation_order"]]
     if len(split["parts"]) > MAX_SPLIT_PARTS:
         raise SchemaRefusal(f"triage split exceeds the {MAX_SPLIT_PARTS}-part limit")
     whole = {"x": 0, "y": 0, "w": frame["width"], "h": frame["height"]}
     regions = []
     for part in split["parts"]:
-        if not isinstance(part, dict) or set(part) != TRIAGE_PART_FIELDS:
+        if not isinstance(part, dict) or set(part) != fields:
             raise SchemaRefusal(
-                "triage split part must be a closed region/crop_box/rotation/colour_mode record"
+                "triage split part must be a closed "
+                + (
+                    "region/crop_box/rotation/colour_mode record"
+                    if fields == TRIAGE_PART_FIELDS
+                    else "region/crop_box/rotation/post_crop_box/fill/colour_mode record"
+                )
+                + f" under operation order {split['operation_order']}"
             )
         _rectangle(part["region"], whole, "triage split region", "its frame", space="frame")
         part_space = {"x": 0, "y": 0, "w": part["region"]["w"], "h": part["region"]["h"]}
@@ -148,6 +202,9 @@ def _validate_split(split: Any, frame: Mapping[str, int]) -> None:
             space="part",
         )
         _rotation(part["rotation"])
+        if fields == TRIAGE_PART_FIELDS_V2:
+            _post_crop(part["post_crop_box"])
+            _fill(part["fill"])
         if part["colour_mode"] not in COLOUR_MODES:
             raise SchemaRefusal("triage part colour_mode is not declared")
         regions.append(part["region"])
@@ -246,14 +303,27 @@ def make_part(
     rotation_direction: str = "clockwise",
     rotation_origin: str = "crop-centre",
     rotation_canvas: str = "expand",
+    post_crop_box: Mapping[str, int] | None = None,
+    fill: list[int] | None = None,
 ) -> dict[str, Any]:
     """Construct one explicit split/crop/rotate/convert decision.
 
     Constructor inputs use the natural spaces: ``region`` is frame-local and
     ``crop_box`` is part-local.  The record names both spaces so serialized data
-    cannot be read the other way later.
+    cannot be read the other way later. With ``post_crop_box`` (rotated-canvas
+    coordinates) and ``fill`` (sample levels), the part is one of the second
+    operation order.
     """
+    if (post_crop_box is None) != (fill is None):
+        raise SchemaRefusal("a post-crop and its fill are given together or not at all")
+    second = {}
+    if post_crop_box is not None:
+        second = {
+            "post_crop_box": {"space": "rotated", **dict(post_crop_box)},
+            "fill": {"levels": list(fill)},
+        }
     return {
+        **second,
         "region": {"space": region_space, **dict(region)},
         "crop_box": {"space": crop_space, **dict(crop_box)},
         "rotation": {

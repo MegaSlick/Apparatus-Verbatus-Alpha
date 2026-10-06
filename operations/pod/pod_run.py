@@ -13,7 +13,6 @@ own interpreter, over the volume::
     submission          --submission-folder / --submission-manifest, inside the volume
     roster              the bootstrap plan's --models-config
     serving catalogue   the bootstrap plan's --serving-recipes-config
-    witness context     the bootstrap plan's --witness-context-config
     data gate           --data-gate-policy, inside the repository
 
 The roster and the serving catalogue are deliberately taken from the bootstrap
@@ -133,8 +132,9 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Callable, Mapping, MutableMapping, Sequence, TypeGuard
+from typing import Callable, Final, Mapping, MutableMapping, Sequence, TypeGuard
 
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity, is_witness_role
@@ -148,16 +148,17 @@ from common.stage import (
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
     real_run_policy_digest,
     run_sealed_config_digests,
-    validate_witness_context_bindings,
     verify_predecessor_seal,
 )
 from common.stage import EXIT_COMPLETE as ORCHESTRATOR_COMPLETE
 from common.stage import EXIT_FATAL as ORCHESTRATOR_FATAL
 from common.stage import EXIT_HELD as ORCHESTRATOR_HELD
 from common.stage import EXIT_RUN_HALTED as ORCHESTRATOR_HALTED
+from operations.notify.client import NotifyOutcome
 from operations.pod.notify_hooks import (
     RunnerFactory,
     environment_runner,
+    notify_deadline_at_risk_from_guard,
     notify_stall_from_guard,
     notify_systemic_from_guard,
 )
@@ -170,7 +171,7 @@ from pipeline.orchestrator.run import (
     STOP_RECORD_SCHEMA,
 )
 
-from . import bootstrap_main
+from . import bootstrap_main, finish_estimate
 from .bootstrap import BootstrapActions, BootstrapReport
 from .bootstrap_main import (
     DEFAULT_PROOF_FIXTURE,
@@ -194,6 +195,7 @@ from .run_exits import (
     EXIT_REFUSED,
     EXIT_SELECTION_COMPLETE,
 )
+from .spend import POD_BUDGET_ENVIRONMENT
 
 RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
@@ -349,6 +351,7 @@ class RunPlan:
     triage_clusters: Path | None = None
     triage_producer_recipe: Path | None = None
     corpus_register: Path | None = None
+    hourly_usd: Decimal | None = None
 
     # Not asserts: `assert` disappears under `python -O`, and `resolve_run_plan`
     # already refused a bootstrap plan missing any of these. Stated as raises so
@@ -360,19 +363,6 @@ class RunPlan:
     @property
     def serving_recipes_config(self) -> Path:
         return _named(self.bootstrap.serving_recipes_config, "--serving-recipes-config")
-
-    @property
-    def witness_context_config(self) -> Path:
-        """The factual witness-context declaration this run seals.
-
-        Named on the plan beside the roster, never defaulted here:
-        `bootstrap_main.resolve_plan` supplies the default when none is named.
-        After checkout, the journaled CONFIGURATION step checks known shipped
-        sentences against their present witness identities before environment
-        or model work. This property receives that resolved path selection;
-        it does not choose another declaration for the orchestrator.
-        """
-        return _named(self.bootstrap.witness_context_config, "--witness-context-config")
 
     @property
     def repository(self) -> Path:
@@ -431,6 +421,13 @@ class RunPlan:
         return Path(run_report_paths(self.report_path)[3])
 
     @property
+    def estimate_path(self) -> Path:
+        """The current stage's finish estimate and any deadline-at-risk notice, beside the
+        run report, rewritten on each liveness tick."""
+
+        return Path(run_report_paths(self.report_path)[5])
+
+    @property
     def repository_commit(self) -> str:
         """The commit the bootstrap checked out and *verified*, forwarded to the run.
 
@@ -471,8 +468,6 @@ class RunPlan:
             str(self.models_config),
             "--serving-recipes-config",
             str(self.serving_recipes_config),
-            "--witness-context-config",
-            str(self.witness_context_config),
             "--stage-timing-journal",
             str(self.timing_journal_path),
             "--stop-record",
@@ -522,7 +517,6 @@ class RunPlan:
             "data_gate_policy": str(self.data_gate_policy),
             "models_config": str(self.models_config),
             "serving_recipes_config": str(self.serving_recipes_config),
-            "witness_context_config": str(self.witness_context_config),
             "fixture": self.fixture,
             "interval_seconds": self.interval_seconds,
             "dry_run": self.dry_run,
@@ -541,6 +535,7 @@ class RunPlan:
             if self.triage_producer_recipe
             else None,
             "corpus_register": str(self.corpus_register) if self.corpus_register else None,
+            "hourly_usd": None if self.hourly_usd is None else str(self.hourly_usd),
             "bootstrap": self.bootstrap.to_record(),
         }
 
@@ -638,7 +633,7 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
     the ``perlector-protocol`` digest against the file this launch would hand
     the orchestrator (read by the same seal reader the run binding uses), and,
     on a real run, the ``run-policy`` digest recomputed from
-    ``--mechanics-qualification``, the witness-context declaration and the
+    ``--mechanics-qualification`` and the
     orchestrator defaults pod_run leaves in place. A fixture run seals those
     knobs only inside its ``config_digest``, which this cannot recompute; its
     stages still refuse a mismatch.
@@ -664,8 +659,8 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
                 mismatches.append(
                     "its run policy (sealed "
                     f"{sealed['run-policy']}, this launch {policy}); pass the "
-                    "--mechanics-qualification the run started with, against the same "
-                    "--witness-context-config"
+                    "--mechanics-qualification the run started with, or the run was sealed by "
+                    "an older version of this code; start a new run"
                 )
     except (ContractError, OSError) as error:
         # `read_run` already turns an unreadable or non-JSON run.json into a
@@ -687,13 +682,7 @@ def _require_sealed_run_inputs(plan: RunPlan) -> None:
 
 def _recomputed_run_policy(plan: RunPlan) -> str:
     defaults = ORCHESTRATOR_RUN_POLICY_DEFAULTS
-    declaration = validate_witness_context_bindings(
-        load_models_toml(plan.models_config),
-        witness_context_config_path=plan.witness_context_config,
-        **defaults,  # type: ignore[arg-type]
-    )
     return real_run_policy_digest(
-        witness_context_declaration_sha256=declaration,
         mechanics_qualification=plan.mechanics_qualification,
         **defaults,  # type: ignore[arg-type]
     )
@@ -782,9 +771,14 @@ def build_parser() -> bootstrap_main.RefusingParser:
     parser.add_argument(
         "--notify",
         action="store_true",
-        help="send the systemic alarm, when the run sounds it, to the phone through "
-        "operations/notify as a decision; off by default so a pod never pages a phone on "
-        "its own",
+        help="send the systemic alarm and the deadline-at-risk notice, when the run raises "
+        "them, to the phone through operations/notify as decisions; off by default so a pod "
+        "never pages a phone on its own",
+    )
+    parser.add_argument(
+        "--hourly-usd",
+        help="the pod and volume price per hour this pod was rented at, as a decimal; "
+        "names the cost of running past the deadline in the deadline-at-risk notice",
     )
     parser.add_argument(
         "--no-hold",
@@ -798,6 +792,26 @@ def build_parser() -> bootstrap_main.RefusingParser:
     selection.add_argument("--models", choices=("small", "big"))
     parser.add_argument("--to", dest="to_stage", choices=SEQUENCE_NAMES)
     return parser
+
+
+HELP_FLAGS: Final = frozenset({"-h", "--help"})
+
+
+def usage() -> str:
+    """Both halves' flags: this module's before the first ``--``, ``bootstrap_main``'s after."""
+
+    run = build_parser()
+    run.prog = "pod_run"
+    bootstrap = bootstrap_main.build_parser()
+    bootstrap.prog = "bootstrap_main"
+    return (
+        "usage: python -m operations.pod.pod_run <run flags> -- <bootstrap_main flags>\n\n"
+        "Run flags:\n"
+        + run.format_usage()
+        + "\nBootstrap flags (a complete bootstrap_main argv):\n"
+        + bootstrap.format_usage()
+        + "\nSee the module docstring and operations/pod/README.md for what each does.\n"
+    )
 
 
 def split_argv(argv: Sequence[str]) -> tuple[list[str], list[str]]:
@@ -946,6 +960,17 @@ def resolve_run_plan(
         args.to_stage
     ):
         raise RunRefusal("--from comes after --to", report_path=report_path)
+    hourly_usd = None
+    if args.hourly_usd is not None:
+        try:
+            hourly_usd = Decimal(args.hourly_usd)
+        except InvalidOperation:
+            hourly_usd = None
+        if hourly_usd is None or not hourly_usd.is_finite() or hourly_usd <= 0:
+            raise RunRefusal(
+                f"--hourly-usd {args.hourly_usd!r} is not a positive decimal price",
+                report_path=report_path,
+            )
     stage = args.stage
     from_stage, to_stage = args.from_stage, args.to_stage
     if args.models == "small":
@@ -976,6 +1001,7 @@ def resolve_run_plan(
         triage_clusters=triage_paths["--triage-clusters"],
         triage_producer_recipe=triage_paths["--triage-producer-recipe"],
         corpus_register=triage_paths["--corpus-register"],
+        hourly_usd=hourly_usd,
     )
 
 
@@ -1465,6 +1491,131 @@ def release_pod_guard(
     return {**record, "released": True, "deadline": stamp}
 
 
+# What a pod-timer launch seals into the pod's environment as its quoted rates.
+HOURLY_RATE_ENVIRONMENT = ("VERBATUS_POD_HOURLY_USD", "VERBATUS_VOLUME_ONGOING_HOURLY_USD")
+
+
+def _hourly_price(
+    plan: RunPlan, rates: Mapping[str, str | None]
+) -> tuple[Decimal | None, str | None]:
+    """The pod and volume price per hour, and where it came from: ``--hourly-usd``, else a
+    pod-timer launch's sealed rates, else none."""
+
+    if plan.hourly_usd is not None:
+        return plan.hourly_usd, "--hourly-usd"
+    values = [rates.get(name) for name in HOURLY_RATE_ENVIRONMENT]
+    missing = [
+        name for name, value in zip(HOURLY_RATE_ENVIRONMENT, values, strict=True) if value is None
+    ]
+    if len(missing) == len(HOURLY_RATE_ENVIRONMENT):
+        return None, None
+    if missing:
+        return None, f"{' and '.join(missing)} missing"
+    try:
+        total = sum((Decimal(value) for value in values if value is not None), Decimal(0))
+    except InvalidOperation:
+        return None, f"unusable {' and '.join(HOURLY_RATE_ENVIRONMENT)}"
+    if not total.is_finite() or total <= 0:
+        return None, f"unusable {' and '.join(HOURLY_RATE_ENVIRONMENT)}"
+    # The launch seals the price it assessed before create. The provider's price after
+    # create may be higher and still within the spend policy's hourly ceiling, and the
+    # pod cannot read it, so the rate is named for what it is.
+    return total, (
+        f"the launch-time estimate before create ({' plus '.join(HOURLY_RATE_ENVIRONMENT)})"
+    )
+
+
+def _pod_budget(
+    plan: RunPlan, sealed: Mapping[str, str | None]
+) -> tuple[finish_estimate.Budget | None, str | None, str]:
+    """The pod's budget, why it is unknown, and where it came from.
+
+    A launch seals the budget of the spend policy it armed the pod with into the
+    pod's environment; that is the budget, and a part of it missing leaves it
+    unknown. Only a pod with none sealed (started by hand, or adopted) falls back
+    to the checkout's own spend policy, which the launching laptop may not have
+    used, so it is named with its digest.
+    """
+
+    if any(value is not None for value in sealed.values()):
+        budget, problem = finish_estimate.sealed_budget(sealed)
+        return budget, problem, "sealed into the pod at launch"
+    path = plan.repository / "config" / "spend.toml"
+    budget, problem, digest = finish_estimate.load_budget(path)
+    named = "unreadable" if digest is None else f"SHA-256 {digest}"
+    return (
+        budget,
+        problem,
+        f"the checked-out config/spend.toml ({named}), as no budget was sealed into the "
+        "pod at launch",
+    )
+
+
+def _deadline_watch(
+    plan: RunPlan,
+    *,
+    pod_id: str | None,
+    hard_deadline: datetime,
+    launch_token: str | None,
+    rates: Mapping[str, str | None],
+    sealed_budget: Mapping[str, str | None],
+    notify: bool,
+    notify_runner: RunnerFactory,
+    now: Callable[[], datetime],
+) -> finish_estimate.DeadlineWatch:
+    """The finish estimate and deadline-at-risk notice for this run.
+
+    Under the pod timer (a launch token) its hard deadline ends the pod; otherwise
+    this pod's guard deadline does (`finish_estimate.PodDeadline`). The budget is
+    the one the launch sealed into the pod (`_pod_budget`), and the page witnesses
+    come from the run's models configuration.
+    """
+
+    volume = plan.bootstrap.volume_mount_path
+    known_pod = pod_id if _is_pod_id(pod_id) else None
+    deadline = finish_estimate.PodDeadline(
+        guard=None
+        if known_pod is None
+        else finish_estimate.GuardDeadline(volume, known_pod, now=now),
+        bootstrap=hard_deadline,
+        pod_timer=launch_token is not None,
+    )
+
+    def send(message: str) -> NotifyOutcome:
+        return notify_deadline_at_risk_from_guard(
+            message=message, volume_mount=volume, runner_factory=notify_runner
+        )
+
+    try:
+        chairs = load_models_toml(plan.models_config).chairs
+    except Exception as error:  # noqa: BLE001 -- the Attestatores total is then unknown
+        print(
+            f"pod_run {plan.run_id}: the roster could not be read for the finish estimate: {error}",
+            file=sys.stderr,
+        )
+        chairs = None
+    budget, budget_problem, budget_source = _pod_budget(plan, sealed_budget)
+    hourly_usd, hourly_source = _hourly_price(plan, rates)
+    return finish_estimate.DeadlineWatch(
+        run_id=plan.run_id,
+        pod_id=known_pod,
+        path=plan.estimate_path,
+        sample=finish_estimate.RunTreeProgress(plan.run_root / plan.run_id, chairs).sample,
+        budget=budget,
+        budget_problem=budget_problem,
+        hourly_usd=hourly_usd,
+        hourly_source=hourly_source,
+        budget_source=budget_source,
+        deadline=deadline,
+        ignored=lambda: deadline.ignored,
+        created_at=(lambda: None)
+        if known_pod is None
+        else (lambda: finish_estimate.pod_created_at(volume, known_pod)),
+        send=send if notify else None,
+        now=now,
+    )
+
+
 def _refuse(refusal: PlanRefusal, *, now: Callable[[], datetime]) -> int:
     print(f"pod_run refused: {refusal}", file=sys.stderr)
     failure = _write_refusal(refusal.report_path, str(refusal), now=now)
@@ -1690,6 +1841,11 @@ def main(
     notify_runner: RunnerFactory = environment_runner,
 ) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    # Help only when asked for alone: inside a run's argv a stray -h is refused like any
+    # other unknown flag, so a launch never ends with a help page and exit 0.
+    if len(raw_argv) == 1 and raw_argv[0] in HELP_FLAGS:
+        print(usage(), end="")
+        return 0
     environment = os.environ if environ is None else environ
     try:
         refuse_credential_looking_argv(raw_argv)
@@ -1700,6 +1856,8 @@ def main(
     # is credential-shaped and would be gone afterwards.
     launch_token = environment.get("VERBATUS_LAUNCH_TOKEN") or None
     shell_pod_id = environment.get(POD_ID_ENVIRONMENT) or None
+    rates = {name: environment.get(name) for name in HOURLY_RATE_ENVIRONMENT}
+    sealed_budget = {name: environment.get(name) for name in POD_BUDGET_ENVIRONMENT.values()}
     # Only the container's first process names this pod (see PID1_ENVIRON).
     pod_id = container_pod_id()
     try:
@@ -1854,6 +2012,7 @@ def main(
         "liveness_path": str(plan.liveness_path),
         "hold_path": str(plan.hold_path),
         "timing_journal_path": str(plan.timing_journal_path),
+        "estimate_path": str(plan.estimate_path),
     }
     _write_run_report(plan, {**running, "state": "running", "exit_code": None})
     journal = _liveness_journal(plan, base, now=now)
@@ -1866,6 +2025,17 @@ def main(
         now=now,
     )
     stall_noticed = False
+    deadline_watch = _deadline_watch(
+        plan,
+        pod_id=pod_id,
+        hard_deadline=hard_deadline,
+        launch_token=launch_token,
+        rates=rates,
+        sealed_budget=sealed_budget,
+        notify=args.notify,
+        notify_runner=notify_runner,
+        now=now,
+    )
 
     def liveness(pid: int, alive: bool) -> None:
         # Only a run that is visibly working holds the pod: a hung child stops touching
@@ -1874,6 +2044,10 @@ def main(
         journal(pid, alive)
         if not alive:
             return
+        try:
+            deadline_watch.tick()
+        except Exception as error:  # noqa: BLE001 -- an estimate never stops a running stage
+            deadline_watch.note_failure(error)
         if progress.advancing():
             stall_noticed = False
             keepalive()
@@ -2045,6 +2219,7 @@ def main(
         "records_missing": records_missing,
         "held_to_hard_deadline": holding,
         "hold_detail": hold_detail,
+        "deadline_watch": deadline_watch.summary(),
         "finished_at": _stamp(now()),
     }
     if stop_problem is not None:

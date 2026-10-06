@@ -495,6 +495,7 @@ def _finish(state: _PagePass, page: _Page, result: dict[str, Any] | Exception | 
     if not named:
         if state.reask_budget and not state.live:
             page_path.fixture_reask_answer(state.context, page.ordinal, planned=False)
+        page_path.hold_doubtful_page(plans, state.accounting_policy)
         publish_act_records(state, page, reading, plans, accounting)
         page.counted = plans
         return
@@ -674,6 +675,7 @@ def _finish_reread(
         else []
     )
     accounting = publish_page_accounting(state, page, reading, plans, attempt=request.ordinal)
+    page_path.hold_doubtful_page(plans, state.accounting_policy)
     publish_act_records(state, page, reading, plans, accounting)
     if page_path.keeps_counted(plans):
         page.counted = plans
@@ -761,9 +763,12 @@ def _finish_reask(state: _PagePass, page: _Page, result: dict[str, Any] | Except
     )
     # A re-ask the accounting does not count adds no act, and the page stands on
     # its first reading; one it counts adds exactly the entries it measured.
-    recovered = page_path.reask_act_plans(
+    counted = page_path.reask_act_plans(
         accounting["payload"], page.plans, plans, f"page {page.page_id}"
-    )[len(page.plans) :]
+    )
+    # The page's doubt is the first reading's and the counted re-ask's together.
+    page_path.hold_doubtful_page(counted, state.accounting_policy)
+    recovered = counted[len(page.plans) :]
     publish_act_records(state, page, page.reading, page.plans, accounting)
     publish_act_records(state, page, second, recovered, accounting)
     page.counted = page.plans + recovered

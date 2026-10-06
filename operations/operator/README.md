@@ -4,9 +4,16 @@
 Double-click [Verbatus.command](Verbatus.command) and answer one question at a time. The
 program always tells you what happened, what it means, and what to do next.
 
-If you would rather type, `python3 -m operations.operator.entry <word>` from the project
-folder, or `verbatus <word>` once the project is installed, runs the same code.
+If you would rather type, `.venv/bin/python -m operations.operator.entry <word>` from the
+project folder, or `verbatus <word>` once the project is installed, runs the same code.
 `verbatus <word> --help` lists every flag.
+
+**On a Mac:** macOS 13 (Ventura) or later, Intel or Apple silicon; the PDF library
+(pypdfium2) has no wheels for older versions. `sw_vers -productVersion; uname -m` shows
+both. git needs the Xcode Command Line Tools (`xcode-select --install`). Their `python3`
+is 3.9, too old here, so run Python only as `uv run …` or `.venv/bin/python …`, never a
+bare `python` or `python3`; `uv sync --frozen --group test --group audit` builds `.venv` on
+Python 3.12.
 
 ## Read this first: what this is today
 
@@ -20,17 +27,18 @@ Two words reach a RunPod network volume:
 - `fetch-run` brings back a pod-written run tree and the launch evidence you name; it never
   fetches the uploaded images or their manifest.
 
-## The thirteen words
+## The fifteen words
 
-Ten things this tool can do, in the order a normal run uses them, plus two you can run any
-time to check on things and one that tidies up.
+Eleven things this tool can do, in the order a normal run uses them, plus three you can run
+any time to check on things and one that tidies up.
 
 | Word | What the real run does | Real-run cost |
 |---|---|---|
+| `prepare` | Prepares page images from a folder of scans with pagekit, and writes the triage manifest that has the Door cut the same pages from the original scans. | No — it runs on this computer and only reads the scans. |
 | `ingest` | Seals and checks a submitted folder, produces triage evidence, and accepts a cluster confirmation file. | No — it is podless and offline. |
 | `triage` | Shows the review queue `ingest` produced — each candidate with its evidence and proxy image — and records your accept or decline against it. | No — podless and offline. It shows and it records; it never opens a master and never decides for you. The double-click window shows the queue only; a decision is recorded from the command line. |
-| `upload` | Sends your images to storage. | No rented machine is needed — do it first if you like. With `--network-volume`, the volume itself costs money for as long as it exists, pod or no pod. |
-| `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. A real chair selection is the trio `--models-config config/models-real.toml`, `--serving-recipes-config config/serving_recipes_real.toml`, and `--witness-context-config config/witness_context-real.toml`; all three are sealed into the run and a partial trio is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
+| `upload` | Sends your images to storage. With `--triage-decision-manifest` and `--triage-producer-recipe` (from `prepare`) it sends them beside the scans as `<prefix>-triage-decision-manifest.json` and `<prefix>-triage-producer-recipe.json`, for the pod's run to read; it refuses a manifest missing a row for a sealed scan, and never replaces triage a submission was sent with. | No rented machine is needed — do it first if you like. With `--network-volume`, the volume itself costs money for as long as it exists, pod or no pod. |
+| `run` | Processes the images through the pipeline on this computer. Without a submission it runs the declared synthetic fixture; `--submission-folder` and `--submission-manifest` send a real approved submission to the Door. `--triage-decision-manifest` and `--triage-producer-recipe` add the page geometry `prepare` writes. A real chair selection is the pair `--models-config config/models-real.toml` and `--serving-recipes-config config/serving_recipes_real.toml`; both are sealed into the run and one without the other is refused. | No new cost: it runs here, not on a pod. The pod's own run is `python -m operations.pod.pod_run` (`operations/pod/README.md`). |
 | `fetch-run` | Brings one run tree back from the network volume a pod wrote it to, every object checked against the tree's own digests, into a local folder. | No — it reads storage only and needs no pod. You have to name the volume. |
 | `export` | Brings the finished results back to this computer. This build makes a base Armarium evidence bundle. | No. |
 | `review` | Opens one run tree read-only, before or after export, and says which stages ran, what each act's latest reading and review say, which acts are held and why, the page and crop images behind them, and the one supported next action. `--json` prints the whole projection instead. | No. It only reads the run tree. |
@@ -38,11 +46,13 @@ time to check on things and one that tidies up.
 | `advance` | Appends the project lead's confirmed decision to pass one exact sealed stage boundary. | No. It shows you the seal digest and makes you type a line back naming this run, this stage and that digest. The record is permanent and never retracted. |
 | `backup` | Copies one completed or partial volume-hosted run tree to a local synced Mac directory. | No. It uses no provider credential, stores every run-tree file by SHA-256, verifies every reused or copied byte, and records any excluded publication temporaries in the snapshot. |
 | `status` | Shows what is currently going on. | No — it only reads. It never starts, changes or spends anything. |
+| `watch` | Shows a pod run's stage, pages, finish estimate, deadline and spend from copies of its report files on this computer, once or every N seconds. | No — it reads local files only; it contacts no provider or volume and writes nothing. |
 | `clear-leftovers` | Lists what an interrupted publication left under one folder you name (a run tree, a volume mount or an export folder): `.<name>.tmp-<id>` files and `.<name>.publishing-<id>` folders. `--apply` removes them; run it only when nothing is writing to that folder. | No. It follows no symbolic link inside the folder, and refuses one as the folder's own last name; it touches no other name, and leaves alone any file, or any folder whose content, changed within the last hour. |
 | `spend show` | Shows the reviewed pod spending policy: its ceilings, hard-stop balance floor and alert threshold. | No — it reads the policy only; it does not contact a provider or edit the policy. |
 
-**The normal order.** `ingest` and `upload` need no rented machine, so do them first:
-`ingest` the submitted folder, work its queue with `triage`, `upload` the images.
+**The normal order.** `prepare`, `ingest` and `upload` need no rented machine, so do
+them first: `prepare` the scans and check its pages, `ingest` the submitted folder, work
+its queue with `triage`, `upload` the images.
 
 - **On this computer:** `run`, then `export` and `backup`.
 - **On a pod:** the pod runs `python -m operations.pod.pod_run`, which writes its tree to
@@ -52,10 +62,93 @@ time to check on things and one that tidies up.
 Use `review` to read a run tree without changing it, `advance` only once you have decided
 to pass a sealed boundary, and `status` whenever you are unsure what this tool has done.
 
+**Exit codes.** Every word exits 0 when it did what was asked and 2 otherwise: a
+refusal, a failure, a held or halted run and a partial export all exit 2, and the
+`What happened:` line says which. `pod_run` and the orchestrator keep their own codes (3
+held, 4 halted and more; `operations/pod/run_exits.py`, listed in `LIVE_READINESS.md`
+step 7), so the same held run exits 3 on a
+pod and 2 under `verbatus run`.
+
 `run`, `ingest`, `triage` and `spend` read configuration, stage code or
 proof material from the workspace, and refuse (`not-a-checkout`) when the folder they run
 in, or the one named with `--workspace`, lacks the `pipeline/`, `config/` or `proof/` they
 need. The other words never read those and run from anywhere.
+
+## `prepare`: page images and the Door's geometry from a folder of scans
+
+```sh
+verbatus prepare --scans private/parish-a/scans --out private/parish-a/prepared \
+    [--overrides private/parish-a/fixes.json] [--corpus-id parish-a] \
+    [--crop none|page|content] [--cache DIR | --no-cache]
+```
+
+The double-click window asks for the two folders (you can drag them in from Finder) and
+an optional corrections file. It runs pagekit (`pagekit/README.md`, "Preparing pages")
+over the scans and writes, in the output folder:
+
+- one lossless TIFF per page, pagekit's manifest `pagekit-prepare.json` and its project
+  file, and pagekit's review sheet `review.html`;
+- `triage-decision-manifest.json`: the same decisions as triage rows over the
+  **original** scans (actor `producer`, identity `pagekit`, revision pagekit's
+  version, colour mode always `keep`), and `triage-producer-recipe.json` beside it,
+  pagekit's own producer recipe (`pagekit-producer-recipe.v1`: its revision, a digest of
+  its settings and the detector behind each step), which the Door requires with
+  producer rows;
+- `triage-notes.txt`: each page the Door will cut differently from pagekit, and why.
+
+It then says how many pages need review, where to look, and the exact commands to run
+next. The prepared TIFFs are for looking at and reuse; they never enter a run. The Door
+reads the triage manifest, keeps each scan whole as the page's `parent_frame`, and cuts
+the page from it, so every reading still traces to the scan.
+
+- **What the Door cannot copy exactly.** Rows use the triage order with a crop after
+  rotation and a recorded fill, so a quarter turn, a skew, a crop and pagekit's paper
+  margin are all reproduced: a page with no skew exactly, a skewed one to within half a
+  pixel on each axis. A cut that leans, or pagekit's overlap past the cut, becomes a straight split
+  of the scan: what lies past it is on the facing page, and each Door page also holds
+  the facing page's sliver in its half, so nothing pagekit kept is dropped. A shrunk
+  page keeps the scan's resolution at the Door. `triage-notes.txt` lists each case.
+- **pagekit's spec 0007 choices.** A scan's orientation tag that turns it folds into the
+  Door's rotation; a tag that mirrors it (values 2, 4, 5 and 7) is refused before
+  anything is written, since the Door turns a scan but never mirrors it. A page made grey
+  by luminance (pagekit's default rule, exact on a scan with equal channels) becomes the
+  triage colour mode `grayscale`, which the Door applies after the same geometry, so its
+  grey page is pagekit's; a page made grey from one channel is refused. Padding is part
+  of the crop after rotation, within the Door's limit; more is refused. A nominal
+  density pagekit writes into a page is not carried: the Door's pages hold pixels only,
+  and `triage-notes.txt` says so for each such page.
+- **Cropping and the stage cache are pagekit's.** pagekit does not crop by default: each
+  page is its whole side of the cut, levelled. `--crop page` or `--crop content` crops;
+  the Door's rows follow either way. pagekit's stage cache (pictures of each step, for
+  looking only) goes beside `--out` unless `--cache DIR` names another place or
+  `--no-cache` turns it off; pagekit refuses one inside the scans folder, and upload never
+  sends it.
+- **Corrections are kept.** Run it again over the same output folder: pagekit continues
+  its project, keeps every value set by hand, and recomputes only what changed. Give
+  corrections with `--overrides FILE` (`pagekit/README.md`, "Corrections").
+- **Ctrl-C leaves the output folder as it was.** pagekit writes all its files or none,
+  and the triage documents are written after it, each whole.
+- **pagekit's own detector pipeline decides** the turn, the cut, the skew and the
+  boxes, as `python -m pagekit prepare` does. A step whose detector cannot decide on a
+  page takes a neutral default, and that page is flagged for review.
+- **The Door reads only approved storage**, `private/` in this checkout, so keep both
+  folders there; it also refuses a scans folder holding a file the manifest does not
+  cover, such as a `.DS_Store`. `prepare` warns about both.
+- Like `ingest`, the scans are decoded in a separate process that holds no credential.
+
+To check the result at the Door on this computer, seal the scans with the triage
+documents and run with them, as `prepare` prints:
+
+```sh
+verbatus upload --source private/parish-a/scans \
+    --manifest-out private/parish-a/prepared/submission-manifest.json \
+    --triage-decision-manifest private/parish-a/prepared/triage-decision-manifest.json \
+    --triage-producer-recipe private/parish-a/prepared/triage-producer-recipe.json
+verbatus run --run-id prepared-check --submission-folder private/parish-a/scans \
+    --submission-manifest private/parish-a/prepared/submission-manifest.json \
+    --triage-decision-manifest private/parish-a/prepared/triage-decision-manifest.json \
+    --triage-producer-recipe private/parish-a/prepared/triage-producer-recipe.json
+```
 
 ## `ingest`: prepare a folder before the Door
 
@@ -97,12 +190,29 @@ proxies, candidate evidence, triage documents and a final `ingest-ready.json`.
 Every `run` ends by printing the exact `verbatus review --run-root … --run-id …` line for
 its tree, whatever its end state; `status` prints the same line under every run.
 
+**A real submission needs its run tree under `private/`.** `run` keeps the tree under the
+state directory (`<state dir>/runs`), and the Door's data gate accepts real material only
+under an approved storage root (`config/data_handling_policy.json`: `private/` on this
+computer). With the default state directory the Door refuses at once, `the run root is
+outside every approved storage root`. Put the state directory there, before the word, and
+keep it for every later word about that run:
+
+```sh
+verbatus --state-dir private/verbatus-state run --run-id <run> \
+  --submission-folder private/<folder> --submission-manifest private/<folder>-manifest.json
+```
+
+The synthetic fixture run needs none of this.
+
 `export` names the run first (with no `--run-id` it takes the most recent and says so) and
 succeeds only when the run's recorded state is `complete`. Over a held or partial run it
 copies what was delivered, prints every reason, and exits `export-partial`. A record that
 claims `complete` but whose acts do not reconcile to its own total is refused with no
 bundle written (`export-unreconciled`, distinct from an unreadable record,
-`export-missing`); use `review` to see why.
+`export-missing`); use `review` to see why. An export record whose Armarium completion
+seal is missing, does not verify, or changes while its evidence is copied is not a
+finished export: `export` refuses it as `export-unsealed` with no bundle written, and
+`run` never reports it complete.
 
 **A hold is not cleared by running the same run name again**: that republishes the same
 sealed hold. An operator review decision recorded in the run (`approval-record.v1`,
@@ -302,8 +412,10 @@ call used and which arrived.
 
 `verbatus spend show` shows the policy's ceilings, hard-stop balance floor and
 notification-only alert threshold, each with the policy's SHA-256. It never fetches a
-balance or edits `config/spend.toml`. The checked-in policy is deliberately unconfigured
-and refuses rather than inventing values.
+balance or edits `config/spend.toml`. Each time limit shows hours beside its seconds.
+`Launch lifetime` is the deadline a launch sets at creation; the soft maximum is where the
+guard's deadline sits, and the hard maximum is as far as the lead may extend it. A policy
+with `state = "unconfigured"` is refused rather than shown with invented values.
 
 ## When something goes wrong
 
@@ -325,6 +437,59 @@ says the screen is the only record.
 recorded**, so it cannot drift from what is on file. Each run shows its id, root, state,
 failure or hold reasons, last output lines, the `verbatus review` line and its record path;
 exports, fetches, uploads, backups and `unexpected` records show what they touched.
+
+## `watch`: follow a pod run from this computer
+
+```sh
+verbatus watch --run-id <run id> --receipts <folder> [--lease <lease file>] [--interval 60]
+```
+
+`watch` reads copies of `pod_run`'s report and its `-liveness`, `-timings` and `-estimate`
+siblings (`pod-run-report-<run id>.json` and so on, the hand route's names; `--report` names
+the report when it is called something else). It reads only the folder you name: it does
+not fetch them, contact the volume or a provider, or write anything. Getting fresh copies
+onto this computer is a separate step. After the run, `fetch-run`'s evidence keys bring
+them home into `<local root>/evidence/`. During the run, `fetch-run` compares rather than
+replaces, so copy the four files yourself (for example `scp` from the pod) into a folder
+each time; reading them over S3 from `watch` itself is the next step.
+
+It prints `Verbatus works on this computer…` and `As of <time> (this computer's clock):`,
+then, in a few short lines:
+
+- **STALE** first, loudly, while the run is still going: the liveness copy and the
+  estimate copy are each judged on their own time (`last_seen`, `updated_at`) against
+  `--stale-minutes` (default 2) by this computer's clock. A stale estimate's stage, finish
+  and deadline lines say the time they were true. An ended run is never called stale.
+- The report's state (and exit code, hold and detail once it ended), the stage and pages
+  done of total, and "this stage finishes about …" — the current stage only; later stages
+  are not counted. With no estimate it says `unknown` and why: a failing estimate says
+  "the estimate is failing" with its last error, and a failed estimate write is counted.
+  An ended run shows no stage estimate.
+- **An ended run whose pod is kept up** (`held_to_hard_deadline`) says the pod is still
+  billing until the hard deadline, and counts spend to now.
+- The deadline and the time left, with its source, whether it can be extended by hand,
+  and `AT RISK` when the estimate passes it. With no deadline in the estimate it shows the
+  bootstrap's hard deadline from the report and says why. It cannot tell whether the guard
+  is armed, and says so; deadline-file values the pod ignored are listed.
+- The soft and hard maximums, from the estimate file (the budget the pod read).
+- Spend, set against the soft and hard maximums: with `--lease`, the pod and volume rate
+  from the verified lease since the pod was created; without it, `at least` pod_run's
+  `--hourly-usd` since pod_run started. A lease whose seal does not verify is named and
+  not used.
+- `Last notice:` the last notice `pod_run` recorded, and whether it was delivered (or
+  `none recorded`); `Stage runs:` each finished stage invocation's duration, with
+  unreadable timings lines counted; `Liveness:` whether the orchestrator was running and
+  how old that copy is.
+
+Without `--interval` it shows once. With `--interval N` it reads again every N seconds,
+prints only when a copy changed or turned stale, reads once more after a pause when a
+copy did not parse (it may have been caught mid-copy), and stops when the report says the run
+ended or after `--timeout`. Ctrl+C stops it. A missing or another run's report is refused
+(`watch-unreadable`, exit 2); a missing or unreadable sibling is named as a note, and the
+exit stays 0. `LIVE_READINESS.md` (step 8) shows its output on synthetic copies.
+
+Not built yet: reading the files over S3 itself, `--json`, and the design's run states and
+exit codes (`docs/design/control-surface.md`).
 
 ## Phone notifications
 
@@ -356,10 +521,11 @@ elsewhere and still read.
    under `submission/` and the ledger as `submission-manifest.json`; `--prefix batch-02`
    writes `batch-02/` and `batch-02-manifest.json`, and its pod request must name matching
    submission paths. Re-sending the same manifest is idempotent; a different manifest at
-   an occupied prefix is refused before any image is written.
+   an occupied prefix is refused before any image is written. That holds for the local
+   folder too: a second sealed folder (the spreads beside the pages, say) needs its own
+   prefix, `--prefix spreads`.
 2. **`run` runs on this computer, not on a pod**, so a real-roster run stops where a stage
-   first needs a served chair. Use the shipped real trio together; a custom roster needs
-   an operator-authored witness declaration. The pod's run is
+   first needs a served chair. Use the shipped real pair together. The pod's run is
    `python -m operations.pod.pod_run`, and `fetch-run` brings its tree home.
 3. **`export` produces a base Armarium evidence bundle**, not the product export,
    and says so on screen.

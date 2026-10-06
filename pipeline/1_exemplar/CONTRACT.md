@@ -40,7 +40,12 @@ Optional inputs:
 - **Triage documents** (`common.contracts.triage`): a decision manifest that splits,
   crops, rotates and converts submitted frames, its re-shoot cluster records, and the
   producer recipe. Every submitted frame needs a row; rows for frames outside this
-  submission are allowed.
+  submission are allowed. A manifest with producer rows needs the recipe of the
+  producer that made them: the duplicate-detection instrument's
+  (`triage-producer-recipe.v2`, `operations/triage/instrument.py`) or pagekit's
+  (`pagekit-producer-recipe.v1`, `operations/triage/pagekit_recipe.py`), which every
+  producer row must match in identity, revision and operation order. pagekit's rows
+  under the instrument's recipe are refused.
 - **Corpus register** (`common/corpus_register.py`): sealed into the run as a snapshot.
 
 The folder must hold exactly the ledgered files; an extra file stops the Door before a
@@ -119,6 +124,16 @@ whole run, before its own completion seal, when:
    at source expansion with the same remedy.
 3. **No page of the submission was admitted** (`refusal-report`). Admitted canaries do
    not count.
+4. **The export could never be sealed.** With `embed_pixels = true` the export
+   archive carries every admitted page (canaries excepted) and its crops. The Door
+   estimates it as each page's stored bytes plus `CROP_PAGE_COVERAGE` whole-page
+   crops at the page's uncompressed crop layout (`crop_bytes_per_pixel` in
+   `common/imaging.py`; 4 bytes per pixel when the mode cannot be read) plus
+   `TEXT_MEMBER_BYTES_PER_PAGE` for the transcriptions the text members carry, and
+   refuses an estimate above `MAX_EXPORT_ARCHIVE_BYTES` (all three constants in
+   `common/armarium_formats.py`) here rather than after the reading. The format
+   choice is sealed into the run, so the remedy is a new run: over a smaller part of
+   the submission, or with `embed_pixels = false`.
 
 A refusal names ordinals and the private report's location, never a filename: it is
 printed to the terminal, and the reports are where filenames belong. A refused Door
@@ -131,13 +146,18 @@ created. The Door checks the frame's bytes against the row's digest and the deco
 frame's dimensions against the row's `frame` (exactly; a stale row is refused rather
 than shifting coordinates), then renders each part with
 `common.imaging.render_triage_derivative`: cut the frame-space region, crop, rotate
-clockwise onto an expanded canvas, convert, encode deterministically.
+clockwise onto an expanded canvas, then, for a row of the second operation order, cut
+the post-crop from the canvas with everything outside the rotated crop set to the
+row's fill;
+convert, encode deterministically.
 
 The master is never re-encoded: its bytes are stored under their own digest as the
 admission's `parent_frame`, and the admission inputs both the page and the master.
 The `render_contract` carries `derivative_page`: the full triage row, the back-link
-to its part, the operation list and the fixed apply recipe
-(`common.imaging.TRIAGE_APPLY_RECIPE`). `colour_mode: "keep"` admits only modes the
+to its part, the operation list and the apply recipe of the row's operation order
+(`common.imaging.triage_apply_recipe`: `triage-raster-apply-v1` for
+`region-crop-rotate`, `-v2` for `region-crop-rotate-crop`); the Exemplar holds each page
+to the recipe of its own row's order. `colour_mode: "keep"` admits only modes the
 encoder stores losslessly (`1`, `L`, `LA`, `RGB`, `RGBA`, and palette `P`); a 16-bit
 master needs an explicit conversion or no split at all. The recorded library versions
 are provenance; the verifier compares bytes, and when a re-render differs on a host

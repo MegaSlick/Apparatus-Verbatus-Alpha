@@ -58,6 +58,10 @@ def configured(**overrides: object) -> SpendPolicy:
         "shutdown_poll_interval_seconds": 1,
         "shutdown_deadline_seconds": 5,
         "billing_cutoff_margin_seconds": 3600,
+        "soft_max_seconds": 86_400,
+        "hard_max_seconds": 86_400,
+        "soft_max_cost_usd": Decimal("1000.00"),
+        "hard_max_cost_usd": Decimal("1000.00"),
     }
     fields.update(overrides)
     return SpendPolicy(**fields)  # type: ignore[arg-type]
@@ -424,3 +428,33 @@ def test_the_rendered_bootstrap_half_is_a_plan_bootstrap_main_accepts() -> None:
     plan = resolve_plan(build_parser().parse_args(bootstrap_half), request.metadata)
 
     assert str(plan.repository) == BOOT_B_REPOSITORY_PATH
+
+
+def test_boot_b_hands_the_run_the_triage_documents_upload_put_beside_the_scans() -> None:
+    rendered = render_boot_b_request(
+        configured(),
+        load_placement_table(PLACEMENT),
+        image=IMAGE,
+        volume_id="volume-abc",
+        repository_commit=COMMIT,
+        run_id="boot-b-0001",
+        hard_deadline=_deadline(),
+        triage=True,
+    )
+    request = json.loads(rendered.text.split("```json\n", 1)[1].split("\n```", 1)[0])
+    nested = _sealed_nested_argv(validated_pod_request(request).docker_start_cmd)
+    run_half = nested[: nested.index("--")]
+    mount = BOOT_B_VOLUME_MOUNT_PATH
+    assert run_half[run_half.index("--triage-decision-manifest") + 1] == (
+        f"{mount}/submission-triage-decision-manifest.json"
+    )
+    assert run_half[run_half.index("--triage-producer-recipe") + 1] == (
+        f"{mount}/submission-triage-producer-recipe.json"
+    )
+    card = cheapest_card(load_placement_table(PLACEMENT))
+    plain = _nested_argv(
+        pod_request(
+            card, image=IMAGE, volume_id="v", repository_commit=COMMIT, run_id="boot-b-0001"
+        )
+    )
+    assert "--triage-decision-manifest" not in plain

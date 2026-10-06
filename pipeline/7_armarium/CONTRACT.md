@@ -108,29 +108,50 @@ The bundle is a ZIP written with every member stored (never compressed) and fixe
 metadata, with `EXPORT_MANIFEST.json` first. It is deterministic for given inputs,
 except that bytes 96-99 of `acts.sqlite` hold the writing library's SQLite version.
 
+The whole archive is bounded by its own limit, `MAX_EXPORT_ARCHIVE_BYTES`
+(`common/armarium_formats.py`), not by the single-page blob ceiling: every run-tree
+read of it (input verification, the completion seal, `bundle.py`) uses that limit, and
+an archive above it is refused before it is stored. The Door refuses a run whose embedded export
+is estimated above it (`pipeline/1_exemplar/CONTRACT.md`).
+
 The formats are the run's sealed selection, `config/formats.toml`
-(`common/armarium_formats.py`): any of `text-bundle`, `acts-database`, `jsonl` and
-`review-items`, and `embed_pixels`. The selection is sealed into the run's
-`config_digest`, so a run's product cannot be re-projected under another selection.
+(`common/armarium_formats.py`, `armarium-formats.v2`): any of `text-bundle`,
+`acts-database`, `jsonl`, `csv` and `review-items`, `embed_pixels`, and `lot`. The
+committed selection is all five, one format set: the plain-text readings, SQLite, JSONL
+and CSV each give the same reading of every act. The selection is
+sealed into the run's `config_digest`, so a run's product cannot be re-projected under
+another selection.
+
+**The lot.** With `lot = true` (the committed default) the manifest's `run` block and
+every row (`acts.jsonl`, `other.jsonl`, `review-items.jsonl`, `acts.csv`, the `acts`
+table) carry the
+run's lot, `lot_<16 hex>` derived from `run.json`'s self-hash
+(`common.contracts.identities.lot_id`), and each `readings.txt` names it under the run's
+status; with `false` each carries `null` and `readings.txt` has no lot line. The lot
+traces a row to its run, settings, models and commit. It is written only into the
+product, which stays with the run tree on the lead's machine or the pod: `bundle.py`
+recomputes it from `run.json` before publishing and refuses a destination inside a git
+work tree that git does not ignore.
 
 | Member | Present | Schema id |
 |---|---|---|
-| `EXPORT_MANIFEST.json` | always | `armarium-export-manifest.v12` |
+| `EXPORT_MANIFEST.json` | always | `armarium-export-manifest.v13` |
 | `sources.json` | always | `armarium-sources.v6` |
 | `text/_source_folder/<folder>/readings.txt`, `text/_source_root/readings.txt` | `text-bundle`: one per source folder | — |
-| `acts.sqlite` | `acts-database` | `armarium-acts-sqlite.v6` (`PRAGMA user_version` 6) |
-| `acts.jsonl` | `jsonl` | `armarium-act.v6` |
-| `other.jsonl` | `jsonl` | `armarium-other-reading.v2` |
+| `acts.sqlite` | `acts-database` | `armarium-acts-sqlite.v7` (`PRAGMA user_version` 7) |
+| `acts.jsonl` | `jsonl` | `armarium-act.v7` |
+| `acts.csv` | `csv` | its header row (below) |
+| `other.jsonl` | `jsonl` | `armarium-other-reading.v3` |
 | `coniector.jsonl` | `jsonl`, when a reconstruction is shown | `armarium-coniector-reconstruction.v1` |
 | `operator.jsonl` | `jsonl`, when an operator acted on a delivered reading | `armarium-operator-action.v1` |
 | `model_readings.jsonl` | `jsonl`, when a person corrected a delivered reading | `armarium-model-reading.v1` |
-| `review-items.jsonl` | `review-items` | `armarium-review-item.v2` |
+| `review-items.jsonl` | `review-items` | `armarium-review-item.v3` |
 | `pixels/pages/<ordinal>.img`, `pixels/crops/<region_id>.img` | `embed_pixels = true` | — |
 
 Every id moves with its closed field set, and the verifier recognises only these, so a
 consumer keying on an id never reads an older shape out of a newer record. Rows are in
 reading order (page, then reading number). Every row of one reading carries the same
-`act_id`, `act_key`, `category` and `reason`; a held or refused reading always carries a
+`act_id`, `act_key`, `lot`, `category` and `reason`; a held or refused reading always carries a
 reason (`"upstream recorded no reason"` when none was recorded).
 
 **Pixels.** With `embed_pixels = false` every page and crop is cited by run-relative path
@@ -148,7 +169,8 @@ other member's path, sha256 and byte count) and `self_hash`.
 
 `canonical_text` names the one text field (`canonical_clean_text`), its hash (SHA-256
 of its UTF-8 bytes), that derived columns are marked as derived, and the literal formats
-compared for identity (`text-bundle`, `acts-database`, `jsonl`; empty below two).
+compared for identity (`text-bundle`, `acts-database`, `jsonl`, `csv`; empty below
+two).
 
 `claims` is the closed set:
 
@@ -168,6 +190,21 @@ compared for identity (`text-bundle`, `acts-database`, `jsonl`; empty below two)
 - `ink_map`: `{denominator, held_pages, unmeasurable_pages}`, derived from
   `sources.json`'s `ink_map_pages`.
 - `not_measured`, `other_readings`, `page_accounting`, `reask`: below.
+- `doubt_share`: `{denominator, status, acts: [{act_id, act_key, page_ordinal,
+  doubtful_or_unread, out_of}], pages: [{ordinal, doubtful_or_unread, out_of}]}`, in
+  reading order, over each delivered act's established text
+  (`common.reading_annotations.doubt_count`: its non-whitespace characters inside an
+  uncertain span, each gap counted as one unread character, and a reading with nothing
+  read as one unread character) and each page's delivered
+  acts together. `status` is `measured`, or `not-applicable-no-literal-format` with
+  empty lists when no literal format carries the text. Verification recounts it from
+  the package's own literals. The Perlector holds a reading, and every reading of a
+  page, over the sealed `[doubt]` limits (`pipeline/4_perlector/CONTRACT.md`); the
+  export refuses a delivered act over the act limit that was never held
+  `doubt-share-high`, and recounts each page over its counted readings'
+  Perlectiones as the Perlector did, refusing a page over the page limit with a
+  reading not held `page-doubt-share-high`, so only a person's decision delivers one. The page record
+  counts delivered acts only, so it can be lower than the share the page was held on.
 
 ### `sources.json`
 
@@ -187,6 +224,7 @@ One `readings.txt` per source folder, UTF-8, `\n`-separated. Each file opens wit
 ```text
 # Armarium text bundle — source folder: <folder>
 run-status: complete | partial (EXPORT_MANIFEST.json claims.partial_reasons says why)
+lot: <lot>                          (when the run has one)
 folder-readings: <n> delivered, <m> not delivered
 ```
 
@@ -202,6 +240,8 @@ source-sha256: <declared_sha256>
 canonical_text_sha256: <sha256>
 canonical_clean_text:
 <the text, as one JSON string>
+diplomatic:
+<the text as a reader is shown it, as one JSON string>
 uncertainty:
 <the uncertainty layer, as one JSON object>
 text_status: established | partial
@@ -211,8 +251,8 @@ followed, when they apply, by continuation notes (`possible-continuation-on:` an
 `possible-continuation-from:`), operator lines and reconstruction lines (below). After
 the acts come join reconstructions, then each delivered other reading as its own
 `## OTHER <act_key> (not an act)` section with fields named apart from an act's
-(`other-id:`, `other-source-page:`, `other_text:`, `other_uncertainty:`,
-`other_text_status:`), so no act reader reads one as an act. The file ends with one
+(`other-id:`, `other-source-page:`, `other_text:`, `other_diplomatic:`,
+`other_uncertainty:`, `other_text_status:`), so no act reader reads one as an act. The file ends with one
 text-free section for every unresolved sealed page and every unsealed source in the
 folder, and then for every act or other reading on its pages that was not delivered:
 
@@ -232,7 +272,7 @@ person wrote is one JSON line, so none can start a line a reader parses.
 
 ### `acts.sqlite`
 
-- `acts`: one row per counted act, with `act_id`, `act_key`, `category`,
+- `acts`: one row per counted act, with `act_id`, `act_key`, `category`, `lot`,
   `canonical_clean_text`, `canonical_text_sha256`, `provenance_json`,
   `source_regions_json`, `uncertainty_json`, `uncertainty_status`, `text_status`,
   `evidence_json`, `approval_ref`, `reason`, `reading` and `operator_label` (the act's
@@ -256,11 +296,11 @@ The database carries no other reading.
 
 ### `acts.jsonl`, `other.jsonl`, `review-items.jsonl`
 
-These files are rows only: they carry no run status or run identity and are read with
+These files are rows only: they carry no run status and are read with
 `EXPORT_MANIFEST.json`, which inventories them by digest.
 
 - `acts.jsonl`: one row per counted act, its row count the act partition: `schema`,
-  `act_id`, `act_key`, `category`, `canonical_clean_text` and `canonical_text_sha256`
+  `act_id`, `act_key`, `lot`, `category`, `canonical_clean_text` and `canonical_text_sha256`
   (null unless delivered), `provenance`, `source_regions`, `uncertainty`,
   `uncertainty_status`, `text_status`, `witnesses`, `perlectio_ref`, `recensor_ref`,
   `dissent_ref`, `approval_ref`, `reason`, `evidence_refs` and `reading`.
@@ -268,8 +308,26 @@ These files are rows only: they carry no run status or run identity and are read
   only when delivered. A separate member, because a second population in `acts.jsonl`
   would be counted as acts by any reader counting its rows.
 - `review-items.jsonl`: one row per held or refused reading, act or other: `schema`,
-  `act_id`, `act_key`, `kind` (`act` | `other`), `category`, `reason` and
+  `act_id`, `act_key`, `lot`, `kind` (`act` | `other`), `category`, `reason` and
   `evidence_refs`. It is a review queue, not a count of acts.
+
+### `acts.csv`
+
+One flat row per counted act, in reading order, for a spreadsheet: UTF-8 with a
+byte-order mark, CRLF rows, RFC 4180 quoting. Its header row is `act_key`, `act_id`,
+`lot`, `category`, `reason`, `reading`, `text_status`, `canonical_clean_text`,
+`diplomatic_text` (the text as a reader is shown it, below), `canonical_text_sha256`,
+`uncertainty_json` (the layer as one canonical JSON object), and `doubtful_or_unread`
+and `out_of`, the act's doubt share (below). Null is an empty cell; the text columns are empty for an act not delivered.
+
+A cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return, which a spreadsheet
+would run as a formula, is written with one leading `'`, and so is a cell already
+starting with `'`, so the escape is undone exactly by removing one leading `'`. The
+hash column is the hash of the unescaped text, and every other format carries the text
+unescaped. To check `canonical_text_sha256` against an escaped `canonical_clean_text`
+cell, a reader strips its one leading `'` first. Verification reads each delivered act's text and layer back, compares them
+with every other literal format, and renders the file again from `sources.json`, the
+manifest's lot and those readings, requiring the same bytes.
 
 ### Labelled layers beside a delivered reading
 
@@ -281,7 +339,11 @@ was shown (a join only when every piece is delivered), as one
 `armarium-coniector-reconstruction.v1` row: its label, who made it, its diplomatic pieces
 with their doubt marks, its departures, its flags and, when not made, why. In the text
 bundle it follows its act's section as `reconstruction_*` lines ending with the whole
-row, and a join is its own `## JOIN RECONSTRUCTION <keys> (not an act)` section. No
+row, and a join is its own `## JOIN RECONSTRUCTION <keys> (not an act)` section. A made
+reconstruction's block carries the "with reconstructions" view, `with_reconstructions:`
+(`coniector_layer.with_reconstructions`): its diplomatic pieces with each departure
+shown as `⟨word⟩` and every other doubt mark bracketed as in the diplomatic text, beside
+the model that made it and each departure's reason. `⟨⟩` appears nowhere else. No
 reconstruction or flag enters the act count, the ledger, review items, the database or
 the aggregate. Beneath an act a person corrected, the row is held to the model's
 reading and says `made_from: "model reading (original)"`.
@@ -354,10 +416,16 @@ aggregate names it.
 **The lead's rulings on what a reader is shown.** The established text is diplomatic,
 with brackets only where the ink is: `[illegible]` for a gap and `[word?]` for a
 doubtful reading. Informed guesses are Coniector reconstructions, kept in their own
-field and never in the established text. No Obsidian vault ships. This build carries
-the gaps and doubts in the uncertainty layer beside each literal and does not yet
-render the brackets; the rendering, a CSV format and a per-row `lot` tying each row to
-its run land in the export follow-up.
+field and never in the established text. No Obsidian vault ships. The literal formats
+carry the established text unbracketed with its uncertainty layer beside it; the
+reader's views (`diplomatic:` and `other_diplomatic:` in `readings.txt`, the
+`diplomatic_text` column of `acts.csv`) show it as
+`common.reading_annotations.diplomatic_display` renders it from that layer: each gap
+as `[illegible]` and each uncertain span as `[word?]`. A person's correction, which
+carries no machine doubt, and a doubt report that could not be anchored are shown as
+they are. The rendering is derived, so verification renders each view again; a
+bracket the scribe wrote is shown as written, and only the layer says which brackets
+are the reader's.
 
 **Other readings.** `claims.other_readings` is `{layer, counted_as_acts: false, count,
 by_category, act_ids, carried_by}`. On a page with acts, an other reading not delivered
@@ -398,9 +466,11 @@ rows against the sealed comparison budgets). `count` is how many did not measure
 its digest against the export record, verifies it again with
 `armarium_export.verify_delivered_bundle` (the same checks, plus the cross-format
 comparison of every literal), compares the package's aggregate, run binding, manifest
-self-hash and status with the export record and `run.json`, and publishes
-`armarium-export.zip` and the verified extraction (`bundle/`) by atomic rename. An
-existing destination is refused, and nothing is written unless everything verifies.
+self-hash and status with the export record and `run.json`, requires the Armarium's
+completion seal (`common.stage.verify_final_seal`) to verify and to witness that same
+export record, and publishes `armarium-export.zip` and the verified extraction
+(`bundle/`) by atomic rename. An existing destination is refused, and nothing is
+written unless everything verifies.
 
 Verification refuses an unsafe ZIP (a member that is compressed, a link, outside the
 root, or aliased by case or Unicode normalization), a member that does not match its

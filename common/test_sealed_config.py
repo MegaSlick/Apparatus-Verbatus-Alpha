@@ -20,7 +20,6 @@ SEALED_FILES = {
     "armarium_formats_config_path": "formats.toml",
     "recovery_config_path": "recovery.toml",
     "hard_failure_config_path": "hard_failure.toml",
-    "witness_context_config_path": "witness_context.toml",
     "perlector_protocol_config_path": "perlector_protocol.toml",
     "perlector_audit_config_path": "perlector_audit.toml",
     "serving_recipes_config_path": "serving_recipes.toml",

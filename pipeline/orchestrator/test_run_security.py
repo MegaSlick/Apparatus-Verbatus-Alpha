@@ -41,7 +41,6 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         placement_tier=None,
         corpus_register=None,
         witness_context="named",
-        witness_context_config="config/witness_context.toml",
         perlector_protocol_config="config/perlector_protocol.toml",
         decoding_config="config/decoding.toml",
         perlector_audit_config="config/perlector_audit.toml",

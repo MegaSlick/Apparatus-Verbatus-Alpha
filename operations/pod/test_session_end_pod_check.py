@@ -50,9 +50,12 @@ def check(tmp_path):
     marker = home / ".cache" / "verbatus" / "pods-reported"
 
     def run(
-        output: str, *, installed: bool = True, with_timeout: bool = True, **extra: str
+        output: str, *, installed: bool = True, with_timeout: bool | None = None, **extra: str
     ) -> list[str]:
         listing.write_text(output)
+        # By default the machine's own: macOS ships no `timeout`.
+        if with_timeout is None:
+            with_timeout = shutil.which("timeout") is not None
         timeout = tools / "timeout"
         if with_timeout and not timeout.exists():
             timeout.symlink_to(shutil.which("timeout"))
@@ -107,7 +110,19 @@ def test_an_empty_listing_is_reported_not_read_as_no_pods(check):
     assert check.marker.read_text() == "unlisted"
 
 
-@pytest.mark.parametrize("with_timeout", [True, False], ids=["timeout", "background-kill"])
+@pytest.mark.parametrize(
+    "with_timeout",
+    [
+        pytest.param(
+            True,
+            id="timeout",
+            marks=pytest.mark.skipif(
+                shutil.which("timeout") is None, reason="this machine has no timeout"
+            ),
+        ),
+        pytest.param(False, id="background-kill"),
+    ],
+)
 def test_a_hung_listing_is_stopped_and_reported(check, with_timeout):
     started = time.monotonic()
     sent = check(
@@ -160,3 +175,12 @@ def test_a_failed_ping_is_tried_again_at_the_next_session_end(check):
     assert len(check(table(RUNNING), FAKE_NOTIFY_EXIT="1")) == 1
     assert not check.marker.exists()
     assert len(check(table(RUNNING))) == 1
+
+
+def test_a_machine_without_timeout_still_runs_the_check(check, monkeypatch):
+    """macOS ships no `timeout`; the script falls back to a background kill, and the
+    fixture must not need one either."""
+    which = shutil.which
+    monkeypatch.setattr(shutil, "which", lambda name: None if name == "timeout" else which(name))
+    sent = check(table(RUNNING))
+    assert sent and "abc123:RUNNING" in sent[0]

@@ -370,6 +370,48 @@ def test_an_already_closed_verified_lease_exits_without_a_provider_call(tmp_path
     assert provider.calls == []
 
 
+def test_a_restart_on_a_close_unverified_lease_notifies_go_and_look(tmp_path: Path) -> None:
+    clock = Clock()
+    provider = fake(clock)
+    record = provider.create(request(clock))
+    store = _store(tmp_path)
+    ident = supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
+    make_lease(store, record, owner=ident.owner_token, clock=clock)
+    # No billing installed, so the close cannot be verified.
+    first = supervise.supervise_tick(
+        store=store,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        owner_token=ident.owner_token,
+        heartbeat_timeout=timedelta(seconds=30),
+        now=lambda: clock.now() + timedelta(seconds=3601),
+    )
+    assert first.close_report is not None and not first.close_report.verified
+    supervise.release_lock(tmp_path, LEASE_ID)
+    provider.calls.clear()
+    messages: list[str] = []
+
+    def notifier(message: str) -> NotifyOutcome:
+        messages.append(message)
+        return NotifyOutcome(True, True, "sent")
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(),
+        notifier=notifier,
+        now=clock.now,
+    )
+    assert result.state == "close-unverified"
+    assert exit_code == 3
+    assert provider.calls == []
+    assert len(messages) == 1 and "go and look" in messages[0] and LEASE_ID in messages[0]
+    assert "sent" in result.detail
+
+
 # -- drill 6: two drivers -----------------------------------------------------
 
 
@@ -419,16 +461,233 @@ def test_no_lease_refuses_without_touching_the_provider(tmp_path: Path) -> None:
     assert provider.calls == []
 
 
-def test_a_heartbeat_timeout_not_shorter_than_the_remaining_lifetime_refuses(
-    tmp_path: Path,
-) -> None:
+def _late_start(
+    tmp_path: Path, *, start_at: float, last_heartbeat: float = 0, release: bool = True
+):
+    """An armed lease with a 3600 s deadline, and a supervisor (re)started at ``start_at``."""
+
     clock = Clock()
     provider = fake(clock)
     record = provider.create(request(clock))
     store = _store(tmp_path)
     ident = supervise.establish_identity(tmp_path, LEASE_ID, now=clock.now, pid=1000)
-    make_lease(store, record, owner=ident.owner_token, clock=clock, deadline_seconds=20)
+    lease = make_lease(
+        store,
+        record,
+        owner=ident.owner_token,
+        clock=clock,
+        deadline_seconds=3600,
+        heartbeat_offset=last_heartbeat,
+    )
+    if release:
+        # The setup call stands in for the supervisor that crashed; its lock
+        # dies with it, and `run_supervisor` below is the restart.
+        supervise.release_lock(tmp_path, LEASE_ID)
+    clock.seconds = start_at
+    provider.bill(record.pod_id, "0.30")
     provider.calls.clear()
+    return clock, provider, store, record, lease
+
+
+def test_a_supervisor_restarted_after_the_hard_deadline_closes_the_pod_verified(
+    tmp_path: Path,
+) -> None:
+    """Restarted one second past the deadline, the supervisor must close, not refuse."""
+
+    clock, provider, store, record, lease = _late_start(tmp_path, start_at=3601)
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(heartbeat_timeout=900),
+        now=clock.now,
+        sleeper=clock.sleep,
+        pid=1000,
+    )
+
+    assert result.state == "lifetime-expired"
+    assert exit_code == 0
+    assert result.close_report is not None and result.close_report.verified
+    assert provider.terminate_calls == [record.pod_id]
+    persisted = store.load()
+    assert persisted is not None and persisted.phase == "closed-verified"
+
+
+def test_a_healthy_lease_inside_one_heartbeat_of_its_deadline_is_watched_to_expiry(
+    tmp_path: Path,
+) -> None:
+    """Ten minutes left under a 900 s heartbeat: supervised until the deadline, then closed."""
+
+    clock, provider, store, record, lease = _late_start(
+        tmp_path, start_at=3000, last_heartbeat=2990
+    )
+    terminated_at: list[float] = []
+    real_terminate = provider.terminate
+
+    def timed_terminate(pod_id: str) -> None:
+        terminated_at.append(clock.seconds)
+        real_terminate(pod_id)
+
+    provider.terminate = timed_terminate  # type: ignore[method-assign]
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(heartbeat_timeout=900),
+        now=clock.now,
+        sleeper=clock.sleep,
+        pid=1000,
+    )
+
+    assert result.state == "lifetime-expired"
+    assert exit_code == 0
+    assert result.close_report is not None and result.close_report.verified
+    assert terminated_at and terminated_at[0] >= 3600, terminated_at
+    assert ("status", record.pod_id) in provider.calls
+    persisted = store.load()
+    assert persisted is not None and persisted.phase == "closed-verified"
+
+
+@pytest.mark.parametrize(
+    ("start_at", "last_heartbeat"),
+    [(3000, 2990), (3700, 3500)],
+    ids=["before-deadline", "after-deadline"],
+)
+def test_a_restart_that_lost_its_identity_waits_out_the_old_heartbeat_then_closes(
+    tmp_path: Path, start_at: int, last_heartbeat: int
+) -> None:
+    """A fresh token reads the dead owner's recent heartbeat as foreign; it must
+    wait for that heartbeat to go stale, claim the orphan and close it verified."""
+
+    clock, provider, store, record, lease = _late_start(
+        tmp_path, start_at=start_at, last_heartbeat=last_heartbeat
+    )
+    supervise.identity_path(tmp_path, LEASE_ID).unlink()
+    messages: list[str] = []
+
+    def notifier(message: str) -> NotifyOutcome:
+        messages.append(message)
+        return NotifyOutcome(True, True, "sent")
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(heartbeat_timeout=900),
+        notifier=notifier,
+        now=clock.now,
+        sleeper=clock.sleep,
+        pid=1000,
+    )
+
+    assert result.state == "orphan-reconciled"
+    assert exit_code == 0
+    assert result.close_report is not None and result.close_report.verified
+    assert provider.terminate_calls == [record.pod_id]
+    assert clock.seconds >= last_heartbeat + 900
+    persisted = store.load()
+    assert persisted is not None and persisted.phase == "closed-verified"
+    assert len(messages) == 1 and "closed verified" in messages[0]
+
+
+@pytest.mark.parametrize(
+    ("last_heartbeat", "state", "expected_exit"),
+    [(3550, "orphan-reconciled", 0), (5000, "owner-heartbeat-fresh", 3)],
+    ids=["future-before-deadline", "future-after-deadline"],
+)
+def test_a_foreign_heartbeat_stamped_in_the_future_is_waited_out_or_reported(
+    tmp_path: Path, last_heartbeat: int, state: str, expected_exit: int
+) -> None:
+    """A heartbeat stamped ahead of this clock is waited on until it goes stale;
+    one stamped past the deadline ends the run with a go-and-look notification."""
+
+    clock, provider, store, record, lease = _late_start(
+        tmp_path, start_at=3000, last_heartbeat=last_heartbeat
+    )
+    supervise.identity_path(tmp_path, LEASE_ID).unlink()
+    messages: list[str] = []
+    sleeps: list[float] = []
+
+    def notifier(message: str) -> NotifyOutcome:
+        messages.append(message)
+        return NotifyOutcome(True, True, "sent")
+
+    def sleeper(seconds: float) -> None:
+        sleeps.append(seconds)
+        assert len(sleeps) < 100, "run_supervisor did not end"
+        clock.sleep(seconds)
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(heartbeat_timeout=900),
+        notifier=notifier,
+        now=clock.now,
+        sleeper=sleeper,
+        pid=1000,
+    )
+    assert result.state == state
+    assert exit_code == expected_exit
+    assert len(messages) == 1
+    if expected_exit == 0:
+        assert provider.terminate_calls == [record.pod_id]
+        assert clock.seconds >= last_heartbeat + 900
+    else:
+        assert provider.terminate_calls == []
+        assert "go and look" in messages[0]
+
+
+def test_a_foreign_heartbeat_that_goes_stale_after_the_tick_is_still_claimed_and_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Fresh when the tick read it, stale by the time the loop decides: not a reason to stop."""
+
+    clock, provider, store, record, lease = _late_start(
+        tmp_path, start_at=3605 + 899, last_heartbeat=3605
+    )
+    supervise.identity_path(tmp_path, LEASE_ID).unlink()
+    real_record_tick = supervise.record_tick
+
+    def slow_record_tick(*args, **kwargs):
+        clock.sleep(2)
+        return real_record_tick(*args, **kwargs)
+
+    monkeypatch.setattr(supervise, "record_tick", slow_record_tick)
+
+    result, exit_code = supervise.run_supervisor(
+        store=store,
+        leases_root=tmp_path,
+        lease_id=LEASE_ID,
+        provider=provider,
+        shutdown=shutdown(provider, clock),
+        policy=policy(heartbeat_timeout=900),
+        now=clock.now,
+        sleeper=clock.sleep,
+        pid=1000,
+    )
+    assert result.state == "orphan-reconciled"
+    assert exit_code == 0
+    assert result.close_report is not None and result.close_report.verified
+    assert provider.terminate_calls == [record.pod_id]
+
+
+def test_a_competing_supervisor_is_refused_even_when_the_lease_is_overdue(
+    tmp_path: Path,
+) -> None:
+    """An overdue lease never lets a second driver past the ownership lock."""
+
+    clock, provider, store, record, lease = _late_start(tmp_path, start_at=3601, release=False)
 
     with pytest.raises(supervise.SuperviseRefusal) as excinfo:
         supervise.run_supervisor(
@@ -437,12 +696,15 @@ def test_a_heartbeat_timeout_not_shorter_than_the_remaining_lifetime_refuses(
             lease_id=LEASE_ID,
             provider=provider,
             shutdown=shutdown(provider, clock),
-            policy=policy(heartbeat_timeout=30),
+            policy=policy(heartbeat_timeout=900),
             now=clock.now,
+            sleeper=clock.sleep,
+            pid=2000,
         )
-    assert "not shorter than" in str(excinfo.value)
+    assert "already owns lease" in str(excinfo.value)
     assert excinfo.value.exit_code == 2
     assert provider.calls == []
+    assert store.load() == lease
 
 
 def test_run_supervisor_loops_to_a_verified_lifetime_expiry_and_writes_a_final_record(
@@ -529,6 +791,11 @@ def test_run_supervisor_breaks_rather_than_spins_once_a_foreign_owners_deadline_
 
     tick_count = 0
     sleeps: list[float] = []
+    messages: list[str] = []
+
+    def notifier(message: str) -> NotifyOutcome:
+        messages.append(message)
+        return NotifyOutcome(True, True, "sent")
 
     def counting_sleeper(seconds: float) -> None:
         nonlocal tick_count
@@ -545,6 +812,7 @@ def test_run_supervisor_breaks_rather_than_spins_once_a_foreign_owners_deadline_
         provider=provider,
         shutdown=shutdown(provider, clock),
         policy=policy(heartbeat_timeout=1, lifetime=3600),
+        notifier=notifier,
         now=clock.now,
         sleeper=counting_sleeper,
         pid=1000,
@@ -554,6 +822,7 @@ def test_run_supervisor_breaks_rather_than_spins_once_a_foreign_owners_deadline_
     assert exit_code == 3, "go and look: another owner's heartbeat stayed fresh past our deadline"
     assert provider.terminate_calls == []
     assert all(seconds > 0 for seconds in sleeps), sleeps
+    assert len(messages) == 1 and "go and look" in messages[0]
 
 
 def test_main_smoke_reports_no_lease_as_exit_code_two(tmp_path: Path, monkeypatch) -> None:
@@ -688,6 +957,40 @@ def test_main_writes_a_crashed_final_record_and_exits_three_on_an_unexpected_err
     assert "ModuleNotFoundError" in payload["detail"]
 
 
+def test_a_crash_with_notify_on_sends_a_go_and_look_notification(
+    tmp_path: Path, monkeypatch
+) -> None:
+    spend_path = tmp_path / "spend.toml"
+    spend_path.write_text(configured_spend_toml(), encoding="utf-8")
+    messages: list[str] = []
+
+    def notifier(message: str) -> NotifyOutcome:
+        messages.append(message)
+        return NotifyOutcome(True, True, "sent")
+
+    def _boom(reference: str):
+        raise ModuleNotFoundError(f"no such module: {reference}")
+
+    monkeypatch.setattr(supervise, "shell_notifier", lambda: notifier)
+    monkeypatch.setattr(supervise, "_load_provider", _boom)
+
+    exit_code = supervise.main(
+        [
+            "--provider-factory",
+            "no_such_module_at_all:factory",
+            "--leases",
+            str(tmp_path / "leases"),
+            "--lease",
+            LEASE_ID,
+            "--spend",
+            str(spend_path),
+            "--notify",
+        ]
+    )
+    assert exit_code == 3
+    assert len(messages) == 1 and "go and look" in messages[0]
+
+
 def test_a_final_record_write_failure_on_the_crash_path_is_named_not_swallowed(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -741,7 +1044,7 @@ def test_a_final_record_write_failure_on_the_refusal_path_is_named_not_raised(
 
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(['schema = "pod-spend.v3"', 'state = "unconfigured"', ""]),
+        "\n".join(['schema = "pod-spend.v4"', 'state = "unconfigured"', ""]),
         encoding="utf-8",
     )
 
