@@ -50,8 +50,8 @@ hour or more, so locally run only what your change touches.
 
 ## How rules are written
 
-Working rules live here for everyone, in AGENTS.md for AI sessions and in CLAUDE.md for
-Claude Code. Keep them few and give each its reason; code comments never cite rules.
+Working rules live here for everyone and in AGENTS.md for AI sessions; CLAUDE.md only
+points Claude Code to AGENTS.md. Keep them few and give each its reason; code comments never cite rules.
 
 ## Rules for what enters the repository
 

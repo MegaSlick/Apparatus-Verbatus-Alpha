@@ -1,7 +1,7 @@
-# Notifications — how a message reaches his phone
+# Notifications — how a message reaches the lead's phone
 
-This file owns the notification mechanism and event meanings. `CLAUDE.md` only routes
-sessions here when a notification is needed.
+This file owns the notification mechanism and event meanings. Sessions come here when a
+notification is needed.
 
 ## Sending one
 
@@ -22,7 +22,7 @@ this file owns the rule.
 |---|---|---|---|
 | `milestone` | Milestone | 3 | the session, the operator tool with `--notify`, and a pod lease's launch, close and balance reports |
 | `decision` | Needs a decision | 4 | the session, the operator tool with `--notify`, the pod's systemic alarm, and the session-end pod check |
-| `done` | Session complete | 3 | `/session-end` |
+| `done` | Session complete | 3 | the session, when it closes |
 
 Any other event name is refused.
 
@@ -49,7 +49,7 @@ code and on `NOTIFY_SUPPRESSED` on stdout, and this line never reaches that stre
 
 ## The topic is a bearer secret
 
-Anyone holding the topic can publish to his phone. It lives in `private/ntfy.conf`, which
+Anyone holding the topic can publish to the lead's phone. It lives in `private/ntfy.conf`, which
 is gitignored, or in `NTFY_TOPIC` in the environment.
 
 **It never enters a script, a note, a commit, a transcript, or a command line.** The
@@ -66,7 +66,7 @@ variable.
 **One topic value is reserved: `verbatus-test-sink`.** With it, the script prints what it
 would have sent to stderr and exits 0 without calling `curl`. It is a literal, not a
 prefix — a near-miss like `verbatus-test-sink-2` notifies normally, because a matching
-rule loose enough to catch a typo would be loose enough to silence him.
+rule loose enough to catch a typo would be loose enough to silence the lead.
 
 It exists because the injected-runner seam every caller is meant to use is only as good
 as the caller: a test that stubs one notifying hook and leaves another real would post to
