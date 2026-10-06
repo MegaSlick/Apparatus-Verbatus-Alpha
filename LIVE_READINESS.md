@@ -66,10 +66,11 @@ offers them too). Their `python3` is 3.9, too old for this repository: run Pytho
 as `uv run …` or `.venv/bin/python …`, never a bare `python` or `python3`. uv builds
 `.venv` on Python 3.12 (`.python-version`), downloading it if the Mac has none.
 
-In Terminal, from a fresh clone. uv must be exactly 0.12.1 (installer line: to confirm).
+In Terminal, from a fresh clone. uv must be exactly 0.12.1; if an older uv is already
+installed, `uv self update 0.12.1` does the same.
 
 ```sh
-curl -LsSf https://astral.sh/uv/0.12.1/install.sh | sh     # (to confirm)
+curl -LsSf https://astral.sh/uv/0.12.1/install.sh | sh
 git clone https://github.com/MegaSlick/Apparatus-Verbatus-Alpha
 cd Apparatus-Verbatus-Alpha
 uv sync --frozen --group test --group audit
@@ -80,13 +81,20 @@ verbatus spend show
 verbatus watch --help              # present only on code new enough for this runbook
 ```
 
-`runpodctl` must be installed and given the account's API key (Mac install: to
-confirm). The RunPod S3 keys go in the shell only, never in a file here:
+`runpodctl` must be installed and given the account's API key. Commands here are
+written for runpodctl 2.x (checked against 2.14.0); `runpodctl version` shows which you
+have. The API key and the RunPod S3 keys go in the shell only, never in a file here:
 
 ```sh
+brew install runpod/runpodctl/runpodctl
+read -rs RUNPOD_API_KEY; export RUNPOD_API_KEY
 read -rs RUNPOD_S3_ACCESS_KEY; export RUNPOD_S3_ACCESS_KEY
 read -rs RUNPOD_S3_SECRET_KEY; export RUNPOD_S3_SECRET_KEY
+runpodctl gpu list    # must list "NVIDIA RTX A5000" and "NVIDIA RTX PRO 6000 Blackwell Server Edition"
 ```
+
+`runpodctl config --apiKey <key>` instead stores the key in `~/.runpod/config.toml`, outside
+the repository; it also lands in the shell's history, so prefer the variable.
 
 ## 3. Confirm three fixes on macOS (free)
 
@@ -237,7 +245,8 @@ from `config/spend.toml`. The `&&` keeps a refusal from creating a pod: written 
 `--docker-args "$(...)"`, the create would still run, with no guard. The backstop counts
 the hard maximum from when the command is printed, so print it afresh for every pod. That
 moment is read from the laptop's clock, so keep it set automatically (System Settings,
-General, Date & Time).
+General, Date & Time). Give `--data-center-ids` exactly one id, the volume's: for a GPU pod
+runpodctl uses only the first.
 
 Over SSH, `tail /workspace/private/.pod_guard/guard.log` must show `armed for pod <id>`;
 if not, `runpodctl pod delete <pod id>` and stop. Otherwise leave it: idle, it should
@@ -404,7 +413,7 @@ With `--no-hold` the pod deletes itself about a minute after the run's final rep
 From the Mac:
 
 ```sh
-runpodctl pod list                 # the pod must not be listed
+runpodctl pod list --all           # the pod must not be listed; without --all, stopped pods are hidden
 runpodctl pod get <pod id>         # must say it is not found
 ```
 

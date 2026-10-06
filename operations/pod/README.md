@@ -621,7 +621,9 @@ is fetched from an older commit.
   rotated. `ssh.runpod.io`'s proxied SSH may not carry standard input; use the pod's
   public-IP SSH (TCP port 22 exposed) for this.
 - **Not yet observed on a live pod:** how RunPod passes `--docker-args` (the start
-  command) to the container, whether `RUNPOD_POD_ID` is in PID 1's environment, the
+  command) to the container (runpodctl 2.14.0 sends it as the pod's start command, which
+  RunPod documents as replacing the image's CMD; what happens with an image ENTRYPOINT is
+  not documented), whether `RUNPOD_POD_ID` is in PID 1's environment, the
   image's `/start.sh`, whether the pod-scoped key may delete its own pod, and the cgroup
   and `nvidia-smi` readings inside the container. The first pod after this change is
   created on the smallest card with a one-hour window, and its guard log and deletion are
@@ -681,7 +683,7 @@ runpodctl pod create \
   --image <RunPod Ubuntu 24.04 CUDA image> \
   --gpu-id "NVIDIA RTX PRO 6000 Blackwell Server Edition" --gpu-count 1 \
   --cloud-type SECURE \
-  --data-center-ids <DATACENTER of the volume> \
+  --data-center-ids <DATACENTER of the volume; one id only> \
   --network-volume-id <VOLUME_ID> \
   --volume-mount-path /workspace/private \
   --container-disk-in-gb 120 \
@@ -807,7 +809,8 @@ guard's ping, then moves the guard's deadline to now; the guard deletes the pod 
 about a minute (and pings, if armed). `guard_release.guard_alive: false` in the report
 means the guard's heartbeat was stale: nothing is known to be acting on the deadline, so
 delete the pod by hand. Confirm it is
-gone with `runpodctl pod list` and `runpodctl pod get <pod id>`, and check the billing in
+gone with `runpodctl pod list --all` (without `--all` it hides stopped pods) and
+`runpodctl pod get <pod id>`, and check the billing in
 RunPod's console: a shutdown is verified, never assumed. The volume and everything on it
 remain.
 
