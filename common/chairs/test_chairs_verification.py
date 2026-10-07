@@ -14,6 +14,7 @@ the seam for, and what it did with what came back.
 
 import json
 import os
+import threading
 import unittest.mock
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,8 +32,10 @@ from common.chairs.errors import (
 from common.chairs.manifests import (
     build_manifest,
     file_digest,
+    inspect_snapshot_for_repair,
     manifest_digest,
     read_manifest,
+    verify_snapshot,
     write_manifest,
 )
 from common.chairs.models import ChairIdentity
@@ -72,14 +75,13 @@ def test_file_digest_streams_the_snapshot_file_in_bounded_chunks(tmp_path, monke
 
     monkeypatch.setattr(type(weights), "read_bytes", whole_file_read_would_be_a_memory_regression)
 
-    # Far above hashlib.file_digest's 256 KiB chunk, far below any real weights file.
-    bound = 4 * 1024 * 1024
+    bound = manifests.HASH_CHUNK_BYTES
 
     class BoundedHandle:
         """Proxy that refuses any single read larger than the bound.
 
-        Deliberately carries no ``getbuffer``: ``hashlib.file_digest`` takes the
-        whole buffer at once down that path, which is exactly the shape refused.
+        Deliberately carries no ``getbuffer``: a future file helper could take
+        the whole buffer at once down that path, which is exactly the shape refused.
         """
 
         def __init__(self, handle):
@@ -112,6 +114,76 @@ def test_file_digest_streams_the_snapshot_file_in_bounded_chunks(tmp_path, monke
     monkeypatch.setattr(type(weights), "open", bounded_open)
 
     assert file_digest(weights, "attestator_1", "weights.bin") == digest_bytes(b"fixture weights\n")
+
+
+def test_parallel_and_serial_hashes_publish_identical_manifests(tmp_path, monkeypatch):
+    snapshot = write_snapshot(
+        tmp_path / "snapshot",
+        {"a.bin": b"first\n", "nested/b.bin": b"second\n", "z.bin": b"third\n"},
+    )
+    monkeypatch.setattr(manifests.os, "cpu_count", lambda: 1)
+    serial = build_manifest(snapshot)
+
+    barrier = threading.Barrier(2)
+    threads: set[str] = set()
+    real_digest = manifests.file_digest
+
+    def paired_digest(path, chair, relative):
+        if relative in {"a.bin", "nested/b.bin"}:
+            threads.add(threading.current_thread().name)
+            barrier.wait(timeout=5)
+        return real_digest(path, chair, relative)
+
+    monkeypatch.setattr(manifests, "file_digest", paired_digest)
+    monkeypatch.setattr(manifests.os, "cpu_count", lambda: 4)
+    parallel = build_manifest(snapshot)
+    monkeypatch.setattr(manifests, "file_digest", real_digest)
+
+    assert len(threads) == 2
+    assert parallel.to_record() == serial.to_record()
+    assert canonical_bytes(parallel.to_record()) == canonical_bytes(serial.to_record())
+    assert manifest_digest(parallel) == manifest_digest(serial)
+
+    identity = config_of(
+        tmp_path, {"attestator_1": hf_chair("attestator_1", manifest_digest(serial))}
+    ).chairs["attestator_1"]
+    assert isinstance(identity, ChairIdentity)
+    monkeypatch.setattr(manifests.os, "cpu_count", lambda: 1)
+    verified_serial = verify_snapshot(identity, snapshot, serial)
+    monkeypatch.setattr(manifests.os, "cpu_count", lambda: 4)
+    assert verify_snapshot(identity, snapshot, parallel) == verified_serial
+
+
+def test_parallel_verification_refuses_the_same_first_corrupt_file(tmp_path, monkeypatch):
+    snapshot = write_snapshot(
+        tmp_path / "snapshot", {"a.bin": b"first\n", "b.bin": b"second\n", "z.bin": b"third\n"}
+    )
+    manifest = build_manifest(snapshot)
+    identity = config_of(
+        tmp_path, {"attestator_1": hf_chair("attestator_1", manifest_digest(manifest))}
+    ).chairs["attestator_1"]
+    assert isinstance(identity, ChairIdentity)
+    (snapshot / "a.bin").write_bytes(b"FIRST\n")
+    (snapshot / "b.bin").write_bytes(b"SECOND\n")
+
+    monkeypatch.setattr(manifests.os, "cpu_count", lambda: 1)
+    with pytest.raises(DigestMismatchRefusal) as serial:
+        verify_snapshot(identity, snapshot, manifest)
+    monkeypatch.setattr(manifests.os, "cpu_count", lambda: 4)
+    with pytest.raises(DigestMismatchRefusal) as parallel:
+        verify_snapshot(identity, snapshot, manifest)
+
+    assert "a.bin" in str(serial.value)
+    assert str(parallel.value) == str(serial.value)
+
+    monkeypatch.setattr(manifests.os, "cpu_count", lambda: 1)
+    with pytest.raises(DigestMismatchRefusal) as repair_serial:
+        inspect_snapshot_for_repair(identity, snapshot, manifest)
+    monkeypatch.setattr(manifests.os, "cpu_count", lambda: 4)
+    with pytest.raises(DigestMismatchRefusal) as repair_parallel:
+        inspect_snapshot_for_repair(identity, snapshot, manifest)
+    assert "a.bin" in str(repair_serial.value)
+    assert str(repair_parallel.value) == str(repair_serial.value)
 
 
 # --- A complete match ---------------------------------------------------------------
@@ -152,7 +224,7 @@ def test_a_second_ensure_hashes_each_complete_cache_file_once_and_fetches_nothin
 
     assert second.root == first.root
     assert second.manifest_digest == first.manifest_digest
-    assert digested == ["config.json", "nested/weights.bin"]
+    assert sorted(digested) == ["config.json", "nested/weights.bin"]
     assert len(hf_world.fetcher.calls) == 1, "a complete verified cache is not re-fetched"
 
 
