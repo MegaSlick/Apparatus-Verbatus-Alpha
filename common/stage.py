@@ -1179,11 +1179,13 @@ def _digest_regular_file_at(
     return observed
 
 
-def verify_predecessor_seal(tree: RunTree, stage: str) -> None:
+def verify_predecessor_seal(
+    tree: RunTree, stage: str, *, manifest: Mapping[str, Any] | None = None
+) -> None:
     """Refuse a missing, forged, or changed predecessor or side-branch boundary by name."""
     predecessor = SEAL_PREDECESSORS.get(stage)
     if predecessor is not None:
-        _verify_stage_seal(tree, predecessor, stage, "predecessor")
+        _verify_stage_seal(tree, predecessor, stage, "predecessor", manifest=manifest)
     for producer in SIDE_SEALS.get(stage, ()):
         _verify_stage_seal(tree, producer, stage, "side branch")
 
@@ -3705,8 +3707,14 @@ def open_context(
             "the currently loaded run inputs. No stage work was written. Resume with "
             "the original sealed inputs, or start a new run for the changed inputs"
         )
-    verify_predecessor_seal(tree, stage)
-    refuse_halted_run(tree, stage, args.hard_failure_config)
+    predecessor = SEAL_PREDECESSORS.get(stage)
+    predecessor_manifest = (
+        tree.build_manifest(predecessor, verify_inputs=False) if predecessor is not None else None
+    )
+    verify_predecessor_seal(tree, stage, manifest=predecessor_manifest)
+    refuse_halted_run(
+        tree, stage, args.hard_failure_config, predecessor_manifest=predecessor_manifest
+    )
     return _bound_context(
         tree, run, fixture, args.scenario, stage, args, registry, bindings, serving_reader
     )
@@ -3758,8 +3766,14 @@ def _open_real_context(
     bindings = real_run_bindings(registry.config, args)
     # Before the seal check, so a moved policy is named as one.
     _refuse_incompatible_real_reuse(run, bindings, run_id=args.run_id)
-    verify_predecessor_seal(tree, stage)
-    refuse_halted_run(tree, stage, args.hard_failure_config)
+    predecessor = SEAL_PREDECESSORS.get(stage)
+    predecessor_manifest = (
+        tree.build_manifest(predecessor, verify_inputs=False) if predecessor is not None else None
+    )
+    verify_predecessor_seal(tree, stage, manifest=predecessor_manifest)
+    refuse_halted_run(
+        tree, stage, args.hard_failure_config, predecessor_manifest=predecessor_manifest
+    )
     return _bound_context(
         tree, run, None, REAL_SCENARIO, stage, args, registry, bindings, serving_reader
     )
@@ -3977,14 +3991,26 @@ def exemplar_page_ids(context) -> dict[int, str]:
     return dict(sorted(pages.items()))
 
 
-def refuse_halted_run(tree: RunTree, stage: str, hard_failure_config_path: str | Path) -> None:
+def refuse_halted_run(
+    tree: RunTree,
+    stage: str,
+    hard_failure_config_path: str | Path,
+    *,
+    predecessor_manifest: dict[str, Any] | None = None,
+) -> None:
     """Apply the sealed run-level cap when no orchestrator guards stage entry."""
     run = tree.read_run()
     policy = load_hard_failure_policy(hard_failure_config_path)
     require_sealed_config(run_sealed_config_digests(run), "hard-failure", policy["config_sha256"])
     # Inputs are not verified here, so lineage damage is reported by the
     # boundary that owns it.
-    tally = tally_hard_failures(tree, policy, verify_inputs=False)
+    predecessor = SEAL_PREDECESSORS.get(stage)
+    manifests = (
+        {predecessor: predecessor_manifest}
+        if predecessor is not None and predecessor_manifest is not None
+        else None
+    )
+    tally = tally_hard_failures(tree, policy, verify_inputs=False, manifests=manifests)
     if tally["breached"]:
         raise RunHalted(
             f"{stage} refuses to start: {tally['count']} hard failure(s) exceed the run-level "

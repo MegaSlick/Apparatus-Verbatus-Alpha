@@ -9,6 +9,7 @@ Nothing links a continuation that crosses a shard boundary: each run sees only
 its own pages.
 """
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
 
@@ -136,7 +137,11 @@ def load_hard_failure_policy(path: str | Path = DEFAULT_HARD_FAILURE_CONFIG_PATH
 
 
 def tally_hard_failures(
-    tree, policy: dict[str, Any], *, verify_inputs: bool = True
+    tree,
+    policy: dict[str, Any],
+    *,
+    verify_inputs: bool = True,
+    manifests: Mapping[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Recompute the run's hard-failure tally from the sealed partition on disk.
 
@@ -146,18 +151,27 @@ def tally_hard_failures(
     not two. `build_manifest`'s entries are already verified evidence, so
     reading `outcome`/`subject_id` off them trusts nothing unchecked; a
     directly invoked stage skips the recursive input check, leaving its own
-    consumer boundary responsible for stale lineage.
+    consumer boundary responsible for stale lineage. A supplied manifest is
+    from that record-only boundary check, not a substitute for input verification.
     """
+    if manifests is not None and verify_inputs:
+        raise ContractError("a prebuilt hard-failure manifest requires verify_inputs=False")
     # One manifest per stage regardless of how many kinds name it: building a
     # manifest re-verifies every byte of that stage, so caching keeps the cost
     # from scaling with policy length, and gives every kind the same snapshot.
-    manifests: dict[str, list[dict[str, Any]]] = {}
+    artifacts_by_stage = {
+        stage: manifest["artifacts"] for stage, manifest in (manifests or {}).items()
+    }
+    verified_inputs: set[tuple[str, str]] = set()
     reasons_seen: dict[tuple[str, str, str], str | None] = {}
 
     def artifacts(stage: str) -> list[dict[str, Any]]:
-        if stage not in manifests:
-            manifests[stage] = tree.build_manifest(stage, verify_inputs=verify_inputs)["artifacts"]
-        return manifests[stage]
+        if stage not in artifacts_by_stage:
+            options = {"verified_inputs": verified_inputs} if verify_inputs else {}
+            artifacts_by_stage[stage] = tree.build_manifest(
+                stage, verify_inputs=verify_inputs, **options
+            )["artifacts"]
+        return artifacts_by_stage[stage]
 
     def reason_of(stage: str, entry: dict[str, Any]) -> str | None:
         # Cached per artifact so several reason_kinds entries on one stage

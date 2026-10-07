@@ -15,6 +15,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -493,6 +494,53 @@ def test_final_seal_returns_only_the_export_from_its_verified_manifest_snapshot(
 
     with pytest.raises(SchemaRefusal, match="changed between its manifest snapshot and use"):
         verify_final_seal(tree)
+
+
+def test_real_stage_open_shares_one_predecessor_manifest_with_seal_and_halt_checks(
+    tmp_path, monkeypatch
+):
+    import common.stage as stage_module
+
+    tree, run, registry, bindings = _tree(tmp_path)
+    producer = _context(tree, run, registry, bindings, stage=DESIGNATOR)
+    producer.seal_boundary()
+    producer.finish()
+
+    original_build_manifest = tree.build_manifest
+    builds = []
+
+    def counted_build_manifest(stage, **options):
+        builds.append((stage, options))
+        return original_build_manifest(stage, **options)
+
+    monkeypatch.setattr(tree, "build_manifest", counted_build_manifest)
+    monkeypatch.setattr(stage_module, "verify_snapshot_is_current", lambda *_args: None)
+    monkeypatch.setattr(stage_module, "read_snapshot", lambda *_args: None)
+    monkeypatch.setattr(stage_module, "_open_registry", lambda *_args: registry)
+    monkeypatch.setattr(stage_module, "real_run_bindings", lambda *_args: bindings)
+    monkeypatch.setattr(stage_module, "_refuse_incompatible_real_reuse", lambda *_args, **_kw: None)
+    monkeypatch.setattr(stage_module, "run_sealed_config_digests", lambda *_args: {})
+    monkeypatch.setattr(stage_module, "require_sealed_config", lambda *_args: None)
+    monkeypatch.setattr(
+        stage_module,
+        "load_hard_failure_policy",
+        lambda *_args: {
+            "config_sha256": "a" * 64,
+            "threshold": 2,
+            "kinds": [(DESIGNATOR, "failed")],
+        },
+    )
+    opened = object()
+    monkeypatch.setattr(stage_module, "_bound_context", lambda *_args: opened)
+    args = SimpleNamespace(corpus_register=None, run_id=tree.run_id, hard_failure_config="unused")
+
+    assert (
+        stage_module._open_real_context(
+            args, ATTESTATORES, tree, run, ChairRegistry.from_toml, None
+        )
+        is opened
+    )
+    assert builds == [(DESIGNATOR, {"verify_inputs": False})]
 
 
 def test_a_real_run_missing_all_sealed_config_digests_refuses_direct_entry(tmp_path):
