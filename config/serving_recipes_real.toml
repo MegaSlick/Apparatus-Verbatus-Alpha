@@ -393,12 +393,17 @@ required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" 
 # encoder's peak. Two full-length pages take 8 GiB of it; four would take 16
 # GiB, more than the whole margin. So two sequences at once, the most an 80 GB
 # card of this tier holds at full length with room left for the rest (a 96 GB
-# card holds more, but the row serves every card of the tier). The stage's
-# default concurrency is this value, so no pass schedules more pages at once
-# than the pool can hold whole.
+# card holds more, but the row serves every card of the tier). On the tier's
+# one reviewed card, the 96 GB RTX PRO 6000, 0.88 x 96 GB - 55.6 GB = 28.9 GB
+# holds four full-length pages (16 GiB) with 11.7 GB left, so the row asks for
+# four: on an 80 GB card vLLM schedules only what its KV pool holds and queues
+# the rest, so the cap costs it nothing but waiting. Measured 2026-10-07 at two:
+# about 3 minutes a page, the GPU half idle between calls. The stage's default
+# concurrency is this value. Prefill chunks of 8,192 tokens halve the engine
+# steps a 58,000-token page takes to read in.
 max_model_len = 65536
-max_num_seqs = 2
-max_num_batched_tokens = 4096
+max_num_seqs = 4
+max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.88"
 min_pixels = 65536
 max_pixels = 5299200
