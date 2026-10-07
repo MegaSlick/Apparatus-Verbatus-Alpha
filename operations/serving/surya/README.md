@@ -34,7 +34,7 @@ one file both sides load; it uses the standard library only.
 
 | File | What it does |
 |---|---|
-| `runner.py` | Runs both detectors over the page images given, in order, and writes `page-<n>.json` per page: Surya's own result models dumped as JSON, which ordering the block positions came from, and the run facts (versions, device, CPU instruction set and machine, threads, settings, checkpoints and every weight file's digest). `--check` prints the installed versions and loads nothing. |
+| `runner.py` | Runs both detectors over the page images given, in order, and writes `page-<n>.json` per page (`n` counted from `--first-ordinal`, 1 unless the parent hands this process one slice of a larger page set): Surya's own result models dumped as JSON, which ordering the block positions came from, and the run facts (versions, device, CPU instruction set and machine, threads, settings, checkpoints and every weight file's digest). `--check` prints the installed versions and loads nothing. |
 | `prefetch.py` | Fetches the three checkpoints once into one bundle directory and writes its lock, `surya-bundle.json`. |
 | `contract.py` | The page document schema name, the settings that shape output, the reading-order branches, and the bundle lock: its shape, the pinned layout commit, and the check that every file still matches. |
 | `standin_bundle.py` | Tests only: a locked bundle of Surya's three architectures with seeded random weights, so the runner's whole path runs where the real weights were never fetched. |
@@ -138,8 +138,11 @@ fresh store, on a new network volume or at an empty store root.
    the versions, CPU instruction set and machine that run measured go in its report.
    `pod_run` refuses a Designator selection without that run.
 
-The rows in `config/serving_recipes_real.toml` (`unproven-real-surya`, 8 threads, 600 s
-to start, 60 s a page) are planning values, not measurements of a pod. One process
-loads the models once and reads every page, so the run's timeout is
-the startup allowance plus the per-page allowance for each page, rather than page
-batches that would load the models again for each batch.
+The rows in `config/serving_recipes_real.toml` (`unproven-real-surya`, 8 threads, 6
+workers, 600 s to start, 60 s a page) are planning values, not measurements of a pod,
+except the worker count, which answers a measurement: one process at 8 threads read
+35-66 s a page on a 32-vCPU host. The stage cuts the pages in page order into up to
+`workers` contiguous slices (never more than the host's CPUs divided by `threads`), runs
+one runner process per slice at the same time, and merges the documents in page order;
+each process loads the models once and gets the startup allowance plus the per-page
+allowance for its slice. A row without `workers` runs one process over every page.

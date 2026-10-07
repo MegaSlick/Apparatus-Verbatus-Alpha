@@ -16,9 +16,23 @@ from operations.pod.test_bootstrap_main import PROVEN_TIER, SURYA_CHAIR, _servin
 from .config import parse_serving_recipes
 from .qualify import QualificationRefusal, _verified_artifact_bytes, qualification_candidates
 from .qualify import main as qualification_main
+from .recordgold_smoke import (
+    DAI_WITNESS_ADAPTER,
+    RECORDGOLD_SMOKE_MAX_CER,
+    RECORDGOLD_SMOKE_PROFILE,
+    fetch_recordgold_smoke_page,
+    score_recordgold_answer,
+)
+from .test_recordgold_smoke import TEST_GOLD_TEXT, record_pin
 
 HASH = "a" * 64
 PAGE_WITNESS = "ABEFGHJMNRTYabdefghijmnqrty23456789ABEFGHJM"
+# The DAI chair's smoke page: a pinned test record answered from memory, and
+# the digest of the PNG the pod would hand the chair.
+TEST_RECORD, TEST_FETCH = record_pin()
+TEST_RECORD_PAGE_SHA256 = digest_bytes(
+    fetch_recordgold_smoke_page(TEST_RECORD, fetch=TEST_FETCH).png
+)
 
 
 def _write_artifact(root: Path, kind: str, value: dict[str, object]) -> dict[str, str]:
@@ -51,7 +65,12 @@ def _replace_smoke_response(
 
 
 def _qualification_fixture(
-    tmp_path: Path, *, answer: str | None = None, adjust_workspace=None
+    tmp_path: Path,
+    *,
+    answer: str | None = None,
+    recordgold_answer: str | None = None,
+    dai_smoke_page: str = "recordgold-record",
+    adjust_workspace=None,
 ) -> tuple[dict[str, Path], dict[str, object]]:
     ws, _ = _serving_workspace(tmp_path, preflight_state="unproven")
     if adjust_workspace is not None:
@@ -63,7 +82,13 @@ def _qualification_fixture(
         "recipes": ws.repository / "config" / "serving_recipes.toml",
         "placement": ws.placement_config,
     }
-    return paths, _write_report(paths, PROVEN_TIER, answer=answer)
+    return paths, _write_report(
+        paths,
+        PROVEN_TIER,
+        answer=answer,
+        recordgold_answer=recordgold_answer,
+        dai_smoke_page=dai_smoke_page,
+    )
 
 
 def _write_report(
@@ -71,9 +96,17 @@ def _write_report(
     tier: str,
     *,
     answer: str | None = None,
+    recordgold_answer: str | None = None,
     roles: set[str] | None = None,
+    dai_smoke_page: str = "recordgold-record",
 ) -> dict[str, object]:
-    """Write a green bootstrap report for a preflight that placed `roles` (all by default)."""
+    """Write a green bootstrap report for a preflight that placed `roles` (all by default).
+
+    Every served chair answers the golden page with `answer`, except the DAI
+    chair, which (as the real preflight has it) read the pinned test record
+    and answered `recordgold_answer`; `dai_smoke_page = "golden-page"` makes
+    it read the golden page like the rest instead.
+    """
 
     evidence_root = paths["evidence"]
     recipes_bytes = paths["recipes"].read_bytes()
@@ -90,7 +123,8 @@ def _write_report(
     witness_sha256 = digest_bytes(witness_bytes)
     if answer is None:
         answer = f"PAGE-WITNESS: {PAGE_WITNESS}"
-    expected_output_sha256 = digest_bytes(canonical_bytes([answer]))
+    if recordgold_answer is None:
+        recordgold_answer = TEST_GOLD_TEXT
     smoke_receipts = []
     cache_receipts = []
     placements = []
@@ -135,8 +169,13 @@ def _write_report(
                 )
             continue
         served_model_id = row["served_model_id"]
+        reads_recordgold = (
+            identity.witness_adapter == DAI_WITNESS_ADAPTER
+            and dai_smoke_page == "recordgold-record"
+        )
+        chair_answer = recordgold_answer if reads_recordgold else answer
         response_bytes = canonical_bytes(
-            {"model": served_model_id, "choices": [{"message": {"content": answer}}]}
+            {"model": served_model_id, "choices": [{"message": {"content": chair_answer}}]}
         )
         response_ref = _write_bytes_artifact(evidence_root, "smoke-responses", response_bytes)
         cache_receipts.append(
@@ -194,24 +233,48 @@ def _write_report(
             "launch_audit_reference": audit_ref,
         }
         evidence_ref = _write_artifact(evidence_root, "serving-evidence", evidence)
+        if reads_recordgold:
+            score = score_recordgold_answer(chair_answer, TEST_GOLD_TEXT)
+            assert score is not None
+            page_read: dict[str, object] = {
+                "smoke_page": "recordgold-record",
+                "supplied_fixture_sha256": TEST_RECORD_PAGE_SHA256,
+                "page_witness_sha256": TEST_RECORD.text_sha256,
+                "page_witness_matches": score.passed,
+                "page_witness_edit_distance": score.edits,
+                "recordgold_record": TEST_RECORD.to_record(),
+                "recordgold_page_sha256": TEST_RECORD_PAGE_SHA256,
+                "character_error_rate": str(score.character_error_rate),
+                "character_error_rate_threshold": str(RECORDGOLD_SMOKE_MAX_CER),
+                "reference_units": score.reference_units,
+                "normalization_profile": {
+                    "profile_id": RECORDGOLD_SMOKE_PROFILE.profile_id,
+                    "digest": RECORDGOLD_SMOKE_PROFILE.digest,
+                },
+            }
+        else:
+            page_read = {
+                "smoke_page": "golden-page",
+                "supplied_fixture_sha256": HASH,
+                "page_witness_sha256": witness_sha256,
+                "page_witness_matches": True,
+                "page_witness_edit_distance": 0,
+                "page_witness_reference": witness_ref,
+            }
         smoke_receipts.append(
             {
                 "chair": role,
                 "served_engine": "vllm 0.test",
                 "utilization": [{"gpu_percent": "50", "cpu_percent": "10"}],
-                "supplied_fixture_sha256": HASH,
+                **page_read,
                 "smoke_fixture_response_sha256": digest_bytes(response_bytes),
-                "smoke_fixture_output_sha256": expected_output_sha256,
+                "smoke_fixture_output_sha256": digest_bytes(canonical_bytes([chair_answer])),
                 "fixture_response_sha256": digest_bytes(response_bytes),
                 "smoke_response_reference": response_ref,
                 "resolved_identity": identity.to_record(),
                 "resolved_revision": identity.receipt_revision,
                 "resolved_revision_kind": identity.receipt_revision_kind,
                 "served_model_id": served_model_id,
-                "page_witness_sha256": witness_sha256,
-                "page_witness_matches": True,
-                "page_witness_edit_distance": 0,
-                "page_witness_reference": witness_ref,
                 "smoke_fixture_request_count": 1,
                 "service_receipt": service_receipt,
                 "receipt_reference": receipt_ref,
@@ -264,7 +327,16 @@ def _qualify(paths: dict[str, Path]) -> dict[str, object]:
         models_config=paths["models"],
         recipes_config=paths["recipes"],
         placement_config=paths["placement"],
+        recordgold_record=TEST_RECORD,
+        recordgold_fetch=TEST_FETCH,
     )
+
+
+def _dai_smoke(wrapper: dict[str, object]) -> dict[str, object]:
+    """The DAI chair's smoke receipt in a written report."""
+    smokes = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"]  # type: ignore[index]
+    (smoke,) = [smoke for smoke in smokes if smoke["chair"] == "attestator_2"]
+    return smoke
 
 
 def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: Path) -> None:
@@ -276,7 +348,10 @@ def test_green_qualification_renders_marks_for_only_the_measured_tier(tmp_path: 
     candidates = record["candidates"]
     assert isinstance(candidates, list) and len(candidates) == 5
     assert {item["tier"] for item in candidates} == {PROVEN_TIER}
-    for candidate in candidates:
+    golden = [item for item in candidates if item["smoke_page"] == "golden-page"]
+    (dai,) = [item for item in candidates if item["smoke_page"] == "recordgold-record"]
+    assert dai["chair"] == "attestator_2" and len(golden) == 4
+    for candidate in golden:
         reference = candidate["page_witness_reference"]
         witness_bytes = (paths["evidence"] / reference["relative_path"]).read_bytes()
         assert witness_bytes == PAGE_WITNESS.encode("ascii")
@@ -429,9 +504,138 @@ def test_bootstrap_witness_evidence_is_accepted_by_the_qualifier(tmp_path: Path)
         models_config=ws.models_config,
         recipes_config=plan.serving_recipes_config,
         placement_config=ws.placement_config,
+        recordgold_record=seams.recordgold_record,
+        recordgold_fetch=seams.recordgold_fetch,
     )["candidates"]
 
     assert isinstance(candidates, list) and len(candidates) == len(identities)
+    # The DAI chair read the record the seams pinned; the producer's receipt
+    # passes the verifier with no witness artifact to cite.
+    (dai,) = [item for item in candidates if item["smoke_page"] == "recordgold-record"]
+    assert dai["chair"] == "attestator_2"
+    assert dai["page_witness_reference"] is None
+    assert dai["recordgold_record"] == seams.recordgold_record.to_record()
+
+
+# --- The DAI chair's RecordGold receipt ------------------------------------------
+
+
+def test_the_dai_chair_s_recordgold_read_is_accepted_within_the_pinned_threshold(
+    tmp_path: Path,
+) -> None:
+    """A slipped but passing read of the pinned record proves the DAI row; the
+    candidate names the record and the measured rate, never the text."""
+    slipped = TEST_GOLD_TEXT.replace("Pierre", "Piere")
+    paths, _ = _qualification_fixture(tmp_path, recordgold_answer=slipped)
+    score = score_recordgold_answer(slipped, TEST_GOLD_TEXT)
+    assert score is not None and score.passed and score.edits == 1
+
+    record = _qualify(paths)
+
+    (dai,) = [item for item in record["candidates"] if item["chair"] == "attestator_2"]
+    assert dai["smoke_page"] == "recordgold-record"
+    assert dai["page_witness_reference"] is None
+    assert dai["recordgold_record"] == TEST_RECORD.to_record()
+    assert dai["recordgold_page_sha256"] == TEST_RECORD_PAGE_SHA256
+    assert dai["page_witness_sha256"] == TEST_RECORD.text_sha256
+    assert dai["character_error_rate"] == str(score.character_error_rate)
+    assert dai["character_error_rate_threshold"] == str(RECORDGOLD_SMOKE_MAX_CER)
+    assert dai["smoke_fixture_output_sha256"] == digest_bytes(canonical_bytes([slipped]))
+    assert TEST_GOLD_TEXT not in json.dumps(record)
+    assert len(record["candidates"]) == 5
+
+
+def test_the_dai_chair_may_still_prove_its_row_with_an_exact_golden_page_read(
+    tmp_path: Path,
+) -> None:
+    """A DAI receipt that read the golden page is held to the golden-page rule;
+    the RecordGold path is an alternative the pod takes, not a relaxation."""
+    paths, _ = _qualification_fixture(tmp_path, dai_smoke_page="golden-page")
+
+    record = _qualify(paths)
+
+    assert all(item["smoke_page"] == "golden-page" for item in record["candidates"])
+    assert len(record["candidates"]) == 5
+
+
+def test_a_chair_that_is_not_the_dai_reader_may_not_smoke_the_recordgold_record(
+    tmp_path: Path,
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    smoke = wrapper["bootstrap"]["receipts"]["preflight"]["smoke_receipts"][0]  # type: ignore[index]
+    assert smoke["chair"] == "attestator_1" and smoke["smoke_page"] == "golden-page"
+    smoke["smoke_page"] = "recordgold-record"
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match="'attestator_1' is not a RecordGold reader"):
+        _qualify(paths)
+
+
+def test_a_dai_read_past_the_pass_line_is_refused_even_when_preflight_claims_green(
+    tmp_path: Path,
+) -> None:
+    mangled = TEST_GOLD_TEXT[:40]
+    score = score_recordgold_answer(mangled, TEST_GOLD_TEXT)
+    assert score is not None and not score.passed
+    paths, wrapper = _qualification_fixture(tmp_path, recordgold_answer=mangled)
+    # The fixture wrote what the pod would: a receipt that records the failing
+    # read honestly. Claiming a pass on top of it is refused the same way.
+    with pytest.raises(QualificationRefusal, match="past the 0.15 pass line"):
+        _qualify(paths)
+    _dai_smoke(wrapper)["page_witness_matches"] = True
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+    with pytest.raises(QualificationRefusal, match="past the 0.15 pass line"):
+        _qualify(paths)
+
+
+def _other_record() -> dict[str, object]:
+    return {**TEST_RECORD.to_record(), "record_id": "00000000-0000-0000-0000-00000000beef"}
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value", "refusal"),
+    [
+        ("smoke_page", "some-other-page", "smoked an unknown page 'some-other-page'"),
+        ("recordgold_record", _other_record(), "a RecordGold record other than the pinned"),
+        ("recordgold_page_sha256", "f" * 64, "a page other than the verified RecordGold record"),
+        ("supplied_fixture_sha256", "f" * 64, "a page other than the verified RecordGold record"),
+        ("page_witness_sha256", "e" * 64, "transcription digest disagrees with the pin"),
+        ("page_witness_edit_distance", 3, "page-read edit distance disagrees"),
+        ("character_error_rate", "0.0500", "character error rate disagrees"),
+        ("character_error_rate_threshold", "0.5000", "threshold is not the pinned 0.15"),
+        ("reference_units", 7, "reference units disagree"),
+        ("normalization_profile", {"profile_id": "other"}, "normalisation profile"),
+        ("page_witness_matches", False, "did not record a passing RecordGold read"),
+    ],
+)
+def test_qualification_refuses_each_disagreeing_recordgold_fact_by_name(
+    tmp_path: Path, field: str, bad_value: object, refusal: str
+) -> None:
+    paths, wrapper = _qualification_fixture(tmp_path)
+    _dai_smoke(wrapper)[field] = bad_value
+    paths["report"].write_text(json.dumps(wrapper), encoding="utf-8")
+
+    with pytest.raises(QualificationRefusal, match=refusal):
+        _qualify(paths)
+
+
+def test_qualification_refuses_when_the_pinned_record_s_own_copy_has_drifted(
+    tmp_path: Path,
+) -> None:
+    """The gold the answer is scored against must itself pass the pin."""
+    paths, _ = _qualification_fixture(tmp_path)
+    _, drifted_fetch = record_pin(text=TEST_GOLD_TEXT[:-1] + "s")
+
+    with pytest.raises(QualificationRefusal, match="pinned RecordGold record cannot be verified"):
+        qualification_candidates(
+            report_path=paths["report"],
+            evidence_root=paths["evidence"],
+            models_config=paths["models"],
+            recipes_config=paths["recipes"],
+            placement_config=paths["placement"],
+            recordgold_record=TEST_RECORD,
+            recordgold_fetch=drifted_fetch,
+        )
 
 
 @pytest.mark.parametrize(
@@ -629,6 +833,7 @@ def test_qualification_accepts_internal_witness_whitespace_with_raw_digest(tmp_p
     assert all(
         item["smoke_fixture_output_sha256"] == digest_bytes(canonical_bytes([answer]))
         for item in record["candidates"]
+        if item["smoke_page"] == "golden-page"
     )
 
 
@@ -930,7 +1135,10 @@ def test_qualification_refuses_changed_source_or_artifact_bytes(tmp_path: Path) 
 
 
 def test_qualification_cli_writes_once_and_never_replaces_a_candidate(tmp_path: Path) -> None:
-    paths, _ = _qualification_fixture(tmp_path)
+    # The command line has no seam for the RecordGold pin: it verifies the real
+    # record's committed copy (`test_recordgold_smoke` covers that copy), so
+    # this fixture has the DAI chair read the golden page like the rest.
+    paths, _ = _qualification_fixture(tmp_path, dai_smoke_page="golden-page")
     output = tmp_path / "qualification.json"
     argv = [
         "--report",

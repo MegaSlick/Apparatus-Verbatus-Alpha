@@ -885,7 +885,6 @@ def review_pages(
     *,
     page_coverage_findings: Callable[..., dict[int, dict]],
     publish_review: Callable[..., dict],
-    current_review: Callable[[Any, str], dict | None],
 ) -> int:
     """Review every counted unit and record every flagged page break.
 
@@ -907,6 +906,16 @@ def review_pages(
         (subject, payload, link_inputs(payload, by_id, real))
         for subject, payload in run_page_breaks(context, acts)
     ]
+    prior_by_id: dict[str, list[dict]] = {}
+    for entry in context.tree.build_manifest(RECENSOR, verify_inputs=False)["artifacts"]:
+        if entry["kind"] == "review" and entry["subject_id"] in by_id:
+            prior_by_id.setdefault(entry["subject_id"], []).append(
+                context.tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+            )
+    priors = {
+        act_id: latest_attempt(records, f"Recensor review of {act_id}", operation="recense")
+        for act_id, records in prior_by_id.items()
+    }
 
     held = 0
     for act, outcome, payload, inputs, approval_ref in decided:
@@ -914,7 +923,7 @@ def review_pages(
             context,
             subject_id=act["act_id"],
             outcome=outcome,
-            prior=current_review(context, act["act_id"]),
+            prior=priors.get(act["act_id"]),
             inputs=inputs,
             payload=payload,
             check=validate_page_review_payload,

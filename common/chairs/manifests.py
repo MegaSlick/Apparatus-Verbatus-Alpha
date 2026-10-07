@@ -5,9 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, TypeVar
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
 
@@ -17,6 +18,11 @@ from .models import ChairIdentity, DigestManifest, ManifestRow, VerifiedSnapshot
 
 # A manifest is a small control artifact, bounded like `model_store`'s shard index.
 MAX_MANIFEST_BYTES = 16_777_216
+HASH_CHUNK_BYTES = 8 * 1024 * 1024
+HASH_WORKERS_MAX = 16
+
+_Item = TypeVar("_Item")
+_Result = TypeVar("_Result")
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,16 +45,17 @@ def build_manifest(snapshot_root: str | Path) -> DigestManifest:
     root = Path(snapshot_root)
     if not root.is_dir():
         raise DigestMismatchRefusal("manifest", f"snapshot root {root} is not a directory")
-    rows = []
-    for relative, path in _regular_files(root, chair="manifest"):
-        rows.append(
-            ManifestRow(
-                path=relative,
-                sha256=file_digest(path, "manifest", relative),
-                size=file_size(path, "manifest", relative),
-            )
+
+    def measure_file(item: tuple[str, Path]) -> ManifestRow:
+        relative, path = item
+        return ManifestRow(
+            path=relative,
+            sha256=file_digest(path, "manifest", relative),
+            size=file_size(path, "manifest", relative),
         )
-    return DigestManifest(rows=tuple(rows))
+
+    files = _regular_files(root, chair="manifest")
+    return DigestManifest(rows=tuple(_map_files_in_order(files, measure_file)))
 
 
 def write_manifest(manifest: DigestManifest, path: str | Path) -> str:
@@ -168,18 +175,16 @@ def _inspect_snapshot(
         for relative, path in _regular_files(root, chair=identity.role)
         if relative not in ignored
     }
-    missing: list[str] = []
-    for relative in sorted(set(expected) | set(actual)):
-        row = expected.get(relative)
-        path = actual.get(relative)
+
+    def inspect_file(item: tuple[str, ManifestRow | None, Path | None]) -> str | None:
+        relative, row, path = item
         if row is None:
             raise DigestMismatchRefusal(
                 identity.role, f"snapshot differs at {relative}: extra file"
             )
         if path is None:
             if allow_missing:
-                missing.append(relative)
-                continue
+                return relative
             raise DigestMismatchRefusal(
                 identity.role, f"snapshot differs at {relative}: missing file"
             )
@@ -205,7 +210,27 @@ def _inspect_snapshot(
                 identity.role,
                 f"snapshot differs at {relative}: sha256 {actual_sha}, expected {row.sha256}",
             )
-    return tuple(missing)
+        return None
+
+    files = [
+        (relative, expected.get(relative), actual.get(relative))
+        for relative in sorted(set(expected) | set(actual))
+    ]
+    return tuple(
+        relative for relative in _map_files_in_order(files, inspect_file) if relative is not None
+    )
+
+
+def _map_files_in_order(items: list[_Item], work: Callable[[_Item], _Result]) -> list[_Result]:
+    """Hash independent files concurrently, then observe results in lexical order."""
+
+    # A container sees its host's CPU count, often far above its own share, and
+    # past a few readers the disk, not the hashing, is the limit.
+    workers = min(len(items), os.cpu_count() or 1, HASH_WORKERS_MAX)
+    if workers <= 1:
+        return [work(item) for item in items]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(work, items))
 
 
 def _verified(
@@ -260,14 +285,16 @@ def file_size(path: Path, chair: str, relative: str) -> int:
 def file_digest(path: Path, chair: str, relative: str) -> str:
     """Stream one file's SHA-256 under the same taxonomy guarantee as `file_size`.
 
-    ``hashlib.file_digest`` (Python 3.11+, PSF license) is the standard-library
-    file helper.  Model snapshots can contain multi-gigabyte weights, so reading
-    a whole file before hashing unnecessarily duplicates it in process memory.
+    Model snapshots can contain multi-gigabyte weights, so each read is bounded.
+    Large ``hashlib`` updates release the GIL while other files are hashed.
     """
 
     def digest() -> str:
+        hasher = hashlib.sha256()
         with path.open("rb") as handle:
-            return hashlib.file_digest(handle, "sha256").hexdigest()
+            while chunk := handle.read(HASH_CHUNK_BYTES):
+                hasher.update(chunk)
+        return hasher.hexdigest()
 
     return _guarded(chair, relative, digest)
 

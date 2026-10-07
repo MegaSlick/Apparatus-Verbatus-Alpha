@@ -107,9 +107,28 @@ in the prompt. A checkpoint whose template can open in thinking mode is asked
 for a direct answer, as its run calls are (`common/chair_wire.py`). The receipt
 records digests, never the page, prompt, witness or answer.
 
+The DAI chair (`witness_adapter = "dai.v1"`, a handwriting record reader) does
+not read the golden page: it misreads the typed code about half the time while
+reading real records well. Its smoke reads one pinned record of the public
+RecordGold corpus it was trained on (`recordgold_smoke.py`), asked what its run
+asks, and is scored by character error rate against the record's expert
+transcription after the corpus's `graphemic-v1` normalisation, passing at CER
+0.15 or under. The repository holds only the record's identity and digests; the
+pod fetches the crop from Teklia's IIIF server and the transcription from the
+Hugging Face dataset at preflight, verifies both against the pins and refuses by
+name -- `recordgold-smoke-fetch-failed` for the network, `-image-mismatch` or
+`-text-mismatch` for a changed record -- before any chair starts. Its receipt
+carries `smoke_page = "recordgold-record"`, the record's pins, the page digest,
+the edit count and the rate; never the text.
+
 `python -m operations.serving.qualify --report … --evidence-root …
 --models-config … --serving-recipes-config … --placement-config …` reads a
 green bootstrap report and its evidence and prints candidate digests for every
 chair the preflight placed and smoked at the measured tier. Each candidate
 needs its own exact read of the witness, bound to the retained artifacts; only
-edit distance zero proves a row. The command never edits the catalogue.
+edit distance zero proves a row. The DAI chair's candidate is instead its read
+of the pinned RecordGold record: the receipt's pins must be the repository's,
+and the retained answer is re-scored against the committed transcription and
+must agree with the receipt and pass the pinned rate. A receipt that names any
+other page, or a RecordGold receipt from any other chair, is refused. The
+command never edits the catalogue.

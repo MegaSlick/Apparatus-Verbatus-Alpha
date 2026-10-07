@@ -688,14 +688,22 @@ def test_a_source_that_lost_its_door_outcome_refuses_before_anything_is_sealed(
 
 
 def test_an_admitted_blob_whose_bytes_changed_refuses(tmp_path, rebind_stage_seal):
+    """A door blob whose bytes changed is refused at the door's stage-seal, which
+    the exemplar checks against disk once at open (`common/stage.py`), before any
+    admission's own reference is followed. The refusal names the blob by its
+    content address and the digest the bytes now carry."""
     tree, _ = build_door_run(tmp_path / "runs")
     admission = tree.read_artifact(DOOR, "admission", artifact_id(DOOR, "admission", "source-1"))
-    tree.resolve(admission["payload"]["stored_at"]).write_bytes(b"different bytes entirely")
+    changed = b"different bytes entirely"
+    stored_at = tree.resolve(admission["payload"]["stored_at"])
+    stored_at.write_bytes(changed)
     rebind_stage_seal(tree, DOOR, rewrite_manifest=False)
 
     result = run_exemplar(tmp_path / "runs")
     assert result.returncode != 0
-    assert "changed under a sealed reference" in result.stderr
+    assert "refuses door stage-seal: its named inventory no longer matches disk" in result.stderr
+    assert f"door blob '{stored_at.name[:12]}" in result.stderr
+    assert f"contains digest {digest_bytes(changed)}, not the digest in its name" in result.stderr
 
 
 def test_an_admitted_blob_that_is_gone_refuses_by_name_rather_than_crashing(

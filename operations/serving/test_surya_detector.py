@@ -388,9 +388,12 @@ def environment(tmp_path, monkeypatch):
 
 
 class FakeChild:
-    """Answers the version check, then writes one document per page given."""
+    """Answers the version check, then writes one document per page given,
+    numbered from `--first-ordinal` as the runner numbers them. A page's
+    document varies with the page's own bytes, so a merge that misplaces a page
+    shows. `failing_page` names a page whose process fails or raises instead."""
 
-    def __init__(self, versions=None, documents=None, returncode=0, raises=None):
+    def __init__(self, versions=None, documents=None, returncode=0, raises=None, failing_page=None):
         self.versions = versions or {
             "surya_ocr": "0.22.1",
             "torch": "2.14.0+cu130",
@@ -400,29 +403,65 @@ class FakeChild:
         self.timeouts: list[int] = []
         self.documents = documents
         self.returncode = returncode
+        self.failing_page = failing_page
         self.calls: list[tuple[list[str], dict]] = []
 
     def __call__(self, argv, **kwargs):
         self.calls.append((argv, kwargs["env"]))
         self.timeouts.append(kwargs["timeout"])
-        if self.raises is not None and "--check" not in argv:
-            raise self.raises
         if "--check" in argv:
             return subprocess.CompletedProcess(argv, 0, json.dumps(self.versions), "")
         output = Path(argv[argv.index("--output-dir") + 1])
         pages = argv[argv.index("--output-dir") + 2 :]
+        first = int(argv[argv.index("--first-ordinal") + 1]) if "--first-ordinal" in argv else 1
+        fails = self.failing_page is None or any(
+            Path(page).name == f"page-{self.failing_page}" for page in pages
+        )
+        if self.raises is not None and fails:
+            raise self.raises
         output.mkdir(parents=True)
-        for ordinal, _page in enumerate(pages, start=1):
+        for ordinal, page in enumerate(pages, start=first):
             if self.documents is not None and ordinal not in self.documents:
                 continue
             document = (self.documents or {}).get(ordinal) or _document(ordinal)
+            document = copy.deepcopy(document)
+            # The page's first byte, as a confidence, so each page's document is its own.
+            data = Path(page).read_bytes()
+            if data:
+                document["text_detection"]["bboxes"][0]["confidence"] = data[0] / 1000
             (output / f"page-{ordinal}.json").write_text(json.dumps(document))
-        return subprocess.CompletedProcess(argv, self.returncode, "", "boom")
+        return subprocess.CompletedProcess(argv, self.returncode if fails else 0, "", "boom")
 
 
-def _profile() -> SubprocessProfile:
-    (profile,) = _catalogue(_row()).profiles
+def _profile(**changes) -> SubprocessProfile:
+    (profile,) = _catalogue(_row(**changes)).profiles
     return profile
+
+
+def _run(child, pages: dict[int, bytes], **kwargs) -> surya_detector.SuryaRun:
+    kwargs.setdefault("manifest_rows", _pinned())
+    kwargs.setdefault("profile", _profile())
+    return run_surya_subprocess(
+        kwargs.pop("profile"),
+        Path("/bundle"),
+        pages,
+        {ordinal: (WIDTH, HEIGHT) for ordinal in pages},
+        _identity(),
+        runner=child,
+        **kwargs,
+    )
+
+
+def _slices(child) -> list[tuple[int, list[str]]]:
+    """Each runner process the child saw: its first ordinal and the page files given."""
+    return [
+        (
+            int(argv[argv.index("--first-ordinal") + 1]),
+            [Path(page).name for page in argv[argv.index("--output-dir") + 2 :]],
+        )
+        for argv, _env in child.calls
+        if "--check" not in argv
+    ]
 
 
 def test_the_runner_runs_under_its_own_interpreter_with_nothing_inherited(environment, monkeypatch):
@@ -530,6 +569,96 @@ def test_the_runner_s_timeout_grows_with_the_pages_it_reads(environment):
     )
     # The version check gets the startup allowance; the run adds 60 s a page.
     assert child.timeouts == [300, 300 + 3 * 60]
+
+
+# --- several runner processes -----------------------------------------------------------
+
+
+def test_the_workers_field_is_optional_and_a_positive_integer():
+    assert _profile().workers == 1
+    assert _profile(workers=6).workers == 6
+    with pytest.raises(ServingConfigurationError, match="workers"):
+        _catalogue(_row(workers=0))
+
+
+def test_the_real_rows_run_several_processes_within_the_cpus_they_have():
+    real = load_serving_recipes(ROOT / "config" / "serving_recipes_real.toml")
+    for row in (p for p in real.profiles if p.chair == DESIGNATOR_SURYA_CHAIR):
+        assert (row.threads, row.workers) == (8, 6)
+        assert surya_detector.runner_processes(row, 47, 32) == 4
+        assert surya_detector.runner_processes(row, 47, 64) == 6
+
+
+@pytest.mark.parametrize(
+    ("ordinals", "workers", "expected"),
+    [
+        ([1, 2, 3], 1, [(1, [1, 2, 3])]),
+        ([3, 5, 8, 11, 20], 2, [(1, [3, 5, 8]), (4, [11, 20])]),
+        ([1, 2, 3, 4, 5, 6, 7], 3, [(1, [1, 2, 3]), (4, [4, 5]), (6, [6, 7])]),
+        ([4, 9], 5, [(1, [4]), (2, [9])]),
+    ],
+)
+def test_pages_are_cut_into_contiguous_slices_in_page_order(ordinals, workers, expected):
+    assert surya_detector.page_slices(ordinals, workers) == expected
+
+
+def test_runner_processes_are_bounded_by_workers_cpus_and_pages():
+    profile = _profile(threads=2, workers=6)
+    assert surya_detector.runner_processes(profile, 47, 32) == 6
+    assert surya_detector.runner_processes(profile, 47, 5) == 2
+    assert surya_detector.runner_processes(profile, 47, 1) == 1
+    assert surya_detector.runner_processes(profile, 3, 32) == 3
+    assert surya_detector.runner_processes(_profile(), 47, 32) == 1
+
+
+def test_several_processes_give_the_bytes_one_process_gives(environment):
+    """Seven pages over three processes, slices of 3, 2 and 2, each page carrying
+    its own bytes: the merged documents, receipt and run facts are byte for byte
+    what one process over all seven gives."""
+    pages = {ordinal: bytes([ordinal * 7, ordinal]) for ordinal in range(1, 8)}
+    single = FakeChild()
+    one = _run(single, pages)
+    several = FakeChild()
+    many = _run(several, pages, profile=_profile(workers=3), cpus=32)
+    assert _slices(single) == [(1, [f"page-{n}" for n in range(1, 8)])]
+    assert _slices(several) == [
+        (1, ["page-1", "page-2", "page-3"]),
+        (4, ["page-4", "page-5"]),
+        (6, ["page-6", "page-7"]),
+    ]
+    assert {n: page.raw for n, page in many.pages.items()} == {
+        n: page.raw for n, page in one.pages.items()
+    }
+    assert many.run_facts == one.run_facts
+    assert dataclasses.replace(many.serving_details, started_at="") == dataclasses.replace(
+        one.serving_details, started_at=""
+    )
+    assert many.serving_details.endpoint == "subprocess://cpu/threads-2"
+    # Each slice gets the startup allowance plus its own pages' allowance.
+    assert several.timeouts == [300, 300 + 3 * 60, 300 + 2 * 60, 300 + 2 * 60]
+
+
+def test_uneven_slices_keep_page_order_and_each_page_s_own_bytes(environment):
+    pages = {ordinal: bytes([ordinal * 9]) for ordinal in (3, 5, 8, 11, 20)}
+    child = FakeChild()
+    run = _run(child, pages, profile=_profile(workers=2), cpus=4)
+    assert _slices(child) == [(1, ["page-3", "page-5", "page-8"]), (4, ["page-11", "page-20"])]
+    assert list(run.pages) == [3, 5, 8, 11, 20]
+    for input_ordinal, (ordinal, page) in enumerate(run.pages.items(), start=1):
+        assert page.document["input_ordinal"] == input_ordinal
+        assert page.document["text_detection"]["bboxes"][0]["confidence"] == ordinal * 9 / 1000
+
+
+def test_a_failing_process_fails_the_whole_run_with_the_single_process_refusal(environment):
+    pages = {ordinal: bytes([ordinal]) for ordinal in range(1, 7)}
+    with pytest.raises(SuryaRunFailure, match=r"Surya's runner failed \(exit 2\): boom"):
+        _run(FakeChild(returncode=2, failing_page=5), pages, profile=_profile(workers=3), cpus=32)
+    raised = subprocess.TimeoutExpired(["runner"], 420)
+    with pytest.raises(SuryaRunFailure, match="did not finish within 420 seconds"):
+        _run(FakeChild(raises=raised, failing_page=2), pages, profile=_profile(workers=3), cpus=32)
+    child = FakeChild(documents={n: _document(n) for n in (1, 2, 3, 5, 6)})
+    with pytest.raises(SuryaOutputRefusal, match="no document for page 4"):
+        _run(child, pages, profile=_profile(workers=3), cpus=32)
 
 
 def test_an_empty_page_set_is_refused_by_name(environment):

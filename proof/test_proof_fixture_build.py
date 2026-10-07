@@ -26,6 +26,7 @@ from common.imaging import decode_grayscale_png
 from proof.build_fixture import (
     _REASK_FIRST_READINGS,
     ACTS,
+    EXTERNAL_FIXTURES,
     SCENARIOS,
     TESTIMONY,
     act_descriptor,
@@ -82,15 +83,15 @@ def configured_witness_chairs(models_config: dict) -> tuple[str, ...]:
 
 def test_every_declared_fixture_file_exists_with_the_declared_digest(ingress):
     entries = ingress["fixture"]
-    assert len(entries) == 3
+    assert len(entries) == 3 + len(EXTERNAL_FIXTURES)
+    signatures = {"image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff"}
     for entry in entries:
         path = PROOF_ROOT.parent / entry["path"]
         assert path.exists(), f"{entry['path']} is declared but not present"
         data = path.read_bytes()
         assert hashlib.sha256(data).hexdigest() == entry["sha256"]
         assert len(data) == entry["bytes"]
-        assert entry["media_type"] == "image/png"
-        assert data.startswith(b"\x89PNG\r\n\x1a\n")
+        assert data.startswith(signatures[entry["media_type"]])
 
 
 def test_the_checked_in_bytes_decode_to_exactly_the_declared_image():
@@ -111,7 +112,11 @@ def test_no_fixture_file_is_present_that_nothing_declares(ingress):
     """An undeclared image in the proof tree is exactly what the ingress hook
     exists to catch; failing here first says so with a better message."""
     declared = {PROOF_ROOT.parent / entry["path"] for entry in ingress["fixture"]}
-    present = set((PROOF_ROOT / "fixtures").rglob("*.png"))
+    present = {
+        path
+        for pattern in ("*.png", "*.jpg", "*.jpeg", "*.tif", "*.tiff")
+        for path in (PROOF_ROOT / "fixtures").rglob(pattern)
+    }
     assert present == declared
 
 

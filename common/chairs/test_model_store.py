@@ -14,7 +14,7 @@ import pytest
 
 from common.chairs import model_store
 from common.chairs.config import load_models_toml, parse_models_config
-from common.chairs.errors import DigestMismatchRefusal, DiskSpaceRefusal
+from common.chairs.errors import DigestMismatchRefusal
 from common.chairs.manifests import build_manifest, read_manifest, write_manifest
 from common.chairs.model_store import (
     DAI_PROMPT_CITATION,
@@ -1765,9 +1765,7 @@ def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothin
         assert declares_nothing == (requirement.license_declaration is None), requirement.chair
 
 
-def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(
-    tmp_path, monkeypatch
-):
+def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(tmp_path):
     """Six cache roles are supplied locally, including both Chandra roles."""
 
     record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
@@ -1825,19 +1823,14 @@ def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(
         registry.ensure(identity)
 
     assert set(fetcher.calls) == set(chairs)
-    last = source_identities[-1]
-    assert (tmp_path / "chair-cache" / last.role / CACHE_DESCRIPTOR).is_file()
-    assert not (tmp_path / "chair-cache" / source_identities[0].role).exists()
+    for identity in source_identities:
+        assert (tmp_path / "chair-cache" / identity.role / CACHE_DESCRIPTOR).is_file()
 
     fetcher.calls.clear()
     restarted = ChairRegistry(config, cache_root=tmp_path / "chair-cache", fetcher=fetcher)
-    restarted.ensure(last)
+    for identity in source_identities:
+        restarted.ensure(identity)
     assert fetcher.calls == []
-    monkeypatch.setattr(
-        "common.chairs.registry.shutil.disk_usage", lambda path: type("Space", (), {"free": 0})()
-    )
-    with pytest.raises(DiskSpaceRefusal, match="container disk too small for chair"):
-        restarted.ensure(source_identities[0])
 
 
 def test_role_fetch_reads_record_without_rehashing_whole_store(tmp_path, monkeypatch):

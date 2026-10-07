@@ -4,6 +4,7 @@ import argparse
 import json
 import stat
 import sys
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Mapping, Sequence
 
@@ -28,6 +29,17 @@ from .config import (
     profile_preflight_digest,
 )
 from .errors import ServingConfigurationError
+from .recordgold_smoke import (
+    DAI_WITNESS_ADAPTER,
+    RECORDGOLD_SMOKE_MAX_CER,
+    RECORDGOLD_SMOKE_PROFILE,
+    RECORDGOLD_SMOKE_RECORD,
+    RecordGoldSmokeRecord,
+    RecordGoldSmokeRefusal,
+    committed_recordgold_bytes,
+    fetch_recordgold_smoke_page,
+    score_recordgold_answer,
+)
 from .smoke import page_witness_edit_distance
 from .witness import is_page_witness
 
@@ -45,6 +57,12 @@ QUALIFICATION_PURPOSE = "preflight-qualification"
 # chair under its row's kind. An `unsupported` row placed at a tier makes the
 # preflight red, so a report qualify accepts never holds one.
 UNSERVED_KINDS = frozenset({"subprocess", "in-process"})
+# What a smoke receipt says its chair read (`smoke.py` writes `smoke_page`).
+# Every served chair reads the golden page, except the DAI chair, whose smoke
+# reads the pinned RecordGold record (`recordgold_smoke.py`). A receipt from
+# before the field existed read the golden page.
+GOLDEN_PAGE = "golden-page"
+RECORDGOLD_PAGE = "recordgold-record"
 
 
 class QualificationRefusal(ValueError):
@@ -58,8 +76,17 @@ def qualification_candidates(
     models_config: str | Path,
     recipes_config: str | Path,
     placement_config: str | Path,
+    recordgold_record: RecordGoldSmokeRecord = RECORDGOLD_SMOKE_RECORD,
+    recordgold_fetch: Callable[[str], bytes] = committed_recordgold_bytes,
 ) -> dict[str, object]:
-    """Return proof candidates bound to one measured tier and its artifacts."""
+    """Return proof candidates bound to one measured tier and its artifacts.
+
+    ``recordgold_record`` and ``recordgold_fetch`` name the RecordGold record
+    the DAI chair's smoke read and where its pinned bytes come from: by
+    default the record pinned in ``recordgold_smoke.py`` and the copy committed
+    beside it, so qualification needs no network. The gold transcription is
+    read into memory to re-score the retained answer and is never written.
+    """
 
     report_bytes = _read_bytes(report_path, "bootstrap report")
     report = _json_object(report_bytes, "bootstrap report")
@@ -168,6 +195,7 @@ def qualification_candidates(
     )
 
     root = Path(evidence_root)
+    gold_text: str | None = None
     candidates: list[dict[str, object]] = []
     for role, identity in sorted(served.items()):
         matches = by_chair[role]
@@ -180,6 +208,21 @@ def qualification_candidates(
             raise QualificationRefusal(
                 f"chair {role!r} tier {tier!r} is not one unproven vLLM profile"
             )
+        smoke_page = smoke.get("smoke_page", GOLDEN_PAGE)
+        recordgold: tuple[RecordGoldSmokeRecord, str] | None = None
+        if smoke_page == RECORDGOLD_PAGE:
+            # Only the chair whose adapter is DAI's reads the record; every
+            # other chair that claims to has smoked a page the qualifier does
+            # not accept from it.
+            if identity.witness_adapter != DAI_WITNESS_ADAPTER:
+                raise QualificationRefusal(
+                    f"chair {role!r} is not a RecordGold reader but smoked the RecordGold record"
+                )
+            if gold_text is None:
+                gold_text = _pinned_gold_text(recordgold_record, recordgold_fetch)
+            recordgold = (recordgold_record, gold_text)
+        elif smoke_page != GOLDEN_PAGE:
+            raise QualificationRefusal(f"chair {role!r} smoked an unknown page {smoke_page!r}")
         _verify_smoke(
             smoke,
             identity=identity,
@@ -188,11 +231,28 @@ def qualification_candidates(
             golden_page_sha256=golden_page_sha256,
             config_inputs=config_inputs,
             evidence_root=root,
+            recordgold=recordgold,
         )
         identity_digest = chair_preflight_identity_digest(identity)
         row["preflight_identity_digest"] = identity_digest
         row["preflight_state"] = "proven"
         profile_digest = profile_preflight_digest(row)
+        if recordgold is None:
+            page_read: dict[str, object] = {
+                "page_witness_reference": dict(
+                    _object(smoke.get("page_witness_reference"), "page witness reference")
+                ),
+            }
+        else:
+            # The record is public and pinned, so the candidate names it and
+            # the measured rate; there is no retained witness artifact to cite.
+            page_read = {
+                "page_witness_reference": None,
+                "recordgold_record": dict(_object(smoke["recordgold_record"], "RecordGold pins")),
+                "recordgold_page_sha256": smoke["recordgold_page_sha256"],
+                "character_error_rate": smoke["character_error_rate"],
+                "character_error_rate_threshold": smoke["character_error_rate_threshold"],
+            }
         candidates.append(
             {
                 "chair": role,
@@ -200,9 +260,8 @@ def qualification_candidates(
                 "tier": tier,
                 "preflight_identity_digest": identity_digest,
                 "preflight_digest": profile_digest,
-                "page_witness_reference": dict(
-                    _object(smoke.get("page_witness_reference"), "page witness reference")
-                ),
+                "smoke_page": smoke_page,
+                **page_read,
                 "page_witness_sha256": smoke["page_witness_sha256"],
                 "smoke_fixture_output_sha256": smoke["smoke_fixture_output_sha256"],
                 "service_receipt_reference": dict(
@@ -287,7 +346,13 @@ def _verify_smoke(
     golden_page_sha256: str,
     config_inputs: Mapping[str, object],
     evidence_root: Path,
+    recordgold: tuple[RecordGoldSmokeRecord, str] | None = None,
 ) -> None:
+    """Check one chair's smoke receipt against its artifacts and the page it read.
+
+    ``recordgold`` is the pinned record and its gold transcription when this
+    chair read the RecordGold record; ``None`` when it read the golden page.
+    """
     if not isinstance(smoke.get("served_engine"), str) or not smoke["served_engine"]:
         raise QualificationRefusal(f"chair {identity.role!r} has no served engine")
     utilization = smoke.get("utilization")
@@ -308,22 +373,28 @@ def _verify_smoke(
     ):
         if not is_sha256(smoke.get(field)):
             raise QualificationRefusal(f"chair {identity.role!r} has no valid {field}")
-    if smoke["supplied_fixture_sha256"] != golden_page_sha256:
-        raise QualificationRefusal(f"chair {identity.role!r} smoked a different golden page")
-    witness_ref = _object(smoke.get("page_witness_reference"), "page witness reference")
-    witness_bytes = _verified_artifact_bytes(evidence_root, witness_ref, "page witness")
-    try:
-        witness = witness_bytes.decode("ascii")
-    except UnicodeDecodeError as error:
-        raise QualificationRefusal(
-            f"chair {identity.role!r} page witness artifact is not ASCII"
-        ) from error
-    if not is_page_witness(witness):
-        raise QualificationRefusal(f"chair {identity.role!r} page witness artifact is malformed")
-    if digest_bytes(witness_bytes) != smoke["page_witness_sha256"]:
-        raise QualificationRefusal(
-            f"chair {identity.role!r} witness digest disagrees with its artifact"
-        )
+    witness: str | None = None
+    if recordgold is None:
+        if smoke["supplied_fixture_sha256"] != golden_page_sha256:
+            raise QualificationRefusal(f"chair {identity.role!r} smoked a different golden page")
+        witness_ref = _object(smoke.get("page_witness_reference"), "page witness reference")
+        witness_bytes = _verified_artifact_bytes(evidence_root, witness_ref, "page witness")
+        try:
+            witness = witness_bytes.decode("ascii")
+        except UnicodeDecodeError as error:
+            raise QualificationRefusal(
+                f"chair {identity.role!r} page witness artifact is not ASCII"
+            ) from error
+        if not is_page_witness(witness):
+            raise QualificationRefusal(
+                f"chair {identity.role!r} page witness artifact is malformed"
+            )
+        if digest_bytes(witness_bytes) != smoke["page_witness_sha256"]:
+            raise QualificationRefusal(
+                f"chair {identity.role!r} witness digest disagrees with its artifact"
+            )
+    else:
+        _verify_recordgold_page(smoke, identity, recordgold[0])
     response_ref = _object(smoke.get("smoke_response_reference"), "smoke response reference")
     response_bytes = _verified_artifact_bytes(evidence_root, response_ref, "smoke response")
     if digest_bytes(response_bytes) != smoke["smoke_fixture_response_sha256"]:
@@ -348,19 +419,24 @@ def _verify_smoke(
             f"chair {identity.role!r} smoke receipt records no page_witness_edit_distance; "
             "re-run preflight"
         )
-    distance = page_witness_edit_distance(answer, witness) if isinstance(answer, str) else None
-    if distance is None:
-        raise QualificationRefusal(
-            f"chair {identity.role!r} output was not a near transcription of the retained page witness"
-        )
-    recorded_distance = smoke.get("page_witness_edit_distance")
-    if type(recorded_distance) is not int or recorded_distance != distance:
-        raise QualificationRefusal(f"chair {identity.role!r} page-read edit distance disagrees")
-    if distance != 0:
-        raise QualificationRefusal(
-            f"chair {identity.role!r} read the page witness with edit distance {distance}; "
-            "only an exact read can prove a profile row"
-        )
+    if recordgold is None:
+        assert witness is not None
+        distance = page_witness_edit_distance(answer, witness) if isinstance(answer, str) else None
+        if distance is None:
+            raise QualificationRefusal(
+                f"chair {identity.role!r} output was not a near transcription of the retained "
+                "page witness"
+            )
+        recorded_distance = smoke.get("page_witness_edit_distance")
+        if type(recorded_distance) is not int or recorded_distance != distance:
+            raise QualificationRefusal(f"chair {identity.role!r} page-read edit distance disagrees")
+        if distance != 0:
+            raise QualificationRefusal(
+                f"chair {identity.role!r} read the page witness with edit distance {distance}; "
+                "only an exact read can prove a profile row"
+            )
+    else:
+        _verify_recordgold_read(smoke, identity, answer, recordgold[1])
     if smoke["smoke_fixture_output_sha256"] != digest_bytes(canonical_bytes([answer])):
         raise QualificationRefusal(
             f"chair {identity.role!r} output digest disagrees with its artifact"
@@ -373,7 +449,11 @@ def _verify_smoke(
         "fixture_response_sha256": smoke["smoke_fixture_response_sha256"],
     }
     if smoke.get("page_witness_matches") is not True:
-        raise QualificationRefusal(f"chair {identity.role!r} did not match the golden-page witness")
+        raise QualificationRefusal(
+            f"chair {identity.role!r} did not match the golden-page witness"
+            if recordgold is None
+            else f"chair {identity.role!r} did not record a passing RecordGold read"
+        )
     for field, expected in page_read.items():
         if smoke.get(field) != expected:
             raise QualificationRefusal(
@@ -440,6 +520,89 @@ def _verify_smoke(
         or profile.get("preflight_state") != "unproven"
     ):
         raise QualificationRefusal(f"chair {identity.role!r} launch audit names another profile")
+
+
+def _pinned_gold_text(record: RecordGoldSmokeRecord, fetch: Callable[[str], bytes]) -> str:
+    """The pinned record's gold transcription, verified against the pin, or a refusal.
+
+    The crop is fetched and checked against its pinned digest too, so a
+    qualifier whose committed copy has drifted refuses by name rather than
+    scoring against text the pin does not vouch for.
+    """
+    try:
+        return fetch_recordgold_smoke_page(record, fetch=fetch).text
+    except RecordGoldSmokeRefusal as refusal:
+        raise QualificationRefusal(
+            f"the pinned RecordGold record cannot be verified: {refusal}"
+        ) from refusal
+
+
+def _verify_recordgold_page(
+    smoke: Mapping[str, object], identity: ChairIdentity, record: RecordGoldSmokeRecord
+) -> None:
+    """The receipt names the pinned record, and the page it was sent is that record.
+
+    The pod verified the fetched crop against the pin, re-encoded it as PNG and
+    refused to send any other bytes (``VisionSmokeCall._verify_recordgold_page``);
+    the receipt carries that page's digest under ``recordgold_page_sha256`` and
+    the digest of what was sent under ``supplied_fixture_sha256``. The PNG is not
+    re-encoded here to compare: two Pillow builds need not compress alike, and a
+    refusal on that difference would say nothing about the chair.
+    """
+    if smoke.get("recordgold_record") != record.to_record():
+        raise QualificationRefusal(
+            f"chair {identity.role!r} smoked a RecordGold record other than the pinned "
+            f"{record.record_id}"
+        )
+    if not is_sha256(smoke.get("recordgold_page_sha256")):
+        raise QualificationRefusal(f"chair {identity.role!r} has no valid recordgold_page_sha256")
+    if smoke["supplied_fixture_sha256"] != smoke["recordgold_page_sha256"]:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} was sent a page other than the verified RecordGold record"
+        )
+    if smoke["page_witness_sha256"] != record.text_sha256:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} RecordGold transcription digest disagrees with the pin"
+        )
+
+
+def _verify_recordgold_read(
+    smoke: Mapping[str, object], identity: ChairIdentity, answer: object, gold: str
+) -> None:
+    """Re-score the retained answer against the gold; the receipt must agree and pass."""
+    score = score_recordgold_answer(answer, gold) if isinstance(answer, str) else None
+    if score is None:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} output could not be measured against the RecordGold "
+            "transcription"
+        )
+    recorded_distance = smoke.get("page_witness_edit_distance")
+    if type(recorded_distance) is not int or recorded_distance != score.edits:
+        raise QualificationRefusal(f"chair {identity.role!r} page-read edit distance disagrees")
+    if smoke.get("character_error_rate") != str(score.character_error_rate):
+        raise QualificationRefusal(
+            f"chair {identity.role!r} RecordGold character error rate disagrees"
+        )
+    if smoke.get("character_error_rate_threshold") != str(RECORDGOLD_SMOKE_MAX_CER):
+        raise QualificationRefusal(
+            f"chair {identity.role!r} RecordGold threshold is not the pinned "
+            f"{RECORDGOLD_SMOKE_MAX_CER}"
+        )
+    if smoke.get("reference_units") != score.reference_units:
+        raise QualificationRefusal(f"chair {identity.role!r} RecordGold reference units disagree")
+    if smoke.get("normalization_profile") != {
+        "profile_id": RECORDGOLD_SMOKE_PROFILE.profile_id,
+        "digest": RECORDGOLD_SMOKE_PROFILE.digest,
+    }:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} RecordGold read was not scored under the corpus's "
+            "normalisation profile"
+        )
+    if not score.passed:
+        raise QualificationRefusal(
+            f"chair {identity.role!r} read the RecordGold record at character error rate "
+            f"{score.character_error_rate}, past the {RECORDGOLD_SMOKE_MAX_CER} pass line"
+        )
 
 
 def _verified_artifact(

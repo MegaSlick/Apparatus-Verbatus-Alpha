@@ -821,6 +821,46 @@ def test_publication_refuses_what_every_read_route_would_refuse(tmp_path):
     assert read_back["inputs"] == [present]
 
 
+def test_manifest_verifies_shared_input_once_per_build_and_refuses_changed_bytes(
+    tmp_path, monkeypatch
+):
+    tree = make_run(tmp_path)
+    digest, blob = tree.put_blob(DESIGNATOR, b"shared page pixels")
+    reference = {"relative_path": blob.relative_path, "sha256": digest}
+    for subject in ("page-line-1", "page-line-2"):
+        tree.publish_artifact(
+            _proposal(
+                subject_id=subject,
+                artifact_id=artifact_id(DESIGNATOR, "proposal", subject),
+                inputs=[reference],
+            )
+        )
+
+    original_read_bytes = tree.read_bytes
+    input_reads = 0
+
+    def counted_read_bytes(relative_path, **options):
+        nonlocal input_reads
+        if relative_path == blob.relative_path:
+            input_reads += 1
+        return original_read_bytes(relative_path, **options)
+
+    monkeypatch.setattr(tree, "read_bytes", counted_read_bytes)
+    first = tree.build_manifest(DESIGNATOR)
+    assert len(first["artifacts"]) == 2
+    assert input_reads == 1
+
+    assert tree.build_manifest(DESIGNATOR) == first
+    assert input_reads == 2
+
+    tree.resolve(blob.relative_path).write_bytes(b"changed page pixels")
+    with pytest.raises(
+        SchemaRefusal, match="artifact input .* bytes changed under a sealed reference"
+    ):
+        tree.build_manifest(DESIGNATOR)
+    assert input_reads == 3
+
+
 def test_record_reads_by_reference_are_bounded_by_the_record_ceiling(tmp_path, monkeypatch):
     """A referenced artifact, a serving receipt and an approval record are JSON
     records about to be parsed, so each is read under the record ceiling rather
