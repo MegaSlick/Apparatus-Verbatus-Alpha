@@ -238,3 +238,10 @@ def test_the_real_pin_is_a_recordgold_crop_url_with_well_formed_digests() -> Non
         assert len(digest) == 64 and int(digest, 16) >= 0
     assert record.text_length > 0
     assert "offset=708" in record.rows_url and "length=1" in record.rows_url
+
+
+def test_the_committed_copy_passes_the_pinned_digests():
+    from .recordgold_smoke import committed_recordgold_bytes
+
+    page = fetch_recordgold_smoke_page(fetch=committed_recordgold_bytes)
+    assert page.png and page.text

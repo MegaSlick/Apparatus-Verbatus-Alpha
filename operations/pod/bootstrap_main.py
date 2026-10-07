@@ -143,7 +143,7 @@ from operations.serving.recordgold_smoke import (
     RECORDGOLD_SMOKE_RECORD,
     RecordGoldSmokeRecord,
     RecordGoldSmokeRefusal,
-    fetch_public_bytes,
+    committed_recordgold_bytes,
     fetch_recordgold_smoke_page,
     recordgold_smoke_chairs,
 )
@@ -477,7 +477,7 @@ class PreflightSeams:
     # How the DAI chair's RecordGold smoke record is fetched, and which record it
     # is (`operations/serving/recordgold_smoke.py`); a test pins a record of its
     # own and answers the fetch from memory.
-    recordgold_fetch: Callable[[str], bytes] = fetch_public_bytes
+    recordgold_fetch: Callable[[str], bytes] = committed_recordgold_bytes
     recordgold_record: RecordGoldSmokeRecord = RECORDGOLD_SMOKE_RECORD
     # The one lock every serving manager on this card must share; on
     # container-local disk, because an advisory lock on a network volume is

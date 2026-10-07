@@ -29,6 +29,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from decimal import ROUND_HALF_UP, Decimal
 from io import BytesIO
+from pathlib import Path
 
 from PIL import Image, UnidentifiedImageError
 
@@ -282,6 +283,36 @@ def _row_text(body: bytes, record: RecordGoldSmokeRecord) -> str:
             f"not the pinned {record.record_id!r}; the dataset has moved since the pin was taken",
         )
     return verify_recordgold_text(text, record)
+
+
+COMMITTED_ROOT = Path(__file__).resolve().parents[2] / "proof" / "fixtures" / "recordgold-smoke-v0"
+
+
+def committed_recordgold_bytes(
+    url: str, record: RecordGoldSmokeRecord = RECORDGOLD_SMOKE_RECORD
+) -> bytes:
+    """Answer the two pinned URLs from the copies committed beside the code.
+
+    The project lead approved committing this one public record (2026-10-07) so a
+    pod's preflight needs no network for it. The bytes are those the IIIF server
+    and the datasets server served when the pins were taken; the same digest
+    checks as a live fetch run on them, so a changed file is refused by name.
+    """
+
+    try:
+        if url == record.record_url:
+            return (COMMITTED_ROOT / f"{record.record_id}.jpg").read_bytes()
+        if url == record.rows_url:
+            text = (COMMITTED_ROOT / f"{record.record_id}.txt").read_text(encoding="utf-8")
+            row = {"record_id": record.record_id, "text": text}
+            return json.dumps({"rows": [{"row": row}]}).encode("utf-8")
+    except OSError as error:
+        raise RecordGoldSmokeRefusal(
+            "recordgold-smoke-fetch-failed", f"{url}: committed copy unreadable: {error}"
+        ) from error
+    raise RecordGoldSmokeRefusal(
+        "recordgold-smoke-fetch-failed", f"{url}: no committed copy for this URL"
+    )
 
 
 def fetch_recordgold_smoke_page(
