@@ -126,4 +126,9 @@ the edit count and the rate; never the text.
 green bootstrap report and its evidence and prints candidate digests for every
 chair the preflight placed and smoked at the measured tier. Each candidate
 needs its own exact read of the witness, bound to the retained artifacts; only
-edit distance zero proves a row. The command never edits the catalogue.
+edit distance zero proves a row. The DAI chair's candidate is instead its read
+of the pinned RecordGold record: the receipt's pins must be the repository's,
+and the retained answer is re-scored against the committed transcription and
+must agree with the receipt and pass the pinned rate. A receipt that names any
+other page, or a RecordGold receipt from any other chair, is refused. The
+command never edits the catalogue.
