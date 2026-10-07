@@ -463,6 +463,7 @@ class ChairRegistry:
                 identity, target, manifest, ignored_paths=(CACHE_DESCRIPTOR,)
             )
             if inspection.verified is not None:
+                self._mark_used(target, identity.role)
                 return inspection.verified
             missing = inspection.missing
         else:
@@ -493,6 +494,7 @@ class ChairRegistry:
             with _cache_write(identity.role, "the verified snapshot could not be promoted"):
                 _write_cache_descriptor(candidate, descriptor)
                 _promote(candidate, target)
+            self._mark_used(target, identity.role)
             return VerifiedSnapshot(
                 identity=verified.identity,
                 root=target.resolve(),
@@ -503,21 +505,23 @@ class ChairRegistry:
                 shutil.rmtree(candidate, ignore_errors=True)
             raise
 
+    @staticmethod
+    def _mark_used(target: Path, role: str) -> None:
+        with _cache_write(role, "cache use time could not be recorded"):
+            os.utime(target, None)
+
     def _make_room(self, identity: ChairIdentity, manifest: DigestManifest) -> None:
         cache_root = self.cache_root
         if cache_root is None:
             raise UnresolvedChairRefusal(identity.role, "no cache_root was supplied")
-        keep = {identity.role}
         configured_roles = {
             role
             for role, configured in self.config.chairs.items()
             if isinstance(configured, ChairIdentity)
         }
-        with _cache_write(identity.role, "other chair caches could not be evicted"):
+        with _cache_write(identity.role, "abandoned chair work directories could not be removed"):
             for other in cache_root.iterdir():
-                if other.name in keep:
-                    continue
-                if other.name not in configured_roles and not any(
+                if not any(
                     other.name.startswith((f".{role}.candidate-", f".{role}.prior-"))
                     for role in configured_roles
                 ):
@@ -529,6 +533,26 @@ class ChairRegistry:
         required = sum(row.size for row in manifest.rows)
         with _cache_write(identity.role, "container-local free space could not be measured"):
             free = shutil.disk_usage(cache_root).free
+        if free < required:
+            with _cache_write(identity.role, "other chair caches could not be evicted"):
+                candidates = sorted(
+                    (
+                        other
+                        for other in cache_root.iterdir()
+                        if other.name in configured_roles
+                        and other.name != identity.role
+                        and (other.is_symlink() or other.is_dir())
+                    ),
+                    key=lambda other: (other.stat(follow_symlinks=False).st_mtime_ns, other.name),
+                )
+                for other in candidates:
+                    if free >= required:
+                        break
+                    if other.is_symlink():
+                        other.unlink()
+                    else:
+                        shutil.rmtree(other)
+                    free = shutil.disk_usage(cache_root).free
         if free < required:
             raise DiskSpaceRefusal(
                 identity.role,

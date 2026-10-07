@@ -16,6 +16,7 @@ import json
 import os
 import unittest.mock
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +25,7 @@ from common.chairs.config import load_models_toml
 from common.chairs.errors import (
     ConfigurationRefusal,
     DigestMismatchRefusal,
+    DiskSpaceRefusal,
     UnresolvedChairRefusal,
 )
 from common.chairs.manifests import (
@@ -152,6 +154,68 @@ def test_a_second_ensure_hashes_each_complete_cache_file_once_and_fetches_nothin
     assert second.manifest_digest == first.manifest_digest
     assert digested == ["config.json", "nested/weights.bin"]
     assert len(hf_world.fetcher.calls) == 1, "a complete verified cache is not re-fetched"
+
+
+def test_an_incoming_chair_keeps_other_complete_caches_when_space_suffices(hf_world, monkeypatch):
+    first = hf_world.registry.ensure(hf_world.identity())
+    monkeypatch.setattr(
+        "common.chairs.registry.shutil.disk_usage",
+        lambda path: SimpleNamespace(free=10**12),
+    )
+
+    second = hf_world.registry.ensure(hf_world.identity("attestator_2"))
+    hf_world.registry.ensure(hf_world.identity())
+    hf_world.registry.ensure(hf_world.identity("attestator_2"))
+
+    assert first.root.is_dir()
+    assert second.root.is_dir()
+    assert hf_world.fetcher.calls == [
+        ("attestator_1", ("config.json", "nested/weights.bin")),
+        ("attestator_2", ("config.json", "nested/weights.bin")),
+    ]
+
+
+def test_insufficient_space_evicts_least_recently_used_chair_first(tmp_path, monkeypatch):
+    files = {"weights.bin": b"fixture weights\n"}
+    remote = write_snapshot(tmp_path / "remote", files)
+    pin = pin_snapshot(remote, tmp_path / "manifests" / "chair.json")
+    chairs = {
+        role: hf_chair(role, pin, manifest="manifests/chair.json")
+        for role in ("old", "recent", "incoming")
+    }
+    fetcher = RecordingFetcher(files)
+    registry = registry_for(config_of(tmp_path, chairs), tmp_path, fetcher)
+    old = registry.ensure(registry.resolve("old"))
+    recent = registry.ensure(registry.resolve("recent"))
+    os.utime(old.root, ns=(1, 1))
+    os.utime(recent.root, ns=(2, 2))
+    registry.ensure(registry.resolve("old"))
+
+    monkeypatch.setattr(
+        "common.chairs.registry.shutil.disk_usage",
+        lambda path: SimpleNamespace(
+            free=len(files["weights.bin"]) if not recent.root.exists() else 0
+        ),
+    )
+    registry.ensure(registry.resolve("incoming"))
+
+    assert old.root.is_dir()
+    assert not recent.root.exists()
+    assert (registry.cache_root / "incoming").is_dir()
+    assert fetcher.roles == ["old", "recent", "incoming"]
+
+
+def test_insufficient_space_after_eviction_refuses_the_incoming_chair(hf_world, monkeypatch):
+    first = hf_world.registry.ensure(hf_world.identity())
+    monkeypatch.setattr(
+        "common.chairs.registry.shutil.disk_usage", lambda path: SimpleNamespace(free=0)
+    )
+
+    with pytest.raises(DiskSpaceRefusal, match="container disk too small for chair"):
+        hf_world.registry.ensure(hf_world.identity("attestator_2"))
+
+    assert not first.root.exists()
+    assert hf_world.fetcher.roles == ["attestator_1"]
 
 
 # --- One flipped byte, a missing file, an extra file --------------------------------
