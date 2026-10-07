@@ -699,8 +699,26 @@ it even if the guard never started.
 The image must carry CUDA 13.0: on a Blackwell card FlashInfer compiles its sampling
 kernel at the first engine start and needs `nvcc` 12.9 or newer. A `cu1281` image fails
 every vLLM chair with `FlashInfer requires GPUs with sm75 or higher` (observed
-2026-10-06; LIVE_READINESS.md step 6).
-`runpodctl pod get <pod id>` shows the SSH details.
+2026-10-06; LIVE_READINESS.md step 6). The `cu1300` image booted on a PRO 6000 with
+`nvcc` 13.0 and needed nothing by hand (2026-10-07).
+`runpodctl pod get <pod id>` shows the SSH details. The `runpodctl` lines here need a
+current CLI: v1.14.3 has no `pod` subcommand. The RunPod API's pod create takes the same
+fields (`args` for the start command, `mounts.network` for the volume, `startSsh`).
+
+**Observed 2026-10-07:**
+
+- **The SSH proxy** (`ssh <pod>-<suffix>@ssh.runpod.io`) ignores a command on the line
+  and opens a shell; it takes commands only on stdin, and `scp` cannot use it. Inside the
+  pod, `$RUNPOD_PUBLIC_IP` and `$RUNPOD_TCP_PORT_22` name the direct port, which takes
+  commands and `scp` (`ssh -p <port> root@<ip>`), even when the pod record's
+  `ssh.direct` is empty.
+- **No card where the volume is.** A network volume lives in one datacenter, and the PRO
+  6000 may have no stock there. A pod with its own disk (`mounts.persistent`, 200 GB, at
+  `/workspace/private`) passes the bootstrap's mount check and fetched the models in about
+  2 minutes. **That disk is deleted with the pod.** Launch such a pod *without*
+  `--no-hold`, copy the results home the moment the run ends, then delete the pod: with
+  `--no-hold` the guard deletes it, and every result, within a minute of the run ending
+  (lost that way once, 2026-10-07).
 
 ### On the pod, over SSH
 
