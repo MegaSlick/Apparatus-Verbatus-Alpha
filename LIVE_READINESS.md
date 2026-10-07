@@ -231,7 +231,7 @@ Proves the pod guard arms from the start command and deletes the pod by itself.
 ```sh
 START=$(sh operations/pod/pod_start_command.sh 1 <sha>) &&
 runpodctl pod create --name verbatus-guard-drill \
-  --image <RunPod Ubuntu 24.04 CUDA image> \
+  --image runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404 \
   --gpu-id "NVIDIA RTX A5000" --gpu-count 1 --cloud-type SECURE \
   --data-center-ids <DATACENTER> --network-volume-id <VOLUME_ID> \
   --volume-mount-path /workspace/private --container-disk-in-gb 20 --ports "22/tcp" \
@@ -247,6 +247,19 @@ the hard maximum from when the command is printed, so print it afresh for every 
 moment is read from the laptop's clock, so keep it set automatically (System Settings,
 General, Date & Time). Give `--data-center-ids` exactly one id, the volume's: for a GPU pod
 runpodctl uses only the first.
+
+**The image must carry CUDA 13.0.** Observed 2026-10-06 on an RTX PRO 4500 (Blackwell,
+the PRO 6000's family): with `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404` every vLLM
+witness died at start with `FlashInfer requires GPUs with sm75 or higher`. FlashInfer
+compiles its sampling kernel on first use and needs `nvcc` 12.9 or newer for Blackwell;
+that image's `/usr/local/cuda` is 12.8. With CUDA 13.0 in its place, the same bootstrap
+went green and Door through Attestatores ran. The `cu1300` image above ships 13.0 with its
+headers. The first engine start compiles the kernel (about 75 s); later starts reuse it.
+
+**Size the volume for the model store.** The bootstrap's `MODEL_STORE` step fetches every
+chair in the real catalogue, whichever roster is chosen: about 85 GB (the Perlector 52 GB).
+A 40 GB volume ran out mid-fetch; 200 GB held it with room to spare. Fetching took about
+8 minutes in EU-RO-1.
 
 Over SSH, `tail /workspace/private/.pod_guard/guard.log` must show `armed for pod <id>`;
 if not, `runpodctl pod delete <pod id>` and stop. Otherwise leave it: idle, it should
