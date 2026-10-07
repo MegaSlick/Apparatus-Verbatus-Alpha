@@ -4985,3 +4985,136 @@ def test_thawed_json_refuses_a_value_nested_past_its_bound_by_name() -> None:
     for deep in (_nested_json(MAX_JSON_DEPTH + 1), {"launched": chain}):
         with pytest.raises(ServingConfigurationError, match=f"deeper than {MAX_JSON_DEPTH} levels"):
             thawed_json(deep)
+
+
+# --- The DAI chair's RecordGold smoke page --------------------------------------
+
+
+def _recordgold_fixture(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """A pinned test record fetched from memory, written as the chair's fixture page."""
+
+    from .recordgold_smoke import fetch_recordgold_smoke_page
+    from .test_recordgold_smoke import record_pin
+
+    record, fetch = record_pin()
+    page = fetch_recordgold_smoke_page(record, fetch=fetch)
+    fixture = tmp_path / "recordgold-record.png"
+    fixture.write_bytes(page.png)
+    return record, page, fixture, hashlib.sha256(page.png).hexdigest()
+
+
+def _recordgold_smoke(record, text: str, page_sha256: str) -> VisionSmokeCall:  # type: ignore[no-untyped-def]
+    return VisionSmokeCall(
+        PAGE_WITNESS,
+        utilization=lambda: (UtilizationSample("71", "31"),),
+        chair_sampling=CHAIR_SAMPLING,
+        recordgold_chairs=frozenset({"reader"}),
+        recordgold_record=record,
+        recordgold_text=text,
+        recordgold_page_sha256=page_sha256,
+    )
+
+
+def test_a_recordgold_chair_is_scored_by_cer_against_the_gold_and_passes_a_slip(
+    tmp_path: Path,
+) -> None:
+    from .test_recordgold_smoke import TEST_GOLD_TEXT
+
+    record, page, fixture, page_sha256 = _recordgold_fixture(tmp_path)
+    chair = identity("reader", "reader-v1")
+    manager, _, http, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": TEST_GOLD_TEXT.replace("Pierre", "Piere")}
+    )
+    handle = manager.start(chair, TIER)
+
+    result = _recordgold_smoke(record, page.text, page_sha256)(
+        handle, chair, fixture, smoke_placement()
+    )
+
+    assert (result.shape_valid, result.nonempty, result.format_valid) == (True, True, True)
+    receipt = result.receipt
+    assert receipt["smoke_page"] == "recordgold-record"
+    assert receipt["page_witness_matches"] is True
+    assert receipt["page_witness_edit_distance"] == 1
+    assert receipt["page_witness_sha256"] == record.text_sha256
+    assert receipt["recordgold_page_sha256"] == page_sha256
+    assert receipt["recordgold_record"] == record.to_record()
+    assert Decimal(receipt["character_error_rate"]) <= Decimal(  # type: ignore[arg-type]
+        receipt["character_error_rate_threshold"]  # type: ignore[arg-type]
+    )
+    assert receipt["reference_units"] == len(TEST_GOLD_TEXT)
+    assert "page_witness_reference" not in receipt
+    # Neither the gold nor the answer leaves in the receipt, and the gold never
+    # reaches the chair in the prompt: it is asked what its run asks, over the page.
+    assert TEST_GOLD_TEXT not in json.dumps(receipt)
+    request = http.calls[-1][2]
+    assert isinstance(request, dict)
+    assert TEST_GOLD_TEXT not in json.dumps(request)
+    messages = request["messages"]
+    assert isinstance(messages, list)
+    assert [message["role"] for message in messages] == ["system", "user"]
+    image_url = messages[1]["content"][0]["image_url"]["url"]  # type: ignore[index]
+    assert image_url == "data:image/png;base64," + base64.b64encode(page.png).decode("ascii")
+    handle.stop()
+    assert launcher.processes[0].terminate_calls == 1
+
+
+def test_a_recordgold_reading_over_the_threshold_fails_format_and_keeps_its_measurement(
+    tmp_path: Path,
+) -> None:
+    from .test_recordgold_smoke import TEST_GOLD_TEXT
+
+    record, page, fixture, page_sha256 = _recordgold_fixture(tmp_path)
+    chair = identity("reader", "reader-v1")
+    manager, _, _, _, _, _ = reader_manager(
+        tmp_path, chair=chair, outputs={"reader-api": TEST_GOLD_TEXT[:40]}
+    )
+    handle = manager.start(chair, TIER)
+
+    result = _recordgold_smoke(record, page.text, page_sha256)(
+        handle, chair, fixture, smoke_placement()
+    )
+
+    assert (result.shape_valid, result.nonempty, result.format_valid) == (True, True, False)
+    receipt = result.receipt
+    assert receipt["page_witness_matches"] is False
+    assert receipt["page_witness_edit_distance"] == len(TEST_GOLD_TEXT) - 40
+    assert Decimal(receipt["character_error_rate"]) > Decimal(  # type: ignore[arg-type]
+        receipt["character_error_rate_threshold"]  # type: ignore[arg-type]
+    )
+    handle.stop()
+
+
+def test_a_recordgold_chair_handed_another_page_is_refused_by_name_before_any_request(
+    tmp_path: Path,
+) -> None:
+    from .recordgold_smoke import RecordGoldSmokeRefusal
+
+    record, page, _fixture, page_sha256 = _recordgold_fixture(tmp_path)
+    chair = identity("reader", "reader-v1")
+    manager, _, http, _, _, _ = reader_manager(tmp_path, chair=chair)
+    golden = tmp_path / "golden-page.png"
+    write_golden_page(golden)
+    handle = manager.start(chair, TIER)
+    calls_before = len(http.calls)
+
+    with pytest.raises(RecordGoldSmokeRefusal, match="recordgold-smoke-image-mismatch"):
+        _recordgold_smoke(record, page.text, page_sha256)(handle, chair, golden, smoke_placement())
+
+    assert len(http.calls) == calls_before
+    handle.stop()
+
+
+def test_the_smoke_refuses_recordgold_chairs_without_a_verified_gold_text(
+    tmp_path: Path,
+) -> None:
+    from .recordgold_smoke import RecordGoldSmokeRefusal
+    from .test_recordgold_smoke import TEST_GOLD_TEXT
+
+    record, _page, _fixture, page_sha256 = _recordgold_fixture(tmp_path)
+    with pytest.raises(ServingConfigurationError, match="no verified gold transcription"):
+        VisionSmokeCall(
+            PAGE_WITNESS, chair_sampling=CHAIR_SAMPLING, recordgold_chairs=frozenset({"reader"})
+        )
+    with pytest.raises(RecordGoldSmokeRefusal, match="recordgold-smoke-text-mismatch"):
+        _recordgold_smoke(record, TEST_GOLD_TEXT + ".", page_sha256)

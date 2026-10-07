@@ -125,6 +125,7 @@ from common.credentials import (
     looks_like_credential_field,
 )
 from common.decoding import READING_CHAIRS, chair_decoding, load_decoding_policy
+from common.durability import atomic_create
 from common.sealed_config import parse_sealed_toml
 from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
@@ -138,6 +139,14 @@ from operations.serving.errors import ServingConfigurationError
 from operations.serving.http import HttpTransport
 from operations.serving.manager import PackageInspector, ReceiptPublication
 from operations.serving.process import ProcessLauncher
+from operations.serving.recordgold_smoke import (
+    RECORDGOLD_SMOKE_RECORD,
+    RecordGoldSmokeRecord,
+    RecordGoldSmokeRefusal,
+    committed_recordgold_bytes,
+    fetch_recordgold_smoke_page,
+    recordgold_smoke_chairs,
+)
 from operations.serving.residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease
 from operations.serving.smoke import (
     NvidiaSmiUtilization,
@@ -465,6 +474,11 @@ class PreflightSeams:
     http: HttpTransport | None = None
     package_inspector: PackageInspector | None = None
     fetcher_factory: Callable[[], SnapshotFetcher] = HuggingFaceFetcher.from_huggingface_hub
+    # How the DAI chair's RecordGold smoke record is fetched, and which record it
+    # is (`operations/serving/recordgold_smoke.py`); a test pins a record of its
+    # own and answers the fetch from memory.
+    recordgold_fetch: Callable[[str], bytes] = committed_recordgold_bytes
+    recordgold_record: RecordGoldSmokeRecord = RECORDGOLD_SMOKE_RECORD
     # The one lock every serving manager on this card must share; on
     # container-local disk, because an advisory lock on a network volume is
     # not something the mount is known to honour. The pipeline stages that
@@ -1180,6 +1194,45 @@ def _golden_page(plan: Plan, seams: PreflightSeams) -> tuple[Path, str, bytes]:
     return page, witness, page_bytes
 
 
+def _recordgold_page(
+    plan: Plan, seams: PreflightSeams, chairs: frozenset[str]
+) -> tuple[Path, str, str]:
+    """The RecordGold record the DAI chairs read: its PNG on the volume, gold text, digest.
+
+    Fetched and verified against the pins before any chair starts, so a
+    network failure or a moved dataset is a named PREFLIGHT refusal here and
+    never a chair's ``smoke-read-failed``. The page is named by its own digest,
+    so a second preflight under the launch adds a page rather than writing
+    over one earlier receipts name.
+    """
+
+    record = seams.recordgold_record
+    try:
+        fetched = fetch_recordgold_smoke_page(record, fetch=seams.recordgold_fetch)
+    except RecordGoldSmokeRefusal as refusal:
+        raise BootstrapStepFailure(
+            BootstrapStep.PREFLIGHT,
+            f"the RecordGold smoke record for {sorted(chairs)} could not be prepared: {refusal}",
+            "A fetch failure is the network, not the chair: check the pod can reach "
+            f"{record.record_url} and {record.rows_url}. A digest mismatch means the "
+            "served record changed; re-pin it in operations/serving/recordgold_smoke.py.",
+        ) from refusal
+    digest = digest_bytes(fetched.png)
+    page = plan.preflight_root / "recordgold-smoke" / f"{record.record_id}-{digest[:16]}.png"
+    page.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        atomic_create(page, fetched.png, strict=False)
+    except FileExistsError:
+        if page.read_bytes() != fetched.png:
+            raise BootstrapStepFailure(
+                BootstrapStep.PREFLIGHT,
+                f"a different page already exists at {page}; preflight evidence is added, "
+                "never written over",
+                "Remove nothing; resume under a fresh launch so the record gets its own name.",
+            ) from None
+    return page, fetched.text, digest
+
+
 def _golden_page_digest(
     smoke_receipts: tuple[dict[str, object], ...], page_bytes_at_render: bytes
 ) -> str:
@@ -1201,7 +1254,13 @@ def _golden_page_digest(
     selection, which has no chair to smoke-read.
     """
 
-    digests = {receipt["supplied_fixture_sha256"] for receipt in smoke_receipts}
+    digests = {
+        receipt["supplied_fixture_sha256"]
+        for receipt in smoke_receipts
+        # The DAI chair's receipt names the RecordGold record it read, not the
+        # golden page; it carries that page's own digest under its own name.
+        if receipt.get("smoke_page") != "recordgold-record"
+    }
     if len(digests) > 1:
         raise BootstrapStepFailure(
             BootstrapStep.PREFLIGHT,
@@ -1282,6 +1341,20 @@ def _build_preflight(
                 f"the decoding policy could not be read: {error}",
                 "Restore the reviewed decoding policy at the pinned commit, then resume.",
             ) from error
+        selected_roles = (
+            frozenset(plan.preflight_roles) if plan.preflight_roles is not None else None
+        )
+        recordgold_chairs = recordgold_smoke_chairs(registry.config)
+        if selected_roles is not None:
+            recordgold_chairs &= selected_roles
+        chair_fixtures: dict[str, str | Path] = {}
+        recordgold_text: str | None = None
+        recordgold_page_sha256: str | None = None
+        if recordgold_chairs:
+            recordgold_page, recordgold_text, recordgold_page_sha256 = _recordgold_page(
+                plan, chosen, recordgold_chairs
+            )
+            chair_fixtures = {chair: recordgold_page for chair in recordgold_chairs}
         smoke_call = VisionSmokeCall(
             witness,
             utilization=chosen.utilization or NvidiaSmiUtilization(),
@@ -1289,6 +1362,10 @@ def _build_preflight(
             chair_sampling={
                 chair: chair_decoding(decoding_policy, chair) for chair in READING_CHAIRS
             },
+            recordgold_chairs=recordgold_chairs,
+            recordgold_record=chosen.recordgold_record,
+            recordgold_text=recordgold_text,
+            recordgold_page_sha256=recordgold_page_sha256,
         )
         witness_reference = publisher.publish_page_witness(witness)
         smoke_call = replace(smoke_call, page_witness_reference=witness_reference)
@@ -1315,9 +1392,8 @@ def _build_preflight(
             fixture,
             serving_recipes=recipes,
             subprocess_checker=chosen.subprocess_checker,
-            selected_roles=frozenset(plan.preflight_roles)
-            if plan.preflight_roles is not None
-            else None,
+            selected_roles=selected_roles,
+            chair_fixtures=chair_fixtures,
         )
         report = runner.run(profile)
         record = report.to_record()

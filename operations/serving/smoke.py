@@ -23,6 +23,12 @@ one ``nvidia-smi`` read after the answer, and the process's own load average
 for the CPU figure.  A sampler that cannot measure returns no samples, which
 ``PreflightRunner`` turns into ``utilization-missing`` -- an empty instrument
 is red, never a quiet green.
+
+One chair reads another page.  A chair named in ``recordgold_chairs`` (the DAI
+handwriting reader) is handed a pinned RecordGold record instead of the golden
+page and scored by character error rate against its gold transcription
+(``recordgold_smoke.py``); the four receipt facts -- what was read, the
+reference digest, the distance, the verdict -- are the same for either page.
 """
 
 from __future__ import annotations
@@ -48,6 +54,16 @@ from operations.pod.preflight import PlacementTier, SmokeResult, UtilizationSamp
 from .errors import ServingConfigurationError, ServingError
 from .http import HttpResponse
 from .manager import ServiceHandle, _active_chat_image_bytes, _local_fixture_bytes
+from .recordgold_smoke import (
+    RECORDGOLD_SMOKE_MAX_CER,
+    RECORDGOLD_SMOKE_PROFILE,
+    RECORDGOLD_SMOKE_RECORD,
+    RecordGoldSmokeRecord,
+    RecordGoldSmokeRefusal,
+    recordgold_smoke_prompt,
+    score_recordgold_answer,
+    verify_recordgold_text,
+)
 from .witness import (
     PAGE_WITNESS_ALPHABET,
     PAGE_WITNESS_LENGTH,
@@ -259,29 +275,34 @@ class NvidiaSmiUtilization:
         )
 
 
-def _golden_page_payload(fixture: Path, prompt: str) -> dict[str, object]:
+def _golden_page_payload(
+    fixture: Path, prompt: str, *, system: str | None = None
+) -> dict[str, object]:
     """One user turn: the fixture page as a data URI, then the instruction.
 
     The page is embedded, never referenced by URL, so the engine reads exactly
-    these bytes.
+    these bytes. ``system`` adds a system turn ahead of it, for a chair whose
+    run always carries one.
     """
 
     data = _local_fixture_bytes(fixture, "golden-page fixture")
     encoded = base64.b64encode(data).decode("ascii")
-    return {
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{_FIXTURE_MIME_TYPE};base64,{encoded}"},
-                    },
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
-    }
+    messages: list[dict[str, object]] = []
+    if system is not None:
+        messages.append({"role": "system", "content": system})
+    messages.append(
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:{_FIXTURE_MIME_TYPE};base64,{encoded}"},
+                },
+                {"type": "text", "text": prompt},
+            ],
+        }
+    )
+    return {"messages": messages}
 
 
 @dataclass(frozen=True, slots=True)
@@ -304,6 +325,14 @@ class VisionSmokeCall:
     raw_exchange_publisher: (
         Callable[[bytes, bytes], tuple[Mapping[str, str], Mapping[str, str]]] | None
     ) = None
+    # The chairs that read the pinned RecordGold record instead of the golden
+    # page (`recordgold_smoke.py`), the record's pins, and its gold transcription
+    # as the caller fetched and verified it. The runner hands those chairs the
+    # record's PNG as their fixture; this callable checks it is that record.
+    recordgold_chairs: frozenset[str] = frozenset()
+    recordgold_record: RecordGoldSmokeRecord = RECORDGOLD_SMOKE_RECORD
+    recordgold_text: str | None = None
+    recordgold_page_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if not is_page_witness(self.page_witness):
@@ -319,6 +348,31 @@ class VisionSmokeCall:
             )
         if not callable(self.utilization):
             raise ServingConfigurationError("golden-page utilization sampler must be callable")
+        if self.recordgold_chairs:
+            if self.recordgold_text is None or self.recordgold_page_sha256 is None:
+                raise ServingConfigurationError(
+                    f"chairs {sorted(self.recordgold_chairs)} read the RecordGold record, but "
+                    "the smoke was given no verified gold transcription and page digest to "
+                    "score them against"
+                )
+            verify_recordgold_text(self.recordgold_text, self.recordgold_record)
+            if any(self.recordgold_text in turn for turn in recordgold_smoke_prompt()):
+                raise ServingConfigurationError(
+                    "RecordGold gold transcription occurs in the smoke prompt, so a text-only "
+                    "answer copied from the prompt would satisfy the page-read check"
+                )
+
+    def _verify_recordgold_page(self, image_bytes: bytes, identity: ChairIdentity) -> None:
+        """Refuse by name unless the page about to be sent is the verified record's PNG."""
+
+        digest = hashlib.sha256(image_bytes).hexdigest()
+        if digest != self.recordgold_page_sha256:
+            raise RecordGoldSmokeRefusal(
+                "recordgold-smoke-image-mismatch",
+                f"chair {identity.role} was handed a page with digest {digest}, not the "
+                f"verified RecordGold record {self.recordgold_record.record_id} "
+                f"({self.recordgold_page_sha256}); nothing was sent",
+            )
 
     @property
     def prompt(self) -> str:
@@ -348,7 +402,12 @@ class VisionSmokeCall:
                 "vision smoke handle identity differs from the resolved chair identity"
             )
 
-        payload = _golden_page_payload(fixture, self.prompt)
+        reads_recordgold = identity.role in self.recordgold_chairs
+        if reads_recordgold:
+            system, query = recordgold_smoke_prompt()
+            payload = _golden_page_payload(fixture, query, system=system)
+        else:
+            payload = _golden_page_payload(fixture, self.prompt)
         # The template switch every run call to this chair carries, so the smoke
         # reads the way the run will; the witness check below still gates preflight.
         template_kwargs = chat_template_kwargs_for(identity.role)
@@ -358,6 +417,8 @@ class VisionSmokeCall:
         # validate replacement bytes rather than the snapshot about to be sent.
         image_bytes = _active_chat_image_bytes(payload, label="golden-page request")
         _verify_png(image_bytes, max_pixels=placement.recipe.pixel_cap**2)
+        if reads_recordgold:
+            self._verify_recordgold_page(image_bytes, identity)
         exchange_references: tuple[Mapping[str, str], Mapping[str, str]] | None = None
 
         def retain_exchange(request: bytes, response: HttpResponse) -> None:
@@ -398,13 +459,22 @@ class VisionSmokeCall:
         # answer never reaches this line — it arrives at the runner as
         # `smoke-read-failed`, earlier and louder.
         nonempty = bool(answer.outputs) and all(output.strip() for output in answer.outputs)
-        # Some readers split a long token across lines; layout whitespace is ignored.
-        distance = (
-            page_witness_edit_distance(answer.outputs[0], self.page_witness)
-            if shape_valid
-            else None
-        )
-        format_valid = distance is not None
+        if reads_recordgold:
+            score = (
+                score_recordgold_answer(answer.outputs[0], self.recordgold_text or "")
+                if shape_valid
+                else None
+            )
+            distance = None if score is None else score.edits
+            format_valid = score is not None and score.passed
+        else:
+            # Some readers split a long token across lines; layout whitespace is ignored.
+            distance = (
+                page_witness_edit_distance(answer.outputs[0], self.page_witness)
+                if shape_valid
+                else None
+            )
+            format_valid = distance is not None
         samples = self.utilization()
         if not isinstance(samples, tuple) or not all(
             isinstance(sample, UtilizationSample) for sample in samples
@@ -423,10 +493,29 @@ class VisionSmokeCall:
             "resolved_revision": identity.receipt_revision,
             "resolved_revision_kind": identity.receipt_revision_kind,
             "served_model_id": answer.model_id,
-            "page_witness_sha256": hashlib.sha256(self.page_witness.encode()).hexdigest(),
+            # What was read, the reference's digest, the distance and the verdict:
+            # the same four facts for either page, never the text of any of them.
+            "smoke_page": "recordgold-record" if reads_recordgold else "golden-page",
+            "page_witness_sha256": (
+                self.recordgold_record.text_sha256
+                if reads_recordgold
+                else hashlib.sha256(self.page_witness.encode()).hexdigest()
+            ),
             "page_witness_matches": format_valid,
             "page_witness_edit_distance": distance,
         }
+        if reads_recordgold:
+            receipt["recordgold_record"] = self.recordgold_record.to_record()
+            receipt["recordgold_page_sha256"] = self.recordgold_page_sha256
+            receipt["character_error_rate"] = (
+                None if score is None else str(score.character_error_rate)
+            )
+            receipt["character_error_rate_threshold"] = str(RECORDGOLD_SMOKE_MAX_CER)
+            receipt["reference_units"] = None if score is None else score.reference_units
+            receipt["normalization_profile"] = {
+                "profile_id": RECORDGOLD_SMOKE_PROFILE.profile_id,
+                "digest": RECORDGOLD_SMOKE_PROFILE.digest,
+            }
         if self.raw_exchange_publisher is not None:
             if exchange_references is None:
                 raise ServingConfigurationError(
@@ -435,7 +524,7 @@ class VisionSmokeCall:
             request_reference, response_reference = exchange_references
             receipt["smoke_request_reference"] = dict(request_reference)
             receipt["smoke_response_reference"] = dict(response_reference)
-        if self.page_witness_reference is not None:
+        if self.page_witness_reference is not None and not reads_recordgold:
             receipt["page_witness_reference"] = dict(self.page_witness_reference)
         return SmokeResult(
             shape_valid=shape_valid,

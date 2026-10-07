@@ -1972,6 +1972,31 @@ def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspa
     return ws, identities
 
 
+def _smoke_outputs(identities: dict, witness: str) -> dict[str, str]:
+    """Each fake chair's answer: the witness line, or the gold text for the DAI chair."""
+
+    from operations.serving.recordgold_smoke import DAI_WITNESS_ADAPTER
+    from operations.serving.test_recordgold_smoke import TEST_GOLD_TEXT
+
+    return {
+        f"{role}-api": (
+            TEST_GOLD_TEXT
+            if chair.witness_adapter == DAI_WITNESS_ADAPTER
+            else f"PAGE-WITNESS: {witness}"
+        )
+        for role, chair in identities.items()
+    }
+
+
+def _recordgold_seams() -> dict:
+    """A pinned test record and an in-memory fetch for the DAI chair's smoke page."""
+
+    from operations.serving.test_recordgold_smoke import record_pin
+
+    record, fetch = record_pin()
+    return {"recordgold_record": record, "recordgold_fetch": fetch}
+
+
 def _preflight_seams(tmp_path: Path, identities: dict, *, witness: str = WITNESS):  # type: ignore[no-untyped-def]
     from decimal import Decimal
 
@@ -1982,7 +2007,7 @@ def _preflight_seams(tmp_path: Path, identities: dict, *, witness: str = WITNESS
 
     http = FakeHttp(
         model_ids=tuple(f"{role}-api" for role in identities),
-        outputs={f"{role}-api": f"PAGE-WITNESS: {witness}" for role in identities},
+        outputs=_smoke_outputs(identities, witness),
     )
     launcher = FakeLauncher(http)
 
@@ -2001,6 +2026,7 @@ def _preflight_seams(tmp_path: Path, identities: dict, *, witness: str = WITNESS
         fetcher_factory=lambda: None,  # type: ignore[arg-type,return-value]
         residency_lock=tmp_path / "pod-gpu.lock",
         subprocess_checker=_surya_environment_answers,
+        **_recordgold_seams(),
     )
     return seams, http, launcher
 
@@ -2196,9 +2222,32 @@ def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
     page = preflight_root / "golden-page" / f"{WITNESS}.png"
     assert page.is_file()
     assert record["golden_page_sha256"] == hashlib.sha256(page.read_bytes()).hexdigest()
-    witness_references = {
-        tuple(sorted(receipt["page_witness_reference"].items()))
+    # The DAI chair read the pinned RecordGold record, fetched through the seam
+    # and written beside the golden page; its receipt names that page and the
+    # measured rate, and neither the gold text nor the answer appears anywhere.
+    from operations.serving.test_recordgold_smoke import TEST_GOLD_TEXT
+
+    golden_receipts = [
+        receipt for receipt in record["smoke_receipts"] if receipt["smoke_page"] == "golden-page"
+    ]
+    (recordgold_receipt,) = [
+        receipt
         for receipt in record["smoke_receipts"]
+        if receipt["smoke_page"] == "recordgold-record"
+    ]
+    assert recordgold_receipt["chair"] == "attestator_2"
+    assert len(golden_receipts) == len(identities) - 1
+    assert recordgold_receipt["character_error_rate"] == "0.0000"
+    assert recordgold_receipt["page_witness_edit_distance"] == 0
+    recordgold_pages = list((preflight_root / "recordgold-smoke").glob("*.png"))
+    assert len(recordgold_pages) == 1
+    recordgold_digest = hashlib.sha256(recordgold_pages[0].read_bytes()).hexdigest()
+    assert recordgold_receipt["recordgold_page_sha256"] == recordgold_digest
+    assert recordgold_receipt["supplied_fixture_sha256"] == recordgold_digest
+    assert recordgold_digest != record["golden_page_sha256"]
+    assert TEST_GOLD_TEXT not in json.dumps(record)
+    witness_references = {
+        tuple(sorted(receipt["page_witness_reference"].items())) for receipt in golden_receipts
     }
     assert len(witness_references) == 1
     witness_reference = dict(next(iter(witness_references)))
@@ -2237,7 +2286,7 @@ def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
 
     http = FakeHttp(
         model_ids=tuple(f"{role}-api" for role in identities),
-        outputs={f"{role}-api": f"PAGE-WITNESS: {witness}" for role in identities},
+        outputs=_smoke_outputs(identities, witness),
     )
     launcher = FakeLauncher(http)
 
@@ -2275,6 +2324,7 @@ def _preflight_seams_swapping_the_page_on_call(  # type: ignore[no-untyped-def]
         fetcher_factory=lambda: None,  # type: ignore[arg-type,return-value]
         residency_lock=tmp_path / "pod-gpu.lock",
         subprocess_checker=_surya_environment_answers,
+        **_recordgold_seams(),
     )
     return seams, http, launcher
 
@@ -2301,7 +2351,11 @@ def test_a_page_swap_after_the_last_smoke_leaves_the_digest_naming_the_smoked_by
     record = _build_preflight(plan, seams)()
 
     assert record["color"] == "green"
-    supplied = {receipt["supplied_fixture_sha256"] for receipt in record["smoke_receipts"]}
+    supplied = {
+        receipt["supplied_fixture_sha256"]
+        for receipt in record["smoke_receipts"]
+        if receipt["smoke_page"] == "golden-page"
+    }
     assert len(supplied) == 1
     assert record["golden_page_sha256"] == next(iter(supplied))
     assert record["golden_page_sha256"] != hashlib.sha256(page_path.read_bytes()).hexdigest()
@@ -2438,3 +2492,49 @@ class _NotCalled(BaseException):
 
 def _never_called(plan: object) -> object:  # pragma: no cover - defensive
     raise _NotCalled("actions_factory must not be called for this scenario")
+
+
+def test_a_recordgold_fetch_failure_is_a_named_preflight_refusal_not_a_chair_failure(
+    tmp_path: Path,
+) -> None:
+    """The DAI chair's record could not be fetched: the network is named, no chair
+    is started, and the refusal says where to look."""
+
+    from operations.serving.recordgold_smoke import RecordGoldSmokeRefusal
+
+    from .bootstrap import BootstrapStepFailure
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, launcher = _preflight_seams(tmp_path, identities)
+
+    def offline(url: str) -> bytes:
+        raise RecordGoldSmokeRefusal(
+            "recordgold-smoke-fetch-failed", f"{url}: URLError: name resolution failed"
+        )
+
+    with pytest.raises(BootstrapStepFailure) as failure:
+        _build_preflight(plan, replace(seams, recordgold_fetch=offline))()
+
+    assert failure.value.step is BootstrapStep.PREFLIGHT
+    assert "recordgold-smoke-fetch-failed" in failure.value.detail
+    assert "['attestator_2']" in failure.value.detail
+    assert "network" in failure.value.remediation
+    assert launcher.calls == []
+
+
+def test_a_preflight_without_the_dai_chair_never_fetches_the_record(tmp_path: Path) -> None:
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, _launcher = _preflight_seams(tmp_path, identities)
+
+    def never(url: str) -> bytes:
+        raise AssertionError(f"fetched {url} for a preflight that does not smoke the DAI chair")
+
+    only_chandra = replace(plan, preflight_roles=("attestator_1",))
+    record = _build_preflight(only_chandra, replace(seams, recordgold_fetch=never))()
+    assert record["color"] == "green"
+    assert {receipt["chair"] for receipt in record["smoke_receipts"]} == {"attestator_1"}
