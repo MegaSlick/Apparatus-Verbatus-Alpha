@@ -9,7 +9,7 @@ beside the run report so a later reader (``verbatus watch``) can show it.
 ``pod_run`` first saw it, times the pages it has left. Later stages are not
 counted, so the run itself ends later still: a stage whose own finish passes
 the deadline is a run that certainly will. Stages that are not counted in pages
-(Recensor, Archetypus, Coniector, Armarium) have no estimate.
+(Coniector, Recensor, Archetypus, Armarium) have no estimate.
 
 **Deadline at risk.** When the stage's finish, plus time to bring results home,
 passes the deadline that actually ends the pod, one ``decision`` notice names

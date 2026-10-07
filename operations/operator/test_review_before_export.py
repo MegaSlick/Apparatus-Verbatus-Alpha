@@ -134,7 +134,7 @@ def test_a_run_stopped_after_the_witnesses_opens_with_its_images_and_names_what_
     assert "picks up from perlector" in summary
     assert "door, exemplar, ink-map, designator, attestatores sealed" in summary
     assert (
-        "perlector, recensor, archetypus, coniector, armarium left no record or seal here"
+        "perlector, coniector, recensor, archetypus, armarium left no record or seal here"
         in summary
     )
     assert "--from" not in summary, "an operator surface prints no orchestrator flag"

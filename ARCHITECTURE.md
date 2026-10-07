@@ -35,18 +35,18 @@ flowchart LR
     D -->|"one bounded re-ask"| D
     D --> E["Recensor<br/><i>completeness & review</i>"]
     E --> F["Archetypus<br/><i>the established reading</i>"]
-    F --> K["Coniector<br/><i>proposes a reconstruction</i>"]
-    K --> G["Armarium<br/><i>written out</i>"]
-    D -.->|"its readings; needs only the Perlector's seal"| K
+    F --> G["Armarium<br/><i>written out</i>"]
+    D -.->|"its readings; next in run order"| K["Coniector<br/><i>proposes a reconstruction</i>"]
     K -.->|"labelled, unconfirmed"| G
 ```
 
-The stages run in that order, one after another. Each is a separate program that reads
-the sealed records of the stages before it and refuses to start until its predecessor's
-stage seal verifies. The Coniector is a side branch: it reads only the Perlector's
-readings and requires only the Perlector's seal, and nothing on the main line reads it.
-It runs after the Archetypus in the run order, and still runs when a hold at the
-Recensor stops the Archetypus and the Armarium; only the Armarium reads what it writes.
+The run order is Exemplar, Ink map, Designator, Attestatores, Perlector, Coniector,
+Recensor, Archetypus, Armarium. Each is a separate program that reads sealed records
+and refuses to start until its predecessor's stage seal verifies. The Coniector is a
+side branch: it reads only the Perlector's readings and requires only the Perlector's
+seal. Recensor and Archetypus do not read it; Armarium verifies its seal and reads
+what it writes. A hold at Recensor therefore leaves Coniector complete before the
+run stops.
 
 **Stage names describe responsibilities, not models.** One model may serve more than one
 role; which model fills which role is configuration, not architecture.
