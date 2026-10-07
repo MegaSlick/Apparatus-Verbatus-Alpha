@@ -302,6 +302,49 @@ def test_a_record_only_tally_leaves_stale_lineage_to_its_consumer_boundary(tmp_p
     assert tally["subjects"] == ["perlector:act_0000000000000001"]
 
 
+def test_tally_verifies_shared_input_once_across_stage_manifests(tmp_path, monkeypatch):
+    tree = make_run(tmp_path)
+    source = tree.resolve("source/input.bin")
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"shared page pixels")
+    reference = {
+        "relative_path": str(source.relative_to(tree.root)),
+        "sha256": digest_bytes(source.read_bytes()),
+    }
+    for stage in (DESIGNATOR, PERLECTOR):
+        publish(
+            tree,
+            stage=stage,
+            kind="perlectio" if stage == PERLECTOR else "proposal",
+            subject=f"{stage}-page",
+            outcome="failed",
+            adapter_revision=RECIPES[stage],
+            inputs=[reference],
+        )
+    policy = {"threshold": 2, "kinds": [(DESIGNATOR, "failed"), (PERLECTOR, "failed")]}
+    original_read_bytes = tree.read_bytes
+    input_reads = 0
+
+    def counted_read_bytes(relative_path, **options):
+        nonlocal input_reads
+        if relative_path == reference["relative_path"]:
+            input_reads += 1
+        return original_read_bytes(relative_path, **options)
+
+    monkeypatch.setattr(tree, "read_bytes", counted_read_bytes)
+    assert tally_hard_failures(tree, policy)["count"] == 2
+    assert input_reads == 1
+    assert tally_hard_failures(tree, policy)["count"] == 2
+    assert input_reads == 2
+
+    source.write_bytes(b"changed page pixels")
+    with pytest.raises(
+        ContractError, match="artifact input .* bytes changed under a sealed reference"
+    ):
+        tally_hard_failures(tree, policy)
+    assert input_reads == 3
+
+
 def test_the_cap_is_tallied_per_shard_run_not_across_run_trees(tmp_path):
     """Each shard is its own run with its own tally: two failures in each of three
     shards is two per run, not six, and none breaches the cap."""

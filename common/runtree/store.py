@@ -834,7 +834,13 @@ class RunTree:
 
     # --- Manifests: derived, never the only evidence ---------------------------
 
-    def build_manifest(self, stage: str, *, verify_inputs: bool = True) -> dict[str, Any]:
+    def build_manifest(
+        self,
+        stage: str,
+        *,
+        verify_inputs: bool = True,
+        verified_inputs: set[tuple[str, str]] | None = None,
+    ) -> dict[str, Any]:
         """Walk the stage's artifacts and describe what is actually there.
 
         Derived from the tree every time it is called, so it cannot drift from
@@ -845,9 +851,14 @@ class RunTree:
         ``verify_inputs=False`` skips only ``_verify_artifact_inputs``, so an
         artifact whose upstream blob changed is still listed.  It is for a caller
         whose own boundary owns lineage, never for speed.
+
+        ``verified_inputs`` shares checked references among the stage manifests
+        of one tally. Without it, each build checks its own references anew.
         """
         # An empty directory must not make a missing run authority look like an empty run.
         self._run_authority()
+        if verified_inputs is None:
+            verified_inputs = set()
         entries: list[dict[str, Any]] = []
         artifacts_root = self._inventory_directory(stage, ARTIFACTS_DIR)
         if artifacts_root is not None:
@@ -864,7 +875,7 @@ class RunTree:
                 if record["stage"] != stage:
                     continue
                 if verify_inputs:
-                    self._verify_artifact_inputs(record)
+                    self._verify_artifact_inputs(record, verified_inputs=verified_inputs)
                 entries.append(
                     {
                         "artifact_id": record["artifact_id"],
@@ -1342,7 +1353,12 @@ class RunTree:
             self._config_digest = config_digest
         return self._config_digest
 
-    def _verify_artifact_inputs(self, record: dict[str, Any]) -> None:
+    def _verify_artifact_inputs(
+        self,
+        record: dict[str, Any],
+        *,
+        verified_inputs: set[tuple[str, str]] | None = None,
+    ) -> None:
         """Verify each direct input before a consumer may reinterpret this artifact.
 
         Input references form the handoff chain.  Validating only their shape at
@@ -1351,7 +1367,12 @@ class RunTree:
         checks it against the bytes again.
         """
         for reference in record["inputs"]:
+            key = (reference["relative_path"], reference["sha256"])
+            if verified_inputs is not None and key in verified_inputs:
+                continue
             read_verified(self.read_bytes, reference, "artifact input")
+            if verified_inputs is not None:
+                verified_inputs.add(key)
 
     def write_manifest(self, stage: str) -> PublishResult:
         """Publish the derived manifest.
