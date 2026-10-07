@@ -1,6 +1,6 @@
 # Coniector — contract
 
-The Coniector runs after the Archetypus and before the Armarium, on a side branch:
+The Coniector runs directly after the Perlector, before the Recensor, on a side branch:
 it reads the Perlector's sealed readings and only the Armarium reads what it
 writes. Its seal's predecessor is the Perlector (`common/contracts/stages.py`,
 `HANDOFFS`); the Armarium verifies its seal beside the Archetypus's

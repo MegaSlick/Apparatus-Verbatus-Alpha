@@ -134,9 +134,9 @@ recovers are labelled "read on re-ask". The bound is sealed per run.
 | **Designator** | Publishes each page's detected lines, blocks and records, the evidence the reading is checked against. It marks out no act and establishes no text. |
 | **Attestator** | One witness model. Plural **Attestatores**. |
 | **Perlector** | The reader: reads each whole page itself, names the acts on it and establishes their text, using witness testimony as clues. |
+| **Coniector** | Proposes a labelled, unconfirmed reconstruction of an act from the text around it: the Perlector's transcriptions, never the image. Establishes nothing. (In textual criticism, a conjecture is a reading no witness carries.) |
 | **Recensor** | Checks that each page is completely accounted for and holds what is not. It establishes no text and calls no model. (Textual critics use *recensio* for weighing witnesses; here the word means the completeness review.) |
 | **Archetypus** | The established reading, the pipeline's output: a machine reading, not truth. (Borrowed loosely from the ancestor text all witnesses descend from.) |
-| **Coniector** | Proposes a labelled, unconfirmed reconstruction of an act from the text around it: the Perlector's transcriptions, never the image. Establishes nothing. (In textual criticism, a conjecture is a reading no witness carries.) |
 | **Armarium** | Where the output is written. (The cupboard where finished books were kept.) |
 
 ## What the stages produce

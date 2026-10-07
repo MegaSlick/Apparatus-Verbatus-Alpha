@@ -254,6 +254,9 @@ def _run_argv(
     if not reconstruction.exists():
         reconstruction.parent.mkdir(parents=True, exist_ok=True)
         reconstruction.write_bytes((ROOT / "config" / "reconstruction.toml").read_bytes())
+    # Existing hand-route tests exercise the explicitly volume-hosted compatibility path.
+    if "--no-hold" in extra and "--run-root" not in extra:
+        extra = ("--run-root", str(ws.volume / "runs"), *extra)
     return [
         "--report-path",
         str(report_path or ws.volume / "pod-run-report.json"),
@@ -490,6 +493,58 @@ def _guard_deadline(ws: Workspace, value: int, *, heartbeat: float | None = None
         beat.touch()
         os.utime(beat, (heartbeat, heartbeat))
     return path
+
+
+@pytest.mark.parametrize("fail_final_sync", (False, True))
+def test_hand_run_uses_local_disk_and_requires_the_final_volume_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fail_final_sync: bool
+) -> None:
+    ws = _prepared(tmp_path)
+    local_root = tmp_path / "local-runs"
+    monkeypatch.setattr(pod_run, "DEFAULT_LOCAL_RUNS_DIRECTORY", local_root)
+    _policy(ws, roots=[str(ws.volume), str(local_root)])
+    clock = Clock()
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, int(clock.now().timestamp()) + 3600)
+    argv = _run_argv(ws, extra=("--no-hold",))
+    index = argv.index("--run-root")
+    del argv[index : index + 2]
+    run = local_root / "first-real-run"
+    if fail_final_sync:
+        stored = ws.volume / "runs" / "first-real-run"
+        stored.mkdir(parents=True)
+        (stored / "record.json").write_bytes(b"older")
+    recorded = RecordedRunner(returncode=0)
+
+    def runner(*args, **kwargs):  # type: ignore[no-untyped-def]
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "record.json").write_bytes(b"new")
+        return recorded(*args, **kwargs)
+
+    code = main(
+        argv,
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+
+    [(command, _cwd, _env)] = recorded.calls
+    assert command[command.index("--run-root") + 1] == str(local_root)
+    assert command[command.index("--stage-sync-root") + 1] == str(ws.volume / "runs")
+    report = _report(ws)
+    if fail_final_sync:
+        assert code == EXIT_FAILED
+        assert report["state"] == "failed"
+        assert "final volume sync failed" in report["detail"]
+        assert (ws.volume / "runs" / "first-real-run" / "record.json").read_bytes() == b"older"
+        assert deadline.read_text(encoding="ascii") != f"{int(clock.now().timestamp())}\n"
+        assert not deadline.with_name("released-pod123").exists()
+    else:
+        assert code == EXIT_COMPLETE
+        assert report["state"] == "complete"
+        assert (ws.volume / "runs" / "first-real-run" / "record.json").read_bytes() == b"new"
+        assert deadline.with_name("released-pod123").exists()
 
 
 @pytest.mark.parametrize(
@@ -1160,6 +1215,35 @@ def test_big_models_maps_to_perlector_through_armarium(tmp_path: Path, monkeypat
     ]
     # The selection runs the Coniector, which asks its chair: preflight checks it too.
     assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == ["perlector", "reconstructor"]
+
+
+def test_model_slice_ends_at_coniector_with_both_chairs_preflighted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    clock = Clock()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=("--from", "perlector", "--to", "coniector")),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    assert code == pod_run.EXIT_SELECTION_COMPLETE
+    command = runner.calls[0][0]
+    assert command[command.index("--from") : command.index("--from") + 4] == [
+        "--from",
+        "perlector",
+        "--to",
+        "coniector",
+    ]
+    assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == [
+        "perlector",
+        "reconstructor",
+    ]
 
 
 @pytest.mark.parametrize("mode", ["on", "off"])

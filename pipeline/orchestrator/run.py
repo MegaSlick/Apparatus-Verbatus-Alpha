@@ -1,8 +1,8 @@
 """The orchestrator: sequencing and resume. It is not a stage.
 
 Its home is decided here, once: `pipeline/orchestrator/`, a peer of the numbered
-stage directories rather than one of them. It is stage-neutral, imports only
-`common/`, and invokes stages **as programs** — real subprocesses, real argv, real
+stage directories rather than one of them. It is stage-neutral, imports `common/`
+and the storage gate, and invokes stages **as programs** — real subprocesses, real argv, real
 exit codes. That last part is meta-invariant #90's requirement made concrete: one
 harness runs the real orchestration end to end offline, so a green Python suite can
 never stand in for a pipeline that was never actually executed.
@@ -11,7 +11,7 @@ It establishes nothing and reads nothing except the outcome bookkeeping it needs
 sequence and to checkpoint. Its three jobs:
 
   Sequence.   Door, Exemplar, Ink Map, Designator, Attestatores, Perlector,
-              Recensor, Archetypus, Coniector, Armarium, in that order. The
+              Coniector, Recensor, Archetypus, Armarium, in that order. The
               Coniector reads the Perlector's readings; only the Armarium reads
               what it writes.
   Checkpoint. After every stage invocation, the run-level
@@ -68,6 +68,7 @@ from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH  # noqa: E4
 from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH  # noqa: E402
 from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, alarm_line  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
+from common.runtree.sync import RunTreeSync, RunTreeSyncError  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_DECODING_CONFIG_PATH,
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
@@ -90,6 +91,7 @@ from common.stage import (  # noqa: E402
     scenario_for,
     verify_final_seal,
 )
+from operations.submit import gate  # noqa: E402
 
 DESCRIPTION = "The orchestrator: sequencing and resume. It is not a stage."
 
@@ -105,9 +107,9 @@ SEQUENCE = (
     ("designator", "pipeline/2_designator/run.py"),
     (ATTESTATORES, "pipeline/3_attestatores/run.py"),
     ("perlector", "pipeline/4_perlector/run.py"),
+    (CONIECTOR, "pipeline/4b_coniector/run.py"),
     ("recensor", "pipeline/5_recensor/run.py"),
     ("archetypus", "pipeline/6_archetypus/run.py"),
-    (CONIECTOR, "pipeline/4b_coniector/run.py"),
     ("armarium", "pipeline/7_armarium/run.py"),
 )
 
@@ -668,6 +670,7 @@ def main() -> int:
         help="the sealed model-chair roster and recipes for this run",
     )
     parser.add_argument("--cache-root", default=None)
+    parser.add_argument("--stage-sync-root", default=None)
     parser.add_argument("--store-root", default=None)
     parser.add_argument(
         "--mechanics-qualification",
@@ -832,6 +835,14 @@ def main() -> int:
     if args.submission_folder is None:
         _require_declared_fixture(args)
     names, mode = selected_sequence(args)
+    if args.stage_sync_root is not None and args.submission_folder is not None:
+        roots = gate.approved_storage_roots(gate.load_policy(Path(args.data_gate_policy)))
+        gate.require_approved_storage_location(Path(args.stage_sync_root), roots, "stage sync root")
+    args.stage_sync = (
+        RunTreeSync(Path(args.run_root) / args.run_id, Path(args.stage_sync_root) / args.run_id)
+        if args.stage_sync_root is not None
+        else None
+    )
 
     tree = _run_tree(args)
     # Every checkpoint shares this object so the cap cannot move mid-run. A
@@ -1001,26 +1012,24 @@ def _drive(
     established or exported over a hold no person has looked at. Both stages
     refuse such a Recensor at their own entry too
     (`common.page_review.require_recensor_passed`); the check here names
-    every hold and how to go on. The Coniector, which reads only the
-    Perlector's readings, still runs when the selection includes it, so what is
-    left needs no model. The run continues past the Recensor once nothing is
-    held, or once an advance record passes its current seal.
+    every hold and how to go on. The run continues past the Recensor once
+    nothing is held, or once an advance record passes its current seal.
     """
-    held_recensor: list[dict] | None = None
-    first_after_recensor: str | None = None
-    ran_after_hold: list[str] = []
     for name in names:
-        if held_recensor is not None and name != CONIECTOR:
-            continue
-        if name in (ARCHETYPUS, ARMARIUM) and first_after_recensor is None:
-            first_after_recensor = name
+        if name in (ARCHETYPUS, ARMARIUM):
             held = recensor_holds(args)
             if held:
-                held_recensor = held
-                continue
+                print(f"run {args.run_id}: stopped at a held recensor, before the {name}")
+                report_held_recensor(args, held)
+                return EXIT_HELD, False
         result = invoke(STAGE_PROGRAMS[name], args)
-        if held_recensor is not None:
-            ran_after_hold.append(name)
+        if getattr(args, "stage_sync", None) is not None:
+            try:
+                args.stage_sync.sync()
+            except (OSError, RunTreeSyncError) as error:
+                raise ContractError(
+                    f"run {args.run_id}: {name} finished, but its volume sync failed: {error}"
+                ) from error
         if result == EXIT_RUN_HALTED:
             return _halt(args, _entry_halt(args, name, hard_failure_policy)), False
         if name == "door" and result in (EXIT_COMPLETE, EXIT_HELD):
@@ -1040,13 +1049,9 @@ def _drive(
         if mode in ("semi", "manual") and result == EXIT_HELD and names[-1] != "armarium":
             print(f"run {args.run_id}: {mode} mode stopped at held {name}")
             if name == RECENSOR:
-                report_held_recensor(args, held_by_recensor(_run_tree(args)), ran_after_hold)
+                report_held_recensor(args, held_by_recensor(_run_tree(args)))
             return EXIT_HELD, False
 
-    if held_recensor is not None:
-        print(f"run {args.run_id}: stopped at a held recensor, before the {first_after_recensor}")
-        report_held_recensor(args, held_recensor, ran_after_hold)
-        return EXIT_HELD, False
     if names[-1] != "armarium":
         return EXIT_COMPLETE, False
     # Armarium has no successor, so its own seal is proved here. The export comes
@@ -1103,7 +1108,7 @@ def report_systemic_share(args) -> None:
         print(args.systemic_line)
 
 
-def report_held_recensor(args, held: list[dict], ran_after_hold: list[str]) -> None:
+def report_held_recensor(args, held: list[dict]) -> None:
     """Say what a held Recensor holds and how the run goes on from it.
 
     When more of the run's pages are held than its sealed review policy allows
@@ -1117,11 +1122,6 @@ def report_held_recensor(args, held: list[dict], ran_after_hold: list[str]) -> N
     for item in held:
         codes = ", ".join(item["hold_codes"])
         print(f"  - {item['what']} ({item['subject_id']})" + (f": {codes}" if codes else ""))
-    if ran_after_hold:
-        print(
-            f"  {', '.join(ran_after_hold)} ran after the hold: it reads only the perlector's "
-            "readings, so what is left needs no model"
-        )
     print(
         "  next: record operator review decisions in this run, then resume it from the "
         "recensor (--from recensor --to armarium), which applies them, or from the perlector "

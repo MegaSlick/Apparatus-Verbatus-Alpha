@@ -2103,30 +2103,26 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
     reference = snapshot(reference_root)
     reference_tally = tally_hard_failures(RunTree(reference_root, "r"), policy)
 
-    # Every boundary that leaves a partial tree. `armarium` is deliberately not
-    # here: it is the last operation in the sequence, so stopping at it is the
-    # whole run and there is nothing partial left to resume from -- the
-    # `len(survivors) < len(reference)` premise below would be false, and the
-    # case it would test is the rerun invariant, which section 2 already covers.
-    # Everything before it is included, and the ones after the Perlector matter
-    # most: the held-reading tally lives there.
-    # The expected exit is part of the case, not a constant. The `page-review`
-    # scenario holds a reading, and the Recensor is what decides that, so a range
-    # ending before it completes cleanly at 0 while one ending at or after it
-    # reports the hold at 3 -- the same status the whole run ends on. Asserting a
-    # flat 0 would have made every later boundary unreachable and is what kept
-    # this loop stopping at the Perlector.
-    for stop_at, partial_exit in (
-        ("door", 0),
-        ("exemplar", 0),
-        (INK_MAP, 0),
-        ("designator", 0),
-        (ATTESTATORES, 0),
-        ("perlector", 0),
-        ("recensor", 3),
-        ("archetypus", 3),
-    ):
-        root = tmp_path / f"stopped-at-{stop_at}"
+    # The `page-review` scenario holds a reading, and the Recensor is what
+    # decides that: the whole run ends on the hold at 3 and no stage after the
+    # Recensor runs. So every boundary strictly before the Recensor, in the
+    # orchestrator's own order, leaves a partial tree that completes cleanly at
+    # 0; stopping at the Recensor itself is the whole held run, and anything
+    # later is unreachable. The boundaries are read from the sequence rather
+    # than listed here so moving a stage (the Coniector sits after the
+    # Perlector now) cannot leave this test checking a stale order, and the
+    # ones after the Perlector matter most: the held-reading tally lives there.
+    sequence = tuple(load_stage("orchestrator").SEQUENCE_NAMES)
+    holding_stage = RECENSOR
+    partial_boundaries = sequence[: sequence.index(holding_stage)]
+    assert PERLECTOR in partial_boundaries
+    for stage in sequence[sequence.index(holding_stage) + 1 :]:
+        assert not (reference_root / "r" / WRITING_DIRECTORIES[stage]).exists(), (
+            f"the reference run was expected to halt at the {holding_stage}, yet {stage} ran"
+        )
+
+    def stop_at(stage: str) -> tuple[Path, subprocess.CompletedProcess[str]]:
+        root = tmp_path / f"stopped-at-{stage}"
         partial = subprocess.run(
             [
                 sys.executable,
@@ -2142,22 +2138,32 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
                 "--from",
                 "door",
                 "--to",
-                stop_at,
+                stage,
             ],
             cwd=ROOT,
             capture_output=True,
             text=True,
         )
-        assert partial.returncode == partial_exit, partial.stderr
+        return root, partial
+
+    # Stopping at the holding stage is the whole run, so the premise below
+    # (`len(survivors) < len(reference)`) is checked here rather than assumed.
+    root, partial = stop_at(holding_stage)
+    assert partial.returncode == EXIT_HELD, partial.stderr
+    assert snapshot(root) == reference, f"stopping at the {holding_stage} is not the whole run"
+
+    for boundary in partial_boundaries:
+        root, partial = stop_at(boundary)
+        assert partial.returncode == 0, partial.stderr
         survivors = snapshot(root)
         survivor_identities = file_identities(root)
-        assert survivors, f"stopping at {stop_at} wrote nothing to resume from"
+        assert survivors, f"stopping at {boundary} wrote nothing to resume from"
         assert len(survivors) < len(reference)
 
         assert orchestrate(root, "r", "page-review").returncode == 3
         resumed = snapshot(root)
         resumed_identities = file_identities(root)
-        assert resumed == reference, f"resuming after {stop_at} did not land on the same tree"
+        assert resumed == reference, f"resuming after {boundary} did not land on the same tree"
         # The tree being right does not mean the resume reused what it found; a
         # stage that redid its work and wrote the same bytes lands the same tree.
         # The inode is what separates the two.
@@ -2167,9 +2173,9 @@ def test_a_run_interrupted_at_every_boundary_resumes_to_the_same_tree_and_tally(
                 continue
             checked += 1
             assert resumed_identities[path] == identity, (
-                f"resuming after {stop_at} republished {path} instead of reusing it"
+                f"resuming after {boundary} republished {path} instead of reusing it"
             )
-        assert checked, f"stopping at {stop_at} left no evidence to check the identity of"
+        assert checked, f"stopping at {boundary} left no evidence to check the identity of"
         assert tally_hard_failures(RunTree(root, "r"), policy) == reference_tally
 
 
