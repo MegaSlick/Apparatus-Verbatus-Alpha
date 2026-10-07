@@ -901,6 +901,7 @@ class PreflightRunner:
         serving_recipes: ServingRecipes | None = None,
         selected_roles: frozenset[str] | None = None,
         subprocess_checker: SubprocessChecker = check_subprocess_environment,
+        chair_fixtures: dict[str, str | Path] | None = None,
     ) -> None:
         self.models = models
         self.subprocess_checker = subprocess_checker
@@ -908,8 +909,16 @@ class PreflightRunner:
         self.cache_verifier = cache_verifier
         self.smoke_reader = smoke_reader
         self.fixture = Path(fixture)
+        # A chair named here smoke-reads its own page instead of `fixture` (the
+        # DAI chair's RecordGold record); every other chair reads `fixture`.
+        self.chair_fixtures = {role: Path(page) for role, page in (chair_fixtures or {}).items()}
         self.serving_recipes = serving_recipes
         self.selected_roles = selected_roles
+
+    def fixture_for(self, role: str) -> Path:
+        """The page this chair's smoke reads."""
+
+        return self.chair_fixtures.get(role, self.fixture)
 
     def run(self, profile: GpuProfile) -> PreflightReport:
         from operations.serving.config import (
@@ -1370,7 +1379,7 @@ class PreflightRunner:
         """
 
         try:
-            result = self.smoke_reader.read(identity, self.fixture, tier)
+            result = self.smoke_reader.read(identity, self.fixture_for(identity.role), tier)
         except Exception as error:
             issues.append(
                 PreflightIssue(

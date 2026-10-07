@@ -216,8 +216,12 @@ correct immediate close.
   `ServingManager`, fed `operations/serving/smoke.py::VisionSmokeCall`). The witness value
   is drawn from the CSPRNG on the pod and rendered onto a golden page under
   `<volume>/preflight/<report stem>/` just before the read, so it was never in a file or
-  prompt. Serving receipts, launch audits and evidence manifests land content-addressed in
-  the same directory. `--fixture` with `--page-witness-file` supplies a page instead.
+  prompt. The DAI chair reads a pinned public RecordGold record instead, fetched and
+  verified against its digests at preflight and scored by character error rate
+  (`operations/serving/recordgold_smoke.py`); a fetch failure is a named refusal, not a
+  chair failure. Serving receipts, launch audits and evidence manifests land
+  content-addressed in the same directory. `--fixture` with `--page-witness-file` supplies
+  a golden page instead.
   Ordinary serving refuses an unproven row; only this smoke assembly may launch one, for
   qualification, and its audit says so. After a green real-silicon report,
   `python -m operations.serving.qualify` renders review candidates for the measured tier;
