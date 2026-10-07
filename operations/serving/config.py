@@ -89,10 +89,14 @@ _SUBPROCESS_FIELDS = _PROFILE_COMMON | {
     "environment",
     "device",
     "threads",
+    "workers",
     "startup_timeout_seconds",
     "seconds_per_page",
     "required_packages",
 }
+# `workers` is the one optional subprocess field: left out, one runner process
+# reads every page.
+_SUBPROCESS_OPTIONAL = {"workers"}
 # The one engine a subprocess row may name, the packages its row pins, and the
 # pinned environment it runs in. CPU only: no card is shared with a served chair,
 # and the output does not vary with a GPU kernel.
@@ -243,9 +247,12 @@ class SubprocessProfile:
     writes. ``required_packages`` are the versions that environment's lock
     installs, checked against the environment before a run.
 
-    One process runs every page, so the models load once: the version check
-    and the model load get ``startup_timeout_seconds``, and a run over ``n``
-    pages gets that plus ``n * seconds_per_page``.
+    The pages are split in page order into up to ``workers`` contiguous slices,
+    each read by its own runner process with ``threads`` torch threads, so the
+    slices never share a thread budget and each page is read exactly as one
+    process over every page would read it. The version check and each process's
+    model load get ``startup_timeout_seconds``, and a process over ``n`` pages
+    gets that plus ``n * seconds_per_page``.
     """
 
     recipe: str
@@ -258,6 +265,7 @@ class SubprocessProfile:
     startup_timeout_seconds: int
     seconds_per_page: int
     required_packages: Mapping[str, str]
+    workers: int = 1
     kind: str = "subprocess"
 
     def __post_init__(self) -> None:
@@ -767,7 +775,7 @@ def _parse_subprocess_profile(raw: Mapping[str, Any]) -> SubprocessProfile:
     """A subprocess row names its engine, environment, device, threads and pins."""
 
     unknown = sorted(set(raw) - _SUBPROCESS_FIELDS)
-    missing = sorted(_SUBPROCESS_FIELDS - set(raw))
+    missing = sorted(_SUBPROCESS_FIELDS - _SUBPROCESS_OPTIONAL - set(raw))
     if unknown or missing:
         raise ServingConfigurationError(
             f"subprocess serving profile has unknown field(s) {unknown} or missing field(s) "
@@ -801,6 +809,7 @@ def _parse_subprocess_profile(raw: Mapping[str, Any]) -> SubprocessProfile:
         environment=environment,
         device=device,
         threads=_positive_int(raw["threads"], "threads"),
+        workers=_positive_int(raw.get("workers", 1), "workers"),
         startup_timeout_seconds=_positive_int(
             raw["startup_timeout_seconds"], "startup_timeout_seconds"
         ),
