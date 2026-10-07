@@ -157,9 +157,9 @@ def stage_programs() -> dict[str, str]:
         "designator",
         "attestatores",
         "perlector",
+        "coniector",
         "recensor",
         "archetypus",
-        "coniector",
         "armarium",
     ], "a stage was added to or dropped from the orchestrator's sequence"
     return programs
