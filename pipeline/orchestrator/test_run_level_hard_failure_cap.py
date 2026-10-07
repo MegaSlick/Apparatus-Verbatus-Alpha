@@ -278,7 +278,10 @@ def test_exactly_two_hard_failures_is_only_a_warning_and_the_run_continues(
     monkeypatch.setattr(sys, "argv", _argv(tmp_path, "--from", "door", "--to", "recensor"))
 
     assert orchestrator.main() == orchestrator.EXIT_COMPLETE
-    stages = ("door", "exemplar", "ink-map", "designator", "attestatores", "perlector", "recensor")
+    # Every stage from the Door through the Recensor, in the orchestrator's own order.
+    names = orchestrator.SEQUENCE_NAMES
+    stages = names[: names.index("recensor") + 1]
+    assert "perlector" in stages
     assert invoked == [orchestrator.STAGE_PROGRAMS[name] for name in stages]
     printed = capsys.readouterr().out
     assert printed.count("2 hard failure(s) so far") == len(stages)

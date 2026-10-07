@@ -23,6 +23,7 @@ import pytest
 from common.contracts.approval import build_review_decision_record
 from common.contracts.canonical import digest_bytes
 from common.runtree.store import RunTree
+from conftest import stage_programs
 from operations.operator import advance, cli, review, review_text
 from operations.operator.errors import ErrorCode, OperatorError
 
@@ -172,7 +173,10 @@ def test_a_run_stopped_after_the_perlector_shows_each_entry_it_read_with_its_cro
     projected = _projection(read_run)
     tree = RunTree(read_run, RUN_ID)
 
-    assert projected.next_action["resume_from"] == "recensor"
+    # The resume point is whatever stage follows the Perlector in the
+    # orchestrator's own sequence (the Coniector today), not a name pinned here.
+    names = list(stage_programs())
+    assert projected.next_action["resume_from"] == names[names.index("perlector") + 1]
     assert projected.acts, "the happy pages carry entries the Perlector read"
     assert projected.acts_denominator_note == review._PRE_EXPORT_ACTS_NOTE
     for act in projected.acts:
