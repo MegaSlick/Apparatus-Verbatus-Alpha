@@ -2570,7 +2570,12 @@ def live_pass(
                                 ),
                             )
 
-                recorded += len(in_order_window(client.handle.profile.max_num_seqs, jobs()))
+                # Chandra's native retry loop publishes its intent and attempt records
+                # while it reads, so it stays one page at a time: in parallel those
+                # records would land in arrival order, not page order.
+                chandra = resolved.witness_adapter == "chandra.v1"
+                width = 1 if chandra else client.handle.profile.max_num_seqs
+                recorded += len(in_order_window(width, jobs()))
     except ServingError as error:
         # Reported as a refusal; everything that arrived is already sealed.
         raise ContractError(f"a live witness reading was refused: {error}") from error
