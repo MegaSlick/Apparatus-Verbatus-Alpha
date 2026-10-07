@@ -24,6 +24,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -496,6 +497,37 @@ def environment_versions(
     return {key: str(value) for key, value in found.items()}
 
 
+def available_cpus() -> int:
+    """The CPUs this process may run on: the affinity mask where the OS keeps
+    one (a container's quota shows there), else the machine's count."""
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
+
+
+def page_slices(ordinals: Sequence[int], workers: int) -> list[tuple[int, list[int]]]:
+    """The page ordinals, in order, cut into at most `workers` contiguous slices
+    as even as they come (the first slices take the remainder), each with the
+    1-based input ordinal of its first page: what a runner process is handed, and
+    where it numbers its documents from. No slice is empty."""
+    count = min(max(workers, 1), len(ordinals))
+    base, extra = divmod(len(ordinals), count)
+    slices = []
+    start = 0
+    for index in range(count):
+        end = start + base + (1 if index < extra else 0)
+        slices.append((start + 1, list(ordinals[start:end])))
+        start = end
+    return slices
+
+
+def runner_processes(profile: SubprocessProfile, pages: int, cpus: int) -> int:
+    """How many runner processes a run gets: the row's `workers`, never more than
+    the CPUs can give `threads` each, never more than there are pages, and one at
+    the least."""
+    return max(1, min(profile.workers, cpus // profile.threads, pages))
+
+
 def run_surya_subprocess(
     profile: SubprocessProfile,
     bundle_root: Path,
@@ -505,49 +537,88 @@ def run_surya_subprocess(
     *,
     manifest_rows: Sequence[Mapping[str, Any]],
     runner: Runner = subprocess.run,
+    cpus: int | None = None,
 ) -> SuryaRun:
-    """Run Surya once over every page, in page order, and check what it wrote.
+    """Run Surya over every page, in page order, and check what it wrote.
 
-    One process loads the models once and reads every page; its timeout is the
-    row's startup allowance plus its per-page allowance for each page.
+    The pages are cut into contiguous slices (`page_slices`), one runner process
+    each (`runner_processes`), run at the same time. Each process loads the models
+    once, reads its slice with the row's thread count, and numbers its documents
+    from its slice's first input ordinal, so the documents are the bytes one
+    process over every page would write. A process's timeout is the row's
+    startup allowance plus its per-page allowance for each page of its slice.
+    Every process is waited for; then the first failure in page order, if any, is
+    the run's refusal.
     """
     _require_pages(pages)
     versions = environment_versions(profile, runner=runner)
     ordinals = sorted(pages)
+    processes = runner_processes(profile, len(ordinals), available_cpus() if cpus is None else cpus)
     with tempfile.TemporaryDirectory(prefix="verbatus-surya-") as work:
         work_root = Path(work)
-        inputs = []
-        for ordinal in ordinals:
-            # No extension: the sealed page may be any format Pillow reads.
-            path = work_root / f"page-{ordinal}"
-            path.write_bytes(pages[ordinal])
-            inputs.append(str(path))
-        output = work_root / "out"
         started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        argv = _command(
-            profile,
-            "--weights",
-            str(bundle_root),
-            "--threads",
-            str(profile.threads),
-            "--output-dir",
-            str(output),
-            *inputs,
-        )
-        result = _run_child(runner, argv, profile.run_timeout_seconds(len(pages)), "runner")
-        if result.returncode != 0:
-            raise SuryaRunFailure(
-                f"Surya's runner failed (exit {result.returncode}): {result.stderr.strip()[-800:]}"
+        jobs = []
+        for first_ordinal, slice_ordinals in page_slices(ordinals, processes):
+            inputs = []
+            for ordinal in slice_ordinals:
+                # No extension: the sealed page may be any format Pillow reads.
+                path = work_root / f"page-{ordinal}"
+                path.write_bytes(pages[ordinal])
+                inputs.append(str(path))
+            output = work_root / f"out-{first_ordinal}"
+            argv = _command(
+                profile,
+                "--weights",
+                str(bundle_root),
+                "--threads",
+                str(profile.threads),
+                "--first-ordinal",
+                str(first_ordinal),
+                "--output-dir",
+                str(output),
+                *inputs,
             )
+            timeout = profile.run_timeout_seconds(len(slice_ordinals))
+            jobs.append((first_ordinal, slice_ordinals, output, argv, timeout))
+        results = _run_children(runner, [(argv, timeout) for *_, argv, timeout in jobs])
         written = {}
-        for input_ordinal, ordinal in enumerate(ordinals, start=1):
-            document = output / f"page-{input_ordinal}.json"
-            if not document.is_file():
-                raise SuryaOutputRefusal(f"Surya's runner wrote no document for page {ordinal}")
-            written[ordinal] = document.read_bytes()
+        for (first_ordinal, slice_ordinals, output, _argv, _timeout), result in zip(
+            jobs, results, strict=True
+        ):
+            if isinstance(result, SuryaRunFailure):
+                raise result
+            if result.returncode != 0:
+                raise SuryaRunFailure(
+                    f"Surya's runner failed (exit {result.returncode}): "
+                    f"{result.stderr.strip()[-800:]}"
+                )
+            for input_ordinal, ordinal in enumerate(slice_ordinals, start=first_ordinal):
+                document = output / f"page-{input_ordinal}.json"
+                if not document.is_file():
+                    raise SuryaOutputRefusal(f"Surya's runner wrote no document for page {ordinal}")
+                written[ordinal] = document.read_bytes()
     return surya_run(
         profile, identity, versions, started_at, written, sizes, manifest_rows=manifest_rows
     )
+
+
+def _run_children(
+    runner: Runner, children: Sequence[tuple[list[str], int]]
+) -> list[subprocess.CompletedProcess | SuryaRunFailure]:
+    """Every child at once, each waited for; a child's named failure is returned
+    in its place, so the caller refuses in page order after all have finished."""
+
+    def one(child: tuple[list[str], int]) -> subprocess.CompletedProcess | SuryaRunFailure:
+        argv, timeout = child
+        try:
+            return _run_child(runner, argv, timeout, "runner")
+        except SuryaRunFailure as failure:
+            return failure
+
+    if len(children) == 1:
+        return [one(children[0])]
+    with ThreadPoolExecutor(max_workers=len(children)) as pool:
+        return list(pool.map(one, children))
 
 
 def surya_run(

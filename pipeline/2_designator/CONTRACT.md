@@ -156,9 +156,17 @@ on the live pass only. Any other row, or a row on the other pass, is refused.
 The row, the versions Surya's environment reports and the chair's weights are
 checked before anything is published, and Surya runs before the record
 detector loads, so it never shares the machine with another model.
-One runner process reads every page, so its timeout is the row's
-`startup_timeout_seconds` plus `seconds_per_page` for each page; a timeout, a
-runner that cannot start, and an empty page set are each refused by name. A
+The pages are cut in page order into contiguous slices, one runner process
+each, run at the same time: as many as the row's `workers` (one when the row
+names none), never more than the host's CPUs divided by `threads` and never
+more than there are pages. Each process reads its slice with the row's thread
+count and numbers its documents from its slice's first page, so every page is
+read with exactly the settings one process over every page would use and the
+documents, records and receipt are byte for byte what that one process would
+give. A process's timeout is the row's `startup_timeout_seconds` plus
+`seconds_per_page` for each page of its slice; a timeout, a runner that cannot
+start, a failed process (the first in page order, after every process has
+finished), and an empty page set are each refused by name. A
 fixture row declared for a page the Exemplar refused is left out, since the
 door already records that loss by name; a fixture row for any other page that
 is not sealed is refused by name.

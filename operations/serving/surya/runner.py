@@ -7,7 +7,10 @@ Run in this directory's own environment, never the project's:
 
 For the n-th page given it writes `<output-dir>/page-<n>.json`: Surya's own
 results for that page, dumped from its own pydantic models, beside the facts of
-the run. `--check` prints the installed versions and loads nothing.
+the run. `--first-ordinal <k>` numbers the pages from `k` instead of 1, so a
+parent that hands one contiguous slice of a page set to each of several runner
+processes gets exactly the files and documents one process over the whole set
+would write. `--check` prints the installed versions and loads nothing.
 
 Each model runs the way its makers wrote it, on the whole page:
 `DetectionPredictor.local()` is Surya's own process-local text-line detector,
@@ -122,10 +125,10 @@ def _checked_env_file(settings_class: Any) -> None:
         raise RunRefusal(f"Surya found a settings file at {found}; remove it, then run again")
 
 
-def _checked_page_modes(pages: list[Path], image_module: Any) -> None:
+def _checked_page_modes(pages: list[Path], image_module: Any, first_ordinal: int = 1) -> None:
     """Refuse by name, before any model loads, a page Surya's own loader would
     clip: one whose mode is not in `PAGE_MODES`. Reads each page's header only."""
-    for ordinal, path in enumerate(pages, start=1):
+    for ordinal, path in enumerate(pages, start=first_ordinal):
         with image_module.open(path) as image:
             mode = image.mode
         if mode not in PAGE_MODES:
@@ -168,7 +171,13 @@ def _checked_checkpoints(bundle: dict[str, Any], defaults: dict[str, Any]) -> No
             )
 
 
-def run(bundle_root: Path, threads: int, output_dir: Path, pages: list[Path]) -> None:
+def run(
+    bundle_root: Path,
+    threads: int,
+    output_dir: Path,
+    pages: list[Path],
+    first_ordinal: int = 1,
+) -> None:
     bundle_root = bundle_root.resolve()
     try:
         bundle = read_bundle(bundle_root)
@@ -191,7 +200,7 @@ def run(bundle_root: Path, threads: int, output_dir: Path, pages: list[Path]) ->
     from surya.settings import Settings, settings
 
     _checked_env_file(Settings)
-    _checked_page_modes(pages, Image)
+    _checked_page_modes(pages, Image, first_ordinal)
     defaults = {name: field.default for name, field in Settings.model_fields.items()}
     effective = _checked_settings(settings, defaults)
     _checked_checkpoints(bundle, defaults)
@@ -231,7 +240,7 @@ def run(bundle_root: Path, threads: int, output_dir: Path, pages: list[Path]) ->
     }
     detections = _observed(engine.model)
     documents = []
-    for ordinal, path in enumerate(pages, start=1):
+    for ordinal, path in enumerate(pages, start=first_ordinal):
         # Mirrors Surya's own `load_image` for a page image.
         image = Image.open(path).convert("RGB")
         (lines,) = detector([image])
@@ -260,7 +269,7 @@ def run(bundle_root: Path, threads: int, output_dir: Path, pages: list[Path]) ->
             }
         )
     output_dir.mkdir(parents=True, exist_ok=True)
-    for ordinal, document in enumerate(documents, start=1):
+    for ordinal, document in enumerate(documents, start=first_ordinal):
         text = json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False)
         (output_dir / f"page-{ordinal}.json").write_text(text + "\n", encoding="utf-8")
 
@@ -270,6 +279,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="print versions, load nothing")
     parser.add_argument("--weights", type=Path, help="the locked Surya weight bundle")
     parser.add_argument("--threads", type=int, help="torch CPU threads, fixed for the run")
+    parser.add_argument(
+        "--first-ordinal",
+        type=int,
+        default=1,
+        help="the number of the first page given; the pages are numbered on from it",
+    )
     parser.add_argument("--output-dir", type=Path, help="where page-<n>.json is written")
     parser.add_argument("pages", nargs="*", type=Path, help="page images, in order")
     args = parser.parse_args(argv)
@@ -280,8 +295,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--weights, --output-dir and at least one page are required")
     if args.threads is None or args.threads < 1:
         parser.error("--threads must be a positive integer")
+    if args.first_ordinal < 1:
+        parser.error("--first-ordinal must be a positive integer")
     try:
-        run(args.weights, args.threads, args.output_dir, args.pages)
+        run(args.weights, args.threads, args.output_dir, args.pages, args.first_ordinal)
     except RunRefusal as error:
         print(f"surya runner refused: {error}", file=sys.stderr)
         return 2
