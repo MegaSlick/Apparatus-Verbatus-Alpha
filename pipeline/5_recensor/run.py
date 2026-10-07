@@ -47,7 +47,6 @@ from common.residual_ink import (  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     EXIT_HELD,
-    latest_attempt,
     open_stage_context,
     reading_denominator,
     run_stage,
@@ -57,14 +56,6 @@ from common.stage import (  # noqa: E402
 from operations.serving.assembly import SERVING_READER  # noqa: E402
 
 DESCRIPTION = "Recensor: establishes that the text is complete. It establishes no text."
-
-
-def artifacts_for(context, stage: str, kind: str, subject: str) -> list[dict]:
-    records = []
-    for entry in stage_manifest(context, stage)["artifacts"]:
-        if entry["kind"] == kind and entry["subject_id"] == subject:
-            records.append(context.tree.read_artifact(stage, kind, entry["artifact_id"]))
-    return records
 
 
 def _records_of_kind(context, stage: str, kind: str) -> Iterator[dict]:
@@ -195,19 +186,6 @@ def page_coverage_findings(context, *, regions: dict[int, list[dict]]) -> dict[i
     return findings
 
 
-def current_review(context, act_id: str) -> dict | None:
-    """This act's current Recensor review, or `None` before its first.
-
-    `stage_manifest` rebuilds fresh from the tree on every call, so this also
-    sees a review this same pass already published for the act -- not only
-    ones from an earlier invocation.
-    """
-    reviews = artifacts_for(context, RECENSOR, "review", act_id)
-    if not reviews:
-        return None
-    return latest_attempt(reviews, f"Recensor review of {act_id}", operation="recense")
-
-
 def publish_review(
     context,
     *,
@@ -261,7 +239,6 @@ def review_a_page_read_run(context, denominator: dict) -> int:
         denominator,
         page_coverage_findings=page_coverage_findings,
         publish_review=publish_review,
-        current_review=current_review,
     )
     # The receipt needs the current manifest and may refuse before the seal.
     context.finish()

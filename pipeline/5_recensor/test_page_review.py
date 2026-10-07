@@ -209,6 +209,38 @@ def test_a_happy_page_tree_accepts_every_unit_with_its_evidence(happy, tmp_path)
     assert file_bytes_snapshot(tree.root) == before
 
 
+def test_review_loop_builds_one_prior_manifest_for_all_units(happy, tmp_path, monkeypatch):
+    tree = happy.copy(tmp_path)
+    context = tree.context()
+    denominator = reading_denominator(context)
+    manifest_calls = []
+    original_build_manifest = context.tree.build_manifest
+
+    def build_manifest(stage, **kwargs):
+        if stage == RECENSOR:
+            manifest_calls.append(kwargs.get("verify_inputs", True))
+        return original_build_manifest(stage, **kwargs)
+
+    monkeypatch.setattr(context.tree, "build_manifest", build_manifest)
+    calls_at_publish = []
+
+    def publish_review(*args, **kwargs):
+        calls_at_publish.append(list(manifest_calls))
+        return RECENSOR_RUN.publish_review(*args, **kwargs)
+
+    assert (
+        page_review.review_pages(
+            context,
+            denominator,
+            page_coverage_findings=RECENSOR_RUN.page_coverage_findings,
+            publish_review=publish_review,
+        )
+        == 0
+    )
+    assert len(calls_at_publish) == len(denominator["acts"]) == 3
+    assert calls_at_publish == [[False]] * 3
+
+
 def test_an_agreed_page_break_is_one_accepted_continuation_link(happy, tmp_path):
     tree = happy.copy(tmp_path)
     assert tree.recensor().returncode == 0
