@@ -680,7 +680,7 @@ From a checkout at `<sha>` on the laptop:
 START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&
 runpodctl pod create \
   --name verbatus-<run id> \
-  --image <RunPod Ubuntu 24.04 CUDA image> \
+  --image runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404 \
   --gpu-id "NVIDIA RTX PRO 6000 Blackwell Server Edition" --gpu-count 1 \
   --cloud-type SECURE \
   --data-center-ids <DATACENTER of the volume; one id only> \
@@ -695,6 +695,11 @@ runpodctl pod create \
 the lead's budget): the guard deletes the pod at that deadline whatever the run is doing,
 and an hour later, never past the hard maximum (3 h from creation), the backstop deletes
 it even if the guard never started.
+
+The image must carry CUDA 13.0: on a Blackwell card FlashInfer compiles its sampling
+kernel at the first engine start and needs `nvcc` 12.9 or newer. A `cu1281` image fails
+every vLLM chair with `FlashInfer requires GPUs with sm75 or higher` (observed
+2026-10-06; LIVE_READINESS.md step 6).
 `runpodctl pod get <pod id>` shows the SSH details.
 
 ### On the pod, over SSH
