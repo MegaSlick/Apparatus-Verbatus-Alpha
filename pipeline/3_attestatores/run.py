@@ -52,6 +52,7 @@ from common.exemplar_boundary import (  # noqa: E402
     sealed_page_bytes,
 )
 from common.imaging import crop_png, dimensions  # noqa: E402
+from common.in_order_window import in_order_window  # noqa: E402
 from common.native_witness import (  # noqa: E402
     REPORTED_BOUNDS_SOURCES,
     native_parse_refusal,
@@ -2068,19 +2069,15 @@ def publish_detector_page_testimonium(
     )
 
 
-def _serve_detector_page(
+def _read_detector_page(
     context,
     *,
     client: ChairClient,
-    chair: str,
     resolved: ChairIdentity,
     adapter,
-    page_ordinal: int,
-    ordinal: int,
     units: list[dict[str, Any]],
-    page_ids: dict[int, str],
-) -> None:
-    """One DAI page: one request per record, then the page record.
+) -> list[tuple[dict[str, Any], dict[str, Any], Attempt]]:
+    """Read one DAI page's records in detector order.
 
     Every response is retained as it arrives; the page record is sealed only
     once all its records are read, so a pass interrupted inside a page asks
@@ -2122,6 +2119,21 @@ def _serve_detector_page(
             presented = built.presented
         witness_adapters.validate_adapter_presentation(resolved.witness_adapter, source, presented)
         served.append((region, presented, attempt))
+    return served
+
+
+def _serve_detector_page(
+    served: list[tuple[dict[str, Any], dict[str, Any], Attempt]],
+    *,
+    context,
+    client: ChairClient,
+    chair: str,
+    resolved: ChairIdentity,
+    page_ordinal: int,
+    ordinal: int,
+    page_ids: dict[int, str],
+) -> None:
+    """Seal one DAI page after its records have all been read."""
     publish_detector_page_testimonium(
         context,
         chair=chair,
@@ -2262,7 +2274,7 @@ def verify_page_call_sampling(context, payload: dict[str, Any], chair: str) -> N
         ) from error
 
 
-def _serve_page_unit(
+def _read_page_unit(
     context,
     *,
     client: ChairClient,
@@ -2273,8 +2285,8 @@ def _serve_page_unit(
     ordinal: int,
     page_ids: dict[int, str],
     framing: str | None = None,
-) -> None:
-    """One whole-page chair, one page: one request, then its sealed page record."""
+) -> Attempt:
+    """Read one whole-page witness, including Chandra's page-local retry loop."""
     presentation = presentation_for_page(context, page_ordinal, page_ids=page_ids)
     try:
         request = live_witness.page_chair_request(
@@ -2324,6 +2336,20 @@ def _serve_page_unit(
                     framing=framing,
                 ),
             )
+    return attempt
+
+
+def _serve_page_unit(
+    attempt: Attempt,
+    *,
+    context,
+    chair: str,
+    resolved: ChairIdentity,
+    page_ordinal: int,
+    ordinal: int,
+    page_ids: dict[int, str],
+) -> None:
+    """Seal one whole-page witness result in page order."""
     publish_page_testimonium(
         context,
         chair=chair,
@@ -2451,7 +2477,7 @@ def live_pass(
     serving_factory,
     tier: str,
 ) -> int:
-    """Serve one resident chair at a time and seal each page record as it is read.
+    """Serve one resident chair at a time and seal its page records in order.
 
     An interruption leaves every received response sealed; a page record
     already sealed at this ordinal is kept and never asked again.
@@ -2495,32 +2521,61 @@ def live_pass(
             resolved = context.registry.resolve(chair)
             adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
             with serving_factory(context, resolved, tier) as client:
-                for page_ordinal in sorted(to_read[chair]):
-                    if chair in detector_chairs:
-                        _serve_detector_page(
-                            context,
-                            client=client,
-                            chair=chair,
-                            resolved=resolved,
-                            adapter=adapter,
-                            page_ordinal=page_ordinal,
-                            ordinal=ordinal,
-                            units=detector[0][page_ordinal],
-                            page_ids=page_ids,
-                        )
-                    else:
-                        _serve_page_unit(
-                            context,
-                            client=client,
-                            chair=chair,
-                            resolved=resolved,
-                            adapter=adapter,
-                            page_ordinal=page_ordinal,
-                            ordinal=ordinal,
-                            page_ids=page_ids,
-                            framing=framings[chair],
-                        )
-                    recorded += 1
+
+                def jobs(chair=chair, resolved=resolved, adapter=adapter):
+                    for page_ordinal in sorted(to_read[chair]):
+                        if chair in detector_chairs:
+                            yield (
+                                partial(
+                                    _read_detector_page,
+                                    context,
+                                    client=client,
+                                    resolved=resolved,
+                                    adapter=adapter,
+                                    units=detector[0][page_ordinal],
+                                ),
+                                partial(
+                                    _serve_detector_page,
+                                    context=context,
+                                    client=client,
+                                    chair=chair,
+                                    resolved=resolved,
+                                    page_ordinal=page_ordinal,
+                                    ordinal=ordinal,
+                                    page_ids=page_ids,
+                                ),
+                            )
+                        else:
+                            yield (
+                                partial(
+                                    _read_page_unit,
+                                    context,
+                                    client=client,
+                                    chair=chair,
+                                    resolved=resolved,
+                                    adapter=adapter,
+                                    page_ordinal=page_ordinal,
+                                    ordinal=ordinal,
+                                    page_ids=page_ids,
+                                    framing=framings[chair],
+                                ),
+                                partial(
+                                    _serve_page_unit,
+                                    context=context,
+                                    chair=chair,
+                                    resolved=resolved,
+                                    page_ordinal=page_ordinal,
+                                    ordinal=ordinal,
+                                    page_ids=page_ids,
+                                ),
+                            )
+
+                # Chandra's native retry loop publishes its intent and attempt records
+                # while it reads, so it stays one page at a time: in parallel those
+                # records would land in arrival order, not page order.
+                chandra = resolved.witness_adapter == "chandra.v1"
+                width = 1 if chandra else client.handle.profile.max_num_seqs
+                recorded += len(in_order_window(width, jobs()))
     except ServingError as error:
         # Reported as a refusal; everything that arrived is already sealed.
         raise ContractError(f"a live witness reading was refused: {error}") from error
