@@ -19,6 +19,7 @@ import json
 import shutil
 import subprocess
 import sys
+import threading
 import tomllib
 from pathlib import Path
 from types import SimpleNamespace
@@ -1391,6 +1392,72 @@ def test_a_churro_body_in_neither_declared_shape_is_retained_and_refused_by_name
 
 
 # ========================= the live pass, page by page =========================
+
+
+def test_a_live_chair_uses_its_sequence_width_and_seals_pages_in_order(monkeypatch):
+    chair = "attestator_3"
+    resolved = SimpleNamespace(witness_adapter="churro.v1")
+    context = SimpleNamespace(registry=SimpleNamespace(config={}, resolve=lambda _chair: resolved))
+    client = SimpleNamespace(handle=SimpleNamespace(profile=SimpleNamespace(max_num_seqs=3)))
+    active = most = 0
+    returned: list[int] = []
+    sealed: list[tuple[int, str]] = []
+    lock = threading.Lock()
+    first_three = threading.Barrier(3)
+    third_returned = threading.Event()
+
+    class ResidentChair:
+        def __enter__(self):
+            return client
+
+        def __exit__(self, *_args):
+            return None
+
+    def read(_context, *, page_ordinal, **_kwargs):
+        nonlocal active, most
+        with lock:
+            active += 1
+            most = max(most, active)
+        if page_ordinal <= 3:
+            first_three.wait(timeout=5)
+        if page_ordinal == 1:
+            assert third_returned.wait(timeout=5)
+        with lock:
+            active -= 1
+            returned.append(page_ordinal)
+            if page_ordinal == 3:
+                third_returned.set()
+        return f"answer-{page_ordinal}"
+
+    def seal(answer, *, page_ordinal, **_kwargs):
+        assert threading.current_thread() is threading.main_thread()
+        sealed.append((page_ordinal, answer))
+
+    monkeypatch.setattr(attestatores, "page_witness_roster", lambda _context: [chair])
+    monkeypatch.setattr(attestatores, "reads_detector_records", lambda _resolved: False)
+    monkeypatch.setattr(attestatores, "_sealed_page_testimonia", lambda *_args: {})
+    monkeypatch.setattr(attestatores.witness_adapters, "framing_for", lambda *_args: None)
+    monkeypatch.setattr(
+        attestatores.witness_adapters, "resolve_runnable_adapter", lambda _name: object()
+    )
+    monkeypatch.setattr(attestatores, "_read_page_unit", read)
+    monkeypatch.setattr(attestatores, "_serve_page_unit", seal)
+    pages = [(page, f"p{page}") for page in range(1, 6)]
+
+    assert (
+        attestatores.live_pass(
+            context,
+            pages,
+            1,
+            page_ids=dict(pages),
+            serving_factory=lambda *_args: ResidentChair(),
+            tier=TIER,
+        )
+        == 5
+    )
+    assert most == 3
+    assert returned.index(3) < returned.index(1)
+    assert sealed == [(page, f"answer-{page}") for page in range(1, 6)]
 
 
 def test_a_live_roster_reads_each_chair_once_through_its_own_scope(live_run, tmp_path):
