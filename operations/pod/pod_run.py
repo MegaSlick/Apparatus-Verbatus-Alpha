@@ -7,9 +7,10 @@ complete ``bootstrap_main`` argv, prepared and run through that module's own
 credential scrub and the hard deadline are the same ones a plain bootstrap
 gets.  Only after that bootstrap journal is green does this process start the
 orchestrator (``pipeline/orchestrator/run.py``) as a subprocess of the pod's
-own interpreter, over the volume::
+own interpreter::
 
-    run root            <volume>/runs           (or --run-root, inside the volume)
+    hand-route run root /var/tmp/verbatus-runs  (synced to <volume>/runs)
+    timer-route root    <volume>/runs
     submission          --submission-folder / --submission-manifest, inside the volume
     roster              the bootstrap plan's --models-config
     serving catalogue   the bootstrap plan's --serving-recipes-config
@@ -143,6 +144,7 @@ from common.contracts.identities import validate_run_id
 from common.contracts.stages import SEAL_PREDECESSORS
 from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH, load_reconstruction_policy
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
+from common.runtree.sync import RunTreeSync, RunTreeSyncError
 from common.sealed_config import read_sealed_toml
 from common.stage import (
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
@@ -201,6 +203,7 @@ RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
 RUN_LIVENESS_SCHEMA = "pod-run-liveness.v1"
 DEFAULT_RUNS_DIRECTORY = "runs"
+DEFAULT_LOCAL_RUNS_DIRECTORY = Path("/var/tmp/verbatus-runs")
 # The container's first process, where the provider sets the pod id. A login
 # shell need not inherit it, and a value exported there by hand can be another
 # pod's: every pod's guard keeps its deadline on the same shared volume.
@@ -353,6 +356,14 @@ class RunPlan:
     corpus_register: Path | None = None
     hourly_usd: Decimal | None = None
 
+    @property
+    def volume_run_root(self) -> Path:
+        return self.bootstrap.volume_mount_path / DEFAULT_RUNS_DIRECTORY
+
+    @property
+    def local_run(self) -> bool:
+        return not self.run_root.is_relative_to(self.bootstrap.volume_mount_path)
+
     # Not asserts: `assert` disappears under `python -O`, and `resolve_run_plan`
     # already refused a bootstrap plan missing any of these. Stated as raises so
     # a hand-built RunPlan fails by name rather than with an AttributeError.
@@ -475,6 +486,8 @@ class RunPlan:
             "--repository-commit",
             self.repository_commit,
         ]
+        if self.local_run:
+            command += ["--stage-sync-root", str(self.volume_run_root)]
         cache_root = _named(self.bootstrap.cache_root, "--cache-root")
         command += ["--cache-root", str(cache_root)]
         store_root = _named(self.bootstrap.store_root, "--store-root")
@@ -848,12 +861,23 @@ def resolve_run_plan(
         run_id = validate_run_id(args.run_id)
     except ContractError as error:
         raise RunRefusal(f"--run-id refused: {error}", report_path=report_path) from error
-    run_root = _require_contained(
-        args.run_root or (volume / DEFAULT_RUNS_DIRECTORY),
-        volume,
-        "--run-root",
-        report_path=report_path,
+    requested_root = args.run_root or (
+        DEFAULT_LOCAL_RUNS_DIRECTORY if args.no_hold else volume / DEFAULT_RUNS_DIRECTORY
     )
+    if args.no_hold and not requested_root.resolve().is_relative_to(volume):
+        if requested_root.resolve() == DEFAULT_LOCAL_RUNS_DIRECTORY.resolve():
+            if requested_root.is_symlink():
+                raise RunRefusal("--run-root is a symlink", report_path=report_path)
+            try:
+                requested_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            except OSError as error:
+                raise RunRefusal(
+                    f"--run-root could not be created on local disk: {error}",
+                    report_path=report_path,
+                ) from error
+        run_root = requested_root.resolve()
+    else:
+        run_root = _require_contained(requested_root, volume, "--run-root", report_path=report_path)
     submission_folder = _require_contained(
         args.submission_folder, volume, "--submission-folder", report_path=report_path
     )
@@ -1024,6 +1048,11 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], 
         gate.require_approved_storage_location(
             plan.submission_folder, resolved.roots, "submission folder on the volume"
         )
+        gate.require_approved_storage_location(plan.run_root, resolved.roots, "run root")
+        if plan.local_run:
+            gate.require_approved_storage_location(
+                plan.volume_run_root, resolved.roots, "volume run root"
+            )
     except gate.GateRefusal as error:
         # The skipped roots belong in this refusal, not only in the report a
         # refusal never writes. This check runs before the bootstrap's own
@@ -1046,6 +1075,21 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], 
             report_path=plan.report_path,
         ) from error
     return tuple(str(root) for root in resolved.roots), resolved.skipped
+
+
+def _hydrate_local_run(plan: RunPlan) -> None:
+    if not plan.local_run:
+        return
+    stored = plan.volume_run_root / plan.run_id
+    if not stored.exists():
+        return
+    try:
+        RunTreeSync(stored, plan.run_root / plan.run_id).sync()
+    except (OSError, RunTreeSyncError) as error:
+        raise RunRefusal(
+            f"the volume's existing run could not be verified on local disk: {error}",
+            report_path=plan.report_path,
+        ) from error
 
 
 def _placement_tier(report: BootstrapReport) -> tuple[str, dict[str, object]]:
@@ -1891,6 +1935,7 @@ def main(
         )
         plan = replace(plan, bootstrap=bootstrap_plan)
         approved_roots, skipped_roots = require_approved_submission_folder(plan)
+        _hydrate_local_run(plan)
         _require_selection_predecessor(plan)
         _require_sealed_run_inputs(plan)
     except PlanRefusal as refusal:
@@ -2115,6 +2160,14 @@ def main(
             f"complete/held/halted/fatal vocabulary; read {plan.transcript_path} and the "
             "run tree before calling this run anything"
         )
+    sync_failure = None
+    if plan.local_run:
+        try:
+            RunTreeSync(plan.run_root / plan.run_id, plan.volume_run_root / plan.run_id).sync()
+        except (OSError, RunTreeSyncError) as error:
+            sync_failure = str(error)
+            exit_code = EXIT_FAILED
+            failure_detail = f"final volume sync failed: {error}; local evidence is at {plan.run_root / plan.run_id}"
     if failure_detail is None and exit_code in (EXIT_HELD, EXIT_HALTED):
         # `detail: null` here would read as "nothing further to say" about
         # the two outcomes that most need a reason. The stage's own stderr is
@@ -2217,6 +2270,7 @@ def main(
         "detail": failure_detail,
         "records_at_close": records_at_close,
         "records_missing": records_missing,
+        "sync_failure": sync_failure,
         "held_to_hard_deadline": holding,
         "hold_detail": hold_detail,
         "deadline_watch": deadline_watch.summary(),
@@ -2242,6 +2296,13 @@ def main(
         print(f"pod_run {plan.run_id}: {systemic}; {notice}")
     _write_run_report(plan, final)
     if plan.no_hold:
+        if sync_failure is not None:
+            print(
+                f"pod_run {plan.run_id}: volume sync failed; the guard was not released: "
+                f"{sync_failure}",
+                file=sys.stderr,
+            )
+            return EXIT_FAILED
         # After the final report, so a prompt delete cannot cost the run's record.
         release = release_pod_guard(
             plan.bootstrap.volume_mount_path, pod_id, run_id=plan.run_id, state=state, now=now

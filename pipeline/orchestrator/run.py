@@ -1,8 +1,8 @@
 """The orchestrator: sequencing and resume. It is not a stage.
 
 Its home is decided here, once: `pipeline/orchestrator/`, a peer of the numbered
-stage directories rather than one of them. It is stage-neutral, imports only
-`common/`, and invokes stages **as programs** — real subprocesses, real argv, real
+stage directories rather than one of them. It is stage-neutral, imports `common/`
+and the storage gate, and invokes stages **as programs** — real subprocesses, real argv, real
 exit codes. That last part is meta-invariant #90's requirement made concrete: one
 harness runs the real orchestration end to end offline, so a green Python suite can
 never stand in for a pipeline that was never actually executed.
@@ -68,6 +68,7 @@ from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH  # noqa: E4
 from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH  # noqa: E402
 from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, alarm_line  # noqa: E402
 from common.runtree.store import RunTree  # noqa: E402
+from common.runtree.sync import RunTreeSync, RunTreeSyncError  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_DECODING_CONFIG_PATH,
     DEFAULT_DESIGNATOR_GEOMETRY_CONFIG_PATH,
@@ -90,6 +91,7 @@ from common.stage import (  # noqa: E402
     scenario_for,
     verify_final_seal,
 )
+from operations.submit import gate  # noqa: E402
 
 DESCRIPTION = "The orchestrator: sequencing and resume. It is not a stage."
 
@@ -668,6 +670,7 @@ def main() -> int:
         help="the sealed model-chair roster and recipes for this run",
     )
     parser.add_argument("--cache-root", default=None)
+    parser.add_argument("--stage-sync-root", default=None)
     parser.add_argument("--store-root", default=None)
     parser.add_argument(
         "--mechanics-qualification",
@@ -832,6 +835,14 @@ def main() -> int:
     if args.submission_folder is None:
         _require_declared_fixture(args)
     names, mode = selected_sequence(args)
+    if args.stage_sync_root is not None and args.submission_folder is not None:
+        roots = gate.approved_storage_roots(gate.load_policy(Path(args.data_gate_policy)))
+        gate.require_approved_storage_location(Path(args.stage_sync_root), roots, "stage sync root")
+    args.stage_sync = (
+        RunTreeSync(Path(args.run_root) / args.run_id, Path(args.stage_sync_root) / args.run_id)
+        if args.stage_sync_root is not None
+        else None
+    )
 
     tree = _run_tree(args)
     # Every checkpoint shares this object so the cap cannot move mid-run. A
@@ -1019,6 +1030,13 @@ def _drive(
                 held_recensor = held
                 continue
         result = invoke(STAGE_PROGRAMS[name], args)
+        if getattr(args, "stage_sync", None) is not None:
+            try:
+                args.stage_sync.sync()
+            except (OSError, RunTreeSyncError) as error:
+                raise ContractError(
+                    f"run {args.run_id}: {name} finished, but its volume sync failed: {error}"
+                ) from error
         if held_recensor is not None:
             ran_after_hold.append(name)
         if result == EXIT_RUN_HALTED:

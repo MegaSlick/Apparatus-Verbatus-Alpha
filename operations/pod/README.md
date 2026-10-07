@@ -265,8 +265,10 @@ python -m operations.pod.pod_run <run flags> -- <bootstrap_main argv>
 
 The argv after `--` goes through `bootstrap_main`'s own `prepare`/`run_bootstrap`, so every
 bootstrap refusal, probe, scrub and deadline applies. After a green journal it runs
-`pipeline/orchestrator/run.py` with the pod's interpreter: run root `<volume>/runs` (or
-`--run-root`, inside the volume), submission inside the volume, the config pair the
+`pipeline/orchestrator/run.py` with the pod's interpreter: the `--no-hold` hand route
+uses `/var/tmp/verbatus-runs` on container disk by default, while the timer route keeps
+`<volume>/runs`. `--run-root` can name another approved root. The submission stays inside
+the volume, and the config pair is the one the
 bootstrap checked and measured, and `--data-gate-policy` inside the repository. Its
 `pod-run-report.v1` at the launch-bound `--report-path` moves through `bootstrapping`,
 `running`, then `complete`, `held`, `halted`, `failed`, `bootstrap-red` or `refused`.
@@ -282,7 +284,8 @@ bootstrap checked and measured, and `--data-gate-policy` inside the repository. 
 | 8 | selected stages completed before Armarium; the timer closes the pod |
 
 It refuses by name: no `--`; a `--hold-only` plan; a report path that is the bootstrap's or
-lacks the launch token; a run root or submission outside the volume or missing; a policy
+lacks the launch token; a run root outside approved storage or a submission outside the
+volume or missing; a policy
 outside the repository; a `--perlector-protocol-config` outside the repository, not a
 file, or not one the seal reader parses; a resume whose Perlector protocol or (on a real
 run) run policy differs from what `run.json` sealed, or whose `run.json` cannot be read;
@@ -294,10 +297,16 @@ pod; a bad run id.
 `config/data_handling_policy.json` lists the pod volume's mount path (the
 `volume_mount_path` `boot_a_request.py` seals) beside the local `private/` root. That
 listing is the project lead's standing disclosure decision: a rented pod's volume is
-accepted exposure for the duration of a run, everything a pod produces (Perlector training
-inputs included) stays there until exported, and `verbatus fetch-run` is the way home. A
-submission outside every listed root is refused. Almost no machine has both roots, so every
-run report records which resolved and which did not (`approved_storage_roots`,
+accepted exposure for the duration of a run. The policy also admits only
+`/var/tmp/verbatus-runs` as the hand route's local working root. After each completed
+stage, the orchestrator copies new run files to `<volume>/runs/<run id>`, fsyncs and
+checks their bytes before starting the next stage. `pod_run` repeats the sync after the
+orchestrator exits, before its final report or guard release. It copies an existing
+volume run back to local disk before a resume and refuses a differing file. The sync
+never removes volume evidence. A sync failure makes the run failed; a failed final sync
+also leaves the guard unreleased for recovery. `verbatus fetch-run` is the way home. A
+submission outside every listed root is refused. Every run report records which roots
+resolved and which did not (`approved_storage_roots`,
 `skipped_storage_roots`).
 
 `pod_run` forwards the `--placement-tier` measured by green `PREFLIGHT` to the
