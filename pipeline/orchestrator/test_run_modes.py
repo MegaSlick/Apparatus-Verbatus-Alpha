@@ -29,9 +29,9 @@ SEQUENCE = (
     "designator",
     "attestatores",
     "perlector",
+    "coniector",
     "recensor",
     "archetypus",
-    "coniector",
     "armarium",
 )
 
@@ -165,14 +165,19 @@ def test_all_and_manual_stages_write_the_identical_happy_run_tree(automatic, tmp
 
 
 def test_all_and_a_split_semi_range_write_the_identical_happy_run_tree(automatic, tmp_path):
-    split = tmp_path / "split"
+    pod = tmp_path / "pod"
+    laptop = tmp_path / "laptop"
 
-    first = drive(split, "r", "page-unbroken", "--from", "door", "--to", "recensor")
+    first = drive(pod, "r", "page-unbroken", "--from", "door", "--to", "coniector")
     assert first.returncode == 0, first.stdout + first.stderr
-    second = drive(split, "r", "page-unbroken", "--from", "archetypus", "--to", "armarium")
+    assert (pod / "r" / "4b_coniector" / "manifest.json").is_file()
+    assert not (pod / "r" / "5_recensor").exists()
+    shutil.copytree(pod / "r", laptop / "r")
+
+    second = drive(laptop, "r", "page-unbroken", "--from", "recensor", "--to", "armarium")
     assert second.returncode == 0, second.stdout + second.stderr
 
-    assert snapshot(split) == snapshot(automatic)
+    assert snapshot(laptop) == snapshot(automatic)
 
 
 def test_from_refuses_an_unsealed_predecessor_by_name(tmp_path):
@@ -223,7 +228,7 @@ def test_semi_mode_stops_at_a_named_hold(tmp_path):
 
 
 def _stopped_at_the_held_recensor(root: Path, result: subprocess.CompletedProcess) -> None:
-    """Held before the Archetypus: the holds named, the Coniector run, nothing established."""
+    """Held before the Archetypus: the holds named, Coniector already sealed."""
     assert result.returncode == EXIT_HELD, result.stdout + result.stderr
     assert HELD_RECENSOR_STOP in result.stdout
     assert "p2:1 (" in result.stdout and "--from recensor --to armarium" in result.stdout
@@ -254,18 +259,21 @@ def test_a_manual_archetypus_over_a_held_recensor_stops_too(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "selection",
-    [("--stage", "armarium"), ("--from", "coniector", "--to", "armarium")],
+    ("selection", "next_stage"),
+    [
+        (("--stage", "armarium"), "armarium"),
+        (("--from", "coniector", "--to", "armarium"), "archetypus"),
+    ],
     ids=["manual", "semi"],
 )
-def test_an_armarium_selection_over_a_held_recensor_stops_too(tmp_path, selection):
-    """A selection that skips the Archetypus still stops before exporting over the hold."""
+def test_an_armarium_selection_over_a_held_recensor_stops_too(tmp_path, selection, next_stage):
+    """Both selections stop before their first stage that could establish or export."""
     root = tmp_path / "runs"
     setup = drive(root, "r", "page-review", "--from", "door", "--to", "recensor")
     assert setup.returncode == EXIT_HELD, setup.stdout + setup.stderr
     result = drive(root, "r", "page-review", *selection)
     assert result.returncode == EXIT_HELD, result.stdout + result.stderr
-    assert "stopped at a held recensor, before the armarium" in result.stdout
+    assert f"stopped at a held recensor, before the {next_stage}" in result.stdout
     assert "p2:1 (" in result.stdout
     assert not (root / "r" / "7_armarium").exists()
 

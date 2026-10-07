@@ -59,6 +59,24 @@ its queue with `triage`, `upload` the images.
   the volume; `fetch-run` brings that tree home (`export` reads only a local tree); then
   `export` and `backup`.
 
+**Finish a pod run on this computer.** When the pod's hand route ended at Coniector,
+fetch its run tree, then run the CPU-only tail against that verified tree:
+
+```sh
+verbatus fetch-run --run-id <id> --into <local root> --network-volume DATACENTER:VOLUME_ID
+.venv/bin/python pipeline/orchestrator/run.py --run-id <id> --run-root <local root> \
+  --models-config config/models-real.toml \
+  --serving-recipes-config config/serving_recipes_real.toml \
+  --mechanics-qualification --from recensor --to armarium
+```
+
+Run the command from the checkout with the same sealed configuration; also pass
+`--corpus-register` if the run sealed one. Recensor, Archetypus and Armarium need no
+served chair. If Recensor holds a reading, use `review` on the fetched tree, record the
+decision there, and rerun the same local range. A page re-ask or operator re-read must
+resume from Perlector with its chair available. `verbatus run --from` resumes only a run
+that `verbatus run` started in its own state, so use the orchestrator for a fetched tree.
+
 Use `review` to read a run tree without changing it, `advance` only once you have decided
 to pass a sealed boundary, and `status` whenever you are unsure what this tool has done.
 

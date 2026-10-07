@@ -12,8 +12,7 @@ the nine tested handoffs rather than an unexamined edge.
 
 The Coniector reads the Perlector's readings and only the Armarium reads it: a
 side branch beside the main line, never an input to the Recensor or the
-Archetypus. Nothing on the main line reads it, so it runs once the main line
-has finished, after the Archetypus.
+Archetypus. It runs directly after the Perlector, before the CPU stages.
 """
 
 from enum import Enum
@@ -39,9 +38,9 @@ STAGES: Final = (
     DESIGNATOR,
     ATTESTATORES,
     PERLECTOR,
+    CONIECTOR,
     RECENSOR,
     ARCHETYPUS,
-    CONIECTOR,
     ARMARIUM,
 )
 

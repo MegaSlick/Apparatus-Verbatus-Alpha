@@ -1162,6 +1162,35 @@ def test_big_models_maps_to_perlector_through_armarium(tmp_path: Path, monkeypat
     assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == ["perlector", "reconstructor"]
 
 
+def test_model_slice_ends_at_coniector_with_both_chairs_preflighted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    clock = Clock()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=("--from", "perlector", "--to", "coniector")),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    assert code == pod_run.EXIT_SELECTION_COMPLETE
+    command = runner.calls[0][0]
+    assert command[command.index("--from") : command.index("--from") + 4] == [
+        "--from",
+        "perlector",
+        "--to",
+        "coniector",
+    ]
+    assert _report(ws)["plan"]["bootstrap"]["preflight_roles"] == [
+        "perlector",
+        "reconstructor",
+    ]
+
+
 @pytest.mark.parametrize("mode", ["on", "off"])
 def test_a_selection_through_the_coniector_preflights_its_chair_only_when_it_asks(
     tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str], mode: str

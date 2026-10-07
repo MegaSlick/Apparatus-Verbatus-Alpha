@@ -20,9 +20,9 @@ defined once, in `common/contracts/stages.py` (`STAGES`, `HANDOFFS`, `SIDE_BRANC
 | 4 | `2_designator/run.py` | Designator | the sealed pages | Surya's `surya-page`, `surya-line`, `surya-block`; the record detector's `detector-page`, `detector-record`, `detector-region` and crops; a provenance record for each detector | Ink map |
 | 5 | `3_attestatores/run.py` | Attestatores | the sealed pages; the detector's record crops, for the record reader | one `page-testimonium` per page and witness; for Chandra, `chandra-native-attempt-intent` and `chandra-native-attempt` records of the attempts of its own retry recipe | Designator |
 | 6 | `4_perlector/run.py` | Perlector | the sealed pages, the page testimonia, the Designator's records, the Ink Map's records | per page `page-feed`, `page-reading`, `page-accounting` (and `reader-sent` on a live call); per entry `act-region` and `perlectio` | Attestatores |
-| 7 | `5_recensor/run.py` | Recensor | the Perlector's records and everything their page accounting is measured from, the page pixels, operator review decisions | one `review` per unit, one `continuation-link` per page break a reading flags, `review-decisions`, and the partition receipt in `run-health/` | Perlector |
-| 8 | `6_archetypus/run.py` | Archetypus | the Perlector's records, the Recensor's reviews and decisions | one `archetypus` per accepted reading, and `index.json` | Recensor |
-| 9 | `4b_coniector/run.py` | Coniector | the Perlector's readings | `reconstruction-plan`, `reconstruction-call`, `reconstruction` | Perlector |
+| 7 | `4b_coniector/run.py` | Coniector | the Perlector's readings | `reconstruction-plan`, `reconstruction-call`, `reconstruction` | Perlector |
+| 8 | `5_recensor/run.py` | Recensor | the Perlector's records and everything their page accounting is measured from, the page pixels, operator review decisions | one `review` per unit, one `continuation-link` per page break a reading flags, `review-decisions`, and the partition receipt in `run-health/` | Perlector |
+| 9 | `6_archetypus/run.py` | Archetypus | the Perlector's records, the Recensor's reviews and decisions | one `archetypus` per accepted reading, and `index.json` | Recensor |
 | 10 | `7_armarium/run.py` | Armarium | the Archetypus's and Coniector's records, the Perlector's `page-reading`, `page-accounting`, `act-region` and `perlectio` records, the Recensor's reviews, the Ink Map's records, the sealed pages | one `manifest-entry` per counted reading and the `export` record with the product bundle | Archetypus, and the Coniector beside it |
 
 Every stage also publishes a `decode-environment` and a `stage-seal` before its final
@@ -30,8 +30,7 @@ manifest.
 
 The directory numbers are not the run order. `1_exemplar` and `1_ink_map` share a
 number, the door has no directory of its own and writes into `1_exemplar/`, and
-`4b_coniector` sits beside the Perlector because it reads the Perlector's readings,
-although it runs after the Archetypus.
+`4b_coniector` runs after the Perlector because it reads only the Perlector's readings.
 
 `0_triage/` is not a stage and is never run by the orchestrator. It holds the schema and
 validator of the triage decision manifest (`manifest.py`): the optional record of how

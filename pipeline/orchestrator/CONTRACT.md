@@ -14,8 +14,8 @@ forwards the same two paths from its volume-bound run plan.
 ## The one sequence
 
 ```
-door → exemplar → ink map → designator → attestatores → perlector → recensor
-     → archetypus → coniector → armarium
+door → exemplar → ink map → designator → attestatores → perlector → coniector
+     → recensor → archetypus → armarium
 ```
 
 Every member is a stage program with its own completion boundary. The orchestrator
@@ -66,10 +66,10 @@ Before the Archetypus is invoked, in every mode, the orchestrator reads what the
 Recensor's current records hold (`common/page_review.py::held_by_recensor`: each held
 review's unit and codes, each held continuation link, each page the
 `review-decisions` record still holds, the same total the Recensor exits held on). When anything is held, nothing is established or exported: the
-Archetypus and the Armarium are not invoked, the Coniector still runs when the
-selection includes it (it reads only the Perlector's readings, so what is left needs no
-model), and the run exits 3 after `run <id>: stopped at a held recensor, before the
-archetypus`, listing every held item and the way on. An unsealed Recensor is left to
+Archetypus and the Armarium are not invoked. The Coniector has already run when the
+selection includes it, since it reads only the Perlector's readings. The run exits 3
+after `run <id>: stopped at a held recensor, before the archetypus`, listing every held
+item and the way on. An unsealed Recensor is left to
 the Archetypus to refuse by name.
 
 The way on is a person's: record operator review decisions in the run, then resume it

@@ -11,7 +11,7 @@ It establishes nothing and reads nothing except the outcome bookkeeping it needs
 sequence and to checkpoint. Its three jobs:
 
   Sequence.   Door, Exemplar, Ink Map, Designator, Attestatores, Perlector,
-              Recensor, Archetypus, Coniector, Armarium, in that order. The
+              Coniector, Recensor, Archetypus, Armarium, in that order. The
               Coniector reads the Perlector's readings; only the Armarium reads
               what it writes.
   Checkpoint. After every stage invocation, the run-level
@@ -105,9 +105,9 @@ SEQUENCE = (
     ("designator", "pipeline/2_designator/run.py"),
     (ATTESTATORES, "pipeline/3_attestatores/run.py"),
     ("perlector", "pipeline/4_perlector/run.py"),
+    (CONIECTOR, "pipeline/4b_coniector/run.py"),
     ("recensor", "pipeline/5_recensor/run.py"),
     ("archetypus", "pipeline/6_archetypus/run.py"),
-    (CONIECTOR, "pipeline/4b_coniector/run.py"),
     ("armarium", "pipeline/7_armarium/run.py"),
 )
 
@@ -1001,26 +1001,17 @@ def _drive(
     established or exported over a hold no person has looked at. Both stages
     refuse such a Recensor at their own entry too
     (`common.page_review.require_recensor_passed`); the check here names
-    every hold and how to go on. The Coniector, which reads only the
-    Perlector's readings, still runs when the selection includes it, so what is
-    left needs no model. The run continues past the Recensor once nothing is
-    held, or once an advance record passes its current seal.
+    every hold and how to go on. The run continues past the Recensor once
+    nothing is held, or once an advance record passes its current seal.
     """
-    held_recensor: list[dict] | None = None
-    first_after_recensor: str | None = None
-    ran_after_hold: list[str] = []
     for name in names:
-        if held_recensor is not None and name != CONIECTOR:
-            continue
-        if name in (ARCHETYPUS, ARMARIUM) and first_after_recensor is None:
-            first_after_recensor = name
+        if name in (ARCHETYPUS, ARMARIUM):
             held = recensor_holds(args)
             if held:
-                held_recensor = held
-                continue
+                print(f"run {args.run_id}: stopped at a held recensor, before the {name}")
+                report_held_recensor(args, held)
+                return EXIT_HELD, False
         result = invoke(STAGE_PROGRAMS[name], args)
-        if held_recensor is not None:
-            ran_after_hold.append(name)
         if result == EXIT_RUN_HALTED:
             return _halt(args, _entry_halt(args, name, hard_failure_policy)), False
         if name == "door" and result in (EXIT_COMPLETE, EXIT_HELD):
@@ -1040,13 +1031,9 @@ def _drive(
         if mode in ("semi", "manual") and result == EXIT_HELD and names[-1] != "armarium":
             print(f"run {args.run_id}: {mode} mode stopped at held {name}")
             if name == RECENSOR:
-                report_held_recensor(args, held_by_recensor(_run_tree(args)), ran_after_hold)
+                report_held_recensor(args, held_by_recensor(_run_tree(args)))
             return EXIT_HELD, False
 
-    if held_recensor is not None:
-        print(f"run {args.run_id}: stopped at a held recensor, before the {first_after_recensor}")
-        report_held_recensor(args, held_recensor, ran_after_hold)
-        return EXIT_HELD, False
     if names[-1] != "armarium":
         return EXIT_COMPLETE, False
     # Armarium has no successor, so its own seal is proved here. The export comes
@@ -1103,7 +1090,7 @@ def report_systemic_share(args) -> None:
         print(args.systemic_line)
 
 
-def report_held_recensor(args, held: list[dict], ran_after_hold: list[str]) -> None:
+def report_held_recensor(args, held: list[dict]) -> None:
     """Say what a held Recensor holds and how the run goes on from it.
 
     When more of the run's pages are held than its sealed review policy allows
@@ -1117,11 +1104,6 @@ def report_held_recensor(args, held: list[dict], ran_after_hold: list[str]) -> N
     for item in held:
         codes = ", ".join(item["hold_codes"])
         print(f"  - {item['what']} ({item['subject_id']})" + (f": {codes}" if codes else ""))
-    if ran_after_hold:
-        print(
-            f"  {', '.join(ran_after_hold)} ran after the hold: it reads only the perlector's "
-            "readings, so what is left needs no model"
-        )
     print(
         "  next: record operator review decisions in this run, then resume it from the "
         "recensor (--from recensor --to armarium), which applies them, or from the perlector "

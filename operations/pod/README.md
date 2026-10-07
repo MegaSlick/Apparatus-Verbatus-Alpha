@@ -306,15 +306,21 @@ orchestrator and records it in the report. `--stage` runs one boundary, `--from`
 selects Door through Attestatores on a cheap card; `--models big` resumes Perlector
 through Armarium on a big card, after verifying this run's sealed Attestatores
 stage on the volume before bootstrap. The two model toggles use the same range validation.
+For the hand route that finishes model work on the pod, use `--from perlector --to
+coniector` in a later invocation after a `--models small` run, or use `--from door --to
+coniector` for an unsplit run.
+Both flags go before the literal `--` and the bootstrap plan. `--to` alone is refused.
+Fetch the sealed tree and run Recensor through Armarium on the laptop as described in
+`operations/operator/README.md`.
 A selection preflights only the chairs its stages use: the Designator's, the witnesses,
 the Perlector, and the Coniector's `reconstructor` when `config/reconstruction.toml`
 has the stage ask it (`mode = "on"`); the run is refused unless each has green
 PREFLIGHT evidence.
 Any range is the orchestrator's semi mode, which stops at the first held stage. In every
 mode, auto included, a run whose Recensor holds anything stops there, before Archetypus
-and Armarium, after running the Coniector when the selection includes it
-(`pipeline/orchestrator/CONTRACT.md`, "A held Recensor stops every mode"), so nothing
-left needs a GPU: the operator decides, and the run resumes from the Recensor off the
+and Armarium. Coniector has already run when the selection includes it
+(`pipeline/orchestrator/CONTRACT.md`, "A held Recensor stops every mode"). After a
+selection through Coniector, the operator can decide and resume from Recensor off the
 pod.
 
 - **`--mechanics-qualification`** is needed for any real-roster run today. Every row in
