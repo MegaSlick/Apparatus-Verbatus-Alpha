@@ -19,6 +19,7 @@ from .models import ChairIdentity, DigestManifest, ManifestRow, VerifiedSnapshot
 # A manifest is a small control artifact, bounded like `model_store`'s shard index.
 MAX_MANIFEST_BYTES = 16_777_216
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
+HASH_WORKERS_MAX = 16
 
 _Item = TypeVar("_Item")
 _Result = TypeVar("_Result")
@@ -223,7 +224,9 @@ def _inspect_snapshot(
 def _map_files_in_order(items: list[_Item], work: Callable[[_Item], _Result]) -> list[_Result]:
     """Hash independent files concurrently, then observe results in lexical order."""
 
-    workers = min(len(items), os.cpu_count() or 1)
+    # A container sees its host's CPU count, often far above its own share, and
+    # past a few readers the disk, not the hashing, is the limit.
+    workers = min(len(items), os.cpu_count() or 1, HASH_WORKERS_MAX)
     if workers <= 1:
         return [work(item) for item in items]
     with ThreadPoolExecutor(max_workers=workers) as pool:
