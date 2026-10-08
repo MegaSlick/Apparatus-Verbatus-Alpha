@@ -131,3 +131,11 @@ vram_gib = 24
 hourly_usd = "0.27"
 tier = "generic-24gb"
 note = "spec 04 smoke-run fallback"
+
+[[card_profile]]
+name = "RTX 3090"
+gpu_type_id = "NVIDIA GeForce RTX 3090"
+vram_gib = 24
+hourly_usd = "0.50"
+tier = "generic-24gb"
+note = "witness bake-off card, 24 GB at the tier floor; price seen in the console 2026-10-08, confirm before renting"
