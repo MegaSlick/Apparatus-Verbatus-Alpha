@@ -85,8 +85,12 @@ def test_blla_arm_is_kraken_native_and_normalises_alto(pages, tmp_path):
     )
     record = json.loads((out / "kraken-ppocrv6-blla" / "p001.json").read_text())
     assert record["text"] == "premiere ligne\nseconde"
-    assert record["units"][0]["raw_response"].startswith("<?xml")
+    first, second = record["units"]
+    assert first["request"]["unit"] == "line-0001" and first["raw_response"] == "premiere ligne"
+    assert second["request"]["bbox"] == list(LINE_BOXES[1])
+    assert first["request"]["line_source"].startswith("blla")
     assert runner.calls[0][-5:-1] == ["segment", "-bl", "ocr", "-m"]
+    assert runner.calls[0][1:3] == ["-d", "cpu"]  # never kraken's `auto`
 
 
 def test_a_failed_page_is_recorded_and_retried(pages, surya_dir, tmp_path):

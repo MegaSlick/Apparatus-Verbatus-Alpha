@@ -11,14 +11,17 @@
 `--lines blla` is kraken's own whole path, segmentation and recognition in one command,
 as the model card gives it (with ALTO out instead of text, so line order is kept):
 
-    kraken -a -i <page> <raw>.xml segment -bl ocr -m medium.safetensors
+    kraken -d cpu|cuda:0 -a -i <page> <raw>.xml segment -bl ocr -m medium.safetensors
+
+Each TextLine of the answer becomes one unit (its polygon's box, baseline and text).
 
 `--lines surya` recognises the cached Surya line crops in kraken's no-segmentation mode,
 the CLI's documented path for pre-cut line images (each image one bbox line):
 
-    kraken -i 0001.png 0001.txt -i 0002.png 0002.txt ... ocr -s -m medium.safetensors
+    kraken -d cpu|cuda:0 -i 0001.png 0001.txt -i 0002.png 0002.txt ... ocr -s -m medium.safetensors
 
-Both decode with kraken's default greedy CTC decoder; there is no language model.
+Both decode with kraken's default greedy CTC decoder; there is no language model. The
+device is always named: kraken's default `auto` would take a visible GPU on a CPU run.
 """
 
 from __future__ import annotations
@@ -55,10 +58,12 @@ class KrakenRecogniser:
         self.log = args.out / args.label / "arm.log"
 
     def _prefix(self) -> list[str]:
-        argv = [str(self.kraken), "--threads", str(self.args.threads)]
-        if self.args.device == "cuda":
-            argv += ["-d", "cuda:0"]
-        return argv
+        return [
+            str(self.kraken),
+            *blla.device_argv(self.args.device),
+            "--threads",
+            str(self.args.threads),
+        ]
 
     def settings(self) -> dict[str, Any]:
         return {
@@ -97,19 +102,15 @@ class KrakenRecogniser:
         argv = self.page_argv(prepared.page, xml)
         done, seconds = harness.subprocess_page(argv, self.log, self.runner)
         request = {
-            "unit": "page",
-            "line_source": "kraken blla (the same command's segment step)",
+            "line_source": "blla (this command's own segment step)",
             "image": {"file": str(prepared.page), "sha256": harness.sha256_file(prepared.page)},
             "settings": self.settings(),
         }
         if done.returncode != 0 or not xml.is_file():
             error = f"kraken exited {done.returncode}; see arm.log"
+            request["unit"] = "page"
             return harness.PageResult([harness.unit(request, None, None, seconds, error)], argv)
-        raw = xml.read_text("utf-8")
-        text = blla.alto_text(raw.encode("utf-8"))
-        page_unit = harness.unit(request, raw, None, seconds)
-        page_unit["text"] = harness.plain(text)
-        return harness.PageResult([page_unit], argv)
+        return harness.PageResult(blla.alto_units(prepared.page, xml, request, seconds), argv)
 
     def read_lines(self, prepared: harness.Prepared) -> harness.PageResult:
         rows = prepared.lines["lines"]

@@ -12,7 +12,10 @@ Matching a page document to a page: the runner numbers documents by input order
 (`page-<n>.json` is the n-th page it was given). When `<lines-dir>/pages.json` exists
 (`{"schema": "bakeoff-surya-pages.v1", "pages": [<stem>, ...]}`, in the order the runner
 was given them), `page-<n>.json` is its n-th stem. Otherwise a document named
-`<stem>.json` belongs to that page. A page with neither is refused by name.
+`<stem>.json` belongs to that page. A page with neither is refused by name. A document is
+also refused when its recorded `input_ordinal` is not the `<n>` of its name or its
+`image_size` is not the page's size, so a stale `pages.json` (the runner given the pages
+in another order, or another page set) cannot hand one page another page's lines.
 
 Reading order: Surya's text lines carry no order of their own. Each line joins the layout
 block that holds most of it (at least half its area); blocks are read in Surya's own
@@ -61,6 +64,25 @@ def match_documents(lines_dir: Path, pages: list[Path]) -> dict[str, Path]:
     return {p.stem: found[p.stem] for p in pages}
 
 
+def read_document(path: Path, page: Path) -> dict[str, Any]:
+    """The runner's document for `page`, refused when it was written for another page."""
+    from PIL import Image
+
+    document = json.loads(path.read_text("utf-8"))
+    named = path.stem.removeprefix("page-")
+    recorded = document.get("input_ordinal")
+    if path.stem.startswith("page-") and named.isdigit() and recorded not in (None, int(named)):
+        raise LinesRefusal(f"{path.name} records input ordinal {recorded}, not {named}")
+    with Image.open(page) as image:
+        size = list(image.size)
+    if document.get("image_size") != size:
+        raise LinesRefusal(
+            f"{path.name} was written for a {document.get('image_size')} image and page "
+            f"{page.stem} is {size}; is {path.parent / 'pages.json'} stale?"
+        )
+    return document
+
+
 def _area(box: list[float]) -> float:
     return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
 
@@ -104,7 +126,7 @@ def prepare(pages: list[Path], lines_dir: Path, out: Path) -> dict[str, dict[str
     for page in pages:
         index = crops.load_index(out, SOURCE, page.stem)
         if index is None:
-            document = json.loads(documents[page.stem].read_text("utf-8"))
+            document = read_document(documents[page.stem], page)
             facts = {
                 "document": documents[page.stem].name,
                 "reading_order": document.get("reading_order"),

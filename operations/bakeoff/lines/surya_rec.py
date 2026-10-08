@@ -3,9 +3,11 @@
 In surya-ocr 0.22.1 the recogniser is not a CTC line model: `RecognitionPredictor` sends
 each Surya layout block (or a whole page) to Datalab's Surya OCR 2 vision-language model
 (650M parameters, Qwen3.5 architecture) with the prompt "OCR this block image to HTML."
-and returns HTML per block. It takes layout blocks, not text lines. This arm runs it in
-block mode over the layout blocks the repository's Surya runner already cached
-(`--lines-dir`, matched to pages as `surya_lines.py` says), in Surya's own environment
+and returns HTML per block. It takes layout blocks, not text lines. `--mode page` (the
+default, arm `surya-rec-surya`) is Surya's own full-page call and reads no cached
+detections; `--mode blocks` (arm `surya-rec-surya-blocks`, its own cache folder) sends
+the layout blocks the repository's Surya runner already cached (`--lines-dir`, matched
+to pages as `surya_lines.py` says). Both run in Surya's own environment
 (`operations/serving/surya/.venv`), through a worker this file also holds:
 
     operations/serving/surya/.venv/bin/python -I operations/bakeoff/lines/surya_rec.py \
@@ -17,8 +19,9 @@ Mac; `llama-server` must be on PATH), or any OpenAI-compatible server already se
 the model under the name `datalab-to/surya-ocr-2` (`--server-url`, e.g. vLLM on the GPU).
 Greedy decoding, one request per block, the block's token budget Surya's own.
 
-    python -m operations.bakeoff.lines.surya_rec run --lines-dir SURYA --pages DIR \
-        --out CACHE --store-root STORE [--server-url http://127.0.0.1:8000/v1]
+    python -m operations.bakeoff.lines.surya_rec run --pages DIR --out CACHE \
+        --store-root STORE [--server-url http://127.0.0.1:8000/v1] \
+        [--mode blocks --lines-dir SURYA]
 """
 
 from __future__ import annotations
@@ -122,8 +125,8 @@ class SuryaRecogniser:
 
         from operations.bakeoff.lines import harness
 
-        if args.lines_dir is None:
-            raise harness.Refusal("surya-rec needs --lines-dir (the Surya runner's documents)")
+        if args.mode == "blocks" and args.lines_dir is None:
+            raise harness.Refusal("--mode blocks needs --lines-dir (the Surya runner's documents)")
         if not args.server_url and not all((weights / n).is_file() for n in GGUF_FILES):
             raise harness.Refusal(f"no GGUF files in {weights}; run fetch, or pass --server-url")
         self.args = args
@@ -133,16 +136,27 @@ class SuryaRecogniser:
         self.log = args.out / args.label / "arm.log"
 
     def job(self, prepared: list[Any]) -> dict[str, Any]:
-        from operations.bakeoff.lines import surya_lines
+        """The worker's job. Page mode reads no cached documents; block mode sends each
+        page's cached layout, refused when a document is missing or another page's."""
+        from operations.bakeoff.lines import harness, surya_lines
 
-        documents = surya_lines.match_documents(self.args.lines_dir, [p.page for p in prepared])
         pages = []
-        for item in prepared:
-            document = json.loads(documents[item.page.stem].read_text("utf-8"))
-            layout = document["layout"] if self.args.mode == "blocks" else None
-            pages.append(
-                {"stem": item.page.stem, "image": str(item.page.resolve()), "layout": layout}
+        try:
+            documents = (
+                surya_lines.match_documents(self.args.lines_dir, [p.page for p in prepared])
+                if self.args.mode == "blocks"
+                else {}
             )
+            for item in prepared:
+                layout = None
+                if self.args.mode == "blocks":
+                    path = documents[item.page.stem]
+                    layout = surya_lines.read_document(path, item.page)["layout"]
+                pages.append(
+                    {"stem": item.page.stem, "image": str(item.page.resolve()), "layout": layout}
+                )
+        except surya_lines.LinesRefusal as refusal:
+            raise harness.Refusal(str(refusal)) from refusal
         return {
             "mode": self.args.mode,
             "parallel": PARALLEL,
@@ -180,7 +194,9 @@ class SuryaRecogniser:
                 request = {"unit": "page", "image": {"file": str(item.page)}}
                 yield (
                     item,
-                    harness.PageResult([harness.unit(request, None, None, seconds, why)], argv),
+                    harness.PageResult(
+                        [harness.unit(request, None, None, seconds / len(prepared), why)], argv
+                    ),
                 )
                 continue
             share = answer["seconds"] / max(1, len(answer["blocks"]))
@@ -245,7 +261,8 @@ def arm() -> Any:
         pins={"surya-ocr": "0.22.1"},
         weight_files=(),
         line_sources=("surya",),
-        arm_name=lambda args: "surya-rec-surya",
+        # The two modes answer differently, so they never share a cache folder.
+        arm_name=lambda args: "surya-rec-surya" + ("-blocks" if args.mode == "blocks" else ""),
         recogniser=SuryaRecogniser,
         add_arguments=_add_arguments,
         fetch=fetch,

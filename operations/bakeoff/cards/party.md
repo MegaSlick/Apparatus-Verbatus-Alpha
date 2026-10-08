@@ -56,7 +56,9 @@ Greedy (argmax) until EOS; Party's default 512 tokens a line, clamped by the dec
 
 ## Output and normalisation
 ALTO from kraken 7.0.3's template; the same rule as kraken (`blla.read_alto`), then NFC
-(Party predicts NFD-trained bytes).
+(Party predicts NFD-trained bytes). Each TextLine is one unit in the record, with its
+polygon's box and baseline (`blla.alto_units`). On the CPU the arm passes `-d cpu`
+(Party's default device is `auto`).
 
 ## Resources
 - GPU recommended (`--device cuda`, bf16-mixed). VRAM: not found; estimate under 8 GB at

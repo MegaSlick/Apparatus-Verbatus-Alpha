@@ -70,3 +70,21 @@ def test_command_writes_the_index_and_names_the_runner(pages, tmp_path, capsys):
     assert "operations/serving/surya/.venv/bin/python" in printed and "runner.py" in printed
     assert printed.rstrip().endswith("p001.tif") and "--threads 8" in printed
     assert json.loads((lines_dir / "pages.json").read_text())["pages"] == ["p000", "p001"]
+
+
+def test_a_document_written_for_another_page_is_refused(pages, surya_dir, tmp_path):
+    """A stale pages.json: the documents swapped, as if the runner had the pages in
+    another order. The recorded ordinal no longer matches the file name."""
+    first, second = surya_dir / "page-1.json", surya_dir / "page-2.json"
+    a, b = first.read_bytes(), second.read_bytes()
+    first.write_bytes(b), second.write_bytes(a)
+    with pytest.raises(surya_lines.LinesRefusal, match="input ordinal"):
+        surya_lines.prepare(sorted(pages.iterdir()), surya_dir, tmp_path / "cache")
+
+
+def test_a_document_of_another_size_is_refused(pages, surya_dir, tmp_path):
+    document = json.loads((surya_dir / "page-1.json").read_text())
+    document["image_size"] = [601, 400]
+    (surya_dir / "page-1.json").write_text(json.dumps(document))
+    with pytest.raises(surya_lines.LinesRefusal, match="stale"):
+        surya_lines.prepare(sorted(pages.iterdir()), surya_dir, tmp_path / "cache")

@@ -54,6 +54,8 @@ def test_one_party_process_reads_every_page(pages, tmp_path):
     record = json.loads((out / "party-blla" / "p000.json").read_text())
     assert set(record) == RECORD_KEYS and record["arm"] == "party-blla"
     assert record["text"] == "une ligne\ndeux" and record["error"] is None
+    assert [u["request"]["unit"] for u in record["units"]] == ["line-0001", "line-0002"]
+    assert record["units"][1]["request"]["bbox"] == list(LINE_BOXES[1])
 
 
 def test_a_page_party_did_not_answer_is_an_error(pages, tmp_path):

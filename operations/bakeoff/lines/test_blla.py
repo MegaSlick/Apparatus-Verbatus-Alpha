@@ -45,6 +45,8 @@ def test_prepare_segments_once_and_cuts_crops_in_alto_order(pages, tmp_path):
     assert len(runner.calls) == 2  # one per page, never again
 
 
-def test_device_cuda_reaches_kraken(tmp_path):
+def test_the_device_always_reaches_kraken(tmp_path):
     argv = blla.segment_argv(Path("/v/bin/kraken"), Path("p.tif"), Path("p.xml"), "cuda")
     assert argv[1:3] == ["-d", "cuda:0"]
+    argv = blla.segment_argv(Path("/v/bin/kraken"), Path("p.tif"), Path("p.xml"), "cpu")
+    assert argv[1:3] == ["-d", "cpu"]  # kraken's default is `auto`, which takes a GPU

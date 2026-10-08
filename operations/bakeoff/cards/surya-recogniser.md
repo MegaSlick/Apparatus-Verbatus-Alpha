@@ -102,9 +102,11 @@ accepted by `LayoutResult`). The Mac runs first:
 `python -m operations.bakeoff.lines.surya_rec install && python -m operations.bakeoff.lines.surya_rec check && which llama-server`
 
 ## Our arm
-- Module `operations.bakeoff.lines.surya_rec`; arm `surya-rec-surya`.
+- Module `operations.bakeoff.lines.surya_rec`; arm `surya-rec-surya` (`--mode page`, the
+  default; reads no cached detections) and `surya-rec-surya-blocks` (`--mode blocks`, the
+  cached layout blocks; its own cache folder, so the two modes never mix on resume).
 - `python -m operations.bakeoff.lines.surya_rec fetch --store-root STORE` (the GGUF pair),
-  then `python -m operations.bakeoff.lines.surya_rec run --lines-dir SURYA_DOCS --pages DIR --out CACHE --store-root STORE [--server-url http://127.0.0.1:8000/v1] [--mode page|blocks]`
+  then `python -m operations.bakeoff.lines.surya_rec run --pages DIR --out CACHE --store-root STORE [--server-url http://127.0.0.1:8000/v1] [--mode blocks --lines-dir SURYA_DOCS]`
 
 ## Sources
 - surya-ocr 0.22.1 wheel from PyPI (files above); `surya/settings.py`

@@ -5,7 +5,7 @@
 
 For each page, kraken's own command in kraken's environment (`venvs/kraken`):
 
-    kraken -a -i <page> <out>/_lines/blla/<stem>.xml segment -bl
+    kraken -d cpu|cuda:0 -a -i <page> <out>/_lines/blla/<stem>.xml segment -bl
 
 with kraken's default segmentation model (`blla.mlmodel`, shipped in the kraken 7.1.1
 wheel; SHA-256 `BLLA_SHA256`), then the same crop layout as the Surya source, cut from
@@ -21,6 +21,7 @@ space, whitespace collapsed.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -108,10 +109,45 @@ def alto_text(raw: bytes) -> str:
     return "\n".join(row["text"] for row in read_alto(raw) if row["text"])
 
 
+def alto_units(
+    page: Path, answer: Path, base: dict[str, Any], seconds: float
+) -> list[dict[str, Any]]:
+    """One unit per TextLine of a vendor's ALTO answer, in its reading order: the line's
+    bounds (its polygon's box on the page), baseline and text. The whole answer stays in
+    `answer`, named with its digest in each unit's request."""
+    from PIL import Image
+
+    from operations.bakeoff.lines import harness
+
+    raw = answer.read_bytes()
+    rows = read_alto(raw)
+    with Image.open(page) as image:
+        width, height = image.size
+    share = seconds / max(1, len(rows))
+    units = []
+    for order, row in enumerate(rows, start=1):
+        bbox = crops.polygon_bbox(row["polygon"], width, height) if row["polygon"] else None
+        request = {
+            **base,
+            "unit": f"line-{order:04d}",
+            "order": order,
+            "alto_id": row["id"],
+            "bbox": bbox,
+            "baseline": row["baseline"],
+            "answer": {"file": str(answer), "sha256": harness.sha256_file(answer)},
+        }
+        units.append(harness.unit(request, row["text"], row["text"], share))
+    return units
+
+
+def device_argv(device: str) -> list[str]:
+    """kraken's and Party's `-d`: always given, because their default is `auto`, which
+    takes a GPU whenever one is visible."""
+    return ["-d", "cuda:0" if device == "cuda" else device]
+
+
 def segment_argv(kraken: Path, page: Path, xml: Path, device: str) -> list[str]:
-    argv = [str(kraken), "-a", "-i", str(page.resolve()), str(xml.resolve())]
-    if device != "cpu":
-        argv[1:1] = ["-d", "cuda:0" if device == "cuda" else device]
+    argv = [str(kraken), *device_argv(device), "-a", "-i", str(page.resolve()), str(xml.resolve())]
     return [*argv, "segment", "-bl"]
 
 
@@ -140,7 +176,7 @@ def prepare(
     runner: Any = subprocess.run,
 ) -> dict[str, dict[str, Any]]:
     """Segment each page that has no ALTO yet, then cut its crops; returns the indexes."""
-    from operations.bakeoff.witness_run import event
+    from operations.bakeoff.witness_run import OFFLINE_ENV, event
 
     folder = out / "_lines" / SOURCE
     folder.mkdir(parents=True, exist_ok=True)
@@ -153,7 +189,8 @@ def prepare(
         seconds = None
         if not xml.is_file():
             started = time.monotonic()
-            done = runner(argv, capture_output=True, text=True, check=False)
+            env = {**os.environ, **OFFLINE_ENV}
+            done = runner(argv, capture_output=True, text=True, check=False, env=env)
             seconds = round(time.monotonic() - started, 3)
             (folder / f"{page.stem}.log").write_text(done.stdout + done.stderr, "utf-8")
             if done.returncode != 0 or not xml.is_file():

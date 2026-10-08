@@ -55,14 +55,16 @@ model, no beam. kraken's default batch size.
 ## Output and normalisation
 - blla: ALTO 4 (kraken's template). Lines in the order of the first `ReadingOrder` group,
   else document order; a line's text is its `String` contents with each `SP` as one space
-  (`blla.read_alto`).
-- surya: one plain-text file per crop, in crop order.
+  (`blla.read_alto`). Each TextLine is one unit in the record, with its polygon's box and
+  baseline (`blla.alto_units`).
+- surya: one plain-text file per crop, in crop order, one unit per crop.
 - Both: NFC (the model writes NFD), whitespace collapsed, empty lines dropped
   (`harness.plain`). One line per written line; no markup.
 
 ## Resources
 - CPU, `--threads N` (default 4). VRAM: not measured; a 16M-parameter model, well under
-  2 GB. `--device cuda` passes `-d cuda:0`.
+  2 GB. `--device cuda` passes `-d cuda:0` and the default `-d cpu` (kraken's own default
+  is `auto`, which would take a visible GPU).
 - Measured here, a 4-vCPU container, a synthetic 1400 x 500 page: blla arm 95-110 s a
   page, of which blla segmentation is about 80 s (half the network, half scikit-image's
   ridge filter, which stays on the CPU even with a GPU); surya arm 13 s for 3 lines,

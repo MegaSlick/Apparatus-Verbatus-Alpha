@@ -13,7 +13,7 @@ The blla segmentation (`blla.py`, kraken 7.1 environment) is shared with the oth
 once), the vendor's own command:
 
     party set-lang fra <copies>
-    party [-d cuda:0 --precision bf16-mixed | --threads N] ocr -l model.safetensors -a \
+    party [-d cuda:0 --precision bf16-mixed | -d cpu --threads N] ocr -l model.safetensors -a \
         -B 32 --prompt-mode curves --add-lang-token -i <in>.xml <out>.xml ...
 
 Greedy decoding (argmax); Party's default of 512 generated tokens (UTF-8 bytes) per line,
@@ -79,8 +79,9 @@ class PartyRecogniser:
 
     def ocr_argv(self, pairs: list[tuple[Path, Path]]) -> list[str]:
         argv = [str(self.party)]
+        argv += blla.device_argv(self.args.device)
         if self.args.device == "cuda":
-            argv += ["-d", "cuda:0", "--precision", "bf16-mixed"]
+            argv += ["--precision", "bf16-mixed"]
         else:
             argv += ["--threads", str(self.args.threads)]
         argv += ["ocr", "-l", str(self.model), "-a", "-B", str(BATCH_SIZE)]
@@ -110,7 +111,6 @@ class PartyRecogniser:
         for item, (tagged, answer), count in zip(prepared, pairs, lines, strict=True):
             share = (seconds + tag_seconds) * count / sum(lines)
             request = {
-                "unit": "page",
                 "line_source": "blla",
                 "lines": len(item.lines["lines"]),
                 "image": {"file": str(item.page), "sha256": harness.sha256_file(item.page)},
@@ -121,15 +121,13 @@ class PartyRecogniser:
             if done is None or not answer.is_file():
                 code = tagged_ok.returncode if done is None else done.returncode
                 error = f"party exited {code}; no answer for this page (see arm.log)"
+                request["unit"] = "page"
                 yield (
                     item,
                     harness.PageResult([harness.unit(request, None, None, share, error)], argv),
                 )
                 continue
-            raw = answer.read_text("utf-8")
-            page_unit = harness.unit(request, raw, None, share)
-            page_unit["text"] = harness.plain(blla.alto_text(raw.encode("utf-8")))
-            yield item, harness.PageResult([page_unit], argv)
+            yield item, harness.PageResult(blla.alto_units(item.page, answer, request, share), argv)
 
 
 def fetch(dest: Path, _args: argparse.Namespace) -> Path:
