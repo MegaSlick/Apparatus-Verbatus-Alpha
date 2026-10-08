@@ -12,6 +12,7 @@ Anything with a human, a machine, or money on the other end.
 | `corpus/` | RecordGold: admitting a third-party expert-annotated corpus and scoring pipeline output against it ([README](corpus/README.md)) |
 | `maintenance/` | `pin_watch.py`: reports whether the configured Hugging Face and GitHub model pins and the vendored Chandra and Churro commits have moved upstream; `--notify` sends one notice when any moved or could not be checked |
 | `notify/` | the one-way phone notification client ([README](notify/README.md)) |
+| `bakeoff/` | the Phase W witness bake-off bench: native witness runs, raw-output cache, scores ([README](bakeoff/README.md)) |
 
 The table is not exhaustive; a directory that needs explaining carries its own README.
 
