@@ -13,6 +13,7 @@ import contextlib
 import fcntl
 import os
 import re
+import time
 from pathlib import Path
 
 import pytest
@@ -356,3 +357,70 @@ def test_an_attached_group_whose_leader_exited_is_still_stopped() -> None:
         finally:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(leader.pid, 9)
+
+
+def test_a_process_that_left_the_service_s_group_keeps_the_lease_and_is_named() -> None:
+    """The live 2026-10-08 failure on real processes: a member of the service that
+    inherited the lease and moved to its own session outlives the group, so the
+    group's stop leaves the lease held; the refusal names that process."""
+    import sys
+    import tempfile
+
+    from .process import SubprocessLauncher, _group_has_running_member, process_start_marker
+
+    if process_start_marker(os.getpid()) is None:
+        pytest.skip("no /proc on this host, so no lease holder can be named")
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        lease = FileResidencyLease(root / "pod-gpu.lock")
+        held = lease.acquire(None)  # type: ignore[arg-type]
+        descriptor = held.inheritable_fd()
+        pid_file = root / "straggler.pid"
+        leader = SubprocessLauncher().launch(
+            (
+                sys.executable,
+                "-c",
+                "import pathlib, subprocess, sys, time; "
+                "straggler = subprocess.Popen([sys.executable, '-c', 'import time; "
+                f"time.sleep(60)'], pass_fds=({descriptor},), start_new_session=True); "
+                f"pathlib.Path({str(pid_file)!r}).write_text(str(straggler.pid)); "
+                "time.sleep(60)",
+            ),
+            root / "leader.log",
+            inheritable_fds=(descriptor,),
+        )
+        marker = leader.start_marker
+        assert marker is not None
+        held.relinquish()
+        straggler = 0
+        try:
+            for _ in range(500):
+                if pid_file.exists() and pid_file.read_text():
+                    break
+                time.sleep(0.02)
+            straggler = int(pid_file.read_text())
+            attached = SubprocessLauncher().attach(leader.pid, marker, root / "leader.log")
+            attached.terminate()
+            attached.wait(5)
+            assert not _group_has_running_member(leader.pid)
+
+            with pytest.raises(ResidencyError, match=f"held by pid {straggler} ") as refused:
+                lease.acquire(None)  # type: ignore[arg-type]
+            assert f"session {straggler})" in str(refused.value)
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(leader.pid, 9)
+            leader.wait(5)
+            if straggler:
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(straggler, 9)
+                with contextlib.suppress(ChildProcessError):
+                    os.waitpid(straggler, 0)
+        for _ in range(250):
+            try:
+                lease.acquire(None).release()  # type: ignore[arg-type]
+                break
+            except ResidencyError:
+                time.sleep(0.02)
+        else:
+            pytest.fail("the lease stayed held after its last holder was killed")
