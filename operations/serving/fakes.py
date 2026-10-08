@@ -109,6 +109,13 @@ class FakeProcess:
         self.wait_calls = 0
         self.ignore_terminate = ignore_terminate
         self.ignore_kill = ignore_kill
+        # Another member of this process's group (vLLM's engine) that outlives the
+        # leader until the group is signalled.
+        self.engine_outlives_leader = False
+
+    @property
+    def group_running(self) -> bool:
+        return self.exit_code is None or self.engine_outlives_leader
 
     @property
     def start_marker(self) -> str | None:
@@ -119,19 +126,23 @@ class FakeProcess:
 
     def terminate(self) -> None:
         self.terminate_calls += 1
-        if not self.ignore_terminate and self.exit_code is None:
-            self.exit_code = 0
+        if not self.ignore_terminate:
+            self.engine_outlives_leader = False
+            if self.exit_code is None:
+                self.exit_code = 0
 
     def kill(self) -> None:
         self.kill_calls += 1
-        if not self.ignore_kill and self.exit_code is None:
-            self.exit_code = -9
+        if not self.ignore_kill:
+            self.engine_outlives_leader = False
+            if self.exit_code is None:
+                self.exit_code = -9
 
     def wait(self, timeout_seconds: float) -> int:
         del timeout_seconds
         self.wait_calls += 1
-        if self.exit_code is None:
-            raise TimeoutError("fake child is still live")
+        if self.group_running:
+            raise TimeoutError("fake child or its group is still live")
         return self.exit_code
 
     def read_tail(self, maximum_bytes: int = 16_384) -> str:
@@ -386,9 +397,9 @@ class FakeLauncher:
             process is None
             or process.pid != pid
             or process.start_marker != start_marker
-            or process.poll() is not None
+            or not process.group_running
         ):
-            raise ProcessLaunchError(f"no live process {pid} with start marker {start_marker!r}")
+            raise ProcessLaunchError(f"no live process group {pid} ({start_marker!r})")
         self.attached.append(process)
         return process
 

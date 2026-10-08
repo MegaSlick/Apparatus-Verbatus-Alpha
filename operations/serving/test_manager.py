@@ -5562,3 +5562,40 @@ def test_a_plan_that_split_a_shared_pair_would_cost_the_take_over(tmp_path: Path
     assert audit["launch_purpose"] == "normal"
     assert "render another vLLM command" in audit["adoption_refused"]
     started.stop()
+
+
+def test_a_server_gone_with_its_engine_still_running_is_stopped_not_forgotten(
+    tmp_path: Path,
+) -> None:
+    """vLLM's engine process can outlive the server that leads its group and keep the
+    card. Such a service is not taken over, and not recorded as already exited: its
+    group is signalled, and only then is the record consumed."""
+    first, second, identities, clock = _shared_managers(tmp_path)
+    _hand_off_from_first(first, identities, clock)
+    leader = first.launcher.processes[0]
+    leader.exit_code = 0
+    leader.engine_outlives_leader = True
+
+    started = second.manager.start(identities["reconstructor"], TIER)
+
+    _receipt, audit = second.publisher.calls[-1]
+    assert "has exited, though its process group still runs" in audit["adoption_refused"]
+    assert audit["displaced_service"]["outcome"] == "stopped"
+    assert leader.terminate_calls == 1 and not leader.group_running
+    assert not (tmp_path / "pod-gpu.hand-off.json").exists()
+    started.stop()
+
+
+def test_a_gone_service_whose_lease_is_still_held_keeps_its_record(tmp_path: Path) -> None:
+    first, second, identities, clock = _shared_managers(tmp_path)
+    _hand_off_from_first(first, identities, clock)
+    first.launcher.processes[0].exit_code = 0
+    holder = FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(identities["witness"])
+    try:
+        with pytest.raises(ServiceStopError, match="lease is still held"):
+            second.manager.reclaim_hand_off()
+        assert (tmp_path / "pod-gpu.hand-off.json").exists()
+    finally:
+        holder.release()
+    assert second.manager.reclaim_hand_off()["outcome"] == "already-exited"
+    assert not (tmp_path / "pod-gpu.hand-off.json").exists()

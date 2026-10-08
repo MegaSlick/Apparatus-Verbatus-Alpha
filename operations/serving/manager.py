@@ -611,7 +611,7 @@ class ServingManager:
                 return self._adopt(identity, profile, record, row)
             except _AdoptionRefused as refused:
                 events["adoption_refused"] = str(refused)
-        events["displaced_service"] = self._displace(record)
+        events["displaced_service"] = self._displace(record, identity)
         return None
 
     def _adopt(
@@ -680,6 +680,10 @@ class ServingManager:
             )
         except ProcessLaunchError as error:
             refuse(f"the handed-off process is gone: {error}")
+        if process.poll() is not None:
+            # Its group still runs (an engine process outlived the server), so it
+            # is stopped, not taken over.
+            refuse("the handed-off server has exited, though its process group still runs")
         endpoint = profile.endpoint
         try:
             health = self._get(health_url(endpoint), _READINESS_PROBE_TIMEOUT_SECONDS)
@@ -756,8 +760,15 @@ class ServingManager:
         self._adopted = True
         return handle
 
-    def _displace(self, record: Mapping[str, Any]) -> Mapping[str, object]:
-        """Stop a handed-off service and consume its record; what was done, for the audit."""
+    def _displace(
+        self, record: Mapping[str, Any], identity: ChairIdentity | None
+    ) -> Mapping[str, object]:
+        """Stop a handed-off service and consume its record; what was done, for the audit.
+
+        The record is removed only once the card's lease is proved free: a process
+        still holding it (an engine outliving its server) keeps the record, so a
+        later start can still find and stop that group.
+        """
 
         noted = {"chair": record["chair"], "pid": record["pid"]}
         try:
@@ -765,10 +776,12 @@ class ServingManager:
                 record["pid"], record["start_marker"], Path(record["log_path"])
             )
         except ProcessLaunchError:
+            self._prove_lease_free(identity)
             self._remove_hand_off()
             return {**noted, "outcome": "already-exited"}
         self._stop_process(process)
         self._assert_endpoint_absent(str(record["endpoint"]))
+        self._prove_lease_free(identity)
         self._remove_hand_off()
         return {**noted, "outcome": "stopped"}
 
@@ -789,14 +802,15 @@ class ServingManager:
             )
         return None
 
-    def _prove_lease_free(self, identity: ChairIdentity) -> None:
-        """After a taken-over service stopped, show its lease went with it."""
+    def _prove_lease_free(self, identity: ChairIdentity | None) -> None:
+        """After a handed-off service stopped, show its lease went with it."""
 
         try:
-            self.residency_lease.acquire(identity).release()
+            self.residency_lease.acquire(identity).release()  # type: ignore[arg-type]
         except ServingError as error:
             raise ServiceStopError(
-                f"the taken-over service stopped, but the card's lease is still held: {error}"
+                f"the handed-off service is stopped or gone, but the card's lease is still "
+                f"held: {error}"
             ) from error
 
     def _read_hand_off(self) -> Mapping[str, Any] | None:
@@ -1005,7 +1019,7 @@ class ServingManager:
             return {"discarded": str(error)}
         if record is None:
             return None
-        return self._displace(record)
+        return self._displace(record, None)
 
     def recover(self) -> None:
         """Retry the cleanup a failed start or a failed stop left; never a launch path.

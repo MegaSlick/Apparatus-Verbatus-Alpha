@@ -119,24 +119,54 @@ def test_a_failed_sync_stops_the_run_at_the_next_boundary(
 def test_a_failed_stage_still_waits_for_the_sync_running_beside_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The first stage's sync is held mid-copy while the second stage fails; `_drive`
+    does not return until the copy is released, then raises the stage's failure."""
     local = tmp_path / "local" / "run"
     volume = tmp_path / "volume" / "run"
     local.mkdir(parents=True)
     volume.mkdir(parents=True)
+    copying = threading.Event()
+    release = threading.Event()
+    stage_failed = threading.Event()
+    copy = RunTreeSync.copy
+
+    def held_copy(self, plan):
+        copying.set()
+        assert release.wait(timeout=10)
+        return copy(self, plan)
 
     def invoke(program: str, args: Namespace, **_options) -> int:
         if (local / "first.json").exists():
+            assert copying.wait(timeout=10)
+            stage_failed.set()
             raise ContractError(f"{program} exited 1")
         (local / "first.json").write_bytes(b"first")
         return orchestrator.EXIT_COMPLETE
 
+    monkeypatch.setattr(RunTreeSync, "copy", held_copy)
     monkeypatch.setattr(orchestrator, "invoke", invoke)
     monkeypatch.setattr(orchestrator, "checkpoint", lambda *args: None)
     args = Namespace(run_id="run", run_root=local.parent, stage_sync=RunTreeSync(local, volume))
+    raised: list[BaseException] = []
 
-    with pytest.raises(ContractError, match="exited 1"):
-        orchestrator._drive(args, (orchestrator.INK_MAP, "designator"), "semi", {})
+    def drive() -> None:
+        try:
+            orchestrator._drive(args, (orchestrator.INK_MAP, "designator"), "semi", {})
+        except BaseException as error:  # noqa: BLE001 -- examined below
+            raised.append(error)
 
+    driver = threading.Thread(target=drive)
+    driver.start()
+    try:
+        assert stage_failed.wait(timeout=10)
+        driver.join(timeout=0.5)
+        assert driver.is_alive(), "_drive returned while the sync was still copying"
+        assert not (volume / "first.json").exists()
+    finally:
+        release.set()
+        driver.join(timeout=10)
+    assert not driver.is_alive()
+    assert len(raised) == 1 and "exited 1" in str(raised[0])
     assert (volume / "first.json").read_bytes() == b"first"
 
 
@@ -246,3 +276,24 @@ def test_an_unreadable_ledger_is_started_again(
 
     monkeypatch.setattr(sync, "_digest", no_hashing)
     assert RunTreeSync(local, volume).sync() == 0
+
+
+@pytest.mark.parametrize("change", ["rewritten", "removed"])
+def test_a_verified_file_changed_after_the_plan_is_refused_not_skipped(
+    tmp_path: Path, change: str
+) -> None:
+    """A file the ledger already verified is skipped only while its source is unchanged:
+    a stage that rewrites or removes it after the boundary fails the sync, rather than
+    the volume keeping the old bytes under a sync that reported success."""
+    local, volume = _trees(tmp_path, {"a.json": b"a"})
+    sync_object = RunTreeSync(local, volume)
+    assert sync_object.sync() == 1
+    plan = sync_object.plan()
+    if change == "rewritten":
+        (local / "a.json").write_bytes(b"a changed")
+    else:
+        (local / "a.json").unlink()
+
+    with pytest.raises(RunTreeSyncError, match="changed during copy|gone since the plan"):
+        sync_object.copy(plan)
+    assert (volume / "a.json").read_bytes() == b"a"
