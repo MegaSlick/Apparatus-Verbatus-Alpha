@@ -144,8 +144,15 @@ Each stage is its own program, so the service passes between two processes:
    `/health` and `/v1/models` answered.
 3. Stopping a taken-over service signals its process group (it is not this
    process's child, so its exit status is unknown), waits for the group to go
-   and the endpoint to refuse, and then proves the lease free by taking and
-   releasing it.
+   and the endpoint to refuse, and then waits up to the shutdown timeout for
+   the lease to come free. It never held that lease: the launching manager's
+   descriptor went to the service's processes. One that left the group can
+   keep it after the group is gone (seen live on 2026-10-08), so a lease
+   still held does not fail the stop; it is left held, which refuses every
+   later start on the card until it is free, and its holders are named on
+   stderr and in that refusal. Stopping a handed-off service nobody took over
+   (`displaced_service`, `reclaim_hand_off`) still requires the lease free, and
+   keeps the record until it is.
 
 Any refused check is recorded, never hidden: the start stops the handed-off
 service and starts its own, and that launch audit carries `adoption_refused`

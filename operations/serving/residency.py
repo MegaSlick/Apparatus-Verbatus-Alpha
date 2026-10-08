@@ -52,8 +52,8 @@ class ResidencyHandle(Protocol):
 
         The owned child inherited the same open-file description, so the lock
         stays held for as long as that process lives. Used only when the
-        running service is handed to another process, which proves the lease
-        free once it has stopped the service.
+        running service is handed to another process, which stops the service
+        and leaves the lease to the processes still holding it.
         """
 
 
@@ -145,8 +145,10 @@ class FileResidencyLease:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             close_failure = _close_quietly(handle)
+            holders = lease_holders(self.path)
             raise ResidencyError(
                 f"another serving manager holds the single-resident lease {self.path}"
+                + (f"; held by {'; '.join(holders)}" if holders else "")
                 + close_failure
             ) from error
         except OSError as error:
@@ -155,6 +157,63 @@ class FileResidencyLease:
                 f"could not acquire serving residency lease {self.path}: {error}" + close_failure
             ) from error
         return _FileResidencyHandle(self.path, handle)
+
+
+def lease_holders(path: Path) -> tuple[str, ...]:
+    """The processes holding the lease's lock, named for a refusal; empty without ``/proc``.
+
+    A process counts when one of its descriptors is the lease file and the
+    kernel lists the lock on it (``/proc/<pid>/fdinfo``), so a process that only
+    has the file open is left out. Each is named by its pid, the parent, group
+    and session it is in, its state and its command name: enough to tell which
+    process kept the card leased, and nothing it was working on.
+    """
+
+    try:
+        lease = os.stat(path)
+    except OSError:
+        return ()
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return ()
+    named: list[str] = []
+    for entry in sorted(proc.iterdir(), key=lambda item: item.name.zfill(10)):
+        if not entry.name.isdigit():
+            continue
+        try:
+            descriptors = list((entry / "fd").iterdir())
+        except OSError:
+            continue
+        for descriptor in descriptors:
+            try:
+                opened = os.stat(descriptor)
+                if (opened.st_dev, opened.st_ino) != (lease.st_dev, lease.st_ino):
+                    continue
+                info = (entry / "fdinfo" / descriptor.name).read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if "FLOCK" not in info:
+                continue
+            named.append(_describe_process(entry))
+            break
+    return tuple(named)
+
+
+def _describe_process(entry: Path) -> str:
+    try:
+        stat = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return f"pid {entry.name}"
+    command = stat[stat.find("(") + 1 : stat.rfind(")")]
+    # Fields after the parenthesised command name: state, ppid, pgrp, session.
+    fields = stat.rsplit(")", 1)[-1].split()
+    if len(fields) < 4:
+        return f"pid {entry.name} ({command})"
+    state, ppid, group, session = fields[:4]
+    return (
+        f"pid {entry.name} ({command}, state {state}, parent {ppid}, "
+        f"group {group}, session {session})"
+    )
 
 
 def _close_quietly(handle: TextIO | None) -> str:
