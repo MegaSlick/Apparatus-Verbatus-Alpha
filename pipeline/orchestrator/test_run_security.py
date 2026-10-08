@@ -39,6 +39,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         review_config="config/review.toml",
         pdf_target_dpi=None,
         placement_tier=None,
+        capacity_plan=None,
         corpus_register=None,
         witness_context="named",
         perlector_protocol_config="config/perlector_protocol.toml",

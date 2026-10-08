@@ -1441,6 +1441,17 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
             "the reproducibility contract config_digest exists to protect."
         ),
     )
+    parser.add_argument(
+        "--capacity-plan",
+        default=None,
+        help=(
+            "the capacity plan green PREFLIGHT derived for the card serving this run "
+            "(canonical JSON, operations/serving/capacity.py): how many sequences each "
+            "chair is launched with, never fewer than its row's max_num_seqs. Unsealed "
+            "like --placement-tier: a measured runtime fact of the card, recorded in each "
+            "launch audit; omitted, every row launches as written."
+        ),
+    )
     return parser
 
 

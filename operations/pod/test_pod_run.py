@@ -4500,3 +4500,95 @@ def test_help_prints_the_usage_of_both_halves_and_runs_nothing(flag: str) -> Non
     assert result.stdout.startswith("usage: python -m operations.pod.pod_run")
     assert "--run-id" in result.stdout and " -- " in result.stdout
     assert "refused" not in result.stdout + result.stderr
+
+
+def _capacity_plan(tier: str = TIER):  # type: ignore[no-untyped-def]
+    from decimal import Decimal
+
+    from operations.serving.capacity import CapacityPlan, ChairCapacity
+    from operations.serving.config import ServingConfigInputs
+
+    return CapacityPlan(
+        vram_gib=Decimal("47.99"),
+        gpu_count=1,
+        compute_capability="8.6",
+        tier=tier,
+        serving_config_inputs=ServingConfigInputs.from_record(SERVING_INPUTS),
+        chairs={
+            "attestator_2": ChairCapacity(
+                recipe="unproven-real-attestatores",
+                row_max_num_seqs=2,
+                max_num_seqs=38,
+                weights_gib=Decimal("15.5"),
+                kv_gib_per_seq=Decimal("0.47"),
+                memory_fraction=Decimal("0.78"),
+            )
+        },
+    )
+
+
+@dataclass
+class _PlannedActions(PreflightedActions):
+    """Green, and PREFLIGHT measured the card and published its capacity plan."""
+
+    plan_record: dict | None = None
+
+    def run_preflight(self) -> dict[str, object]:
+        record = super().run_preflight()
+        record["capacity_plan"] = self.plan_record
+        return record
+
+
+def _run_with_plan(tmp_path: Path, plan_record: dict | None):  # type: ignore[no-untyped-def]
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+    exit_code = main(
+        _run_argv(ws),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: _PlannedActions(plan_record=plan_record),
+        runner=runner,
+    )
+    return exit_code, runner, _report(ws)
+
+
+def test_pod_run_forwards_preflight_s_capacity_plan_to_the_orchestrator(tmp_path: Path) -> None:
+    plan = _capacity_plan()
+    exit_code, runner, report = _run_with_plan(tmp_path, plan.to_record())
+
+    assert exit_code == EXIT_COMPLETE
+    [(command, _cwd, _env)] = runner.calls
+    assert command[command.index("--placement-tier") + 1] == TIER
+    assert command[command.index("--capacity-plan") + 1] == plan.to_argument()
+    assert report["capacity_plan"] == plan.to_record()
+
+
+def test_without_a_plan_pod_run_forwards_none(tmp_path: Path) -> None:
+    exit_code, runner, report = _run_with_plan(tmp_path, None)
+
+    assert exit_code == EXIT_COMPLETE
+    [(command, _cwd, _env)] = runner.calls
+    assert "--capacity-plan" not in command
+    assert report["capacity_plan"] is None
+
+
+def test_a_changed_capacity_plan_is_refused_not_dropped(tmp_path: Path) -> None:
+    record = _capacity_plan().to_record()
+    record["chairs"]["attestator_2"]["max_num_seqs"] = 64
+    exit_code, runner, report = _run_with_plan(tmp_path, record)
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "capacity plan" in report["reason"]
+
+
+def test_a_capacity_plan_for_another_tier_is_refused(tmp_path: Path) -> None:
+    exit_code, runner, report = _run_with_plan(
+        tmp_path, _capacity_plan("generic-80gb-plus").to_record()
+    )
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "generic-80gb-plus" in report["reason"]
