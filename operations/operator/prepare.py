@@ -591,7 +591,8 @@ def summary(prepared: Prepared) -> list[str]:
         f"  {verbatus} run --run-id prepared-check --submission-folder {_quoted(prepared.scans)} "
         f"--submission-manifest {_quoted(manifest)} {triage_flags}",
         "For a pod run, upload the same way with --sealed-manifest and --network-volume; "
-        "LIVE_READINESS.md says how the pod's run reads the triage documents.",
+        "operations/pod/README.md (the hand route's launch) says how the pod's run reads "
+        "the triage documents.",
     ]
     return lines
 
