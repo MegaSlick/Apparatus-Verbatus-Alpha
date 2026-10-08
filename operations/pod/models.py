@@ -281,8 +281,14 @@ def validate_pod_report_identity(
     require_utc(parsed_acknowledged_at, "pod report acknowledged_at")
 
 
-DEFAULT_CONTAINER_DISK_GB = 60
+DEFAULT_CONTAINER_DISK_GB = 100
 """Container-local disk for a small card or a request with no known tier, in gigabytes.
+
+Measured 2026-10-08 on a witness pod (RTX 4090, Door to Attestatores): a 60 GB disk
+filled during the Attestatores (ENOSPC) holding the local chair cache (33 GB, every
+witness chair), the uv cache (12 GB), the venv (8.4 GB), the run tree (1.3 GB) and the
+image. The bound below did not count the chair cache; 100 GB is that measurement plus
+room for the run tree to grow on a larger chunk.
 
 The bootstrap spends this disk twice over, and leaving it to the image or
 account default -- commonly 20 GB -- lets ``uv sync --group pod`` fill the

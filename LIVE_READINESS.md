@@ -328,7 +328,7 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
 ```
 
 - **Two pods, then the Mac.** The planned topology splits the run: a cheap witness pod
-  (A5000, `--container-disk-in-gb 60`) adds `--models small` before `--` (Door through
+  (A5000, `--container-disk-in-gb 100`) adds `--models small` before `--` (Door through
   Attestatores); the big card (PRO 6000, 120 GB disk) adds `--from perlector --to
   coniector` with the **same run id, submission folder and `--store-root`**, and checks
   the sealed Attestatores on the volume before its boot. Do not use `--models big` for
