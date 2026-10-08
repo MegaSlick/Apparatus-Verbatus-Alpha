@@ -472,8 +472,9 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   five pages and ten minutes. The stage is the one the transcript says started and has
   not ended, or else the page stage the estimate counts. A stage not counted in pages is
   `stalled` after 15 minutes (not yet measured against a real stage) with no new
-  transcript output and nothing written in its run tree outside the `serving-logs`
-  directories. The record keeps each check, any finding, the last moment the run was
+  transcript output and no record published in its run tree outside the `serving-logs`
+  directories (judged by directory times, since every record is linked or renamed into
+  place, so the files themselves are never stat'ed one by one). The record keeps each check, any finding, the last moment the run was
   `ok`, and `stage_rates`: each page stage's pages done and total, the seconds `pod_run`
   watched it and its pages a minute, which the final report keeps too.
 

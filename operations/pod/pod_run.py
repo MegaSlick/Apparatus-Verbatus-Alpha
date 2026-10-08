@@ -1325,12 +1325,13 @@ def _guard_heartbeat_age(volume: Path, pod_id: str, instant: float) -> int | Non
 
 
 def run_tree_mark(root: Path) -> int | None:
-    """The newest modification time, in nanoseconds, of anything under `root` that a
-    stage wrote; None when `root` cannot be read.
+    """The newest modification time, in nanoseconds, of any directory under `root` that a
+    stage writes in; None when `root` cannot be read.
 
-    Directories count, so a published name or a replaced manifest moves the mark even
-    when the file's own time is older. The serving-logs directories do not: an engine
-    that sits idle still writes its log, and that is not the stage advancing.
+    Directories only: the run tree publishes every record by linking or renaming it into
+    place, which moves its directory's time, so the walk never stats the files one by
+    one. The serving-logs directories do not count: an engine that sits idle still
+    writes its log, and that is not the stage advancing.
     """
 
     newest: int | None = None
@@ -1340,20 +1341,14 @@ def run_tree_mark(root: Path) -> int | None:
         try:
             newest = max(newest or 0, directory.lstat().st_mtime_ns)
             with os.scandir(directory) as entries:
-                listed = list(entries)
+                pending.extend(
+                    Path(entry.path)
+                    for entry in entries
+                    if entry.name != SERVING_LOGS_DIR and entry.is_dir(follow_symlinks=False)
+                )
         except OSError:
             if directory == root:
                 return None
-            continue
-        for entry in listed:
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    if entry.name != SERVING_LOGS_DIR:
-                        pending.append(Path(entry.path))
-                    continue
-                newest = max(newest, entry.stat(follow_symlinks=False).st_mtime_ns)
-            except OSError:
-                continue
     return newest
 
 

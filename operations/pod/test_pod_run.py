@@ -4462,18 +4462,21 @@ def test_the_run_tree_mark_moves_on_stage_writes_and_not_on_engine_logs(tmp_path
     assert before is not None
 
     future = before + 10**9
-    os.utime(engine_log, ns=(future, future))
+    os.utime(engine_log.parent, ns=(future, future))
     assert pod_run.run_tree_mark(tmp_path) == before
 
-    artifact = stage / "page-1.json"
-    artifact.write_text("{}", encoding="utf-8")
-    os.utime(artifact, ns=(future, future))
+    # A record published into a stage's directory moves that directory's time.
+    records = stage / "artifacts" / "page-accounting"
+    records.mkdir(parents=True)
+    os.utime(records, ns=(future, future))
     assert pod_run.run_tree_mark(tmp_path) == future
-
-    # A name published from an older file still moves the mark through its directory.
     later = future + 10**9
-    os.link(artifact, stage / "page-2.json")
-    os.utime(stage, ns=(later, later))
+    (records / "page-1.json").write_text("{}", encoding="utf-8")
+    os.utime(records, ns=(later, later))
+    assert pod_run.run_tree_mark(tmp_path) == later
+
+    # Files are never stat'ed one by one.
+    os.utime(records / "page-1.json", ns=(later + 10**9, later + 10**9))
     assert pod_run.run_tree_mark(tmp_path) == later
 
 
