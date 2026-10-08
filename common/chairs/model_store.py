@@ -34,6 +34,7 @@ from .errors import DigestMismatchRefusal
 from .filesystem import apfs_alias, apfs_key, read_limited_bytes
 from .manifests import (
     CopyLedger,
+    CopyPool,
     build_manifest,
     copy_and_digest_files,
     read_manifest,
@@ -205,8 +206,11 @@ class BundleFetcher(Protocol):
 class StoreRoleFetcher:
     """Plan one configured role from the durable record and its pinned manifest."""
 
-    def __init__(self, store_root: str | Path) -> None:
+    def __init__(self, store_root: str | Path, *, pool: CopyPool | None = None) -> None:
         self.root = Path(store_root).resolve()
+        # Workers shared with other fills running at the same time; None for a
+        # pool of this fill's own.
+        self.pool = pool
 
     def plan(self, identity: ChairIdentity) -> dict[str, Any]:
         snapshot, _manifest = self._source(identity)
@@ -277,7 +281,7 @@ class StoreRoleFetcher:
                     f"model-store source file {relative!r} is not a regular in-snapshot file",
                 )
             work.append((source, destination / relative, row))
-        return copy_and_digest_files(work, chair=identity.role)
+        return copy_and_digest_files(work, chair=identity.role, pool=self.pool)
 
 
 def materialize_real_roster(
