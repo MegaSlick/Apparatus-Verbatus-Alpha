@@ -32,9 +32,10 @@ The directory numbers are not the run order. `1_exemplar` and `1_ink_map` share 
 number, the door has no directory of its own and writes into `1_exemplar/`, and
 `4b_coniector` runs after the Perlector because it reads only the Perlector's readings.
 
-`0_triage/` is not a stage and is never run by the orchestrator. It holds the schema and
-validator of the triage decision manifest (`manifest.py`): the optional record of how
-captured frames were split, rotated and grouped before intake. The triage producer in
+`0_triage/` is not a stage and is never run by the orchestrator. It holds only the
+CONTRACT.md of the triage decision manifest, whose schema and validator are
+`common/contracts/triage.py`: the optional record of how captured frames were split,
+rotated and grouped before intake. The triage producer in
 `operations/triage/` writes it and the door reads it.
 
 ## Boundaries

@@ -14,7 +14,7 @@ Nothing has moved yet; this page only classifies.
 - **HISTORY** stays in alpha: records of how alpha was built.
 - **PRIVATE** is local and gitignored; only the folder's README is tracked. Beta keeps
   the folders the product uses (`private/`, `scriptorium/`); `workbench/` is the
-  harness's own.
+  harness's own. Session handoffs, plans and run reports live in `workbench/`, not in git.
 - **AMBIGUOUS** marks a path whose class is still to be decided, with the question
   under [Decisions](#decisions). None is open today.
 
@@ -61,7 +61,6 @@ for a script to read.
 | `GLOSSARY.md` | PRODUCT | |
 | `GOVERNANCE.md` | PRODUCT | |
 | `LICENSE` | PRODUCT | |
-| `LIVE_READINESS.md` | HISTORY | runbook for alpha's first paid run |
 | `PRINCIPLES.md` | PRODUCT | |
 | `README.md` | PRODUCT | |
 | `SECURITY.md` | PRODUCT | private vulnerability reporting |
@@ -79,7 +78,6 @@ for a script to read.
 | `operations/corpus/` | PRODUCT | RecordGold evaluation |
 | `operations/http_deadline.py` | PRODUCT | |
 | `operations/maintenance/` | PRODUCT | watches the pinned vendor revisions |
-| `operations/metrics/` | HARNESS | code-size counts for cleanups |
 | `operations/notify/` | PRODUCT | the operator and pod notices use it |
 | `operations/operator/` | PRODUCT | |
 | `operations/pod/` | PRODUCT | |
@@ -95,17 +93,17 @@ for a script to read.
 | `private/` | PRIVATE | |
 | `proof/` | PRODUCT | synthetic fixtures and their tests |
 | `pyproject.toml` | PRODUCT | |
-| `review-notes/` | HISTORY | session reviews, plans and lead reports |
 | `scriptorium/` | PRIVATE | |
 | `uv.lock` | PRODUCT | |
-| `workbench/` | PRIVATE | the harness's notes; stays in alpha |
+| `workbench/` | PRIVATE | the harness's notes, session handoffs and run reports; stays in alpha |
 
 ## Decisions
 
 - **`.coderabbit.yaml` is HARNESS.** Its instructions speak to the lead and to the
   AI-written workflow. If beta wants the app, it gets a fresh, short configuration.
 The cleanup train has landed: the spike, the bench, the review-candidate code and the
-old metrics are gone. When a later deletion lands, the check fails on the row that no
+code-size metrics tool are out of git (the metrics tool is kept in the local
+`workbench/tools/`). When a later deletion lands, the check fails on the row that no
 longer matches anything, and that row goes. The inventory is final only once it is taken
 against the `main` that beta is copied from.
 
