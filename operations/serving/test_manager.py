@@ -58,8 +58,8 @@ from .assembly import (
     _load_bound_configuration,
     assemble_serving_smoke_reader,
 )
-from .client import ServingModeRefusal, serving_mode_for
 from .capacity import CapacityPlan, ChairCapacity
+from .client import ServingModeRefusal, serving_mode_for
 from .config import (
     MAX_JSON_DEPTH,
     FixtureProfile,
