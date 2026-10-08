@@ -1,7 +1,7 @@
 """`verbatus watch`: a pod run's progress, finish estimate and spend, from saved copies.
 
-It reads the copies of `pod_run`'s report and its `-liveness`, `-timings` and
-`-estimate` siblings that are already on this computer, and optionally a pod
+It reads the copies of `pod_run`'s report and its `-liveness`, `-timings`,
+`-estimate` and `-progress` siblings that are already on this computer, and optionally a pod
 lease. It writes nothing and contacts no provider or volume. Every time it
 shows is by this computer's clock; a record older than the stale limit is
 said to be stale, and its numbers are labelled with the time they were true.
@@ -46,6 +46,7 @@ class Receipts:
     problems: tuple[str, ...]
     fingerprint: bytes
     """The bytes read, so a follower prints only when something changed."""
+    progress: dict[str, Any] | None = None
 
 
 def report_path_for(run_id: str, receipts: Path) -> Path:
@@ -70,13 +71,14 @@ def read_receipts(run_id: str, report_path: Path, lease_path: Path | None) -> Re
             ErrorCode.WATCH_UNREADABLE,
             detail=f"{report_path} is the report of run {report.get('run_id')!r}, not {run_id!r}",
         )
-    _, _, liveness_path, timings_path, _, estimate_path = (
+    _, _, liveness_path, timings_path, _, estimate_path, progress_path = (
         Path(path) for path in run_report_paths(PurePosixPath(report_path))
     )
     sides: dict[str, dict[str, Any] | None] = {}
     for name, path, schema in (
         ("liveness", liveness_path, "pod-run-liveness.v1"),
         ("estimate", estimate_path, "pod-run-estimate.v1"),
+        ("progress", progress_path, "pod-run-progress.v1"),
     ):
         record = _object(_read(path, f"the {name} copy", seen, problems=problems))
         if record is not None and (
@@ -114,6 +116,7 @@ def read_receipts(run_id: str, report_path: Path, lease_path: Path | None) -> Re
         lease=lease,
         problems=tuple(problems),
         fingerprint=b"\0".join(seen),
+        progress=sides["progress"],
     )
 
 
@@ -142,6 +145,23 @@ def _read(
         return None
     seen.append(data)
     return data
+
+
+def _progress_lines(receipts: Receipts, active: bool) -> list[str]:
+    """Whether the stage keeps its pace, as the pod guard is told it."""
+
+    progress = receipts.progress
+    if not active or progress is None:
+        return []
+    status = _text(progress.get("status")) or "unknown"
+    last_ok = _instant(progress.get("last_ok"))
+    line = f"Progress: {status}"
+    if status != "ok" and last_ok is not None:
+        line += f", last on pace {_clock(last_ok)}"
+    findings = progress.get("findings")
+    if isinstance(findings, list) and findings and _text(findings[0]):
+        line += f" ({findings[0]})"
+    return [line + "."]
 
 
 def _object(data: bytes | None) -> dict[str, Any] | None:
@@ -249,6 +269,7 @@ def render(
             f"{estimate_file.get('last_write_failure') if estimate_file else None}."
         )
 
+    lines.extend(_progress_lines(receipts, active))
     lines.extend(_deadline_lines(receipts, now, estimate_note))
     lines.extend(_spend_lines(receipts, now))
 

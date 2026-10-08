@@ -161,7 +161,6 @@ from operations.pod.notify_hooks import (
     RunnerFactory,
     environment_runner,
     notify_deadline_at_risk_from_guard,
-    notify_stall_from_guard,
     notify_systemic_from_guard,
 )
 from operations.serving.config import ServingConfigInputs
@@ -173,7 +172,7 @@ from pipeline.orchestrator.run import (
     STOP_RECORD_SCHEMA,
 )
 
-from . import bootstrap_main, finish_estimate
+from . import bootstrap_main, finish_estimate, progress_watch
 from .bootstrap import BootstrapActions, BootstrapReport
 from .bootstrap_main import (
     DEFAULT_PROOF_FIXTURE,
@@ -437,6 +436,13 @@ class RunPlan:
         run report, rewritten on each liveness tick."""
 
         return Path(run_report_paths(self.report_path)[5])
+
+    @property
+    def progress_path(self) -> Path:
+        """Whether the current stage keeps its pace, and the last moment it did, beside the
+        run report, rewritten on each liveness tick (`progress_watch`)."""
+
+        return Path(run_report_paths(self.report_path)[6])
 
     @property
     def repository_commit(self) -> str:
@@ -1321,20 +1327,14 @@ def _guard_heartbeat_age(volume: Path, pod_id: str, instant: float) -> int | Non
     return max(0, int(instant - beat))
 
 
-# How long a live orchestrator may show no progress (no new transcript output, nothing
-# written in its run tree outside the serving logs) before pod_run stops holding the pod
-# and leaves the guard's idle check to decide. UNMEASURED: no stage's longest quiet stretch
-# has been measured yet.
-RUN_STALL_SECONDS = 15 * 60
-
-
 def run_tree_mark(root: Path) -> int | None:
-    """The newest modification time, in nanoseconds, of anything under `root` that a
-    stage wrote; None when `root` cannot be read.
+    """The newest modification time, in nanoseconds, of any directory under `root` that a
+    stage writes in; None when `root` cannot be read.
 
-    Directories count, so a published name or a replaced manifest moves the mark even
-    when the file's own time is older. The serving-logs directories do not: an engine
-    that sits idle still writes its log, and that is not the stage advancing.
+    Directories only: the run tree publishes every record by linking or renaming it into
+    place, which moves its directory's time, so the walk never stats the files one by
+    one. The serving-logs directories do not count: an engine that sits idle still
+    writes its log, and that is not the stage advancing.
     """
 
     newest: int | None = None
@@ -1344,54 +1344,15 @@ def run_tree_mark(root: Path) -> int | None:
         try:
             newest = max(newest or 0, directory.lstat().st_mtime_ns)
             with os.scandir(directory) as entries:
-                listed = list(entries)
+                pending.extend(
+                    Path(entry.path)
+                    for entry in entries
+                    if entry.name != SERVING_LOGS_DIR and entry.is_dir(follow_symlinks=False)
+                )
         except OSError:
             if directory == root:
                 return None
-            continue
-        for entry in listed:
-            try:
-                if entry.is_dir(follow_symlinks=False):
-                    if entry.name != SERVING_LOGS_DIR:
-                        pending.append(Path(entry.path))
-                    continue
-                newest = max(newest, entry.stat(follow_symlinks=False).st_mtime_ns)
-            except OSError:
-                continue
     return newest
-
-
-class RunProgress:
-    """Whether a live orchestrator is still doing something, judged once per liveness tick.
-
-    Progress is a change the stages own: output added to the transcript, or something
-    written in the run tree outside the serving logs. CPU time is not progress: an idle
-    model server in the orchestrator's process tree uses some on every tick. A run that
-    shows no change for `stall_seconds` is stalled until one comes; `last_progress`
-    names the last moment it showed one.
-    """
-
-    def __init__(
-        self,
-        *,
-        sample: Callable[[], tuple[int | None, int | None]],
-        now: Callable[[], datetime],
-        stall_seconds: float = RUN_STALL_SECONDS,
-    ) -> None:
-        self._sample = sample
-        self._now = now
-        self._stall_seconds = stall_seconds
-        self._last: tuple[int | None, int | None] | None = None
-        self.last_progress: datetime | None = None
-
-    def advancing(self) -> bool:
-        current = self._sample()
-        instant = self._now()
-        previous, self._last = self._last, current
-        if current != previous or self.last_progress is None:
-            self.last_progress = instant
-            return True
-        return (instant - self.last_progress).total_seconds() < self._stall_seconds
 
 
 def _file_size(path: Path) -> int | None:
@@ -1399,6 +1360,58 @@ def _file_size(path: Path) -> int | None:
         return path.stat().st_size
     except OSError:
         return None
+
+
+def _guard_file(volume: Path, pod_id: str | None, name: str) -> Path | None:
+    """`<name>-<pod id>` in this pod's guard directory; None when no guard armed one here
+    or the pod id is not the first process's own."""
+
+    guard = volume / POD_GUARD_DIRECTORY
+    if not _is_pod_id(pod_id) or not guard.is_dir():
+        return None
+    return guard / f"{name}-{pod_id}"
+
+
+class BackupList:
+    """`backup-<pod id>`: the run's trees, one absolute path per line, that the guard
+    copies to the volume when the pod has been idle for an hour.
+
+    Only trees that exist are listed, since the guard reads a listed path that is
+    missing as a lost run and refuses to delete the pod. Best effort: a failed write
+    says so and never stops the run.
+    """
+
+    def __init__(self, path: Path | None, trees: Sequence[Path]) -> None:
+        self._path = path
+        self._trees = tuple(dict.fromkeys(tree.absolute() for tree in trees))
+        self._listed: tuple[Path, ...] | None = None
+
+    def refresh(self) -> None:
+        if self._path is None:
+            return
+        present = tuple(tree for tree in self._trees if tree.is_dir())
+        if present == self._listed:
+            return
+        try:
+            atomic_write(self._path, "".join(f"{tree}\n" for tree in present).encode())
+            self._listed = present
+        except OSError as error:
+            print(f"pod_run could not write the guard's backup list: {error}", file=sys.stderr)
+
+    def clear(self) -> None:
+        """At a clean finish every record is on the volume, so nothing is left to back up."""
+
+        _remove(self._path)
+        self._listed = None
+
+
+def _remove(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        print(f"pod_run could not remove {path}: {error}", file=sys.stderr)
 
 
 def _guard_keepalive(volume: Path, pod_id: str | None) -> Callable[[], None]:
@@ -1411,10 +1424,9 @@ def _guard_keepalive(volume: Path, pod_id: str | None) -> Callable[[], None]:
     says so and never stops the run, and the deadline still ends the pod.
     """
 
-    guard = volume / POD_GUARD_DIRECTORY
-    if not _is_pod_id(pod_id) or not guard.is_dir():
+    path = _guard_file(volume, pod_id, "keepalive")
+    if path is None:
         return lambda: None
-    path = guard / f"keepalive-{pod_id}"
 
     def touch() -> None:
         try:
@@ -1618,6 +1630,7 @@ def _deadline_watch(
     sealed_budget: Mapping[str, str | None],
     notify: bool,
     notify_runner: RunnerFactory,
+    sample: Callable[[], finish_estimate.StageProgress | None],
     now: Callable[[], datetime],
 ) -> finish_estimate.DeadlineWatch:
     """The finish estimate and deadline-at-risk notice for this run.
@@ -1643,21 +1656,13 @@ def _deadline_watch(
             message=message, volume_mount=volume, runner_factory=notify_runner
         )
 
-    try:
-        chairs = load_models_toml(plan.models_config).chairs
-    except Exception as error:  # noqa: BLE001 -- the Attestatores total is then unknown
-        print(
-            f"pod_run {plan.run_id}: the roster could not be read for the finish estimate: {error}",
-            file=sys.stderr,
-        )
-        chairs = None
     budget, budget_problem, budget_source = _pod_budget(plan, sealed_budget)
     hourly_usd, hourly_source = _hourly_price(plan, rates)
     return finish_estimate.DeadlineWatch(
         run_id=plan.run_id,
         pod_id=known_pod,
         path=plan.estimate_path,
-        sample=finish_estimate.RunTreeProgress(plan.run_root / plan.run_id, chairs).sample,
+        sample=sample,
         budget=budget,
         budget_problem=budget_problem,
         hourly_usd=hourly_usd,
@@ -1669,6 +1674,48 @@ def _deadline_watch(
         if known_pod is None
         else (lambda: finish_estimate.pod_created_at(volume, known_pod)),
         send=send if notify else None,
+        now=now,
+    )
+
+
+def _run_tree_progress(plan: RunPlan) -> finish_estimate.RunTreeProgress:
+    try:
+        chairs = load_models_toml(plan.models_config).chairs
+    except Exception as error:  # noqa: BLE001 -- the Attestatores total is then unknown
+        print(
+            f"pod_run {plan.run_id}: the roster could not be read for the page counts: {error}",
+            file=sys.stderr,
+        )
+        chairs = None
+    return finish_estimate.RunTreeProgress(plan.run_root / plan.run_id, chairs)
+
+
+def _progress_watch(
+    plan: RunPlan,
+    *,
+    pod_id: str | None,
+    placement_tier: str,
+    tree: finish_estimate.RunTreeProgress,
+    now: Callable[[], datetime],
+) -> progress_watch.ProgressWatch:
+    """The progress check for this run, with each stage's planned pace at this tier."""
+
+    expected, problems = progress_watch.expected_rates(
+        models_config=plan.models_config,
+        serving_recipes_config=plan.serving_recipes_config,
+        decoding_config=plan.repository / "config" / "decoding.toml",
+        tier=placement_tier,
+    )
+    run_directory = plan.run_root / plan.run_id
+    return progress_watch.ProgressWatch(
+        run_id=plan.run_id,
+        path=plan.progress_path,
+        guard_line=_guard_file(plan.bootstrap.volume_mount_path, pod_id, "progress"),
+        expected=expected,
+        expected_problems=problems,
+        stage_hint=lambda: progress_watch.transcript_stage(plan.transcript_path),
+        count=tree.count,
+        change=lambda: (_file_size(plan.transcript_path), run_tree_mark(run_directory)),
         now=now,
     )
 
@@ -1983,10 +2030,30 @@ def main(
         "started_at": started_at,
     }
     _write_run_report(plan, {**base, "state": "bootstrapping", "exit_code": None})
-
-    report = bootstrap_main.run_bootstrap(
-        bootstrap_plan, now=now, actions_factory=actions_factory, environment=environment
+    backup = BackupList(
+        _guard_file(plan.bootstrap.volume_mount_path, pod_id, "backup"),
+        (plan.run_root / plan.run_id, plan.volume_run_root / plan.run_id),
     )
+    backup.refresh()
+    progress_line = _guard_file(plan.bootstrap.volume_mount_path, pod_id, "progress")
+
+    # The bootstrap has no liveness tick: a thread tells the guard which step runs, so a
+    # long hash or model load at low CPU is not read as an idle pod.
+    journal_path = bootstrap_plan.journal
+    with progress_watch.ProgressTicker(
+        progress_line,
+        status="bootstrapping",
+        late_status="bootstrapping",
+        check="bootstrap",
+        step=lambda: (
+            "running" if journal_path is None else progress_watch.bootstrap_step(journal_path)
+        ),
+        now=now,
+        interval_seconds=plan.interval_seconds,
+    ):
+        report = bootstrap_main.run_bootstrap(
+            bootstrap_plan, now=now, actions_factory=actions_factory, environment=environment
+        )
     if isinstance(report, bootstrap_main.BootstrapRefused):
         _write_run_report(
             plan,
@@ -1999,6 +2066,8 @@ def main(
                 "finished_at": _stamp(now()),
             },
         )
+        backup.clear()
+        _remove(progress_line)
         return EXIT_REFUSED
     if not report.green:
         _write_run_report(
@@ -2011,6 +2080,8 @@ def main(
                 "finished_at": _stamp(now()),
             },
         )
+        backup.clear()
+        _remove(progress_line)
         return EXIT_BOOTSTRAP_RED
     try:
         placement_tier, serving_config_inputs = _placement_tier(report)
@@ -2062,6 +2133,8 @@ def main(
             },
         )
         print(f"pod_run refused: {refusal}", file=sys.stderr)
+        backup.clear()
+        _remove(progress_line)
         return EXIT_REFUSED
 
     stop_record = Path(stop_directory.name) / "stop.json"
@@ -2081,18 +2154,14 @@ def main(
         "hold_path": str(plan.hold_path),
         "timing_journal_path": str(plan.timing_journal_path),
         "estimate_path": str(plan.estimate_path),
+        "progress_path": str(plan.progress_path),
     }
     _write_run_report(plan, {**running, "state": "running", "exit_code": None})
     journal = _liveness_journal(plan, base, now=now)
     keepalive = _guard_keepalive(plan.bootstrap.volume_mount_path, pod_id)
-    progress = RunProgress(
-        sample=lambda: (
-            _file_size(plan.transcript_path),
-            run_tree_mark(plan.run_root / plan.run_id),
-        ),
-        now=now,
-    )
-    stall_noticed = False
+    tree = _run_tree_progress(plan)
+    sample = progress_watch.TickSample(tree.sample)
+    watch = _progress_watch(plan, pod_id=pod_id, placement_tier=placement_tier, tree=tree, now=now)
     deadline_watch = _deadline_watch(
         plan,
         pod_id=pod_id,
@@ -2102,39 +2171,24 @@ def main(
         sealed_budget=sealed_budget,
         notify=args.notify,
         notify_runner=notify_runner,
+        sample=sample,
         now=now,
     )
 
     def liveness(pid: int, alive: bool) -> None:
-        # Only a run that is visibly working holds the pod: a hung child stops touching
-        # the keep-alive after the stall window, and the guard's idle check decides.
-        nonlocal stall_noticed
+        # Only a run that keeps its pace holds the pod. The guard reads the progress
+        # line and owns every notice about a slow or stalled run.
         journal(pid, alive)
         if not alive:
             return
+        backup.refresh()
+        current = sample.refresh()
         try:
             deadline_watch.tick()
         except Exception as error:  # noqa: BLE001 -- an estimate never stops a running stage
             deadline_watch.note_failure(error)
-        if progress.advancing():
-            stall_noticed = False
+        if watch.tick(current) == "ok":
             keepalive()
-            return
-        if not stall_noticed and _is_pod_id(pod_id) and progress.last_progress is not None:
-            stall_noticed = True
-            # Minutes, spaced: the credential check reads a compact ISO stamp as a token.
-            since = progress.last_progress.strftime("%Y-%m-%d %H:%M UTC")
-            outcome = notify_stall_from_guard(
-                pod_id=pod_id,
-                since=since,
-                volume_mount=plan.bootstrap.volume_mount_path,
-                runner_factory=notify_runner,
-            )
-            print(
-                f"pod_run {plan.run_id}: no progress since {since}; the guard's idle check "
-                f"now decides. {outcome.line()}",
-                file=sys.stderr,
-            )
 
     try:
         completed = runner(
@@ -2186,7 +2240,17 @@ def main(
     sync_failure = None
     if plan.local_run:
         try:
-            RunTreeSync(plan.run_root / plan.run_id, plan.volume_run_root / plan.run_id).sync()
+            with progress_watch.ProgressTicker(
+                progress_line,
+                status="ok",
+                # A copy running long is still copying: warned about, never deleted.
+                late_status="slow",
+                check="final-sync",
+                step=lambda: "final volume sync",
+                now=now,
+                interval_seconds=plan.interval_seconds,
+            ):
+                RunTreeSync(plan.run_root / plan.run_id, plan.volume_run_root / plan.run_id).sync()
         except (OSError, RunTreeSyncError) as error:
             sync_failure = str(error)
             exit_code = EXIT_FAILED
@@ -2297,6 +2361,8 @@ def main(
         "held_to_hard_deadline": holding,
         "hold_detail": hold_detail,
         "deadline_watch": deadline_watch.summary(),
+        "progress": watch.summary(),
+        "stage_rates": watch.stage_rates(),
         "finished_at": _stamp(now()),
     }
     if stop_problem is not None:
@@ -2318,6 +2384,10 @@ def main(
         final = {**final, "systemic": systemic, "systemic_notification": notice}
         print(f"pod_run {plan.run_id}: {systemic}; {notice}")
     _write_run_report(plan, final)
+    # The run is over: the guard's counters decide again.
+    _remove(progress_line)
+    if sync_failure is None:
+        backup.clear()
     if plan.no_hold:
         if sync_failure is not None:
             print(
