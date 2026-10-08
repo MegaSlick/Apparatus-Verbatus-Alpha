@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
@@ -177,8 +178,11 @@ MODEL_PAYLOAD_SUFFIXES = frozenset({".bin", ".gguf", ".onnx", ".pt", ".pth", ".s
 MAX_DOWNLOAD_RECORD_BYTES = 1_048_576
 # Repository-controlled JSON may not claim unbounded memory.
 MAX_SHARD_INDEX_BYTES = 16_777_216
-MATERIALIZATION_LOCK_TIMEOUT_SECONDS = 60.0
+# Another pod on the same volume may hold the lock through its whole store check (about
+# seven minutes for the real roster), so a second pod booting meanwhile waits that out.
+MATERIALIZATION_LOCK_TIMEOUT_SECONDS = 20 * 60.0
 MATERIALIZATION_LOCK_POLL_SECONDS = 0.1
+MATERIALIZATION_LOCK_NOTICE_SECONDS = 60.0
 
 
 class MaterializationFetcher(Protocol):
@@ -333,17 +337,31 @@ def _materialization_lock(root: Path):
             "model-store", f"cannot open materialization lock for {root}: {error}"
         ) from error
     with lock:
-        deadline = time.monotonic() + MATERIALIZATION_LOCK_TIMEOUT_SECONDS
+        started = time.monotonic()
+        deadline = started + MATERIALIZATION_LOCK_TIMEOUT_SECONDS
+        next_notice = started + MATERIALIZATION_LOCK_NOTICE_SECONDS
         while True:
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError as error:
-                remaining = deadline - time.monotonic()
+                clock = time.monotonic()
+                remaining = deadline - clock
                 if remaining <= 0:
                     raise DigestMismatchRefusal(
-                        "model-store", f"timed out acquiring materialization lock for {root}"
+                        "model-store",
+                        f"timed out acquiring materialization lock for {root} after "
+                        f"{MATERIALIZATION_LOCK_TIMEOUT_SECONDS:.0f} s",
                     ) from error
+                if clock >= next_notice:
+                    next_notice = clock + MATERIALIZATION_LOCK_NOTICE_SECONDS
+                    print(
+                        f"model-store: waiting {clock - started:.0f} s of "
+                        f"{MATERIALIZATION_LOCK_TIMEOUT_SECONDS:.0f} s for the materialization "
+                        f"lock on {root}, held by another materializer (perhaps another pod)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 time.sleep(min(MATERIALIZATION_LOCK_POLL_SECONDS, remaining))
             except OSError as error:
                 raise DigestMismatchRefusal(
