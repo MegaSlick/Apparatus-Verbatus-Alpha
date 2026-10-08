@@ -83,6 +83,7 @@ from common.stage import (  # noqa: E402
 from operations.serving.assembly import (  # noqa: E402
     SERVING_READER,
     bound_serving_recipes,
+    launch_row,
     stage_chair_client,
 )
 from operations.serving.chat_request import EngineSignalRefusal, send_chat_request  # noqa: E402
@@ -423,10 +424,13 @@ class _Pass:
         self.replanned = replanned
 
     def width(self) -> int:
-        """How many calls may be in flight: only a live engine batches, up to its row."""
+        """How many calls may be in flight: only a live engine batches, up to the
+        width its chair is launched with (the row's, or the capacity plan's)."""
         if self.chair is None or not self.chair.live:
             return 1
-        return self.chair.row().max_num_seqs
+        return launch_row(
+            self.context, self.chair.identity, self.context.args.placement_tier
+        ).max_num_seqs
 
     def sends_any(self, calls: list) -> bool:
         """Whether some call has no sealed record, so a live chair will be needed.

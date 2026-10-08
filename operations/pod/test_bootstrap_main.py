@@ -1600,7 +1600,7 @@ def test_a_placement_value_changed_after_a_green_bootstrap_refuses_the_resume(
     assert isinstance(first, BootstrapReport) and first.green
 
     ws.placement_config.write_bytes(
-        ws.placement_config.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+        ws.placement_config.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     )
     resumed_actions = _configuration_actions(plan)
     resumed = bootstrap_main.run_bootstrap(
@@ -2042,7 +2042,9 @@ def _surya_environment_answers(identity, profile, weights_root, golden_page, man
     }
 
 
-def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspace, dict]:
+def _serving_workspace(
+    tmp_path: Path, *, preflight_state: str, capacity: bool = False
+) -> tuple[Workspace, dict]:
     """A checked-out repository whose fixture roster has launchable vLLM rows.
 
     The committed catalogue holds fixture rows only, which the manager refuses
@@ -2082,6 +2084,9 @@ def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspa
             )
             row["gpu_memory_utilization"] = "0.50"
             row["preflight_state"] = preflight_state
+            if capacity:
+                row["weights_gib"] = "10"
+                row["kv_gib_per_seq"] = "1"
             rows.append(row)
     surya = models.chairs[SURYA_CHAIR]
     rows.extend(
@@ -2804,3 +2809,76 @@ def test_a_preflight_without_the_dai_chair_never_fetches_the_record(tmp_path: Pa
     record = _build_preflight(only_chandra, replace(seams, recordgold_fetch=never))()
     assert record["color"] == "green"
     assert {receipt["chair"] for receipt in record["smoke_receipts"]} == {"attestator_1"}
+
+
+def _measured_probe(vram_mib: int):  # type: ignore[no-untyped-def]
+    """``SystemGpuProbe`` over a scripted ``nvidia-smi``: a measured card, as on a pod."""
+
+    import subprocess
+    from types import SimpleNamespace
+
+    from operations.pod.preflight import SystemGpuProbe
+
+    def runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        if len(argv) > 1:
+            return subprocess.CompletedProcess(argv, 0, f"fake GPU, 550, {vram_mib}, 8.0\n", "")
+        return subprocess.CompletedProcess(argv, 0, "CUDA Version: 12.4", "")
+
+    return SystemGpuProbe(
+        disk_path=Path("/"),
+        runner=runner,
+        disk_usage=lambda _path: SimpleNamespace(free=100 * 1024**3),
+    )
+
+
+def test_preflight_publishes_the_measured_card_and_smokes_at_the_planned_width(
+    tmp_path: Path,
+) -> None:
+    """PREFLIGHT's receipt carries the card and the capacity plan, and each smoke
+    launches at the planned width: 0.50 x 48 GiB - 10 GiB weights - 4 GiB overhead
+    leaves 10 GiB, ten sequences of 1 GiB, against the rows' one."""
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven", capacity=True)
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, launcher = _preflight_seams(tmp_path, identities)
+    seams = replace(seams, gpu_probe=_measured_probe(48 * 1024))
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["color"] == "green"
+    environment = record["environment"]
+    assert (environment["vram_gib"], environment["gpu_count"]) == ("48", 1)
+    assert environment["compute_capability"] == (8, 0)
+    capacity = record["capacity_plan"]
+    assert capacity["card"] == {"vram_gib": "48", "gpu_count": 1, "compute_capability": "8.0"}
+    assert capacity["tier"] == PROVEN_TIER
+    assert {role: chair["max_num_seqs"] for role, chair in capacity["chairs"].items()} == {
+        role: 10 for role in identities
+    }
+    assert all(chair["row_max_num_seqs"] == 1 for chair in capacity["chairs"].values())
+    for argv, _log in launcher.calls:
+        assert argv[argv.index("--max-num-seqs") + 1] == "10"
+    for smoke in record["smoke_receipts"]:
+        audit = smoke["serving_launch_audit"]
+        assert audit["capacity"]["plan_sha256"] == capacity["plan_sha256"]
+        assert (audit["capacity"]["row_max_num_seqs"], audit["capacity"]["max_num_seqs"]) == (1, 10)
+
+
+def test_an_unmeasured_card_publishes_no_plan_and_smokes_at_the_row(tmp_path: Path) -> None:
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven", capacity=True)
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, launcher = _preflight_seams(tmp_path, identities)
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["color"] == "green"
+    assert record["capacity_plan"] is None
+    assert record["environment"]["gpu_count"] == 1
+    for argv, _log in launcher.calls:
+        assert argv[argv.index("--max-num-seqs") + 1] == "1"
+    for smoke in record["smoke_receipts"]:
+        assert "capacity" not in smoke["serving_launch_audit"]

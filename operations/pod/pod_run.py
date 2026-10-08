@@ -163,6 +163,7 @@ from operations.pod.notify_hooks import (
     notify_deadline_at_risk_from_guard,
     notify_systemic_from_guard,
 )
+from operations.serving.capacity import CapacityPlan
 from operations.serving.config import ServingConfigInputs
 from operations.serving.errors import ServingConfigurationError
 from operations.submit import gate
@@ -1139,6 +1140,35 @@ def _placement_tier(report: BootstrapReport) -> tuple[str, dict[str, object]]:
     return tier, validated.to_record()
 
 
+def _capacity_plan(report: BootstrapReport, placement_tier: str) -> CapacityPlan | None:
+    """PREFLIGHT's capacity plan for the measured card, or None when it published none.
+
+    None (an unmeasured card) leaves every row at its own width. A plan that does
+    not parse, was changed after PREFLIGHT, or names another tier or other serving
+    digests than the receipt's is refused rather than dropped, since dropping it
+    would quietly run the card at the rows' widths.
+    """
+
+    receipt = report.receipts.get("preflight")
+    raw = receipt.get("capacity_plan") if isinstance(receipt, dict) else None
+    if raw is None:
+        return None
+    try:
+        plan = CapacityPlan.from_record(raw)
+        plan.require_inputs(ServingConfigInputs.from_record(receipt["serving_config_inputs"]))
+    except (ServingConfigurationError, KeyError) as error:
+        raise RunRefusal(
+            f"the green bootstrap's PREFLIGHT receipt carries a capacity plan that was refused: "
+            f"{error}"
+        ) from error
+    if plan.tier != placement_tier:
+        raise RunRefusal(
+            f"the PREFLIGHT capacity plan was derived at tier {plan.tier!r}, not the measured "
+            f"placement tier {placement_tier!r}"
+        )
+    return plan
+
+
 def _stamp(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
@@ -2085,6 +2115,7 @@ def main(
         return EXIT_BOOTSTRAP_RED
     try:
         placement_tier, serving_config_inputs = _placement_tier(report)
+        capacity_plan = _capacity_plan(report, placement_tier)
         receipt = report.receipts.get("preflight")
         smokes = receipt.get("smoke_receipts") if isinstance(receipt, dict) else None
         smoked = (
@@ -2140,10 +2171,13 @@ def main(
     stop_record = Path(stop_directory.name) / "stop.json"
     command = plan.orchestrator_argv(stop_record)
     command += ["--placement-tier", placement_tier]
+    if capacity_plan is not None:
+        command += ["--capacity-plan", capacity_plan.to_argument()]
     running: dict[str, object] = {
         **base,
         "bootstrap": report.to_record(),
         "placement_tier": placement_tier,
+        "capacity_plan": capacity_plan.to_record() if capacity_plan is not None else None,
         "serving_config_inputs": serving_config_inputs,
         "orchestrator_argv": command,
         # Named in the report, not only written beside it: a fetched report is

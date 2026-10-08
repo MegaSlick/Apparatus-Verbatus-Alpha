@@ -475,11 +475,15 @@ def invoke(program: str, args: argparse.Namespace, *, coniector_next: bool = Fal
             ),
             omit_unset=True,
         )
-    # The placement tier is a measured runtime fact of the card, not run
-    # configuration, so an unset one is omitted and stage_parser's
+    # The placement tier and the capacity plan are measured runtime facts of the card,
+    # not run configuration, so an unset one is omitted and stage_parser's
     # own default (None) governs.
     command += _argv(
-        (("--pdf-target-dpi", args.pdf_target_dpi), ("--placement-tier", args.placement_tier)),
+        (
+            ("--pdf-target-dpi", args.pdf_target_dpi),
+            ("--placement-tier", args.placement_tier),
+            ("--capacity-plan", getattr(args, "capacity_plan", None)),
+        ),
         omit_unset=True,
     )
     if getattr(args, "mechanics_qualification", False):
@@ -1028,6 +1032,14 @@ def main() -> int:
             "the measured placement tier of the card serving this run; forwarded "
             "to every stage when set, omitted (not sealed) otherwise — see "
             "stage_parser's own flag for the full rationale"
+        ),
+    )
+    parser.add_argument(
+        "--capacity-plan",
+        default=None,
+        help=(
+            "PREFLIGHT's capacity plan for the card serving this run; forwarded to every "
+            "stage when set, omitted (not sealed) otherwise, like --placement-tier"
         ),
     )
     parser.add_argument(

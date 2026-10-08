@@ -143,7 +143,19 @@ _PROFILE_FIELDS = {
 # row omitting them still launches -- `request_capacity.row_image_geometry`
 # refuses by name instead of counting against a wrong default -- so a
 # catalogue not yet measured is incomplete rather than unloadable.
-_OPTIONAL_PROFILE_FIELDS = {"patch_size", "merge_size", "shares_service_with"}
+#
+# `weights_gib` and `kv_gib_per_seq` are optional too: a row's weights on the
+# card and the KV one full-length sequence holds, both GiB as decimal strings,
+# from the row's own notes. A row carrying both can be widened past its
+# `max_num_seqs` on a card with room (`operations/serving/capacity.py`); a row
+# without them is launched exactly as written.
+_OPTIONAL_PROFILE_FIELDS = {
+    "patch_size",
+    "merge_size",
+    "shares_service_with",
+    "weights_gib",
+    "kv_gib_per_seq",
+}
 # What shapes the running service, as distinct from how a caller waits for it or
 # times its requests. Two rows sharing one service must agree on every one: the
 # argv, the readiness probe the service was proven ready with, and the package
@@ -354,6 +366,10 @@ class ServingProfile:
     # ``common/request_capacity.py`` refuses by name rather than defaulting.
     patch_size: int | None = None
     merge_size: int | None = None
+    # The row's capacity estimates in GiB, optional on the row; ``None`` means the
+    # row is never widened past its own ``max_num_seqs``.
+    weights_gib: Decimal | None = None
+    kv_gib_per_seq: Decimal | None = None
     kind: str = "vllm"
     # The chair whose running service this row may take over (see the module
     # docstring); ``None`` for a row that always starts its own.
@@ -651,6 +667,8 @@ def _parse_profile(
         raise ServingConfigurationError("min_pixels cannot exceed max_pixels")
     patch_size = _optional_positive_int(raw, "patch_size")
     merge_size = _optional_positive_int(raw, "merge_size")
+    weights_gib = _optional_gib(raw, "weights_gib")
+    kv_gib_per_seq = _optional_gib(raw, "kv_gib_per_seq")
     enable_prefix_caching = _bool(raw["enable_prefix_caching"], "enable_prefix_caching")
     enforce_eager = _bool(raw["enforce_eager"], "enforce_eager")
     trust_remote_code = _bool(raw["trust_remote_code"], "trust_remote_code")
@@ -726,6 +744,8 @@ def _parse_profile(
         max_pixels=max_pixels,
         patch_size=patch_size,
         merge_size=merge_size,
+        weights_gib=weights_gib,
+        kv_gib_per_seq=kv_gib_per_seq,
         enable_prefix_caching=enable_prefix_caching,
         enforce_eager=enforce_eager,
         trust_remote_code=trust_remote_code,
@@ -1072,6 +1092,21 @@ def _optional_positive_int(raw: Mapping[str, Any], field: str) -> int | None:
     if field not in raw:
         return None
     return _positive_int(raw[field], field)
+
+
+def _optional_gib(raw: Mapping[str, Any], field: str) -> Decimal | None:
+    """A row's optional size in GiB, written as a decimal string so its digest is exact."""
+
+    if field not in raw:
+        return None
+    value = raw[field]
+    try:
+        parsed = Decimal(value) if isinstance(value, str) else None
+    except InvalidOperation:
+        parsed = None
+    if parsed is None or not parsed.is_finite() or parsed <= 0:
+        raise ServingConfigurationError(f"{field} must be a positive decimal string of GiB")
+    return parsed
 
 
 def _nonnegative_int(value: Any, field: str) -> int:

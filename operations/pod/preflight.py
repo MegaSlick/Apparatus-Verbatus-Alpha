@@ -311,6 +311,9 @@ class PlacementRecipe:
     context_cap: int
     pixel_cap: int
     batch_size: int
+    # The most sequences a capacity plan may launch a row with at this tier
+    # (operations/serving/capacity.py); None leaves the plan's own hard cap.
+    planned_batch_ceiling: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -327,6 +330,13 @@ class PlacementRecipe:
         ):
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise PlacementRefusal(f"{label} must be a positive integer")
+        ceiling = self.planned_batch_ceiling
+        if ceiling is not None and (
+            not isinstance(ceiling, int) or isinstance(ceiling, bool) or ceiling < self.batch_size
+        ):
+            raise PlacementRefusal(
+                "planned batch ceiling must be an integer no smaller than the batch size"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -547,7 +557,7 @@ def load_placement_table(path: str | Path, *, source_bytes: bytes | None = None)
         if unknown:
             raise PlacementRefusal(f"placement tier has unknown field(s) {unknown}")
         recipe_raw = raw_tier.get("recipe")
-        if not isinstance(recipe_raw, dict) or set(recipe_raw) != {
+        if not isinstance(recipe_raw, dict) or set(recipe_raw) - {"planned_batch_ceiling"} != {
             "engine_memory_fraction",
             "context_cap",
             "pixel_cap",
@@ -567,6 +577,7 @@ def load_placement_table(path: str | Path, *, source_bytes: bytes | None = None)
                         context_cap=recipe_raw["context_cap"],
                         pixel_cap=recipe_raw["pixel_cap"],
                         batch_size=recipe_raw["batch_size"],
+                        planned_batch_ceiling=recipe_raw.get("planned_batch_ceiling"),
                     ),
                 )
             )
@@ -966,6 +977,7 @@ class PreflightReport:
                 "driver_version": self.profile.driver_version,
                 "compute_capability": self.profile.compute_capability,
                 "vram_gib": str(self.profile.vram_gib),
+                "gpu_count": self.profile.gpu_count,
                 "disk_gib": str(self.profile.disk_gib),
                 "dtype": self.profile.dtype,
                 "discovery_detail": self.profile.discovery_detail or None,

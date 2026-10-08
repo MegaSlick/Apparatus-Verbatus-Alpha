@@ -35,6 +35,7 @@ from common.contracts.canonical import canonical_bytes
 from common.contracts.serving import SERVING_LAUNCH_AUDIT_SCHEMA
 from common.credentials import log_word_carries_credential, looks_like_credential_field
 
+from .capacity import CapacityPlan, planned_ceiling
 from .config import (
     FixtureProfile,
     InProcessProfile,
@@ -370,6 +371,8 @@ class ServingManager:
         monotonic: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
         shutdown_timeout_seconds: float = 10.0,
+        capacity_plan: CapacityPlan | None = None,
+        placement_table: Any | None = None,
         hand_off_path: str | Path | None = None,
         service_scope: str | None = None,
         _launch_purpose: object | None = None,
@@ -410,8 +413,17 @@ class ServingManager:
             MECHANICS_QUALIFICATION_PURPOSE,
         ):
             raise ValueError("serving launch purpose is not a recognized qualification purpose")
+        if capacity_plan is not None:
+            capacity_plan.require_inputs(config_inputs)
+            if placement_table is None:
+                raise ValueError(
+                    "a capacity plan needs the sealed placement table, whose ceilings bound it"
+                )
         self.registry = registry
         self.recipes = recipes
+        # The measured card's plan, or None: then every row launches exactly as written.
+        self.capacity_plan = capacity_plan
+        self.placement_table = placement_table
         self.config_inputs = config_inputs
         self.launcher = launcher
         self.http = http
@@ -472,9 +484,17 @@ class ServingManager:
         service_events: dict[str, object] = {}
         try:
             # The recipe check comes before any snapshot is verified.
-            profile = self._launchable_profile(identity, tier)
+            row = self._launchable_profile(identity, tier)
+            # Proof marks and digests are checked on the row; the plan only widens it.
+            profile = (
+                self.capacity_plan.launch_profile(row, identity.role)
+                if self.capacity_plan is not None
+                else row
+            )
+            if self.capacity_plan is not None:
+                self._plan_ceilings(profile)
             self._assert_runtime(profile)
-            adopted = self._take_over_or_clear(identity, profile, service_events)
+            adopted = self._take_over_or_clear(identity, profile, service_events, row)
             if adopted is not None:
                 return adopted
             snapshot = self.registry.ensure(identity)
@@ -522,6 +542,7 @@ class ServingManager:
                     snapshot=snapshot,
                     runtime_packages=observed_packages,
                     started_at=started_at,
+                    row=row,
                 ),
                 **service_events,
             }
@@ -577,6 +598,7 @@ class ServingManager:
         identity: ChairIdentity,
         profile: ServingProfile,
         events: dict[str, object],
+        row: ServingProfile | None = None,
     ) -> ServiceHandle | None:
         """Take over a handed-off service this row shares, or stop whatever was handed off.
 
@@ -594,14 +616,18 @@ class ServingManager:
             return None
         if profile.shares_service_with is not None:
             try:
-                return self._adopt(identity, profile, record)
+                return self._adopt(identity, profile, record, row)
             except _AdoptionRefused as refused:
                 events["adoption_refused"] = str(refused)
         events["displaced_service"] = self._displace(record, identity)
         return None
 
     def _adopt(
-        self, identity: ChairIdentity, profile: ServingProfile, record: Mapping[str, Any]
+        self,
+        identity: ChairIdentity,
+        profile: ServingProfile,
+        record: Mapping[str, Any],
+        row: ServingProfile | None = None,
     ) -> ServiceHandle:
         """Take over the handed-off service, publishing a receipt and audit for `identity`.
 
@@ -703,6 +729,7 @@ class ServingManager:
                     snapshot=snapshot,
                     runtime_packages=observed_packages,
                     started_at=audit["started_at"],
+                    row=row,
                 ),
                 "launch_purpose": ADOPTED_LAUNCH,
                 "adoption": {
@@ -1191,6 +1218,35 @@ class ServingManager:
         )
         return parse_openai_answer(response, kind=kind, expected_model_id=model_id)
 
+    def _plan_ceilings(self, profile: ServingProfile) -> dict[str, int]:
+        """The tier's two configured ceilings, refusing a plan that is not bound by them.
+
+        ``batch_size`` bounds the row (PREFLIGHT checks it); ``planned_batch_ceiling``
+        bounds the width a plan launches it with. A plan derived under another
+        ceiling than the sealed placement table's is refused too.
+        """
+
+        plan = self.capacity_plan
+        if plan is None:
+            return {}
+        try:
+            tier = self.placement_table.tier_named(profile.tier)
+        except ValueError as error:
+            raise ServingConfigurationError(str(error)) from error
+        ceiling = planned_ceiling(tier)
+        if plan.max_num_seqs_cap != ceiling:
+            raise ServingConfigurationError(
+                f"capacity plan was derived under a ceiling of "
+                f"{plan.max_num_seqs_cap} sequences, but tier {profile.tier!r} "
+                f"sets planned_batch_ceiling {ceiling}"
+            )
+        if profile.max_num_seqs > ceiling:
+            raise ServingConfigurationError(
+                f"capacity plan would launch chair {profile.chair!r} with {profile.max_num_seqs} "
+                f"sequences, above tier {profile.tier!r}'s planned_batch_ceiling of {ceiling}"
+            )
+        return {"row_ceiling": tier.recipe.batch_size, "planned_ceiling": ceiling}
+
     def _launch_audit(
         self,
         *,
@@ -1202,8 +1258,13 @@ class ServingManager:
         snapshot: VerifiedSnapshot,
         runtime_packages: Mapping[str, str],
         started_at: str,
+        row: ServingProfile | None = None,
     ) -> Mapping[str, object]:
-        """Return operational evidence kept outside the receipt schema."""
+        """Return operational evidence kept outside the receipt schema.
+
+        ``profile`` is the shape launched. Under a capacity plan, ``capacity``
+        records the row's width beside it, the card and the plan's digest.
+        """
 
         argv_digest = _argv_sha256(argv)
         pins = model_and_tokenizer_pins(snapshot.identity)
@@ -1212,8 +1273,18 @@ class ServingManager:
         model_revision, tokenizer_revision = (
             pins if pins is not None else (snapshot.identity.receipt_revision,) * 2
         )
+        capacity: dict[str, object] = {}
+        if self.capacity_plan is not None:
+            capacity["capacity"] = {
+                "plan_sha256": self.capacity_plan.digest,
+                "card": self.capacity_plan.card_record(),
+                "row_max_num_seqs": (row or profile).max_num_seqs,
+                "max_num_seqs": profile.max_num_seqs,
+                **self._plan_ceilings(profile),
+            }
         return MappingProxyType(
             {
+                **capacity,
                 "schema": SERVING_LAUNCH_AUDIT_SCHEMA,
                 "chair": identity.role,
                 "producer": self.producer,

@@ -59,6 +59,7 @@ from .assembly import (
     _load_bound_configuration,
     assemble_serving_smoke_reader,
 )
+from .capacity import CapacityPlan, ChairCapacity
 from .client import ServingModeRefusal, serving_mode_for
 from .config import (
     MAX_JSON_DEPTH,
@@ -684,6 +685,7 @@ def manager_for(
     probe_http_status: int | None = None,
     usage: Mapping[str, object] | None = None,
     launch_purpose: object | None = None,
+    capacity_plan: CapacityPlan | None = None,
 ):
     clock = Clock()
     http = FakeHttp(
@@ -725,6 +727,8 @@ def manager_for(
         monotonic=clock.monotonic,
         sleep=clock.sleep,
         residency_lease=residency_lease or FileResidencyLease(tmp_path / "pod-gpu.lock"),
+        capacity_plan=capacity_plan,
+        placement_table=_PLACEMENT if capacity_plan is not None else None,
         _launch_purpose=launch_purpose,
     )
     return manager, clock, http, launcher, registry, publisher
@@ -2775,7 +2779,7 @@ def test_pod_assembly_refuses_recipe_or_placement_path_substitution_before_effec
     copied_placement.write_bytes(
         (root / "config/pod_placement.toml")
         .read_bytes()
-        .replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+        .replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     )
 
     with pytest.raises(ServingConfigurationError, match="serving recipes differ"):
@@ -2825,7 +2829,7 @@ def test_load_placement_table_parses_the_bytes_it_is_given_and_not_the_path(
 
     root = Path(__file__).resolve().parents[2]
     sealed = (root / "config/pod_placement.toml").read_bytes()
-    altered = sealed.replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+    altered = sealed.replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     assert altered != sealed, "the fixture no longer contains the batch size this test flips"
 
     path = tmp_path / "pod_placement.toml"
@@ -2835,7 +2839,7 @@ def test_load_placement_table_parses_the_bytes_it_is_given_and_not_the_path(
     from_path = load_placement_table(path)
 
     assert from_bytes.choose(Decimal(24)).recipe.batch_size == 1
-    assert from_path.choose(Decimal(24)).recipe.batch_size == 9
+    assert from_path.choose(Decimal(24)).recipe.batch_size == 3
 
 
 def test_bound_configuration_parses_the_snapshot_it_digested_not_a_second_read(
@@ -2846,7 +2850,7 @@ def test_bound_configuration_parses_the_snapshot_it_digested_not_a_second_read(
     root = Path(__file__).resolve().parents[2]
     recipes_path = root / "config/serving_recipes.toml"
     sealed = (root / "config/pod_placement.toml").read_bytes()
-    altered = sealed.replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+    altered = sealed.replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     assert altered != sealed, "the fixture no longer contains the batch size this test flips"
 
     placement_path = tmp_path / "pod_placement.toml"
@@ -3073,7 +3077,7 @@ def test_serving_recipe_and_placement_bytes_are_bound_into_the_run_configuration
     )["config_digest"]
     assert first != second
     copied_placement.write_bytes(
-        copied_placement.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+        copied_placement.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     )
     third = run_config_bindings(
         models,
@@ -5121,6 +5125,104 @@ def test_the_smoke_refuses_recordgold_chairs_without_a_verified_gold_text(
         _recordgold_smoke(record, TEST_GOLD_TEXT + ".", page_sha256)
 
 
+_PLACEMENT = load_placement_table(Path(__file__).resolve().parents[2] / "config/pod_placement.toml")
+
+
+def _reader_plan(
+    *,
+    row_max_num_seqs: int = 1,
+    max_num_seqs: int = 6,
+    inputs: ServingConfigInputs | None = None,
+    cap: int = 48,
+) -> CapacityPlan:
+    return CapacityPlan(
+        max_num_seqs_cap=cap,
+        vram_gib=Decimal("95.5"),
+        gpu_count=1,
+        compute_capability="12.0",
+        tier=TIER,
+        serving_config_inputs=inputs or ServingConfigInputs("1" * 64, "2" * 64),
+        chairs={
+            "reader": ChairCapacity(
+                recipe="reader-v1",
+                row_max_num_seqs=row_max_num_seqs,
+                max_num_seqs=max_num_seqs,
+                weights_gib=Decimal("10"),
+                kv_gib_per_seq=Decimal("1"),
+                memory_fraction=Decimal("0.85"),
+            )
+        },
+    )
+
+
+def test_without_a_plan_the_row_launches_as_written_and_the_audit_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
+    handle = manager.start(chair, TIER)
+    assert _value_after(launcher.calls[0][0], "--max-num-seqs") == "1"
+    assert handle.profile.max_num_seqs == 1
+    assert "capacity" not in handle.launch_audit
+    handle.stop()
+
+
+def test_a_plan_widens_the_launch_and_the_audit_records_row_derived_card_and_digest(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    plan = _reader_plan()
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair, capacity_plan=plan)
+    handle = manager.start(chair, TIER)
+    argv = launcher.calls[0][0]
+    assert _value_after(argv, "--max-num-seqs") == "6"
+    # Nothing else in the launch moves.
+    assert _value_after(argv, "--max-num-batched-tokens") == "256"
+    assert _value_after(argv, "--gpu-memory-utilization") == "0.85"
+    assert _value_after(argv, "--max-model-len") == "2048"
+    assert handle.profile.max_num_seqs == 6
+    audit = handle.launch_audit
+    assert audit["capacity"] == {  # type: ignore[index]
+        "plan_sha256": plan.digest,
+        "card": {"vram_gib": "95.5", "gpu_count": 1, "compute_capability": "12.0"},
+        "row_max_num_seqs": 1,
+        "max_num_seqs": 6,
+        "row_ceiling": 2,
+        "planned_ceiling": 48,
+    }
+    assert audit["profile"]["max_num_seqs"] == 6  # type: ignore[index]
+    # The fields the serving spans and the pod watcher read are still there.
+    for key in ("schema", "chair", "launch_purpose", "started_at", "readiness", "command"):
+        assert key in audit
+    expected_argv_digest = hashlib.sha256(
+        json.dumps(list(argv), ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert audit["command"]["argv_sha256"] == expected_argv_digest  # type: ignore[index]
+    handle.stop()
+
+
+def test_a_plan_derived_from_another_row_is_refused_before_launch(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, capacity_plan=_reader_plan(row_max_num_seqs=2)
+    )
+    with pytest.raises(ServingRecipeRefusal, match="max_num_seqs"):
+        manager.start(chair, TIER)
+    assert launcher.calls == []
+
+
+def test_a_plan_from_other_serving_configuration_is_refused_at_construction(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    with pytest.raises(ServingConfigurationError, match="sealed"):
+        reader_manager(
+            tmp_path,
+            chair=chair,
+            capacity_plan=_reader_plan(inputs=ServingConfigInputs("3" * 64, "2" * 64)),
+        )
+
+
 # --- a shared service: handed off by one stage's process, taken over by the next ----
 
 
@@ -5172,6 +5274,7 @@ def _shared_managers(
     second_scope: str = "run-a",
     identities: Mapping[str, ChairIdentity] | None = None,
     rows: tuple[dict[str, object], ...] | None = None,
+    capacity_plan: CapacityPlan | None = None,
 ):
     """Two managers as two stage processes on one pod: one card (endpoint), one lease
     and one hand-off path, each with its own launcher, registry and publisher."""
@@ -5207,6 +5310,8 @@ def _shared_managers(
             residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
             hand_off_path=tmp_path / "pod-gpu.hand-off.json",
             service_scope=scope,
+            capacity_plan=capacity_plan,
+            placement_table=_PLACEMENT if capacity_plan is not None else None,
         )
         built.append(SimpleNamespace(manager=manager, launcher=launcher, publisher=publisher))
     return built[0], built[1], identities, clock
@@ -5389,6 +5494,90 @@ def test_the_real_catalogue_shares_the_perlector_service_with_the_reconstructor(
     assert row.shares_service_with == "perlector"
 
 
+def _planned_shared_rows() -> tuple[dict[str, object], ...]:
+    capacity = {"weights_gib": "10", "kv_gib_per_seq": "1"}
+    perlector_row, reconstructor_row = _shared_rows(**capacity)
+    return {**perlector_row, **capacity}, reconstructor_row
+
+
+def test_under_a_plan_a_shared_pair_launches_at_one_width_and_the_take_over_holds(
+    tmp_path: Path,
+) -> None:
+    """The plan gives the reconstructor the width it gives the Perlector, so the
+    Coniector's chair renders the command the Perlector's service was launched with
+    and takes it over: 0.78 x 48 GiB - 10 - 4 leaves 23 sequences of 1 GiB."""
+    from operations.serving.capacity import derive_capacity_plan
+
+    identities = _shared_identities()
+    rows = _planned_shared_rows()
+    plan = derive_capacity_plan(
+        vram_gib=Decimal("48"),
+        gpu_count=1,
+        compute_capability="8.6",
+        tier=TIER,
+        engine_memory_fraction=Decimal("0.78"),
+        recipes=recipes(*rows, identities=identities),
+        chairs=identities,
+        serving_config_inputs=ServingConfigInputs("1" * 64, "2" * 64),
+        max_num_seqs_cap=48,
+    )
+    assert plan.chairs["perlector"].max_num_seqs == plan.chairs["reconstructor"].max_num_seqs
+    assert plan.chairs["reconstructor"].max_num_seqs == 23
+    first, second, identities, clock = _shared_managers(
+        tmp_path, identities=identities, rows=rows, capacity_plan=plan
+    )
+    original = _hand_off_from_first(first, identities, clock)
+    launched = first.launcher.calls[0][0]
+    assert launched[launched.index("--max-num-seqs") + 1] == "23"
+
+    adopted = second.manager.start(identities["reconstructor"], TIER)
+
+    assert second.launcher.calls == []
+    _receipt, audit = second.publisher.calls[-1]
+    assert audit["launch_purpose"] == "adopted"
+    assert audit["command"]["argv_sha256"] == original.launch_audit["command"]["argv_sha256"]
+    assert audit["capacity"]["max_num_seqs"] == 23
+    assert audit["capacity"]["row_max_num_seqs"] == 1
+    assert audit["capacity"]["plan_sha256"] == plan.digest
+    assert adopted.profile.max_num_seqs == 23
+    adopted.stop()
+
+
+def test_a_plan_that_split_a_shared_pair_would_cost_the_take_over(tmp_path: Path) -> None:
+    """Why the pair is planned once: a reconstructor width other than the
+    Perlector's renders another command, and the service is stopped and reloaded."""
+    identities = _shared_identities()
+    figures = {
+        "row_max_num_seqs": 1,
+        "weights_gib": Decimal("10"),
+        "kv_gib_per_seq": Decimal("1"),
+        "memory_fraction": Decimal("0.78"),
+    }
+    split = CapacityPlan(
+        max_num_seqs_cap=48,
+        vram_gib=Decimal("48"),
+        gpu_count=1,
+        compute_capability="8.6",
+        tier=TIER,
+        serving_config_inputs=ServingConfigInputs("1" * 64, "2" * 64),
+        chairs={
+            "perlector": ChairCapacity(recipe="perlector-v1", max_num_seqs=23, **figures),
+            "reconstructor": ChairCapacity(recipe="reconstructor-v1", max_num_seqs=8, **figures),
+        },
+    )
+    first, second, identities, clock = _shared_managers(
+        tmp_path, identities=identities, rows=_planned_shared_rows(), capacity_plan=split
+    )
+    _hand_off_from_first(first, identities, clock)
+
+    started = second.manager.start(identities["reconstructor"], TIER)
+
+    _receipt, audit = second.publisher.calls[-1]
+    assert audit["launch_purpose"] == "normal"
+    assert "render another vLLM command" in audit["adoption_refused"]
+    started.stop()
+
+
 def test_a_server_gone_with_its_engine_still_running_is_stopped_not_forgotten(
     tmp_path: Path,
 ) -> None:
@@ -5424,3 +5613,38 @@ def test_a_gone_service_whose_lease_is_still_held_keeps_its_record(tmp_path: Pat
         holder.release()
     assert second.manager.reclaim_hand_off()["outcome"] == "already-exited"
     assert not (tmp_path / "pod-gpu.hand-off.json").exists()
+
+
+def test_a_plan_not_bound_by_the_tier_s_planned_ceiling_is_refused_before_launch(
+    tmp_path: Path,
+) -> None:
+    """generic-48gb sets planned_batch_ceiling 48; a plan derived under 64 could launch
+    past it, so it is refused before anything starts."""
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, capacity_plan=_reader_plan(max_num_seqs=60, cap=64)
+    )
+    with pytest.raises(ServingRecipeRefusal, match="planned_batch_ceiling 48"):
+        manager.start(chair, TIER)
+    assert launcher.calls == []
+
+
+def test_a_plan_without_the_placement_table_is_refused_at_construction(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="placement table"):
+        ServingManager(
+            registry=FakeRegistry({}, tmp_path),
+            recipes=recipes(
+                profile_row(
+                    recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+                ),
+                identities={"reader": identity("reader", "reader-v1")},
+            ),
+            config_inputs=ServingConfigInputs("1" * 64, "2" * 64),
+            launcher=FakeLauncher(FakeHttp(model_ids=())),
+            http=FakeHttp(model_ids=()),
+            receipt_publisher=FakePublisher(FakeHttp(model_ids=())),
+            log_root=tmp_path / "logs",
+            package_inspector=FakePackages({"vllm": "0.test"}),
+            residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
+            capacity_plan=_reader_plan(),
+        )

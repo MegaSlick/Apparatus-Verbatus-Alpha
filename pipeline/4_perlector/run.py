@@ -49,6 +49,7 @@ from common.stage import (  # noqa: E402
 )
 from operations.serving.assembly import (  # noqa: E402
     bound_serving_recipes,
+    launch_row,
     stage_chair_client,
 )
 from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
@@ -286,15 +287,12 @@ def _positive_int(value: str) -> int:
 def _reading_concurrency(context, args, chair, serving_mode: str) -> int:
     """How many reader calls may be in flight at once.
 
-    Only a live engine batches, and never beyond its served row's `max_num_seqs`.
+    Only a live engine batches, and never beyond the `max_num_seqs` its chair is
+    launched with: the row's, or the run's capacity plan's for this card.
     """
     if serving_mode != "live":
         return 1
-    bound = (
-        bound_serving_recipes(context, args.serving_recipes_config)
-        .for_identity(chair, args.placement_tier)
-        .max_num_seqs
-    )
+    bound = launch_row(context, chair, args.placement_tier).max_num_seqs
     return min(args.perlector_concurrency or bound, bound)
 
 

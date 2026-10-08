@@ -109,8 +109,8 @@ taken over from. A take-over any check refuses stops that service and starts the
 chair as usual, the reason in the launch audit (`operations/serving/README.md`, "A
 shared service"). A pass that sends nothing stops a service left for it before its
 seal. Calls are
-sent through `common.in_order_window`: up to the serving row's `max_num_seqs` in
-flight at once on a live row, one at a time otherwise. Only the request itself
+sent through `common.in_order_window`: up to the launched row's `max_num_seqs` (the row's
+own, or the run's `--capacity-plan` width) in flight at once on a live row, one at a time otherwise. Only the request itself
 leaves the main thread; each call's record and its reconstructions are published
 on the main thread in plan order, whatever order the replies arrive in, so the
 records are the bytes a serial pass publishes.

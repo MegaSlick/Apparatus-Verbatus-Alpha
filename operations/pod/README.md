@@ -248,6 +248,12 @@ correct immediate close.
   chair at a time. Serving receipts, launch audits and evidence manifests land
   content-addressed in the same directory. `--fixture` with `--page-witness-file` supplies
   a golden page instead.
+  The receipt records the measured card (`environment.vram_gib`, `gpu_count`,
+  `compute_capability`) and `capacity_plan`: how many sequences each selected chair
+  is launched with on this card, never fewer than its row's `max_num_seqs`
+  (`operations/serving/README.md`, "Scaling to the card"); the smoke launches each
+  chair at that width. It is null when the probe could not measure the card, and the
+  rows then launch as written.
   Ordinary serving refuses an unproven row; only this smoke assembly may launch one, for
   qualification, and its audit says so. After a green real-silicon report,
   `python -m operations.serving.qualify` renders review candidates for the measured tier;
@@ -348,7 +354,10 @@ resolved and which did not (`approved_storage_roots`,
 `skipped_storage_roots`).
 
 `pod_run` forwards the `--placement-tier` measured by green `PREFLIGHT` to the
-orchestrator and records it in the report. `--stage` runs one boundary, `--from` and
+orchestrator and records it in the report, and with it the receipt's capacity plan as
+`--capacity-plan` (omitted when the receipt has none). Neither is sealed: both are
+facts of the card. A plan whose digest, tier or serving digests do not match the
+receipt is refused by name. `--stage` runs one boundary, `--from` and
 `--to` run an inclusive range, and no selection runs the full sequence. `--models small`
 selects Door through Attestatores on a cheap card; `--models big` resumes Perlector
 through Armarium on a big card, after verifying this run's sealed Attestatores
@@ -484,7 +493,8 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   max(10 min, 3 expected page times), or, before its first page, for its engine's startup
   timeout plus three page times (30 min when that is not known). The expected rate is a
   planning value, not a measurement: the Perlector's `planned_seconds_per_page` over the
-  calls its engine serves at once (`max_num_seqs`), Surya's `seconds_per_page` over its
+  calls its row serves at once (`max_num_seqs`; a capacity plan's wider launch only makes
+  it finish sooner than planned), Surya's `seconds_per_page` over its
   runner processes (`workers`); any other page stage is held to its own pace once it has
   five pages and ten minutes. The stage is the one the transcript says started and has
   not ended, or else the page stage the estimate counts. A stage not counted in pages is

@@ -52,6 +52,7 @@ def _invoke_namespace_fields(tmp_path: Path, **overrides) -> dict:
         review_config=ROOT / "config" / "review.toml",
         pdf_target_dpi=None,
         placement_tier=None,
+        capacity_plan=None,
         mechanics_qualification=False,
         perlector_concurrency=None,
         witness_context="named",
@@ -220,3 +221,39 @@ def test_placement_tier_is_absent_from_the_sealed_config_digests():
         "serving_recipes_sha256",
         "pod_placement_sha256",
     }
+
+
+def test_orchestrator_forwards_the_capacity_plan_only_when_set(tmp_path):
+    """`--capacity-plan` travels to every stage exactly like `--placement-tier`."""
+    import types
+
+    orchestrator = load_stage("orchestrator")
+    observed: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        observed.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    orchestrator.subprocess = types.SimpleNamespace(run=fake_run)
+    program = orchestrator.STAGE_PROGRAMS["attestatores"]
+
+    orchestrator.invoke(program, Namespace(**_invoke_namespace_fields(tmp_path)))
+    assert "--capacity-plan" not in observed[-1]
+
+    plan = '{"schema":"capacity-plan.v1"}'
+    orchestrator.invoke(
+        program, Namespace(**_invoke_namespace_fields(tmp_path, capacity_plan=plan))
+    )
+    command = observed[-1]
+    assert command[command.index("--capacity-plan") + 1] == plan
+
+
+def test_capacity_plan_flag_defaults_to_none_and_is_not_sealed():
+    import inspect
+
+    parser = stage_parser("capacity plan default")
+    assert parser.parse_args(["--run-root", "runs", "--run-id", "r"]).capacity_plan is None
+    assert "capacity_plan" not in inspect.signature(run_config_bindings).parameters
+    models = ChairRegistry.from_toml(ROOT / "config" / "models.toml").config
+    bindings = run_config_bindings(models, load_fixture(ROOT / "proof"), "happy")
+    assert not any("capacity" in key for key in bindings["sealed_config_digests"])

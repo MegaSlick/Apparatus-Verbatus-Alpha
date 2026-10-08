@@ -142,6 +142,7 @@ from common.durability import atomic_create
 from common.sealed_config import parse_sealed_toml
 from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH
 from operations.serving.assembly import ProfileProbe, assemble_serving_smoke_reader
+from operations.serving.capacity import plan_for_measured_card
 from operations.serving.config import (
     ServingConfigInputs,
     SubprocessProfile,
@@ -1439,6 +1440,19 @@ def _build_preflight(
         publisher = PodPreflightReceiptPublisher(preflight_root, context)
         probe = chosen.gpu_probe or SystemGpuProbe(disk_path=plan.volume_mount_path)
         profile = probe.profile(PREFLIGHT_DTYPE, expected_gpu_count=REQUESTED_GPU_COUNT)
+        # The width each selected chair runs at on this card; the smoke below reads
+        # at it, and pod_run forwards it to the stages. None on an unmeasured card.
+        capacity_plan = plan_for_measured_card(
+            profile=profile,
+            placement=placement,
+            recipes=recipes,
+            chairs={
+                role: chair
+                for role, chair in registry.config.chairs.items()
+                if plan.preflight_roles is None or role in plan.preflight_roles
+            },
+            serving_config_inputs=config_inputs,
+        )
         fixture, witness, page_bytes_at_render = _golden_page(plan, chosen)
         try:
             decoding_policy, _decoding_sha256 = load_decoding_policy()
@@ -1490,6 +1504,7 @@ def _build_preflight(
             package_inspector=chosen.package_inspector,
             residency_lease=FileResidencyLease(chosen.residency_lock),
             producer="operations.pod.bootstrap_main",
+            capacity_plan=capacity_plan,
         )
         cache_verifier = RegistryChairCacheVerifier(registry)
         runner = PreflightRunner(
@@ -1507,6 +1522,7 @@ def _build_preflight(
         report = runner.run(profile)
         record = report.to_record()
         record["serving_config_inputs"] = config_inputs.to_record()
+        record["capacity_plan"] = capacity_plan.to_record() if capacity_plan is not None else None
         record["preflight_root"] = str(preflight_root)
         try:
             record["golden_page_sha256"] = _golden_page_digest(

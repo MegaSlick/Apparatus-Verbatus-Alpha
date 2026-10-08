@@ -19,8 +19,9 @@ from operations.pod.preflight import (
     load_placement_table,
 )
 
+from .capacity import CapacityPlan, plan_from_argument
 from .client import ChairClient
-from .config import ServingConfigInputs, ServingRecipes, load_serving_recipes
+from .config import ServingConfigInputs, ServingProfile, ServingRecipes, load_serving_recipes
 from .errors import (
     ChairRequestRefusal,
     ChairResponseRefusal,
@@ -76,6 +77,7 @@ def assemble_serving_smoke_reader(
     command_prefix: tuple[str, ...] | None = None,
     residency_lease: ResidencyLease,
     producer: str = "operations.serving.assembly",
+    capacity_plan: CapacityPlan | None = None,
 ) -> ServingSmokeReader:
     """Return the one lifecycle-backed ``SmokeReader`` used by pod preflight.
 
@@ -113,6 +115,7 @@ def assemble_serving_smoke_reader(
         command_prefix=command_prefix,
         residency_lease=residency_lease,
         producer=producer,
+        capacity_plan=capacity_plan,
     )
 
 
@@ -126,14 +129,14 @@ def bound_serving_recipes(context: Any, recipes_path: str | Path) -> ServingReci
 
 def _bound_serving(
     context: Any, recipes_path: str | Path
-) -> tuple[ServingRecipes, ServingConfigInputs]:
+) -> tuple[ServingRecipes, ServingConfigInputs, PlacementTable]:
     if context.serving_config_inputs is None:
         raise ContractError(
             "this run authority seals no serving configuration inputs, so the serving "
             "posture of its chairs cannot be proven; open the run with `open_stage_context`"
         )
     try:
-        recipes, _, inputs = _load_bound_configuration(
+        recipes, placement, inputs = _load_bound_configuration(
             sealed_config_inputs=dict(context.serving_config_inputs),
             recipes_path=recipes_path,
             placement_path=DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -143,7 +146,7 @@ def _bound_serving(
             f"the sealed serving configuration was refused for {recipes_path} and "
             f"{DEFAULT_POD_PLACEMENT_CONFIG_PATH}: {error}; rerun with the files this run sealed"
         ) from error
-    return recipes, inputs
+    return recipes, inputs, placement
 
 
 class _BoundServingReader:
@@ -209,7 +212,7 @@ def stage_chair_client(
     ``decoding_policy`` is the policy the stage already loaded and sealed; the client
     sends its chair's row of it."""
 
-    recipes, config_inputs = _bound_serving(context, context.args.serving_recipes_config)
+    recipes, config_inputs, placement = _bound_serving(context, context.args.serving_recipes_config)
     manager = ServingManager(
         registry=context.registry,
         recipes=recipes,
@@ -223,6 +226,8 @@ def stage_chair_client(
         hand_off_path=POD_HAND_OFF_PATH,
         service_scope=str(context.tree.root),
         producer=f"pipeline/{stage_directory(context.stage)}/run.py",
+        capacity_plan=stage_capacity_plan(context),
+        placement_table=placement,
         _launch_purpose=(
             MECHANICS_QUALIFICATION_PURPOSE
             if getattr(context.args, "mechanics_qualification", False)
@@ -238,6 +243,35 @@ def stage_chair_client(
         decoding_policy=decoding_policy,
         read_receipt=context.tree.read_run_receipt,
     )
+
+
+def stage_capacity_plan(context: Any) -> CapacityPlan | None:
+    """The run's ``--capacity-plan``, checked against the serving digests it sealed.
+
+    ``None`` when the stage was given none: every row then launches as written.
+    """
+
+    plan = plan_from_argument(getattr(context.args, "capacity_plan", None))
+    if plan is not None:
+        plan.require_inputs(_bound_serving(context, context.args.serving_recipes_config)[1])
+    return plan
+
+
+def launch_row(context: Any, chair: ChairIdentity, tier: str) -> Any:
+    """The row a stage's chair is launched with: the sealed row, widened by the
+    run's capacity plan when it names the chair. A stage sizes its window from this
+    before the chair starts; once started, ``handle.profile`` is the same row."""
+
+    row = bound_serving_recipes(context, context.args.serving_recipes_config).for_identity(
+        chair, tier
+    )
+    try:
+        plan = stage_capacity_plan(context)
+        if plan is None or not isinstance(row, ServingProfile):
+            return row
+        return plan.launch_profile(row, chair.role)
+    except ServingError as error:
+        raise ContractError(f"the run's capacity plan was refused: {error}") from error
 
 
 def _load_bound_configuration(
@@ -324,6 +358,7 @@ def _make_reader(
     package_inspector: PackageInspector | None,
     command_prefix: tuple[str, ...] | None,
     producer: str,
+    capacity_plan: CapacityPlan | None = None,
 ) -> ServingSmokeReader:
     """Construct a dormant manager only after configuration substitution is refused."""
 
@@ -339,6 +374,10 @@ def _make_reader(
         command_prefix=command_prefix,
         residency_lease=residency_lease,
         producer=producer,
+        # The smoke reads at the planned width, so the card is proven at the shape
+        # the stages will launch.
+        capacity_plan=capacity_plan,
+        placement_table=placement,
         _launch_purpose=_PREFLIGHT_QUALIFICATION_PURPOSE,
     )
     return ServingSmokeReader(

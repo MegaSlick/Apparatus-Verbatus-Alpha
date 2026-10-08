@@ -1035,6 +1035,18 @@ def test_a_real_submission_that_asks_nothing_is_not_refused(off, monkeypatch):
     assert published == ["plan", "seal"]
 
 
+def test_the_call_window_is_as_wide_as_the_chair_is_launched(monkeypatch):
+    """The Coniector's window is the launched row's `max_num_seqs`, so a capacity plan
+    that widens the reconstructor widens it; a fixture chair stays at one."""
+    stage = load_stage("4b_coniector", "run")
+    monkeypatch.setattr(stage, "launch_row", lambda *_args: SimpleNamespace(max_num_seqs=17))
+    context = SimpleNamespace(args=SimpleNamespace(placement_tier="generic-80gb-plus"))
+    live = SimpleNamespace(live=True, identity=object())
+    assert stage._Pass(context, live, None, None, 1, False).width() == 17
+    fixture = SimpleNamespace(live=False, identity=object())
+    assert stage._Pass(context, fixture, None, None, 1, False).width() == 1
+
+
 def test_a_live_chair_starts_on_a_background_thread_while_the_calls_are_drawn(
     tmp_path, monkeypatch
 ):
