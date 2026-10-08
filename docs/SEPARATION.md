@@ -74,6 +74,7 @@ for a script to read.
 | `gold/` | PRODUCT | human gold sampling |
 | `operations/README.md` | PRODUCT | |
 | `operations/__init__.py` | PRODUCT | |
+| `operations/bakeoff/` | HARNESS | witness bake-off bench |
 | `operations/conftest.py` | PRODUCT | |
 | `operations/corpus/` | PRODUCT | RecordGold evaluation |
 | `operations/http_deadline.py` | PRODUCT | |

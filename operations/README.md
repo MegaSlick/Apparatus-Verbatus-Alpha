@@ -11,6 +11,7 @@ Anything with a human, a machine, or money on the other end.
 | `serving/` | the model servers a stage starts for its chairs |
 | `data/` | future movement of runs and exports between machines |
 | `notify/` | the one-way phone notification client ([README](notify/README.md)) |
+| `bakeoff/` | the Phase W witness bake-off bench: native witness runs, raw-output cache, scores ([README](bakeoff/README.md)) |
 
 The table is not exhaustive; a directory that needs explaining carries its own README.
 
