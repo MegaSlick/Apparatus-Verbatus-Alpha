@@ -21,8 +21,10 @@ out), for each candidate against the baselines:
   group leader's.
 
 Rescue, correlation, shared fabrication and union recall use only pages every baseline
-and the candidate have a reading for; an empty reading gets every token wrong. A
-baseline counts as a witness on every group, even where it is not scored.
+and the candidate have a reading for; an empty reading gets every token wrong. On each
+group the baselines are only those scored there (`groups.MODEL_GROUPS`): DAI reads
+records, so its empty index pages would make every correlation with it undefined and
+block the rule's rescue route on every group but `acts`.
 
 The roster rule is printed as a suggestion with its inputs, never as a decision: a
 candidate earns a fourth-witness arm on a page group when it is top-two on rescue rate
@@ -206,6 +208,11 @@ def roster_group(group, baselines, cache, gold, readings, hard) -> list[dict[str
     arms = {m: S.model_arm(cache[m]) for m in cache}
     scored = [m for m in cache if group.name in G.groups_for(arms[m])[0]]
     candidates = [m for m in scored if m not in baselines]
+    # The witnesses already seated on this group: a baseline not scored here (DAI off
+    # act pages) is no witness, and its empty readings would only blank the correlations.
+    baselines = [b for b in baselines if b in scored]
+    if not baselines:
+        return []
     shared = [p for p in pages if all(p in readings[b] for b in baselines)]
     pairwise = {
         f"{a}~{b}": phi(_wrong(readings[a], shared), _wrong(readings[b], shared))
@@ -310,7 +317,8 @@ def report(results: list[dict[str, Any]], baselines: list[str], fools: bool) -> 
         lines += [
             f"## {group.name}{label}",
             "",
-            f"Baselines' pairwise r ({base['pages']} pages): {pairwise}; lowest "
+            f"Baselines here: {', '.join(base['baselines'])}. "
+            f"Their pairwise r ({base['pages']} pages): {pairwise or '–'}; lowest "
             f"{_f(base['baseline_pairwise_min'])}. Leader on {metric}: {base['leader']} "
             f"({_f(base['leader_headline'])}, ins. {_f(base['leader_insertion_rate'])}). "
             f"Least invention within 10 points: {', '.join(base['lowest_invention']) or '–'}.",
@@ -319,28 +327,31 @@ def report(results: list[dict[str, Any]], baselines: list[str], fools: bool) -> 
         if not cands:
             lines += ["No candidate is scored on this group.", ""]
             continue
-        heads = " | ".join(f"r({b})" for b in baselines)
-        union = " | union LR" if group.name == "index-list" else ""
+        # Two narrow tables rather than one wide one: the lead reads this on a phone.
+        seated = base["baselines"]
+        heads = " | ".join(f"r({b})" for b in seated)
         lines += [
-            f"| candidate | pages | rescue | {heads} | shared fab. | ins. | {metric}{union} "
-            "| suggestion |",
-            "|---|---:|---:|"
-            + "---:|" * len(baselines)
-            + "---:|---:|---:|"
-            + ("---|" if union else "")
-            + "---|",
+            f"| candidate | pages | rescue | {heads} |",
+            "|---|---:|---:|" + "---:|" * len(seated),
         ]
         for r in cands:
-            cells = " | ".join(_f(r["correlation"][b]) for b in baselines)
+            cells = " | ".join(_f(r["correlation"].get(b)) for b in seated)
+            lines.append(f"| {r['candidate']} | {r['pages']} | {_f(r['rescue_rate'])} | {cells} |")
+        union = " | union LR" if group.name == "index-list" else ""
+        lines += [
+            "",
+            f"| candidate | shared fab. | ins. | {metric}{union} | suggestion |",
+            "|---|---:|---:|---:|" + ("---|" if union else "") + "---|",
+        ]
+        for r in cands:
             extra = ""
             if union:
                 extra = (
                     f" | {_f(r['union_line_recall_baselines'])} → {_f(r['union_line_recall_with'])}"
                 )
             lines.append(
-                f"| {r['candidate']} | {r['pages']} | {_f(r['rescue_rate'])} | {cells} | "
-                f"{_f(r['shared_fabrication'])} | {_f(r['insertion_rate'])} | "
-                f"{_f(r['headline'])}{extra} | {r['suggestion']} |"
+                f"| {r['candidate']} | {_f(r['shared_fabrication'])} | "
+                f"{_f(r['insertion_rate'])} | {_f(r['headline'])}{extra} | {r['suggestion']} |"
             )
         lines.append("")
     return "\n".join(lines)

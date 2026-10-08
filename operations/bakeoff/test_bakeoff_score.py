@@ -204,6 +204,9 @@ def test_groups_hard_pages_and_fair_report(tmp_path):
     assert "Excluded from scoring: 1 pages." in md
     acts = md.split("### acts, handwritten pages (CER, lower is better)")[1].split("###")[0]
     assert "| chandra | 2 | 0.000 |" in acts  # the hard page's bad reading is left out
+    chandra = md.split("## chandra (arm chandra-native)")[1].split("\n## ")[0]
+    # 8 pages beside the test page; h001 is hard, so counted apart and out of the median
+    assert "| all pages, for reference | 7 | 1 | 0 | CER 0.000 |" in chandra
 
 
 def test_surname_recall_and_false_lines():
@@ -290,8 +293,7 @@ def test_record_arm_is_scored_by_act(tmp_path):
     assert "record" not in by["chandra", "a001"]
     dai = md.split("## dai (arm dai)")[1].split("\n## ")[0]
     assert "act recall | units unmatched | unit CER | whole-page fallbacks |" in dai
-    acts = next(line for line in dai.splitlines() if line.startswith("| acts |"))
-    assert acts.endswith("| 0.250 | 2 | 0.000 | 1 |")
+    assert "| acts | 0.250 | 2 | 0.000 | 1 |" in dai  # its own narrow table
     chandra = md.split("## chandra (arm chandra-native)")[1].split("\n## ")[0]
     assert "act recall" not in chandra
     assert S.is_record_reading({"arm": "other", "units": [{"unit": "record-3"}]})

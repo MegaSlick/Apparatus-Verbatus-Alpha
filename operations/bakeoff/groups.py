@@ -147,8 +147,13 @@ def is_known_arm(arm: str) -> bool:
 
 
 def validate() -> None:
-    """Refuse a table naming a category, group, metric or arm this module does not know."""
+    """Refuse a table naming a category, group, metric or arm this module does not know.
+
+    Reads the tables as they stand now (not the lookups built at import), so a table
+    patched in a test is checked as it is.
+    """
     problems = []
+    names = [g.name for g in GROUPS]
     seen: dict[str, str] = {}
     for g in GROUPS:
         if g.headline not in METRICS or any(m not in METRICS for m in g.also):
@@ -160,12 +165,15 @@ def validate() -> None:
                 problems.append(f"category {category!r} is in {seen[category]} and {g.name}")
             seen[category] = g.name
     problems += [f"category {c!r} is in no group" for c in CATEGORIES if c not in seen]
-    for arm, (names, _reason) in MODEL_GROUPS.items():
+    if len(set(names)) != len(names):
+        problems.append("two groups share a name")
+    if TEST not in names:
+        problems.append(f"no {TEST!r} group")
+    for arm, (groups, _reason) in MODEL_GROUPS.items():
         if arm not in ARMS:
             problems.append(f"MODEL_GROUPS names an unknown arm {arm!r}")
-        problems += [f"arm {arm}: unknown group {n!r}" for n in names if n not in _BY_NAME]
-    if len(_BY_NAME) != len(GROUPS):
-        problems.append("two groups share a name")
+        problems += [f"arm {arm}: unknown group {n!r}" for n in groups if n not in names]
+    problems += [f"arm {a!r} has no MODEL_GROUPS entry" for a in ARMS if a not in MODEL_GROUPS]
     if problems:
         raise ValueError("; ".join(problems))
 

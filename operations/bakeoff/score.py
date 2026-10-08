@@ -522,13 +522,12 @@ def _per_model(s: _Scores, model: str, label: str) -> list[str]:
     lines = [f"## {model} (arm {arm}){label}", "", f"Scored on: {', '.join(names)} ({reason})."]
     if not known:
         lines.append(f"**Warning:** arm {arm!r} is not in the fairness table.")
-    head = "| group | pages | hard | missing | median | mean | also | empty | loops | errors | s/page |"
-    rule = "|---|---:|---:|---:|---|---:|---|---:|---:|---:|---:|"
-    if record:
-        head += " act recall | units unmatched | unit CER | whole-page fallbacks |"
-        rule += "---:|---:|---:|---:|"
-    lines += ["", head, rule]
-    blank = " | | | |" if record else ""
+    # Three narrow tables rather than one fifteen columns wide: the lead reads on a phone.
+    scores = ["", "| group | pages | hard | missing | median | mean | also |"]
+    scores.append("|---|---:|---:|---:|---|---:|---|")
+    health = ["", "| group | empty | loops | errors | s/page |", "|---|---:|---:|---:|---:|"]
+    records = ["", "| group | act recall | units unmatched | unit CER | whole-page fallbacks |"]
+    records.append("|---|---:|---:|---:|---:|")
     for g in G.GROUPS:
         forms = s.forms_in(g.name)
         if g.name not in names or g.name == G.TEST or not forms:
@@ -539,21 +538,27 @@ def _per_model(s: _Scores, model: str, label: str) -> list[str]:
         for title, only in slices:
             got = s.got(model, g.name, forms=only)
             also = "; ".join(_metric(got, m) for m in g.also) or "–"
-            extra = blank
-            if record and only is None and g.name == "acts":
-                extra = f" {_record_cells(got)} |"
-            lines.append(
+            scores.append(
                 f"| {title} | {len(got)} | {s.hard_in(g.name, only)} | "
                 f"{len(s.gone(model, g.name, only))} | {_metric(got, g.headline)} | "
-                f"{_mean_of(got, g.headline)} | {also} | {_counts(got)} |{extra}"
+                f"{_mean_of(got, g.headline)} | {also} |"
             )
+            health.append(f"| {title} | {_counts(got)} |")
+            if record and only is None and g.name == "acts":
+                records.append(f"| {title} | {_record_cells(got)} |")
+    # Like the group rows: test pages never, hard pages counted apart, not in the median.
     every = [r for r in s.rows if r["model"] == model and r["group"] != G.TEST]
-    gone = [p for p in s.missing.get(model, []) if page_group(s.gold[p]) != G.TEST]
-    lines += [
-        f"| all pages, for reference | {len(every)} | {sum(r['hard'] for r in every)} | "
-        f"{len(gone)} | {_metric(every, 'cer')} | – | – | {_counts(every)} |{blank}",
-        "",
+    easy = [r for r in every if not r["hard"]]
+    gone = [
+        p for p in s.missing.get(model, []) if page_group(s.gold[p]) != G.TEST and p not in s.hard
     ]
+    title = "all pages, for reference"
+    scores.append(
+        f"| {title} | {len(easy)} | {len(every) - len(easy)} | "
+        f"{len(gone)} | {_metric(easy, 'cer')} | – | – |"
+    )
+    health.append(f"| {title} | {_counts(easy)} |")
+    lines += scores + health + (records if len(records) > 3 else []) + [""]
     return lines
 
 

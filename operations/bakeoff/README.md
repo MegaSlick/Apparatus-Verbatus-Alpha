@@ -174,12 +174,15 @@ record arm (`dai`, or `record-*`/`whole-page` units) also gets act recall (units
 to gold acts at CER <= 0.5), units unmatched, per-unit CER and whole-page fallbacks.
 
 `scores.md` has a compact cross-model table per group (headline only), one section per
-model (one row per group it is scored on, then `all pages, for reference`), the test
+model (one row per group it is scored on, then `all pages, for reference`, which
+leaves out test pages and counts hard pages apart; scores, health and record cells in
+separate narrow tables so they read on a phone), the test
 pages with their expected behaviour, and the hard pages. `--hard-pages FILE` (one stem per
 line) moves pages out of the medians into their own table; `--exclude FILE` drops them.
 
 `python -m operations.bakeoff.roster` takes the same arguments as `score`; `roster.md` gives, per group and candidate against `--baselines` (default
 `chandra,dai,churro`): rescue rate, phi correlation of wrong tokens with each baseline
 (and the baselines' own), shared fabrication, insertion rate beside the leader's, union
-line recall on index-list, and the roster rule's suggestion with its inputs. The rule is
+line recall on index-list, and the roster rule's suggestion with its inputs. On each group
+only the baselines scored there count as witnesses (DAI on `acts` only). The rule is
 a suggestion for the lead, never a decision.

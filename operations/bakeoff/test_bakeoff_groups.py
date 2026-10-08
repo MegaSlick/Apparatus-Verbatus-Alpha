@@ -36,3 +36,22 @@ def test_validate_refuses_unknown_category_and_arm(monkeypatch):
     monkeypatch.setattr(G, "MODEL_GROUPS", {"dai": (("nowhere",), "x")})
     with pytest.raises(ValueError, match="unknown group 'nowhere'"):
         G.validate()
+
+
+def test_validate_reads_the_tables_as_patched(monkeypatch):
+    twice = G.Group("acts", (), "cer", ())
+    monkeypatch.setattr(G, "GROUPS", (*G.GROUPS, twice))
+    with pytest.raises(ValueError, match="two groups share a name"):
+        G.validate()
+    monkeypatch.setattr(G, "GROUPS", tuple(g for g in G.GROUPS if g.name != G.TEST))
+    with pytest.raises(ValueError, match="no 'test' group"):
+        G.validate()
+    monkeypatch.undo()
+    extra = G.Group("extra", (), "cer", ())  # a new group an arm may name at once
+    monkeypatch.setattr(G, "GROUPS", (*G.GROUPS, extra))
+    monkeypatch.setattr(G, "MODEL_GROUPS", {**G.MODEL_GROUPS, "dai": (("extra",), "x")})
+    G.validate()
+    monkeypatch.undo()
+    monkeypatch.setattr(G, "ARMS", (*G.ARMS, "novum"))
+    with pytest.raises(ValueError, match="arm 'novum' has no MODEL_GROUPS entry"):
+        G.validate()

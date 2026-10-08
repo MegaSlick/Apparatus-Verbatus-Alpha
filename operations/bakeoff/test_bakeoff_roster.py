@@ -98,7 +98,14 @@ def test_roster_on_a_constructed_case(tmp_path):
     assert (b["shared_fabrication"], c["shared_fabrication"]) == (1.0, 0.5)
     assert c["insertion_rate"] == pytest.approx(2 / 10)
     assert "dai" in base["lowest_invention"] and "invention" not in a["suggestion"]  # a tie
+    # DAI is no witness off act pages: its empty index reading must not blank the
+    # correlations (an all-wrong vector has no phi) and so block the rescue route.
+    index_base = next(r for r in out if r["group"] == "index-list" and r["kind"] == "baselines")
+    assert index_base["baselines"] == ["chandra", "churro"]
+    assert list(index_base["baseline_pairwise"]) == ["chandra~churro"]
+    assert index_base["baseline_pairwise_min"] is not None
     union = next(r for r in out if r["group"] == "index-list" and r.get("candidate") == "cand-a")
+    assert set(union["correlation"]) == {"chandra", "churro"}
     assert union["union_line_recall_baselines"] == pytest.approx(2 / 3)
     assert union["union_line_recall_with"] == 1
     assert not any(r["group"] == "test" for r in out)
