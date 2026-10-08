@@ -321,6 +321,7 @@ def test_a_fill_still_running_at_its_deadline_fails_the_waiting_step_by_name(
             prefill.wait(BootstrapStep.CHAIR_CACHE)
         assert caught.value.step is BootstrapStep.CHAIR_CACHE
         assert "still copying" in caught.value.detail
+        assert "at a tenth of 13.6 GB/min" in caught.value.detail
         assert "resume this journal" in caught.value.remediation
         assert prefill.registry is None, "a stuck fill hands over nothing to PREFLIGHT"
         # The deadline has passed: a second wait refuses at once rather than waiting again.

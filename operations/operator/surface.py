@@ -60,7 +60,7 @@ from operations.pod.transfer import (
 from operations.submit import submit as submission_door
 
 from . import notify_bridge
-from ._run_tree_paths import is_publication_temporary
+from ._run_tree_paths import is_publication_temporary, is_sync_residue
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .local_volume import LocalFixtureObjectStore
 from .notify_bridge import Notifier
@@ -2698,7 +2698,9 @@ def _fetch_run_tree(
     excluded: list[str] = []
     for key in keys:
         relative = key[len(prefix) :]
-        if is_publication_temporary(relative, scope):
+        # Neither is evidence: the tree's own write-in-flight residue, and the files a
+        # sync to or from the volume keeps for itself.
+        if is_publication_temporary(relative, scope) or is_sync_residue(relative):
             excluded.append(relative)
             continue
         if _escapes_root(relative) or not any(
