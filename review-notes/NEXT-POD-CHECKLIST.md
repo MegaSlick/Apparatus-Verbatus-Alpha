@@ -65,7 +65,7 @@ Ask these in the session, early, each with the recommendation:
 
 ### 1. Witness pod: Door to Attestatores (bills, ~$0.27/h)
 
-- [ ] Create: RTX A5000, `--container-disk-in-gb 60`, same datacenter as the volume,
+- [ ] Create: RTX A5000, `--container-disk-in-gb 100` (60 filled up on 2026-10-08), same datacenter as the volume,
       `--docker-args "$(sh operations/pod/pod_start_command.sh off <sha>)"`.
 - [ ] Within 5 min, over SSH: `findmnt /workspace/private`; `tail
       /workspace/private/.pod_guard/guard.log` shows `armed for pod <id>: deadline none
