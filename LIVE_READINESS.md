@@ -22,10 +22,14 @@ $7.00, whichever comes first. A pod's window is 2 h: the guard's deadline sits a
 soft maximum. Going past it is an extension only the lead makes, and the hard maximum
 bounds it at 3 h. The hourly cap admits the RTX PRO 6000 ($1.99/h) beside a volume of up
 to $0.11/h, so 2 h costs about $4.10 and 3 h about $6.15 at a $0.06/h volume. On the hand
-route below (`runpodctl` plus the pod guard) the file bounds time only: the start command
-refuses a window past the hard maximum and its backstop deletes the pod at the hard
-maximum from creation. Nothing on that route checks the hourly price or the cost, so the
-lead's approval in the session is the limit that counts there, inside this budget.
+route below (`runpodctl` plus the pod guard) the file bounds time only, and only while the
+budget is on: the start command then refuses a window past the hard maximum and its
+backstop deletes the pod at the hard maximum from creation. **With the budget off, as
+committed**, `pod_start_command.sh off` means no deadline (the guard warns and backs up,
+never deletes unless `ladder_delete = "on"`), and `pod_start_command.sh <hours>` is a hard
+delete at that time whatever the run is doing, backstop an hour later, with no 3 h cap.
+Nothing on that route checks the hourly price or the cost, so the lead's approval in the
+session is the limit that counts there.
 
 **The plan inside it.** Nothing has been timed on a real pod, so these are planning
 figures. Costs are the card's hourly price ($1.99/h; the drill's A5000 $0.27/h) plus the
@@ -272,18 +276,22 @@ idle ladder itself deletes only with `ladder_delete = "on"`, and only after two 
 
 ## 7. Launch a real run
 
-Arm the phone ping first (from the Mac, using the pod's public-IP SSH):
+Arm the phone ping first, from the Mac, over the pod's **direct** SSH port (read
+`echo $RUNPOD_PUBLIC_IP $RUNPOD_TCP_PORT_22` in a pod shell). Never pipe the topic through
+`ssh.runpod.io`: that proxy ignores the command and runs standard input as a shell, so
+the secret would be typed into it.
 
 ```sh
 sed -n 's/^NTFY_TOPIC=//p' private/ntfy.conf | tail -n 1 | tr -d "\"'" |
-  ssh <pod ssh target> 'umask 077 && mkdir -p /workspace/private/.pod_guard &&
+  ssh -p <RUNPOD_TCP_PORT_22> root@<RUNPOD_PUBLIC_IP> 'umask 077 && mkdir -p /workspace/private/.pod_guard &&
     cat > /workspace/private/.pod_guard/ntfy_topic'
 ```
 
 Create the pod as in step 6, but with `--name verbatus-<run id>`,
 `--gpu-id "NVIDIA RTX PRO 6000 Blackwell Server Edition"`, `--container-disk-in-gb 120`
-and `pod_start_command.sh 2 <sha>` (the 2 h window, the soft maximum; with the budget on
-it refuses more than the 3 h hard maximum). Then, on the
+and `pod_start_command.sh <hours or off> <sha>` (with the committed budget off, `off` is
+no deadline and needs `--no-hold` below; with the budget on, `2` is the soft-maximum
+window and more than the 3 h hard maximum is refused). Then, on the
 pod over SSH, the checks from `operations/pod/README.md` ("On the pod, over SSH"):
 `findmnt /workspace/private`, the guard log, `echo "$RUNPOD_POD_ID"`, the deadline file,
 then
@@ -299,8 +307,12 @@ and launch, detached:
 
 ```sh
 V=/workspace/private RUN=<run id> R=/opt/verbatus
-GUARD_DEADLINE=$(cat $V/.pod_guard/deadline-$RUNPOD_POD_ID) && [ -n "$GUARD_DEADLINE" ] &&
-export VERBATUS_HARD_DEADLINE=$(date -u -d "@$(( GUARD_DEADLINE - 300 ))" +%Y-%m-%dT%H:%M:%SZ) &&
+GUARD_DEADLINE=$(cat $V/.pod_guard/deadline-$RUNPOD_POD_ID 2>/dev/null)
+if [ -n "$GUARD_DEADLINE" ]; then
+  VERBATUS_HARD_DEADLINE=$(date -u -d "@$(( GUARD_DEADLINE - 300 ))" +%Y-%m-%dT%H:%M:%SZ)
+else
+  VERBATUS_HARD_DEADLINE=none   # a pod started with `off`; accepted only with --no-hold
+fi && export VERBATUS_HARD_DEADLINE &&
 cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   --report-path $V/pod-run-report-$RUN.json --run-id $RUN \
   --submission-folder $V/submission --submission-manifest $V/submission-manifest.json \
@@ -315,6 +327,15 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   > $V/pod-run-$RUN.out 2>&1 < /dev/null &
 ```
 
+- **Two pods, then the Mac.** The planned topology splits the run: a cheap witness pod
+  (A5000, `--container-disk-in-gb 60`) adds `--models small` before `--` (Door through
+  Attestatores); the big card (PRO 6000, 120 GB disk) adds `--from perlector --to
+  coniector` with the **same run id, submission folder and `--store-root`**, and checks
+  the sealed Attestatores on the volume before its boot. Do not use `--models big` for
+  the split: it runs on to the Armarium. The Mac then runs Recensor to Armarium
+  (`operations/operator/README.md`). With `--no-hold` the guard deletes each pod within
+  a minute of its run ending; a pod on its own disk (`mounts.persistent`) instead runs
+  without `--no-hold`, needs a deadline, and is copied home before it is deleted.
 - The real configuration is these **two files, always together**. Here, on the pod,
   `pod_run` always needs `--models-config`, and refuses any roster other than the
   fixture `config/models.toml` when `--serving-recipes-config` is missing; it does
@@ -349,12 +370,13 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
 
 `verbatus watch` reads copies of four report files from a folder on the Mac. It contacts
 nothing and writes nothing, so copy fresh files in a loop (`scp` from the pod's
-public-IP SSH; the exact `scp` form is to confirm). Ctrl+C stops it.
+direct SSH port, `scp -P $RUNPOD_TCP_PORT_22 root@$RUNPOD_PUBLIC_IP:...`, read inside
+the pod; the `ssh.runpod.io` proxy cannot carry `scp`). Ctrl+C stops it.
 
 ```sh
 mkdir -p ~/verbatus-watch
 while :; do
-  scp -q -P <port> "root@<pod ip>:/workspace/private/pod-run-report-<run id>{.json,-liveness.json,-timings.json,-estimate.json}" ~/verbatus-watch/
+  scp -q -P <RUNPOD_TCP_PORT_22> "root@<RUNPOD_PUBLIC_IP>:/workspace/private/pod-run-report-<run id>{.json,-liveness.json,-timings.json,-estimate.json}" ~/verbatus-watch/
   verbatus watch --run-id <run id> --receipts ~/verbatus-watch
   sleep 60
 done
@@ -449,6 +471,7 @@ verbatus fetch-run --run-id <run id> --into <local root> --network-volume DATACE
   --evidence-key pod-run-report-<run id>-liveness.json \
   --evidence-key pod-run-report-<run id>-timings.json \
   --evidence-key pod-run-report-<run id>-estimate.json \
+  --evidence-key pod-run-report-<run id>-progress.json \
   --evidence-key bootstrap-report-<run id>.json \
   --evidence-key bootstrap-journal-<run id>.json \
   --evidence-key pod-run-<run id>.out --evidence-key .pod_guard/guard.log

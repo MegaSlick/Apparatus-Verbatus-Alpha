@@ -752,14 +752,15 @@ the guard is fetched from an older commit.
 
   ```sh
   sed -n 's/^NTFY_TOPIC=//p' private/ntfy.conf | tail -n 1 | tr -d "\"'" |
-    ssh <pod ssh target> 'umask 077 && mkdir -p /workspace/private/.pod_guard &&
+    ssh -p <RUNPOD_TCP_PORT_22> root@<RUNPOD_PUBLIC_IP> 'umask 077 && mkdir -p /workspace/private/.pod_guard &&
       cat > /workspace/private/.pod_guard/ntfy_topic'
   ```
 
   The guard reads it on every ping, so it can be written after the pod starts. It stays
   on the volume for later pods; delete it with the volume, or by hand when the topic is
-  rotated. `ssh.runpod.io`'s proxied SSH may not carry standard input; use the pod's
-  public-IP SSH (TCP port 22 exposed) for this.
+  rotated. Use the pod's direct port (TCP port 22 exposed; `$RUNPOD_PUBLIC_IP` and
+  `$RUNPOD_TCP_PORT_22` inside the pod), never `ssh.runpod.io`: that proxy ignores the
+  command and runs standard input as a shell, so the topic would be typed into it.
 - **Not yet observed on a live pod:** how RunPod passes `--docker-args` (the start
   command) to the container (runpodctl 2.14.0 sends it as the pod's start command, which
   RunPod documents as replacing the image's CMD; what happens with an image ENTRYPOINT is
