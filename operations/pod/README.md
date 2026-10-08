@@ -260,7 +260,10 @@ correct immediate close.
   calls `cuInit(0)` and `cuDeviceGetCount` through `libcuda.so.1` (the compatibility copy
   when one is installed) and refuses the host by its hostname, driver and cards when
   either fails or no device is counted: a host that lists its cards but cannot initialise
-  CUDA would otherwise spend the whole setup before its first GPU stage fails. The receipt
+  CUDA would otherwise spend the whole setup before its first GPU stage fails. The calls
+  run in a child process killed after 120 s, so a hung driver is refused rather than
+  holding the pod. A library or call that is missing is refused as the image's fault (the
+  next host would fail the same way), not the host's. The receipt
   records the action and the device count, including each resume recheck when a restart
   has removed the container-local installation.
 - **Refusals come before any action**: a journal or report path outside the mounted volume;
@@ -644,7 +647,8 @@ tree uses a little on every tick, and its engine log keeps growing too. The boot
 the final volume sync have no liveness tick, so a thread writes the line through both:
 `bootstrapping bootstrap <step> for <seconds>` and `ok final-sync`. Either counts as work
 for an hour per step; after that the line stops moving its last `ok` (the sync's says
-`stalled`) and the ladder climbs. When the run ends `pod_run` removes the line and the
+`slow`) and the ladder climbs through its warnings and backup, but neither line reaches
+the delete, so a long copy is never cut off mid-way. When the run ends `pod_run` removes the line and the
 counters decide again. `pod_run` sends no notice of its own about a slow or stalled run;
 the guard's ladder does. An unreadable CPU counter never
 deletes a pod. If it cannot be read from the start, or stays unreadable, the guard counts

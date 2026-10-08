@@ -5315,6 +5315,21 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
         actions.sync_uv_environment(other)
 
 
+REAL_CUDA_PROBE = bootstrap_module._run_cuda_probe
+
+
+@pytest.fixture(autouse=True)
+def _cuda_probe_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CUDA probe runs in this process here, so a test's fake libcuda is the one used;
+    the child process it really runs in is tested on its own below."""
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_run_cuda_probe",
+        lambda library, timeout: bootstrap_module.probe_cuda(library),
+    )
+
+
 class FakeCuda:
     """libcuda.so.1 as ctypes loads it: cuInit and cuDeviceGetCount return the codes given,
     and the count is what the host reports."""
@@ -5395,8 +5410,78 @@ def test_a_missing_driver_library_is_refused_by_name(
 
     monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", missing)
 
-    with pytest.raises(BootstrapStepFailure, match="could not be loaded or called"):
+    with pytest.raises(BootstrapStepFailure, match="could not be loaded or called") as refusal:
         _new_driver_actions(tmp_path).configure_cuda_compat()
+
+    assert "Repair the image or the CUDA compatibility package" in refusal.value.remediation
+
+
+def test_a_library_missing_a_call_blames_the_image_not_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cuda = FakeCuda()
+    del cuda.cuDeviceGetCount
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
+
+    with pytest.raises(BootstrapStepFailure, match="cuDeviceGetCount") as refusal:
+        _new_driver_actions(tmp_path).configure_cuda_compat()
+
+    assert "another host with this image would fail the same way" in refusal.value.remediation
+
+
+def test_a_cuda_probe_that_does_not_answer_refuses_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bootstrap_module, "_run_cuda_probe", lambda library, timeout: None)
+
+    with pytest.raises(BootstrapStepFailure, match="did not answer within 120 s") as refusal:
+        _new_driver_actions(tmp_path).configure_cuda_compat()
+
+    assert "cannot use CUDA through libcuda.so.1" in refusal.value.detail
+    assert "another host" in refusal.value.remediation
+
+
+def test_the_cuda_probe_process_is_killed_when_it_hangs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bootstrap_module, "_CUDA_PROBE_SOURCE", "import time\ntime.sleep(60)\n")
+    started = time.monotonic()
+
+    assert REAL_CUDA_PROBE("libcuda.so.1", 0.5) is None
+    assert time.monotonic() - started < 10
+
+
+def test_the_cuda_probe_process_reports_a_missing_library(tmp_path: Path) -> None:
+    """The real child process imports the probe from this checkout and runs it."""
+
+    result = REAL_CUDA_PROBE(str(tmp_path / "libcuda.so.1"), 60)
+
+    assert result is not None and result["failure"] == "library"
+    assert "libcuda.so.1" in str(result["error"])
+
+
+def test_the_compat_path_refuses_a_host_with_no_cuda_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "is_dir", lambda path: True)
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", FakeCuda(devices=0).load)
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        name = Path(argv[0]).name
+        output = "570.195.03, NVIDIA RTX A6000" if name == "nvidia-smi" else "580.178.04-1ubuntu1"
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=runner,
+    )
+    with pytest.raises(BootstrapStepFailure, match="reports no CUDA device") as refusal:
+        actions.configure_cuda_compat()
+
+    assert "/usr/local/cuda-13.0/compat/libcuda.so.1" in refusal.value.detail
 
 
 @pytest.mark.parametrize(

@@ -2243,7 +2243,8 @@ def main(
             with progress_watch.ProgressTicker(
                 progress_line,
                 status="ok",
-                late_status="stalled",
+                # A copy running long is still copying: warned about, never deleted.
+                late_status="slow",
                 check="final-sync",
                 step=lambda: "final volume sync",
                 now=now,
