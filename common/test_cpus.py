@@ -52,3 +52,103 @@ def test_the_operator_override_wins_and_is_named_as_the_source():
 def test_an_override_that_is_not_a_worker_count_is_refused(raw):
     with pytest.raises(ValueError, match="VERBATUS_IO_WORKERS"):
         cpus.io_workers({cpus.IO_WORKERS_ENV: raw})
+
+
+GIB = 1 << 30
+MIB = 1 << 20
+
+
+def _meminfo(tmp_path, available_bytes):
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(
+        f"MemTotal: 99999999 kB\nMemAvailable: {available_bytes // 1024} kB\n", encoding="ascii"
+    )
+    return meminfo
+
+
+def _cgroup(tmp_path, files: dict[str, str]):
+    root = tmp_path / "cgroup"
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text, encoding="ascii")
+    root.mkdir(exist_ok=True)
+    return root
+
+
+def test_pool_workers_are_bounded_by_cpus_tasks_and_memory_after_the_parent_s_reserve(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(cpus, "usable_cpus", lambda *args: 16)
+    meminfo = _meminfo(tmp_path, 1536 * MIB)  # 1 GiB once the parent's 512 MiB is kept
+    no_cgroup = _cgroup(tmp_path, {})
+
+    def workers(tasks, per_task, meminfo=meminfo):
+        return cpus.pool_workers(
+            tasks, bytes_per_task=per_task, meminfo=meminfo, cgroup_root=no_cgroup
+        )
+
+    assert workers(4, 1) == 4
+    assert workers(100, 1) == 16
+    assert workers(100, 256 * MIB) == 4
+    assert workers(100, 4 * GIB) == 1
+    assert workers(100, 1, meminfo=tmp_path / "absent") == 16
+    assert workers(0, 1) == 1
+    assert (
+        cpus.pool_workers(
+            100, bytes_per_task=1, meminfo=_meminfo(tmp_path, 100 * MIB), cgroup_root=no_cgroup
+        )
+        == 1
+    )
+
+
+def test_a_cgroup_v2_limit_below_the_host_s_memory_caps_the_workers(tmp_path, monkeypatch):
+    monkeypatch.setattr(cpus, "usable_cpus", lambda *args: 32)
+    host = _meminfo(tmp_path, 512 * GIB)
+    cgroup = _cgroup(
+        tmp_path, {"memory.max": f"{4 * GIB}\n", "memory.current": f"{1 * GIB + 512 * MIB}\n"}
+    )
+
+    assert cpus.cgroup_memory_bytes(cgroup) == 2 * GIB + 512 * MIB
+    assert cpus.available_memory_bytes(host, cgroup) == 2 * GIB + 512 * MIB
+    assert cpus.pool_workers(100, bytes_per_task=512 * MIB, meminfo=host, cgroup_root=cgroup) == 4
+
+
+def test_a_cgroup_v1_limit_is_read_where_v2_names_none(tmp_path, monkeypatch):
+    monkeypatch.setattr(cpus, "usable_cpus", lambda *args: 32)
+    host = _meminfo(tmp_path, 512 * GIB)
+    cgroup = _cgroup(
+        tmp_path,
+        {
+            "memory/memory.limit_in_bytes": f"{3 * GIB}\n",
+            "memory/memory.usage_in_bytes": f"{1 * GIB}\n",
+        },
+    )
+
+    assert cpus.cgroup_memory_bytes(cgroup) == 2 * GIB
+    assert cpus.pool_workers(100, bytes_per_task=512 * MIB, meminfo=host, cgroup_root=cgroup) == 3
+
+
+def test_a_cgroup_that_sets_no_limit_leaves_the_host_s_memory(tmp_path):
+    host = _meminfo(tmp_path, 8 * GIB)
+    v2 = _cgroup(tmp_path / "v2", {"memory.max": "max\n", "memory.current": "12345\n"})
+    v1 = _cgroup(
+        tmp_path / "v1",
+        {"memory/memory.limit_in_bytes": "9223372036854771712\n"},
+    )
+
+    for cgroup in (v2, v1):
+        assert cpus.cgroup_memory_bytes(cgroup) is None
+        assert cpus.available_memory_bytes(host, cgroup) == 8 * GIB
+
+
+def test_a_cgroup_already_full_leaves_one_worker(tmp_path, monkeypatch):
+    monkeypatch.setattr(cpus, "usable_cpus", lambda *args: 32)
+    cgroup = _cgroup(tmp_path, {"memory.max": f"{GIB}\n", "memory.current": f"{2 * GIB}\n"})
+
+    assert cpus.cgroup_memory_bytes(cgroup) == 0
+    assert (
+        cpus.pool_workers(
+            100, bytes_per_task=1, meminfo=_meminfo(tmp_path, 64 * GIB), cgroup_root=cgroup
+        )
+        == 1
+    )

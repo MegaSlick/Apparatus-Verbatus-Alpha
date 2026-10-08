@@ -94,8 +94,8 @@ _SUBPROCESS_FIELDS = _PROFILE_COMMON | {
     "seconds_per_page",
     "required_packages",
 }
-# `workers` is the one optional subprocess field: left out, one runner process
-# reads every page.
+# `workers` is the one optional subprocess field: a ceiling on runner processes.
+# Left out, the CPUs the stage can use decide, `threads` each.
 _SUBPROCESS_OPTIONAL = {"workers"}
 # The one engine a subprocess row may name, the packages its row pins, and the
 # pinned environment it runs in. CPU only: no card is shared with a served chair,
@@ -247,8 +247,10 @@ class SubprocessProfile:
     writes. ``required_packages`` are the versions that environment's lock
     installs, checked against the environment before a run.
 
-    The pages are split in page order into up to ``workers`` contiguous slices,
-    each read by its own runner process with ``threads`` torch threads, so the
+    The pages are split in page order into as many contiguous slices as the
+    usable CPUs give ``threads`` each (never more than ``workers``, where a row
+    sets that ceiling), each read by its own runner process with ``threads``
+    torch threads, so the
     slices never share a thread budget and each page is read exactly as one
     process over every page would read it. The version check and each process's
     model load get ``startup_timeout_seconds``, and a process over ``n`` pages
@@ -265,7 +267,7 @@ class SubprocessProfile:
     startup_timeout_seconds: int
     seconds_per_page: int
     required_packages: Mapping[str, str]
-    workers: int = 1
+    workers: int | None = None
     kind: str = "subprocess"
 
     def __post_init__(self) -> None:
@@ -809,7 +811,7 @@ def _parse_subprocess_profile(raw: Mapping[str, Any]) -> SubprocessProfile:
         environment=environment,
         device=device,
         threads=_positive_int(raw["threads"], "threads"),
-        workers=_positive_int(raw.get("workers", 1), "workers"),
+        workers=_optional_positive_int(raw, "workers"),
         startup_timeout_seconds=_positive_int(
             raw["startup_timeout_seconds"], "startup_timeout_seconds"
         ),
