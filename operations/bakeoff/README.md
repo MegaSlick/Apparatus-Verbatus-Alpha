@@ -165,22 +165,20 @@ checked by `validate()`:
 `MODEL_GROUPS` says which groups each arm is scored on: `dai` on `acts` only (it reads
 records; empty on an index is no failure), `pylaia-popp-*` on `index-list`, `tables` and
 `acts`, every other arm on every group. An arm not in the table is scored everywhere and
-the report warns. False text: more than 20 characters of output beyond the reference.
-Surname recall: each gold row's first token found among the model's tokens at distance
-<= 1. False-line rate: model lines matched to no gold row or heading, over model lines.
+the report warns. False text: more than 20 characters of output, on pages with no gold
+text only. Surname recall: each gold row's first token among the model's tokens at
+distance <= 1. False-line rate: model lines matched to no gold row or heading. Pages are
+also split by FORM (handwritten, typed, printed form, mixed): one row per form under each
+group, and the cross-model tables compare handwritten pages, then typed ones apart. A
+record arm (`dai`, or `record-*`/`whole-page` units) also gets act recall (units matched
+to gold acts at CER <= 0.5), units unmatched, per-unit CER and whole-page fallbacks.
 
 `scores.md` has a compact cross-model table per group (headline only), one section per
 model (one row per group it is scored on, then `all pages, for reference`), the test
 pages with their expected behaviour, and the hard pages. `--hard-pages FILE` (one stem per
 line) moves pages out of the medians into their own table; `--exclude FILE` drops them.
 
-```sh
-.venv/bin/python -m operations.bakeoff.roster --cache private/bakeoff/witness-cache \
-  --gold "$HOME/Desktop/Bake-off set/Pages" --gold-glob '*/Prepped/*.txt' \
-  --out private/bakeoff/scores --hard-pages private/bakeoff/hard-pages.txt
-```
-
-`roster.md` gives, per group and candidate against `--baselines` (default
+`python -m operations.bakeoff.roster` takes the same arguments as `score`; `roster.md` gives, per group and candidate against `--baselines` (default
 `chandra,dai,churro`): rescue rate, phi correlation of wrong tokens with each baseline
 (and the baselines' own), shared fabrication, insertion rate beside the leader's, union
 line recall on index-list, and the roster rule's suggestion with its inputs. The rule is

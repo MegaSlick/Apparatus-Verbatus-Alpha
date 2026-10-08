@@ -51,10 +51,25 @@ METRICS = {
     "line_recall": ("line recall", True),
     "surname_recall": ("surname recall", True),
     "false_line_rate": ("false lines", False),
-    "false_text_rate": ("false text", False),
+    "false_text_rate": ("false text (pages with no gold text)", False),
 }
 
 TEST = "test"
+
+# The gold FORM header, folded to these; the cross-model tables compare handwritten pages
+# and, apart, typed ones. A page with no FORM counts as handwritten.
+FORMS = ("handwritten", "typed", "printed form", "mixed")
+
+
+def form_of(value: str) -> str:
+    """One gold FORM header value as one of FORMS, or the value itself if none fits."""
+    word = value.strip().lower()
+    for form, cue in (("mixed", "mix"), ("typed", "typ"), ("printed form", "print")):
+        if cue in word:
+            return form
+    if not word or "hand" in word:
+        return "handwritten"
+    return word
 
 
 @dataclass(frozen=True)

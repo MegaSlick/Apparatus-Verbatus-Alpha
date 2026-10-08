@@ -13,7 +13,11 @@ groups its arm is scored on, by the group's own headline metric. Per model and p
   at CER <= 0.3), false-line rate (model lines matched to no gold row or heading, over
   model lines) and surname recall (the first token of each gold row found among the
   model's tokens at edit distance <= 1, each model token used once);
-- false text: more than 20 characters of output beyond the reference's length;
+- false text, only where the gold has no text: more than 20 characters of output;
+- for a record arm (`dai`, or units named `record-*` or `whole-page*`): each unit's text
+  matched one-to-one to a gold act at CER <= 0.5, best pairs first, giving act recall,
+  units unmatched, per-unit CER over matched pairs and whole-page fallbacks, so missed
+  records and misread ones are told apart;
 - empty output, loop (one line repeated >= 30 times in a row, or `finish_reason`
   length), seconds.
 
@@ -48,6 +52,7 @@ from operations.bakeoff.gold import GoldPage, load_gold_dir, reduce_marks
 LOOP_RUN = 30
 LINE_MATCH_CER = 0.3
 SURNAME_DISTANCE = 1
+UNIT_MATCH_CER = 0.5
 FALSE_TEXT_CHARS = 20
 FOOLS_GOLD_LABEL = "vs fool's gold (ballpark, not accuracy)"
 _THINK = re.compile(r"<think>.*?(</think>|\Z)", re.DOTALL)
@@ -245,6 +250,60 @@ def page_group(gold: GoldPage) -> str:
     return G.group_of_category(gold.category) or "unassigned"
 
 
+def act_texts(gold: GoldPage) -> list[str]:
+    """Each gold act's text, marks reduced, as `GoldPage.act_text` gives them together."""
+    texts = []
+    for act in gold.acts:
+        lines = [line for line in reduce_marks("\n".join(act.lines)).split("\n") if line]
+        if lines:
+            texts.append("\n".join(lines))
+    return texts
+
+
+def _unit_name(unit: dict[str, Any]) -> str:
+    return str(unit.get("unit") or (unit.get("request") or {}).get("unit") or "")
+
+
+def is_record_reading(record: dict[str, Any]) -> bool:
+    """Whether a page was read record by record (DAI, or units named for records)."""
+    if record.get("arm") == "dai":
+        return True
+    names = [_unit_name(u) for u in record.get("units") or [] if isinstance(u, dict)]
+    return any(n.startswith(("record-", "whole-page")) for n in names)
+
+
+def record_scores(record: dict[str, Any], gold: GoldPage) -> dict[str, Any]:
+    """Units matched one-to-one to gold acts at CER <= 0.5, best pairs first."""
+    arm = record.get("arm", "")
+    units = [
+        text
+        for u in record.get("units") or []
+        if isinstance(u, dict) and (text := normalise_output(arm, u.get("text"))).strip()
+    ]
+    acts = act_texts(gold)
+    pairs = []
+    for i, act in enumerate(acts):
+        for j, unit in enumerate(units):
+            cer = cer_wer(act, unit)["cer"]
+            if cer is not None and cer <= UNIT_MATCH_CER:
+                pairs.append((cer, i, j))
+    used_a, used_u, cers = set(), set(), []
+    for cer, i, j in sorted(pairs):
+        if i not in used_a and j not in used_u:
+            used_a.add(i)
+            used_u.add(j)
+            cers.append(cer)
+    return {
+        "acts": len(acts),
+        "acts_matched": len(used_a),
+        "act_recall": len(used_a) / len(acts) if acts else None,
+        "units": len(units),
+        "units_unmatched": len(units) - len(used_u),
+        "unit_cers": cers,
+        "whole_page_fallback": bool(record.get("whole_page_fallback")),
+    }
+
+
 def score_page(record: dict[str, Any], gold: GoldPage, hard: bool = False) -> dict[str, Any]:
     arm = record.get("arm", "")
     text = normalise_output(arm, record.get("text"))
@@ -258,13 +317,14 @@ def score_page(record: dict[str, Any], gold: GoldPage, hard: bool = False) -> di
         "arm": arm,
         "page": gold.stem,
         "category": gold.category,
+        "form": G.form_of(gold.header.get("FORM", "")),
         "group": group,
         "scored": group in G.groups_for(arm)[0],
         "hard": hard,
         "status": gold.status,
         "ref_chars": len(reference),
         "hyp_chars": len(text),
-        "false_text": max(0, len(text) - len(reference)) > FALSE_TEXT_CHARS,
+        "false_text": len(text) > FALSE_TEXT_CHARS if not reference.strip() else None,
         "empty": not text.strip(),
         "loop": bool(loop),
         "finish_reason": record.get("finish_reason"),
@@ -275,6 +335,8 @@ def score_page(record: dict[str, Any], gold: GoldPage, hard: bool = False) -> di
     if gold.rows:
         row.update(line_recall(gold.row_lines(), text.splitlines(), gold.heading_lines()))
         row["surname_recall"] = surname_recall(gold.row_lines(), text)
+    if is_record_reading(record) and gold.acts:
+        row["record"] = record_scores(record, gold)
     return row
 
 
@@ -322,7 +384,7 @@ def model_arm(pages: dict[str, dict]) -> str:
 def summarise(rows: list[dict], metric: str) -> float | None:
     """One group's value of a metric: the median per page, or for false text the share."""
     if metric == "false_text_rate":
-        return _mean([float(r["false_text"]) for r in rows])
+        return _mean([float(r["false_text"]) for r in rows if r.get("false_text") is not None])
     return _median([r[metric] for r in rows if r.get(metric) is not None])
 
 
@@ -339,7 +401,14 @@ def _mean(values: list[float]) -> float | None:
 
 
 def _metric(rows: list[dict], metric: str) -> str:
-    return f"{G.METRICS[metric][0]} {_fmt(summarise(rows, metric))}"
+    name = "false text" if metric == "false_text_rate" else G.METRICS[metric][0]
+    return f"{name} {_fmt(summarise(rows, metric))}"
+
+
+def _mean_of(rows: list[dict], metric: str) -> str:
+    if metric == "false_text_rate":
+        return "–"
+    return _fmt(_mean([r[metric] for r in rows if r.get(metric) is not None]))
 
 
 def _counts(rows: list[dict]) -> str:
@@ -350,8 +419,24 @@ def _counts(rows: list[dict]) -> str:
     )
 
 
+def _record_cells(rows: list[dict]) -> str:
+    """Act recall, units unmatched, median unit CER and whole-page fallbacks, as cells."""
+    records = [r["record"] for r in rows if r.get("record")]
+    acts = sum(r["acts"] for r in records)
+    recall = sum(r["acts_matched"] for r in records) / acts if acts else None
+    cers = [c for r in records for c in r["unit_cers"]]
+    return (
+        f"{_fmt(recall)} | {sum(r['units_unmatched'] for r in records)} | "
+        f"{_fmt(_median(cers))} | {sum(r['whole_page_fallback'] for r in records)}"
+    )
+
+
 def _direction(metric: str) -> str:
     return "higher is better" if G.METRICS[metric][1] else "lower is better"
+
+
+def page_form(gold: GoldPage) -> str:
+    return G.form_of(gold.header.get("FORM", ""))
 
 
 class _Scores:
@@ -361,80 +446,112 @@ class _Scores:
         self.rows, self.gold, self.missing, self.arms, self.hard = rows, gold, missing, arms, hard
         self.models = sorted({r["model"] for r in rows} | set(missing))
 
-    def got(self, model: str, group: str, hard: bool = False) -> list[dict]:
+    def _in(self, stem: str, group: str, forms) -> bool:
+        page = self.gold[stem]
+        return page_group(page) == group and (forms is None or page_form(page) in forms)
+
+    def got(self, model: str, group: str, hard: bool = False, forms=None) -> list[dict]:
         return [
             r
             for r in self.rows
-            if r["model"] == model and r["group"] == group and r["hard"] == hard
+            if r["model"] == model and r["hard"] == hard and self._in(r["page"], group, forms)
         ]
 
-    def gone(self, model: str, group: str) -> list[str]:
+    def gone(self, model: str, group: str, forms=None) -> list[str]:
         return [
             p
             for p in self.missing.get(model, [])
-            if page_group(self.gold[p]) == group and p not in self.hard
+            if self._in(p, group, forms) and p not in self.hard
         ]
 
-    def hard_in(self, group: str) -> int:
-        return sum(page_group(self.gold[p]) == group for p in self.hard if p in self.gold)
+    def hard_in(self, group: str, forms=None) -> int:
+        return sum(self._in(p, group, forms) for p in self.hard if p in self.gold)
+
+    def forms_in(self, group: str) -> list[str]:
+        present = {page_form(p) for p in self.gold.values() if page_group(p) == group}
+        return [f for f in G.FORMS if f in present] + sorted(present - set(G.FORMS))
 
     def groups_for(self, model: str) -> tuple[tuple[str, ...], str, bool]:
         return G.groups_for(self.arms.get(model, ""))
+
+    def is_record_arm(self, model: str) -> bool:
+        return any(r.get("record") for r in self.rows if r["model"] == model)
+
+
+def _cross_table(s: _Scores, g: G.Group, forms, title: str) -> list[str]:
+    name = G.METRICS[g.headline][0]
+    lines = [
+        f"### {g.name}, {title} ({name}, {_direction(g.headline)})",
+        "",
+        f"| model | pages | {name} |",
+        "|---|---:|---:|",
+    ]
+    skipped = []
+    for model in s.models:
+        names, reason, _ = s.groups_for(model)
+        if g.name not in names:
+            skipped.append(f"{model} ({reason})")
+            continue
+        got = s.got(model, g.name, forms=forms)
+        lines.append(f"| {model} | {len(got)} | {_fmt(summarise(got, g.headline))} |")
+    lines.append("")
+    if skipped:
+        lines += [f"Not scored here: {', '.join(skipped)}.", ""]
+    return lines
 
 
 def _cross_model(s: _Scores, label: str) -> list[str]:
     lines = [f"## Compare models, one group at a time{label}", ""]
     for g in G.GROUPS:
-        if g.name == G.TEST or not any(page_group(p) == g.name for p in s.gold.values()):
+        forms = s.forms_in(g.name)
+        if g.name == G.TEST or not forms:
             continue
-        name = G.METRICS[g.headline][0]
-        lines += [
-            f"### {g.name} ({name}, {_direction(g.headline)})",
-            "",
-            f"| model | pages | {name} |",
-            "|---|---:|---:|",
-        ]
-        skipped = []
-        for model in s.models:
-            names, reason, _ = s.groups_for(model)
-            if g.name not in names:
-                skipped.append(f"{model} ({reason})")
-                continue
-            got = s.got(model, g.name)
-            lines.append(f"| {model} | {len(got)} | {_fmt(summarise(got, g.headline))} |")
-        lines.append("")
-        if skipped:
-            lines += [f"Not scored here: {', '.join(skipped)}.", ""]
+        if "handwritten" in forms:
+            lines += _cross_table(s, g, {"handwritten"}, "handwritten pages")
+        else:
+            lines += _cross_table(s, g, None, "all pages (none handwritten)")
+        if "typed" in forms and "handwritten" in forms:
+            lines += _cross_table(s, g, {"typed"}, "typed pages")
     return lines
 
 
 def _per_model(s: _Scores, model: str, label: str) -> list[str]:
     names, reason, known = s.groups_for(model)
     arm = s.arms.get(model) or "?"
+    record = s.is_record_arm(model)
     lines = [f"## {model} (arm {arm}){label}", "", f"Scored on: {', '.join(names)} ({reason})."]
     if not known:
         lines.append(f"**Warning:** arm {arm!r} is not in the fairness table.")
-    lines += [
-        "",
-        "| group | pages | hard | missing | headline | also | empty | loops | errors | s/page |",
-        "|---|---:|---:|---:|---|---|---:|---:|---:|---:|",
-    ]
+    head = "| group | pages | hard | missing | median | mean | also | empty | loops | errors | s/page |"
+    rule = "|---|---:|---:|---:|---|---:|---|---:|---:|---:|---:|"
+    if record:
+        head += " act recall | units unmatched | unit CER | whole-page fallbacks |"
+        rule += "---:|---:|---:|---:|"
+    lines += ["", head, rule]
+    blank = " | | | |" if record else ""
     for g in G.GROUPS:
-        if g.name not in names or g.name == G.TEST:
+        forms = s.forms_in(g.name)
+        if g.name not in names or g.name == G.TEST or not forms:
             continue
-        if not any(page_group(p) == g.name for p in s.gold.values()):
-            continue
-        got = s.got(model, g.name)
-        also = "; ".join(_metric(got, m) for m in g.also) or "–"
-        lines.append(
-            f"| {g.name} | {len(got)} | {s.hard_in(g.name)} | {len(s.gone(model, g.name))} | "
-            f"{_metric(got, g.headline)} | {also} | {_counts(got)} |"
-        )
+        slices = [(g.name, None)]
+        if len(forms) > 1:
+            slices += [(f"↳ {form}", {form}) for form in forms]
+        for title, only in slices:
+            got = s.got(model, g.name, forms=only)
+            also = "; ".join(_metric(got, m) for m in g.also) or "–"
+            extra = blank
+            if record and only is None and g.name == "acts":
+                extra = f" {_record_cells(got)} |"
+            lines.append(
+                f"| {title} | {len(got)} | {s.hard_in(g.name, only)} | "
+                f"{len(s.gone(model, g.name, only))} | {_metric(got, g.headline)} | "
+                f"{_mean_of(got, g.headline)} | {also} | {_counts(got)} |{extra}"
+            )
     every = [r for r in s.rows if r["model"] == model and r["group"] != G.TEST]
     gone = [p for p in s.missing.get(model, []) if page_group(s.gold[p]) != G.TEST]
     lines += [
         f"| all pages, for reference | {len(every)} | {sum(r['hard'] for r in every)} | "
-        f"{len(gone)} | {_metric(every, 'cer')} | – | {_counts(every)} |",
+        f"{len(gone)} | {_metric(every, 'cer')} | – | – | {_counts(every)} |{blank}",
         "",
     ]
     return lines
@@ -468,6 +585,8 @@ def _test_pages(s: _Scores, label: str) -> list[str]:
 def _page_headline(row: dict, group: str) -> str:
     metric = G.group(group).headline if group in {g.name for g in G.GROUPS} else "cer"
     if metric == "false_text_rate":
+        if row.get("false_text") is None:
+            return f"gold has text, CER {_fmt(row.get('cer'))}"
         return "false text" if row["false_text"] else "no false text"
     return f"{G.METRICS[metric][0]} {_fmt(row.get(metric))}"
 
