@@ -784,6 +784,112 @@ def test_chandra_error_terminal_resume_waits_full_backoff_before_next_request(
     assert [request["temperature"] for request in resumed.requests("attestator_1")] == [0.2, 0.0]
 
 
+def test_chandra_pages_read_side_by_side_seal_in_page_order_and_resume(
+    live_run, tmp_path, monkeypatch
+):
+    """Page 2 finishes its whole retry loop before page 1 sends anything, yet every
+    Chandra record is written in page order, and a pass stopped inside page 1's
+    loop resumes it at the next native attempt."""
+    run_root = fresh_tree(live_run, tmp_path)
+    repeated = CHANDRA_PAGE_ONE + ("<!--repeat-->" * 24)
+    scripts = default_scripts()
+    # Arrival order: page 2's two attempts, then page 1's first.
+    scripts["attestator_1"] = [
+        ScriptedAnswer(content=repeated, finish_reason="stop"),
+        ScriptedAnswer(content=CHANDRA_PAGE_TWO, finish_reason="stop"),
+        ScriptedAnswer(content=repeated, finish_reason="stop"),
+    ]
+    world = LiveWorld(live_run, tmp_path / "interrupted", scripts)
+
+    # The sealed test row holds one sequence; Chandra's chair gets two here.
+    resident: dict[str, str] = {}
+    real_window = attestatores.in_order_window
+
+    def factory(context, identity, tier):
+        resident["chair"] = identity.role
+        return world.factory(context, identity, tier)
+
+    def window(width, jobs):
+        return real_window(2 if resident.get("chair") == "attestator_1" else width, jobs)
+
+    # Page 1 waits for page 2's whole loop, which only a window wider than one allows.
+    real_read = attestatores.chandra_native.read_page
+    page_two_read = threading.Event()
+
+    def page_two_first(context, page, *, page_ordinal, **kwargs):
+        if page_ordinal == 1:
+            assert page_two_read.wait(timeout=10), "Chandra pages were not read side by side"
+        read = real_read(context, page, page_ordinal=page_ordinal, **kwargs)
+        if page_ordinal == 2:
+            page_two_read.set()
+        return read
+
+    real_intent = attestatores.chandra_native._chandra_intent_record
+
+    def stop_before_page_one_retry(context, **fields):
+        if fields["page_ordinal"] == 1 and fields["native_attempt_ordinal"] == 2:
+            raise RuntimeError("simulated stop inside page 1's retry loop")
+        return real_intent(context, **fields)
+
+    written: list[tuple[str, str, bool]] = []
+    real_publish = RunTree.publish_artifact
+
+    def recording_publish(tree, envelope):
+        written.append(
+            (
+                envelope["kind"],
+                envelope["subject_id"],
+                threading.current_thread() is threading.main_thread(),
+            )
+        )
+        return real_publish(tree, envelope)
+
+    monkeypatch.setattr(attestatores, "in_order_window", window)
+    monkeypatch.setattr(attestatores.chandra_native, "read_page", page_two_first)
+    monkeypatch.setattr(
+        attestatores.chandra_native, "_chandra_intent_record", stop_before_page_one_retry
+    )
+    monkeypatch.setattr(RunTree, "publish_artifact", recording_publish)
+    with pytest.raises(RuntimeError, match="inside page 1's retry loop"):
+        run_attestatores(live_run, run_root, factory=factory)
+    monkeypatch.undo()
+
+    tree = RunTree(run_root, RUN_ID)
+    page_two = page_records(tree)[(2, "attestator_1")]
+    page_of = {page_two["subject_id"]: 2}
+    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] == "chandra-native-attempt-intent":
+            intent = tree.read_artifact(ATTESTATORES, entry["kind"], entry["artifact_id"])
+            page_of[entry["subject_id"]] = intent["payload"]["page_ordinal"]
+    chandra_kinds = {"chandra-native-attempt-intent", "chandra-native-attempt"}
+    assert all(main for kind, _subject, main in written if kind in chandra_kinds)
+    assert [
+        (kind, page_of[subject])
+        for kind, subject, _main in written
+        if kind in chandra_kinds or (kind == "page-testimonium" and subject in page_of)
+    ] == [
+        ("chandra-native-attempt-intent", 1),
+        ("chandra-native-attempt", 1),
+        ("chandra-native-attempt-intent", 2),
+        ("chandra-native-attempt", 2),
+        ("chandra-native-attempt-intent", 2),
+        ("chandra-native-attempt", 2),
+        ("page-testimonium", 2),
+    ]
+    assert page_two["payload"]["native_inference"]["physical_request_count"] == 2
+
+    resumed_scripts = default_scripts()
+    resumed_scripts["attestator_1"] = [
+        ScriptedAnswer(content=CHANDRA_PAGE_ONE, finish_reason="stop")
+    ]
+    resumed = LiveWorld(live_run, tmp_path / "resumed", resumed_scripts)
+    assert run_attestatores(live_run, run_root, factory=resumed.factory) == 0
+    # Only page 1's next native attempt is sent; its first is not repeated.
+    assert [request["temperature"] for request in resumed.requests("attestator_1")] == [0.2]
+    trace = page_records(tree)[(1, "attestator_1")]["payload"]["native_inference"]
+    assert [row["trigger"] for row in trace["attempts"]] == ["repeat-token", None]
+
+
 def test_chandra_post_response_refusal_is_terminal_and_reproduced_on_resume(
     live_run, tmp_path, monkeypatch
 ):

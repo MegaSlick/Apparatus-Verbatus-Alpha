@@ -24,7 +24,7 @@ full commands.
     matches the runbook (`VERBATUS_HARD_DEADLINE=none` with `--no-hold`), describes the
     pod split, and arms the ping over the pod's direct SSH port only.
 - Known and deferred (throughput only, not failures): each stage process re-hashes its
-  chair once; Chandra reads one page at a time; witnesses do not share a card; no
+  chair once; witnesses do not share a card; no
   GPU/CPU/disk warn checks beyond page rates; no per-stage hand-off file between pods.
 
 ## The lead's decisions before anything bills

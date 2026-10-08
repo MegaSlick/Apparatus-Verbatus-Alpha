@@ -68,9 +68,9 @@ passed over, and prints nothing on a real run.
 client is entered once and its pages are read in order, then it is stopped.
 Churro is asked once per page, Chandra once per page plus its vendor retry loop
 (below), and DAI once per record its own detector
-found on the page. Churro and DAI keep up to the launched row's `max_num_seqs` (the
+found on the page. Every chair keeps up to the launched row's `max_num_seqs` (the
 row's own, or the run's `--capacity-plan` width for the card)
-requests in flight (Chandra one, since its retry loop seals records as it reads);
+pages in flight; Chandra's retry loop holds its records until its page's turn.
 DAI's requests are its records, so a page's records go out side by side and the
 next page's start while its last are out. Records are still sealed strictly in
 page order, a DAI page once its last record has answered. Preflight consults no
@@ -159,9 +159,14 @@ recipe: one request at `temperature=0, top_p=0.1`, then at most six retries at
 0.2, 0.4, 0.6, 0.8, 0.8, 0.8 with `top_p=0.95`. Only the vendor's repeat
 detector or an inference error advances the loop; an error waits 2, 4, 6, 8, 10
 or 12 seconds before the next request, also after a resume. Every physical
-request has a sealed `chandra-native-attempt-intent` before HTTP and a sealed
-`chandra-native-attempt` terminal after. An intent with no terminal is
-delivery-unknown and refuses resume; it is never replayed. A response the stage
+request has a `chandra-native-attempt-intent`, made before HTTP and named by its
+call record, and a `chandra-native-attempt` terminal after. Both are written
+when the page's turn comes, intent before terminal, so pages read side by side
+still seal their records in page order; a page whose loop stops on an error
+first seals what it made. A sealed intent with no terminal is delivery-unknown
+and refuses resume; it is never replayed. A pass killed while a page's loop is
+still out seals nothing for that page, and a resume reads it again from the
+sealed records, if any. A response the stage
 refuses after it arrived gets a terminal first, so a resume repeats the named
 refusal. The final returned attempt alone supplies the page text and geometry;
 every request stays reachable through the page record's `native_inference`,

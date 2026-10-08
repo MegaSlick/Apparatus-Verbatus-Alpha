@@ -2307,8 +2307,13 @@ def _read_page_unit(
     ordinal: int,
     page_ids: dict[int, str],
     framing: str | None = None,
-) -> Attempt:
-    """Read one whole-page witness, including Chandra's page-local retry loop."""
+    chandra_page: chandra_native.ChandraPage | None = None,
+) -> Attempt | chandra_native.ChandraPage:
+    """Read one whole-page witness, including Chandra's page-local retry loop.
+
+    Chandra's loop comes back unsealed, with the records it made; its page's
+    turn in `_serve_page_unit` writes them.
+    """
     presentation = presentation_for_page(context, page_ordinal, page_ids=page_ids)
     try:
         request = live_witness.page_chair_request(
@@ -2329,9 +2334,10 @@ def _read_page_unit(
             adapter=adapter,
         )
     else:
-        if resolved.role == "attestator_1" and resolved.witness_adapter == "chandra.v1":
-            attempt = chandra_native.serve_page(
+        if chandra_page is not None:
+            attempt = chandra_native.read_page(
                 context,
+                chandra_page,
                 client=client,
                 chair=chair,
                 resolved=resolved,
@@ -2340,7 +2346,6 @@ def _read_page_unit(
                 witness_attempt_ordinal=ordinal,
                 request=request,
                 framing=framing,
-                page_subject_id=page_subject(context, page_ordinal, page_ids=page_ids),
             )
         else:
             response = client.read(request)
@@ -2361,8 +2366,12 @@ def _read_page_unit(
     return attempt
 
 
+def _reads_chandra_natively(resolved) -> bool:
+    return resolved.witness_adapter == "chandra.v1" and resolved.role == "attestator_1"
+
+
 def _serve_page_unit(
-    attempt: Attempt,
+    attempt: Attempt | chandra_native.ChandraPage,
     *,
     context,
     chair: str,
@@ -2372,6 +2381,8 @@ def _serve_page_unit(
     page_ids: dict[int, str],
 ) -> None:
     """Seal one whole-page witness result in page order."""
+    if isinstance(attempt, chandra_native.ChandraPage):
+        attempt = chandra_native.seal_page(context, attempt)
     publish_page_testimonium(
         context,
         chair=chair,
@@ -2559,6 +2570,20 @@ def live_pass(
                                 page_ids=page_ids,
                             )
                         else:
+                            # Read here, where records are written: what an
+                            # earlier pass sealed for this page's native loop.
+                            chandra_page = (
+                                chandra_native.begin_page(
+                                    context,
+                                    chair=chair,
+                                    page_subject_id=page_subject(
+                                        context, page_ordinal, page_ids=page_ids
+                                    ),
+                                    witness_attempt_ordinal=ordinal,
+                                )
+                                if _reads_chandra_natively(resolved)
+                                else None
+                            )
                             yield (
                                 partial(
                                     _read_page_unit,
@@ -2571,6 +2596,7 @@ def live_pass(
                                     ordinal=ordinal,
                                     page_ids=page_ids,
                                     framing=framings[chair],
+                                    chandra_page=chandra_page,
                                 ),
                                 partial(
                                     _serve_page_unit,
@@ -2583,12 +2609,11 @@ def live_pass(
                                 ),
                             )
 
-                # Chandra's native retry loop publishes its intent and attempt records
-                # while it reads, so it stays one page at a time: in parallel those
-                # records would land in arrival order, not page order. A record
-                # reader's jobs are its records, and only a page's last one seals.
-                chandra = resolved.witness_adapter == "chandra.v1"
-                width = 1 if chandra else client.handle.profile.max_num_seqs
+                # Chandra's native loop returns its records unsealed, so its
+                # pages share the window too and still seal in page order. A
+                # record reader's jobs are its records, and only a page's last
+                # one seals.
+                width = client.handle.profile.max_num_seqs
                 if chair in detector_chairs:
                     recorded += sum(
                         1 for sealed_page in in_order_window(width, jobs()) if sealed_page
