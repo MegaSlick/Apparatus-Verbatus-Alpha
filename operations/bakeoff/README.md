@@ -116,9 +116,8 @@ cd ~/verbatus_alpha
   --out private/bakeoff/scores
 ```
 
-`scores.md` has one table per category (median and mean CER, median WER, line recall on
-index and list pages, empty, loops, errors, s/page), the five worst pages per model, and
-each model's throughput. While the gold files say `STATUS: fool's gold`, every heading
+`scores.md` scores each model on its own page groups (see "Fair scoring and the roster"
+below), lists the five worst pages per model, and each model's throughput. While the gold files say `STATUS: fool's gold`, every heading
 says **vs fool's gold (ballpark, not accuracy)**.
 
 How it scores:
@@ -143,7 +142,46 @@ How it scores:
   revision, a check that vLLM 0.30's registry serves it without remote code, and a
   normaliser branch for its JSON layout answer. The `qwen-blind` arm with
   `--prompt-file` and `--label` can serve it once those are settled.
-- The rescue rate, error correlation, act recall and the other Phase W metrics in the
-  plan's section 9 are not computed here; the cache has what they need.
+- Act recall and the other Phase W metrics beyond the roster's (`roster.py`) are not
+  computed here; the cache has what they need.
 - Nothing here has run on a GPU yet: the tests use a fake server, and DAI's detector is
   faked in the tests (it needs `ultralytics`, which only the pod has).
+
+## Fair scoring and the roster
+
+A model is scored only where its design applies, by the metric that fits the page type,
+and never pooled across types. `groups.py` holds the table as data, edited by hand and
+checked by `validate()`:
+
+| Group | Gold categories | Headline | Also |
+|---|---|---|---|
+| `acts` | acts-18c, acts-19c, acts-20c | CER | WER |
+| `prose-other` | contract | CER | |
+| `tables` | ledger | line recall | CER |
+| `index-list` | index, list | line recall | surname recall, false-line rate |
+| `blank-like` | blank, near-blank, non-register | false-text rate | CER |
+| `test` | any page with `TEST PAGE: yes` | per page, for the lead | |
+
+`MODEL_GROUPS` says which groups each arm is scored on: `dai` on `acts` only (it reads
+records; empty on an index is no failure), `pylaia-popp-*` on `index-list`, `tables` and
+`acts`, every other arm on every group. An arm not in the table is scored everywhere and
+the report warns. False text: more than 20 characters of output beyond the reference.
+Surname recall: each gold row's first token found among the model's tokens at distance
+<= 1. False-line rate: model lines matched to no gold row or heading, over model lines.
+
+`scores.md` has a compact cross-model table per group (headline only), one section per
+model (one row per group it is scored on, then `all pages, for reference`), the test
+pages with their expected behaviour, and the hard pages. `--hard-pages FILE` (one stem per
+line) moves pages out of the medians into their own table; `--exclude FILE` drops them.
+
+```sh
+.venv/bin/python -m operations.bakeoff.roster --cache private/bakeoff/witness-cache \
+  --gold "$HOME/Desktop/Bake-off set/Pages" --gold-glob '*/Prepped/*.txt' \
+  --out private/bakeoff/scores --hard-pages private/bakeoff/hard-pages.txt
+```
+
+`roster.md` gives, per group and candidate against `--baselines` (default
+`chandra,dai,churro`): rescue rate, phi correlation of wrong tokens with each baseline
+(and the baselines' own), shared fabrication, insertion rate beside the leader's, union
+line recall on index-list, and the roster rule's suggestion with its inputs. The rule is
+a suggestion for the lead, never a decision.

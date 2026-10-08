@@ -75,5 +75,143 @@ def test_main_writes_labelled_report(tmp_path):
     rows = [json.loads(x) for x in (tmp_path / "scores.jsonl").read_text().splitlines()]
     assert len(rows) == 1 and 0 < rows[0]["cer"] < 1
     md = (tmp_path / "scores.md").read_text()
-    assert S.FOOLS_GOLD_LABEL in md and "## index" in md and "p001 (" in md
-    assert "| dai | 0 | 1 |" in md  # the index page has no reading: counted missing
+    assert S.FOOLS_GOLD_LABEL in md and "### acts" in md and "p001 (" in md
+    assert "| acts | 1 | 0 | 0 | CER" in md
+    assert "| all pages, for reference | 1 | 0 | 1 |" in md  # the index page: missing
+
+
+def gold_text(category, acts=(), rows=(), headings=(), test="no"):
+    """A synthetic gold file; the words are invented, never a real transcription."""
+    text = (
+        f"FILE: x.tif\nSTATUS: fool's gold\nCATEGORY: {category}\nVERDICT: acts\n"
+        f"TEST PAGE: {test}\n\n"
+    )
+    if acts:
+        text += "=== ACT 1 | baptism | from previous page: no | to next page: no ===\n"
+        text += "\n".join(acts) + "\n"
+    if headings:
+        text += "=== HEADINGS ===\n" + "\n".join(headings) + "\n"
+    if rows:
+        text += "=== ROWS ===\n" + "\n".join(rows) + "\n"
+    return text
+
+
+ROWS = ["Abellus | Iovan | 12", "Rossius | Mara | 4", "Cantor | Lucius | 7"]
+ACT = ["Anno domini vigesimo baptizavi Petrum", "filium legitimum Marci fabri"]
+PAGES = {
+    "a001": gold_text("acts-19c", acts=ACT),
+    "a002": gold_text("acts-18c", acts=["Die tertia sepultus est Paulus senex"]),
+    "h001": gold_text("acts-20c", acts=["Quarto idus nupserunt Titus et Livia"]),
+    "i001": gold_text("index", rows=ROWS, headings=["Tabula nominum"]),
+    "l001": gold_text("list", rows=["Ferrarius | Gaius | 3", "Pistor | Iulia | 9"]),
+    "g001": gold_text("ledger", rows=["Solvit Gaius | x | 12", "Debet Iulia | v | 3"]),
+    "c001": gold_text("contract", acts=["Coram notario convenerunt partes infrascriptae"]),
+    "b001": gold_text("blank"),
+    "n001": gold_text("near-blank", acts=["vacat"]),
+    "t001": gold_text("index", rows=ROWS, test="yes: a rotated page, expect nothing"),
+}
+
+
+def write_gold(directory, pages=PAGES):
+    directory.mkdir(parents=True, exist_ok=True)
+    for stem, text in pages.items():
+        (directory / f"{stem}.txt").write_text(text, encoding="utf-8")
+
+
+def write_reading(cache, model, arm, page, text, **extra):
+    folder = cache / model
+    folder.mkdir(parents=True, exist_ok=True)
+    record = {
+        "schema": "bakeoff-witness-page.v1",
+        "model": model,
+        "arm": arm,
+        "page": page,
+        "text": text,
+        "finish_reason": "stop",
+        "loop": False,
+        "seconds": 1.0,
+        "error": None,
+        **extra,
+    }
+    (folder / f"{page}.json").write_text(json.dumps(record), encoding="utf-8")
+
+
+def _full_reading(stem):
+    from operations.bakeoff.gold import parse_gold
+
+    return parse_gold(PAGES[stem], stem).reference_text()
+
+
+def _cache(tmp_path):
+    cache = tmp_path / "cache"
+    for stem in PAGES:
+        write_reading(cache, "chandra", "chandra-native", stem, _full_reading(stem))
+        write_reading(cache, "popp", "pylaia-popp-blla", stem, _full_reading(stem))
+        write_reading(cache, "mystery", "label-x", stem, _full_reading(stem))
+        dai_text = _full_reading(stem) if stem.startswith("a") or stem == "h001" else ""
+        write_reading(cache, "dai", "dai", stem, dai_text)
+    write_reading(cache, "chandra", "chandra-native", "b001", "Lorem ipsum dolor sit amet nimis")
+    write_reading(cache, "popp", "pylaia-popp-blla", "b001", "Lorem ipsum")
+    write_reading(cache, "chandra", "chandra-native", "h001", "nihil simile")
+    return cache
+
+
+def test_groups_hard_pages_and_fair_report(tmp_path):
+    write_gold(tmp_path / "gold")
+    cache = _cache(tmp_path)
+    (tmp_path / "hard.txt").write_text("# hard pages\nh001.tif\n", encoding="utf-8")
+    (tmp_path / "exclude.txt").write_text("n001\n", encoding="utf-8")
+    argv = ["--cache", str(cache), "--gold", str(tmp_path / "gold"), "--out", str(tmp_path)]
+    argv += ["--hard-pages", str(tmp_path / "hard.txt"), "--exclude", str(tmp_path / "exclude.txt")]
+    assert S.main(argv) == 0
+    rows = [json.loads(x) for x in (tmp_path / "scores.jsonl").read_text().splitlines()]
+    by = {(r["model"], r["page"]): r for r in rows}
+    assert by["chandra", "t001"]["group"] == "test"  # an index page, but a test page
+    assert by["chandra", "i001"]["group"] == "index-list"
+    assert by["chandra", "g001"]["group"] == "tables"
+    assert not by["dai", "i001"]["scored"] and by["dai", "a001"]["scored"]
+    assert not by["popp", "c001"]["scored"] and by["popp", "g001"]["scored"]
+    assert by["chandra", "h001"]["hard"] and not by["chandra", "a001"]["hard"]
+    assert ("chandra", "n001") not in by  # excluded
+    assert by["chandra", "b001"]["false_text"] and not by["popp", "b001"]["false_text"]
+    assert by["chandra", "i001"]["surname_recall"] == 1
+    assert by["chandra", "i001"]["false_line_rate"] == 0  # the heading is not a false line
+
+    md = (tmp_path / "scores.md").read_text()
+    dai = md.split("## dai (arm dai)")[1].split("\n## ")[0]
+    assert "| acts | 2 | 1 | 0 | CER 0.000 | WER 0.000 |" in dai  # h001 counted hard
+    assert "index-list" not in dai and "all pages, for reference" in dai
+    index = md.split("### index-list (line recall, higher is better)")[1].split("###")[0]
+    assert "| chandra | 2 | 1.000 |" in index and "| dai |" not in index
+    assert "Not scored here: dai (reads records on act pages" in index
+    prose = md.split("### prose-other")[1].split("###")[0]
+    assert "popp (census-table model" in prose
+    blank = md.split("### blank-like (false text, lower is better)")[1].split("###")[0]
+    assert "| chandra | 1 | 1.000 |" in blank and "| mystery | 1 | 0.000 |" in blank
+    assert "not in the fairness table" in md and "'mystery'" in md
+    assert "## Test pages" in md and "Expected: a rotated page, expect nothing" in md
+    assert "## Hard pages" in md and "| h001 | acts | chandra | CER" in md
+    assert "Excluded from scoring: 1 pages." in md
+    acts = md.split("### acts (CER, lower is better)")[1].split("###")[0]
+    assert "| chandra | 2 | 0.000 |" in acts  # the hard page's bad reading is left out
+
+
+def test_surname_recall_and_false_lines():
+    rows = ["Abellus Iovan 12", "Rossius Mara 4", "Cantor Lucius 7"]
+    assert S.surname_recall(rows, "Abelus Iovan\nzz Rossius\nnothing") == pytest.approx(2 / 3)
+    assert S.surname_recall(rows, "Abellus") == pytest.approx(1 / 3)  # one token, used once
+    assert S.surname_recall([], "x") is None
+    result = S.line_recall(rows, ["Abellus Iovan 12", "Tabula", "noise line"], ["Tabula"])
+    assert result["line_recall"] == pytest.approx(1 / 3)
+    assert result["false_line_rate"] == pytest.approx(1 / 3)
+
+
+def test_read_stems_and_expected_behaviour(tmp_path):
+    from operations.bakeoff.gold import parse_gold
+
+    (tmp_path / "s.txt").write_text("p001.tif\n\n# note\np002\n", encoding="utf-8")
+    assert S.read_stems(tmp_path / "s.txt") == {"p001", "p002"}
+    page = parse_gold(gold_text("blank", test="yes: say it is blank"), "p001")
+    assert S.expected_behaviour(page) == "say it is blank"
+    assert S.page_group(page) == "test"
+    assert S.expected_behaviour(parse_gold(gold_text("blank"), "p002")) is None
