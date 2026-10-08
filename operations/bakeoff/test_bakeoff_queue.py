@@ -281,6 +281,91 @@ def test_schedule_cuts_overrun_and_install_rules_on_a_fake_clock(bench):
     assert not (bench["guard"] / "deadline-testpod").exists()
 
 
+def test_an_arm_that_cannot_start_is_retried_reported_and_the_queue_still_ends(bench):
+    """A typo in a program path is that arm's error: retried, reported, never the end."""
+    env_dump = bench["tmp"] / "arm-env.json"
+    dump = [
+        sys.executable,
+        "-c",
+        f"import json, os, sys; open({str(env_dump)!r}, 'w').write(json.dumps(sorted(os.environ)))",
+    ]
+    arms = [
+        {**_cpu_arm(bench, "typo"), "command": ["/no/such/program", "--label", "typo"]},
+        {**_cpu_arm(bench, "envcheck"), "command": [*dump, "--label", "envcheck"]},
+        _cpu_arm(bench, "good"),
+    ]
+    notifier, deletes = FakeNotifier(), []
+    env = {**bench["env"], "RUNPOD_API_KEY": "key-not-real", "NTFY_TOPIC": "topic-not-real"}
+    queue = Q.Queue(
+        _manifest(bench, arms),
+        notifier=notifier,
+        runner=lambda argv: deletes.append(argv) or 0,
+        environ=env,
+        poll_seconds=0.05,
+    )
+    assert queue.run() == 0
+    status = json.loads((bench["out"] / "status.json").read_text())
+    assert {a["label"]: a["status"] for a in status["finished_arms"]} == {
+        "good": "ok",
+        "typo": "failed",
+        "envcheck": "failed",
+    }
+    assert any(e.startswith("typo: crashed (FileNotFoundError") for e in status["errors"])
+    assert (bench["home"] / "DONE.json").is_file() and deletes
+    # The arms never see the pod's API key or the phone topic.
+    names = json.loads(env_dump.read_text())
+    assert "RUNPOD_API_KEY" not in names and "NTFY_TOPIC" not in names
+    assert "HF_HUB_OFFLINE" in names
+    blob = (bench["out"] / "events.jsonl").read_text() + (bench["out"] / "status.json").read_text()
+    assert "key-not-real" not in blob and "topic-not-real" not in blob
+
+
+def test_the_copy_waits_for_a_skipped_arms_preparation(bench):
+    """A preparation still writing into the cache must finish before the copy and digests."""
+    clock = FakeClock()
+    marker = bench["out"] / "late" / "prepared.txt"
+    slow = [
+        sys.executable,
+        "-c",
+        f"import pathlib, time; time.sleep(2); pathlib.Path({str(marker)!r}).write_text('done')",
+    ]
+    arms = [
+        _cpu_arm(bench, "first"),
+        {**_cpu_arm(bench, "late", cut="overrun", time_box_min=5), "prepare": slow},
+    ]
+    notifier = FakeNotifier(lambda m: "first started" in m and setattr(clock, "t", clock.t + 3600))
+    queue = Q.Queue(
+        _manifest(bench, arms, end_pod="none"),
+        clock=clock,
+        notifier=notifier,
+        environ=bench["env"],
+        poll_seconds=0.05,
+    )
+    assert queue.run() == 0
+    done = json.loads((bench["out"] / "DONE.json").read_text())
+    assert done["verified"] and "late/prepared.txt" in done["digests"]
+    assert [
+        s["arm"] for s in json.loads((bench["out"] / "status.json").read_text())["skipped"]
+    ] == ["late"]
+
+
+def test_pages_done_counts_only_the_queue_pages_without_errors(bench):
+    queue = Q.Queue(_manifest(bench, [_cpu_arm(bench, "a")]), environ=bench["env"])
+    queue.page_list = sorted(bench["pages"].glob("*.tif"))
+    folder = bench["out"] / "a"
+    folder.mkdir(parents=True)
+    (folder / "p000.json").write_text(json.dumps({"error": None}))
+    (folder / "p001.json").write_text(json.dumps({"error": "timeout"}))
+    (folder / "stray-old-page.json").write_text(json.dumps({"error": None}))
+    (folder / "run.json").write_text(json.dumps({"error": None}))
+    queue.lanes["gpu"] = {"arm": "a", "index": 0, "phase": "run", "t0": 0.0, "wall0": 0.0}
+    snap = queue.snapshot()
+    assert (snap["pages_done"], snap["pages_total"]) == (1, 3)
+    queue.lanes["gpu"]["phase"] = "smoke"
+    snap = queue.snapshot()
+    assert (snap["pages_done"], snap["pages_total"]) == (1, 2)
+
+
 def test_skip_reason_rules():
     def arm(cut, box=20):
         return Q.ArmSpec("a", box, cut, True, ("x",), ("i",))
@@ -461,6 +546,25 @@ def _gone(pid: int) -> bool:
         ({"command": ["python", "x.py", "--out", "/elsewhere"]}, "not the queue's out"),
         ({"cut": "install-failed"}, "needs an install"),
         ({"time_box": 3}, "unknown keys"),
+        ({"command": ["python", "x.py", "--pages", "/other-pages"]}, "not the queue's pages"),
+        (
+            {
+                "command": [
+                    "python",
+                    "-m",
+                    "operations.bakeoff.witness_run",
+                    "run",
+                    "--model",
+                    "dai",
+                ]
+            },
+            "add --label a",
+        ),
+        (
+            {"command": ["python", "-m", "operations.bakeoff.witness_run", "run-all"]},
+            "run-all",
+        ),
+        ({"sync_to": "OUT/home"}, "neither inside the other"),
     ],
 )
 def test_manifest_refusals(bench, change, message):
@@ -473,7 +577,10 @@ def test_manifest_refusals(bench, change, message):
         "sync_to": "/workspace/private/home",
         "arms": [arm],
     }
-    if "schema" in change:
+    data["pages"] = arm["command"][arm["command"].index("--pages") + 1]
+    if "sync_to" in change:
+        data["sync_to"] = change["sync_to"].replace("OUT", data["out"])
+    elif "schema" in change:
         data.update(change)
     else:
         arm.update(change)
@@ -526,20 +633,22 @@ def _status(**fields) -> dict:
 def test_watch_prints_changes_only_warns_when_stale_and_exits_on_done(tmp_path):
     status_path = tmp_path / "cache" / "status.json"
     status_path.parent.mkdir()
-    old = Q.iso(time.time() - 3600)
+    # The pod's clock is an hour off; only this machine's clock decides staleness.
+    stuck = Q.iso(time.time() - 3600)
     steps = [
         _status(),
         _status(),
-        _status(phase="run", pages_done=1, pages_total=3, eta_min=4.2),
-        _status(phase="run", pages_done=1, pages_total=3, eta_min=4.2, updated=old),
-        _status(phase="run", pages_done=1, pages_total=3, eta_min=4.2, updated=old),
+        _status(phase="run", pages_done=1, pages_total=3, eta_min=4.2, updated=stuck),
+        _status(phase="run", pages_done=1, pages_total=3, eta_min=4.2, updated=stuck),
+        _status(phase="run", pages_done=1, pages_total=3, eta_min=4.2, updated=stuck),
         _status(state="done", phase="end-pod", arm=None, arm_index=None),
     ]
     status_path.write_text(json.dumps(steps[0]))
-    position = [0]
+    position, clock = [0], [1000.0]
 
     def next_step(_seconds):
         position[0] += 1
+        clock[0] += 400  # the third and fourth reads leave `updated` unchanged for 800 s
         status_path.write_text(json.dumps(steps[position[0]]))
         if position[0] == len(steps) - 1:
             (status_path.parent / "DONE.json").write_text(
@@ -547,7 +656,14 @@ def test_watch_prints_changes_only_warns_when_stale_and_exits_on_done(tmp_path):
             )
 
     lines: list[str] = []
-    code = Q.watch_ssh(_fake_ssh(tmp_path), str(status_path), 30, sleep=next_step, say=lines.append)
+    code = Q.watch_ssh(
+        _fake_ssh(tmp_path),
+        str(status_path),
+        30,
+        sleep=next_step,
+        say=lines.append,
+        now=lambda: clock[0],
+    )
     assert code == 0
     body = [line.split(" ", 1)[1] for line in lines]
     assert body[0].startswith("q running, arm chandra (1/3), smoke, 0/2 pages, eta -")
@@ -555,6 +671,32 @@ def test_watch_prints_changes_only_warns_when_stale_and_exits_on_done(tmp_path):
     assert sum(line.startswith("WARNING") for line in lines) == 1
     assert lines[-1].startswith("queue done: copy verified True, 9 files")
     assert len(lines) == 5
+
+
+def test_watch_warns_once_when_the_pod_stops_answering(tmp_path):
+    clock, lines, reads = [0.0], [], [0]
+
+    def dead_ssh(argv, **_):
+        reads[0] += 1
+        if reads[0] > 30:
+            raise KeyboardInterrupt  # the lead's ctrl-C; the test's way out
+        return subprocess.CompletedProcess(argv, 255, "", "Connection refused")
+
+    def sleep(seconds):
+        clock[0] += seconds
+
+    with pytest.raises(KeyboardInterrupt):
+        Q.watch_ssh(
+            "ssh -p 1 root@h",
+            "/x/status.json",
+            60,
+            run=dead_ssh,
+            sleep=sleep,
+            now=lambda: clock[0],
+            say=lines.append,
+        )
+    warnings = [line for line in lines if line.startswith("WARNING")]
+    assert len(warnings) == 1 and "not readable for 11 min" in warnings[0]
 
 
 def test_watch_exits_1_when_the_queue_failed(tmp_path):

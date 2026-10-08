@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import json
 import os
@@ -49,8 +50,22 @@ def now() -> str:
 def event(out: Path, name: str, **facts: Any) -> None:
     out.mkdir(parents=True, exist_ok=True)
     line = json.dumps({"t": now(), "event": name, **facts}, sort_keys=True)
-    with _events_lock, open(out / "events.jsonl", "a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
+    # The queue runner and its arms (separate processes) share this file: one O_APPEND
+    # write per line, under an advisory lock where the file system offers one, so lines
+    # never interleave even on a network volume where appends alone are not atomic.
+    data = (line + "\n").encode("utf-8")
+    with _events_lock:
+        fd = os.open(out / "events.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError:
+                pass
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view) :]
+        finally:
+            os.close(fd)
     print(line, flush=True)
 
 

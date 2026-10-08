@@ -58,6 +58,8 @@ ROOT = Path(__file__).resolve().parents[2]
 POD_DELETE = ROOT / "operations" / "pod" / "pod_delete.sh"
 NTFY_CONF = ROOT / "private" / "ntfy.conf"
 DEFAULT_GUARD_DIR = "/workspace/private/.pod_guard"
+# Secrets the arms never need: kept out of their environment, so no arm log can show them.
+ARM_ENV_DROPPED = frozenset({"RUNPOD_API_KEY", "NTFY_TOPIC"})
 OFFLINE_ENV = {"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1", "DO_NOT_TRACK": "1"}
 HEARTBEAT_FRESH_SECONDS = 300
 STATUS_EVERY_SECONDS = 30
@@ -148,7 +150,13 @@ def _flag_value(argv: tuple[str, ...], flag: str) -> str | None:
     return None
 
 
-def _parse_arm(raw: Any, index: int, out: Path) -> ArmSpec:
+def _runs_witness(argv: tuple[str, ...]) -> bool:
+    return any(
+        item == "operations.bakeoff.witness_run" or item.endswith("witness_run.py") for item in argv
+    )
+
+
+def _parse_arm(raw: Any, index: int, out: Path, pages: Path) -> ArmSpec:
     where = f"arms[{index}]"
     if not isinstance(raw, dict):
         raise ManifestError(f"{where} must be a table")
@@ -172,9 +180,21 @@ def _parse_arm(raw: Any, index: int, out: Path) -> ArmSpec:
     named_out = _flag_value(command, "--out")
     if named_out is not None and Path(named_out) != out:
         raise ManifestError(f"{where}: command writes to {named_out}, not the queue's out {out}")
+    named_pages = _flag_value(command, "--pages")
+    if named_pages is not None and Path(named_pages) != pages:
+        raise ManifestError(f"{where}: command reads {named_pages}, not the queue's pages {pages}")
     label = _flag_value(command, "--label")
     if label is not None and label != name:
         raise ManifestError(f"{where}: command's --label {label!r} is not the arm's name")
+    if _runs_witness(command):
+        # witness_run's cache folder is --label, else --model; run-all writes several.
+        if "run-all" in command:
+            raise ManifestError(f"{where}: witness_run run-all writes several folders; use run")
+        model = _flag_value(command, "--model")
+        if label is None and model is not None and model != name:
+            raise ManifestError(
+                f"{where}: command caches under --model {model!r}; add --label {name}"
+            )
     if cut == "install-failed" and raw.get("install") is None:
         raise ManifestError(f"{where}: cut = install-failed needs an install command")
     return ArmSpec(
@@ -203,8 +223,9 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
         if not isinstance(value, str) or not value.startswith("/"):
             raise ManifestError(f"{key} must be an absolute path")
         paths[key] = Path(value)
-    if paths["out"] == paths["sync_to"]:
-        raise ManifestError("sync_to must differ from out")
+    out_path, sync_path = paths["out"], paths["sync_to"]
+    if out_path == sync_path or out_path in sync_path.parents or sync_path in out_path.parents:
+        raise ManifestError("sync_to and out must be separate folders, neither inside the other")
     own_disk = data.get("own_disk", False)
     if not isinstance(own_disk, bool):
         raise ManifestError("own_disk must be true or false")
@@ -218,7 +239,7 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
     raw_arms = data.get("arms")
     if not isinstance(raw_arms, list) or not raw_arms:
         raise ManifestError("arms must be a non-empty list of [[arms]] tables")
-    arms = tuple(_parse_arm(raw, i, paths["out"]) for i, raw in enumerate(raw_arms))
+    arms = tuple(_parse_arm(raw, i, paths["out"], paths["pages"]) for i, raw in enumerate(raw_arms))
     names = [arm.name for arm in arms]
     if len(set(names)) != len(names):
         raise ManifestError("two arms share a name (each is a cache folder)")
@@ -403,6 +424,7 @@ class Queue:
         self.terminated = False
         self._ok_cache: dict[Path, tuple[int, bool]] = {}
         self._stop_ticker = threading.Event()
+        self._ticker_thread: threading.Thread | None = None
 
     def restore(self, status: dict[str, Any]) -> None:
         """Carry an earlier run's record into a manual end-pod, so its status keeps it."""
@@ -415,12 +437,14 @@ class Queue:
 
     # status ------------------------------------------------------------------------
 
-    def _ok_pages(self, label: str) -> list[float]:
-        """Modification times of the label's pages cached without an error."""
+    def _ok_pages(self, label: str, pages: list[Path] | None = None) -> list[float]:
+        """Modification times of the label's pages (of `pages`, default all) cached without
+        an error; stray records of pages outside the queue's page list never count."""
         times = []
         folder = self.m.out / label
+        stems = {p.stem for p in (self.page_list if pages is None else pages)}
         for path in folder.glob("*.json") if folder.is_dir() else []:
-            if path.name == "run.json":
+            if path.stem not in stems:
                 continue
             try:
                 mtime = path.stat().st_mtime_ns
@@ -452,12 +476,10 @@ class Queue:
             done = total = 0
             last = eta = eta_min = None
             if lane is not None:
-                times = self._ok_pages(lane["arm"])
-                done = len(times)
                 smoke = lane["phase"] == "smoke"
-                total = (
-                    min(self.m.smoke_pages, len(self.page_list)) if smoke else len(self.page_list)
-                )
+                counted = self.page_list[: self.m.smoke_pages] if smoke else self.page_list
+                times = self._ok_pages(lane["arm"], counted)
+                done, total = len(times), len(counted)
                 last = iso(times[-1]) if times else None
                 recent = [t for t in times if t >= lane["wall0"]]
                 if len(recent) >= 2:
@@ -545,7 +567,10 @@ class Queue:
             process = subprocess.Popen(
                 argv,
                 cwd=self.root,
-                env={**self.env, **OFFLINE_ENV},
+                env={
+                    **{k: v for k, v in self.env.items() if k not in ARM_ENV_DROPPED},
+                    **OFFLINE_ENV,
+                },
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -680,17 +705,23 @@ class Queue:
             )
         elif status == "failed":
             self.ping(f"failed:{arm.name}", "decision", f"{arm.name} failed after its retry")
+        elif status == "smoke-failed":
+            self.ping(f"failed:{arm.name}", "decision", f"{arm.name} smoke failed (smoke only)")
 
     def _arm_error(self, arm: ArmSpec, what: str) -> None:
         self._error(f"{arm.name}: {what}")
         self._event("queue-arm-error", arm=arm.name, detail=what)
-        self.ping(f"error:{arm.name}", "decision", f"{arm.name} {what}; retried at the end")
+        later = "reported at the end" if self.smoke_only else "retried at the end"
+        self.ping(f"error:{arm.name}", "decision", f"{arm.name} {what}; {later}")
         with self.lock:
             self.retry.append(arm)
 
     def skip(self, arm: ArmSpec, reason: str) -> None:
         with self.lock:
             self.skipped.append({"arm": arm.name, "reason": reason})
+            pending = self.ready.get(self.m.arms.index(arm))
+        if pending is not None:
+            pending.cancel()  # a skipped arm's preparation, if not yet started, never runs
         self._event("queue-arm-skipped", arm=arm.name, reason=reason)
         self.ping(f"skip:{arm.name}", "milestone", f"{arm.name} skipped: {reason}")
 
@@ -714,6 +745,8 @@ class Queue:
         )
         try:
             self._run_arm_phases(index, arm, lane, t0)
+        except Exception as failure:  # noqa: BLE001 -- a missing program must not end the queue
+            self._arm_error(arm, f"crashed ({type(failure).__name__}: {failure})"[:200])
         finally:
             self._end_lane(lane)
 
@@ -762,13 +795,22 @@ class Queue:
             if arm.install is not None and self._run_plain(arm, "retry", list(arm.install)) != 0:
                 self._record(arm, "failed", t0)
                 return
-            code = self._run_watched(index, arm, "gpu", "retry", list(arm.command))
+            # The smoke again first (cached pages are skipped, so a passed smoke costs nothing).
+            smoke = [*arm.command, "--limit", str(self.m.smoke_pages)]
+            code = self._run_watched(index, arm, "gpu", "retry", smoke)
+            if code == 0 and self._pages_ok(arm.name, self.page_list[: self.m.smoke_pages]):
+                code = self._run_watched(index, arm, "gpu", "retry", list(arm.command))
+            elif code == 0:
+                code = -1
             if self.hard_stopped:
                 self._record(arm, "hard-stopped", t0)
             elif code == 0 and self._pages_ok(arm.name, self.page_list):
                 self._record(arm, "ok", t0)
             else:
                 self._record(arm, "failed", t0)
+        except Exception as failure:  # noqa: BLE001 -- reported, never dropped
+            self._error(f"{arm.name}: retry crashed ({type(failure).__name__}: {failure})"[:200])
+            self._record(arm, "failed", t0)
         finally:
             self._end_lane("gpu")
 
@@ -794,18 +836,21 @@ class Queue:
             f"queue started: {len(self.m.arms)} arms, {len(self.page_list)} pages, plan "
             f"{self.m.planned_min:.0f} min",
         )
-        ticker = threading.Thread(target=self._ticker, daemon=True)
-        ticker.start()
+        self._ticker_thread = threading.Thread(target=self._ticker, daemon=True)
+        self._ticker_thread.start()
         try:
             self._run_arms()
-            if not self.smoke_only:
+            if self.smoke_only:
+                for arm in list(self.retry):
+                    self._record(arm, "smoke-failed", time.monotonic())
+            else:
                 for arm in list(self.retry):
                     if self.hard_stopped or self.hard_stop_passed():
                         self._record(arm, "hard-stopped", time.monotonic())
                         continue
                     self._retry_arm(arm)
-                with self.lock:
-                    self.retry.clear()
+            with self.lock:
+                self.retry.clear()
             return self.finish()
         except Terminated:
             return self.terminate()
@@ -842,6 +887,7 @@ class Queue:
             self.errors.append("stopped by SIGTERM")
         self._event("queue-terminated")
         self.write_status()
+        self.ping("terminated", "decision", "queue stopped by SIGTERM; pod NOT ended")
         return 143
 
     # the end ----------------------------------------------------------------------
@@ -862,6 +908,14 @@ class Queue:
         with self.lock:
             self.state, self.phase_override = "syncing", "sync"
         self.write_status()
+        # Nothing may write into the cache while it is copied and digested: a preparation
+        # still running for a skipped arm would change its log after the copy, and the
+        # ticker's status.tmp would vanish under rsync (exit 24).
+        self._stop_ticker.set()
+        if self._ticker_thread is not None:
+            self._ticker_thread.join()
+        self.ready_pool.shutdown(wait=True, cancel_futures=True)
+        self.cpu_pool.shutdown(wait=True, cancel_futures=True)
         method, mismatched = None, []
         try:
             method = copy_tree(self.m.out, self.m.sync_to)
@@ -1016,14 +1070,6 @@ def status_line(status: dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
-def _age_seconds(stamp: str | None, now: float) -> float | None:
-    try:
-        moment = datetime.strptime(stamp or "", "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-    except ValueError:
-        return None
-    return now - moment.timestamp()
-
-
 def watch_ssh(
     ssh: str,
     status_path: str,
@@ -1034,14 +1080,19 @@ def watch_ssh(
     now: Callable[[], float] = time.time,
     say: Callable[[str], None] = print,
 ) -> int:
-    """Read the status file over SSH; one line per change; 0 on DONE, 1 on failure."""
+    """Read the status file over SSH; one line per change; 0 on DONE, 1 on failure.
+
+    Staleness is judged on this machine's clock: the pod rewrites `updated` every 30 s,
+    so a value unchanged (or unreadable) for STALE_SECONDS means the queue or the pod
+    has stopped, whatever the two clocks say. It warns once per stale spell."""
     argv = shlex.split(ssh)
     done_path = posixpath.join(posixpath.dirname(status_path), "DONE.json")
     remote = (
         f"cat {shlex.quote(status_path)}; echo {_MARK}; "
         f"cat {shlex.quote(done_path)} 2>/dev/null; true"
     )
-    last, warned = None, None
+    last, warned = None, False
+    seen_updated, fresh_at = None, now()
     while True:
         try:
             result = run([*argv, remote], capture_output=True, text=True, timeout=120)
@@ -1058,11 +1109,15 @@ def watch_ssh(
         if line != last:
             say(f"{datetime.now().strftime('%H:%M')} {line}")
             last = line
+        updated = (status or {}).get("updated")
+        if status is not None and updated != seen_updated:
+            seen_updated, fresh_at, warned = updated, now(), False
+        quiet = now() - fresh_at
+        if quiet > STALE_SECONDS and not warned and done is None:
+            warned = True
+            what = "not updated" if status is not None else "not readable"
+            say(f"WARNING: status {what} for {quiet / 60:.0f} min; the queue or pod may be gone")
         if status is not None:
-            age = _age_seconds(status.get("updated"), now())
-            if age is not None and age > STALE_SECONDS and status.get("updated") != warned:
-                warned = status.get("updated")
-                say(f"WARNING: status not updated for {age / 60:.0f} min; inspect once over SSH")
             if status.get("state") == "failed":
                 say(
                     f"queue failed: {status.get('end_action') or (status.get('errors') or [''])[-1]}"

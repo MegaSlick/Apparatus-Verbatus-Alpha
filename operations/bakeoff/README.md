@@ -154,8 +154,8 @@ How it scores:
 schema `bakeoff-queue.v1`) and ends the pod itself, so no laptop has to notice when a job
 ends. Arms run in order; each runs a smoke of `smoke_pages` pages (`--limit N` appended),
 then the full run. The next arm's `install` and `prepare` run on the CPU while this arm's
-command holds the card; a `gpu = false` arm runs beside the GPU arms. A failed arm is
-retried once at the end. Time boxes never kill work: an overrun is pinged once, and the
+command holds the card; a `gpu = false` arm runs beside the GPU arms. A failed arm (one whose
+program cannot even start included) is retried once at the end, smoke first, then reported. Time boxes never kill work: an overrun is pinged once, and the
 `cut` rule only skips later arms (`overrun`, `behind-schedule`, `install-failed`;
 `never` always runs). `hard_stop_min`, off unless set, stops the arm in flight and ends
 the day early. `status.json` beside the cache is rewritten every 30 s; the queue's events
@@ -166,7 +166,9 @@ writes `DONE.json` (digests and summary) to both, pings, and ends the pod: with 
 heartbeat younger than 5 min it moves the guard's deadline to now (the guard deletes, with
 its retries and stop fallback); otherwise it runs `operations/pod/pod_delete.sh`. With
 `own_disk = true` it refuses unless the copy verified; `end_pod = "none"` keeps the pod.
-SIGTERM stops the arm and exits 143 without ending the pod.
+SIGTERM stops the arm, pings and exits 143 without ending the pod. Arms never see
+`RUNPOD_API_KEY` or `NTFY_TOPIC`; `watch` warns once when the status has not changed (or
+cannot be read) for 10 min by the Mac's own clock.
 
 On the pod (`validate` and `run --dry-run` first):
 
