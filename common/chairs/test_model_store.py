@@ -9,6 +9,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1301,6 +1302,37 @@ def test_materializer_refuses_store_lock_after_bounded_wait(tmp_path, monkeypatc
 
     assert str(root) in str(caught.value)
     assert isinstance(caught.value.__cause__, BlockingIOError)
+
+
+def test_a_second_pod_waits_out_another_pod_s_store_work_and_says_so(tmp_path, monkeypatch, capsys):
+    """A pod booting while another holds the store lock through a seven-minute check waits,
+    saying so each minute, rather than refusing after one."""
+    assert model_store.MATERIALIZATION_LOCK_TIMEOUT_SECONDS >= 15 * 60
+    clock = [0.0]
+    attempts = []
+
+    def flock(fd, operation):
+        if operation & model_store.fcntl.LOCK_UN:
+            return
+        attempts.append(clock[0])
+        if clock[0] < 7 * 60:
+            raise BlockingIOError("held by the other pod")
+
+    def sleep(seconds):
+        clock[0] += 30
+
+    monkeypatch.setattr(model_store.fcntl, "flock", flock)
+    monkeypatch.setattr(
+        model_store, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep)
+    )
+
+    with model_store._materialization_lock(tmp_path / "store"):
+        pass
+
+    assert attempts[-1] == 7 * 60
+    waits = [line for line in capsys.readouterr().err.splitlines() if "waiting" in line]
+    assert len(waits) == 6
+    assert waits[0].startswith("model-store: waiting 60 s of 1200 s for the materialization lock")
 
 
 def test_materializer_clears_staging_left_after_failed_cleanup_on_next_fetch(tmp_path, monkeypatch):

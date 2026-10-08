@@ -58,6 +58,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from functools import partial
 from typing import Any, Callable, Final
 
@@ -264,6 +265,8 @@ class _PagePass:
     # What each page already holds, read before the pass publishes anything.
     sealed: dict[str, _Sealed] = field(default_factory=dict)
     row: Any = None
+    # The chair's start on a background thread while pages are prepared, if begun.
+    starting: Any = None
 
     @property
     def context(self):
@@ -1225,14 +1228,88 @@ def _left_to_send(
     return left
 
 
+def _startup_left(state: _PagePass) -> int:
+    """The seconds the chair's start may still take: its whole timeout when not begun,
+    what is left of it while it runs in the background, none once it is up."""
+    timeout = _serving_row(state).startup_timeout_seconds
+    if state.starting is not None and not state.starting.done:
+        return max(0, timeout - state.starting.elapsed_seconds())
+    return timeout if state.run.service.client is None else 0
+
+
 def _refuse_past_phase_deadline(state: _PagePass, left: int, what: str) -> None:
     """The deadline check before a phase's window: its sends, and the chair's start if due."""
-    startup = _serving_row(state).startup_timeout_seconds if state.run.service.client is None else 0
+    startup = _startup_left(state)
     _refuse_past_page_deadline(
         state,
         startup + left * planned_seconds_per_page(state.run.page_max_tokens),
         f"starting the Perlector ({startup}s) and {what} {left} pages",
     )
+
+
+def _starts_early(state: _PagePass, pages: dict[int, str]) -> bool:
+    """Whether the chair may start while pages are prepared: some page has no sealed
+    first reading, none was sent by an interrupted pass, and the reading deadline
+    admits the start and every such page, read from the records alone.
+
+    It is decided before any feed is built, so a page the pass will not send after
+    all (refused by the Exemplar, over capacity) still counts: at worst the chair
+    starts for a pass that sends nothing, and is stopped with it. Otherwise the chair
+    starts lazily, as before: a resumed pass with an earlier send waits for
+    `_left_to_send`, which may refuse it, and a tight deadline is judged on the exact
+    pages to send, which may refuse the pass before anything starts.
+    """
+    unread = [
+        (ordinal, page_id)
+        for ordinal, page_id in pages.items()
+        if page_path.page_reading_attempt(page_id, FIRST_READING)
+        not in state.sealed.get(page_id, _Sealed()).readings
+    ]
+    if not unread or any(
+        live_calls.sent_records(
+            state.context, page_id, page_key(ordinal), FIRST_READING, PAGE_READING_PASS
+        )
+        for ordinal, page_id in unread
+    ):
+        return False
+    deadline = state.run.args.reading_deadline
+    if deadline is None:
+        return True
+    needed = _serving_row(state).startup_timeout_seconds + len(unread) * planned_seconds_per_page(
+        state.run.page_max_tokens
+    )
+    return (deadline - datetime.now(timezone.utc)).total_seconds() >= needed
+
+
+def _prepare_all(state: _PagePass, pages: dict[int, str]) -> list[_Page]:
+    """Prepare every page, starting a live chair in the background meanwhile.
+
+    The chair loads while feeds are built, so its cold start overlaps the
+    preparation instead of following it. It starts only when a page is unread and
+    the deadline admits its start and every unread page; the start is joined before this
+    returns, so the first window finds it up, and a failure on either thread is
+    raised here. A preparation that fails does not wait for the start.
+    """
+    run = state.run
+    if state.live and state.chair_present and _starts_early(state, pages):
+        # On the resident chair too, so `close` hands a still-starting chair to its
+        # thread rather than waiting for it or stopping it mid-start.
+        state.starting = run.service.starting = live_calls.BackgroundStart(run)
+    try:
+        prepared = [_prepare(state, ordinal, page_id) for ordinal, page_id in pages.items()]
+        if state.live and state.chair_present:
+            left = _left_to_send(state, prepared, _first_requests)
+            if left:
+                _refuse_past_phase_deadline(state, left, "reading")
+    except BaseException as raised:
+        # Not waited for: `ResidentChair.close` leaves a chair still starting to its
+        # thread, which stops it once its start returns.
+        if state.starting is not None:
+            state.starting.note_failure(raised)
+        raise
+    if state.starting is not None:
+        state.starting.join()
+    return prepared
 
 
 def read_the_pages(run) -> None:
@@ -1262,11 +1339,7 @@ def read_the_pages(run) -> None:
         reask_budget=page_reask.reask_budget(context.recovery_policy),
         sealed=_sealed_pages(context),
     )
-    prepared = [_prepare(state, ordinal, page_id) for ordinal, page_id in pages.items()]
-    if state.live and state.chair_present:
-        left = _left_to_send(state, prepared, _first_requests)
-        if left:
-            _refuse_past_phase_deadline(state, left, "reading")
+    prepared = _prepare_all(state, pages)
     print(f"perlector: reading {len(pages)} pages whole", file=sys.stderr)
     live_calls.in_order_window(
         run.concurrency,

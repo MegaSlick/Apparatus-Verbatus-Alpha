@@ -462,13 +462,13 @@ exports, fetches, uploads, backups and `unexpected` records show what they touch
 verbatus watch --run-id <run id> --receipts <folder> [--lease <lease file>] [--interval 60]
 ```
 
-`watch` reads copies of `pod_run`'s report and its `-liveness`, `-timings` and `-estimate`
-siblings (`pod-run-report-<run id>.json` and so on, the hand route's names; `--report` names
+`watch` reads copies of `pod_run`'s report and its `-liveness`, `-timings`, `-estimate` and
+`-progress` siblings (`pod-run-report-<run id>.json` and so on, the hand route's names; `--report` names
 the report when it is called something else). It reads only the folder you name: it does
 not fetch them, contact the volume or a provider, or write anything. Getting fresh copies
 onto this computer is a separate step. After the run, `fetch-run`'s evidence keys bring
 them home into `<local root>/evidence/`. During the run, `fetch-run` compares rather than
-replaces, so copy the four files yourself (for example `scp` from the pod) into a folder
+replaces, so copy the five files yourself (for example `scp` from the pod) into a folder
 each time; reading them over S3 from `watch` itself is the next step.
 
 It prints `Verbatus works on this computer…` and `As of <time> (this computer's clock):`,
@@ -483,6 +483,8 @@ then, in a few short lines:
   are not counted. With no estimate it says `unknown` and why: a failing estimate says
   "the estimate is failing" with its last error, and a failed estimate write is counted.
   An ended run shows no stage estimate.
+- While the run is going, its progress check from the `-progress` copy: `ok`, `slow` or
+  `stalled`, the last time it was on pace, and the first finding.
 - **An ended run whose pod is kept up** (`held_to_hard_deadline`) says the pod is still
   billing until the hard deadline, and counts spend to now.
 - The deadline and the time left, with its source, whether it can be extended by hand,

@@ -120,6 +120,31 @@ def test_a_live_run_shows_progress_finish_deadline_budget_and_spend(tmp_path: Pa
     assert "Stage runs: door 3 min." in shown
 
 
+def test_a_live_run_shows_its_progress_check(tmp_path: Path) -> None:
+    report = _receipts(tmp_path)
+    progress = tmp_path / f"pod-run-report-{RUN}-progress.json"
+    _write(
+        progress,
+        {
+            "schema": "pod-run-progress.v1",
+            "run_id": RUN,
+            "status": "slow",
+            "last_ok": _stamp(NOW - timedelta(minutes=12)),
+            "findings": ["perlector: 0.10 pages a minute over 10 min, 0.26 expected"],
+        },
+    )
+
+    assert (
+        "Progress: slow, last on pace 2030-01-01 11:48 UTC (perlector: 0.10 pages a minute "
+        "over 10 min, 0.26 expected)."
+    ) in _show(report)
+
+    _write(progress, {"schema": "pod-run-progress.v1", "run_id": "other", "status": "ok"})
+    shown = _show(report)
+    assert "Progress:" not in shown
+    assert "is not this run's pod-run-progress.v1 record" in shown
+
+
 def test_old_copies_are_called_stale_and_dated_not_shown_as_current(tmp_path: Path) -> None:
     report = _receipts(tmp_path, seen=NOW - timedelta(minutes=47))
 

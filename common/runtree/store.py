@@ -101,6 +101,10 @@ RECENSOR_PARTITION_RECEIPT_FILE: Final = "run-health/recensor-partition-receipt.
 # Written by the serving launcher while a stage runs, never by this store; named
 # so `inventory_scope()` covers every path any code writes in the tree.
 SERVING_LOGS_DIR: Final = "serving-logs"
+# Beside a stage's engine logs, one empty note per launch audit the stage stored,
+# named by the audit blob's digest, so a watcher finds the launches without reading
+# the stage's other blobs. Operational, like the logs: never inventoried as evidence.
+LAUNCH_AUDIT_NOTE_PREFIX: Final = "launch-audit-"
 
 # The facts a run id is bound to. Changing any of them means this is a different
 # run wearing an old name, and reuse is refused rather than resumed.
@@ -420,6 +424,17 @@ class RunTree:
         `fetch-run` refuse the whole tree.
         """
         return f"{writing_directory(stage)}/{SERVING_LOGS_DIR}"
+
+    def note_launch_audit(self, stage: str, digest: str) -> None:
+        """Name a launch audit blob of `stage` in its serving-logs directory.
+
+        The note is empty: its name carries the digest, and the blob itself is the
+        content-addressed record. An identical note is reused.
+        """
+        _refuse_path_component(digest, "blob digest")
+        self._publish_bytes(
+            f"{self.serving_log_path(stage)}/{LAUNCH_AUDIT_NOTE_PREFIX}{digest}", b""
+        )
 
     def receipt_path(self, digest: str) -> str:
         """The one content-addressed location for a validated receipt-backed record."""

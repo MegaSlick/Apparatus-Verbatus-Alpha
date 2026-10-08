@@ -16,8 +16,12 @@
 # /workspace/private/.pod_guard, on the network volume at the pod's mount path). To set or
 # extend the deadline, write the new epoch second to a temporary file and move it over
 # deadline-<pod id>. Touching keepalive-<pod id> counts as work at that moment: idle time
-# then runs from the touch; pod_run touches it while the run's transcript or run tree
-# grows, never for CPU time alone. backup-<pod id> names the paths the ladder backs up,
+# then runs from the touch; pod_run touches it while the run keeps its pace, never for
+# CPU time alone. pod_run also writes progress-<pod id>, one line
+# "<epoch now> <epoch last ok> <ok|slow|stalled|bootstrapping> <check> <detail>"; while
+# that line is fresh it decides instead of the counters: ok is work, anything else is idle
+# time counted from the last ok, though only a stalled line, never a slow one, can reach the
+# delete. backup-<pod id> names the paths the ladder backs up,
 # one absolute path per line. alert-<pod id> holds the ladder's latest step. The guard
 # touches heartbeat-<pod id> on every tick, so a reader can tell a live guard from a
 # deadline file nobody watches; a released-<pod id> file (pod_run --no-hold writes the run
@@ -44,12 +48,15 @@ ladder_delete=${POD_GUARD_DELETE:-off}
 busy_percent=${POD_GUARD_BUSY_PERCENT:-5}
 busy_cpu_percent=${POD_GUARD_BUSY_CPU_PERCENT:-50}
 busy_net_kbps=${POD_GUARD_BUSY_NET_KBPS:-256}
+# A progress line older than this is a pod_run that stopped writing, not a verdict.
+progress_fresh=${POD_GUARD_PROGRESS_FRESH_SECONDS:-300}
 cgroup=${POD_GUARD_CGROUP:-/sys/fs/cgroup}
 netdev=${POD_GUARD_NETDEV:-/proc/net/dev}
 log="$dir/guard.log"
 deadline_file="$dir/deadline-$pod"
 alert_file="$dir/alert-$pod"
 backup_list="$dir/backup-$pod"
+progress_file="$dir/progress-$pod"
 
 # Without a writable log nothing below can be trusted, so the guard exits and the start
 # command's own backstop does the deleting instead.
@@ -255,6 +262,25 @@ cpu_busy() {
   [ $((now - before)) -ge $((span * interval * 10000 * busy_cpu_percent)) ]
 }
 
+# Reads pod_run's progress line. Succeeds only for a fresh, well-formed line, and sets
+# progress (its status), progress_for (seconds since its last ok) and progress_what (its
+# check and detail, cut to quote).
+read_progress() {
+  line=$(head -n 1 "$progress_file" 2>/dev/null) || return 1
+  p_now=${line%% *}
+  rest=${line#* }
+  p_ok=${rest%% *}
+  rest=${rest#* }
+  progress=${rest%% *}
+  progress_what=$(quoted "${rest#* }")
+  is_epoch "$p_now" && is_epoch "$p_ok" || return 1
+  case $progress in ok | slow | stalled | bootstrapping) ;; *) return 1 ;; esac
+  clock=$(date +%s)
+  [ $((clock - p_now)) -le "$progress_fresh" ] && [ $((p_now - clock)) -le "$progress_fresh" ] || return 1
+  progress_for=$((clock - p_ok))
+  [ "$progress_for" -ge 0 ] || progress_for=0
+}
+
 # Seconds since the keep-alive file was last touched; fails when there is none.
 keepalive_age() {
   touched=$(stat -c %Y "$dir/keepalive-$pod" 2>/dev/null || stat -f %m "$dir/keepalive-$pod" 2>/dev/null)
@@ -329,8 +355,13 @@ ladder() {
   fi
   if [ -z "$warned" ]; then
     warned=yes
-    say "idle warning: idle for ${idle_for}s"
-    notify "Pod $pod: no GPU, CPU or network work for $((idle_for / 60)) min. Touch its keep-alive if the wait is wanted."
+    if [ "$idle_what" = "$no_work" ]; then
+      say "idle warning: idle for ${idle_for}s"
+      notify "Pod $pod: no GPU, CPU or network work for $((idle_for / 60)) min. Touch its keep-alive if the wait is wanted."
+    else
+      say "idle warning: idle for ${idle_for}s; $idle_what"
+      notify "Pod $pod: $idle_what for $((idle_for / 60)) min."
+    fi
     alert warn "$idle_for"
   fi
   clock=$(date +%s)
@@ -338,7 +369,7 @@ ladder() {
     { [ -z "$urgent_at" ] || [ $((clock - urgent_at)) -ge "$urgent_repeat" ]; }; then
     urgent_at=$clock
     say "urgent: idle for ${idle_for}s"
-    notify "Pod $pod: still no work after $((idle_for / 60)) min and still billing. Check it or delete it." urgent
+    notify "Pod $pod: still no work after $((idle_for / 60)) min ($idle_what) and still billing. Check it or delete it." urgent
     alert urgent "$idle_for"
   fi
   if [ "$idle_for" -ge "$backup_after" ] && [ -z "$backup" ]; then
@@ -346,13 +377,16 @@ ladder() {
     alert backup "$backup"
   fi
   [ "$idle_for" -ge "$delete_after" ] || return 0
-  if [ "$ladder_delete" = on ] && { [ "$backup" = verified ] || [ "$backup" = nothing ]; }; then
+  if [ "$ladder_delete" = on ] && [ -n "$deletable" ] &&
+    { [ "$backup" = verified ] || [ "$backup" = nothing ]; }; then
     alert delete "$idle_for"
-    shut_down "no GPU, CPU or network work for ${idle_for}s"
+    shut_down "$idle_what for ${idle_for}s"
   fi
   [ -z "$held_noticed" ] || return 0
   held_noticed=yes
-  if [ "$ladder_delete" = on ]; then
+  if [ -z "$deletable" ]; then
+    why="the run reports $progress, not stalled: it is still working"
+  elif [ "$ladder_delete" = on ]; then
     why="its run tree backup failed"
   else
     why="deletion is off (ladder_delete)"
@@ -362,6 +396,11 @@ ladder() {
   alert held "$why"
 }
 
+no_work="no GPU, CPU or network work"
+idle_what=$no_work
+# Only a stalled run, or a pod the counters find idle with no fresh line, may be deleted:
+# a slow stage still makes pages, so it is warned about and backed up, never deleted.
+deletable=yes
 idle_for=0
 while :; do
   touch "$dir/heartbeat-$pod" 2>/dev/null
@@ -377,15 +416,25 @@ while :; do
     fi
   fi
   if [ -n "$deadline" ] && [ "$(date +%s)" -ge "$deadline" ]; then shut_down "approved time is up"; fi
+  # The counters are read every tick, so their baselines stay current while a fresh
+  # progress line decides.
   cpu_busy
   cpu=$?
   net_busy
   net=$?
-  if [ "$cpu" -eq 0 ] || [ "$net" -eq 0 ] || gpu_busy; then
+  deletable=yes
+  if read_progress; then
+    idle_what="the run reports $progress ($progress_what)"
+    case $progress in slow | bootstrapping) deletable="" ;; esac
+    if [ "$progress" = ok ]; then idle_for=0; else idle_for=$progress_for; fi
+  elif [ "$cpu" -eq 0 ] || [ "$net" -eq 0 ] || gpu_busy; then
+    idle_what=$no_work
     idle_for=0
   elif [ "$cpu" -eq 2 ]; then
+    idle_what=$no_work
     say "no CPU reading to compare this tick; idle time unchanged at ${idle_for}s"
   else
+    idle_what=$no_work
     idle_for=$((idle_for + interval))
     # Idle time counts from the later of the last busy sample and the last keep-alive touch.
     if age=$(keepalive_age) && [ "$age" -lt "$idle_for" ]; then idle_for=$age; fi

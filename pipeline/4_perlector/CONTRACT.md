@@ -41,7 +41,8 @@ published. An absent Perlector chair reads nothing: every page is `not-run`
 ## Records, per page, in publication order
 
 Every page's feed is published before any page is read, so a live pass knows exactly
-which pages it will send before its chair starts.
+which pages it will send before its first call. Its chair loads meanwhile, on a
+background thread, so the cold start overlaps the feeds (see the pass rules below).
 
 **`page-feed`** (subject `page_id`, outcome `read`): everything one call is shown —
 the sealed switches, the page render (or none), each shown witness's units with ids
@@ -252,15 +253,25 @@ The re-read is also accounted against the page's evidence like any reading.
 
 ## Live reading
 
-- One chair per pass, started on the first page actually sent, so a resumed pass with
-  nothing left to send loads no model, and stopped before the stage seal, so a failed
-  shutdown is never reported over a sealed stage.
+- One chair per pass. A live pass with a page that has no sealed first reading, none
+  an interrupted pass already sent, and a reading deadline (if any) that admits the
+  start-up timeout and every such page, starts it on a background thread before the
+  feeds are built and waits for it before the first call; a failed start stops the
+  pass on the main thread. A pass that stops while the chair is still loading does not
+  wait: the start's thread stops the chair as soon as its load returns, and the
+  process exits only after that. Otherwise (a resumed pass with earlier sends, or only
+  re-asks and re-reads left) it starts on the first page actually sent, so a resumed
+  pass with nothing left to send loads no model. A pass whose unread pages all turn
+  out not to be sent (refused by the Exemplar, over capacity) has started a chair it
+  does not use. The chair is stopped before the stage seal, so a failed shutdown is
+  never reported over a sealed stage.
 - `--perlector-concurrency` keeps up to that many calls in flight (ceiling and default:
   the served row's `max_num_seqs`); records are still written strictly in page order.
   An error finishes every page already sent before it stops the pass; an interrupt
   first records every reply that has arrived.
 - `--reading-deadline` refuses to start, or to send another page, when the chair's
-  start-up time plus the pages left would run past it.
+  start-up time plus the pages left would run past it. After the feeds it is checked
+  against what is left of a background start's timeout and every page to send.
 - The engine's `stop` and `length` are the reading's own words; anything else is a
   `call-failed` reading with its retained bytes named.
 

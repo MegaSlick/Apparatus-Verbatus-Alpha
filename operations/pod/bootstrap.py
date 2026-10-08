@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -56,6 +57,7 @@ CUDA_COMPAT_PATH = "/usr/local/cuda-13.0/compat"
 CUDA_COMPAT_PACKAGE = "cuda-compat-13-0"
 CUDA_COMPAT_VERSION = "580.178.04-1ubuntu1"
 CUDA_13_MIN_DRIVER = (580, 65, 6)
+CUDA_DRIVER_LIBRARY = "libcuda.so.1"
 BOOTSTRAP_ENVIRONMENT = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "LANG": "C.UTF-8",
@@ -1053,6 +1055,7 @@ class SubprocessBootstrapActions:
             "package": None,
         }
         if tuple(int(part) for part in driver.split(".")) >= CUDA_13_MIN_DRIVER:
+            receipt["cuda_devices"] = _initialise_cuda(CUDA_DRIVER_LIBRARY, driver, gpus)
             return receipt
         if any("GeForce" in name for name in gpus):
             raise BootstrapStepFailure(
@@ -1097,24 +1100,9 @@ class SubprocessBootstrapActions:
                 f"installed {CUDA_COMPAT_PACKAGE} version {installed_version!r} differs from pinned {CUDA_COMPAT_VERSION}",
                 "Install the pinned CUDA compatibility package and resume this journal.",
             )
-        library = f"{CUDA_COMPAT_PATH}/libcuda.so.1"
-        try:
-            cuda = ctypes.CDLL(library)
-            cuda.cuInit.argtypes = [ctypes.c_uint]
-            cuda.cuInit.restype = ctypes.c_int
-            result = cuda.cuInit(0)
-        except (OSError, AttributeError) as error:
-            raise BootstrapStepFailure(
-                BootstrapStep.CUDA_COMPAT,
-                f"CUDA compatibility library {library} could not initialize: {error}",
-                "Use a supported GPU and compatible driver, then resume.",
-            ) from error
-        if result != 0:
-            raise BootstrapStepFailure(
-                BootstrapStep.CUDA_COMPAT,
-                f"CUDA compatibility cuInit(0) failed with code {result} on {gpus}",
-                "Use a supported GPU and compatible driver, then resume.",
-            )
+        receipt["cuda_devices"] = _initialise_cuda(
+            f"{CUDA_COMPAT_PATH}/{CUDA_DRIVER_LIBRARY}", driver, gpus
+        )
         receipt["compat_path"] = CUDA_COMPAT_PATH
         return receipt
 
@@ -1359,6 +1347,105 @@ class SubprocessBootstrapActions:
             check=False,
             timeout=timeout,
         )
+
+
+def probe_cuda(library: str) -> dict[str, object]:
+    """Load `library`, call cuInit(0) and cuDeviceGetCount, and say how far it got.
+
+    ``failure`` is None on success, ``"library"`` when the library or one of its calls is
+    missing, ``"init"`` or ``"count"`` when the call returned the nonzero ``code``.
+    Runs in its own process (``_run_cuda_probe``), since a driver call can hang.
+    """
+
+    try:
+        cuda = ctypes.CDLL(library)
+        cuda.cuInit.argtypes = [ctypes.c_uint]
+        cuda.cuInit.restype = ctypes.c_int
+        cuda.cuDeviceGetCount.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        cuda.cuDeviceGetCount.restype = ctypes.c_int
+        result = cuda.cuInit(0)
+        if result != 0:
+            return {"failure": "init", "code": result}
+        count = ctypes.c_int(0)
+        result = cuda.cuDeviceGetCount(ctypes.pointer(count))
+    except (OSError, AttributeError) as error:
+        return {"failure": "library", "error": str(error)}
+    if result != 0:
+        return {"failure": "count", "code": result}
+    return {"failure": None, "devices": count.value}
+
+
+# A healthy cuInit answers in seconds; a driver that has not answered in two minutes is
+# hung, and would otherwise hold the pod until its hard deadline.
+CUDA_PROBE_TIMEOUT_SECONDS = 120
+_CUDA_PROBE_SOURCE = (
+    "import json, sys\n"
+    "sys.path.insert(0, sys.argv[1])\n"
+    "from operations.pod.bootstrap import probe_cuda\n"
+    "print(json.dumps(probe_cuda(sys.argv[2])))\n"
+)
+
+
+def _run_cuda_probe(library: str, timeout: float) -> dict[str, object] | None:
+    """`probe_cuda` in a child process; None when it did not answer within `timeout`."""
+
+    root = str(Path(__file__).resolve().parents[2])
+    child = subprocess.Popen(
+        [sys.executable, "-I", "-c", _CUDA_PROBE_SOURCE, root, library],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        out, err = child.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        try:
+            child.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass  # Stuck in the driver: left to the kernel rather than waited on.
+        return None
+    try:
+        result = json.loads(out.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        result = None
+    if not isinstance(result, dict):
+        detail = (err.strip().splitlines() or [f"exit {child.returncode}"])[-1]
+        return {"failure": "library", "error": f"the probe process failed: {detail[:300]}"}
+    return result
+
+
+def _initialise_cuda(library: str, driver: str, gpus: list[str]) -> int:
+    """Initialise CUDA through `library` the way every GPU stage will, and count its
+    devices. A host whose driver lists its cards but cannot initialise CUDA is refused
+    here, before the environment install and the model store spend most of an hour; a
+    library or call that is missing is the image's fault, not the host's."""
+
+    where = (
+        f"host {socket.gethostname()} (driver {driver}, {gpus}) cannot use CUDA through {library}"
+    )
+    replace_host = "Delete this pod and start one on another host; this one cannot run a GPU stage."
+    result = _run_cuda_probe(library, CUDA_PROBE_TIMEOUT_SECONDS)
+    if result is None:
+        what, remedy = (
+            f"cuInit or cuDeviceGetCount did not answer within {CUDA_PROBE_TIMEOUT_SECONDS} s",
+            replace_host,
+        )
+    elif result.get("failure") == "library":
+        what, remedy = (
+            f"the library could not be loaded or called: {result.get('error')}",
+            "Repair the image or the CUDA compatibility package: another host with this "
+            "image would fail the same way.",
+        )
+    elif result.get("failure") == "init":
+        what, remedy = f"cuInit(0) failed with code {result.get('code')}", replace_host
+    elif result.get("failure") == "count":
+        what, remedy = f"cuDeviceGetCount failed with code {result.get('code')}", replace_host
+    elif not isinstance(result.get("devices"), int) or result["devices"] < 1:
+        what, remedy = "it reports no CUDA device", replace_host
+    else:
+        return result["devices"]
+    raise BootstrapStepFailure(BootstrapStep.CUDA_COMPAT, f"{where}: {what}", remedy)
 
 
 def _apply_cuda_compat(receipt: dict[str, object], environment: MutableMapping[str, str]) -> None:

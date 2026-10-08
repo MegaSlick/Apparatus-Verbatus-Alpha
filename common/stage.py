@@ -694,7 +694,17 @@ class StageContext:
                 "construct serving through open_context"
             )
         self._require_run_sealed_serving_inputs(audit)
-        return self._write_serving_blob(audit, "serving launch audit")
+        reference = self._write_serving_blob(audit, "serving launch audit")
+        try:
+            self.tree.note_launch_audit(self.stage, reference["sha256"])
+        except (OSError, ContractError) as error:
+            # A watcher's convenience; the audit itself is stored and referenced.
+            print(
+                f"{self.stage}: the launch audit was stored but not noted for the watcher: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return reference
 
     def write_serving_evidence_manifest(
         self,
