@@ -1,8 +1,8 @@
 # Control surface: design
 
 This is the design for one way to drive Apparatus Verbatus, whether a person at a terminal
-or an AI model with no prior context is doing the driving. Nothing here is built yet. A
-later session builds it in the order given in "Build order", and changes this document
+or an AI model with no prior context is doing the driving. Only part of it is built so far
+(see "Build order"). A later session builds the rest in the order given in "Build order", and changes this document
 when something it builds turns out differently.
 
 It builds on what exists once the cleanup pull requests have merged:
@@ -341,6 +341,11 @@ the orchestrator's sequence has an entry.
 
 ### Budgets: soft and hard maximum
 
+> **Superseded 2026-10-07.** The lead set no automatic spend limits: the budget below is
+> off by default (`pod_budget = "off"` in `config/spend.toml`), so a pod gets no deadline
+> unless one is given in hours at start (`operations/pod/pod_start_command.sh`). With
+> `pod_budget = "on"` the soft and hard maximums in that file apply as described here.
+
 Every pod has a budget with two limits, each in both time and cost:
 
 - **Up to the soft maximum** the run simply proceeds. The guard's deadline is set at the
@@ -456,6 +461,11 @@ ignores a deadline more than a week away, but that only catches a typo; it is no
 limit.
 
 ### Pause and stop on a pod
+
+> **Superseded 2026-10-07.** The guard no longer deletes an idle pod at a fixed limit. It
+> climbs an idle ladder (`operations/pod/pod_guard.sh`): a warning at 15 minutes, urgent
+> notices from 30 minutes, a verified backup of the run tree at 1 hour, and deletion at 2
+> hours only when `ladder_delete = "on"` in `config/spend.toml` (off by default).
 
 The pod guard (`operations/pod/pod_guard.sh`) already deletes a pod that has done no
 work for its idle limit: no GPU, container CPU or network use at any one-minute sample,
@@ -635,6 +645,12 @@ Kept short on purpose; each is designed in full when it is built.
 - Native Windows (WSL is supported like Linux).
 
 ## Lead's rulings (2026-10-02)
+
+> **Superseded 2026-10-07, rulings 1, 3 and 4.** Pod budgets are off by default and there
+> are no automatic spend limits (`pod_budget` in `config/spend.toml`); an idle pod is
+> warned about, backed up at 1 hour, and deleted at 2 hours only with `ladder_delete =
+> "on"` (`operations/pod/pod_guard.sh`). See the notes under "Budgets" and "Pause and stop
+> on a pod".
 
 The lead answered the seven open questions. The body above follows them.
 
