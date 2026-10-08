@@ -16,6 +16,7 @@ provider API, downloads a model or claims a GPU fit.
 | `manager.py` | `ServingManager`: the lifecycle of one vLLM chair, its receipt, launch audit and evidence blobs. |
 | `process.py`, `residency.py` | The child process in its own group, and the pod-wide `flock` lease that keeps one chair resident. |
 | `http.py` | The transport (whole-call deadline from `operations/http_deadline.py`), request bodies, and the OpenAI response parsers. |
+| `capacity.py` | The capacity plan: how many sequences each chair is launched with on the measured card, never fewer than its row's. |
 | `client.py` | `ChairClient`, the one client a stage reads a chair through, and `serving_mode_for`. |
 | `chat_request.py` | Request helpers the Perlector and Coniector share. |
 | `assembly.py` | Builds the client a stage uses and the pod's smoke reader from run-sealed configuration. |
@@ -45,6 +46,34 @@ recipe or a missing row fails in tests, not on a rented card.
 - Only full checkpoints are served: the roster refuses a chair declared as an
   adapter of another (`adapter_of`) when it is parsed.
 
+## Scaling to the card
+
+A row's `max_num_seqs` is written for the smallest card of its tier, and it is the
+floor. A row that also states `weights_gib` and `kv_gib_per_seq` (the weights on the
+card and the KV one full-length sequence holds, from the catalogue's notes) can be
+launched wider on a card with room. PREFLIGHT derives the capacity plan
+(`capacity.py`, schema `capacity-plan.v1`) from the card `SystemGpuProbe` measured:
+
+    n = clamp(floor((U x VRAM - W - A) / P), row max_num_seqs, 64)
+
+with U the fraction the row launches with (its `gpu_memory_utilization`, at or under
+the tier's `engine_memory_fraction`), W `weights_gib`, P `kv_gib_per_seq` and A 4 GiB
+for everything else the engine holds (activations, the vision encoder, CUDA graphs).
+A is not measured: a pod's launch log reports the KV pool vLLM allocated, which is
+what to size it from. Only `max_num_seqs` moves; `gpu_memory_utilization`,
+`max_num_batched_tokens` and every field that shapes a reading stay at the row, and
+proof marks and `profile_preflight_digest` are checked on the row.
+
+`ServingManager(capacity_plan=...)` launches `replace(row, max_num_seqs=n)` after
+checking the plan was derived from this row, tier and sealed serving digests and that
+n is not below the row. The handle's profile is the launched row, so the stage
+windows (`handle.profile`, or `assembly.launch_row` before a chair starts) take n.
+The PREFLIGHT smoke launches at n, so each chair is proven on the card at the width
+the stages use. The launch audit's `profile` is the launched shape and its `capacity`
+block records the row's width, n, the card and the plan digest. No plan (no
+`--capacity-plan`, or a card the probe could not measure) launches every row as
+written, and the audit carries no `capacity` block.
+
 ## Lifecycle
 
 Before launch: exact package pins, the verified snapshot, the processor geometry
@@ -64,8 +93,8 @@ a bounded, credential-scrubbed log tail.
 
 On success the manager publishes three content-addressed blobs: the closed
 `chair-serving-receipt.v1`, the `serving-launch-audit.v2` (profile, argv digest,
-pins, observed packages, identity, readiness, launch purpose and the sealed
-configuration digests) and `serving-evidence.v1` linking them. `stop()` releases
+pins, observed packages, identity, readiness, launch purpose, the sealed
+configuration digests and, under a capacity plan, `capacity`) and `serving-evidence.v1` linking them. `stop()` releases
 the lease only once the process group is gone and the endpoint refuses
 connections; otherwise it keeps the lease and `recover()` retries the same
 cleanup.

@@ -271,7 +271,7 @@ The re-read is also accounted against the page's evidence like any reading.
   does not use. The chair is stopped before the stage seal, so a failed shutdown is
   never reported over a sealed stage.
 - `--perlector-concurrency` keeps up to that many calls in flight (ceiling and default:
-  the served row's `max_num_seqs`); records are still written strictly in the order
+  the launched row's `max_num_seqs`, the row's own or the run's `--capacity-plan` width); records are still written strictly in the order
   the calls were drawn. A page's re-ask is drawn as soon as its first reading is
   published, ahead of the next page's first reading, so the card is not idle
   between first readings and re-asks; a re-ask an interrupted pass already sent

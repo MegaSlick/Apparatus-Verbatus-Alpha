@@ -96,8 +96,8 @@ findings, not_made}`. Outcome `made` or `not-made`.
 
 A live chair is started on the main thread when the first call that will be sent
 is drawn, so a pass whose every call is already sealed loads no model. Calls are
-sent through `common.in_order_window`: up to the serving row's `max_num_seqs` in
-flight at once on a live row, one at a time otherwise. Only the request itself
+sent through `common.in_order_window`: up to the launched row's `max_num_seqs` (the
+row's own, or the run's `--capacity-plan` width) in flight at once on a live row, one at a time otherwise. Only the request itself
 leaves the main thread; each call's record and its reconstructions are published
 on the main thread in plan order, whatever order the replies arrive in, so the
 records are the bytes a serial pass publishes.
