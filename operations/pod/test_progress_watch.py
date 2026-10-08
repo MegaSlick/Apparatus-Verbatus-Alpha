@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from common.contracts.stages import DESIGNATOR, PERLECTOR
+from common.cpus import usable_cpus
 
 from . import progress_watch
 from .finish_estimate import StageProgress
@@ -89,7 +90,11 @@ def test_the_real_configuration_plans_the_perlector_and_surya_rates() -> None:
     # 12,288 answer tokens at 33 s per 441 is 920 s a call, four calls at once.
     assert rates[PERLECTOR].seconds_per_page == 920 / 4
     assert "920 s a page over 4 calls" in rates[PERLECTOR].source
-    assert rates[DESIGNATOR].seconds_per_page == 60 / 6
+    # Surya's real row runs 8 threads a runner; the Designator sizes runners by
+    # the usable CPUs, so the planned rate follows this host.
+    runners = max(1, usable_cpus() // 8)
+    assert rates[DESIGNATOR].seconds_per_page == 60 / runners
+    assert f"over {runners} runner processes" in rates[DESIGNATOR].source
     assert rates[DESIGNATOR].startup_seconds == 600
 
 

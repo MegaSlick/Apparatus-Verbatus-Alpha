@@ -40,8 +40,10 @@ from typing import Final
 from common.chairs.config import load_models_toml
 from common.chairs.models import ChairIdentity
 from common.contracts.stages import DESIGNATOR, PERLECTOR, STAGES
+from common.cpus import usable_cpus
 from common.decoding import load_decoding_policy, perlector_page_max_tokens
 from operations.serving.config import ServingProfile, SubprocessProfile, load_serving_recipes
+from operations.serving.surya_detector import runner_processes
 
 from .bootstrap import ORDERED_STEPS
 from .durable import atomic_write, canonical_json
@@ -147,11 +149,15 @@ def expected_rates(
         try:
             profile = recipes.for_identity(surya, tier)
             if isinstance(profile, SubprocessProfile):
+                # The same sizing the Designator uses, on this host's usable CPUs;
+                # the page count only ever lowers it, so this is the faster bound.
+                cpus = usable_cpus()
+                runners = runner_processes(profile, cpus, cpus)
                 rates[DESIGNATOR] = ExpectedRate(
-                    profile.seconds_per_page / profile.workers,
+                    profile.seconds_per_page / runners,
                     profile.startup_timeout_seconds,
                     f"Surya's {profile.seconds_per_page} s a page over "
-                    f"{profile.workers} runner processes",
+                    f"{runners} runner processes on {cpus} usable CPUs",
                 )
         except Exception as error:  # noqa: BLE001
             problems.append(f"{DESIGNATOR}: {error}")
