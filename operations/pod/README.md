@@ -214,6 +214,16 @@ correct immediate close.
   copied and then re-read; the receipt records the worker count. Within one process a
   verified, unchanged cache is not hashed again, so PREFLIGHT's smoke start reuses the
   verification its cache check just made; each stage process still verifies from the bytes.
+  The Hugging Face chairs' copies start early: UV_ENVIRONMENT starts them on a background
+  thread (`chair_prefill.py`) while uv downloads, every digest at once through one copy
+  pool that takes the largest waiting file first (Chandra's single 10.6 GB file starts
+  at once), and MODEL_STORE and CHAIR_CACHE wait for them before completing. A copy that
+  refuses fails MODEL_STORE, whose receipt says those store bytes are verified at copy.
+  The background copy never evicts a cache; a chair whose store artifact is not present
+  yet, or that does not fit beside what uv will still write (chairs are taken in the
+  order the stages first need them, each only if it still fits), is left for PREFLIGHT as
+  before. CHAIR_CACHE's receipt lists under `prefill` what was filled and what was left,
+  and PREFLIGHT takes over those verifications instead of hashing the bytes again.
   A pod given a stage selection (`pod_run`'s `preflight_roles`) prepares only the chairs
   those stages use: MODEL_STORE fetches and checks only their artifacts, CHAIR_CACHE plans
   and places only them (others read `not-selected`), and the disk and environment checks
@@ -223,7 +233,8 @@ correct immediate close.
   re-fetch is not wired (04-8); a mismatch is red and names the chair.
 - **Transfer is optional.** No submission manifest on the volume is a vacuous success; a
   manifest with no configured target is a refusal.
-- **`PREFLIGHT`** runs `ChairRegistry.ensure` for the selected roles, then a smoke read through the
+- **`PREFLIGHT`** runs `ChairRegistry.ensure` for the selected roles, in the order the
+  stages first need them, then a smoke read through the
   serving package's production seam (`assemble_serving_smoke_reader` around
   `ServingManager`, fed `operations/serving/smoke.py::VisionSmokeCall`). The witness value
   is drawn from the CSPRNG on the pod and rendered onto a golden page under
@@ -231,7 +242,10 @@ correct immediate close.
   prompt. The DAI chair reads a pinned public RecordGold record instead, fetched and
   verified against its digests at preflight and scored by character error rate
   (`operations/serving/recordgold_smoke.py`); a fetch failure is a named refusal, not a
-  chair failure. Serving receipts, launch audits and evidence manifests land
+  chair failure. While one chair smokes, one background thread copies and verifies the
+  next chair's cache (never evicting, so the cache being served stays put; a chair it
+  finds no room for is filled after the smoke, as before). The card still serves one
+  chair at a time. Serving receipts, launch audits and evidence manifests land
   content-addressed in the same directory. `--fixture` with `--page-witness-file` supplies
   a golden page instead.
   Ordinary serving refuses an unproven row; only this smoke assembly may launch one, for

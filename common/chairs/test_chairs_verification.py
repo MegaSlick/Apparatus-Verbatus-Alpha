@@ -43,6 +43,7 @@ from common.chairs.models import ChairIdentity
 from common.chairs.registry import (
     CACHE_DESCRIPTOR,
     PRE_MATERIALIZATION_SENTINEL,
+    ChairRegistry,
     HuggingFaceMaterializationFetcher,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
@@ -278,6 +279,65 @@ def test_a_pool_of_copies_runs_largest_first_and_refuses_the_lexically_first_fil
         with pytest.raises(DigestMismatchRefusal) as caught:
             manifests.copy_and_digest_files(items, chair="attestator_1")
         assert "snapshot differs at a.bin" in str(caught.value)
+
+
+def test_one_pool_takes_the_largest_waiting_file_across_every_fill(tmp_path):
+    """Two fills share one worker; it always takes the largest file still waiting."""
+    from common.cpus import IoWorkers
+
+    order: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def job(name):
+        def run():
+            if name == "first":
+                started.set()
+                assert release.wait(timeout=5)
+            order.append(name)
+            return name
+
+        return run
+
+    with manifests.CopyPool(IoWorkers(1, "test")) as pool:
+        results: dict[str, list[str]] = {}
+        blocker = threading.Thread(
+            target=lambda: results.update(a=pool.run([(100, job("first")), (5, job("a-small"))]))
+        )
+        blocker.start()
+        assert started.wait(timeout=5)
+        other = threading.Thread(
+            target=lambda: results.update(b=pool.run([(10, job("b-large")), (2, job("b-tiny"))]))
+        )
+        other.start()
+        deadline = 50
+        while len(pool._waiting) < 3 and deadline:
+            deadline -= 1
+            threading.Event().wait(0.01)
+        release.set()
+        blocker.join(timeout=5)
+        other.join(timeout=5)
+
+    assert order[0] == "first"
+    assert order[1:] == ["b-large", "a-small", "b-tiny"]
+    assert results == {"a": ["first", "a-small"], "b": ["b-large", "b-tiny"]}
+    assert len(pool._threads) == 1
+
+
+def test_files_copied_through_a_shared_pool_record_its_worker_count(tmp_path):
+    from common.cpus import IoWorkers
+
+    files = {"a.bin": b"a\n", "b.bin": b"bbbb\n"}
+    remote = write_snapshot(tmp_path / "remote", files)
+    rows = {row.path: row for row in build_manifest(remote).rows}
+    items = [(remote / name, tmp_path / "copy" / name, rows[name]) for name in sorted(files)]
+
+    with manifests.CopyPool(IoWorkers(3, "shared-test")) as pool:
+        ledger = manifests.copy_and_digest_files(items, chair="attestator_1", pool=pool)
+
+    assert ledger.digests == {name: rows[name].sha256 for name in files}
+    assert ledger.workers == IoWorkers(3, "shared-test")
+    assert len(pool._threads) == 2, "never more threads than files waiting"
 
 
 def test_a_malformed_worker_override_is_a_configuration_refusal(tmp_path, monkeypatch):
@@ -648,6 +708,53 @@ def test_insufficient_space_after_eviction_refuses_the_incoming_chair(tmp_path, 
     assert fetcher.roles == ["attestator_1"]
 
 
+def test_a_fill_that_may_not_evict_refuses_and_keeps_every_other_cache(tmp_path, monkeypatch):
+    """A background fill must not take a cache another step may be about to use."""
+    registry, fetcher = _distinct_pins(tmp_path, ("attestator_1", "attestator_2"))
+    first = registry.ensure(registry.resolve("attestator_1"))
+    monkeypatch.setattr(
+        "common.chairs.registry.shutil.disk_usage", lambda path: SimpleNamespace(free=0)
+    )
+
+    with pytest.raises(DiskSpaceRefusal, match="container disk too small for chair"):
+        registry.ensure(registry.resolve("attestator_2"), evict=False)
+
+    assert first.root.is_dir()
+    assert fetcher.roles == ["attestator_1"]
+    assert not [entry for entry in first.root.parent.iterdir() if ".candidate-" in entry.name], (
+        "a refused fill leaves no candidate behind"
+    )
+
+
+def test_a_registry_adopts_another_s_verifications_only_for_the_same_roster(hf_world, monkeypatch):
+    """PREFLIGHT's registry takes over what the bootstrap's background fill verified."""
+    identity = hf_world.identity()
+    hf_world.registry.ensure(identity)
+    reads: list[str] = []
+    real_digest = manifests.file_digest
+    monkeypatch.setattr(
+        manifests,
+        "file_digest",
+        lambda path, chair, relative: reads.append(relative) or real_digest(path, chair, relative),
+    )
+
+    adopting = registry_for(hf_world.registry.config, hf_world.tmp_path)
+    adopting.adopt_verifications(hf_world.registry)
+    remembered = adopting.ensure(identity)
+
+    assert reads == []
+    assert remembered.verification == {
+        "bytes": "verified earlier in this process; no file changed since"
+    }
+    other_root = ChairRegistry(
+        hf_world.registry.config,
+        manifest_root=hf_world.tmp_path,
+        cache_root=hf_world.tmp_path / "elsewhere",
+    )
+    other_root.adopt_verifications(hf_world.registry)
+    assert other_root._verified == {}
+
+
 # --- One flipped byte, a missing file, an extra file --------------------------------
 
 
@@ -733,6 +840,84 @@ def test_a_partial_cache_re_fetches_exactly_the_missing_files(hf_world):
         ("attestator_1", ("config.json", "nested/weights.bin")),
         ("attestator_1", ("nested/weights.bin",)),
     ]
+
+
+def test_a_repair_moves_the_files_it_keeps_instead_of_copying_them(hf_world, monkeypatch):
+    """Carried files keep their inode, are hashed once by the repair, and stay remembered."""
+    identity = hf_world.identity()
+    snapshot = hf_world.registry.ensure(identity)
+    kept_inode = (snapshot.root / "config.json").stat().st_ino
+    (snapshot.root / "nested/weights.bin").unlink()
+    monkeypatch.setattr(
+        "common.chairs.registry.shutil.copyfile",
+        lambda *args, **kwargs: pytest.fail("a carried file was copied"),
+    )
+
+    repaired = hf_world.registry.ensure(identity)
+    digested = _digest_log(monkeypatch)
+    again = hf_world.registry.ensure(identity)
+
+    assert (repaired.root / "config.json").stat().st_ino == kept_inode
+    assert repaired.root == snapshot.root
+    assert digested == [], "the repaired cache is remembered, not hashed again"
+    assert again.verification == {
+        "bytes": "verified earlier in this process; no file changed since"
+    }
+
+
+def test_a_failed_repair_puts_the_files_it_carried_back(hf_world):
+    identity = hf_world.identity()
+    snapshot = hf_world.registry.ensure(identity)
+    kept_inode = (snapshot.root / "config.json").stat().st_ino
+    (snapshot.root / "nested/weights.bin").unlink()
+    hf_world.fetcher.files["nested/weights.bin"] = b"corrupted on the way back\n"
+
+    with pytest.raises(DigestMismatchRefusal):
+        hf_world.registry.ensure(identity)
+
+    assert (snapshot.root / "config.json").stat().st_ino == kept_inode
+    assert not (snapshot.root / "nested/weights.bin").exists()
+
+
+def test_a_carried_file_that_cannot_go_back_is_kept_and_named_not_deleted(hf_world, monkeypatch):
+    identity = hf_world.identity()
+    snapshot = hf_world.registry.ensure(identity)
+    (snapshot.root / "nested/weights.bin").unlink()
+    hf_world.fetcher.files["nested/weights.bin"] = b"corrupted on the way back\n"
+    fetched = threading.Event()
+    real_fetch = hf_world.fetcher.fetch
+
+    def fetch(identity, destination, paths):
+        fetched.set()
+        return real_fetch(identity, destination, paths)
+
+    hf_world.fetcher.fetch = fetch
+    real_replace = os.replace
+
+    def replace(source, destination):
+        if fetched.is_set() and Path(destination) == snapshot.root / "config.json":
+            raise PermissionError("cannot write into the cache")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", replace)
+
+    with pytest.raises(DigestMismatchRefusal) as caught:
+        hf_world.registry.ensure(identity)
+
+    message = str(caught.value)
+    assert "nested/weights.bin" in message, "the original refusal still leads"
+    assert "could not be put back" in message and "'config.json'" in message
+    (kept,) = [
+        entry
+        for entry in (hf_world.registry.cache_root / "by-digest").iterdir()
+        if ".unreturned-" in entry.name
+    ]
+    assert str(kept) in message
+    assert (kept / "config.json").read_bytes() == hf_world.files["config.json"]
+    monkeypatch.setattr(os, "replace", real_replace)
+    hf_world.fetcher.files["nested/weights.bin"] = b"fixture weights\n"
+    hf_world.registry.ensure(identity)
+    assert kept.is_dir(), "the next fill's clean-up leaves the kept files alone"
 
 
 def test_a_cache_holding_a_file_the_pin_does_not_name_is_refused_before_any_refetch(hf_world):

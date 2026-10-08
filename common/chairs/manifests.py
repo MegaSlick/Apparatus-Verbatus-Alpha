@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
+import itertools
 import json
 import os
 import stat
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping, TypeVar
@@ -366,20 +369,104 @@ def copy_and_digest(source: Path, target: Path, row: ManifestRow, *, chair: str)
     return actual
 
 
+class CopyPool:
+    """Copy workers shared by several concurrent fills, always taking the largest waiting file.
+
+    One pool across every file of every snapshot being filled keeps all workers
+    busy until the last file: a snapshot whose one large file is its long pole
+    no longer leaves the other workers idle behind a per-snapshot barrier.
+    Threads start as work arrives, never more than `workers.count`.
+    """
+
+    def __init__(self, workers: IoWorkers) -> None:
+        self.workers = workers
+        self._waiting: list[tuple[int, int, Callable[[], Any], Future[Any]]] = []
+        self._order = itertools.count()
+        self._condition = threading.Condition()
+        self._threads: list[threading.Thread] = []
+        self._closed = False
+
+    def run(self, jobs: Iterable[tuple[int, Callable[[], _Result]]]) -> list[_Result]:
+        """Run `(size, job)` pairs, largest first among everything waiting; results in order.
+
+        A closed pool runs them in the calling thread instead, one at a time.
+        """
+
+        futures: list[Future[_Result]] = []
+        with self._condition:
+            if self._closed:
+                ordered = sorted(enumerate(jobs), key=lambda entry: -entry[1][0])
+                done = {index: job() for index, (_, job) in ordered}
+                return [done[index] for index in sorted(done)]
+            for size, job in jobs:
+                future: Future[_Result] = Future()
+                heapq.heappush(self._waiting, (-size, next(self._order), job, future))
+                futures.append(future)
+            while len(self._threads) < min(self.workers.count, len(self._waiting)):
+                thread = threading.Thread(target=self._work, name="chair-copy", daemon=True)
+                self._threads.append(thread)
+                thread.start()
+            self._condition.notify_all()
+        return [future.result() for future in futures]
+
+    def close(self) -> None:
+        """Let the workers finish what is waiting, then stop them."""
+
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+        for thread in self._threads:
+            thread.join()
+
+    def __enter__(self) -> "CopyPool":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def _work(self) -> None:
+        while True:
+            with self._condition:
+                while not self._waiting and not self._closed:
+                    self._condition.wait()
+                if not self._waiting:
+                    return
+                _, _, job, future = heapq.heappop(self._waiting)
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(job())
+            except BaseException as error:  # handed to the waiting caller
+                future.set_exception(error)
+
+
+def copy_pool(*, chair: str) -> CopyPool:
+    """A pool sized by `io_workers`, with a bad override refused as configuration."""
+
+    try:
+        return CopyPool(io_workers())
+    except ValueError as error:
+        raise ConfigurationRefusal(chair, str(error)) from error
+
+
 def copy_and_digest_files(
-    items: Iterable[tuple[Path, Path, ManifestRow]], *, chair: str
+    items: Iterable[tuple[Path, Path, ManifestRow]],
+    *,
+    chair: str,
+    pool: CopyPool | None = None,
 ) -> CopyLedger:
     """Copy many pinned files in one pool, largest first, and return their ledger.
 
-    Every copy runs to its end, then the lexically first refusal is raised, so
-    the file a refusal names does not depend on which worker finished first.
+    `pool` shares workers with other fills running at the same time; without
+    one, a pool is made for these files alone. Every copy runs to its end, then
+    the lexically first refusal is raised, so the file a refusal names does not
+    depend on which worker finished first.
     """
 
     work = sorted(items, key=lambda item: (-item[2].size, item[2].path))
-    try:
-        workers = io_workers()
-    except ValueError as error:
-        raise ConfigurationRefusal(chair, str(error)) from error
+    if pool is None:
+        with copy_pool(chair=chair) as own:
+            return copy_and_digest_files(work, chair=chair, pool=own)
 
     def copy(
         item: tuple[Path, Path, ManifestRow],
@@ -390,16 +477,14 @@ def copy_and_digest_files(
         except DigestMismatchRefusal as refusal:
             return row.path, None, refusal
 
-    if not work:
-        return CopyLedger(digests={}, workers=workers)
-    with ThreadPoolExecutor(max_workers=min(workers.count, len(work))) as pool:
-        results = sorted(pool.map(copy, work), key=lambda result: result[0])
+    jobs = [(item[2].size, lambda item=item: copy(item)) for item in work]
+    results = sorted(pool.run(jobs), key=lambda result: result[0])
     for _, _, refusal in results:
         if refusal is not None:
             raise DigestMismatchRefusal(refusal.chair, refusal.difference) from refusal
     return CopyLedger(
         digests={path: digest for path, digest, _ in results if digest is not None},
-        workers=workers,
+        workers=pool.workers,
     )
 
 

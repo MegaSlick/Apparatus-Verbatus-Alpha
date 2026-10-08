@@ -5,18 +5,23 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import threading
+import time
 import tomllib
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
-from common.chairs.errors import CacheRevisionRefusal, DigestMismatchRefusal
+from common.chairs.errors import CacheRevisionRefusal, DigestMismatchRefusal, DiskSpaceRefusal
 from common.chairs.models import AbsentChair, ChairIdentity, DigestManifest, ModelsConfig
 
 if TYPE_CHECKING:
     from operations.serving.config import ServingRecipes
 
+from .chair_order import in_stage_need_order
 from .models import as_decimal
 
 PLACEMENT_SCHEMA = "pod-placement.v1"
@@ -723,6 +728,127 @@ class ChairCacheVerifier(Protocol):
         """The chair's pinned digest manifest, the one ``verify`` checks the cache against."""
 
 
+CachePrefetcher = Callable[[ChairIdentity], dict[str, object]]
+"""Verify (filling if needed) the next chair's cache while the current one smokes.
+
+It must never evict another cache, so it cannot take the one being served; one
+that finds no room raises `DiskSpaceRefusal` and the chair is verified again,
+with eviction, once the smoke has finished.
+"""
+
+
+# How long the next chair's fill may run before preflight calls it stuck: three
+# times what its snapshot takes at the 13.6 GB/min one copy pass was measured at
+# (review 01), never less than a quarter of an hour.
+PREFETCH_BYTES_PER_SECOND = 13.6e9 / 60 / 3
+PREFETCH_MINIMUM_SECONDS = 15 * 60
+
+
+class PrefetchTimeout(RuntimeError):
+    """The background fill of a chair's cache did not finish by its deadline."""
+
+
+class _CacheLookahead:
+    """Verify the next chair's cache on one background thread while the card smokes.
+
+    The card still serves one chair at a time; only the copy and hash of the next
+    chair overlap. A prefetch's result, or its refusal, is the verification of
+    that chair, exactly as the foreground call would have returned or raised it.
+    """
+
+    def __init__(
+        self,
+        verify: Callable[[ChairIdentity], dict[str, object]],
+        prefetch: CachePrefetcher | None,
+        order: list[ChairIdentity],
+        *,
+        snapshot_bytes: Callable[[ChairIdentity], int] = lambda _identity: 0,
+        bytes_per_second: float = PREFETCH_BYTES_PER_SECOND,
+        minimum_seconds: float = PREFETCH_MINIMUM_SECONDS,
+    ) -> None:
+        self._verify = verify
+        self._prefetch = prefetch
+        self._order = order
+        self._snapshot_bytes = snapshot_bytes
+        self._bytes_per_second = bytes_per_second
+        self._minimum_seconds = minimum_seconds
+        # Each pending prefetch, and the monotonic time it must be done by.
+        self._pending: dict[str, tuple[Future[dict[str, object]], float]] = {}
+        # Set once a prefetch overran: its thread cannot be stopped, so nothing
+        # more is prefetched and nothing waits for it again.
+        self._expired = False
+
+    def verify(self, identity: ChairIdentity) -> dict[str, object]:
+        pending = self._pending.pop(identity.role, None)
+        if pending is not None:
+            future, deadline = pending
+            try:
+                return future.result(timeout=max(0.0, deadline - time.monotonic()))
+            except FutureTimeout as expired:
+                # A running prefetch cannot be cancelled: its thread is left to
+                # finish or hang on its own, and this chair counts as not filled.
+                self._expired = True
+                raise PrefetchTimeout(
+                    f"chair {identity.role}'s cache fill beside the previous smoke did not "
+                    "finish by its deadline; a copy or a store read has stalled"
+                ) from expired
+            except DiskSpaceRefusal:
+                pass  # no room without evicting; verified below, where evicting is safe
+        return self._verify(identity)
+
+    def start_next(self, identity: ChairIdentity) -> None:
+        """Begin verifying the chair after `identity`, if there is one."""
+
+        if self._prefetch is None or self._expired:
+            return
+        roles = [chair.role for chair in self._order]
+        if identity.role not in roles:
+            return
+        position = roles.index(identity.role) + 1
+        if position >= len(self._order):
+            return
+        following = self._order[position]
+        if following.role not in self._pending:
+            try:
+                size = self._snapshot_bytes(following)
+            except Exception:
+                size = 0
+            deadline = time.monotonic() + max(self._minimum_seconds, size / self._bytes_per_second)
+            self._pending[following.role] = (self._run(self._prefetch, following), deadline)
+
+    @staticmethod
+    def _run(prefetch: CachePrefetcher, identity: ChairIdentity) -> Future[dict[str, object]]:
+        """Start one prefetch on a daemon thread, so a hung one cannot hold up exit."""
+
+        future: Future[dict[str, object]] = Future()
+        future.set_running_or_notify_cancel()
+
+        def work() -> None:
+            try:
+                future.set_result(prefetch(identity))
+            except BaseException as error:  # handed to `verify`, as the call would raise it
+                future.set_exception(error)
+
+        threading.Thread(target=work, name="cache-lookahead", daemon=True).start()
+        return future
+
+    def close(self) -> None:
+        """Let a prefetch nobody collected finish, unless one has already overrun.
+
+        After an overrun nothing waits again: the stuck thread is left behind, so
+        preflight still returns its report.
+        """
+
+        for future, deadline in self._pending.values():
+            if self._expired:
+                break
+            try:
+                future.result(timeout=max(0.0, deadline - time.monotonic()))
+            except Exception:
+                continue
+        self._pending.clear()
+
+
 SubprocessChecker = Callable[
     [ChairIdentity, Any, Path, Path, list[dict[str, object]]], dict[str, object]
 ]
@@ -902,8 +1028,17 @@ class PreflightRunner:
         selected_roles: frozenset[str] | None = None,
         subprocess_checker: SubprocessChecker = check_subprocess_environment,
         chair_fixtures: dict[str, str | Path] | None = None,
+        cache_prefetcher: CachePrefetcher | None = None,
+        prefetch_bytes_per_second: float = PREFETCH_BYTES_PER_SECOND,
+        prefetch_minimum_seconds: float = PREFETCH_MINIMUM_SECONDS,
     ) -> None:
         self.models = models
+        self.prefetch_bytes_per_second = prefetch_bytes_per_second
+        self.prefetch_minimum_seconds = prefetch_minimum_seconds
+        # Fills the next chair's cache while the current one smokes; None to
+        # verify each chair only when its turn comes.
+        self.cache_prefetcher = cache_prefetcher
+        self._lookahead: _CacheLookahead | None = None
         self.subprocess_checker = subprocess_checker
         self.placement = placement
         self.cache_verifier = cache_verifier
@@ -921,11 +1056,7 @@ class PreflightRunner:
         return self.chair_fixtures.get(role, self.fixture)
 
     def run(self, profile: GpuProfile) -> PreflightReport:
-        from operations.serving.config import (
-            InProcessProfile,
-            SubprocessProfile,
-            UnsupportedProfile,
-        )
+        from operations.serving.config import UnsupportedProfile
 
         issues: list[PreflightIssue] = []
         placements: list[ChairPlacement] = []
@@ -959,9 +1090,118 @@ class PreflightRunner:
                     "Restore the named proof fixture before attempting a smoke read.",
                 )
             )
-        for role, configured in sorted(self.models.chairs.items()):
-            if self.selected_roles is not None and role not in self.selected_roles:
-                continue
+        # Chairs in the order the stages first need them, so the copy of each
+        # can overlap the smoke of the one before it.
+        roles = [
+            role
+            for role in in_stage_need_order(self.models.chairs)
+            if self.selected_roles is None or role in self.selected_roles
+        ]
+        serving_profiles: dict[str, Any] = {}
+        for role in roles:
+            configured = self.models.chairs[role]
+            if isinstance(configured, ChairIdentity) and tier is not None:
+                serving_profiles[role] = (
+                    self.serving_recipes.for_identity(configured, tier.identifier)
+                    if self.serving_recipes is not None
+                    else None
+                )
+        self._lookahead = _CacheLookahead(
+            self.cache_verifier.verify,
+            self.cache_prefetcher,
+            [
+                self.models.chairs[role]  # type: ignore[misc]
+                for role in roles
+                if role in serving_profiles
+                and not isinstance(serving_profiles[role], UnsupportedProfile)
+            ],
+            snapshot_bytes=lambda identity: sum(
+                row.size for row in self.cache_verifier.manifest(identity).rows
+            ),
+            bytes_per_second=self.prefetch_bytes_per_second,
+            minimum_seconds=self.prefetch_minimum_seconds,
+        )
+        try:
+            self._run_chairs(
+                roles,
+                serving_profiles,
+                tier,
+                fixture_present,
+                issues,
+                placements,
+                cache_receipts,
+                smoke_receipts,
+                subprocess_receipts,
+                utilization,
+                served_reads,
+            )
+        finally:
+            self._lookahead.close()
+            self._lookahead = None
+        if not smoke_receipts and self.selected_roles != frozenset():
+            # An all-absent or fully-failed roster produced placements and no
+            # measurements; green here would claim a serving assembly nobody
+            # smoke-read.
+            issues.append(
+                PreflightIssue(
+                    "no-chair-verified",
+                    "no configured chair completed cache verification and a smoke read; "
+                    "this preflight measured no serving assembly at all",
+                    "Configure at least one chair with a verified cache before a paid run.",
+                )
+            )
+        floor = self.models.witness_floor_status()
+        if not floor.meets_floor:
+            issues.append(
+                PreflightIssue(
+                    "witness-floor-unmet",
+                    f"configured Attestator chairs ({floor.configured_count}) fall short of "
+                    f"the witness floor ({floor.floor})",
+                    "Configure the missing Attestator chairs or lower the floor deliberately "
+                    "before a paid run.",
+                )
+            )
+        assembly_proven, assembly_note = self._assembly_claim(profile, served_reads)
+        return PreflightReport(
+            color="green" if not issues else "red",
+            profile=profile,
+            tier=tier.identifier if tier else None,
+            placements=tuple(placements),
+            cache_receipts=tuple(cache_receipts),
+            smoke_receipts=tuple(smoke_receipts),
+            utilization=tuple(utilization),
+            issues=tuple(issues),
+            assembly_proven=assembly_proven,
+            assembly_note=assembly_note,
+            card_profile=matched.name if matched is not None else None,
+            card_profile_note=matched.note if matched is not None and matched.note else None,
+            plan_source=plan_source,
+            subprocess_receipts=tuple(subprocess_receipts),
+        )
+
+    def _run_chairs(
+        self,
+        roles: list[str],
+        serving_profiles: dict[str, Any],
+        tier: PlacementTier | None,
+        fixture_present: bool,
+        issues: list[PreflightIssue],
+        placements: list[ChairPlacement],
+        cache_receipts: list[dict[str, object]],
+        smoke_receipts: list[dict[str, object]],
+        subprocess_receipts: list[dict[str, object]],
+        utilization: list[UtilizationSample],
+        served_reads: list[tuple[str, str]],
+    ) -> None:
+        """Place, verify and smoke each selected chair in turn, recording every outcome."""
+        from operations.serving.config import (
+            InProcessProfile,
+            SubprocessProfile,
+            UnsupportedProfile,
+        )
+
+        for role in roles:
+            configured = self.models.chairs[role]
             if isinstance(configured, AbsentChair):
                 placements.append(
                     ChairPlacement(role, None, None, None, None, None, None, None, "absent")
@@ -982,11 +1222,7 @@ class PreflightRunner:
                     )
                 )
                 continue
-            serving_profile = (
-                self.serving_recipes.for_identity(configured, tier.identifier)
-                if self.serving_recipes is not None
-                else None
-            )
+            serving_profile = serving_profiles[role]
             if isinstance(serving_profile, UnsupportedProfile):
                 placements.append(
                     ChairPlacement(
@@ -1028,6 +1264,7 @@ class PreflightRunner:
                     )
                 )
                 self._verify_cache(configured, issues, cache_receipts)
+                self._lookahead.start_next(configured)
                 continue
             if isinstance(serving_profile, SubprocessProfile):
                 # Never served and never on the card: its weights are verified,
@@ -1047,6 +1284,7 @@ class PreflightRunner:
                     )
                 )
                 cache = self._verify_cache(configured, issues, cache_receipts)
+                self._lookahead.start_next(configured)
                 if cache is not None and fixture_present:
                     self._check_subprocess(
                         configured, serving_profile, cache, issues, subprocess_receipts
@@ -1066,51 +1304,12 @@ class PreflightRunner:
                 )
             )
             verified = self._verify_cache(configured, issues, cache_receipts)
+            self._lookahead.start_next(configured)
             if not verified or not fixture_present:
                 continue
             served_by = self._smoke(configured, tier, issues, smoke_receipts, utilization)
             if served_by is not None:
                 served_reads.append((role, served_by))
-        if not smoke_receipts and self.selected_roles != frozenset():
-            # An all-absent or fully-failed roster produced placements and no
-            # measurements; green here would claim a serving assembly nobody
-            # smoke-read.
-            issues.append(
-                PreflightIssue(
-                    "no-chair-verified",
-                    "no configured chair completed cache verification and a smoke read; "
-                    "this preflight measured no serving assembly at all",
-                    "Configure at least one chair with a verified cache before a paid run.",
-                )
-            )
-        floor = self.models.witness_floor_status()
-        if not floor.meets_floor:
-            issues.append(
-                PreflightIssue(
-                    "witness-floor-unmet",
-                    f"configured Attestator chairs ({floor.configured_count}) fall short of "
-                    f"the witness floor ({floor.floor})",
-                    "Configure the missing Attestator chairs or lower the floor deliberately "
-                    "before a paid run.",
-                )
-            )
-        assembly_proven, assembly_note = self._assembly_claim(profile, served_reads)
-        return PreflightReport(
-            color="green" if not issues else "red",
-            profile=profile,
-            tier=tier.identifier if tier else None,
-            placements=tuple(placements),
-            cache_receipts=tuple(cache_receipts),
-            smoke_receipts=tuple(smoke_receipts),
-            utilization=tuple(utilization),
-            issues=tuple(issues),
-            assembly_proven=assembly_proven,
-            assembly_note=assembly_note,
-            card_profile=matched.name if matched is not None else None,
-            card_profile_note=matched.note if matched is not None and matched.note else None,
-            plan_source=plan_source,
-            subprocess_receipts=tuple(subprocess_receipts),
-        )
 
     @staticmethod
     def _assembly_claim(
@@ -1298,7 +1497,22 @@ class PreflightRunner:
     ) -> dict[str, object] | None:
         """The chair's bound cache receipt, recorded, or None with the issue recorded."""
         try:
-            receipt = self.cache_verifier.verify(identity)
+            receipt = (
+                self._lookahead.verify(identity)
+                if self._lookahead is not None
+                else self.cache_verifier.verify(identity)
+            )
+        except PrefetchTimeout as expired:
+            issues.append(
+                PreflightIssue(
+                    "cache-prefetch-timeout",
+                    f"{expired}.",
+                    "Check the model volume and the container disk (a hung network mount, "
+                    "a full disk), then run preflight again; the chair was not filled.",
+                    identity.role,
+                )
+            )
+            return None
         except Exception as initial_error:
             issues.append(
                 PreflightIssue(
