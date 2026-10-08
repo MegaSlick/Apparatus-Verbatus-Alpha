@@ -1,8 +1,9 @@
 # Report for the lead: 2026-10-08 pod-efficiency session
 
-Short version: four pull requests take the measured idle time out of a pod run. Two are
-merged, two are in review. Nothing has run on a pod yet; the next pod is the real test.
-No pod was started this session.
+Short version: nine pull requests take the measured idle time out of a pod run and stop
+the guard deleting working pods. Six are merged (#287-#292), one is in review (#293) and
+two are queued to open (shared 27B server; card capacity plan). Nothing has run on a pod
+yet; the next pod is the real test. No pod was started this session.
 
 ## What changed, and what it saves (estimates from the 2026-10-07 numbers)
 
@@ -27,17 +28,32 @@ The five review reports with file:line anchors are in `review-notes/2026-10-08-r
 
 ## Decisions still yours
 
-1. `ladder_delete` default: off (as built). Turn on when you trust the backup step.
+1. `ladder_delete` default: off (as built). Turn on when you trust the backup step. A
+   `slow` or `bootstrapping` pod is never deleted, only a `stalled` one (#291).
 2. The MODEL_STORE receipt now says "bytes verified at copy, for roles ..." instead of
    implying every store byte was hashed at boot (hand-off item E; built as engineering).
-3. Perlector `max_tokens` from the page reserve (review 4, F2): trades held pages for
-   time; needs a headroom number from the 10-07 call records. Not built.
-4. Chandra at width > 1 and wider 24 GB witness rows (review 4, F3/F4): throughput only,
-   but changes batch composition; wants one cheap-pod KV check. Not built.
-5. Keeping the Perlector server alive for the Coniector (review 2, F1, ~10 min per chunk)
-   and witnesses sharing a big card (F2): both need a serving-layer change and one line
-   of evidence wording. Not built.
-6. Two integrity relaxations the builders declined: a per-stage verified-input set for
+3. Perlector reply bound (#293): headroom 2.0 x the page's reserve, floor 4,096 tokens.
+   Set wide because the 10-07 notes have no completion-token ratios. A reply at the bound
+   is held unread, never guessed. Recommended: keep for the next pod, then tune from its
+   `completion_tokens`.
+4. Widths (#293): DAI, Churro and the reconstructor at 8 on 80 GB+. The Perlector stays at
+   4 (8 full pages need ~32 GiB), Chandra stays at 4 (no KV figure), 24/48 GB rows
+   unchanged pending one cheap-pod KV check.
+5. Shared 27B server (queued PR): the Perlector now seals while its server is still up,
+   the Coniector's receipt says an "adopted" service served it, and the volume sync trails
+   by one stage (a stage's files reach the volume by the end of the next stage). All three
+   are honest receipts of what happened; recommended: accept. Witness overlap (F2a) is not
+   built: every 80 GB+ witness row asks 0.88 of the card, so nothing pairs until fractions
+   are measured.
+6. Card capacity plan (queued PR): widths derived from measured VRAM with the row as the
+   floor and a 4 GiB engine-overhead guess (unmeasured). Planned on 80 GB: DAI 64, Churro
+   54, Perlector 4; on 96 GB the Perlector 7; on 141 GB the Perlector 17. Recommended: one
+   cheap 24 GB PREFLIGHT run first to replace the 4 GiB guess with the vLLM KV-pool line,
+   and decide whether 64 is an acceptable ceiling.
+7. One 120 GB pod running witnesses, Perlector and Coniector together still re-copies
+   ~6 min of cache (#292 notes). Either ~160 GB disk (costs money) or keep witnesses off
+   the big card (the two-card split; recommended).
+8. Two integrity relaxations the builders declined: a per-stage verified-input set for
    `publish`, and skipping input checks in the hard-failure tally for sealed stages.
 
 ## What the next pod must check
@@ -49,10 +65,18 @@ The five review reports with file:line anchors are in `review-notes/2026-10-08-r
   file unless you wrote one.
 - Surya runner count equals usable cores // 8; sync ledger `.verbatus-sync-ledger.jsonl`
   in the local run tree; final sync near-instant.
-- Per-stage GPU use and serving spans in `-timings.json`.
+- Per-stage GPU use and serving spans in `-timings.json`; sync durations in the journal.
+- `pod-run-progress.json` and `.pod_guard/progress-<pod>` show `ok` while pages arrive;
+  `backup-<pod>` lists the run trees; a bad CUDA host is refused within ~2 min.
+- CHAIR_CACHE `prefill` record (chairs filled during uv sync, seconds, pool size).
+- Perlector `answer_reserve` carries headroom and floor; count pages held as cut off.
+- With the shared server: one 27B launch per run; the Coniector's receipt says adopted.
+- With the capacity plan: PREFLIGHT receipt carries `vram_gib` and `capacity_plan`; the
+  launch audit's `capacity` block shows row and launched widths.
 
 ## Recommended next step
 
 One cheap pod (witness card) through Attestatores, then the big card from Perlector to
-Coniector, on the 47 bake-off pages, timed from the journal. Then build review 2's F1
-(shared Perlector/Coniector server) and the progress-rate watcher (review 5, PR 2).
+Coniector, on the 47 bake-off pages, timed from the journal, comparing against the 45 min
+setup and 82 min pipeline of 2026-10-07. Read the PREFLIGHT smoke's vLLM KV-pool line on
+each card to replace the capacity plan's 4 GiB guess before trusting the wide widths.
