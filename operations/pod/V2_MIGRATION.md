@@ -8,7 +8,9 @@ counterpart. §6 records what is now built and what still waits on a live run.
 
 **`RunPodV2Provider` now exists beside the v1 class** in `provider_runpod.py`
 and is the default route; the v1 class stays selectable until the first live
-run under v2 is green. **A v2 create is refused by name** until the rental
+run under v2 is green. The paid runs so far created their pods with `runpodctl`,
+not through either adapter, so that run is still to come; RunPod retires v1 on
+2026-11-15 whether or not it has happened. **A v2 create is refused by name** until the rental
 type can be shown (§4.1, §6).
 
 §1–§5 record the pages as read online on **2026-09-02**; §6 records the second

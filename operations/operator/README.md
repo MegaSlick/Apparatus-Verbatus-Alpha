@@ -83,9 +83,9 @@ to pass a sealed boundary, and `status` whenever you are unsure what this tool h
 **Exit codes.** Every word exits 0 when it did what was asked and 2 otherwise: a
 refusal, a failure, a held or halted run and a partial export all exit 2, and the
 `What happened:` line says which. `pod_run` and the orchestrator keep their own codes (3
-held, 4 halted and more; `operations/pod/run_exits.py`, listed in `LIVE_READINESS.md`
-step 7), so the same held run exits 3 on a
-pod and 2 under `verbatus run`.
+held, 4 halted and more; `operations/pod/run_exits.py`, listed in
+`operations/pod/README.md`, "`pod_run.py`"), so the same held run exits 3 on a pod and 2
+under `verbatus run`.
 
 `run`, `ingest`, `triage` and `spend` read configuration, stage code or
 proof material from the workspace, and refuse (`not-a-checkout`) when the folder they run
@@ -167,6 +167,32 @@ verbatus run --run-id prepared-check --submission-folder private/parish-a/scans 
     --triage-decision-manifest private/parish-a/prepared/triage-decision-manifest.json \
     --triage-producer-recipe private/parish-a/prepared/triage-producer-recipe.json
 ```
+
+The upload refuses a triage manifest without a row for every sealed scan, before anything
+is sent, and the run is expected to stop at the first stage that needs a served chair,
+with one page per prepared page. Give `run` a `--state-dir` under `private/` ("`run`,
+`export` and holds").
+
+### Sending prepared scans to a pod
+
+Send the same sealed record with its triage documents to the volume, under a prefix of
+its own so it stays apart from any unprepared upload of the same scans:
+
+```sh
+P=private/parish-a/prepared
+verbatus upload --source private/parish-a/scans \
+    --sealed-manifest $P/submission-manifest.json --prefix prepared-spreads \
+    --network-volume DATACENTER:VOLUME_ID \
+    --triage-decision-manifest $P/triage-decision-manifest.json \
+    --triage-producer-recipe $P/triage-producer-recipe.json
+```
+
+That writes `prepared-spreads/`, `prepared-spreads-manifest.json`,
+`prepared-spreads-triage-decision-manifest.json` and
+`prepared-spreads-triage-producer-recipe.json` on the volume. The pod's run names all four
+(`operations/pod/README.md`, the hand route's launch), and the Door cuts each page from its
+original as `prepare` decided. Triage sent with a submission is never replaced: after a
+later correction, upload again under a new `--prefix`.
 
 ## `ingest`: prepare a folder before the Door
 
@@ -506,7 +532,8 @@ prints only when a copy changed or turned stale, reads once more after a pause w
 copy did not parse (it may have been caught mid-copy), and stops when the report says the run
 ended or after `--timeout`. Ctrl+C stops it. A missing or another run's report is refused
 (`watch-unreadable`, exit 2); a missing or unreadable sibling is named as a note, and the
-exit stays 0. `LIVE_READINESS.md` (step 8) shows its output on synthetic copies.
+exit stays 0. `operations/pod/README.md` ("Watching it") has a loop that copies fresh
+files from a pod and shows them.
 
 Not built yet: reading the files over S3 itself, `--json`, and the design's run states and
 exit codes (`docs/design/control-surface.md`).
