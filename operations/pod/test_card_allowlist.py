@@ -70,6 +70,8 @@ def policy(*, max_hourly: str) -> SpendPolicy:
         hard_max_seconds=86_400,
         soft_max_cost_usd=Decimal("1000.00"),
         hard_max_cost_usd=Decimal("1000.00"),
+        pod_budget="on",
+        ladder_delete="off",
     )
 
 
