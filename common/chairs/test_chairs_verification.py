@@ -842,6 +842,43 @@ def test_a_partial_cache_re_fetches_exactly_the_missing_files(hf_world):
     ]
 
 
+def test_a_repair_moves_the_files_it_keeps_instead_of_copying_them(hf_world, monkeypatch):
+    """Carried files keep their inode, are hashed once by the repair, and stay remembered."""
+    identity = hf_world.identity()
+    snapshot = hf_world.registry.ensure(identity)
+    kept_inode = (snapshot.root / "config.json").stat().st_ino
+    (snapshot.root / "nested/weights.bin").unlink()
+    monkeypatch.setattr(
+        "common.chairs.registry.shutil.copyfile",
+        lambda *args, **kwargs: pytest.fail("a carried file was copied"),
+    )
+
+    repaired = hf_world.registry.ensure(identity)
+    digested = _digest_log(monkeypatch)
+    again = hf_world.registry.ensure(identity)
+
+    assert (repaired.root / "config.json").stat().st_ino == kept_inode
+    assert repaired.root == snapshot.root
+    assert digested == [], "the repaired cache is remembered, not hashed again"
+    assert again.verification == {
+        "bytes": "verified earlier in this process; no file changed since"
+    }
+
+
+def test_a_failed_repair_puts_the_files_it_carried_back(hf_world):
+    identity = hf_world.identity()
+    snapshot = hf_world.registry.ensure(identity)
+    kept_inode = (snapshot.root / "config.json").stat().st_ino
+    (snapshot.root / "nested/weights.bin").unlink()
+    hf_world.fetcher.files["nested/weights.bin"] = b"corrupted on the way back\n"
+
+    with pytest.raises(DigestMismatchRefusal):
+        hf_world.registry.ensure(identity)
+
+    assert (snapshot.root / "config.json").stat().st_ino == kept_inode
+    assert not (snapshot.root / "nested/weights.bin").exists()
+
+
 def test_a_cache_holding_a_file_the_pin_does_not_name_is_refused_before_any_refetch(hf_world):
     identity = hf_world.identity()
     snapshot = hf_world.registry.ensure(identity)

@@ -598,10 +598,11 @@ class ChairRegistry:
         self._make_room(identity, manifest, digests_root, evict=evict)
         with _cache_write(identity.role, "no candidate cache directory could be created"):
             candidate = Path(tempfile.mkdtemp(prefix=f".{digest}.candidate-", dir=digests_root))
+        carried: list[str] = []
         try:
             if target.exists():
                 with _cache_write(identity.role, "the existing cache could not be carried over"):
-                    _copy_existing_files(target, candidate, manifest)
+                    _carry_existing_files(target, candidate, manifest, carried)
             try:
                 ledger = self.fetcher.fetch(identity, candidate, missing)
             except ChairRefusal:
@@ -628,6 +629,7 @@ class ChairRegistry:
             )
         except Exception:
             if candidate.exists():
+                _return_carried_files(candidate, target, carried)
                 shutil.rmtree(candidate, ignore_errors=True)
             raise
 
@@ -853,14 +855,38 @@ def _write_cache_descriptor(target: Path, descriptor: dict[str, object]) -> None
     (target / CACHE_DESCRIPTOR).write_bytes(canonical_bytes(descriptor))
 
 
-def _copy_existing_files(target: Path, candidate: Path, manifest: DigestManifest) -> None:
+def _carry_existing_files(
+    target: Path, candidate: Path, manifest: DigestManifest, carried: list[str]
+) -> None:
+    """Move the files an incomplete cache still holds into the candidate, appending each to `carried`.
+
+    A rename on the one cache filesystem, not a copy: the bytes are not read or
+    written again here (verification still hashes every carried file). Moving
+    rather than linking leaves each inode with one name, so removing the old
+    cache after promotion does not touch the stat identity just verified.
+    """
+
     for row in manifest.rows:
         source = target / row.path
         if not source.exists():
             continue
         destination = candidate / row.path
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
+        os.replace(source, destination)
+        carried.append(row.path)
+
+
+def _return_carried_files(candidate: Path, target: Path, carried: list[str]) -> None:
+    """Put carried files back into a cache whose repair failed, so it is left as it was."""
+
+    if not target.is_dir():
+        return
+    for relative in carried:
+        try:
+            (target / relative).parent.mkdir(parents=True, exist_ok=True)
+            os.replace(candidate / relative, target / relative)
+        except OSError:
+            continue
 
 
 def _promote(candidate: Path, target: Path) -> None:

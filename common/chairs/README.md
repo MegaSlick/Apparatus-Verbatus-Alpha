@@ -125,9 +125,12 @@ process's usable CPUs (affinity mask and cgroup `cpu.max`) clamped to 2..32, or
 `VERBATUS_IO_WORKERS`; the count and its source are recorded in the verification
 receipt. A caller filling several digests at once gives `StoreRoleFetcher` one
 `CopyPool`, so every file of every snapshot waits in one queue, largest first, and
-no worker idles behind one snapshot's single large file. The returned ledger lets the registry check the copied tree's structure
-(missing and extra files, sizes, links) without reading those bytes again; files
-carried over from a damaged cache are hashed again.
+no worker idles behind one snapshot's single large file. The returned ledger lets
+the registry check the copied tree's structure (missing and extra files, sizes,
+links) without reading those bytes again; files carried over from a damaged cache
+are hashed again. They are carried by renaming them into the candidate on the
+cache's own filesystem, not by copying, and are renamed back if the repair fails,
+so an incomplete cache is left as it was.
 
 Within one process, a `ChairRegistry` remembers each snapshot it fully verified,
 by manifest digest and root, with every file's device, inode, size, mtime and
