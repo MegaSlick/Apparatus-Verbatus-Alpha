@@ -33,7 +33,11 @@ from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.stages import PERLECTOR  # noqa: E402
-from common.decoding import load_decoding_policy, perlector_page_max_tokens  # noqa: E402
+from common.decoding import (  # noqa: E402
+    load_decoding_policy,
+    perlector_page_generation,
+    perlector_page_max_tokens,
+)
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     PERLECTOR_CHAIR,
@@ -191,9 +195,11 @@ class _Pass:
     chair: ChairIdentity | AbsentChair
     serving_mode: str
     protocol_config: dict[str, Any]
-    # The sealed decoding policy, and from it the output cap of one whole-page reading.
+    # The sealed decoding policy, and from it the output cap of one whole-page reading
+    # and the bounds a request sends from its answer reserve.
     decoding_policy: dict[str, Any]
     page_max_tokens: int
+    page_generation: dict[str, int]
     audit_policy: dict[str, Any]
     audit_sha256: str
     # The sealed step budget of every dissent comparison.
@@ -255,6 +261,7 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         protocol_config=protocol_config,
         decoding_policy=decoding_policy,
         page_max_tokens=perlector_page_max_tokens(decoding_policy),
+        page_generation=perlector_page_generation(decoding_policy),
         audit_policy=audit_policy,
         audit_sha256=audit_sha256,
         dissent_steps=dissent_limits.max_comparison_steps,

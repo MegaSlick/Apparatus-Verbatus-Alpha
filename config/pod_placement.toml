@@ -84,7 +84,10 @@ detector_device = "cpu"
 engine_memory_fraction = "0.88"
 context_cap = 65536
 pixel_cap = 3584
-batch_size = 4
+# A ceiling, not a plan: a row asks for at most this many sequences and the
+# engine's KV pool admits what the card holds. config/serving_recipes_real.toml
+# carries each row's KV arithmetic.
+batch_size = 8
 
 # The rented cards.  `tier` must be one of the ids above; a
 # profile whose vram_gib does not fall inside its own tier's band is refused at

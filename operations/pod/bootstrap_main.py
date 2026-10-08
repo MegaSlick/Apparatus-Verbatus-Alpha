@@ -110,13 +110,19 @@ from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from common.chairs.config import parse_models_config
 from common.chairs.errors import ChairRefusal
-from common.chairs.manifests import CopyLedger, verify_snapshot
+from common.chairs.manifests import CopyLedger, copy_pool, verify_snapshot
 from common.chairs.model_store import (
     StoreRoleFetcher,
     artifacts_for_roles,
     pending_local_artifacts,
 )
-from common.chairs.models import ChairIdentity, DigestManifest, ModelsConfig, ServingReceipt
+from common.chairs.models import (
+    ChairIdentity,
+    DigestManifest,
+    ModelsConfig,
+    ServingReceipt,
+    VerifiedSnapshot,
+)
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
     ChairRegistry,
@@ -177,6 +183,8 @@ from .bootstrap import (
     SubprocessBootstrapActions,
     verify_image_contract,
 )
+from .chair_order import in_stage_need_order
+from .chair_prefill import ChairCachePrefill, PrefillChairs
 from .durable import atomic_write, canonical_json, exclusive_write
 from .models import POD_VOLUME_MOUNT_PATH, REQUESTED_GPU_COUNT, require_utc, utc_now
 from .preflight import (
@@ -324,7 +332,15 @@ class RegistryChairCacheVerifier:
         self.registry = registry
 
     def verify(self, identity: ChairIdentity) -> dict[str, object]:
-        snapshot = self.registry.ensure(identity)
+        return self._receipt(identity, self.registry.ensure(identity))
+
+    def prefetch(self, identity: ChairIdentity) -> dict[str, object]:
+        """`verify` without evicting any other cache, for a fill beside a running smoke."""
+
+        return self._receipt(identity, self.registry.ensure(identity, evict=False))
+
+    @staticmethod
+    def _receipt(identity: ChairIdentity, snapshot: VerifiedSnapshot) -> dict[str, object]:
         receipt: dict[str, object] = {
             "chair": identity.role,
             "manifest_digest": snapshot.manifest_digest,
@@ -1131,6 +1147,39 @@ def _build_cache(plan: Plan) -> dict[str, object]:
     return {"chairs": chairs, "cache_root": str(plan.cache_root)}
 
 
+def _prefill_chairs(plan: Plan) -> PrefillChairs | None:
+    """The selected Hugging Face chairs a background fill copies from the store, in stage order.
+
+    A chair whose store artifact is not present yet, or whose store row differs
+    from its pin, is left out: MODEL_STORE fetches or refuses it, and PREFLIGHT
+    fills it afterwards as it always has.
+    """
+
+    if plan.models_config is None or plan.cache_root is None or plan.store_root is None:
+        return None
+    # One pool of copy workers across every file of every chair, largest first.
+    fetcher = StoreRoleFetcher(plan.store_root, pool=copy_pool(chair="chair-cache"))
+    registry = ChairRegistry.from_toml(plan.models_config, cache_root=plan.cache_root)
+    registry.fetcher = fetcher
+    chairs: list[ChairIdentity] = []
+    deferred: list[dict[str, str]] = []
+    for role in in_stage_need_order(list(registry.config.chairs)):
+        identity = registry.config.chairs[role]
+        if (
+            not _selected(plan, role)
+            or not isinstance(identity, ChairIdentity)
+            or identity.source != "huggingface"
+        ):
+            continue
+        try:
+            fetcher.plan(identity)
+        except ChairRefusal as refusal:
+            deferred.append({"chair": role, "reason": f"store source not ready: {refusal}"})
+            continue
+        chairs.append(identity)
+    return PrefillChairs(registry, tuple(chairs), tuple(deferred), fetcher.pool)
+
+
 def _place_local_chair(
     registry: ChairRegistry, fetcher: StoreRoleFetcher, identity: ChairIdentity
 ) -> dict[str, object]:
@@ -1327,7 +1376,9 @@ def _golden_page_digest(
 
 
 def _build_preflight(
-    plan: Plan, seams: PreflightSeams | None = None
+    plan: Plan,
+    seams: PreflightSeams | None = None,
+    prefill: ChairCachePrefill | None = None,
 ) -> Callable[[], dict[str, object]]:
     """The real ``PREFLIGHT``: registry-backed cache verification and a served smoke.
 
@@ -1355,6 +1406,10 @@ def _build_preflight(
             registry.fetcher = StoreRoleFetcher(plan.store_root)  # type: ignore[arg-type]
         else:
             registry.fetcher = chosen.fetcher_factory()
+        if prefill is not None and prefill.registry is not None:
+            # The chairs the background fill verified in this process are not
+            # read again here, nor by the smoke's own ensure.
+            registry.adopt_verifications(prefill.registry)
         # One read each, sealed from the table that is parsed: the serving
         # assembly re-reads both files and refuses if what it parses does not
         # seal to what is sealed here, so a substitution between the two
@@ -1436,16 +1491,18 @@ def _build_preflight(
             residency_lease=FileResidencyLease(chosen.residency_lock),
             producer="operations.pod.bootstrap_main",
         )
+        cache_verifier = RegistryChairCacheVerifier(registry)
         runner = PreflightRunner(
             registry.config,
             placement,
-            RegistryChairCacheVerifier(registry),
+            cache_verifier,
             reader,
             fixture,
             serving_recipes=recipes,
             subprocess_checker=chosen.subprocess_checker,
             selected_roles=selected_roles,
             chair_fixtures=chair_fixtures,
+            cache_prefetcher=cache_verifier.prefetch,
         )
         report = runner.run(profile)
         record = report.to_record()
@@ -1715,6 +1772,7 @@ def _local_bundles(plan: Plan) -> dict[Path, int]:
 def build_actions(plan: Plan) -> BootstrapActions:
     """The real composition; check image facts at REPOSITORY before paid setup."""
 
+    prefill = ChairCachePrefill(lambda: _prefill_chairs(plan))
     return SubprocessBootstrapActions(
         subprocess_environments=lambda: _subprocess_environments(plan),
         local_bundles=lambda: _local_bundles(plan),
@@ -1723,7 +1781,8 @@ def build_actions(plan: Plan) -> BootstrapActions:
         transfer=_build_transfer(plan),
         materialize_model_store=lambda: _build_model_store(plan).materialize(),
         cache=_LazyChairCache(plan),  # type: ignore[arg-type]
-        preflight=_build_preflight(plan),
+        preflight=_build_preflight(plan, prefill=prefill),
+        prefill=prefill,
         image_contract=lambda: verify_image_contract(
             plan.repository,  # type: ignore[arg-type]
             interpreter=Path(sys.executable),
