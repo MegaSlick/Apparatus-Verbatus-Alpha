@@ -887,7 +887,7 @@ class ChairCachePrefillPlan(Protocol):
 
     def start(self, step: str, reserved: Mapping[int, int] | None = None) -> None: ...
 
-    def wait(self) -> dict[str, object] | None: ...
+    def wait(self, step: BootstrapStep) -> dict[str, object] | None: ...
 
 
 class ModelStoreBootstrapAction:
@@ -1273,11 +1273,13 @@ class SubprocessBootstrapActions:
         if self.prefill is not None:
             # A copy that refused (a store byte differing from its pin) fails this
             # step, whose receipt says those bytes are verified at copy.
-            self.prefill.wait()
+            self.prefill.wait(BootstrapStep.MODEL_STORE)
         return result
 
     def verify_chair_cache(self) -> dict[str, object]:
-        prefilled = self.prefill.wait() if self.prefill is not None else None
+        prefilled = (
+            self.prefill.wait(BootstrapStep.CHAIR_CACHE) if self.prefill is not None else None
+        )
         receipt = self.cache.verify()
         if prefilled is not None:
             receipt = {**receipt, "prefill": prefilled}

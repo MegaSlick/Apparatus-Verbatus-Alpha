@@ -29,7 +29,15 @@ from common.chairs.manifests import CopyPool
 from common.chairs.models import ChairIdentity
 from common.chairs.registry import DIGEST_CACHE_DIRECTORY, ChairRegistry
 
-from .bootstrap import _filesystem_key, _free_bytes
+from .bootstrap import BootstrapStep, BootstrapStepFailure, _filesystem_key, _free_bytes
+
+# How long a waiting step gives the fill before calling it stuck: a third of the
+# 13.6 GB/min one copy pass was measured at (review 01), so three times the time
+# the bytes should take, and never less than a quarter of an hour, for a slow
+# volume or a disk shared with the uv sync. Present caches count too: they are
+# read once to be verified.
+PREFILL_BYTES_PER_SECOND = 13.6e9 / 60 / 3
+PREFILL_MINIMUM_SECONDS = 15 * 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +70,8 @@ class ChairCachePrefill:
         *,
         free_bytes: Callable[[Path], int] = _free_bytes,
         filesystem_key: Callable[[Path], int] = _filesystem_key,
+        bytes_per_second: float = PREFILL_BYTES_PER_SECOND,
+        minimum_seconds: float = PREFILL_MINIMUM_SECONDS,
     ) -> None:
         # Called when the fill starts, after the checkout, so it reads the
         # pinned roster rather than whatever was on disk at container start.
@@ -72,6 +82,11 @@ class ChairCachePrefill:
         self._registry: ChairRegistry | None = None
         self._outcome = _Outcome()
         self._started_at_step: str | None = None
+        self._bytes_per_second = bytes_per_second
+        self._minimum_seconds = minimum_seconds
+        # Bytes the chosen chairs copy or verify, and when the fill must be done by.
+        self._planned_bytes = 0
+        self._deadline: float | None = None
 
     @property
     def registry(self) -> ChairRegistry | None:
@@ -111,6 +126,9 @@ class ChairCachePrefill:
                 {"chair": "*", "reason": f"the cache disk could not be measured: {error}"}
             )
             chairs = []
+        self._deadline = time.monotonic() + max(
+            self._minimum_seconds, self._planned_bytes / self._bytes_per_second
+        )
         self._thread = threading.Thread(
             target=self._fill,
             args=(plan.registry, chairs, plan.pool),
@@ -119,15 +137,30 @@ class ChairCachePrefill:
         )
         self._thread.start()
 
-    def wait(self) -> dict[str, object] | None:
+    def wait(self, step: BootstrapStep = BootstrapStep.MODEL_STORE) -> dict[str, object] | None:
         """Block until the fill ends; its record, or raise the refusal that stopped it.
 
         None when no fill was started in this process, as after a resume past it.
+        A fill still running at its deadline is a named failure of `step`; the
+        daemon copy threads are left behind rather than waited for.
         """
 
         if self._thread is None:
             return None
-        self._thread.join()
+        remaining = None if self._deadline is None else self._deadline - time.monotonic()
+        self._thread.join(timeout=None if remaining is None else max(0.0, remaining))
+        if self._thread.is_alive():
+            raise BootstrapStepFailure(
+                step,
+                f"the chair-cache prefill started at {self._started_at_step} is still "
+                f"copying {self._planned_bytes} bytes after its deadline "
+                f"({self._planned_bytes / self._bytes_per_second:.0f} s at a third of "
+                "13.6 GB/min, at least "
+                f"{self._minimum_seconds:.0f} s); a copy or a store read has stalled",
+                "Check the model volume and the container disk (a hung network mount, a "
+                "full disk), then resume this journal; the next attempt clears the "
+                "abandoned candidate directories under the chair cache.",
+            )
         if self._outcome.failure is not None:
             raise self._outcome.failure
         return {
@@ -163,15 +196,14 @@ class ChairCachePrefill:
         chosen: list[ChairIdentity] = []
         for chair in plan.chairs:
             digest = chair.digest_manifest
-            need = 0
-            if digest not in planned and not (digests_root / digest).exists():
-                try:
-                    need = sum(row.size for row in plan.registry.manifest(chair).rows)
-                except ChairRefusal as refusal:
-                    self._outcome.deferred.append(
-                        {"chair": chair.role, "reason": f"pinned manifest unreadable: {refusal}"}
-                    )
-                    continue
+            try:
+                size = sum(row.size for row in plan.registry.manifest(chair).rows)
+            except ChairRefusal as refusal:
+                self._outcome.deferred.append(
+                    {"chair": chair.role, "reason": f"pinned manifest unreadable: {refusal}"}
+                )
+                continue
+            need = 0 if digest in planned or (digests_root / digest).exists() else size
             if committed + need > free:
                 self._outcome.deferred.append(
                     {
@@ -182,6 +214,8 @@ class ChairCachePrefill:
                 )
                 continue
             committed += need
+            if digest not in planned:
+                self._planned_bytes += size
             planned.add(digest)
             chosen.append(chair)
         return chosen

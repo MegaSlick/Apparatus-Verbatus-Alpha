@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -297,3 +298,52 @@ def test_chairs_the_plan_left_out_are_recorded_as_deferred(tmp_path: Path) -> No
 
     assert fetcher.roles == []
     assert record["deferred"] == [{"chair": "attestator_1", "reason": "store source not ready"}]
+
+
+def test_a_fill_still_running_at_its_deadline_fails_the_waiting_step_by_name(
+    tmp_path: Path,
+) -> None:
+    from .bootstrap import BootstrapStep, BootstrapStepFailure
+
+    never = threading.Event()
+    registry, fetcher = _world(tmp_path, ("perlector",), gate=never)
+    chairs = (registry.resolve("perlector"),)
+    prefill = ChairCachePrefill(
+        lambda: PrefillChairs(registry, chairs),
+        free_bytes=lambda _path: FREE,
+        filesystem_key=lambda _path: 1,
+        minimum_seconds=0.2,
+    )
+
+    prefill.start("uv-environment")
+    try:
+        with pytest.raises(BootstrapStepFailure) as caught:
+            prefill.wait(BootstrapStep.CHAIR_CACHE)
+        assert caught.value.step is BootstrapStep.CHAIR_CACHE
+        assert "still copying" in caught.value.detail
+        assert "resume this journal" in caught.value.remediation
+        assert prefill.registry is None, "a stuck fill hands over nothing to PREFLIGHT"
+        # The deadline has passed: a second wait refuses at once rather than waiting again.
+        with pytest.raises(BootstrapStepFailure):
+            prefill.wait()
+    finally:
+        never.set()
+
+
+def test_the_deadline_grows_with_the_bytes_to_copy(tmp_path: Path) -> None:
+    registry, _ = _world(tmp_path, ("perlector",))
+    size = len(b"perlector weights\n")
+    prefill = ChairCachePrefill(
+        lambda: PrefillChairs(registry, (registry.resolve("perlector"),)),
+        free_bytes=lambda _path: FREE,
+        filesystem_key=lambda _path: 1,
+        bytes_per_second=size / 100,
+        minimum_seconds=1,
+    )
+
+    began = time.monotonic()
+    prefill.start("uv-environment")
+    prefill.wait()
+
+    assert prefill._planned_bytes == size
+    assert 99 < prefill._deadline - began < 101, "100 s for these bytes, above the 1 s floor"

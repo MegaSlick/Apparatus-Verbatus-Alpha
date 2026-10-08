@@ -5869,8 +5869,8 @@ class FakePrefill:
     def start(self, step: str, reserved=None) -> None:  # type: ignore[no-untyped-def]
         self.events.append(("start", (step, dict(reserved) if reserved is not None else None)))
 
-    def wait(self) -> dict[str, object] | None:
-        self.events.append(("wait", None))
+    def wait(self, step) -> dict[str, object] | None:  # type: ignore[no-untyped-def]
+        self.events.append(("wait", step))
         if self.failure is not None:
             raise self.failure
         return {"filled": [{"chair": "perlector"}], "deferred": []}
@@ -5929,6 +5929,10 @@ def test_the_chair_cache_fill_starts_before_uv_syncs_and_both_later_steps_wait_f
 
     assert model_store == {"selection_complete": True}
     assert [name for name, _ in prefill.events] == ["start", "start", "wait", "wait"]
+    assert [step for name, step in prefill.events if name == "wait"] == [
+        BootstrapStep.MODEL_STORE,
+        BootstrapStep.CHAIR_CACHE,
+    ]
     assert prefill.events[1] == ("start", ("model-store", None))
     assert order == ["uv", "materialize", "cache"]
     assert chair_cache == {
