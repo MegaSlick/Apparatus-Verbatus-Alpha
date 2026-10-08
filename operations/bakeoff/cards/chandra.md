@@ -47,6 +47,7 @@ The package's `OCR_LAYOUT_PROMPT` (`chandra/prompts.py`), one user turn, image f
 
 - First request: temperature 0.0, top_p 0.1, `max_tokens` 12,384, nothing else sent (vLLM defaults; the model's generation_config has only the EOS id). Thinking: the model's chat template always closes an empty `<think></think>` after the assistant tag, so thinking is off whatever is sent.
 - Retry loop (`generate_vllm::process_item`): if the answer's tail repeats (`detect_repeat_token`, also checked 50 characters from the end) or the request failed, ask again, up to 6 more times, at temperature min(0.2 n, 0.8) and top_p 0.95, sleeping 2 n s after an error. The last attempt is returned whatever it holds.
+- Inside each attempt the package's OpenAI client (openai 3.26.1, its defaults: `max_retries=2`, 600 s timeout) itself re-sends a request that fails to connect, times out or gets a 408/409/429/5xx, so one attempt can be up to three HTTP requests. `--request-timeout` does not apply to this arm; the client's 600 s does.
 - Concurrency: 28 pages in flight; the server takes 32 sequences.
 
 ## Output and normalisation
@@ -67,7 +68,7 @@ The package's `OCR_LAYOUT_PROMPT` (`chandra/prompts.py`), one user turn, image f
 - Loops on some spreads (seen in our arm); the vendor's retries change the temperature and usually end the loop, at a time cost.
 - Context: the package always sends 12,384 as `max_tokens` against an 18,000-token context. A page at the `scale_to_fit` cap is about 6,144 image tokens plus about 900 prompt tokens, so prompt plus bound is about 19.4 k. Whether vLLM 0.30 refuses such a request (`vllm/renderers/params.py` checks prompt length against context minus `max_tokens`) or counts the image placeholder as one token at that check and lets generation stop at the context end was not determined here. If it refuses, every large page fails after seven attempts and is cached with an error.
 - The package returns no `finish_reason`; the arm infers `length` when `token_count >= max_output_tokens`.
-- The package prints errors to stdout and keeps no request log; the arm caches the final answer only, not the discarded attempts.
+- The package prints errors to stdout and keeps no request log; the arm caches the final answer only, not the discarded attempts. `final_answer_repeats` applies the package's own retry test (repeat at the end, or 50 characters before the end) to that final answer: true means the retries ran out on a loop.
 
 ## What differs from our vLLM adapter
 

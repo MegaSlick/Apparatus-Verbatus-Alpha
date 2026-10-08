@@ -56,13 +56,17 @@ def load_vendor() -> Any:
 
 
 def server_argv(vendor: Any, args: argparse.Namespace, weights: Path) -> list[str]:
-    """`start_vllm_server`'s flags; host and port added, the snapshot as the model."""
+    """`start_vllm_server`'s flags; host and port added, the snapshot as the model.
+
+    The vendor also passes `--trust_remote_code`. The pinned snapshot has no Python files,
+    so the flag runs nothing there; it is left out so that only dots.mocr, which needs it,
+    ever runs code from a snapshot folder.
+    """
     return [
         "serve", str(weights),
         "--host", "127.0.0.1", "--port", str(args.port),
         "--gpu-memory-utilization", "0.9",
         "--data-parallel-size", "1",
-        "--trust-remote-code",
         "--tensor-parallel-size", "1",
         "--max-model-len", str(args.max_model_len),
         "--served-model-name", SERVED,

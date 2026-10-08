@@ -89,7 +89,8 @@ def _stub_chandra(monkeypatch, *, fail: bool = False) -> list[dict]:
         "chandra.model": types.SimpleNamespace(InferenceManager=InferenceManager),
         "chandra.model.schema": types.SimpleNamespace(BatchInputItem=_Item),
         "chandra.model.util": types.SimpleNamespace(
-            scale_to_fit=lambda image: image, detect_repeat_token=lambda text: False
+            scale_to_fit=lambda image: image,
+            detect_repeat_token=lambda text, cut_from_end=0: False,
         ),
         "chandra.model.vllm": types.SimpleNamespace(image_to_base64=_png_base64),
         "chandra.output": types.SimpleNamespace(parse_markdown=parse_markdown),
@@ -162,9 +163,14 @@ def test_runs_the_package_pipeline_writes_records_and_resumes(tmp_path, monkeypa
 def test_a_failed_page_is_recorded_and_sent_again(tmp_path, monkeypatch):
     _stub_chandra(monkeypatch, fail=True)
     _pages(tmp_path / "pages", 1)
-    assert C.base.main(C.ARM, _argv(tmp_path)) == 1
+    argv = _argv(tmp_path)
+    assert C.base.main(C.ARM, argv) == 1
     path = tmp_path / "cache" / "chandra-native" / "p000.json"
     assert json.loads(path.read_text())["error"] and not W.cached_ok(path)
+    _stub_chandra(monkeypatch)  # the next run sends the page again and clears the error
+    argv[argv.index("--port") + 1] = str(_free_port())
+    assert C.base.main(C.ARM, argv) == 0
+    assert W.cached_ok(path) and json.loads(path.read_text())["text"] == "Le dix mai"
 
 
 def test_refusals(tmp_path, monkeypatch):

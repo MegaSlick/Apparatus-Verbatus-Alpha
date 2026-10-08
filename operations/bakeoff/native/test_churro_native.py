@@ -57,7 +57,7 @@ def test_runs_the_release_runner_settings_and_resumes(tmp_path, monkeypatch):
     assert request["sampling"] == {"temperature": 0.6} and request["max_tokens"] is None
     argv_sent = record["server"]["argv"]
     assert argv_sent[argv_sent.index("--max-model-len") + 1] == "20000"
-    assert "--trust-remote-code" in argv_sent and "churro" in argv_sent
+    assert "--trust-remote-code" not in argv_sent and "churro" in argv_sent
     assert "HistoricalDocument" in record["units"][0]["raw_response"]
     assert C.base.main(arm, argv) == 0
     events = (tmp_path / "cache" / "events.jsonl").read_text().splitlines()

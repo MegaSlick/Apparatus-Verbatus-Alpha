@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import json
 import re
 import time
 from html import unescape
@@ -210,9 +211,26 @@ def cells_lines(cells: list[dict]) -> str:
     return base.plain(lines)
 
 
+_JSON_TEXT = re.compile(r'"text"\s*:\s*("(?:[^"\\]|\\.)*")')
+
+
 def salvaged_lines(text: str) -> str:
-    """The vendor's salvage of a broken JSON answer: cell texts joined by blank lines."""
-    return base.plain(_markdown_lines(_TAG.sub("", text or "")))
+    """The vendor's salvage of a broken JSON answer: cell texts joined by blank lines.
+
+    Table rows in it are split as in `cells_lines`. When the vendor's cleaner itself fails
+    it hands back the raw answer; then only the cells' `"text"` values are kept, so no JSON
+    reaches the page text.
+    """
+    text = text or ""
+    if text.lstrip().startswith(("[", "{")) and '"text"' in text:
+        values = []
+        for match in _JSON_TEXT.finditer(text):
+            try:
+                values.append(json.loads(match.group(1)))
+            except ValueError:
+                continue
+        text = "\n\n".join(values)
+    return base.plain(_markdown_lines("\n".join(_html_lines(text))))
 
 
 def add_arguments(parser: argparse.ArgumentParser) -> None:

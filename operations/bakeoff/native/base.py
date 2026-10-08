@@ -26,6 +26,7 @@ import importlib.metadata
 import importlib.util
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -296,7 +297,13 @@ def install(arm: Arm, venv_dir: Path) -> int:
     recipe = VENVS / arm.venv
     if not (recipe / "uv.lock").is_file():
         raise Refusal(f"no uv.lock beside {recipe / 'pyproject.toml'}; run `uv lock` there first")
-    command = ["uv", "sync", "--locked", "--project", str(recipe)]
+    uv = shutil.which("uv")
+    if uv is None:
+        raise Refusal("`uv` is not on PATH; install uv 0.12.1 (the recipe's required-version)")
+    # uv reads a relative UV_PROJECT_ENVIRONMENT against the recipe folder, not the working
+    # directory: a relative --venv-dir would land inside the repository and miss the checkout.
+    venv_dir = venv_dir.resolve()
+    command = [uv, "sync", "--locked", "--project", str(recipe)]
     env = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(venv_dir)}
     print(" ".join(command), f"(UV_PROJECT_ENVIRONMENT={venv_dir})", flush=True)
     code = subprocess.run(command, env=env, check=False).returncode

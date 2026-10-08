@@ -25,11 +25,11 @@ The runner is `python run_churro_ocr.py --engine churro --image-dir DIR --output
 
 ```
 vllm serve <snapshot> --host 127.0.0.1 --port 8193 --gpu-memory-utilization 0.9 \
-  --data-parallel-size 1 --trust-remote-code --tensor-parallel-size 1 \
+  --data-parallel-size 1 --tensor-parallel-size 1 \
   --max-model-len 20000 --served-model-name churro
 ```
 
-(`--max-model-len 20000` is the `churro` row's `max_completion_tokens`, which `maybe_start_vllm_server_for_engine` passes as the context length. `--trust-remote-code` is the vendor's flag; the snapshot has no Python files, so it runs nothing.) Requests go through `witness_run.post` rather than LiteLLM: the body LiteLLM sends to an OpenAI-compatible server is the same three fields, and LiteLLM would add a disk cache and fetch a model price list from the internet at start-up.
+(`--max-model-len 20000` is the `churro` row's `max_completion_tokens`, which `maybe_start_vllm_server_for_engine` passes as the context length. The vendor also passes `--trust_remote_code`; the snapshot has no Python files, so it runs nothing there, and the arm leaves it out so that only dots.mocr ever runs code from a snapshot.) Requests go through `witness_run.post` rather than LiteLLM: the body LiteLLM sends to an OpenAI-compatible server is the same three fields, and LiteLLM would add a disk cache and fetch a model price list from the internet at start-up.
 
 ## Prompt
 
@@ -49,7 +49,7 @@ User turn: the image alone. (The paper harness class `ocr/systems/finetuned_ocr.
 
 - Sent: `temperature` 0.6 (`MODEL_MAP["churro"]["static_params"]`); no `max_tokens`, so vLLM answers to the end of the 20,000-token context.
 - Not sent, so the server's generation config applies (vLLM's default `--generation-config auto` reads the snapshot's `generation_config.json`): `repetition_penalty` 1.05; top_p and top_k at vLLM defaults.
-- Retries: LiteLLM's `num_retries=1` for a vLLM model, so one more try after a failed request; a timeout of 600 s.
+- Retries: LiteLLM's `num_retries=1` for a vLLM model, so one more try after a failed request. LiteLLM's timeout is 600 s (`utils/llm/config.py::DEFAULT_TIMEOUT`); the arm uses `--request-timeout`, default 1,800 s like the other bake-off arms, so a slow looping page under load is not cut off by the harness. `--request-timeout 600` gives the runner's limit.
 - Concurrency 64; vLLM's default sequence limit.
 
 ## Output and normalisation
@@ -81,6 +81,8 @@ User turn: the image alone. (The paper harness class `ocr/systems/finetuned_ocr.
 | Sampling | temperature 1e-6 (raised to 0.01 by vLLM), repetition 1.05, top_k 50, top_p 1.0 (`config/decoding.toml`) | temperature 0.6, repetition 1.05 from the snapshot, top_k/top_p vLLM defaults |
 | Answer bound | 25,000 tokens in a 32,768 context | none sent, 20,000 context |
 | Retries | none | one, on a failed request |
+| Timeout | 1,800 s | 1,800 s (`--request-timeout`; the runner's LiteLLM uses 600 s) |
+| Remote code | not trusted | not trusted (the runner passes the flag; the snapshot has no code) |
 | Server | sealed row: `--generation-config vllm`, pixel bounds sent, prefix caching on, 32 sequences, 0.92 memory | runner's flags: snapshot generation config, snapshot pixel bounds, vLLM defaults otherwise, 0.9 memory |
 | Post-processing | `common/churro_document.py` reader | the repository's own `extract_actual_text_from_xml` |
 

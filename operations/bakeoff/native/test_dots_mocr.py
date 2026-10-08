@@ -161,3 +161,11 @@ def test_cells_lines_reads_the_layout_answer_in_order():
         "x^{2}",
         "12",
     ]
+
+
+def test_salvaged_text_splits_table_rows_and_never_keeps_json():
+    salvaged = "Le dix mai\n\n<table><tr><td>Nom</td><td>Age</td></tr><tr><td>Luc</td></tr></table>"
+    assert D.salvaged_lines(salvaged).splitlines() == ["Le dix mai", "Nom Age", "Luc"]
+    # The vendor's cleaner failed and handed back the raw, truncated answer.
+    raw = '[{"bbox": [1, 2, 3, 4], "category": "Text", "text": "est n\\u00e9 **Jean**"}, {"bb'
+    assert D.salvaged_lines(raw) == "est n\u00e9 Jean"

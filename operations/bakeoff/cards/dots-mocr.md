@@ -11,7 +11,7 @@
 
 ## Install
 
-- Own venv for the client: `operations/bakeoff/native/venvs/dots-mocr/pyproject.toml` with `uv.lock` (produced here, linux x86_64): `pymupdf==1.26.4`, `cairosvg==2.8.2`, `openai==2.2.0`, `requests==2.32.5`, `pydantic==2.12.3`, `numpy==2.3.4`, `tqdm==4.67.1`, `pillow==12.3.0`, 40 packages in all: what `import dots_mocr` needs on its vLLM path.
+- Own venv for the client: `operations/bakeoff/native/venvs/dots-mocr/pyproject.toml` with `uv.lock` (produced here, linux x86_64): `pymupdf==1.26.4`, `cairosvg==2.8.2`, `openai==2.2.0`, `requests==2.32.5`, `pydantic==2.12.3`, `numpy==2.3.4`, `tqdm==4.67.1`, `pillow==12.3.0`, 39 packages in the lock: what `import dots_mocr` needs on its vLLM path.
 - The vendor package is not built: its `setup.py` (`find_packages()`) leaves out `dots_mocr/model`, which has no `__init__.py`, so a wheel cannot import it. The vendor's own instruction is `pip install -e .` in a clone; `install` does the equivalent: `uv sync --locked`, then a checkout of the pinned commit into `<venv>/src/dots-mocr` and a `.pth` file pointing at it.
 - Vendor's own pins (`requirements.txt`): `gradio, PyMuPDF, openai, qwen_vl_utils, transformers==4.57.6, huggingface_hub, modelscope, accelerate, cairosvg` (flash-attn commented out). The transformers, gradio, modelscope and accelerate pins serve the demos and the transformers path, not this one.
 - The vLLM server runs from the project pod venv (vLLM 0.30.0, transformers 5.14.1); the vendor names vLLM 0.11.0 or later.
@@ -73,7 +73,7 @@ Please output the layout information from the PDF image, including each layout e
 - Raw: a JSON list of cells `{"bbox": [x1, y1, x2, y2], "category": …, "text": …}` in reading order (bbox in the sent image's pixels). Cached as `raw_response`, `answer`, and the vendor's `cells` (bboxes mapped back to the page by `post_process_cells`).
 - The vendor reads it with `post_process_output`: `json.loads` and bbox mapping; if that fails (a loop cut at the token bound), its `OutputCleaner` salvages the cells it can and joins their texts with blank lines (`json_salvaged: true`).
 - The vendor's text output is `layoutjson2md`: cell texts in order joined by blank lines, Picture as an embedded image, Formula wrapped in `$$`, headers and footers kept in `.md` and dropped in `_nohf.md`.
-- Our rule (`dots_mocr.cells_lines`), on the vendor's cells, in their order: Picture skipped; Table HTML, each row a line with its cells joined by a space; Formula LaTeX kept as written without `$$`; every other category read as Markdown with heading marks, bullets, `**`/`__`/`~~` and backslash escapes removed and its own line breaks kept; page headers and footers kept (the `.md`, not the `_nohf.md`). A salvaged answer is read the same way as Markdown.
+- Our rule (`dots_mocr.cells_lines`), on the vendor's cells, in their order: Picture skipped; Table HTML, each row a line with its cells joined by a space; Formula LaTeX kept as written without `$$`; every other category read as Markdown with heading marks, bullets, `**`/`__`/`~~` and backslash escapes removed and its own line breaks kept; page headers and footers kept (the `.md`, not the `_nohf.md`). A salvaged answer is read the same way (table rows split, then Markdown); if the vendor's cleaner itself fails it returns the raw answer, and then only the cells' `"text"` values are kept, so no JSON reaches `text`.
 
 ## Resources
 

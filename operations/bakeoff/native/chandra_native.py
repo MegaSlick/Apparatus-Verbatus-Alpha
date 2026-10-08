@@ -122,6 +122,12 @@ def client_settings(vendor: Any, args: argparse.Namespace) -> dict:
     }
 
 
+def repeats(vendor: Any, raw: str) -> bool:
+    """The repeat test of `generate_vllm::_should_retry`: at the end, or 50 characters before."""
+    detect = vendor.detect_repeat_token
+    return bool(detect(raw) or (len(raw) > 50 and detect(raw, cut_from_end=50)))
+
+
 def read_page(vendor: Any, args: argparse.Namespace, page: Path, url: str):
     tokens, retries = _bounds(vendor, args)
     started = time.monotonic()
@@ -153,7 +159,7 @@ def read_page(vendor: Any, args: argparse.Namespace, page: Path, url: str):
     extra = {
         "finish_reason_basis": "inferred from token_count; the package does not return it",
         "token_count": result.token_count,
-        "final_answer_repeats": bool(vendor.detect_repeat_token(result.raw or "")),
+        "final_answer_repeats": repeats(vendor, result.raw or ""),
         "markdown": result.markdown,
         "markdown_with_headers_footers": vendor.parse_markdown(
             result.raw or "", include_headers_footers=True
