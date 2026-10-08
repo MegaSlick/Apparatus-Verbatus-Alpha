@@ -199,11 +199,7 @@ def test_every_shipped_perlector_row_admits_a_dense_whole_page_reading():
                 "act_entries": 20,
                 "surya_lines": 120,
             },
-            generation={
-                "page_max_tokens": 12288,
-                "answer_headroom_bp": 20000,
-                "answer_floor_tokens": 4096,
-            },
+            generation={"page_max_tokens": 12288},
         )
         assert admitted["capacity"]["fits"] is True
         assert admitted["capacity"]["headroom"] >= 0
