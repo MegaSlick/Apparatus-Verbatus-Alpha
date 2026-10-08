@@ -158,6 +158,11 @@ artifacts except reading their bytes (`verify_snapshot_structure`). At pod boot
 chairs whose cache copies will hash those bytes against the same pinned manifest,
 and the artifacts it fetched and measured in the same call; its receipt's
 `store_bytes` records where each present artifact's bytes were hashed.
+`materialize_real_roster(..., roles=...)` limits fetching and verification to the
+artifacts those chairs need (`artifacts_for_roles`); `None` means every chair. Its
+receipt then reports `selection_complete` for those artifacts, lists the present
+artifacts it left unchecked under `store_bytes.not_verified`, and reports
+`real_roster_complete` only when nothing was left unchecked.
 
 When the roster gains an artifact, a store written before it is upgraded rather
 than refused: `materialize_real_roster` publishes a new record version that adds

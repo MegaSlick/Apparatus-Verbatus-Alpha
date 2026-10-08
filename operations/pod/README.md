@@ -214,6 +214,11 @@ correct immediate close.
   copied and then re-read; the receipt records the worker count. Within one process a
   verified, unchanged cache is not hashed again, so PREFLIGHT's smoke start reuses the
   verification its cache check just made; each stage process still verifies from the bytes.
+  A pod given a stage selection (`pod_run`'s `preflight_roles`) prepares only the chairs
+  those stages use: MODEL_STORE fetches and checks only their artifacts, CHAIR_CACHE plans
+  and places only them (others read `not-selected`), and the disk and environment checks
+  count only them. So the small card of a two-card split never reads the Perlector's model
+  and the big card never places Surya. A bare `bootstrap_main` run prepares every chair.
   An adapter base remains available while its adapter is filled. The at-most-one same-pin
   re-fetch is not wired (04-8); a mismatch is red and names the chair.
 - **Transfer is optional.** No submission manifest on the volume is a vacuous success; a
@@ -1068,6 +1073,10 @@ copies and that this boot did not fetch: an artifact fetched in the same call wa
 as it was promoted, and a chair's copy into the cache hashes each byte against the same
 pinned manifest. Its receipt's `store_bytes` names which artifacts were hashed at boot,
 at fetch, and at copy, with the statement "bytes verified at copy, for roles ...".
+With a stage selection the receipt's `selection_complete` says whether the selected
+chairs' artifacts are present, which is what the step requires; `real_roster_complete` is
+true only when every roster artifact was present and checked by this boot, and
+`store_bytes.not_verified` names the present artifacts outside the selection.
 
 ### What the image must carry
 
