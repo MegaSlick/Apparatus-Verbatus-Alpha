@@ -62,6 +62,8 @@ def configured(**overrides: object) -> SpendPolicy:
         "hard_max_seconds": 86_400,
         "soft_max_cost_usd": Decimal("1000.00"),
         "hard_max_cost_usd": Decimal("1000.00"),
+        "pod_budget": "on",
+        "ladder_delete": "off",
     }
     fields.update(overrides)
     return SpendPolicy(**fields)  # type: ignore[arg-type]

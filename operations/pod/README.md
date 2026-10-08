@@ -372,22 +372,24 @@ pod.
   ([the hand route](#the-hand-route-a-proof-run-started-by-hand)). After the final report
   of any run past a green bootstrap, whatever its outcome, it returns instead of holding
   and moves this pod's guard deadline (`<volume>/.pod_guard/deadline-$RUNPOD_POD_ID`) to
-  now, so the guard deletes the pod on its next one-minute tick instead of after 30 idle
-  minutes. The pod id is read only from the container's first process
+  now, so the guard deletes the pod on its next one-minute tick instead of leaving it to
+  the idle ladder. The pod id is read only from the container's first process
   (`/proc/1/environ`), never from the shell: every pod's deadline sits on the shared
   volume, and an id exported by hand could name another live pod, whose guard would then
   delete it mid-stage. Before the bootstrap, `--no-hold` is refused when the first
   process names no pod id (then no guard armed for this pod, and there is nothing to
   release), when the shell exports a different id, or when that pod's
   `heartbeat-<pod id>` is missing or older than five minutes. Run without `--no-hold`
-  then; the guard's idle deletion still applies. Before the deadline it writes
-  `released-<pod id>` (run id and outcome), which the guard quotes in its ping. It only
-  moves a deadline file the guard already wrote; with none, `guard_release.released` is
-  false and says why. `released` means the deadline was written; `guard_alive` says
+  then; the guard's idle ladder still applies. Before the deadline it writes
+  `released-<pod id>` (run id and outcome), which the guard quotes in its ping. A guard
+  started with no deadline (the budget off) honours one written later, so when there is
+  no deadline file and the guard is alive the release writes one; with no file and no
+  live guard, or a file it cannot read, `guard_release.released` is false and says why.
+  It never moves a deadline later. `released` means the deadline was written; `guard_alive` says
   whether the guard's heartbeat was still fresh at the release (a guard can die during the
   run), and when it was not, the detail says to delete the pod by hand. The report records the flag
   (`plan.no_hold`) and the release (`guard_release`). A refusal or a red bootstrap leaves
-  the guard alone, so the pod stays through the idle window for a fix and a rerun. It is
+  the guard alone, so the pod stays up for a fix and a rerun. It is
   refused under a launch token: the pod timer reads the early exit as `completed-early`.
 
 **Without `--no-hold`, it holds only for a finished full run.** A selection ending before Armarium records
@@ -400,7 +402,9 @@ it reached a sealed export, holds toward the hard deadline (paid idle time); an 
 an earlier pass left in the run tree never counts. It holds
 because the pod timer
 treats an early exit as non-green. The hold does no work and touches no keep-alive, so the
-pod guard deletes the pod once its idle window passes and the hold ends there;
+pod guard's idle ladder warns, and with `ladder_delete = "on"` deletes the pod after two
+idle hours, which ends the hold. A run with no hard deadline
+(`VERBATUS_HARD_DEADLINE=none`) cannot hold, so it is refused without `--no-hold`;
 `held_to_hard_deadline` records the choice to hold, and the last tick in the `-hold.json`
 record below says when the hold ended. After
 `halted`, `failed` or a failed start it returns at once and lets the timer close the pod:
@@ -560,50 +564,92 @@ on container-local disk (`operations/serving/surya/README.md`, "On the pod").
 refused unless the preflight report places Surya as a subprocess, verified its cache and
 carries its golden-page run in `subprocess_receipts`.
 
-## The pod guard: every pod deletes itself when idle or out of time
+## The pod guard: every pod watches itself
 
-`pod_guard.sh` runs on the pod and deletes that same pod when its approved time runs out
-or when it has done no work for 30 minutes: no GPU use (under 5 % at every one-minute
-sample; a GPU that cannot report counts as busy), no container CPU use (under half a core,
-from the container's own cgroup, not the shared host's load), no download (under
-256 KB/s received), and no touch of the pod's keep-alive file. `pod_run` touches that
-file on every liveness tick while the orchestrator shows progress: new output in its
-transcript, or anything written in its run tree outside the `serving-logs` directories.
-CPU time is not progress, because an idle model server in the run's process tree uses a
-little on every tick, and its engine log keeps growing too. A working run never depends
-on the counters. A live run that shows no progress for 15 minutes (`RUN_STALL_SECONDS`, not yet
-measured against a real stage) stops touching it and sends one notice ("run on <pod>
-shows no progress since <time>; the idle guard now decides"); the guard's own counters
-then decide, and touching resumes if the run moves again. An unreadable CPU counter never deletes a pod. If it cannot be
-read from the start, or stays unreadable, the guard counts the pod as busy, keeps
-trying the read every minute, and sends one notice ("CPU idle detection unavailable
-on <pod>; held until its deadline <time>"), and one more if the read comes back, after
-which idle counting resumes. A counter that keeps dropping out and coming back reaches the
-phone at most once an hour; every episode is still in `guard.log`. A single missed read
-between good ones is skipped: it neither adds idle time nor resets it, and the next good
-read is judged over both ticks. The deadline deletes the pod either way.
-A deadline more than a week
-out is taken as a typo and ignored. It needs nothing from the laptop or a Claude session, so a crashed
-session, a closed app or a sleeping Mac cannot leave a pod billing. It uses RunPod's
-documented self-stop route: every pod has `runpodctl` and a pod-scoped `RUNPOD_API_KEY`.
-It keeps asking until the pod is gone, falls back to stopping it, and the network volume
-survives either way. The deadline is the guarantee; the idle delete saves money sooner.
+`pod_guard.sh` runs on the pod and watches that same pod, so a crashed session, a closed
+app or a sleeping Mac cannot leave a pod billing unnoticed. It needs nothing from the
+laptop or a Claude session. What it may delete is the lead's choice, in
+`config/spend.toml`, and both switches are committed off:
+
+- **`pod_budget`.** Off, the pod has no deadline unless the lead starts it with a number
+  of hours, and no backstop. On, the deadline sits at the soft maximum and a backstop
+  deletes the pod at the hard maximum (below).
+- **`ladder_delete`.** Whether the idle ladder's last step deletes the pod. Off, the guard
+  only warns.
+
+**The deadline.** When there is one, the guard deletes the pod when it passes, whatever
+the run is doing. A deadline more than a week out is taken as a typo and ignored; the
+phone hears once of each value ignored. A guard started without a deadline (`off`)
+honours one written to the deadline file later, by the lead or by `pod_run --no-hold`.
+A value already in the file when it starts is left from an earlier start of the same pod
+and is not honoured; the guard says so in its log and on the phone.
+
+**The idle ladder.** The pod is idle while it does no work: no GPU use (under 5 % at
+every one-minute sample; a GPU that cannot report counts as busy), no container CPU use
+(under half a core, from the container's own cgroup, not the shared host's load), no
+download (under 256 KB/s received), and no touch of the pod's keep-alive file. As idle
+time grows the guard:
+
+| Idle for | Step |
+| --- | --- |
+| 15 min | one warning notice |
+| 30 min | an urgent notice (ntfy `Priority: urgent`), repeated every 10 min |
+| 1 h | copies the paths named in `backup-<pod id>` to `/workspace/private/runs-guard-backup/<name>-<epoch>/` and checks each copy with `diff -rq`; with no such file it logs "nothing to back up", and a listed path that is missing counts as a failed backup |
+| 2 h | deletes the pod, only with `ladder_delete = "on"` and only when the backup verified or there was nothing to back up; otherwise one more urgent notice says why it will not |
+
+Any work, or a touch of the keep-alive, starts the ladder over, with a "work resumed"
+notice if a warning had gone out. The latest step is in `alert-<pod id>` as one line,
+`<epoch> <step> <detail>`. The steps are `POD_GUARD_WARN_SECONDS`,
+`POD_GUARD_URGENT_SECONDS`, `POD_GUARD_URGENT_REPEAT`, `POD_GUARD_BACKUP_SECONDS` and
+`POD_GUARD_DELETE_SECONDS` in the guard's environment; `POD_GUARD_DELETE=on` is
+`ladder_delete`, which the start command passes in. Nothing writes `backup-<pod id>` yet,
+so today the backup step finds nothing to back up.
+
+`pod_run` touches the keep-alive file on every liveness tick while the orchestrator shows
+progress: new output in its transcript, or anything written in its run tree outside the
+`serving-logs` directories. CPU time is not progress, because an idle model server in the
+run's process tree uses a little on every tick, and its engine log keeps growing too. A
+live run that shows no progress for 15 minutes (`RUN_STALL_SECONDS`, not yet measured
+against a real stage) stops touching it and sends one notice ("run on <pod> shows no
+progress since <time>; the idle guard now decides"); the ladder then climbs on the
+counters, and touching resumes if the run moves again. An unreadable CPU counter never
+deletes a pod. If it cannot be read from the start, or stays unreadable, the guard counts
+the pod as busy, keeps trying the read every minute, and sends one notice ("CPU idle
+detection unavailable on <pod>; held until its deadline <time>", or "counted as busy, and
+no deadline is set"), and one more if the read comes back, after which idle counting
+resumes. A counter that keeps dropping out and coming back reaches the phone at most once
+an hour; every episode is still in `guard.log`. A single missed read between good ones is
+skipped: it neither adds idle time nor resets it, and the next good read is judged over
+both ticks.
+
+To delete, the guard uses RunPod's documented self-stop route: every pod has `runpodctl`
+and a pod-scoped `RUNPOD_API_KEY`. It keeps asking until the pod is gone, falls back to
+stopping it, and never deletes a network volume.
 
 Arm it at creation through the pod's start command, so it runs even if SSH never comes
-up. `pod_start_command.sh` prints that command: it fetches the guard from this public
-repository at a pinned commit, starts a backstop that deletes the pod an hour after its
-deadline, and in any case at the hard maximum, even if the guard never ran, and then
-hands over to the image's `/start.sh`. The hard maximum is the sealed
-`VERBATUS_HARD_MAX_SECONDS` when set, else `hard_max_seconds` in the checkout's
-`config/spend.toml`; it counts from when the command is printed, just before the create,
-so print a fresh command for every pod, on a laptop whose clock is set automatically.
-At container start the guard's window is cut to end two minutes inside the hard maximum,
-so the guard's orderly delete comes first and the backstop is the fallback. The command
-refuses `<hours>` past the hard maximum, and refuses outright when the hard maximum
-cannot be read:
+up. `pod_start_command.sh <hours|off> <sha>` prints that command: it fetches the guard
+from this public repository at a pinned commit (ten tries, 30 s apart), starts it, and
+then hands over to the image's `/start.sh`. It reads `pod_budget` from the checkout's
+`config/spend.toml`, or from `VERBATUS_POD_BUDGET` when that is set:
+
+- **Budget off, `off`:** no deadline file (one left by an earlier start of the pod is
+  removed) and no backstop.
+- **Budget off, `<hours>`:** a deadline `<hours>` from container start, and a backstop that
+  deletes the pod an hour after the deadline (the one the guard keeps on the volume, so
+  extensions count) even if the guard never ran. The hard maximum is not read.
+- **Budget on, `<hours>`:** as above, and the backstop also deletes the pod at the hard
+  maximum. The hard maximum is the sealed `VERBATUS_HARD_MAX_SECONDS` when set, else
+  `hard_max_seconds` in the checkout's `config/spend.toml`; it counts from when the
+  command is printed, just before the create, so print a fresh command for every pod, on
+  a laptop whose clock is set automatically. At container start the guard's window is cut
+  to end two minutes inside the hard maximum, so the guard's orderly delete comes first
+  and the backstop is the fallback. The command refuses `off`, `<hours>` past the hard
+  maximum, and refuses outright when the hard maximum cannot be read.
+
+It always refuses `<hours>` of zero, and a `pod_budget` or `ladder_delete` it cannot read:
 
 ```sh
-START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&
+START=$(sh operations/pod/pod_start_command.sh <hours|off> <sha>) &&
 runpodctl pod create ... --volume-mount-path /workspace/private --docker-args "$START"
 ```
 
@@ -611,30 +657,31 @@ The `&&` matters: the script exits 2 and prints nothing when it refuses, and an 
 `--docker-args "$(...)"` would let the create run anyway, with no guard.
 
 (`runpodctl create pod ... --args` in runpodctl releases before `pod create`.) `<hours>` is
-the approved window and `<sha>` a commit on `main` that carries the guard. The network
-volume must be mounted at `/workspace/private`, the one path the bootstrap and the data
-gate accept (`models.POD_VOLUME_MOUNT_PATH`). The start command exports
-`POD_GUARD_DIR=/workspace/private/.pod_guard` to the guard and reads it in the backstop,
-so the guard's deadline and log sit on the volume and survive the pod, even when the guard
-is fetched from an older commit.
+the approved window, or `off` for none, and `<sha>` a commit on `main` that carries the
+guard. The network volume must be mounted at `/workspace/private`, the one path the
+bootstrap and the data gate accept (`models.POD_VOLUME_MOUNT_PATH`). The start command
+exports `POD_GUARD_DIR=/workspace/private/.pod_guard` to the guard and reads it in the
+backstop, so the guard's deadline and log sit on the volume and survive the pod, even when
+the guard is fetched from an older commit.
 
-- **A long quiet wait that is still wanted** (no GPU, CPU or network use for half an
-  hour) touches `/workspace/private/.pod_guard/keepalive-<pod id>`.
-- **More time:** write the new deadline (epoch seconds) to a temporary file and move it
-  over `/workspace/private/.pod_guard/deadline-<pod id>`; the guard and the backstop both
-  read it. A deadline moved earlier ends the pod on the guard's next tick; that is what
-  `pod_run --no-hold` does.
-  A pod that was stopped and is started again keeps its old deadline, so write a new one
-  when the lead approves more time.
+- **A long quiet wait that is still wanted** (no GPU, CPU or network use) touches
+  `/workspace/private/.pod_guard/keepalive-<pod id>`, which starts the ladder over.
+- **A deadline, or more time:** write the deadline (epoch seconds) to a temporary file and
+  move it over `/workspace/private/.pod_guard/deadline-<pod id>`; the guard and the
+  backstop, when there is one, both read it. A deadline moved earlier ends the pod on the
+  guard's next tick; that is what `pod_run --no-hold` does. A pod that was stopped and is
+  started again with `<hours>` keeps its old deadline file, so write a new one when the
+  lead approves more time; started with `off`, the start command removes it.
 - **Records:** `/workspace/private/.pod_guard/guard.log`; with a topic in
-  `/workspace/private/.pod_guard/ntfy_topic` it pings when it deletes, fails to delete, or
-  has to stop the pod instead. Before `pod_run --no-hold` moves the deadline it writes
-  `released-<pod id>` there with the run id and its outcome, and the guard quotes it:
+  `/workspace/private/.pod_guard/ntfy_topic` it pings at each ladder step, for each
+  ignored deadline value, and when it deletes, fails to delete, or has to stop the pod
+  instead. Before `pod_run --no-hold` moves the deadline it writes `released-<pod id>`
+  there with the run id and its outcome, and the guard quotes it:
   `... requested deletion (approved time is up; pod_run reported: run <id> ended complete)`.
   The guard clears that file when it starts, so a restarted pod never quotes an old run.
   A ping without `pod_run reported` means the pod ended without `pod_run` finishing: the
-  window ran out or the run was lost mid-stage. Either way the run's own state is in
-  `pod-run-report-<run id>.json` on the volume.
+  window ran out, the ladder deleted an idle pod, or the run was lost mid-stage. Either
+  way the run's own state is in `pod-run-report-<run id>.json` on the volume.
 - **Heartbeat:** the guard touches `/workspace/private/.pod_guard/heartbeat-<pod id>` on
   every tick, so a reader can tell a running guard from a deadline file nobody watches.
 - **Arming the ping.** The topic is the bearer secret `operations/notify/README.md`
@@ -708,7 +755,7 @@ serves every chair in turn.
 From a checkout at `<sha>` on the laptop:
 
 ```sh
-START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&
+START=$(sh operations/pod/pod_start_command.sh <hours|off> <sha>) &&
 runpodctl pod create \
   --name verbatus-<run id> \
   --image runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404 \
@@ -722,10 +769,13 @@ runpodctl pod create \
   --docker-args "$START"
 ```
 
-`<hours>` is the approved window, at most the soft maximum in `config/spend.toml` (2 h in
-the lead's budget): the guard deletes the pod at that deadline whatever the run is doing,
-and an hour later, never past the hard maximum (3 h from creation), the backstop deletes
-it even if the guard never started.
+With the budget off (`pod_budget = "off"`, as committed), `off` starts the pod with no
+deadline: the guard only watches, the idle ladder warns, and someone deletes the pod by
+hand when the run is home (or `--no-hold` releases it). `<hours>` instead sets a deadline
+the guard deletes the pod at whatever the run is doing, with a backstop an hour later.
+With the budget on, `<hours>` is required and is the approved window, at most the soft
+maximum in `config/spend.toml` (2 h in the lead's budget), and the backstop also deletes
+the pod at the hard maximum (3 h from creation) even if the guard never started.
 
 The image must carry CUDA 13.0: on a Blackwell card FlashInfer compiles its sampling
 kernel at the first engine start and needs `nvcc` 12.9 or newer. A `cu1281` image fails
@@ -757,7 +807,7 @@ fields (`args` for the start command, `mounts.network` for the volume, `startSsh
 findmnt /workspace/private                  # the network volume, not a plain directory
 tail /workspace/private/.pod_guard/guard.log # "armed for pod <id>: deadline ..."
 echo "$RUNPOD_POD_ID"                       # must print the pod id; see below if empty
-cat /workspace/private/.pod_guard/deadline-$RUNPOD_POD_ID   # the guard's deadline, epoch seconds
+cat /workspace/private/.pod_guard/deadline-$RUNPOD_POD_ID   # the deadline, epoch seconds; none with `off`
 
 git clone https://github.com/MegaSlick/Apparatus-Verbatus-Alpha /opt/verbatus
 cd /opt/verbatus && git checkout --detach <sha>
@@ -765,25 +815,31 @@ bash operations/pod/prepare_runtime.sh
 UV_CACHE_DIR=/tmp/verbatus-uv-cache uv sync --frozen
 ```
 
-**No "armed for pod" line for this pod, or no deadline file: stop.** Only the backstop is
-watching, an hour after the window. Delete the pod now (`runpodctl pod delete <pod id>`),
+**No "armed for pod" line for this pod, or no deadline file when the pod was started
+with `<hours>`: stop.** At most the backstop is watching, an hour after the window, and
+with `off` nothing is. (Started with `off`, the line reads `deadline none (off)` and there
+is no deadline file.) Delete the pod now (`runpodctl pod delete <pod id>`),
 confirm it is gone, and find out why before renting again. If `RUNPOD_POD_ID` is empty in
 the SSH shell, take it from the container's first process, the same place the guard got it:
 `export RUNPOD_POD_ID=$(tr '\0' '\n' </proc/1/environ | sed -n 's/^RUNPOD_POD_ID=//p')`.
 Never type an id in by hand. `pod_run --no-hold` never trusts the shell's value (a
 different one is refused) and releases only the first process's pod; when that has none, or this pod's guard heartbeat is stale, it
-refuses before the bootstrap. Then launch without `--no-hold`: the guard's idle deletion
-still ends the pod.
+refuses before the bootstrap. Then launch without `--no-hold` (which needs a deadline):
+the guard's idle ladder still watches the pod.
 Arm the guard's completion ping now if wanted ("Arming the ping" above).
 
 Then launch detached, so a dropped SSH session or a sleeping laptop cannot kill it. The
-bootstrap requires a hard deadline; it is taken from the guard's own, and the launch line
-stops if the guard's deadline is missing:
+bootstrap's hard deadline is taken from the guard's own; a pod started with `off` has
+none, which is said as `VERBATUS_HARD_DEADLINE=none` and accepted only with `--no-hold`:
 
 ```sh
 V=/workspace/private RUN=<run id> R=/opt/verbatus
-GUARD_DEADLINE=$(cat $V/.pod_guard/deadline-$RUNPOD_POD_ID) && [ -n "$GUARD_DEADLINE" ] &&
-export VERBATUS_HARD_DEADLINE=$(date -u -d "@$(( GUARD_DEADLINE - 300 ))" +%Y-%m-%dT%H:%M:%SZ) &&
+GUARD_DEADLINE=$(cat $V/.pod_guard/deadline-$RUNPOD_POD_ID 2>/dev/null)
+if [ -n "$GUARD_DEADLINE" ]; then
+  VERBATUS_HARD_DEADLINE=$(date -u -d "@$(( GUARD_DEADLINE - 300 ))" +%Y-%m-%dT%H:%M:%SZ)
+else
+  VERBATUS_HARD_DEADLINE=none
+fi && export VERBATUS_HARD_DEADLINE &&
 cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   --report-path $V/pod-run-report-$RUN.json \
   --run-id $RUN \
@@ -820,10 +876,11 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
 - The file names carry the run id so a second run on the same volume cannot overwrite
   them. A gated Hugging Face model needs its token in the environment and
   `--keep-env HF_TOKEN` in the bootstrap half, never on the command line.
-- A refusal or a red bootstrap leaves the pod up until the guard's idle window (30
-  minutes): read the report, fix, and launch again.
-- **Nothing stops the run before the guard's deadline.** Under `--no-hold` the hard
-  deadline only satisfies the bootstrap. If the window runs out mid-run, the guard deletes
+- A refusal or a red bootstrap leaves the pod up: read the report, fix, and launch
+  again. The guard's ladder warns after 15 idle minutes, and deletes the pod after two
+  idle hours only with `ladder_delete = "on"`.
+- **Nothing stops the run before the guard's deadline, when there is one.** Under
+  `--no-hold` the hard deadline only satisfies the bootstrap. If the window runs out mid-run, the guard deletes
   the pod with the stage in flight: that stage's work is lost, the report still reads
   `running`, and the transcript keeps only its head. Size `<hours>` with margin, and when
   the lead approves more time, write the new deadline file before the old one passes.
@@ -839,8 +896,10 @@ tail -f $V/pod-run-$RUN.out              # the bootstrap's own output as well
 tail -f $V/.pod_guard/guard.log
 ```
 
-A long quiet wait that is still wanted (no GPU, CPU or network use for 30 minutes)
-touches the keep-alive file above, or the guard deletes the pod. Reads from the network
+A long quiet wait that is still wanted (no GPU, CPU or network use) touches the
+keep-alive file above, which starts the idle ladder over; otherwise the phone hears at
+15 and 30 minutes, and with `ladder_delete = "on"` the guard deletes the pod after two
+hours. Reads from the network
 volume may not show as network traffic inside the container, so a slow weight load at
 low CPU could look idle; how the guard reads such a phase is not yet observed. More time is the lead's
 decision and a new deadline file.
@@ -859,7 +918,8 @@ halted: every stage refuses to start while the cap is breached.
 ### When it ends, and how results come home
 
 With `--no-hold`, `pod_run` writes its final report, leaves the run's outcome for the
-guard's ping, then moves the guard's deadline to now; the guard deletes the pod within
+guard's ping, then moves the guard's deadline to now (or writes it, when the guard
+started with none); the guard deletes the pod within
 about a minute (and pings, if armed). `guard_release.guard_alive: false` in the report
 means the guard's heartbeat was stale: nothing is known to be acting on the deadline, so
 delete the pod by hand. Confirm it is

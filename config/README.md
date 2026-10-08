@@ -152,16 +152,26 @@ hourly price (`max_hourly_usd`) and for the estimated cost through the hard life
 (`max_estimated_metered_cost_usd`), the `hard_lifetime_seconds`, a bounded
 `billing_cutoff_margin_seconds`, the laptop heartbeat and the shutdown polling and
 deadline, an observed `account_balance_floor_usd` hard reserve and a higher
-`account_balance_alert_usd` notification threshold. It also sets a pod's default budget:
-`soft_max_seconds` and `soft_max_cost_usd`, `hard_max_seconds` and `hard_max_cost_usd`,
-fixed values in time from creation and in metered cost, whichever is reached first. The
-guard's deadline sits at the soft maximum, so the loader refuses a soft value above its
-hard one and a `hard_lifetime_seconds` or `max_estimated_metered_cost_usd` above the soft
-maximum. `pod_run` sends one `deadline-at-risk` notice ahead of time, when a stage's
-projected finish passes the deadline that ends the pod; going on past the soft maximum is
-an extension only the lead makes, and the hard maximum bounds it. The committed values are
-the lead's budget: `max_hourly_usd` $2.10, `max_estimated_metered_cost_usd` $5.00, a soft
-maximum of 2 h or $5.00 and a hard maximum of 3 h or $7.00. A paid action reads the available
+`account_balance_alert_usd` notification threshold. Two switches, each `"on"` or
+`"off"`, are the lead's: `pod_budget` and `ladder_delete`, both committed `"off"`.
+`pod_budget = "on"` arms a pod's budget: `soft_max_seconds` and `soft_max_cost_usd`,
+`hard_max_seconds` and `hard_max_cost_usd`, fixed values in time from creation and in
+metered cost, whichever is reached first. The guard's deadline then sits at the soft
+maximum, so the loader refuses a soft value above its hard one and a
+`hard_lifetime_seconds` or `max_estimated_metered_cost_usd` above the soft maximum.
+`pod_run` sends one `deadline-at-risk` notice ahead of time, when a stage's projected
+finish passes the deadline that ends the pod; going on past the soft maximum is an
+extension only the lead makes, and the hard maximum bounds it. With `pod_budget = "off"`
+the four maximums may stay in the file but bind nothing and are not required: a pod gets
+no guard deadline and no backstop unless the lead starts it with a number of hours, and
+`pod_run` reports "budget off (lead's choice)". `ladder_delete = "on"` lets the pod
+guard delete a pod that has shown no work for two hours, once its run tree is backed up
+on the volume; off, the guard's idle ladder only warns (`operations/pod/README.md`). The
+hourly, metered-cost, balance and lifetime ceilings govern every launch either way, and
+the lease route's pod timer stays bounded by `hard_lifetime_seconds`. The committed values
+are the lead's: `max_hourly_usd` $2.10, `max_estimated_metered_cost_usd` $5.00, and, for
+when the budget is on, a soft maximum of 2 h or $5.00 and a hard maximum of 3 h or $7.00.
+A paid action reads the available
 balance through the provider's explicitly configured source and refuses when that source
 is unavailable or the action would breach the reserve. The `$50.00` floor is a policy
 value, not a balance observation, until checked against RunPod before a live run. The loader refuses an unknown or missing key. The policy does not

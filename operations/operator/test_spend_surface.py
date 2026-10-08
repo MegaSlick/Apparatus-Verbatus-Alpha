@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from operations.pod.spend import SPEND_SCHEMA
+
 from . import cli
 from . import spend as spend_module
 from .errors import ErrorCode, OperatorError
@@ -16,7 +18,7 @@ def _policy(path: Path) -> Path:
     path.write_text(
         "\n".join(
             (
-                'schema = "pod-spend.v4"',
+                f'schema = "{SPEND_SCHEMA}"',
                 'state = "configured"',
                 'currency = "USD"',
                 'max_hourly_usd = "1.00"',
@@ -32,6 +34,8 @@ def _policy(path: Path) -> Path:
                 "hard_max_seconds = 21600",
                 'soft_max_cost_usd = "2.00"',
                 'hard_max_cost_usd = "3.00"',
+                'pod_budget = "on"',
+                'ladder_delete = "off"',
                 "",
             )
         ),
@@ -56,11 +60,27 @@ def test_spend_show_reads_the_policy_without_writing(tmp_path: Path) -> None:
     assert "lifetime ceiling" not in rendered
     assert "Soft maximum: 14400 seconds (4 h) and $2.00" in rendered
     assert "Hard maximum: 21600 seconds (6 h) and $3.00" in rendered
+    assert "idle ladder ends by deleting the pod: off" in rendered
+
+
+def test_spend_show_says_the_budget_is_off_rather_than_quoting_inert_maximums(
+    tmp_path: Path,
+) -> None:
+    policy = _policy(tmp_path / "reviewed-spend.toml")
+    policy.write_text(
+        policy.read_text(encoding="utf-8").replace('pod_budget = "on"', 'pod_budget = "off"'),
+        encoding="utf-8",
+    )
+
+    rendered = "\n".join(spend_module.show(policy))
+
+    assert "Pod budget: budget off (lead's choice)" in rendered
+    assert "Soft maximum" not in rendered and "Hard maximum" not in rendered
 
 
 def test_spend_refuses_to_display_unconfigured_policy_as_configured(tmp_path: Path) -> None:
     policy = tmp_path / "spend.toml"
-    policy.write_text('schema = "pod-spend.v4"\nstate = "unconfigured"\n', encoding="utf-8")
+    policy.write_text(f'schema = "{SPEND_SCHEMA}"\nstate = "unconfigured"\n', encoding="utf-8")
 
     with pytest.raises(OperatorError) as raised:
         spend_module.show(policy)
@@ -162,7 +182,7 @@ def test_a_policy_that_is_not_utf_8_refuses_by_name(tmp_path: Path) -> None:
     """The byte-oriented loader decodes UTF-8 itself and refuses bad bytes by name."""
 
     source = tmp_path / "spend.toml"
-    source.write_bytes(b'schema = "pod-spend.v4"\nstate = "\xff\xfe"\n')
+    source.write_bytes(f'schema = "{SPEND_SCHEMA}"\n'.encode() + b'state = "\xff\xfe"\n')
 
     with pytest.raises(OperatorError) as excinfo:
         spend_module.show(source)
