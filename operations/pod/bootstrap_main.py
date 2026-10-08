@@ -1068,6 +1068,19 @@ def _build_model_store(plan: Plan) -> ModelStoreBootstrapAction:
         plan.store_root,  # type: ignore[arg-type]
         HuggingFaceMaterializationFetcher.from_huggingface_hub(),
         _bundle_fetcher(),
+        hashed_at_copy=_cached_roles(plan),
+    )
+
+
+def _cached_roles(plan: Plan) -> tuple[str, ...]:
+    """The configured chairs CHAIR_CACHE and PREFLIGHT copy from the store into the
+    chair cache, each copy hashing the bytes against the roster's pinned manifest."""
+
+    if plan.repository is None or plan.models_config is None:
+        return ()
+    models = _checked_out_roster(plan)
+    return tuple(
+        sorted(role for role, chair in models.chairs.items() if isinstance(chair, ChairIdentity))
     )
 
 

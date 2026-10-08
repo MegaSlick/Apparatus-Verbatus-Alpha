@@ -149,6 +149,30 @@ def verify_snapshot(
     return _verified(identity, snapshot_root, manifest)
 
 
+def verify_snapshot_structure(
+    identity: ChairIdentity,
+    snapshot_root: str | Path,
+    manifest: DigestManifest,
+    *,
+    ignored_paths: Iterable[str] = (),
+) -> None:
+    """Every check of `verify_snapshot` except reading the bytes.
+
+    Missing and extra files, links, non-regular entries and sizes are refused as
+    there. For a store snapshot whose bytes are hashed against this same manifest
+    when they are copied to where they are used; it proves no byte's content.
+    """
+
+    _inspect_snapshot(
+        identity,
+        snapshot_root,
+        manifest,
+        ignored_paths=ignored_paths,
+        allow_missing=False,
+        hash_bytes=False,
+    )
+
+
 def inspect_snapshot_for_repair(
     identity: ChairIdentity,
     snapshot_root: str | Path,
@@ -184,6 +208,7 @@ def _inspect_snapshot(
     ignored_paths: Iterable[str],
     allow_missing: bool,
     copied: Mapping[str, str] | None = None,
+    hash_bytes: bool = True,
 ) -> tuple[str, ...]:
     """Inventory and verify a snapshot once, returning the pinned paths it lacks.
 
@@ -227,6 +252,8 @@ def _inspect_snapshot(
             )
         if copied and relative in copied:
             actual_sha = copied[relative]
+        elif not hash_bytes:
+            return None
         else:
             actual_sha = file_digest(path, identity.role, relative)
         if actual_sha != row.sha256:

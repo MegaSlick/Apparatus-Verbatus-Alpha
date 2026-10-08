@@ -1336,12 +1336,85 @@ def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_p
     calls = []
     real = model_store.verify_store
     monkeypatch.setattr(
-        model_store, "verify_store", lambda root: (calls.append(root), real(root))[1]
+        model_store,
+        "verify_store",
+        lambda root, **kwargs: (calls.append(root), real(root, **kwargs))[1],
     )
     receipt = materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
 
     assert len(calls) == 1
     assert {row["artifact"] for row in receipt["artifacts"]} == present
+
+
+def _hashed_artifacts(monkeypatch):
+    """Which store snapshots `verify_store` read byte for byte, by artifact."""
+    hashed: list[str] = []
+    real = model_store.verify_snapshot
+
+    def record(identity, snapshot, manifest, **kwargs):  # type: ignore[no-untyped-def]
+        hashed.append(identity.role)
+        return real(identity, snapshot, manifest, **kwargs)
+
+    monkeypatch.setattr(model_store, "verify_snapshot", record)
+    return hashed
+
+
+def test_a_boot_whose_copies_hash_the_bytes_checks_the_store_structure_only(tmp_path, monkeypatch):
+    fetcher = _FakeMaterializationFetcher()
+    materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
+    hashed = _hashed_artifacts(monkeypatch)
+
+    receipt = materialize_real_roster(
+        tmp_path,
+        fetcher,
+        _FakeBundleFetcher(),
+        hashed_at_copy=("perlector", "reconstructor", "attestator_1"),
+    )
+
+    assert sorted(hashed) == [
+        "churro-3B",
+        "dai-recordgold-atr",
+        "surya2-detection",
+        "yolov26-record-detection",
+    ]
+    assert receipt["real_roster_complete"] is True
+    assert receipt["store_bytes"]["hashed_at_copy"] == {
+        "artifacts": ["chandra-ocr-2", "qwen3.8-27B"],
+        "roles": ["attestator_1", "perlector", "reconstructor"],
+    }
+    assert receipt["store_bytes"]["hashed_at_fetch"] == []
+    assert receipt["store_bytes"]["statement"].startswith(
+        "bytes verified at copy, for roles attestator_1, perlector, reconstructor:"
+    )
+
+
+def test_structure_only_still_refuses_a_missing_or_resized_store_file(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
+    weights = tmp_path / entry["snapshot"] / "model.safetensors"
+    data = weights.read_bytes()
+    weights.write_bytes(data[:-2] + b"X\n")
+    verify_store(tmp_path, bytes_hashed_elsewhere=("qwen3.8-27B",))
+
+    with pytest.raises(DigestMismatchRefusal, match="model.safetensors"):
+        verify_store(tmp_path)
+    weights.write_bytes(data + b"longer")
+    with pytest.raises(DigestMismatchRefusal, match="model.safetensors: size"):
+        verify_store(tmp_path, bytes_hashed_elsewhere=("qwen3.8-27B",))
+    weights.unlink()
+    with pytest.raises(DigestMismatchRefusal, match="model.safetensors"):
+        verify_store(tmp_path, bytes_hashed_elsewhere=("qwen3.8-27B",))
+
+
+def test_artifacts_fetched_in_this_call_are_not_hashed_a_second_time(tmp_path, monkeypatch):
+    hashed = _hashed_artifacts(monkeypatch)
+
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
+
+    assert hashed == []
+    assert receipt["store_bytes"]["hashed_at_boot"] == []
+    assert len(receipt["store_bytes"]["hashed_at_fetch"]) == 6
+    assert "statement" not in receipt["store_bytes"]
 
 
 def test_materializer_receipt_digest_names_the_record_whole_store_verification_checked(
@@ -1354,8 +1427,8 @@ def test_materializer_receipt_digest_names_the_record_whole_store_verification_c
     verify = model_store.verify_store
     observed: dict[str, str] = {}
 
-    def verify_then_advance_active_record(root):  # type: ignore[no-untyped-def]
-        inventory = verify(root)
+    def verify_then_advance_active_record(root, **kwargs):  # type: ignore[no-untyped-def]
+        inventory = verify(root, **kwargs)
         observed["verified"] = inventory["download_record_sha256"]
         replacement = load_download_record(root)
         # Every artifact is present, so the valid change is the entries' order.

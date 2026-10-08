@@ -5065,8 +5065,13 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
 ) -> None:
     observed: dict[str, object] = {}
 
-    def materialize(root, fetcher, bundle_fetcher):  # type: ignore[no-untyped-def]
-        observed.update(root=root, fetcher=fetcher, bundle_fetcher=bundle_fetcher)
+    def materialize(root, fetcher, bundle_fetcher, *, hashed_at_copy):  # type: ignore[no-untyped-def]
+        observed.update(
+            root=root,
+            fetcher=fetcher,
+            bundle_fetcher=bundle_fetcher,
+            hashed_at_copy=hashed_at_copy,
+        )
         return {"artifacts": [], "complete": False}
 
     monkeypatch.setattr("operations.pod.bootstrap.materialize_real_roster", materialize)
@@ -5075,6 +5080,7 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
         tmp_path / "models",
         fetcher,  # type: ignore[arg-type]
         bundle_fetcher,  # type: ignore[arg-type]
+        hashed_at_copy=("perlector",),
     )
 
     assert action.materialize() == {"artifacts": [], "complete": False}
@@ -5082,6 +5088,7 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
         "root": tmp_path / "models",
         "fetcher": fetcher,
         "bundle_fetcher": bundle_fetcher,
+        "hashed_at_copy": ("perlector",),
     }
 
 

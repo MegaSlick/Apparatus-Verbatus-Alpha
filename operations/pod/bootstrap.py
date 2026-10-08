@@ -888,13 +888,23 @@ class ModelStoreBootstrapAction:
         store_root: str | Path,
         fetcher: MaterializationFetcher,
         bundle_fetcher: BundleFetcher,
+        *,
+        hashed_at_copy: tuple[str, ...] = (),
     ) -> None:
         self.store_root = Path(store_root)
         self.fetcher = fetcher
         self.bundle_fetcher = bundle_fetcher
+        # Roles whose store bytes CHAIR_CACHE or PREFLIGHT copy into the chair
+        # cache, hashing them against the same pinned manifest as they copy.
+        self.hashed_at_copy = hashed_at_copy
 
     def materialize(self) -> dict[str, object]:
-        return materialize_real_roster(self.store_root, self.fetcher, self.bundle_fetcher)
+        return materialize_real_roster(
+            self.store_root,
+            self.fetcher,
+            self.bundle_fetcher,
+            hashed_at_copy=self.hashed_at_copy,
+        )
 
 
 class SubprocessBootstrapActions:

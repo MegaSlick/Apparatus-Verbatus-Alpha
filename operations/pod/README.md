@@ -1061,7 +1061,13 @@ evidence and the materialized model store on the network volume. A store on the 
 written before the roster gained an artifact (the record detector, for one) is upgraded
 at boot: materialization adds each new artifact to its record as `pending-fetch` and
 fetches it (Surya's bundle included), provided every artifact the store already names still matches the roster;
-any other record is refused (`common/chairs/README.md`).
+any other record is refused (`common/chairs/README.md`). MODEL_STORE's final verification
+checks every present artifact's structure (manifest pin, licence, required and carried
+files, file list, sizes, links) but reads the bytes only of artifacts no configured chair
+copies and that this boot did not fetch: an artifact fetched in the same call was measured
+as it was promoted, and a chair's copy into the cache hashes each byte against the same
+pinned manifest. Its receipt's `store_bytes` names which artifacts were hashed at boot,
+at fetch, and at copy, with the statement "bytes verified at copy, for roles ...".
 
 ### What the image must carry
 

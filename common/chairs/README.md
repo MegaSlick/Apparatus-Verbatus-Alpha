@@ -152,6 +152,13 @@ than unrepresentable. A pending entry also refuses if its
 artifact-keyed snapshot or manifest exists, so replaying an older pending record
 cannot relabel acquired or lost bytes as “not yet fetched.”
 
+`verify_store(root, bytes_hashed_elsewhere=...)` runs every check on the named
+artifacts except reading their bytes (`verify_snapshot_structure`). At pod boot
+`materialize_real_roster(..., hashed_at_copy=roles)` passes the artifacts of the
+chairs whose cache copies will hash those bytes against the same pinned manifest,
+and the artifacts it fetched and measured in the same call; its receipt's
+`store_bytes` records where each present artifact's bytes were hashed.
+
 When the roster gains an artifact, a store written before it is upgraded rather
 than refused: `materialize_real_roster` publishes a new record version that adds
 each newly required artifact as `pending-fetch`, then fetches it. It does so

@@ -2179,6 +2179,28 @@ def test_the_disk_check_counts_each_local_bundle_chair_cache_copies(tmp_path: Pa
     assert bundles[target] == sum(row.size for row in manifest.rows) > 0
 
 
+def test_model_store_leaves_byte_hashing_to_the_copies_of_every_configured_chair(
+    tmp_path: Path,
+) -> None:
+    """MODEL_STORE checks the store's structure for each chair CHAIR_CACHE or
+    PREFLIGHT will copy, since those copies hash the same bytes against the same
+    pinned manifest; an absent chair is not copied, so it is hashed at boot."""
+    from common.chairs.config import load_models_toml
+    from common.chairs.models import ChairIdentity
+
+    from .bootstrap_main import _build_model_store, build_parser, resolve_plan
+
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    configured = sorted(
+        role
+        for role, chair in load_models_toml(ws.models_config).chairs.items()
+        if isinstance(chair, ChairIdentity)
+    )
+
+    assert _build_model_store(plan).hashed_at_copy == tuple(configured)
+
+
 def test_the_bundle_fetcher_s_environment_is_synced_while_the_store_lacks_a_bundle(
     tmp_path: Path,
 ) -> None:
