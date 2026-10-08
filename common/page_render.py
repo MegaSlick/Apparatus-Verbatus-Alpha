@@ -17,10 +17,33 @@ from common.contracts.errors import SchemaRefusal
 from common.exemplar_boundary import read_sealed_page
 from common.imaging import (
     crop_png,
+    decode_page,
     dimensions,
     encode_grayscale_png_deterministic,
     lanczos_source,
 )
+
+# Modes whose page `crop_png` writes back sample for sample at 8 bits with no
+# tRNS record, so decoding that full-page crop again gives the decoded page's
+# own pixels in the same mode; such a page is resized straight from its decode.
+_SAMPLE_EXACT_MODES: Final = frozenset({"L", "LA", "RGB", "RGBA"})
+
+
+def _display_page(page_bytes: bytes, width: int, height: int) -> Image.Image:
+    """The page as `crop_png` displays it at its full bounds, as a decoded image.
+
+    Shared with the decode cache, so it is only read, never changed.
+    """
+    page = decode_page(page_bytes)
+    if page.rows is not None:
+        return Image.frombytes("L", (page.width, page.height), b"".join(page.rows))
+    image = page.image
+    if image.mode in _SAMPLE_EXACT_MODES and "transparency" not in image.info:
+        return image
+    display = crop_png(page_bytes, {"x": 0, "y": 0, "w": width, "h": height})
+    with Image.open(BytesIO(display)) as shown:
+        shown.load()
+    return shown
 
 
 def render_size(size: tuple[int, int], maximum_edge: int) -> tuple[int, int]:
@@ -49,37 +72,35 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
     recorded as `identity` rather than silently resampled to itself.
     """
     width, height = dimensions(page_bytes)
-    display = crop_png(page_bytes, {"x": 0, "y": 0, "w": width, "h": height})
-    with Image.open(BytesIO(display)) as image:
-        image.load()
-        target = render_size((image.width, image.height), maximum_edge)
-        if target == (image.width, image.height):
-            rendered = image.copy()
-            resampler = "identity"
-        else:
-            rendered = lanczos_source(image).resize(target, resample=Image.Resampling.LANCZOS)
-            resampler = "pillow-lanczos"
-        # The project's own deterministic encoder, never Pillow's: Pillow's
-        # wheels bundle their own zlib, so `rendered.save(...)` produces
-        # different bytes on Linux than on macOS, and a run-time blob's bytes
-        # name its content-addressed path and every artifact digest downstream.
-        grayscale = rendered.convert("L")
-        samples = grayscale.tobytes()
-        deterministic = encode_grayscale_png_deterministic(
-            grayscale.width,
-            grayscale.height,
-            [
-                bytearray(samples[row * grayscale.width : (row + 1) * grayscale.width])
-                for row in range(grayscale.height)
-            ],
-        )
-        return deterministic, {
-            "operation": "downscale-for-page-context",
-            "source_dimensions": {"w": width, "h": height},
-            "target_dimensions": {"w": rendered.width, "h": rendered.height},
-            "maximum_edge": maximum_edge,
-            "resampler": resampler,
-        }
+    image = _display_page(page_bytes, width, height)
+    target = render_size((image.width, image.height), maximum_edge)
+    if target == (image.width, image.height):
+        rendered = image.copy()
+        resampler = "identity"
+    else:
+        rendered = lanczos_source(image).resize(target, resample=Image.Resampling.LANCZOS)
+        resampler = "pillow-lanczos"
+    # The project's own deterministic encoder, never Pillow's: Pillow's
+    # wheels bundle their own zlib, so `rendered.save(...)` produces
+    # different bytes on Linux than on macOS, and a run-time blob's bytes
+    # name its content-addressed path and every artifact digest downstream.
+    grayscale = rendered.convert("L")
+    samples = grayscale.tobytes()
+    deterministic = encode_grayscale_png_deterministic(
+        grayscale.width,
+        grayscale.height,
+        [
+            bytearray(samples[row * grayscale.width : (row + 1) * grayscale.width])
+            for row in range(grayscale.height)
+        ],
+    )
+    return deterministic, {
+        "operation": "downscale-for-page-context",
+        "source_dimensions": {"w": width, "h": height},
+        "target_dimensions": {"w": rendered.width, "h": rendered.height},
+        "maximum_edge": maximum_edge,
+        "resampler": resampler,
+    }
 
 
 # Why a page render has the size it has: the page's ink made legible, or the

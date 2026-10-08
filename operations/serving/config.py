@@ -31,6 +31,12 @@ skeleton's stand-in; and ``unsupported`` keeps a configured real chair covered
 without inventing launch flags for an engine this package does not implement.
 Every kind but ``vllm`` carries no vLLM flags and must refuse by its actual cause
 before runtime checks.
+
+A ``vllm`` row may name ``shares_service_with``: another chair whose service,
+already running at the same tier, this chair may take over instead of starting
+its own (the reconstructor and the Perlector serve one checkpoint). The pair
+must have identical launch fields (``LAUNCH_FIELDS``), and only such a pair may
+share an endpoint and a served model id.
 """
 
 from __future__ import annotations
@@ -94,8 +100,8 @@ _SUBPROCESS_FIELDS = _PROFILE_COMMON | {
     "seconds_per_page",
     "required_packages",
 }
-# `workers` is the one optional subprocess field: left out, one runner process
-# reads every page.
+# `workers` is the one optional subprocess field: a ceiling on runner processes.
+# Left out, the CPUs the stage can use decide, `threads` each.
 _SUBPROCESS_OPTIONAL = {"workers"}
 # The one engine a subprocess row may name, the packages its row pins, and the
 # pinned environment it runs in. CPU only: no card is shared with a served chair,
@@ -137,7 +143,45 @@ _PROFILE_FIELDS = {
 # row omitting them still launches -- `request_capacity.row_image_geometry`
 # refuses by name instead of counting against a wrong default -- so a
 # catalogue not yet measured is incomplete rather than unloadable.
-_OPTIONAL_PROFILE_FIELDS = {"patch_size", "merge_size"}
+#
+# `weights_gib` and `kv_gib_per_seq` are optional too: a row's weights on the
+# card and the KV one full-length sequence holds, both GiB as decimal strings,
+# from the row's own notes. A row carrying both can be widened past its
+# `max_num_seqs` on a card with room (`operations/serving/capacity.py`); a row
+# without them is launched exactly as written.
+_OPTIONAL_PROFILE_FIELDS = {
+    "patch_size",
+    "merge_size",
+    "shares_service_with",
+    "weights_gib",
+    "kv_gib_per_seq",
+}
+# What shapes the running service, as distinct from how a caller waits for it or
+# times its requests. Two rows sharing one service must agree on every one: the
+# argv, the readiness probe the service was proven ready with, and the package
+# pins it runs under.
+LAUNCH_FIELDS = (
+    "tier",
+    "host",
+    "port",
+    "served_model_id",
+    "dtype",
+    "seed",
+    "required_packages",
+    "max_model_len",
+    "max_num_seqs",
+    "max_num_batched_tokens",
+    "gpu_memory_utilization",
+    "min_pixels",
+    "max_pixels",
+    "patch_size",
+    "merge_size",
+    "enable_prefix_caching",
+    "enforce_eager",
+    "trust_remote_code",
+    "generation_config",
+    "readiness_probe",
+)
 _PREFLIGHT_DIGEST_FIELD = "preflight_digest"
 _PREFLIGHT_IDENTITY_FIELD = "preflight_identity_digest"
 _PREFLIGHT_MARK_FIELDS = frozenset({"preflight_state", _PREFLIGHT_DIGEST_FIELD})
@@ -247,8 +291,10 @@ class SubprocessProfile:
     writes. ``required_packages`` are the versions that environment's lock
     installs, checked against the environment before a run.
 
-    The pages are split in page order into up to ``workers`` contiguous slices,
-    each read by its own runner process with ``threads`` torch threads, so the
+    The pages are split in page order into as many contiguous slices as the
+    usable CPUs give ``threads`` each (never more than ``workers``, where a row
+    sets that ceiling), each read by its own runner process with ``threads``
+    torch threads, so the
     slices never share a thread budget and each page is read exactly as one
     process over every page would read it. The version check and each process's
     model load get ``startup_timeout_seconds``, and a process over ``n`` pages
@@ -265,7 +311,7 @@ class SubprocessProfile:
     startup_timeout_seconds: int
     seconds_per_page: int
     required_packages: Mapping[str, str]
-    workers: int = 1
+    workers: int | None = None
     kind: str = "subprocess"
 
     def __post_init__(self) -> None:
@@ -320,7 +366,14 @@ class ServingProfile:
     # ``common/request_capacity.py`` refuses by name rather than defaulting.
     patch_size: int | None = None
     merge_size: int | None = None
+    # The row's capacity estimates in GiB, optional on the row; ``None`` means the
+    # row is never widened past its own ``max_num_seqs``.
+    weights_gib: Decimal | None = None
+    kv_gib_per_seq: Decimal | None = None
     kind: str = "vllm"
+    # The chair whose running service this row may take over (see the module
+    # docstring); ``None`` for a row that always starts its own.
+    shares_service_with: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -614,6 +667,8 @@ def _parse_profile(
         raise ServingConfigurationError("min_pixels cannot exceed max_pixels")
     patch_size = _optional_positive_int(raw, "patch_size")
     merge_size = _optional_positive_int(raw, "merge_size")
+    weights_gib = _optional_gib(raw, "weights_gib")
+    kv_gib_per_seq = _optional_gib(raw, "kv_gib_per_seq")
     enable_prefix_caching = _bool(raw["enable_prefix_caching"], "enable_prefix_caching")
     enforce_eager = _bool(raw["enforce_eager"], "enforce_eager")
     trust_remote_code = _bool(raw["trust_remote_code"], "trust_remote_code")
@@ -662,6 +717,15 @@ def _parse_profile(
             "poll_interval_seconds cannot exceed startup_timeout_seconds"
         )
     request_timeout = _positive_int(raw["request_timeout_seconds"], "request_timeout_seconds")
+    shares_service_with = (
+        _text(raw["shares_service_with"], "shares_service_with")
+        if "shares_service_with" in raw
+        else None
+    )
+    if shares_service_with == chair:
+        raise ServingConfigurationError(
+            f"serving profile {profile_name} names its own chair in shares_service_with"
+        )
     return ServingProfile(
         recipe=recipe,
         chair=chair,
@@ -680,6 +744,8 @@ def _parse_profile(
         max_pixels=max_pixels,
         patch_size=patch_size,
         merge_size=merge_size,
+        weights_gib=weights_gib,
+        kv_gib_per_seq=kv_gib_per_seq,
         enable_prefix_caching=enable_prefix_caching,
         enforce_eager=enforce_eager,
         trust_remote_code=trust_remote_code,
@@ -692,6 +758,7 @@ def _parse_profile(
         preflight_digest=preflight_digest,
         preflight_identity_digest=preflight_identity_digest,
         kind="vllm",
+        shares_service_with=shares_service_with,
     )
 
 
@@ -809,7 +876,7 @@ def _parse_subprocess_profile(raw: Mapping[str, Any]) -> SubprocessProfile:
         environment=environment,
         device=device,
         threads=_positive_int(raw["threads"], "threads"),
-        workers=_positive_int(raw.get("workers", 1), "workers"),
+        workers=_optional_positive_int(raw, "workers"),
         startup_timeout_seconds=_positive_int(
             raw["startup_timeout_seconds"], "startup_timeout_seconds"
         ),
@@ -821,6 +888,12 @@ def _parse_subprocess_profile(raw: Mapping[str, Any]) -> SubprocessProfile:
     )
 
 
+def launch_differences(first: ServingProfile, second: ServingProfile) -> list[str]:
+    """The launch fields on which two vLLM rows differ; empty when one service fits both."""
+
+    return [name for name in LAUNCH_FIELDS if getattr(first, name) != getattr(second, name)]
+
+
 def _validate_catalogue(
     profiles: tuple[
         "ServingProfile | InProcessProfile | SubprocessProfile | FixtureProfile | UnsupportedProfile",
@@ -830,15 +903,20 @@ def _validate_catalogue(
     keys = [profile.key for profile in profiles]
     if len(keys) != len(set(keys)):
         raise ServingConfigurationError("serving profiles duplicate a recipe/chair/tier key")
+    served = [profile for profile in profiles if isinstance(profile, ServingProfile)]
+    for profile in served:
+        if profile.shares_service_with is not None:
+            _validate_shared_service(profile, served)
     endpoint_chairs: dict[tuple[str, int], set[str]] = {}
     served_chairs: dict[str, set[str]] = {}
-    for profile in profiles:
+    for profile in served:
         # Only a vLLM row owns an endpoint and an API alias; applying these
         # launch-only collision rules to any other kind would invent serving claims.
-        if not isinstance(profile, ServingProfile):
-            continue
-        endpoint_chairs.setdefault((profile.host, profile.port), set()).add(profile.chair)
-        served_chairs.setdefault(profile.served_model_id, set()).add(profile.chair)
+        # A row sharing another chair's service counts as that chair, so only the
+        # checked pair may share an endpoint and an alias.
+        owner = profile.shares_service_with or profile.chair
+        endpoint_chairs.setdefault((profile.host, profile.port), set()).add(owner)
+        served_chairs.setdefault(profile.served_model_id, set()).add(owner)
     conflicts = sorted(endpoint for endpoint, chairs in endpoint_chairs.items() if len(chairs) > 1)
     if conflicts:
         raise ServingConfigurationError(
@@ -849,6 +927,35 @@ def _validate_catalogue(
         raise ServingConfigurationError(
             f"served model id(s) are assigned to more than one chair: {aliases}"
         )
+
+
+def _validate_shared_service(profile: ServingProfile, served: list[ServingProfile]) -> None:
+    """A sharing row needs its partner's vLLM row at its tier, with identical launch fields."""
+
+    name = f"recipe={profile.recipe!r}, chair={profile.chair!r}, tier={profile.tier!r}"
+    partners = [
+        other
+        for other in served
+        if other.chair == profile.shares_service_with and other.tier == profile.tier
+    ]
+    if not partners:
+        raise ServingConfigurationError(
+            f"serving profile {name} shares the service of chair "
+            f"{profile.shares_service_with!r}, which has no vllm row at that tier"
+        )
+    for partner in partners:
+        if partner.shares_service_with is not None:
+            raise ServingConfigurationError(
+                f"serving profile {name} shares the service of chair {partner.chair!r}, "
+                "which itself shares another chair's service; only one hop is allowed"
+            )
+        differing = launch_differences(profile, partner)
+        if differing:
+            raise ServingConfigurationError(
+                f"serving profile {name} shares the service of chair {partner.chair!r} "
+                f"(recipe={partner.recipe!r}), but their launch fields differ: {differing}; "
+                "one running service cannot be both"
+            )
 
 
 def verify_recipes_cover_chairs(
@@ -985,6 +1092,21 @@ def _optional_positive_int(raw: Mapping[str, Any], field: str) -> int | None:
     if field not in raw:
         return None
     return _positive_int(raw[field], field)
+
+
+def _optional_gib(raw: Mapping[str, Any], field: str) -> Decimal | None:
+    """A row's optional size in GiB, written as a decimal string so its digest is exact."""
+
+    if field not in raw:
+        return None
+    value = raw[field]
+    try:
+        parsed = Decimal(value) if isinstance(value, str) else None
+    except InvalidOperation:
+        parsed = None
+    if parsed is None or not parsed.is_finite() or parsed <= 0:
+        raise ServingConfigurationError(f"{field} must be a positive decimal string of GiB")
+    return parsed
 
 
 def _nonnegative_int(value: Any, field: str) -> int:

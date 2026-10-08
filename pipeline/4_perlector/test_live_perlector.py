@@ -36,6 +36,7 @@ from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.decoding import load_decoding_policy
+from common.in_order_window import HELD_PER_SLOT
 from common.page_path import distinct_refs
 from common.page_testimonia import validate_page_testimonium_record
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
@@ -429,6 +430,148 @@ def test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_
             extra_args=("--reading-deadline", deadline),
         )
     assert endpoints[0].requests == []
+
+
+def test_the_chair_starts_while_pages_are_prepared_and_is_up_before_the_first_send(
+    live_run, tmp_path, monkeypatch
+):
+    """The first page's preparation waits for the chair's start to begin: it can only
+    finish because the start runs beside it, not after it."""
+    page_run = perlector.page_run
+    began = threading.Event()
+    started_on: list[str] = []
+    start_chair = live_calls.start_chair
+
+    def start(run):
+        started_on.append(threading.current_thread().name)
+        began.set()
+        start_chair(run)
+
+    prepare = page_run._prepare
+
+    def prepared(state, ordinal, page_id):
+        assert began.wait(timeout=10), "the chair did not start while pages were prepared"
+        return prepare(state, ordinal, page_id)
+
+    monkeypatch.setattr(live_calls, "start_chair", start)
+    monkeypatch.setattr(page_run, "_prepare", prepared)
+    endpoint, exit_code = _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+    )
+    assert exit_code == 0
+    assert started_on == ["chair-start"]
+    assert endpoint.requests
+
+
+def test_a_chair_that_fails_to_start_in_the_background_stops_the_pass_on_the_main_thread(
+    live_run, tmp_path, monkeypatch
+):
+    def refuse(run):
+        raise ContractError("the engine would not load")
+
+    monkeypatch.setattr(live_calls, "start_chair", refuse)
+    with pytest.raises(ContractError, match="the engine would not load"):
+        _run_perlector(
+            live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+        )
+
+
+def test_a_live_pass_notes_its_launch_audit_beside_its_engine_logs(live_run, tmp_path, monkeypatch):
+    """The orchestrator finds the launch by this note, without reading the stage's blobs."""
+    from common.contracts.serving import SERVING_LAUNCH_AUDIT_SCHEMA
+    from common.runtree.store import LAUNCH_AUDIT_NOTE_PREFIX
+
+    _endpoint, exit_code = _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+    )
+    assert exit_code == 0
+    stage = live_run[0] / "r" / "4_perlector"
+    [note] = [
+        path
+        for path in (stage / SERVING_LOGS_DIR).iterdir()
+        if path.name.startswith(LAUNCH_AUDIT_NOTE_PREFIX)
+    ]
+    digest = note.name.removeprefix(LAUNCH_AUDIT_NOTE_PREFIX)
+    audit = json.loads((stage / "blobs" / "sha256" / digest).read_bytes())
+    assert audit["schema"] == SERVING_LAUNCH_AUDIT_SCHEMA and audit["chair"] == "perlector"
+
+
+def test_a_failed_preparation_keeps_its_error_and_notes_a_failed_start(monkeypatch):
+    def refuse(run):
+        raise RuntimeError("no card")
+
+    monkeypatch.setattr(live_calls, "start_chair", refuse)
+    starting = live_calls.BackgroundStart(SimpleNamespace())
+    starting._thread.join(timeout=10)
+    raised = ContractError("a page could not be prepared")
+    starting.note_failure(raised)
+    assert "no card" in raised.__notes__[0]
+    starting.join()  # the failure was reported once, on the error that propagated
+
+
+class _SlowClient:
+    """A chair whose start blocks until released, and which records its stop."""
+
+    def __init__(self, gate: threading.Event) -> None:
+        self.gate = gate
+        self.stopped = threading.Event()
+
+    def start(self, run) -> None:
+        run.service.client = self
+        assert self.gate.wait(timeout=10), "the test never released the start"
+
+    def __exit__(self, *exc) -> None:
+        self.stopped.set()
+
+
+def test_closing_during_a_slow_start_returns_at_once_and_the_start_stops_the_chair(
+    monkeypatch,
+):
+    gate = threading.Event()
+    client = _SlowClient(gate)
+    monkeypatch.setattr(live_calls, "start_chair", client.start)
+    run = SimpleNamespace(service=perlector.ResidentChair())
+    run.service.starting = starting = live_calls.BackgroundStart(run)
+    try:
+        began = time.monotonic()
+        run.service.close()
+        assert time.monotonic() - began < 1
+        assert not starting.done and not client.stopped.is_set()
+    finally:
+        gate.set()
+    starting._thread.join(timeout=10)
+    assert client.stopped.is_set() and run.service.client is None
+
+
+def test_an_interrupt_while_pages_are_prepared_does_not_wait_for_the_chair_to_load(
+    live_run, tmp_path, monkeypatch
+):
+    """The pass stops at once; the chair, still loading, is stopped by its start's thread
+    as soon as the load returns."""
+    gate = threading.Event()
+    client = _SlowClient(gate)
+
+    def interrupted(state, ordinal, page_id):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(live_calls, "start_chair", client.start)
+    monkeypatch.setattr(perlector.page_run, "_prepare", interrupted)
+    try:
+        began = time.monotonic()
+        with pytest.raises(KeyboardInterrupt):
+            _run_perlector(
+                live_run,
+                tmp_path,
+                monkeypatch,
+                ScriptedAnswer(content=READING, finish_reason="stop"),
+            )
+        assert time.monotonic() - began < 5
+        assert not client.stopped.is_set()
+    finally:
+        gate.set()
+    [thread] = [thread for thread in threading.enumerate() if thread.name == "chair-start"]
+    thread.join(timeout=10)
+    assert client.stopped.is_set()
 
 
 def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
@@ -845,6 +988,15 @@ def test_a_fixture_pass_reads_one_page_at_a_time():
     assert perlector._reading_concurrency(SimpleNamespace(), args, None, "fixture") == 1
 
 
+def test_a_live_pass_reads_as_wide_as_its_chair_is_launched(monkeypatch):
+    """The width is the launched row's `max_num_seqs`, which a capacity plan widens;
+    `--perlector-concurrency` only ever narrows it."""
+    monkeypatch.setattr(perlector, "launch_row", lambda *_args: SimpleNamespace(max_num_seqs=7))
+    for asked, width in ((None, 7), (3, 3), (10, 7)):
+        args = SimpleNamespace(perlector_concurrency=asked, placement_tier="generic-80gb-plus")
+        assert perlector._reading_concurrency(SimpleNamespace(), args, None, "live") == width
+
+
 def test_the_window_finishes_in_order_within_its_bound():
     lock = threading.Lock()
     in_flight = most = 0
@@ -866,26 +1018,91 @@ def test_the_window_finishes_in_order_within_its_bound():
     assert most == 3
 
 
-def test_the_window_never_holds_more_than_width_unfinished_jobs():
-    unfinished = most = 0
+def test_the_window_never_has_more_than_width_calls_in_flight():
+    lock = threading.Lock()
+    in_flight = most = 0
     order: list[str] = []
 
+    def call() -> None:
+        nonlocal in_flight, most
+        with lock:
+            in_flight += 1
+            most = max(most, in_flight)
+        time.sleep(0.02)
+        with lock:
+            in_flight -= 1
+
     def jobs():
-        nonlocal unfinished, most
         for index in range(6):
-            unfinished += 1
-            most = max(most, unfinished)
-            call = None if index % 3 == 0 else partial(time.sleep, 0.02)
-            yield call, partial(finish, str(index))
+            yield (None if index % 3 == 0 else call), partial(finish, str(index))
 
     def finish(name: str, _result) -> None:
-        nonlocal unfinished
-        unfinished -= 1
         order.append(name)
 
     live_calls.in_order_window(2, jobs())
     assert most == 2
     assert order == [str(index) for index in range(6)]
+
+
+def test_a_slow_head_does_not_stop_later_jobs_being_sent():
+    """Answered jobs wait behind the head; the free slots keep sending."""
+    later_sent = threading.Event()
+    sent: list[int] = []
+    finished: list[int] = []
+    drawn_on: set[str] = set()
+
+    def call(index: int) -> int:
+        sent.append(index)
+        if index == 0:
+            assert later_sent.wait(timeout=5)
+        elif index == 4:
+            later_sent.set()
+        return index
+
+    def jobs():
+        for index in range(6):
+            drawn_on.add(threading.current_thread().name)
+            yield partial(call, index), finished.append
+
+    live_calls.in_order_window(2, jobs())
+    # Job 0 answers only once job 4 has been sent: a blocked window would time out.
+    assert later_sent.is_set()
+    assert sorted(sent) == list(range(6))
+    assert finished == list(range(6))
+    assert drawn_on == {threading.main_thread().name}
+
+
+def test_answered_jobs_held_behind_a_slow_head_are_bounded():
+    width = 2
+    release = threading.Event()
+    drawn = unfinished = most = 0
+
+    def call(index: int) -> int:
+        if index == 0:
+            assert release.wait(timeout=5)
+        return index
+
+    def jobs():
+        nonlocal drawn, unfinished, most
+        for index in range(40):
+            drawn += 1
+            unfinished += 1
+            most = max(most, unfinished)
+            yield partial(call, index), finish
+
+    def finish(_result) -> None:
+        nonlocal unfinished
+        unfinished -= 1
+
+    timer = threading.Timer(0.3, release.set)
+    timer.start()
+    try:
+        live_calls.in_order_window(width, jobs())
+    finally:
+        timer.cancel()
+    assert drawn == 40
+    assert most <= width + HELD_PER_SLOT * width
+    assert most > width
 
 
 def test_a_call_that_raises_re_raises_at_its_place_after_every_sent_job_is_finished():

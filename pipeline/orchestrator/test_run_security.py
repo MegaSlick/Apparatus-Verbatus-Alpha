@@ -39,6 +39,7 @@ def _invoke_args(tmp_path: Path) -> argparse.Namespace:
         review_config="config/review.toml",
         pdf_target_dpi=None,
         placement_tier=None,
+        capacity_plan=None,
         corpus_register=None,
         witness_context="named",
         perlector_protocol_config="config/perlector_protocol.toml",
@@ -105,6 +106,39 @@ def test_invoke_forwards_perlector_concurrency_to_the_perlector_alone(tmp_path, 
         "--perlector-concurrency"
         in commands[1:][list(orchestrator.STAGE_PROGRAMS).index("perlector")]
     )
+
+
+def test_the_perlector_is_told_to_hand_off_only_when_the_coniector_runs_next(tmp_path, monkeypatch):
+    orchestrator = load_stage("orchestrator")
+    commands = []
+
+    def completed(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(orchestrator.subprocess, "run", completed)
+    args = _invoke_args(tmp_path)
+    perlector = orchestrator.STAGE_PROGRAMS["perlector"]
+    assert orchestrator.invoke(perlector, args, coniector_next=True) == 0
+    assert orchestrator.invoke(perlector, args) == 0
+    assert [command.count("--hand-off-to-coniector") for command in commands] == [1, 0]
+
+    asked: list[tuple[str, bool]] = []
+
+    def recorded(program, _args, *, coniector_next=False):
+        asked.append((program, coniector_next))
+        return orchestrator.EXIT_COMPLETE
+
+    monkeypatch.setattr(orchestrator, "invoke", recorded)
+    monkeypatch.setattr(orchestrator, "checkpoint", lambda *_args: None)
+    args.stage_sync = None
+    for names in (("perlector", "coniector"), ("perlector",)):
+        orchestrator._drive(args, names, "semi", {})
+    assert asked == [
+        (perlector, True),
+        (orchestrator.STAGE_PROGRAMS["coniector"], False),
+        (perlector, False),
+    ]
 
 
 def test_the_timing_journal_names_the_perlector_concurrency_asked_for(tmp_path):
@@ -246,3 +280,171 @@ def test_the_stand_in_namespace_mirrors_the_argv_surface_it_claims_to():
                 f"{attribute}={value!r} names a config file that does not exist; a stand-in "
                 "for the real argv surface must not carry a path the real run could not use"
             )
+
+
+def test_invoke_runs_the_stage_unbuffered_and_prints_its_start_and_end(
+    tmp_path, monkeypatch, capsys
+):
+    orchestrator = load_stage("orchestrator")
+    commands = []
+
+    def completed(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(orchestrator.subprocess, "run", completed)
+    assert (
+        orchestrator.invoke(orchestrator.STAGE_PROGRAMS["perlector"], _invoke_args(tmp_path)) == 0
+    )
+    assert commands[0][1:3] == ["-I", "-u"]
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("run r: perlector started at ")
+    assert lines[1].startswith("run r: perlector ended, exit 0, after ")
+
+
+def _audit(chair: str, started_at: str, ready_at: str) -> bytes:
+    from common.contracts.serving import SERVING_LAUNCH_AUDIT_SCHEMA
+
+    return json.dumps(
+        {
+            "schema": SERVING_LAUNCH_AUDIT_SCHEMA,
+            "chair": chair,
+            "launch_purpose": "stage",
+            "started_at": started_at,
+            "readiness": {"ready_at": ready_at},
+        }
+    ).encode()
+
+
+def _stage_with_blobs(tmp_path: Path, blobs: dict[str, bytes], noted: list[str]):
+    from common.runtree.store import LAUNCH_AUDIT_NOTE_PREFIX
+
+    stage = tmp_path / "runs" / "r" / "4_perlector"
+    store = stage / "blobs" / "sha256"
+    logs = stage / "serving-logs"
+    store.mkdir(parents=True)
+    logs.mkdir()
+    (logs / "vllm-perlector-0.log").write_text("engine log\n")
+    for name, data in blobs.items():
+        (store / name).write_bytes(data)
+    for name in noted:
+        (logs / f"{LAUNCH_AUDIT_NOTE_PREFIX}{name}").write_bytes(b"")
+    return store
+
+
+def test_serving_spans_are_this_invocations_noted_launch_audits_and_nothing_else(tmp_path):
+    orchestrator = load_stage("orchestrator")
+    args = argparse.Namespace(run_root=tmp_path / "runs", run_id="r")
+    current, earlier, unnoted = "a" * 64, "b" * 64, "c" * 64
+    _stage_with_blobs(
+        tmp_path,
+        {
+            current: _audit("perlector", "2026-10-07T10:00:05Z", "2026-10-07T10:06:20Z"),
+            earlier: _audit("perlector", "2026-10-06T10:00:00Z", "2026-10-06T10:05:00Z"),
+            unnoted: _audit("perlector", "2026-10-07T11:00:00Z", "2026-10-07T11:05:00Z"),
+        },
+        # An earlier pass's launch is noted too; a note naming a missing blob is skipped.
+        [current, earlier, "d" * 64],
+    )
+    spans = orchestrator._serving_spans(
+        args, orchestrator.STAGE_PROGRAMS["perlector"], "2026-10-07T10:00:00Z"
+    )
+    assert spans == [
+        {
+            "chair": "perlector",
+            "launch_purpose": "stage",
+            "started_at": "2026-10-07T10:00:05Z",
+            "ready_at": "2026-10-07T10:06:20Z",
+            "adopted_at": None,
+            "ready_seconds": 375,
+        }
+    ]
+    # A stage with no serving logs launched nothing.
+    assert orchestrator._serving_spans(args, "pipeline/5_recensor/run.py", "2026") == []
+
+
+def test_a_service_taken_over_is_this_invocations_from_the_moment_it_was_taken(tmp_path):
+    """The Coniector's audit of the Perlector's service keeps the Perlector's launch
+    moment, which is before the Coniector started; it is still the Coniector's span."""
+    orchestrator = load_stage("orchestrator")
+    args = argparse.Namespace(run_root=tmp_path / "runs", run_id="r")
+    adopted = json.loads(_audit("reconstructor", "2026-10-07T10:00:05Z", "2026-10-07T10:06:20Z"))
+    adopted["launch_purpose"] = "adopted"
+    adopted["adoption"] = {"adopted_at": "2026-10-07T11:00:01Z"}
+    digest = "a" * 64
+    _stage_with_blobs(tmp_path, {digest: json.dumps(adopted).encode()}, [digest])
+    (tmp_path / "runs" / "r" / "4_perlector").rename(tmp_path / "runs" / "r" / "4b_coniector")
+    program = orchestrator.STAGE_PROGRAMS["coniector"]
+    [span] = orchestrator._serving_spans(args, program, "2026-10-07T11:00:00Z")
+    assert span["launch_purpose"] == "adopted"
+    assert span["adopted_at"] == "2026-10-07T11:00:01Z"
+    assert span["started_at"] == "2026-10-07T10:00:05Z"
+    assert orchestrator._serving_spans(args, program, "2026-10-07T12:00:00Z") == []
+    # The stage's end line says a model was taken over, where a load would be said.
+    assert "chair reconstructor adopted 2026-10-07T11:00:01Z (no model load" in (
+        orchestrator._span_words(span)
+    )
+
+
+def test_serving_spans_read_no_blob_but_the_noted_audits(tmp_path, monkeypatch):
+    """A stage store of thousands of page and call blobs costs nothing to look through."""
+    orchestrator = load_stage("orchestrator")
+    args = argparse.Namespace(run_root=tmp_path / "runs", run_id="r")
+    audit = "a" * 64
+    blobs = {f"{index:064x}": b'{"schema": "chair-call-record.v1"}' for index in range(1, 2000)}
+    blobs[audit] = _audit("perlector", "2026-10-07T10:00:05Z", "2026-10-07T10:06:20Z")
+    store = _stage_with_blobs(tmp_path, blobs, [audit])
+    touched: list[str] = []
+    read_bytes, listed = Path.read_bytes, Path.iterdir
+
+    def counted_read(self):
+        touched.append(self.name)
+        return read_bytes(self)
+
+    def counted_list(self):
+        assert self != store, "the blob store was listed"
+        return listed(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    monkeypatch.setattr(Path, "iterdir", counted_list)
+    spans = orchestrator._serving_spans(
+        args, orchestrator.STAGE_PROGRAMS["perlector"], "2026-10-07T10:00:00Z"
+    )
+    assert [span["ready_seconds"] for span in spans] == [375]
+    assert touched == [audit]
+
+
+def test_a_stored_launch_audit_is_noted_beside_the_engine_logs(tmp_path):
+    from common.runtree.store import LAUNCH_AUDIT_NOTE_PREFIX, RunTree
+
+    tree = RunTree(tmp_path, "r")
+    tree.note_launch_audit("perlector", "e" * 64)
+    tree.note_launch_audit("perlector", "e" * 64)  # an identical note is reused
+    logs = tmp_path / "r" / tree.serving_log_path("perlector")
+    assert [path.name for path in logs.iterdir()] == [f"{LAUNCH_AUDIT_NOTE_PREFIX}{'e' * 64}"]
+
+
+def test_the_timing_journal_carries_serving_spans_and_stays_v4(tmp_path):
+    orchestrator = load_stage("orchestrator")
+    journal = tmp_path / "timings.jsonl"
+    args = argparse.Namespace(
+        stage_timing_journal=journal,
+        run_id="r",
+        run_root=tmp_path / "runs",
+        repository_commit=None,
+        perlector_concurrency=None,
+    )
+    span = {"chair": "perlector", "started_at": "a", "ready_at": "b", "ready_seconds": 1}
+    orchestrator._record_stage_timing(
+        args,
+        program=orchestrator.STAGE_PROGRAMS["perlector"],
+        started_at="2026-01-01T00:00:00Z",
+        finished_at="2026-01-01T00:00:01Z",
+        duration_ms=1000,
+        exit_code=0,
+        gpu_utilization=(None, "not sampled"),
+        serving_spans=[span],
+    )
+    (entry,) = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert entry["schema"] == "stage-timing-journal.v4"
+    assert entry["serving_spans"] == [span]

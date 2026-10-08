@@ -1245,3 +1245,26 @@ def test_a_continuation_link_naming_a_recovered_act_is_refused(tmp_path):
     rewitness_stage_boundary(RunTree(tree.root, RUN_ID), RECENSOR)
     with pytest.raises(FatalAccounting, match="an entry the re-ask recovered"):
         continuation_links(tree.context(), reading_acts(tree.context()))
+
+
+def test_the_reviews_and_the_receipt_measure_residual_ink_once(happy, tmp_path, monkeypatch):
+    """Both plans of a pass are taken from one residual-ink measurement of the same
+    regions, and each gets its own copy; the receipt still matches every review on disk."""
+    tree = happy.copy(tmp_path)
+    context = tree.context()
+    measured = []
+    real = RECENSOR_RUN.page_coverage_findings
+
+    def counting(context, *, regions):
+        measured.append(regions)
+        return real(context, regions=regions)
+
+    monkeypatch.setattr(RECENSOR_RUN, "page_coverage_findings", counting)
+    RECENSOR_RUN.review_a_page_read_run(context, reading_denominator(context))
+
+    assert len(measured) == 1
+
+    once = RECENSOR_RUN.measured_once(lambda _context, *, regions: {1: {"regions": regions}})
+    first = once(context, regions={1: []})
+    first[1]["regions"][1] = ["changed"]
+    assert once(context, regions={1: []}) == {1: {"regions": {1: []}}}

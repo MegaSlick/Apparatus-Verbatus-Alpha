@@ -36,6 +36,7 @@ from .bootstrap import (
 from .bootstrap_main import (
     HARD_DEADLINE_ENV,
     HOLD_SCHEMA,
+    NO_HARD_DEADLINE,
     REFUSAL_SCHEMA,
     PlanRefusal,
     PodPreflightReceiptPublisher,
@@ -107,7 +108,9 @@ class FakeActions:
         return self._step(BootstrapStep.TRANSFER, {"state": "nothing-to-transfer"})
 
     def materialize_model_store(self) -> dict[str, object]:
-        return self._step(BootstrapStep.MODEL_STORE, {"real_roster_complete": True})
+        return self._step(
+            BootstrapStep.MODEL_STORE, {"real_roster_complete": True, "selection_complete": True}
+        )
 
     def verify_chair_cache(self) -> dict[str, object]:
         return self._step(BootstrapStep.CHAIR_CACHE, {"chairs": []})
@@ -180,6 +183,17 @@ def test_the_sealed_mount_path_passes_when_a_real_mount_sits_there(
     plan, _deadline = bootstrap_main.prepare(_hold_argv(ws), _environ(clock), now=clock.now)
 
     assert plan.hold_only is True
+
+
+def test_a_caller_that_will_not_hold_may_say_there_is_no_hard_deadline(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+
+    _plan, deadline = bootstrap_main.prepare(
+        _argv(ws), {HARD_DEADLINE_ENV: NO_HARD_DEADLINE}, now=clock.now
+    )
+
+    assert deadline is None
 
 
 def _argv(ws: Workspace, *, commit: str = "a" * 40, extra: tuple[str, ...] = ()) -> list[str]:
@@ -431,6 +445,7 @@ def test_configuration_refusal_stops_before_environment_and_model_work(tmp_path:
         ("report-outside", "--report-path"),
         ("lockfile-stray", "is not the checked-out repository uv.lock"),
         ("deadline-missing", HARD_DEADLINE_ENV),
+        ("deadline-none", "is for a caller that will not hold"),
         ("credential-marker", "looks like a credential"),
         ("credential-opaque", "looks like a credential"),
         ("models-config-missing", "--models-config"),
@@ -453,6 +468,8 @@ def test_bootstrap_plan_refusals_name_the_bad_argument(
         argv[argv.index(str(ws.repository / "uv.lock"))] = str(tmp_path / "elsewhere" / "uv.lock")
     elif case == "deadline-missing":
         environment = {}
+    elif case == "deadline-none":
+        environment = {HARD_DEADLINE_ENV: NO_HARD_DEADLINE}
     elif case == "credential-marker":
         argv = _argv(ws, extra=("--transfer-prefix", "my-api-key-123"))
     elif case == "credential-opaque":
@@ -1049,6 +1066,7 @@ def test_chair_cache_receipt_says_sources_were_planned(monkeypatch: pytest.Monke
         models_config=Path("/repo/models.toml"),
         cache_root=Path("/volume/cache"),
         store_root=Path("/volume/store"),
+        preflight_roles=None,
     )
 
     assert bootstrap_main._build_cache(plan) == {
@@ -1057,6 +1075,85 @@ def test_chair_cache_receipt_says_sources_were_planned(monkeypatch: pytest.Monke
         ],
         "cache_root": "/volume/cache",
     }
+
+
+def test_the_background_fill_takes_selected_store_ready_chairs_in_stage_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from common.chairs.conftest import hf_chair, local_chair, write_models_toml
+    from common.chairs.errors import DigestMismatchRefusal
+
+    pin = "1" * 64
+    models = write_models_toml(
+        tmp_path,
+        {
+            "reconstructor": hf_chair("reconstructor", pin),
+            "perlector": hf_chair("perlector", pin),
+            "attestator_1": hf_chair("attestator_1", pin),
+            "attestator_2": hf_chair("attestator_2", pin),
+            "designator_surya": local_chair("designator_surya", pin),
+            "secondary_proposer": hf_chair("secondary_proposer", pin),
+        },
+        witness_floor=0,
+        model_root="real-models",
+    )
+
+    class Fetcher:
+        def __init__(self, root: Path, *, pool=None) -> None:  # type: ignore[no-untyped-def]
+            assert root == tmp_path / "store"
+            self.pool = pool
+
+        def plan(self, identity):  # type: ignore[no-untyped-def]
+            if identity.role == "attestator_2":
+                raise DigestMismatchRefusal(identity.role, "model-store artifact is not present")
+            return {"snapshot": "store"}
+
+    monkeypatch.setattr(bootstrap_main, "StoreRoleFetcher", Fetcher)
+    plan = SimpleNamespace(
+        models_config=models,
+        cache_root=tmp_path / "cache",
+        store_root=tmp_path / "store",
+        preflight_roles=(
+            "attestator_1",
+            "attestator_2",
+            "designator_surya",
+            "perlector",
+            "reconstructor",
+        ),
+    )
+
+    chairs = bootstrap_main._prefill_chairs(plan)
+
+    assert [chair.role for chair in chairs.chairs] == ["attestator_1", "perlector", "reconstructor"]
+    assert isinstance(chairs.registry.fetcher, Fetcher)
+    assert chairs.pool is not None and chairs.registry.fetcher.pool is chairs.pool
+    chairs.pool.close()
+    (deferred,) = chairs.deferred
+    assert deferred["chair"] == "attestator_2"
+    assert "not present" in deferred["reason"]
+    assert (
+        bootstrap_main._prefill_chairs(SimpleNamespace(**{**vars(plan), "store_root": None}))
+        is None
+    )
+
+
+def test_preflight_s_lookahead_fill_never_evicts_a_cache() -> None:
+    from types import SimpleNamespace
+
+    calls: list[dict[str, object]] = []
+
+    class Registry:
+        def ensure(self, identity, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(kwargs)
+            return SimpleNamespace(manifest_digest="d" * 64, root=Path("/c"), verification=None)
+
+    verifier = bootstrap_main.RegistryChairCacheVerifier(Registry())  # type: ignore[arg-type]
+    identity = SimpleNamespace(role="perlector")
+
+    assert verifier.prefetch(identity) == verifier.verify(identity)  # type: ignore[arg-type]
+    assert calls == [{"evict": False}, {}]
 
 
 def _local_chair_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1100,7 +1197,10 @@ def _local_chair_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from types import SimpleNamespace
 
     plan = SimpleNamespace(
-        models_config=models, cache_root=tmp_path / "cache", store_root=tmp_path / "store"
+        models_config=models,
+        cache_root=tmp_path / "cache",
+        store_root=tmp_path / "store",
+        preflight_roles=None,
     )
     return plan, config / "real-models" / "designator_surya", snapshot
 
@@ -1121,6 +1221,60 @@ def test_chair_cache_places_a_local_chair_s_verified_bundle_where_the_roster_bin
     assert bootstrap_main._build_cache(plan)["chairs"] == [
         {"chair": "designator_surya", "state": "local-verified", "root": str(placed)}
     ]
+
+
+def test_chair_cache_places_a_local_chair_through_a_verifying_copy_reading_it_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from common.chairs import manifests
+
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    rows = {row.path: row for row in manifests.build_manifest(snapshot).rows}
+    digested: list[str] = []
+    real_digest = manifests.file_digest
+
+    def record_digest(path, chair, relative):  # type: ignore[no-untyped-def]
+        digested.append(relative)
+        return real_digest(path, chair, relative)
+
+    monkeypatch.setattr(manifests, "file_digest", record_digest)
+
+    # A plain copy returns no ledger, so the placed bundle is read again to verify it.
+    bootstrap_main._build_cache(plan)
+    assert set(digested) == set(rows)
+    shutil.rmtree(placed)
+    digested.clear()
+
+    ledgers: list[manifests.CopyLedger] = []
+
+    def verifying_fetch(self, identity, destination: Path, paths):  # type: ignore[no-untyped-def]
+        self.copies += 1
+        ledger = manifests.copy_and_digest_files(
+            [(snapshot / p, destination / p, rows[p]) for p in paths], chair=identity.role
+        )
+        ledgers.append(ledger)
+        return ledger
+
+    monkeypatch.setattr(bootstrap_main.StoreRoleFetcher, "fetch", verifying_fetch)
+    monkeypatch.setenv("VERBATUS_IO_WORKERS", "3")
+    receipt = bootstrap_main._build_cache(plan)
+
+    assert digested == []
+    assert len(ledgers) == 1 and sorted(ledgers[0].digests) == sorted(rows)
+    assert receipt["chairs"][0]["verification"]["copied_files"] == len(ledgers[0].digests)
+    assert receipt["chairs"] == [
+        {
+            "chair": "designator_surya",
+            "state": "local-placed",
+            "snapshot": str(snapshot),
+            "verification": {
+                "bytes": "hashed while copying",
+                "copied_files": 3,
+                "io_workers": {"workers": 3, "source": "VERBATUS_IO_WORKERS"},
+            },
+        }
+    ]
+    assert (placed / "surya_layout2" / "rfdetr_layout.pth").read_bytes() == b"weights\n"
 
 
 def test_chair_cache_replaces_a_placed_bundle_that_no_longer_verifies(
@@ -1446,7 +1600,7 @@ def test_a_placement_value_changed_after_a_green_bootstrap_refuses_the_resume(
     assert isinstance(first, BootstrapReport) and first.green
 
     ws.placement_config.write_bytes(
-        ws.placement_config.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+        ws.placement_config.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     )
     resumed_actions = _configuration_actions(plan)
     resumed = bootstrap_main.run_bootstrap(
@@ -1888,7 +2042,9 @@ def _surya_environment_answers(identity, profile, weights_root, golden_page, man
     }
 
 
-def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspace, dict]:
+def _serving_workspace(
+    tmp_path: Path, *, preflight_state: str, capacity: bool = False
+) -> tuple[Workspace, dict]:
     """A checked-out repository whose fixture roster has launchable vLLM rows.
 
     The committed catalogue holds fixture rows only, which the manager refuses
@@ -1928,6 +2084,9 @@ def _serving_workspace(tmp_path: Path, *, preflight_state: str) -> tuple[Workspa
             )
             row["gpu_memory_utilization"] = "0.50"
             row["preflight_state"] = preflight_state
+            if capacity:
+                row["weights_gib"] = "10"
+                row["kv_gib_per_seq"] = "1"
             rows.append(row)
     surya = models.chairs[SURYA_CHAIR]
     rows.extend(
@@ -2054,6 +2213,30 @@ def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) ->
     assert record["serving_config_inputs"]["pod_placement_sha256"] == sealed  # type: ignore[index]
 
 
+def test_preflight_adopts_what_the_background_fill_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, _launcher = _preflight_seams(tmp_path, identities)
+    filled = object()
+    adopted: list[object] = []
+    monkeypatch.setattr(
+        bootstrap_main.ChairRegistry,
+        "adopt_verifications",
+        lambda self, other: adopted.append(other),
+    )
+
+    _build_preflight(plan, seams, prefill=SimpleNamespace(registry=filled))()  # type: ignore[arg-type]
+    _build_preflight(plan, seams, prefill=SimpleNamespace(registry=None))()  # type: ignore[arg-type]
+
+    assert adopted == [filled]
+
+
 def test_bootstrap_syncs_a_subprocess_environment_only_for_a_row_that_runs_in_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2137,6 +2320,35 @@ def test_the_disk_check_counts_each_local_bundle_chair_cache_copies(tmp_path: Pa
     assert bundles[target] == sum(row.size for row in manifest.rows) > 0
 
 
+def test_model_store_leaves_byte_hashing_to_the_copies_of_every_configured_chair(
+    tmp_path: Path,
+) -> None:
+    """MODEL_STORE checks the store's structure for each chair CHAIR_CACHE or
+    PREFLIGHT will copy, since those copies hash the same bytes against the same
+    pinned manifest; an absent chair is not copied, so it is hashed at boot."""
+    from common.chairs.config import load_models_toml
+    from common.chairs.models import ChairIdentity
+
+    from .bootstrap_main import _build_model_store, build_parser, resolve_plan
+
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    configured = sorted(
+        role
+        for role, chair in load_models_toml(ws.models_config).chairs.items()
+        if isinstance(chair, ChairIdentity)
+    )
+
+    assert _build_model_store(plan).hashed_at_copy == tuple(configured)
+    # With a stage selection, only the selected chairs are copied, so only they
+    # leave their bytes to the copy; every other chair is excluded.
+    selected = ("attestator_2", "perlector")
+    assert set(selected) < set(configured)
+    hashed = _build_model_store(replace(plan, preflight_roles=selected)).hashed_at_copy
+    assert hashed == tuple(sorted(selected))
+    assert set(hashed).isdisjoint(set(configured) - set(selected))
+
+
 def test_the_bundle_fetcher_s_environment_is_synced_while_the_store_lacks_a_bundle(
     tmp_path: Path,
 ) -> None:
@@ -2172,6 +2384,65 @@ def test_the_bundle_fetcher_s_environment_is_synced_while_the_store_lacks_a_bund
     (plan.store_root / "download_record.json").write_text("{}", encoding="utf-8")
     with pytest.raises(BootstrapStepFailure, match="cannot say what it still needs"):
         _subprocess_environments(plan)
+
+
+SMALL_CARD = ("attestator_1", "attestator_2", "attestator_3", SURYA_CHAIR, "secondary_proposer")
+BIG_CARD = ("perlector", "reconstructor")
+
+
+def test_each_half_of_a_two_card_split_prepares_only_the_chairs_its_stages_need(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The witness card never fetches or copies the Perlector's model, and the big
+    card never places Surya or syncs the bundle fetcher's environment."""
+    from .bootstrap_main import (
+        _build_model_store,
+        _bundle_fetcher,
+        _local_bundles,
+        _store_environments,
+        build_parser,
+        resolve_plan,
+    )
+
+    monkeypatch.setattr(
+        bootstrap_main, "pending_local_artifacts", lambda root: ("surya2-detection",)
+    )
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    small = replace(plan, preflight_roles=SMALL_CARD)
+    big = replace(plan, preflight_roles=BIG_CARD)
+
+    assert _build_model_store(small).roles == SMALL_CARD
+    assert _build_model_store(small).hashed_at_copy == tuple(sorted(SMALL_CARD))
+    assert _build_model_store(big).roles == BIG_CARD
+    assert _build_model_store(big).hashed_at_copy == tuple(sorted(BIG_CARD))
+    # The fixture roster binds every chair to a bundle in the checkout.
+    assert sorted(path.name for path in _local_bundles(small)) == sorted(SMALL_CARD)
+    assert sorted(path.name for path in _local_bundles(big)) == sorted(BIG_CARD)
+    assert _store_environments(small) == frozenset({_bundle_fetcher().environment})
+    assert _store_environments(big) == frozenset()
+    # A bare bootstrap, with no stage selection, prepares every chair.
+    assert _build_model_store(plan).roles is None
+    assert sorted(path.name for path in _local_bundles(plan)) == sorted(SMALL_CARD + BIG_CARD)
+    assert _store_environments(plan) == frozenset({_bundle_fetcher().environment})
+
+
+def test_chair_cache_places_a_local_chair_only_on_the_card_whose_stages_use_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    big = SimpleNamespace(**{**vars(plan), "preflight_roles": BIG_CARD})
+    small = SimpleNamespace(**{**vars(plan), "preflight_roles": SMALL_CARD})
+
+    assert bootstrap_main._build_cache(big)["chairs"] == [
+        {"chair": SURYA_CHAIR, "state": "not-selected"}
+    ]
+    assert not placed.exists()
+    assert bootstrap_main._build_cache(small)["chairs"] == [
+        {"chair": SURYA_CHAIR, "state": "local-placed", "snapshot": str(snapshot)}
+    ]
 
 
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(
@@ -2538,3 +2809,76 @@ def test_a_preflight_without_the_dai_chair_never_fetches_the_record(tmp_path: Pa
     record = _build_preflight(only_chandra, replace(seams, recordgold_fetch=never))()
     assert record["color"] == "green"
     assert {receipt["chair"] for receipt in record["smoke_receipts"]} == {"attestator_1"}
+
+
+def _measured_probe(vram_mib: int):  # type: ignore[no-untyped-def]
+    """``SystemGpuProbe`` over a scripted ``nvidia-smi``: a measured card, as on a pod."""
+
+    import subprocess
+    from types import SimpleNamespace
+
+    from operations.pod.preflight import SystemGpuProbe
+
+    def runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        if len(argv) > 1:
+            return subprocess.CompletedProcess(argv, 0, f"fake GPU, 550, {vram_mib}, 8.0\n", "")
+        return subprocess.CompletedProcess(argv, 0, "CUDA Version: 12.4", "")
+
+    return SystemGpuProbe(
+        disk_path=Path("/"),
+        runner=runner,
+        disk_usage=lambda _path: SimpleNamespace(free=100 * 1024**3),
+    )
+
+
+def test_preflight_publishes_the_measured_card_and_smokes_at_the_planned_width(
+    tmp_path: Path,
+) -> None:
+    """PREFLIGHT's receipt carries the card and the capacity plan, and each smoke
+    launches at the planned width: 0.50 x 48 GiB - 10 GiB weights - 4 GiB overhead
+    leaves 10 GiB, ten sequences of 1 GiB, against the rows' one."""
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven", capacity=True)
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, launcher = _preflight_seams(tmp_path, identities)
+    seams = replace(seams, gpu_probe=_measured_probe(48 * 1024))
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["color"] == "green"
+    environment = record["environment"]
+    assert (environment["vram_gib"], environment["gpu_count"]) == ("48", 1)
+    assert environment["compute_capability"] == (8, 0)
+    capacity = record["capacity_plan"]
+    assert capacity["card"] == {"vram_gib": "48", "gpu_count": 1, "compute_capability": "8.0"}
+    assert capacity["tier"] == PROVEN_TIER
+    assert {role: chair["max_num_seqs"] for role, chair in capacity["chairs"].items()} == {
+        role: 10 for role in identities
+    }
+    assert all(chair["row_max_num_seqs"] == 1 for chair in capacity["chairs"].values())
+    for argv, _log in launcher.calls:
+        assert argv[argv.index("--max-num-seqs") + 1] == "10"
+    for smoke in record["smoke_receipts"]:
+        audit = smoke["serving_launch_audit"]
+        assert audit["capacity"]["plan_sha256"] == capacity["plan_sha256"]
+        assert (audit["capacity"]["row_max_num_seqs"], audit["capacity"]["max_num_seqs"]) == (1, 10)
+
+
+def test_an_unmeasured_card_publishes_no_plan_and_smokes_at_the_row(tmp_path: Path) -> None:
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven", capacity=True)
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, launcher = _preflight_seams(tmp_path, identities)
+
+    record = _build_preflight(plan, seams)()
+
+    assert record["color"] == "green"
+    assert record["capacity_plan"] is None
+    assert record["environment"]["gpu_count"] == 1
+    for argv, _log in launcher.calls:
+        assert argv[argv.index("--max-num-seqs") + 1] == "1"
+    for smoke in record["smoke_receipts"]:
+        assert "capacity" not in smoke["serving_launch_audit"]

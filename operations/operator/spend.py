@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from operations.pod.spend import load_spend_policy_bytes
+from operations.pod.spend import SpendPolicy, load_spend_policy_bytes
 
 from .errors import ErrorCode, OperatorError, strip_control_bytes
 from .records import bounded_bytes
@@ -58,6 +58,19 @@ def show(policy_path: str | Path) -> list[str]:
         f"(policy SHA-256 {policy_digest})",
         "- Launch lifetime (the deadline a launch sets at creation): "
         f"{_duration(policy.hard_lifetime_seconds)} (policy SHA-256 {policy_digest})",
+        *_budget_lines(policy, policy_digest),
+        "- Guard's idle ladder ends by deleting the pod: "
+        f"{policy.ladder_delete} (policy SHA-256 {policy_digest})",
+    ]
+
+
+def _budget_lines(policy: SpendPolicy, policy_digest: str) -> list[str]:
+    if not policy.budget_on:
+        return [
+            "- Pod budget: budget off (lead's choice): no guard deadline and no backstop; "
+            f"the soft and hard maximums bind nothing (policy SHA-256 {policy_digest})"
+        ]
+    return [
         f"- Soft maximum: {_duration(policy.soft_max_seconds)} and "
         f"${policy.soft_max_cost_usd}, whichever comes first; the guard's deadline sits here "
         f"(policy SHA-256 {policy_digest})",

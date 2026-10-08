@@ -113,6 +113,7 @@ from .spend import (
     CHALLENGE_BYTES,
     CONFIRMATION_PREFIX,
     POD_BUDGET_ENVIRONMENT,
+    SPEND_SCHEMA,
     SpendAssessment,
     SpendPolicy,
     confirmation_phrase,
@@ -2827,6 +2828,7 @@ def test_guarded_create_seals_dead_man_facts_into_the_creation_request(tmp_path:
         "VERBATUS_SOFT_MAX_COST_USD": "1000.00",
         "VERBATUS_HARD_MAX_COST_USD": "1000.00",
     }
+    assert submitted.metadata["VERBATUS_POD_BUDGET"] == "on"
 
 
 def test_default_runtime_refuses_paid_create_without_an_approved_controller_harness(
@@ -5065,8 +5067,14 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
 ) -> None:
     observed: dict[str, object] = {}
 
-    def materialize(root, fetcher, bundle_fetcher):  # type: ignore[no-untyped-def]
-        observed.update(root=root, fetcher=fetcher, bundle_fetcher=bundle_fetcher)
+    def materialize(root, fetcher, bundle_fetcher, *, roles, hashed_at_copy):  # type: ignore[no-untyped-def]
+        observed.update(
+            root=root,
+            fetcher=fetcher,
+            bundle_fetcher=bundle_fetcher,
+            roles=roles,
+            hashed_at_copy=hashed_at_copy,
+        )
         return {"artifacts": [], "complete": False}
 
     monkeypatch.setattr("operations.pod.bootstrap.materialize_real_roster", materialize)
@@ -5075,6 +5083,8 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
         tmp_path / "models",
         fetcher,  # type: ignore[arg-type]
         bundle_fetcher,  # type: ignore[arg-type]
+        roles=("perlector", "reconstructor"),
+        hashed_at_copy=("perlector",),
     )
 
     assert action.materialize() == {"artifacts": [], "complete": False}
@@ -5082,6 +5092,8 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
         "root": tmp_path / "models",
         "fetcher": fetcher,
         "bundle_fetcher": bundle_fetcher,
+        "roles": ("perlector", "reconstructor"),
+        "hashed_at_copy": ("perlector",),
     }
 
 
@@ -5303,6 +5315,186 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
         actions.sync_uv_environment(other)
 
 
+REAL_CUDA_PROBE = bootstrap_module._run_cuda_probe
+
+
+@pytest.fixture(autouse=True)
+def _cuda_probe_in_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The CUDA probe runs in this process here, so a test's fake libcuda is the one used;
+    the child process it really runs in is tested on its own below."""
+
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_run_cuda_probe",
+        lambda library, timeout: bootstrap_module.probe_cuda(library),
+    )
+
+
+class FakeCuda:
+    """libcuda.so.1 as ctypes loads it: cuInit and cuDeviceGetCount return the codes given,
+    and the count is what the host reports."""
+
+    def __init__(self, *, init: int = 0, count: int = 0, devices: int = 1) -> None:
+        self.paths: list[str] = []
+        self.init_calls: list[int] = []
+
+        def cuInit(flags: int) -> int:
+            self.init_calls.append(flags)
+            return init
+
+        def cuDeviceGetCount(pointer) -> int:  # type: ignore[no-untyped-def]
+            pointer.contents.value = devices
+            return count
+
+        self.cuInit = cuInit
+        self.cuDeviceGetCount = cuDeviceGetCount
+
+    def load(self, path: str) -> FakeCuda:
+        self.paths.append(path)
+        return self
+
+
+def _new_driver_actions(tmp_path: Path) -> SubprocessBootstrapActions:
+    return SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=lambda argv, cwd: subprocess.CompletedProcess(
+            argv, 0, stdout="580.178.04, NVIDIA H100 80GB HBM3\n", stderr=""
+        ),
+    )
+
+
+def test_a_new_driver_host_still_initialises_cuda_before_the_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cuda = FakeCuda(devices=1)
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
+
+    receipt = _new_driver_actions(tmp_path).configure_cuda_compat()
+
+    assert (receipt["action"], receipt["cuda_devices"]) == ("not-needed", 1)
+    assert cuda.paths == ["libcuda.so.1"] and cuda.init_calls == [0]
+
+
+@pytest.mark.parametrize(
+    ("cuda", "expected"),
+    [
+        (FakeCuda(init=999), r"cuInit\(0\) failed with code 999"),
+        (FakeCuda(count=3), "cuDeviceGetCount failed with code 3"),
+        (FakeCuda(devices=0), "reports no CUDA device"),
+    ],
+    ids=["init", "count", "none"],
+)
+def test_a_host_that_cannot_initialise_cuda_is_refused_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cuda: FakeCuda, expected: str
+) -> None:
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
+    monkeypatch.setattr(bootstrap_module.socket, "gethostname", lambda: "a1b2c3d4e5")
+
+    with pytest.raises(BootstrapStepFailure, match=expected) as refusal:
+        _new_driver_actions(tmp_path).configure_cuda_compat()
+
+    assert "host a1b2c3d4e5 (driver 580.178.04, ['NVIDIA H100 80GB HBM3'])" in refusal.value.detail
+    assert "another host" in refusal.value.remediation
+
+
+def test_a_missing_driver_library_is_refused_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing(path: str) -> None:
+        raise OSError(f"{path}: cannot open shared object file")
+
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", missing)
+
+    with pytest.raises(BootstrapStepFailure, match="could not be loaded or called") as refusal:
+        _new_driver_actions(tmp_path).configure_cuda_compat()
+
+    assert "Repair the image or the CUDA compatibility package" in refusal.value.remediation
+
+
+def test_a_library_missing_a_call_blames_the_image_not_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cuda = FakeCuda()
+    del cuda.cuDeviceGetCount
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
+
+    with pytest.raises(BootstrapStepFailure, match="cuDeviceGetCount") as refusal:
+        _new_driver_actions(tmp_path).configure_cuda_compat()
+
+    assert "another host with this image would fail the same way" in refusal.value.remediation
+
+
+def test_a_cuda_probe_that_does_not_answer_refuses_the_host(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bootstrap_module, "_run_cuda_probe", lambda library, timeout: None)
+
+    with pytest.raises(BootstrapStepFailure, match="did not answer within 120 s") as refusal:
+        _new_driver_actions(tmp_path).configure_cuda_compat()
+
+    assert "cannot use CUDA through libcuda.so.1" in refusal.value.detail
+    assert "another host" in refusal.value.remediation
+
+
+def test_the_cuda_probe_process_is_killed_when_it_hangs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bootstrap_module, "_CUDA_PROBE_SOURCE", "import time\ntime.sleep(60)\n")
+    children: list[subprocess.Popen[str]] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args: object, **kwargs: object) -> subprocess.Popen[str]:
+        child = real_popen(*args, **kwargs)  # type: ignore[call-overload]
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(bootstrap_module.subprocess, "Popen", recording_popen)
+    started = time.monotonic()
+
+    assert REAL_CUDA_PROBE("libcuda.so.1", 0.5) is None
+    assert time.monotonic() - started < 10
+    # The sleeping child must be gone, not merely abandoned within the time limit.
+    assert len(children) == 1 and children[0].poll() is not None
+
+
+def test_the_cuda_probe_process_reports_a_missing_library(tmp_path: Path) -> None:
+    """The real child process imports the probe from this checkout and runs it."""
+
+    result = REAL_CUDA_PROBE(str(tmp_path / "libcuda.so.1"), 60)
+
+    assert result is not None and result["failure"] == "library"
+    assert "libcuda.so.1" in str(result["error"])
+
+
+def test_the_compat_path_refuses_a_host_with_no_cuda_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(Path, "is_dir", lambda path: True)
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", FakeCuda(devices=0).load)
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        name = Path(argv[0]).name
+        output = "570.195.03, NVIDIA RTX A6000" if name == "nvidia-smi" else "580.178.04-1ubuntu1"
+        return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
+
+    actions = SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=runner,
+    )
+    with pytest.raises(BootstrapStepFailure, match="reports no CUDA device") as refusal:
+        actions.configure_cuda_compat()
+
+    assert "/usr/local/cuda-13.0/compat/libcuda.so.1" in refusal.value.detail
+
+
 @pytest.mark.parametrize(
     ("driver", "gpu", "expected"),
     [
@@ -5340,9 +5532,8 @@ def test_cuda_compat_decision_uses_reported_driver_and_card(
         return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
 
     monkeypatch.setattr(Path, "is_dir", is_dir)
-    cuda = unittest.mock.Mock()
-    cuda.cuInit.return_value = 0
-    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+    cuda = FakeCuda(init=0)
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
     actions = SubprocessBootstrapActions(
         repository=tmp_path,
         configuration=lambda: {},
@@ -5362,7 +5553,7 @@ def test_cuda_compat_decision_uses_reported_driver_and_card(
         assert receipt["gpus"] == [gpu]
         if expected == "installed":
             assert receipt["installed_version"] == "580.178.04-1ubuntu1"
-            cuda.cuInit.assert_called_once_with(0)
+            assert cuda.init_calls == [0]
     assert [command[0] for command in commands] == (
         ["/usr/bin/nvidia-smi", "/usr/bin/apt-cache", "/usr/bin/apt-get", "/usr/bin/dpkg-query"]
         if expected == "installed"
@@ -5412,9 +5603,8 @@ def test_cuda_compat_refuses_named_failures(
 ) -> None:
     commands: list[list[str]] = []
     monkeypatch.setattr(Path, "is_dir", lambda path: False)
-    cuda = unittest.mock.Mock()
-    cuda.cuInit.return_value = cu_result
-    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+    cuda = FakeCuda(init=cu_result)
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
 
     def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         commands.append(argv)
@@ -5454,9 +5644,8 @@ def test_cuda_compat_existing_pin_is_probed_without_apt(
 ) -> None:
     commands: list[str] = []
     monkeypatch.setattr(Path, "is_dir", lambda path: True)
-    cuda = unittest.mock.Mock()
-    cuda.cuInit.return_value = 0
-    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+    cuda = FakeCuda(init=0)
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
 
     def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         commands.append(Path(argv[0]).name)
@@ -5480,7 +5669,7 @@ def test_cuda_compat_existing_pin_is_probed_without_apt(
     assert receipt["action"] == "already-present"
     assert receipt["installed_version"] == "580.178.04-1ubuntu1"
     assert commands == ["nvidia-smi", "dpkg-query"]
-    cuda.cuInit.assert_called_once_with(0)
+    assert cuda.init_calls == [0]
 
 
 def test_cuda_compat_command_timeouts_are_named(
@@ -5538,7 +5727,10 @@ def test_git_and_uv_command_timeouts_are_named(
     assert seen == [("repo-tool", 600), ("env-tool", 3600)]
 
 
-def test_new_enough_cuda_host_keeps_library_path_untouched(tmp_path: Path) -> None:
+def test_new_enough_cuda_host_keeps_library_path_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", FakeCuda().load)
     environment = {"LD_LIBRARY_PATH": "/original"}
     actions = SubprocessBootstrapActions(
         repository=tmp_path,
@@ -5665,6 +5857,124 @@ def test_sync_uv_environment_refuses_a_checkout_without_suryas_lock(tmp_path: Pa
 
     with pytest.raises(BootstrapStepFailure, match="operations/serving/surya.*is missing"):
         actions.sync_uv_environment(lockfile)
+
+
+class FakePrefill:
+    """Records how the steps drive the background chair-cache fill."""
+
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.events: list[tuple[str, object]] = []
+
+    def start(self, step: str, reserved=None) -> None:  # type: ignore[no-untyped-def]
+        self.events.append(("start", (step, dict(reserved) if reserved is not None else None)))
+
+    def wait(self, step) -> dict[str, object] | None:  # type: ignore[no-untyped-def]
+        self.events.append(("wait", step))
+        if self.failure is not None:
+            raise self.failure
+        return {"filled": [{"chair": "perlector"}], "deferred": []}
+
+
+def _prefill_actions(tmp_path: Path, prefill: FakePrefill, *, order: list[str]):
+    repository, lockfile = _checkout_with_locks(tmp_path)
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        order.append("uv")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def materialize() -> dict[str, object]:
+        order.append("materialize")
+        return {"selection_complete": True}
+
+    class Cache:
+        def verify(self) -> dict[str, object]:
+            order.append("cache")
+            return {"chairs": [], "cache_root": "/cache"}
+
+    actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
+        repository=repository,
+        transfer=lambda: {},
+        materialize_model_store=materialize,
+        cache=Cache(),
+        preflight=lambda: {"color": "green"},
+        runner=runner,
+        free_bytes=lambda _path: 512 * 1024**3,
+        environment={**BOOTSTRAP_ENVIRONMENT, "UV_CACHE_DIR": str(tmp_path / "uv-cache")},
+        prefill=prefill,
+    )
+    return actions, lockfile
+
+
+def test_the_chair_cache_fill_starts_before_uv_syncs_and_both_later_steps_wait_for_it(
+    tmp_path: Path,
+) -> None:
+    order: list[str] = []
+    prefill = FakePrefill()
+    actions, lockfile = _prefill_actions(tmp_path, prefill, order=order)
+
+    actions.sync_uv_environment(lockfile)
+    assert order == ["uv"]
+    (start,) = prefill.events
+    step, reserved = start[1]
+    assert step == "uv-environment"
+    # What uv will still write, per filesystem, is held back from the fill.
+    assert sum(reserved.values()) == (
+        bootstrap_module.UV_CACHE_REQUIRED_BYTES + bootstrap_module.REPOSITORY_VENV_REQUIRED_BYTES
+    )
+
+    model_store = actions.materialize_model_store()
+    chair_cache = actions.verify_chair_cache()
+
+    assert model_store == {"selection_complete": True}
+    assert [name for name, _ in prefill.events] == ["start", "start", "wait", "wait"]
+    assert [step for name, step in prefill.events if name == "wait"] == [
+        BootstrapStep.MODEL_STORE,
+        BootstrapStep.CHAIR_CACHE,
+    ]
+    assert prefill.events[1] == ("start", ("model-store", None))
+    assert order == ["uv", "materialize", "cache"]
+    assert chair_cache == {
+        "chairs": [],
+        "cache_root": "/cache",
+        "prefill": {"filled": [{"chair": "perlector"}], "deferred": []},
+    }
+
+
+def test_a_refused_background_copy_fails_model_store_with_the_chair_s_refusal(
+    tmp_path: Path,
+) -> None:
+    order: list[str] = []
+    refusal = DigestMismatchRefusal("perlector", "snapshot differs at model.safetensors: sha256 x")
+    actions, lockfile = _prefill_actions(tmp_path, FakePrefill(failure=refusal), order=order)
+    journal = BootstrapJournal(
+        tmp_path / "bootstrap.json", BootstrapPlan("c" * 40, lockfile), now=lambda: START
+    )
+
+    class Composed(FakeBootstrapActions):
+        def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
+            return actions.sync_uv_environment(lockfile)
+
+        def materialize_model_store(self) -> dict[str, object]:
+            return actions.materialize_model_store()
+
+    report = Bootstrapper(journal, Composed()).run()
+
+    assert not report.green
+    assert report.failure_step is BootstrapStep.MODEL_STORE
+    assert "perlector" in report.detail and "model.safetensors" in report.detail
+    assert report.completed[-1] is BootstrapStep.TRANSFER
+
+
+def test_a_model_store_that_fails_does_not_wait_for_the_background_fill(tmp_path: Path) -> None:
+    prefill = FakePrefill()
+    actions, _ = _prefill_actions(tmp_path, prefill, order=[])
+    actions.materialize = lambda: {"selection_complete": False}
+
+    with pytest.raises(BootstrapStepFailure):
+        actions.materialize_model_store()
+    assert [name for name, _ in prefill.events] == ["start"]
 
 
 def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
@@ -6294,13 +6604,33 @@ def test_production_bootstrap_refuses_an_incomplete_model_store_receipt(tmp_path
         materialize_model_store=lambda: {
             "complete": False,
             "real_roster_complete": False,
+            "selection_complete": False,
         },
         cache=None,  # type: ignore[arg-type]
         preflight=lambda: {"color": "green"},
     )
 
-    with pytest.raises(BootstrapStepFailure, match="every real-roster repository"):
+    with pytest.raises(BootstrapStepFailure, match="selected chairs need"):
         actions.materialize_model_store()
+
+
+def test_a_split_pod_needs_only_its_selection_s_repositories(tmp_path: Path) -> None:
+    """A witness pod's store may still lack the Perlector's model; its own chairs may not."""
+
+    def actions_with(receipt: dict[str, object]) -> SubprocessBootstrapActions:
+        return SubprocessBootstrapActions(
+            configuration=lambda: {"profile": "fixture"},
+            repository=tmp_path,
+            transfer=lambda: {},
+            materialize_model_store=lambda: receipt,
+            cache=None,  # type: ignore[arg-type]
+            preflight=lambda: {"color": "green"},
+        )
+
+    partial = {"real_roster_complete": False, "selection_complete": True}
+    assert actions_with(partial).materialize_model_store() == partial
+    with pytest.raises(BootstrapStepFailure, match="selected chairs need"):
+        actions_with({"real_roster_complete": True}).materialize_model_store()
 
 
 def test_red_preflight_details_survive_into_the_bootstrap_failure(tmp_path: Path) -> None:
@@ -6379,6 +6709,186 @@ def test_preflight_uses_the_configured_vram_table(vram: str, expected: str) -> N
     assert planned_chairs == {receipt["chair"] for receipt in report.cache_receipts}
     assert planned_chairs == {receipt["chair"] for receipt in report.smoke_receipts}
     assert all(item.residency in {"single", None} for item in report.placements)
+
+
+_EIGHTY = GpuProfile("synthetic", "12.4", "550", (8, 0), Decimal("80"), Decimal("100"), "bfloat16")
+
+
+class LookaheadLog:
+    """One timeline of verifications, prefetches and smokes, from every thread."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.lock = threading.Lock()
+        self.smoking = 0
+        self.overlapping_smokes = False
+
+    def add(self, event: str) -> None:
+        with self.lock:
+            self.events.append(event)
+
+
+class LoggedCache(FakeCache):
+    def __init__(self, log: LookaheadLog, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(**kwargs)
+        self.log = log
+
+    def verify(self, identity):  # type: ignore[no-untyped-def]
+        self.log.add(f"verify {identity.role}")
+        return super().verify(identity)
+
+
+class LoggedSmoke(FakeSmoke):
+    def __init__(self, log: LookaheadLog) -> None:
+        super().__init__()
+        self.log = log
+
+    def read(self, identity, fixture, placement):  # type: ignore[no-untyped-def]
+        with self.log.lock:
+            self.log.smoking += 1
+            self.log.overlapping_smokes |= self.log.smoking > 1
+        self.log.add(f"smoke {identity.role}")
+        time.sleep(0.02)
+        with self.log.lock:
+            self.log.smoking -= 1
+        return super().read(identity, fixture, placement)
+
+
+def _lookahead_runner(cache, smoke, prefetch) -> PreflightRunner:  # type: ignore[no-untyped-def]
+    root = Path(__file__).resolve().parents[2]
+    return PreflightRunner(
+        load_models_toml(root / "config/models.toml"),
+        load_placement_table(root / "config/pod_placement.toml"),
+        cache,
+        smoke,
+        root / "proof/fixtures/synthetic-two-page-v0/page-1.png",
+        cache_prefetcher=prefetch,
+    )
+
+
+def test_preflight_fills_the_next_chair_while_the_current_one_smokes_one_smoke_at_a_time() -> None:
+    order = [
+        "designator_surya",
+        "secondary_proposer",
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+        "perlector",
+        "reconstructor",
+    ]
+    log = LookaheadLog()
+    cache = LoggedCache(log)
+    started = {role: threading.Event() for role in order}
+
+    def prefetch(identity):  # type: ignore[no-untyped-def]
+        log.add(f"prefetch {identity.role}")
+        started[identity.role].set()
+        return {"manifest_digest": identity.digest_manifest, "prefetched": True}
+
+    class Overlapping(LoggedSmoke):
+        def read(self, identity, fixture, placement):  # type: ignore[no-untyped-def]
+            position = order.index(identity.role)
+            if position + 1 < len(order):
+                # The next chair's fill is under way while this one is on the card.
+                assert started[order[position + 1]].wait(timeout=5)
+            return super().read(identity, fixture, placement)
+
+    serial = _preflight(FakeCache(), FakeSmoke()).run(_EIGHTY)
+    report = _lookahead_runner(cache, Overlapping(log), prefetch).run(_EIGHTY)
+
+    assert report.color == "green"
+    assert not log.overlapping_smokes, "the card smokes one chair at a time"
+    smoked = [event.split()[1] for event in log.events if event.startswith("smoke")]
+    assert smoked == order
+    assert [receipt["chair"] for receipt in report.smoke_receipts] == order
+    # Only the first chair is verified in the foreground; every later one was
+    # prefetched while the chair before it smoked.
+    assert cache.verify_calls == {order[0]: 1}
+    assert all(receipt.get("prefetched") for receipt in report.cache_receipts[1:])
+    assert sorted(r["chair"] for r in report.cache_receipts) == sorted(
+        r["chair"] for r in serial.cache_receipts
+    )
+
+
+def test_a_prefetch_without_room_is_verified_again_after_the_smoke() -> None:
+    log = LookaheadLog()
+    cache = LoggedCache(log)
+
+    def prefetch(identity):  # type: ignore[no-untyped-def]
+        log.add(f"prefetch {identity.role}")
+        raise DiskSpaceRefusal(identity.role, "container disk too small")
+
+    report = _lookahead_runner(cache, LoggedSmoke(log), prefetch).run(_EIGHTY)
+
+    assert report.color == "green"
+    smoked = [event.split()[1] for event in log.events if event.startswith("smoke")]
+    assert set(cache.verify_calls) >= set(smoked)
+    for before, after in itertools.pairwise(smoked):
+        assert log.events.index(f"smoke {before}") < log.events.index(f"verify {after}")
+
+
+def test_a_prefetch_that_never_finishes_is_a_named_issue_and_the_report_still_returns() -> None:
+    never = threading.Event()
+    prefetched: list[str] = []
+
+    def prefetch(identity):  # type: ignore[no-untyped-def]
+        prefetched.append(identity.role)
+        never.wait(timeout=30)
+        return {"manifest_digest": identity.digest_manifest}
+
+    class Sized(FakeCache):
+        def manifest(self, identity):  # type: ignore[no-untyped-def]
+            raise CacheMismatch("no manifest in this fake")
+
+    cache = Sized()
+    root = Path(__file__).resolve().parents[2]
+    runner = PreflightRunner(
+        load_models_toml(root / "config/models.toml"),
+        load_placement_table(root / "config/pod_placement.toml"),
+        cache,
+        FakeSmoke(),
+        root / "proof/fixtures/synthetic-two-page-v0/page-1.png",
+        cache_prefetcher=prefetch,
+        prefetch_minimum_seconds=0.2,
+    )
+    began = time.monotonic()
+    try:
+        report = runner.run(_EIGHTY)
+    finally:
+        never.set()
+
+    assert time.monotonic() - began < 10, "the report returns without waiting on the stuck fill"
+    assert report.color == "red"
+    stuck = prefetched[0]
+    timeouts = [issue for issue in report.issues if issue.code == "cache-prefetch-timeout"]
+    assert [
+        (issue.chair, "did not finish by its deadline" in issue.message) for issue in timeouts
+    ] == [(stuck, True)]
+    assert stuck not in {receipt["chair"] for receipt in report.cache_receipts}
+    assert prefetched == [stuck], "nothing more is prefetched once one has overrun"
+    later = [
+        r["chair"] for r in report.cache_receipts if r["chair"] != report.cache_receipts[0]["chair"]
+    ]
+    assert all(cache.verify_calls.get(chair) == 1 for chair in later), (
+        "the chairs after it are verified in the foreground"
+    )
+
+
+def test_a_prefetch_that_refuses_is_that_chair_s_cache_issue() -> None:
+    def prefetch(identity):  # type: ignore[no-untyped-def]
+        if identity.role == "attestator_2":
+            raise CacheMismatch("digest differs")
+        return {"manifest_digest": identity.digest_manifest}
+
+    cache = FakeCache()
+    report = _lookahead_runner(cache, FakeSmoke(), prefetch).run(_EIGHTY)
+    expected = _preflight(FakeCache(always_mismatch="attestator_2"), FakeSmoke()).run(_EIGHTY)
+
+    assert report.color == "red"
+    assert [(issue.code, issue.chair, issue.message) for issue in report.issues] == [
+        (issue.code, issue.chair, issue.message) for issue in expected.issues
+    ]
+    assert "attestator_2" not in cache.verify_calls, "the refusal is not retried"
 
 
 def _table() -> PlacementTable:
@@ -6661,6 +7171,10 @@ def test_the_shipped_spend_policy_carries_the_reviewed_ceilings() -> None:
     assert policy.shutdown_poll_interval_seconds == 30
     assert policy.shutdown_deadline_seconds == 900
     assert policy.billing_cutoff_margin_seconds == 3600
+    # The lead's switches: the budget and the guard's idle delete are both off.
+    assert policy.pod_budget == "off"
+    assert policy.ladder_delete == "off"
+    assert policy.budget_environment() == {"VERBATUS_POD_BUDGET": "off"}
 
 
 @pytest.mark.parametrize(
@@ -6946,6 +7460,11 @@ def test_an_unconfigured_spend_policy_refuses_both_paid_paths_end_to_end(tmp_pat
         ({"hard_lifetime_seconds": "18000"}, "hard lifetime cannot exceed the soft maximum"),
         ({"max_estimated_metered_cost_usd": '"2.50"'}, "cannot exceed the soft maximum cost"),
         ({"schema": '"pod-spend.v3"'}, "soft and hard pod budget maximums"),
+        ({"schema": '"pod-spend.v4"'}, "pod_budget and ladder_delete"),
+        ({"pod_budget": None}, "pod_budget must be 'on' or 'off'"),
+        ({"pod_budget": '"yes"'}, "pod_budget must be 'on' or 'off'"),
+        ({"ladder_delete": "true"}, "ladder_delete must be 'on' or 'off'"),
+        ({"soft_max_seconds": None}, "missing a required ceiling"),
     ],
 )
 def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
@@ -6954,7 +7473,7 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
     from .spend import load_spend_policy
 
     base: dict[str, str | None] = {
-        "schema": '"pod-spend.v4"',
+        "schema": f'"{SPEND_SCHEMA}"',
         "state": '"configured"',
         "currency": '"USD"',
         "max_hourly_usd": '"1.00"',
@@ -6970,6 +7489,8 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
         "hard_max_seconds": "21600",
         "soft_max_cost_usd": '"2.00"',
         "hard_max_cost_usd": '"3.00"',
+        "pod_budget": '"on"',
+        "ladder_delete": '"off"',
     }
     base.update(mutation)
     path = tmp_path / "spend.toml"
@@ -7074,8 +7595,66 @@ def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceilin
     detail = str(refusal.value)
     assert "retired" in detail
     assert "account_balance_alert_usd" in detail
-    assert "pod-spend.v4" in detail
+    assert SPEND_SCHEMA in detail
     assert "missing a required ceiling" not in detail
+
+
+def _budget_off_policy_text(**mutation: str | None) -> str:
+    fields: dict[str, str | None] = {
+        "schema": f'"{SPEND_SCHEMA}"',
+        "state": '"configured"',
+        "currency": '"USD"',
+        "max_hourly_usd": '"1.00"',
+        "max_estimated_metered_cost_usd": '"2.00"',
+        "account_balance_floor_usd": '"50.00"',
+        "account_balance_alert_usd": '"75.00"',
+        "hard_lifetime_seconds": "3600",
+        "laptop_heartbeat_timeout_seconds": "30",
+        "shutdown_poll_interval_seconds": "1",
+        "shutdown_deadline_seconds": "5",
+        "billing_cutoff_margin_seconds": "3600",
+        "pod_budget": '"off"',
+        "ladder_delete": '"off"',
+    }
+    fields.update(mutation)
+    return "\n".join(f"{key} = {value}" for key, value in fields.items() if value is not None)
+
+
+def test_a_budget_off_policy_needs_no_maximums_and_seals_only_the_switch(tmp_path: Path) -> None:
+    from .spend import load_spend_policy
+
+    path = tmp_path / "spend.toml"
+    path.write_text(_budget_off_policy_text() + "\n", encoding="utf-8")
+
+    policy = load_spend_policy(path)
+
+    assert policy.configured and not policy.budget_on
+    assert policy.soft_max_seconds is None and policy.hard_max_cost_usd is None
+    assert policy.budget_environment() == {"VERBATUS_POD_BUDGET": "off"}
+
+
+def test_a_budget_off_policy_keeps_its_maximums_inert(tmp_path: Path) -> None:
+    """Off, the maximums may stay in the file out of order with each other and the launch
+    ceilings, ready for the lead to turn the budget on; they are still checked as numbers."""
+    from .spend import load_spend_policy
+
+    inert = {
+        "soft_max_seconds": "1800",
+        "hard_max_seconds": "900",
+        "soft_max_cost_usd": '"1.00"',
+        "hard_max_cost_usd": '"0.50"',
+    }
+    path = tmp_path / "spend.toml"
+    path.write_text(_budget_off_policy_text(**inert) + "\n", encoding="utf-8")
+
+    policy = load_spend_policy(path)
+
+    assert policy.soft_max_seconds == 1800
+    assert policy.budget_environment() == {"VERBATUS_POD_BUDGET": "off"}
+
+    path.write_text(_budget_off_policy_text(soft_max_seconds="0") + "\n", encoding="utf-8")
+    with pytest.raises(SpendRefusal, match="soft maximum seconds must be a positive integer"):
+        load_spend_policy(path)
 
 
 def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path: Path) -> None:
@@ -7083,7 +7662,7 @@ def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path
 
     path = tmp_path / "spend.toml"
     path.write_text(
-        'schema = "pod-spend.v4"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
+        f'schema = "{SPEND_SCHEMA}"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
         encoding="utf-8",
     )
 

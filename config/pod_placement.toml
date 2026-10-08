@@ -14,6 +14,10 @@
 # card: that is the project lead's call.
 #
 # UNITS. `context_cap` is tokens. `batch_size` is concurrent sequences.
+# `planned_batch_ceiling` is concurrent sequences too: the most a capacity plan
+# (operations/serving/capacity.py) may launch a row with on a measured card of the
+# tier, while `batch_size` bounds the row itself. Both are planning caps pending
+# measurement on a rented card.
 # `engine_memory_fraction` is a fraction of the card. **`pixel_cap` is a
 # LONGEST-EDGE cap in pixels**, not a pixel count: 3,584 admits 3,584² =
 # 12,845,056 pixels, exactly DAI's vendor `max_pixels`. A serving profile's
@@ -55,6 +59,7 @@ engine_memory_fraction = "0.90"
 context_cap = 32768
 pixel_cap = 3584
 batch_size = 1
+planned_batch_ceiling = 8
 
 [[tiers]]
 id = "generic-48gb"
@@ -68,6 +73,7 @@ engine_memory_fraction = "0.78"
 context_cap = 32768
 pixel_cap = 3584
 batch_size = 2
+planned_batch_ceiling = 48
 
 # The id names the card class this tier is planned for, not its literal
 # numeric floor: a measured 64-79 GiB card lands here too, below the "80gb"
@@ -84,7 +90,11 @@ detector_device = "cpu"
 engine_memory_fraction = "0.88"
 context_cap = 65536
 pixel_cap = 3584
-batch_size = 4
+# A ceiling, not a plan: a row asks for at most this many sequences and the
+# engine's KV pool admits what the card holds. config/serving_recipes_real.toml
+# carries each row's KV arithmetic.
+batch_size = 8
+planned_batch_ceiling = 64
 
 # The rented cards.  `tier` must be one of the ids above; a
 # profile whose vram_gib does not fall inside its own tier's band is refused at

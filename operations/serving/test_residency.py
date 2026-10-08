@@ -9,6 +9,7 @@ but closing the descriptor afterward does not.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import os
 import re
@@ -277,3 +278,81 @@ def test_acquire_reports_a_close_failure_inside_the_refusal_it_was_already_raisi
 
     assert "additionally its descriptor could not be closed" in str(refused.value)
     assert "simulated close failure during acquire cleanup" in str(refused.value)
+
+
+def test_a_relinquished_lease_stays_held_by_the_child_until_an_attached_stop() -> None:
+    """The hand-off path on a real process: the manager gives up its descriptor, the
+    child keeps the card leased, and a later process attaches by pid and start marker,
+    stops the group and finds the lease free."""
+    import sys
+    import tempfile
+
+    from .process import SubprocessLauncher, process_start_marker
+
+    if process_start_marker(os.getpid()) is None:
+        pytest.skip("no /proc on this host, so no process can be handed over")
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        lease = FileResidencyLease(root / "pod-gpu.lock")
+        held = lease.acquire(None)  # type: ignore[arg-type]
+        descriptor = held.inheritable_fd()
+        child = SubprocessLauncher().launch(
+            (sys.executable, "-c", "import time; time.sleep(60)"),
+            root / "child.log",
+            inheritable_fds=(descriptor,),
+        )
+        try:
+            marker = child.start_marker
+            assert marker is not None and marker == process_start_marker(child.pid)
+            held.relinquish()
+            with pytest.raises(ResidencyError):
+                lease.acquire(None)  # type: ignore[arg-type]
+
+            # A pid that now names another process is never taken for the service.
+            with pytest.raises(Exception, match="no longer the service"):
+                SubprocessLauncher().attach(child.pid, marker + "0", root / "child.log")
+            attached = SubprocessLauncher().attach(child.pid, marker, root / "child.log")
+            assert attached.poll() is None
+            attached.terminate()
+            assert attached.wait(5) == -1
+            assert attached.poll() == -1
+            lease.acquire(None).release()  # type: ignore[arg-type]
+        finally:
+            child.kill()
+            child.wait(5)
+
+
+def test_an_attached_group_whose_leader_exited_is_still_stopped() -> None:
+    """A real group whose leader exited while a member (the engine's stand-in) runs:
+    attaching finds it, and stopping signals the member, not nobody."""
+    import sys
+    import tempfile
+
+    from .process import SubprocessLauncher, _group_has_running_member, process_start_marker
+
+    if process_start_marker(os.getpid()) is None:
+        pytest.skip("no /proc on this host, so no process can be handed over")
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        leader = SubprocessLauncher().launch(
+            (
+                sys.executable,
+                "-c",
+                "import subprocess, sys; "
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])",
+            ),
+            root / "leader.log",
+        )
+        marker = leader.start_marker
+        assert marker is not None
+        leader.process.wait(10)  # the leader exits; its child keeps the group
+        try:
+            assert _group_has_running_member(leader.pid)
+            attached = SubprocessLauncher().attach(leader.pid, marker, root / "leader.log")
+            assert attached.poll() == -1
+            attached.terminate()
+            attached.wait(5)
+            assert not _group_has_running_member(leader.pid)
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(leader.pid, 9)

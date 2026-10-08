@@ -45,8 +45,8 @@ from operations.operator.volume_s3 import VolumeSpec
 from pipeline.orchestrator import run as orchestrator
 from pipeline.orchestrator.run import STOP_RECORD_SCHEMA
 
+from . import bootstrap_main, pod_run
 from . import launch as launch_module
-from . import pod_run
 from .bootstrap import BootstrapStep
 from .models import run_report_paths
 from .pod_run import (
@@ -327,11 +327,15 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
     assert actions.calls == list(BootstrapStep)
     [(command, cwd, env)] = runner.calls
     assert cwd == ws.repository
-    assert command[1:3] == ["-I", str(ws.repository / "pipeline" / "orchestrator" / "run.py")]
+    assert command[1:4] == [
+        "-I",
+        "-u",
+        str(ws.repository / "pipeline" / "orchestrator" / "run.py"),
+    ]
     stop = Path(command[command.index("--stop-record") + 1])
     assert stop.name == "stop.json" and stop.parent.name.startswith("pod-run-stop-")
     assert not stop.parent.exists()
-    assert command[3:] == [
+    assert command[4:] == [
         "--fixture",
         "synthetic-two-page-v0",
         "--run-id",
@@ -483,6 +487,85 @@ def _armed(
     return _guard_deadline(ws, value, heartbeat=clock.now().timestamp() - 30)
 
 
+def test_the_backup_list_names_only_trees_that_exist_and_is_cleared(tmp_path: Path) -> None:
+    local, volume = tmp_path / "local" / "run", tmp_path / "volume" / "run"
+    listed = tmp_path / "backup-pod123"
+    backup = pod_run.BackupList(listed, (local, volume, local))
+    backup.refresh()
+    assert lines(listed) == []
+    volume.mkdir(parents=True)
+    backup.refresh()
+    assert lines(listed) == [str(volume)]
+    local.mkdir(parents=True)
+    backup.refresh()
+    assert lines(listed) == [str(local), str(volume)]
+    backup.clear()
+    assert not listed.exists()
+    pod_run.BackupList(None, (local,)).refresh()
+
+
+def test_the_bootstrap_and_the_final_sync_tell_the_guard_they_are_working(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither has a liveness tick; a thread writes the progress line through both, and
+    the line is gone once the run ends."""
+    ws = _prepared(tmp_path)
+    local_root = tmp_path / "local-runs"
+    monkeypatch.setattr(pod_run, "DEFAULT_LOCAL_RUNS_DIRECTORY", local_root)
+    _policy(ws, roots=[str(ws.volume), str(local_root)])
+    clock = Clock()
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, int(clock.now().timestamp()) + 3600)
+    progress = deadline.with_name("progress-pod123")
+    seen: dict[str, list[str]] = {}
+
+    class Watched(PreflightedActions):
+        def run_preflight(self) -> dict[str, object]:
+            # The thread writes once a second here (--interval-seconds 1).
+            give_up = time.monotonic() + 10
+            while "preflight" not in progress.read_text(encoding="ascii"):
+                assert time.monotonic() < give_up, progress.read_text(encoding="ascii")
+                time.sleep(0.05)
+            seen["bootstrap"] = progress.read_text(encoding="ascii").split(" ", 4)
+            return super().run_preflight()
+
+    real_sync = pod_run.RunTreeSync.sync
+
+    def watched_sync(self):  # type: ignore[no-untyped-def]
+        seen["sync"] = progress.read_text(encoding="ascii").split(" ", 4)
+        return real_sync(self)
+
+    monkeypatch.setattr(pod_run.RunTreeSync, "sync", watched_sync)
+    run = local_root / "first-real-run"
+    recorded = RecordedRunner(returncode=0)
+
+    def runner(*args, **kwargs):  # type: ignore[no-untyped-def]
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "record.json").write_bytes(b"new")
+        return recorded(*args, **kwargs)
+
+    argv = _run_argv(ws, extra=("--no-hold",))
+    index = argv.index("--run-root")
+    del argv[index : index + 2]
+    code = main(
+        argv,
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: Watched(),
+        runner=runner,
+    )
+
+    assert code == EXIT_COMPLETE
+    assert seen["bootstrap"][2:4] == ["bootstrapping", "bootstrap"]
+    assert seen["bootstrap"][4].startswith("preflight for ")
+    assert seen["sync"][2:4] == ["ok", "final-sync"]
+    assert not progress.exists()
+
+
+def lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+
 def _guard_deadline(ws: Workspace, value: int, *, heartbeat: float | None = None) -> Path:
     guard = ws.volume / pod_run.POD_GUARD_DIRECTORY
     guard.mkdir()
@@ -513,9 +596,12 @@ def test_hand_run_uses_local_disk_and_requires_the_final_volume_sync(
         stored = ws.volume / "runs" / "first-real-run"
         stored.mkdir(parents=True)
         (stored / "record.json").write_bytes(b"older")
-    recorded = RecordedRunner(returncode=0)
+    recorded = RecordedRunner(returncode=0, ticks=1)
+    backup = deadline.with_name("backup-pod123")
+    listed_at_start: list[str] = []
 
     def runner(*args, **kwargs):  # type: ignore[no-untyped-def]
+        listed_at_start.extend(lines(backup))
         run.mkdir(parents=True, exist_ok=True)
         (run / "record.json").write_bytes(b"new")
         return recorded(*args, **kwargs)
@@ -540,11 +626,16 @@ def test_hand_run_uses_local_disk_and_requires_the_final_volume_sync(
         assert (ws.volume / "runs" / "first-real-run" / "record.json").read_bytes() == b"older"
         assert deadline.read_text(encoding="ascii") != f"{int(clock.now().timestamp())}\n"
         assert not deadline.with_name("released-pod123").exists()
+        # The guard's hour-idle backup keeps both trees, from the start (the volume's run
+        # was copied to local disk before the bootstrap) to past the failed sync.
+        assert listed_at_start == lines(backup) == [str(run), str(stored)]
     else:
         assert code == EXIT_COMPLETE
         assert report["state"] == "complete"
         assert (ws.volume / "runs" / "first-real-run" / "record.json").read_bytes() == b"new"
         assert deadline.with_name("released-pod123").exists()
+        assert listed_at_start == [], "only trees that exist are listed"
+        assert not backup.exists(), "a clean finish leaves nothing to back up"
 
 
 @pytest.mark.parametrize(
@@ -708,8 +799,18 @@ def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
     extra = {pod_run.POD_ID_ENVIRONMENT: "pod123"}
     later = int(clock.now().timestamp()) + 3600
     deadline_path = _armed(ws, tmp_path, monkeypatch, clock, later)
+    runner = RecordedRunner()
     if case == "no-deadline-file":
+        # No deadline, and the guard dies during the run: nothing would read a new one.
         deadline_path.unlink()
+        inner = runner
+        stale = clock.now().timestamp() - pod_run.GUARD_HEARTBEAT_STALE_SECONDS - 1
+
+        def guard_dies_mid_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+            os.utime(deadline_path.with_name("heartbeat-pod123"), (stale, stale))
+            return inner(*args, **kwargs)
+
+        runner = guard_dies_mid_run  # type: ignore[assignment]
     elif case == "garbage-deadline":
         deadline_path.write_text("abc\n", encoding="ascii")
     elif case == "unwritable":
@@ -729,7 +830,7 @@ def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
         now=clock.now,
         sleeper=clock.sleep,
         actions_factory=lambda plan: PreflightedActions(),
-        runner=RecordedRunner(),
+        runner=runner,
     )
 
     assert code == EXIT_COMPLETE
@@ -744,6 +845,76 @@ def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
         assert release["detail"].startswith("deadline write failed")
     else:
         assert not deadline.exists()
+
+
+def test_no_hold_writes_the_release_deadline_for_a_guard_started_with_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the budget off a pod can start with no deadline; its live guard honours one
+    written later, so the release writes it, and the run needs no hard deadline either."""
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, 0)
+    deadline.unlink()
+    environment = {
+        **_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        bootstrap_main.HARD_DEADLINE_ENV: bootstrap_main.NO_HARD_DEADLINE,
+        "VERBATUS_POD_BUDGET": "off",
+    }
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=environment,
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(),
+    )
+
+    assert code == EXIT_COMPLETE
+    now = int(clock.now().timestamp())
+    assert deadline.read_text(encoding="ascii") == f"{now}\n"
+    report = _report(ws)
+    assert report["hard_deadline"] is None
+    assert report["guard_release"]["released"] is True
+    assert report["guard_release"]["guard_alive"] is True
+
+
+@pytest.mark.parametrize("sealed", [True, False], ids=["sealed-off", "checkout-off"])
+def test_a_budget_switched_off_is_reported_as_off_not_unknown(tmp_path: Path, sealed: bool) -> None:
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "spend.toml").write_bytes((ROOT / "config" / "spend.toml").read_bytes())
+    environment = {name: None for name in pod_run.POD_BUDGET_ENVIRONMENT.values()}
+    environment["VERBATUS_POD_BUDGET"] = "off" if sealed else None
+    plan = SimpleNamespace(repository=tmp_path)
+
+    budget, problem, source = pod_run._pod_budget(plan, environment)  # type: ignore[arg-type]
+
+    assert (budget, problem) == (None, "budget off (lead's choice)")
+    assert source.startswith("sealed into the pod") is sealed
+
+
+def test_a_run_that_may_hold_is_refused_when_there_is_no_hard_deadline(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+    environment = {
+        **_environ(clock, lifetime=4.0),
+        bootstrap_main.HARD_DEADLINE_ENV: bootstrap_main.NO_HARD_DEADLINE,
+    }
+
+    code = main(
+        _run_argv(ws),
+        environ=environment,
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=_never_called,
+        runner=runner,
+    )
+
+    assert code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "--no-hold" in _report(ws)["reason"]
 
 
 def test_no_hold_leaves_the_guard_alone_after_a_red_bootstrap(
@@ -1526,6 +1697,15 @@ class PacedRunner(RecordedRunner):
         )
 
 
+# The shipped spend policy with the lead's budget switched on.
+SHIPPED_SPEND_BUDGET_ON = (
+    (ROOT / "config" / "spend.toml")
+    .read_bytes()
+    .replace(b'pod_budget = "off"', b'pod_budget = "on"', 1)
+)
+assert b'pod_budget = "on"' in SHIPPED_SPEND_BUDGET_ON
+
+
 @pytest.mark.parametrize(
     ("flags", "rates", "hourly", "source"),
     [
@@ -1549,9 +1729,7 @@ def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
     source: str,
 ) -> None:
     ws = _prepared(tmp_path)
-    (ws.repository / "config" / "spend.toml").write_bytes(
-        (ROOT / "config" / "spend.toml").read_bytes()
-    )
+    (ws.repository / "config" / "spend.toml").write_bytes(SHIPPED_SPEND_BUDGET_ON)
     clock = Clock()
     _first_process(tmp_path, monkeypatch, "pod123")
     _guard_deadline(ws, int(clock.now().timestamp()) + 3600)
@@ -1585,13 +1763,36 @@ def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
     assert "mv $G/deadline.new $G/deadline-pod123" in call[3]
 
 
+def test_the_final_report_records_each_page_stage_s_rate(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=PacedRunner(ticks=3, clock=clock),
+    )
+
+    assert code == EXIT_COMPLETE
+    report = _report(ws)
+    [rate] = report["stage_rates"]
+    assert rate["stage"] == "perlector"
+    assert (rate["pages_total"], rate["pages_per_minute"]) == (100, 0.5)
+    progress = json.loads(Path(report["progress_path"]).read_text(encoding="utf-8"))
+    assert progress["stage"] == "perlector" and progress["status"] == "ok"
+    assert progress["stage_rates"] == report["stage_rates"]
+
+
 SEALED_BUDGET = {
     "VERBATUS_SOFT_MAX_SECONDS": "7200",
     "VERBATUS_HARD_MAX_SECONDS": "10800",
     "VERBATUS_SOFT_MAX_COST_USD": "1.00",
     "VERBATUS_HARD_MAX_COST_USD": "1.50",
 }
-SHIPPED_SPEND_SHA256 = hashlib.sha256((ROOT / "config" / "spend.toml").read_bytes()).hexdigest()
+SHIPPED_SPEND_SHA256 = hashlib.sha256(SHIPPED_SPEND_BUDGET_ON).hexdigest()
 
 
 @pytest.mark.parametrize(
@@ -1626,9 +1827,7 @@ def test_the_deadline_notice_quotes_the_budget_that_armed_the_pod(
     laptop may not have launched with, is used only when nothing was sealed, and then
     named with its digest. A budget sealed in part is never filled from the checkout."""
     ws = _prepared(tmp_path)
-    (ws.repository / "config" / "spend.toml").write_bytes(
-        (ROOT / "config" / "spend.toml").read_bytes()
-    )
+    (ws.repository / "config" / "spend.toml").write_bytes(SHIPPED_SPEND_BUDGET_ON)
     clock = Clock()
     _first_process(tmp_path, monkeypatch, "pod123")
     created = int(clock.now().timestamp())
@@ -3135,6 +3334,7 @@ def test_the_sibling_suffixes_launch_derives_are_the_ones_pod_run_actually_write
         plan.timing_journal_path.name.removeprefix(report.stem),
         plan.transcript_path.name.removeprefix(report.stem),
         plan.estimate_path.name.removeprefix(report.stem),
+        plan.progress_path.name.removeprefix(report.stem),
     }
 
     nested = json.dumps(["python", "-m", pod_run.__name__, "--report-path", str(report)])
@@ -3204,6 +3404,7 @@ def test_every_launch_bound_record_is_derived_from_the_sealed_start_command() ->
         f"pod-run-report-{token}-timings.json",
         f"pod-run-report-{token}-transcript.log",
         f"pod-run-report-{token}-estimate.json",
+        f"pod-run-report-{token}-progress.json",
     )
 
 
@@ -3617,6 +3818,7 @@ def test_a_launch_receipt_for_another_run_is_refused_rather_than_used(tmp_path: 
         f"pod-run-report-{token}-timings.json",
         f"pod-run-report-{token}-transcript.log",
         f"pod-run-report-{token}-estimate.json",
+        f"pod-run-report-{token}-progress.json",
     )
 
 
@@ -4141,20 +4343,21 @@ def _burn_cpu() -> None:
 
 def _stalling_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ticks: list[str]
-) -> tuple[list[float], list[list[str]]]:
+) -> tuple[list[float], list[list[str]], list[list[str]], dict]:
     """Drive one run whose orchestrator ticks once per five minutes doing what `ticks` says.
 
     On every tick an idle model server in the orchestrator's own process tree burns CPU
     and appends to its engine log in the run tree; "transcript" also adds stage output,
     and "artifact" also publishes a file in the run tree. Returns the minute of each
-    keep-alive touch and every notice argv.
+    keep-alive touch, the guard's progress line after each tick split into its fields,
+    every notice argv and the final run report.
     """
     ws = _prepared(tmp_path)
     clock = Clock()
     _first_process(tmp_path, monkeypatch, "pod123")
-    topic = ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic"
-    topic.parent.mkdir(parents=True, exist_ok=True)
-    topic.write_text("guard-topic-for-the-test\n", encoding="utf-8")
+    guard = ws.volume / pod_run.POD_GUARD_DIRECTORY
+    guard.mkdir(parents=True, exist_ok=True)
+    (guard / "ntfy_topic").write_text("guard-topic-for-the-test\n", encoding="utf-8")
     start = clock.now()
     touches: list[float] = []
     monkeypatch.setattr(
@@ -4165,6 +4368,7 @@ def _stalling_run(
     tree = ws.volume / pod_run.DEFAULT_RUNS_DIRECTORY / "first-real-run"
     engine_log = tree / "4_perlector" / pod_run.SERVING_LOGS_DIR / "vllm-perlector.log"
     notify = NotifyRecorder()
+    lines: list[list[str]] = []
 
     class Ticking(RecordedRunner):
         def __call__(self, argv, *, cwd, env, transcript, liveness, interval_seconds):  # type: ignore[no-untyped-def]
@@ -4178,14 +4382,13 @@ def _stalling_run(
                     with Path(transcript).open("a", encoding="utf-8") as out:
                         out.write(f"page {number} read\n")
                 elif tick == "artifact":
-                    artifact = tree / "4_perlector" / f"page-{number}.json"
-                    artifact.write_text("{}", encoding="utf-8")
-                    # Ahead of every earlier write, whatever the filesystem's clock grain.
-                    later = time.time_ns() + (number + 1) * 10**9
-                    os.utime(artifact, ns=(later, later))
+                    page = tree / "4_perlector" / f"page-{number}"
+                    page.mkdir(parents=True)
+                    (page / "record.json").write_text("{}", encoding="utf-8")
                 else:
                     assert tick == "idle"
                 liveness(os.getpid(), True)
+                lines.append((guard / "progress-pod123").read_text(encoding="ascii").split(" ", 4))
             return super().__call__(
                 argv,
                 cwd=cwd,
@@ -4205,38 +4408,52 @@ def _stalling_run(
         notify_runner=notify.factory,
     )
     assert code == EXIT_COMPLETE
-    stalls = [call for call in notify.calls if "shows no progress" in call[-1]]
-    return touches, stalls
+    return touches, lines, notify.calls, _report(ws)
 
 
 def test_a_progressing_run_holds_its_pod_on_every_tick(tmp_path, monkeypatch) -> None:
-    touches, stalls = _stalling_run(
+    touches, lines, notices, _ = _stalling_run(
         tmp_path, monkeypatch, ["transcript", "artifact", "transcript", "artifact", "transcript"]
     )
     assert touches == [5, 10, 15, 20, 25]
-    assert stalls == []
+    assert [line[2] for line in lines] == ["ok"] * 5
+    assert all(line[0] == line[1] for line in lines), "last ok is now on every ok tick"
+    assert notices == []
 
 
-def test_an_idle_server_burning_cpu_does_not_hold_the_pod_past_the_stall_window(
+def test_an_idle_server_burning_cpu_does_not_hold_the_pod_past_the_quiet_window(
     tmp_path, monkeypatch
 ) -> None:
-    assert pod_run.RUN_STALL_SECONDS == 15 * 60
-    touches, stalls = _stalling_run(tmp_path, monkeypatch, ["idle"] * 7)
+    assert pod_run.progress_watch.OUTPUT_QUIET_SECONDS == 15 * 60
+    touches, lines, notices, _ = _stalling_run(tmp_path, monkeypatch, ["idle"] * 7)
     # Only the first tick, which finds the run tree new, is progress: held through
-    # minute 15, released from minute 20 on, though the server burned CPU every tick.
+    # minute 15, stalled from minute 20 on, though the server burned CPU every tick.
     assert touches == [5, 10, 15]
-    [notice] = stalls
-    assert notice[-2] == "decision"
-    assert notice[-1].startswith("run on pod123 shows no progress since ")
-    assert notice[-1].endswith("since 2026-01-01 00:05 UTC; the idle guard now decides")
+    assert [line[2] for line in lines] == ["ok"] * 3 + ["stalled"] * 4
+    started = int(lines[0][0]) - 300
+    # The last ok stays at minute 15, so the guard's ladder runs from there.
+    assert {int(line[1]) - started for line in lines[3:]} == {15 * 60}
+    assert lines[-1][3] == "output"
+    assert lines[-1][4].startswith("no new output or record for 1800 s")
+    # The guard owns every notice about a stalled run; pod_run sends none.
+    assert notices == []
 
 
 def test_progress_after_a_stall_holds_the_pod_again(tmp_path, monkeypatch) -> None:
-    touches, stalls = _stalling_run(
+    touches, lines, _, _ = _stalling_run(
         tmp_path, monkeypatch, ["idle"] * 5 + ["artifact", "transcript"]
     )
     assert touches == [5, 10, 15, 30, 35]
-    assert len(stalls) == 1
+    assert [line[2] for line in lines] == ["ok"] * 3 + ["stalled"] * 2 + ["ok"] * 2
+
+
+def test_the_final_report_carries_the_progress_record(tmp_path, monkeypatch) -> None:
+    *_, report = _stalling_run(tmp_path, monkeypatch, ["idle"] * 5)
+    progress = json.loads(Path(report["progress_path"]).read_text(encoding="utf-8"))
+    assert progress["schema"] == "pod-run-progress.v1"
+    assert progress["status"] == "stalled" and progress["measure"] == "output"
+    assert report["progress"]["status"] == "stalled"
+    assert report["stage_rates"] == []
 
 
 def test_the_run_tree_mark_moves_on_stage_writes_and_not_on_engine_logs(tmp_path: Path) -> None:
@@ -4249,18 +4466,21 @@ def test_the_run_tree_mark_moves_on_stage_writes_and_not_on_engine_logs(tmp_path
     assert before is not None
 
     future = before + 10**9
-    os.utime(engine_log, ns=(future, future))
+    os.utime(engine_log.parent, ns=(future, future))
     assert pod_run.run_tree_mark(tmp_path) == before
 
-    artifact = stage / "page-1.json"
-    artifact.write_text("{}", encoding="utf-8")
-    os.utime(artifact, ns=(future, future))
+    # A record published into a stage's directory moves that directory's time.
+    records = stage / "artifacts" / "page-accounting"
+    records.mkdir(parents=True)
+    os.utime(records, ns=(future, future))
     assert pod_run.run_tree_mark(tmp_path) == future
-
-    # A name published from an older file still moves the mark through its directory.
     later = future + 10**9
-    os.link(artifact, stage / "page-2.json")
-    os.utime(stage, ns=(later, later))
+    (records / "page-1.json").write_text("{}", encoding="utf-8")
+    os.utime(records, ns=(later, later))
+    assert pod_run.run_tree_mark(tmp_path) == later
+
+    # Files are never stat'ed one by one.
+    os.utime(records / "page-1.json", ns=(later + 10**9, later + 10**9))
     assert pod_run.run_tree_mark(tmp_path) == later
 
 
@@ -4280,3 +4500,95 @@ def test_help_prints_the_usage_of_both_halves_and_runs_nothing(flag: str) -> Non
     assert result.stdout.startswith("usage: python -m operations.pod.pod_run")
     assert "--run-id" in result.stdout and " -- " in result.stdout
     assert "refused" not in result.stdout + result.stderr
+
+
+def _capacity_plan(tier: str = TIER):  # type: ignore[no-untyped-def]
+    from decimal import Decimal
+
+    from operations.serving.capacity import CapacityPlan, ChairCapacity
+    from operations.serving.config import ServingConfigInputs
+
+    return CapacityPlan(
+        vram_gib=Decimal("47.99"),
+        gpu_count=1,
+        compute_capability="8.6",
+        tier=tier,
+        serving_config_inputs=ServingConfigInputs.from_record(SERVING_INPUTS),
+        chairs={
+            "attestator_2": ChairCapacity(
+                recipe="unproven-real-attestatores",
+                row_max_num_seqs=2,
+                max_num_seqs=38,
+                weights_gib=Decimal("15.5"),
+                kv_gib_per_seq=Decimal("0.47"),
+                memory_fraction=Decimal("0.78"),
+            )
+        },
+    )
+
+
+@dataclass
+class _PlannedActions(PreflightedActions):
+    """Green, and PREFLIGHT measured the card and published its capacity plan."""
+
+    plan_record: dict | None = None
+
+    def run_preflight(self) -> dict[str, object]:
+        record = super().run_preflight()
+        record["capacity_plan"] = self.plan_record
+        return record
+
+
+def _run_with_plan(tmp_path: Path, plan_record: dict | None):  # type: ignore[no-untyped-def]
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+    exit_code = main(
+        _run_argv(ws),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: _PlannedActions(plan_record=plan_record),
+        runner=runner,
+    )
+    return exit_code, runner, _report(ws)
+
+
+def test_pod_run_forwards_preflight_s_capacity_plan_to_the_orchestrator(tmp_path: Path) -> None:
+    plan = _capacity_plan()
+    exit_code, runner, report = _run_with_plan(tmp_path, plan.to_record())
+
+    assert exit_code == EXIT_COMPLETE
+    [(command, _cwd, _env)] = runner.calls
+    assert command[command.index("--placement-tier") + 1] == TIER
+    assert command[command.index("--capacity-plan") + 1] == plan.to_argument()
+    assert report["capacity_plan"] == plan.to_record()
+
+
+def test_without_a_plan_pod_run_forwards_none(tmp_path: Path) -> None:
+    exit_code, runner, report = _run_with_plan(tmp_path, None)
+
+    assert exit_code == EXIT_COMPLETE
+    [(command, _cwd, _env)] = runner.calls
+    assert "--capacity-plan" not in command
+    assert report["capacity_plan"] is None
+
+
+def test_a_changed_capacity_plan_is_refused_not_dropped(tmp_path: Path) -> None:
+    record = _capacity_plan().to_record()
+    record["chairs"]["attestator_2"]["max_num_seqs"] = 64
+    exit_code, runner, report = _run_with_plan(tmp_path, record)
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "capacity plan" in report["reason"]
+
+
+def test_a_capacity_plan_for_another_tier_is_refused(tmp_path: Path) -> None:
+    exit_code, runner, report = _run_with_plan(
+        tmp_path, _capacity_plan("generic-80gb-plus").to_record()
+    )
+
+    assert exit_code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "generic-80gb-plus" in report["reason"]

@@ -40,6 +40,7 @@ from operations.pod.preflight import (
     _mint_runtime_provenance,
 )
 
+from .capacity import planned_ceiling
 from .config import ServingProfile, thawed_json
 from .errors import ServiceStopError, ServingConfigurationError
 from .manager import ServiceHandle, ServingManager
@@ -187,6 +188,18 @@ class ServingSmokeReader:
                     f"{gpu_profile.dtype!r}"
                 )
             self._assert_profile_within_placement(serving_profile, placement)
+            plan = self.manager.capacity_plan
+            if plan is not None:
+                # The row is held to `batch_size` above; the width the plan launches
+                # it with is held to the tier's planned ceiling.
+                launched = plan.launch_profile(serving_profile, identity.role)
+                ceiling = planned_ceiling(placement)
+                if launched.max_num_seqs > ceiling:
+                    raise ServingConfigurationError(
+                        f"capacity plan would launch chair {identity.role!r} with "
+                        f"{launched.max_num_seqs} sequences, above tier "
+                        f"{placement.identifier!r}'s planned_batch_ceiling of {ceiling}"
+                    )
         fixture_sha256 = _fixture_digest(fixture)
         # Refuse a symlinked log root and force it owner-only before anything
         # can write a launch log through it. Idempotent, so once per read is cheap.

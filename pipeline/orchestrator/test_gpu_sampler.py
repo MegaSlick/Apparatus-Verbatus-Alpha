@@ -3,13 +3,15 @@
 import subprocess
 import threading
 import time
+from functools import partial
 from types import SimpleNamespace
 
 from conftest import load_stage
 
 orchestrator = load_stage("orchestrator")
 GPU_QUERY = orchestrator.GPU_QUERY
-GpuSampler = orchestrator.GpuSampler
+# Every test names the binary, so none depends on this host having one.
+GpuSampler = partial(orchestrator.GpuSampler, nvidia_smi="nvidia-smi")
 
 
 def _runner(outputs):
@@ -107,7 +109,7 @@ def test_a_failed_read_among_good_ones_is_counted_and_its_first_reason_kept():
     assert "no utilisation reading" in result["first_failure_reason"]
 
 
-def test_the_cap_keeps_the_last_samples_but_the_statistics_cover_every_read(monkeypatch):
+def test_the_cap_keeps_every_nth_sample_but_the_statistics_cover_every_read(monkeypatch):
     monkeypatch.setattr(orchestrator, "GPU_SAMPLES_KEPT", 2)
     run, calls = _runner([_ok("10, 1\n"), _ok("100, 1\n"), _ok("30, 1\n")])
     # Drive reads by hand so the totals are exact.
@@ -116,7 +118,9 @@ def test_the_cap_keeps_the_last_samples_but_the_statistics_cover_every_read(monk
         sampler._read()
     result, _ = sampler.result()
 
-    assert [s["utilization_percent"] for s in result["samples"]] == [100, 30]
+    # Three reads kept to two: every second read, from the stage's first.
+    assert result["sample_stride"] == 2
+    assert [s["utilization_percent"] for s in result["samples"]] == [10, 30]
     assert result["sample_count"] == 3 and result["mean"] == 140 / 3
     assert result["busy_fraction_over_95"] == 1 / 3 and result["max"] == 100
 
@@ -170,3 +174,39 @@ def test_a_sampler_thread_that_outlives_the_join_is_abandoned_not_published():
         sampler._thread.join(timeout=10)
 
     assert result is None and "did not stop within" in reason
+
+
+def test_a_host_without_nvidia_smi_starts_no_sampler_and_says_why(monkeypatch):
+    """The default lookup asks PATH, and a host where it finds nothing is not read."""
+    looked_up = []
+
+    def which(name):
+        looked_up.append(name)
+        return None
+
+    monkeypatch.setattr(orchestrator.shutil, "which", which)
+    orchestrator._nvidia_smi_path.cache_clear()
+    run, calls = _runner([_ok("1, 1\n")])
+    try:
+        with orchestrator.GpuSampler(run=run, interval=0.001) as sampler:
+            time.sleep(0.01)
+    finally:
+        # Forget this host's made-up answer, so no later test inherits it.
+        orchestrator._nvidia_smi_path.cache_clear()
+    result, reason = sampler.result()
+    assert looked_up == ["nvidia-smi"]
+    assert calls == [] and result is None and "not on PATH" in reason
+    assert not sampler._started and not sampler._thread.is_alive()
+    assert "gpu-sampler" not in [thread.name for thread in threading.enumerate()]
+
+
+def test_the_binary_is_run_by_the_path_found_for_it():
+    run, calls = _runner([_ok("40, 1\n")])
+    sampler = orchestrator.GpuSampler(run=run, interval=60, nvidia_smi="/opt/bin/nvidia-smi")
+    sampler._read()
+    assert calls == [["/opt/bin/nvidia-smi", *GPU_QUERY[1:]]]
+    assert sampler.result()[0]["sample_stride"] == 1
+
+
+def test_the_sampler_reads_every_fifteen_seconds_by_default():
+    assert orchestrator.GPU_SAMPLE_INTERVAL_SECONDS == 15.0

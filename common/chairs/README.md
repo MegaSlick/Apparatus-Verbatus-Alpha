@@ -102,7 +102,8 @@ checked against the roster's manifest before it replaces anything.
 
 The store is shared with the future pod, and the two sides key their directories
 differently: a store directory is per **artifact** (chandra-ocr-2 fills two
-chairs at one revision and is stored once), a `cache_root` entry is per **role**.
+chairs at one revision and is stored once), a `cache_root` entry is per **pinned
+manifest digest**, under `cache_root/by-digest/<digest_manifest>`.
 Each present snapshot and manifest is held to its artifact-keyed canonical path,
 so one roster row cannot claim another artifact's verified directory and pin.
 `model_root` is the local-repository half, resolved relative to
@@ -111,11 +112,39 @@ snapshot used as a cache entry directly, naming that cause rather than reporting
 an extra file.
 
 Each configured Hugging Face role is bound to its exact repository, revision and
-manifest when its stage fills its cache. `StoreRoleFetcher` copies these sources
-into separate role caches, and `ChairRegistry` verifies and publishes each cache
-with its own identity descriptor. When making room, the registry may remove a
-configured role's unused cache and abandoned `.<role>.candidate-*` and
-`.<role>.prior-*` directories;
+manifest when its stage fills its cache. Roles pinned to the same manifest digest
+share one cache copy: the Perlector and the Coniector's `reconstructor` read one
+copy of their model. The cache's descriptor records only the digest it holds; the
+role that asked travels in the returned `VerifiedSnapshot` and in every receipt.
+`StoreRoleFetcher` copies a missing snapshot into a candidate directory,
+`ChairRegistry` verifies it and promotes it under that digest. The copy hashes
+each file as it writes it (`copy_and_digest`: the source opened without following
+a link, its size checked before a byte is read, a differing digest refused by file
+name), with all files in one thread pool, largest first. The pool's size is the
+process's usable CPUs (affinity mask and cgroup `cpu.max`) clamped to 2..32, or
+`VERBATUS_IO_WORKERS`; the count and its source are recorded in the verification
+receipt. A caller filling several digests at once gives `StoreRoleFetcher` one
+`CopyPool`, so every file of every snapshot waits in one queue, largest first, and
+no worker idles behind one snapshot's single large file. The returned ledger lets
+the registry check the copied tree's structure (missing and extra files, sizes,
+links) without reading those bytes again; files carried over from a damaged cache
+are hashed again. They are carried by renaming them into the candidate on the
+cache's own filesystem, not by copying, and are renamed back if the repair fails,
+so an incomplete cache is left as it was. A file that cannot be renamed back is
+not deleted: the candidate is kept as `.<digest>.unreturned-*` and the refusal
+names it and says how to recover.
+
+Within one process, a `ChairRegistry` remembers each snapshot it fully verified,
+by manifest digest and root, with every file's device, inode, size, mtime and
+ctime at that moment. A later `ensure` of the same snapshot in that process
+re-reads the manifest and the cache descriptor and walks the tree, and reads the
+bytes again only if any file was added, removed, rewritten or replaced. So
+preflight's verification followed by the smoke's `ServingManager.start` hashes a
+chair once. A new process remembers nothing and verifies from the bytes. A per-digest lock
+(`by-digest/.<digest>.lock`) serialises concurrent fills of one digest, across
+processes. When making room, the registry may remove a configured digest's unused
+cache and abandoned `.<digest>.candidate-*` and `.<digest>.prior-*` directories,
+least recently used first and never while another fill holds that digest's lock;
 it leaves all other entries under `cache_root` alone. Cache preparation and
 preflight do not fall back to network downloads when retained bytes are missing
 or invalid.
@@ -129,6 +158,18 @@ inventory `complete: false` with every pending artifact named, and
 than unrepresentable. A pending entry also refuses if its
 artifact-keyed snapshot or manifest exists, so replaying an older pending record
 cannot relabel acquired or lost bytes as “not yet fetched.”
+
+`verify_store(root, bytes_hashed_elsewhere=...)` runs every check on the named
+artifacts except reading their bytes (`verify_snapshot_structure`). At pod boot
+`materialize_real_roster(..., hashed_at_copy=roles)` passes the artifacts of the
+chairs whose cache copies will hash those bytes against the same pinned manifest,
+and the artifacts it fetched and measured in the same call; its receipt's
+`store_bytes` records where each present artifact's bytes were hashed.
+`materialize_real_roster(..., roles=...)` limits fetching and verification to the
+artifacts those chairs need (`artifacts_for_roles`); `None` means every chair. Its
+receipt then reports `selection_complete` for those artifacts, lists the present
+artifacts it left unchecked under `store_bytes.not_verified`, and reports
+`real_roster_complete` only when nothing was left unchecked.
 
 When the roster gains an artifact, a store written before it is upgraded rather
 than refused: `materialize_real_roster` publishes a new record version that adds

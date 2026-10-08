@@ -68,7 +68,13 @@ passed over, and prints nothing on a real run.
 client is entered once and its pages are read in order, then it is stopped.
 Churro is asked once per page, Chandra once per page plus its vendor retry loop
 (below), and DAI once per record its own detector
-found on the page. Preflight consults no chair and writes nothing.
+found on the page. Churro and DAI keep up to the launched row's `max_num_seqs` (the
+row's own, or the run's `--capacity-plan` width for the card)
+requests in flight (Chandra one, since its retry loop seals records as it reads);
+DAI's requests are its records, so a page's records go out side by side and the
+next page's start while its last are out. Records are still sealed strictly in
+page order, a DAI page once its last record has answered. Preflight consults no
+chair and writes nothing.
 
 **Resume.** A page record already sealed at this ordinal is kept and its page is
 never asked again. A DAI page is sealed only once every one of its records has

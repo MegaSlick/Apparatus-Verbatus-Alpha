@@ -524,6 +524,7 @@ class ReadOnlyRunTree:
     write_run_receipt = _refused_write
     write_approval_record = _refused_write
     write_recensor_partition_receipt = _refused_write
+    note_launch_audit = _refused_write
 
 
 # --- The comparison record ---------------------------------------------------

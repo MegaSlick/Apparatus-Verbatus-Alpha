@@ -18,13 +18,14 @@ import json
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Iterable, Mapping, Protocol
 
 from common.contracts.canonical import canonical_bytes, digest_bytes
 from common.durability import atomic_create, atomic_replace
@@ -32,11 +33,15 @@ from common.durability import atomic_create, atomic_replace
 from .errors import DigestMismatchRefusal
 from .filesystem import apfs_alias, apfs_key, read_limited_bytes
 from .manifests import (
+    CopyLedger,
+    CopyPool,
     build_manifest,
+    copy_and_digest_files,
     read_manifest,
     verify_snapshot,
+    verify_snapshot_structure,
 )
-from .models import ChairIdentity, is_hf_revision, is_sha256
+from .models import ChairIdentity, DigestManifest, ManifestRow, is_hf_revision, is_sha256
 from .registry import CACHE_DESCRIPTOR, load_model_card_metadata
 
 STORE_SCHEMA = "verbatus-model-store.v2"
@@ -174,8 +179,11 @@ MODEL_PAYLOAD_SUFFIXES = frozenset({".bin", ".gguf", ".onnx", ".pt", ".pth", ".s
 MAX_DOWNLOAD_RECORD_BYTES = 1_048_576
 # Repository-controlled JSON may not claim unbounded memory.
 MAX_SHARD_INDEX_BYTES = 16_777_216
-MATERIALIZATION_LOCK_TIMEOUT_SECONDS = 60.0
+# Another pod on the same volume may hold the lock through its whole store check (about
+# seven minutes for the real roster), so a second pod booting meanwhile waits that out.
+MATERIALIZATION_LOCK_TIMEOUT_SECONDS = 20 * 60.0
 MATERIALIZATION_LOCK_POLL_SECONDS = 0.1
+MATERIALIZATION_LOCK_NOTICE_SECONDS = 60.0
 
 
 class MaterializationFetcher(Protocol):
@@ -198,10 +206,17 @@ class BundleFetcher(Protocol):
 class StoreRoleFetcher:
     """Plan one configured role from the durable record and its pinned manifest."""
 
-    def __init__(self, store_root: str | Path) -> None:
+    def __init__(self, store_root: str | Path, *, pool: CopyPool | None = None) -> None:
         self.root = Path(store_root).resolve()
+        # Workers shared with other fills running at the same time; None for a
+        # pool of this fill's own.
+        self.pool = pool
 
     def plan(self, identity: ChairIdentity) -> dict[str, Any]:
+        snapshot, _manifest = self._source(identity)
+        return {"snapshot": str(snapshot), "identity": identity.cache_descriptor()}
+
+    def _source(self, identity: ChairIdentity) -> tuple[Path, DigestManifest]:
         record = load_download_record(self.root)
         required = next((item for item in REQUIRED_ARTIFACTS if item.chair == identity.role), None)
         if required is None:
@@ -222,15 +237,33 @@ class StoreRoleFetcher:
                     identity.role, f"model-store {field} differs from the configured pin"
                 )
         manifest_path = _under(self.root, row["manifest"])
-        read_manifest(manifest_path, expected_digest=identity.digest_manifest, chair=identity.role)
+        manifest = read_manifest(
+            manifest_path, expected_digest=identity.digest_manifest, chair=identity.role
+        )
         snapshot = _under(self.root, row["snapshot"])
         if not snapshot.is_dir() or snapshot.is_symlink():
             raise DigestMismatchRefusal(identity.role, "model-store snapshot is not a directory")
-        return {"snapshot": str(snapshot), "identity": identity.cache_descriptor()}
+        return snapshot, manifest
 
-    def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
-        source_root = Path(self.plan(identity)["snapshot"])
+    def fetch(
+        self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]
+    ) -> CopyLedger:
+        """Copy `paths` from the pinned store snapshot, hashing each file as it is written.
+
+        Each source is checked, in path order, before any byte is copied; then the
+        copies run in one pool and each refuses a size or digest that differs from
+        the pinned manifest. The returned ledger lets the caller skip re-reading them.
+        """
+
+        source_root, manifest = self._source(identity)
+        rows = {row.path: row for row in manifest.rows}
+        work: list[tuple[Path, Path, ManifestRow]] = []
         for relative in paths:
+            row = rows.get(relative)
+            if row is None:
+                raise DigestMismatchRefusal(
+                    identity.role, f"model-store source file {relative!r} is not in the manifest"
+                )
             source = source_root / relative
             try:
                 resolved = source.resolve(strict=True)
@@ -247,18 +280,17 @@ class StoreRoleFetcher:
                     identity.role,
                     f"model-store source file {relative!r} is not a regular in-snapshot file",
                 )
-            target = destination / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.copyfile(source, target)
-            except OSError as error:
-                raise DigestMismatchRefusal(
-                    identity.role, f"cannot copy model-store source file {relative!r}: {error}"
-                ) from error
+            work.append((source, destination / relative, row))
+        return copy_and_digest_files(work, chair=identity.role, pool=self.pool)
 
 
 def materialize_real_roster(
-    store_root: str | Path, fetcher: MaterializationFetcher, bundle_fetcher: BundleFetcher
+    store_root: str | Path,
+    fetcher: MaterializationFetcher,
+    bundle_fetcher: BundleFetcher,
+    *,
+    roles: Iterable[str] | None = None,
+    hashed_at_copy: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Fetch each real pinned artifact once and publish its measured evidence.
 
@@ -269,11 +301,28 @@ def materialize_real_roster(
     through a reviewed config edit. Pending artifacts are fetched before present
     ones are re-verified, so an interrupted promotion is closed by re-fetching
     the same pin; one final whole-store verification backs every receipt.
+
+    ``roles`` limits fetching and verification to the artifacts those chairs
+    need, for a pod that runs only some stages; None means every roster chair.
+    ``selection_complete`` then says whether this pod's artifacts are all
+    present, while ``real_roster_complete`` still describes the whole record.
+
+    ``hashed_at_copy`` names the roles whose store bytes the caller will copy
+    into a chair cache, hashing them against the same pinned manifest as it
+    copies. The final verification checks those artifacts' structure only, and
+    does not re-hash an artifact this call fetched and measured; the receipt's
+    ``store_bytes`` says which artifact was hashed where.
     """
 
     root = Path(store_root).resolve()
     with _materialization_lock(root):
-        return _materialize_real_roster_locked(root, fetcher, bundle_fetcher)
+        return _materialize_real_roster_locked(
+            root,
+            fetcher,
+            bundle_fetcher,
+            frozenset(hashed_at_copy),
+            None if roles is None else frozenset(roles),
+        )
 
 
 @contextmanager
@@ -292,17 +341,31 @@ def _materialization_lock(root: Path):
             "model-store", f"cannot open materialization lock for {root}: {error}"
         ) from error
     with lock:
-        deadline = time.monotonic() + MATERIALIZATION_LOCK_TIMEOUT_SECONDS
+        started = time.monotonic()
+        deadline = started + MATERIALIZATION_LOCK_TIMEOUT_SECONDS
+        next_notice = started + MATERIALIZATION_LOCK_NOTICE_SECONDS
         while True:
             try:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError as error:
-                remaining = deadline - time.monotonic()
+                clock = time.monotonic()
+                remaining = deadline - clock
                 if remaining <= 0:
                     raise DigestMismatchRefusal(
-                        "model-store", f"timed out acquiring materialization lock for {root}"
+                        "model-store",
+                        f"timed out acquiring materialization lock for {root} after "
+                        f"{MATERIALIZATION_LOCK_TIMEOUT_SECONDS:.0f} s",
                     ) from error
+                if clock >= next_notice:
+                    next_notice = clock + MATERIALIZATION_LOCK_NOTICE_SECONDS
+                    print(
+                        f"model-store: waiting {clock - started:.0f} s of "
+                        f"{MATERIALIZATION_LOCK_TIMEOUT_SECONDS:.0f} s for the materialization "
+                        f"lock on {root}, held by another materializer (perhaps another pod)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 time.sleep(min(MATERIALIZATION_LOCK_POLL_SECONDS, remaining))
             except OSError as error:
                 raise DigestMismatchRefusal(
@@ -315,7 +378,11 @@ def _materialization_lock(root: Path):
 
 
 def _materialize_real_roster_locked(
-    root: Path, fetcher: MaterializationFetcher, bundle_fetcher: BundleFetcher
+    root: Path,
+    fetcher: MaterializationFetcher,
+    bundle_fetcher: BundleFetcher,
+    hashed_at_copy: frozenset[str],
+    roles: frozenset[str] | None,
 ) -> dict[str, Any]:
     record = _initial_materialization_record()
     active = root / "download_record.json"
@@ -332,7 +399,8 @@ def _materialize_real_roster_locked(
         write_download_record(record, root)
 
     completed: dict[str, dict[str, str | None]] = {}
-    requirements = _unique_requirements()
+    needed = set(artifacts_for_roles(roles))
+    requirements = [item for item in _unique_requirements() if item.artifact in needed]
     record_by_artifact = {item["artifact"]: item for item in record["artifacts"]}
     already_present = {
         item.artifact
@@ -362,11 +430,34 @@ def _materialize_real_roster_locked(
         completed[requirement.artifact] = _materialization_receipt(present)
 
     # `verify_store` covers the entire volume, so one call after all fetches
-    # backs every receipt without rehashing the same bytes per artifact.
-    inventory = verify_store(root)
+    # backs every receipt. It reads no byte that was measured during this call
+    # or that a chair-cache copy will hash against the same pinned manifest.
+    fetched_now = frozenset(completed)
+    copy_roles = sorted(
+        item.chair
+        for item in REQUIRED_ARTIFACTS
+        if item.chair in hashed_at_copy and item.artifact not in fetched_now
+    )
+    at_copy = frozenset(item.artifact for item in REQUIRED_ARTIFACTS if item.chair in copy_roles)
+    inventory = verify_store(
+        root, bytes_hashed_elsewhere=fetched_now | at_copy, artifacts=frozenset(needed)
+    )
     verified = {row["artifact"]: row for row in inventory["artifacts"]}
     for artifact in already_present:
         completed[artifact] = _materialization_receipt(verified[artifact])
+    present = {
+        row["artifact"]
+        for row in inventory["artifacts"]
+        if row["state"] == "present" and row["artifact"] in needed
+    }
+    copy_roles = [
+        item.chair
+        for item in REQUIRED_ARTIFACTS
+        if item.chair in copy_roles and item.artifact in present
+    ]
+    not_verified = sorted(
+        {row["artifact"] for row in inventory["artifacts"] if row["state"] == "present"} - needed
+    )
 
     return {
         "store": str(root),
@@ -377,11 +468,58 @@ def _materialize_real_roster_locked(
         # could have moved.
         "download_record_sha256": inventory["download_record_sha256"],
         "complete": inventory["complete"],
-        # Every roster artifact is fetched here, so the real roster is complete
-        # exactly when the store is.
-        "real_roster_complete": inventory["complete"],
+        # Every roster artifact is present and was checked by this call; a
+        # selection leaves the artifacts outside it unchecked.
+        "real_roster_complete": inventory["complete"] and not not_verified,
+        "selection": None if roles is None else sorted(roles),
+        "selection_complete": needed <= present,
         "unattributed_staging_entries": _unattributed_staging_entries(root),
+        "store_bytes": {
+            **_store_bytes_receipt(present, fetched_now, at_copy, copy_roles),
+            "not_verified": not_verified,
+        },
     }
+
+
+def artifacts_for_roles(roles: Iterable[str] | None) -> tuple[str, ...]:
+    """The store artifacts these roster chairs are filled from, in roster order.
+
+    None means every chair, so every artifact the roster requires.
+    """
+
+    wanted = None if roles is None else set(roles)
+    return tuple(
+        item.artifact
+        for item in _unique_requirements()
+        if wanted is None
+        or any(
+            chair.artifact == item.artifact and chair.chair in wanted
+            for chair in REQUIRED_ARTIFACTS
+        )
+    )
+
+
+def _store_bytes_receipt(
+    present: set[str],
+    fetched_now: frozenset[str],
+    at_copy: frozenset[str],
+    copy_roles: list[str],
+) -> dict[str, Any]:
+    """Where each present artifact's bytes were, or will be, hashed against its pin."""
+
+    receipt: dict[str, Any] = {
+        "hashed_at_boot": sorted(present - fetched_now - at_copy),
+        "hashed_at_fetch": sorted(present & fetched_now),
+        "hashed_at_copy": {"artifacts": sorted(present & at_copy), "roles": copy_roles},
+    }
+    if copy_roles:
+        receipt["statement"] = (
+            f"bytes verified at copy, for roles {', '.join(copy_roles)}: their store "
+            "snapshots were checked for structure at boot (manifest pin, licence, "
+            "required and carried files, file list and sizes) and each byte is hashed "
+            "against the same pinned manifest when it is copied into the chair cache"
+        )
+    return receipt
 
 
 def pending_local_artifacts(store_root: str | Path) -> tuple[str, ...]:
@@ -1138,18 +1276,32 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def verify_store(store_root: str | Path) -> dict[str, Any]:
+def verify_store(
+    store_root: str | Path,
+    *,
+    bytes_hashed_elsewhere: Iterable[str] = (),
+    artifacts: Iterable[str] | None = None,
+) -> dict[str, Any]:
     """Verify every declared manifest against its existing bytes; never fetch.
 
     A `pending-fetch` entry has no bytes to verify, so it is passed over and
     reported: the returned inventory is then a verified inventory of a
     *partial* store, marked `complete: false`, with every pending artifact named.
+
+    `bytes_hashed_elsewhere` names artifacts whose bytes the caller has measured
+    or will hash against the same pinned manifest; every check runs on them
+    except reading their bytes. `artifacts`, when given, limits the snapshot
+    checks to those artifacts; the record itself is always checked whole.
     """
 
     root = Path(store_root).resolve()
+    skip_bytes = frozenset(bytes_hashed_elsewhere)
+    only = None if artifacts is None else frozenset(artifacts)
     record = load_download_record(root)
     inventory = derived_inventory(record)
     for item in record["artifacts"]:
+        if only is not None and item["artifact"] not in only:
+            continue
         if item["state"] == "pending-fetch":
             prefix = "hf" if item["source"] == "huggingface" else "local"
             possible_evidence = (
@@ -1209,8 +1361,9 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
                 item["artifact"],
                 f"the chair registry's cache descriptor {CACHE_DESCRIPTOR!r} is inside this "
                 "store snapshot: a store directory is keyed by artifact and is not a "
-                "cache_root entry, which is keyed by chair role. Fill "
-                "cache_root/<role> from this snapshot through StoreRoleFetcher instead",
+                "cache_root entry, which is keyed by manifest digest. Fill "
+                "cache_root/by-digest/<digest_manifest> from this snapshot through "
+                "StoreRoleFetcher instead",
             )
         identity = ChairIdentity(
             role=item["artifact"],
@@ -1224,7 +1377,10 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
             serving_recipe="unproven-store-only",
             license_note="verified in off-repo model store",
         )
-        verify_snapshot(identity, snapshot, manifest)
+        if item["artifact"] in skip_bytes:
+            verify_snapshot_structure(identity, snapshot, manifest)
+        else:
+            verify_snapshot(identity, snapshot, manifest)
         _verify_synthetic_licence_observation(snapshot, item)
     return inventory
 

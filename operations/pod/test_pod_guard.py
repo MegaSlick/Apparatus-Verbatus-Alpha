@@ -1,4 +1,5 @@
-"""The pod guard and its start command delete a pod when idle or out of time.
+"""The pod guard and its start command: a deadline, when there is one, deletes the pod;
+an idle pod climbs the ladder of notices, backup and, when switched on, delete.
 
 runpodctl, nvidia-smi and curl are stand-ins, and the container's CPU accounting is a
 fake cgroup directory, so nothing here reaches RunPod or depends on the test machine's load.
@@ -29,6 +30,7 @@ pytestmark = pytest.mark.skipif(
 HERE = Path(__file__).parent
 GUARD = HERE / "pod_guard.sh"
 START_COMMAND = HERE / "pod_start_command.sh"
+SHIPPED_SPEND = HERE.parents[1] / "config" / "spend.toml"
 
 
 @pytest.fixture
@@ -58,6 +60,11 @@ def pod(tmp_path):
             "done\n"
             f'printf "%s\\n" "$*" >> "{curl_calls}"\n'
             '[ "${FAKE_CURL_FAIL:-}" = yes ] && exit 22\n'
+            # Fails the first FAKE_CURL_FAIL_TIMES calls, then succeeds.
+            'if [ -n "${FAKE_CURL_FAIL_TIMES:-}" ]; then\n'
+            f'  echo >> "{tmp_path}/curl-count"\n'
+            f'  [ "$(wc -l < "{tmp_path}/curl-count")" -gt "$FAKE_CURL_FAIL_TIMES" ] || exit 22\n'
+            "fi\n"
             "while [ $# -gt 0 ]; do\n"
             '  case "$1" in\n'
             '    -o) cp "$FAKE_GUARD" "$2"; exit 0 ;;\n'
@@ -96,13 +103,19 @@ def pod(tmp_path):
     cgroup.mkdir()
     (cgroup / "cpu.stat").write_text("usage_usec 1000\n")
     state = tmp_path / "guard"
+    inherited = {"VERBATUS_POD_BUDGET", "VERBATUS_HARD_MAX_SECONDS", "POD_GUARD_DELETE"}
     env = {
-        **os.environ,
+        **{key: value for key, value in os.environ.items() if key not in inherited},
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
         "RUNPOD_POD_ID": "testpod",
         "POD_GUARD_DIR": str(state),
         "POD_GUARD_INTERVAL": "1",
-        "POD_GUARD_IDLE_SECONDS": "2",
+        # The idle ladder in one-second steps: warn, urgent, back up, delete.
+        "POD_GUARD_WARN_SECONDS": "1",
+        "POD_GUARD_URGENT_SECONDS": "2",
+        "POD_GUARD_BACKUP_SECONDS": "3",
+        "POD_GUARD_DELETE_SECONDS": "4",
+        "POD_GUARD_DELETE": "on",
         "POD_GUARD_CGROUP": str(tmp_path / "cgroup"),
         "POD_GUARD_NETDEV": str(tmp_path / "netdev"),
         "FAKE_RUNPODCTL_FAIL": "never",
@@ -291,6 +304,8 @@ def test_a_deadline_rewritten_while_running_ignores_garbage_and_honours_an_exten
     clock = state.parent / "clock"
     ticks = state.parent / "ticks"
     start = clock_of(env)
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
     deadline = state / "deadline-testpod"
     staging = state / "deadline-testpod.new"
 
@@ -305,6 +320,7 @@ def test_a_deadline_rewritten_while_running_ignores_garbage_and_honours_an_exten
         assert f"deadline {start + 3}," in log_of(state)
         rewrite("soon")
         wait_for(lambda: "ignored deadline file value 'soon'" in log_of(state), "garbage ignored")
+        rewrite("soon")
         rewrite(start + 3600)
         wait_for(lambda: f"deadline now {start + 3600}" in log_of(state), "the extension")
         # Well past the first deadline: only the extension keeps the pod through these ticks.
@@ -319,6 +335,9 @@ def test_a_deadline_rewritten_while_running_ignores_garbage_and_honours_an_exten
         process.wait()
     log = log_of(state)
     assert log.count("deadline now") == 2
+    assert log.count("ignored deadline file value 'soon'") == 1
+    [notice] = _notices(state.parent, "ignored the deadline file value")
+    assert "'soon'" in notice
     assert f"deadline now {start + 60}" in log
     assert "deleting pod testpod: approved time is up" in log
 
@@ -351,7 +370,7 @@ def test_a_topic_file_sends_one_notification_when_the_guard_deletes(pod, tmp_pat
     (state / "ntfy_topic").write_text("guard-test-topic\n")
     curl_calls = tmp_path / "curl-calls.txt"
     run_guard(env, "5")
-    [notification] = lines(curl_calls)
+    [notification] = [line for line in lines(curl_calls) if "deletion" in line]
     assert "-H Title: Pod guard" in notification
     assert "Pod testpod: its guard requested deletion (no GPU, CPU or network work" in notification
     # ntfy's answer echoes the topic; it must not land in the guard log.
@@ -359,7 +378,7 @@ def test_a_topic_file_sends_one_notification_when_the_guard_deletes(pod, tmp_pat
     assert "guard-test-topic" not in log_of(state)
     # Assembled from pieces so the ingress check does not read a topic URL here.
     topic_url = "https://ntfy" + ".sh/" + "guard-test-topic"
-    assert lines(tmp_path / "curl-configs.txt") == [f'url = "{topic_url}"']
+    assert set(lines(tmp_path / "curl-configs.txt")) == {f'url = "{topic_url}"'}
 
 
 def test_a_released_run_s_outcome_is_in_the_delete_notice(pod, tmp_path):
@@ -585,7 +604,7 @@ def _idle_cgroup(env, tmp_path, drop_at: int | None) -> None:
 
 # The dropped tick delays the delete by exactly one tick: it neither added idle time
 # nor reset it (a reset would cost the whole idle limit again).
-@pytest.mark.parametrize(("drop_at", "idle_seconds"), [(None, 1), (1, 2)])
+@pytest.mark.parametrize(("drop_at", "idle_seconds"), [(None, 3), (1, 4)])
 def test_a_cpu_reading_dropped_for_one_tick_neither_resets_nor_adds_idle(
     pod, tmp_path, drop_at, idle_seconds
 ):
@@ -607,9 +626,9 @@ def test_the_idle_limit_runs_from_the_last_keepalive_touch(pod):
     os.utime(keepalive, (started, started))
     run_guard(env, "5")
     assert "no GPU, CPU or network work" in log_of(state)
-    # One idle limit (2 s) after the touch: not the one tick an untouched idle pod lasts,
-    # and not a further idle limit after the touch expires. The clock stops at the delete.
-    assert clock_of(env) - started == 2
+    # The ladder's delete step (4 s) after the touch: not the three ticks an untouched idle
+    # pod lasts, and not a further four after the touch expires. The clock stops at the delete.
+    assert clock_of(env) - started == 4
 
 
 def test_a_garbled_deadline_file_is_replaced_not_trusted(pod):
@@ -645,15 +664,38 @@ def test_an_unwritable_state_directory_exits_so_the_backstop_takes_over(pod, tmp
     assert result.returncode == 3
 
 
-def start_command(env, hours):
-    env = {**env, "POD_BACKSTOP_GRACE": "1", "POD_BACKSTOP_POLL": "1"}
+def checkout(env, *, budget, ladder_delete="on"):
+    """A copy of the start command beside a spend policy with these two switches."""
+    # The test's own directory, where the fixture keeps its stand-ins.
+    root = Path(env["PATH"].split(":")[0]).parent / f"checkout-{budget}-{ladder_delete}"
+    script = root / "operations" / "pod" / "pod_start_command.sh"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(START_COMMAND, script)
+    (root / "config").mkdir(exist_ok=True)
+    policy = SHIPPED_SPEND.read_text()
+    policy = policy.replace('pod_budget = "off"', f'pod_budget = "{budget}"')
+    policy = policy.replace('ladder_delete = "off"', f'ladder_delete = "{ladder_delete}"')
+    (root / "config" / "spend.toml").write_text(policy)
+    return script
+
+
+def start_command(env, hours, *, budget="on", ladder_delete="on", poll="1"):
+    env = {
+        **env,
+        "POD_BACKSTOP_GRACE": "1",
+        "POD_BACKSTOP_POLL": poll,
+        "POD_GUARD_FETCH_TRIES": env.get("POD_GUARD_FETCH_TRIES", "1"),
+    }
+    script = checkout(env, budget=budget, ladder_delete=ladder_delete)
     printed = subprocess.run(
-        ["sh", str(START_COMMAND), hours, "0" * 40],
+        ["sh", str(script), hours, "0" * 40],
         env=env,
         capture_output=True,
         text=True,
         check=True,
     ).stdout
+    # The pod's /tmp is its own; tests running side by side each get theirs.
+    printed = printed.replace("/tmp/pod_", f"{script.parents[3]}/pod_")
     return ["sh", "-c", printed], env
 
 
@@ -711,15 +753,8 @@ def test_the_backstop_wakes_at_the_hard_maximum_not_a_whole_poll_later(pod):
     env["VERBATUS_HARD_MAX_SECONDS"] = "5"
     started = clock_of(env)
     # A real five-minute poll: each sleep second moves the fake clock one second.
-    env = {**env, "POD_BACKSTOP_GRACE": "1", "POD_BACKSTOP_POLL": "300"}
-    printed = subprocess.run(
-        ["sh", str(START_COMMAND), "0.001", "0" * 40],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    run_until(["sh", "-c", printed], env, lambda: halted(env))
+    argv, env = start_command(env, "0.001", poll="300")
+    run_until(argv, env, lambda: halted(env))
     assert "pod delete testpod" in lines(calls)
     assert clock_of(env) <= started + 6
 
@@ -753,3 +788,310 @@ def test_a_guard_fetched_from_an_older_commit_still_uses_the_start_command_s_dir
     run_until(argv, env, lambda: "pod delete testpod" in lines(calls))
     assert "armed for pod testpod" in log_of(state)
     assert not (tmp_path / "wrong").exists()
+
+
+# --- no deadline, and the idle ladder ------------------------------------------------
+
+
+def run_ticks(argv, env, count):
+    """Runs a guard or start command for `count` of the guard's ticks, then stops it."""
+    ticks = Path(env["POD_GUARD_DIR"]).parent / "ticks"
+    return run_until(argv, env, lambda: len(lines(ticks)) >= count)
+
+
+def test_with_no_deadline_the_guard_writes_none_and_never_ends_a_working_pod(pod):
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    run_ticks(["sh", str(GUARD), "off"], env, 30)
+    assert "armed for pod testpod: deadline none (off)," in log_of(state)
+    assert not (state / "deadline-testpod").exists()
+    assert lines(calls) == []
+
+
+def test_with_no_deadline_only_a_deadline_written_after_arming_is_honoured(pod, tmp_path):
+    """A deadline left by an earlier start of this pod is not this start's; one written while
+    the guard runs (an extension by the lead, or pod_run --no-hold's release) is."""
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    deadline = state / "deadline-testpod"
+    deadline.write_text(f"{clock_of(env) - 60}\n")
+    staging = state / "deadline-testpod.new"
+    on_each_tick(
+        env,
+        tmp_path,
+        f'[ "$1" = 5 ] || exit 0\necho $(($(cat "{tmp_path}/clock") + 3)) > "{staging}"\n'
+        f'mv "{staging}" "{deadline}"\n',
+    )
+    run_until(["sh", str(GUARD), "off"], env, lambda: halted(env))
+    log = log_of(state)
+    assert "predates this guard; not honoured" in log
+    assert "deleting pod testpod: approved time is up" in log
+    assert len(lines(state.parent / "ticks")) >= 8, "the stale deadline did not end the pod"
+    [notice] = _notices(tmp_path, "is not honoured")
+    assert "earlier value" in notice
+
+
+def test_an_idle_pod_climbs_the_ladder_to_the_delete(pod, tmp_path):
+    env, calls, state = pod
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    run_guard(env, "5")
+    sent = lines(tmp_path / "curl-calls.txt")
+    warning = next(i for i, line in enumerate(sent) if "Touch its keep-alive" in line)
+    urgent = next(i for i, line in enumerate(sent) if "still billing" in line)
+    deleted = next(i for i, line in enumerate(sent) if "requested deletion" in line)
+    assert warning < urgent < deleted
+    assert "-H Priority: default" in sent[warning]
+    assert "-H Priority: urgent" in sent[urgent]
+    assert "nothing to back up" in log_of(state)
+    assert (state / "alert-testpod").read_text().split()[1] == "delete"
+
+
+def test_with_deletion_off_the_ladder_repeats_urgent_notices_and_keeps_the_pod(pod, tmp_path):
+    env, calls, state = pod
+    env["POD_GUARD_DELETE"] = "off"
+    env["POD_GUARD_URGENT_REPEAT"] = "3"
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    run_until(["sh", str(GUARD), "5"], env, lambda: len(_notices(tmp_path, "still billing")) >= 4)
+    urgent = _notices(tmp_path, "still billing")
+    assert len(urgent) >= 4
+    assert all("-H Priority: urgent" in line for line in urgent)
+    [held] = _notices(tmp_path, "will not delete it because deletion is off")
+    assert "-H Priority: urgent" in held
+    assert lines(calls) == []
+    assert "not deleting: deletion is off (ladder_delete)" in log_of(state)
+
+
+def test_work_after_a_warning_resets_the_ladder_and_says_so(pod, tmp_path):
+    env, calls, state = pod
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    keepalive = state / "keepalive-testpod"
+    clock = tmp_path / "clock"
+    # Idle through the warning, then the run touches the keep-alive on every tick.
+    on_each_tick(
+        env, tmp_path, f'[ "$1" -ge 2 ] || exit 0\ntouch -d "@$(cat "{clock}")" "{keepalive}"\n'
+    )
+    run_until(
+        ["sh", str(GUARD), "5"],
+        env,
+        lambda: _notices(tmp_path, "work resumed") and len(lines(tmp_path / "ticks")) >= 12,
+    )
+    assert len(_notices(tmp_path, "Touch its keep-alive")) == 1
+    assert _notices(tmp_path, "work resumed")
+    assert lines(calls) == []
+    assert "resumed" in (state / "alert-testpod").read_text()
+
+
+def test_the_ladder_backs_up_the_run_and_verifies_the_copy_before_the_delete(pod, tmp_path):
+    env, calls, state = pod
+    local = tmp_path / "local" / "run-1"
+    (local / "stage").mkdir(parents=True)
+    (local / "stage" / "page.json").write_text('{"page": 1}\n')
+    volume = tmp_path / "volume-runs" / "run-1"
+    volume.mkdir(parents=True)
+    (volume / "journal.jsonl").write_text("one\n")
+    state.mkdir()
+    (state / "backup-testpod").write_text(f"{local}\n{volume}\n")
+    run_guard(env, "5")
+    copies = sorted((tmp_path / "runs-guard-backup").iterdir())
+    assert len(copies) == 2
+    assert (copies[0] / "stage" / "page.json").read_text() == '{"page": 1}\n'
+    assert (copies[1] / "journal.jsonl").read_text() == "one\n"
+    assert log_of(state).count("and verified the copy") == 2
+    assert "pod delete testpod" in lines(calls)
+
+
+def test_a_backup_that_fails_blocks_the_delete(pod, tmp_path):
+    env, calls, state = pod
+    local = tmp_path / "local" / "run-1"
+    local.mkdir(parents=True)
+    (local / "page.json").write_text("{}\n")
+    # A file where the backup directory belongs: the copy cannot be made.
+    (tmp_path / "runs-guard-backup").write_text("")
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    (state / "backup-testpod").write_text(f"{local}\n")
+    # Held at the delete step, and still held some ticks later.
+    run_until(
+        ["sh", str(GUARD), "5"],
+        env,
+        lambda: (
+            "not deleting: its run tree backup failed" in log_of(state)
+            and len(lines(tmp_path / "ticks")) >= 10
+        ),
+    )
+    assert lines(calls) == []
+    assert _notices(tmp_path, "could not back up the run")
+    assert "failed or does not match" in log_of(state)
+
+
+def test_a_listed_run_tree_that_is_missing_blocks_the_delete(pod, tmp_path):
+    """A run tree named for backup but not there may be lost or misnamed, not absent by
+    design, so the pod stays."""
+    env, calls, state = pod
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    (state / "backup-testpod").write_text(f"{tmp_path / 'local' / 'run-1'}\n")
+    run_until(
+        ["sh", str(GUARD), "5"],
+        env,
+        lambda: (
+            "not deleting: its run tree backup failed" in log_of(state)
+            and len(lines(tmp_path / "ticks")) >= 10
+        ),
+    )
+    assert lines(calls) == []
+    assert "is not there, so the backup failed" in log_of(state)
+    assert _notices(tmp_path, "could not back up the run")
+
+
+def test_the_start_command_with_the_budget_off_arms_no_deadline_and_no_backstop(pod):
+    """A deadline file from an earlier start of the pod is removed, so the only deadline is
+    one written during this start (the lead's, or pod_run --no-hold's release)."""
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    state.mkdir()
+    (state / "deadline-testpod").write_text(f"{clock_of(env) - 60}\n")
+    argv, env = start_command(env, "off", budget="off")
+    assert "runpodctl" not in argv[2]
+    run_until(argv, env, lambda: "armed for pod testpod" in log_of(state))
+    assert "deadline none (off)" in log_of(state)
+    assert "predates this guard" not in log_of(state)
+    assert not (state / "deadline-testpod").exists()
+    assert (state / "created-testpod").read_text().strip().isdigit()
+    assert lines(calls) == []
+
+
+def test_the_start_command_retries_the_guard_fetch(pod):
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    env["FAKE_CURL_FAIL_TIMES"] = "2"
+    env["POD_GUARD_FETCH_TRIES"] = "3"
+    argv, env = start_command(env, "off", budget="off")
+    run_until(argv, env, lambda: "armed for pod testpod" in log_of(state))
+    assert "armed for pod testpod" in log_of(state)
+
+
+def test_the_start_command_passes_the_ladder_delete_switch_to_the_guard(pod):
+    env, calls, state = pod
+    argv, env = start_command(env, "off", budget="off", ladder_delete="off")
+    assert "POD_GUARD_DELETE=off sh " in argv[2] and "/pod_guard.sh off)" in argv[2]
+    run_ticks(argv, env, 12)
+    assert "(deletion off)" in log_of(state)
+    assert lines(calls) == []
+
+
+def test_with_the_budget_off_hours_arm_a_deadline_the_hard_maximum_does_not_cut(pod):
+    env, calls, state = pod
+    env["FAKE_CURL_FAIL"] = "yes"
+    env["VERBATUS_HARD_MAX_SECONDS"] = "5"
+    state.mkdir()
+    started = clock_of(env)
+    (state / "deadline-testpod").write_text(f"{started + 3600}\n")
+    argv, env = start_command(env, "0.0003", budget="off")
+    run_until(argv, env, lambda: clock_of(env) >= started + 10)
+    assert clock_of(env) >= started + 10
+    assert lines(calls) == []
+
+
+def test_with_the_budget_off_the_backstop_deletes_an_hour_after_the_deadline(pod):
+    env, calls, state = pod
+    env["FAKE_CURL_FAIL"] = "yes"
+    started = clock_of(env)
+    argv, env = start_command(env, "0.0003", budget="off")
+    run_until(argv, env, lambda: halted(env))
+    assert "pod delete testpod" in lines(calls)
+    # One second of window and one of grace, plus at most a poll.
+    assert clock_of(env) <= started + 4
+    assert (state / "deadline-testpod").read_text().strip() == str(started + 1)
+    assert not (state / "deadline-testpod.new").exists()
+
+
+def _progress_each_tick(env, tmp_path, state, line):
+    """Writes pod_run's progress line on every tick; `line` is a shell word that may use
+    $c, the clock's epoch now."""
+    state.mkdir(exist_ok=True)
+    clock = tmp_path / "clock"
+    target = state / "progress-testpod"
+    on_each_tick(
+        env,
+        tmp_path,
+        f'c=$(cat "{clock}")\nprintf "%s\\n" "{line}" > "{target}.new"\nmv "{target}.new" "{target}"\n',
+    )
+
+
+def test_a_fresh_ok_progress_line_holds_a_pod_whose_counters_read_idle(pod, tmp_path):
+    env, calls, state = pod
+    _progress_each_tick(env, tmp_path, state, "$c $c ok page-rate 1.00 pages a minute")
+    run_guard(env, "0.002")
+    assert "approved time is up" in log_of(state)
+    assert "idle warning" not in log_of(state)
+
+
+def test_a_fresh_stalled_line_climbs_the_ladder_while_the_gpu_is_busy(pod, tmp_path):
+    """An engine spinning on a hung request keeps the GPU busy; the run's own verdict wins."""
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    _progress_each_tick(env, tmp_path, state, "$c $((c - 7200)) stalled page-quiet no new page")
+    run_guard(env, "5")
+    assert "pod delete testpod" in lines(calls)
+    assert "the run reports stalled (page-quiet no new page)" in log_of(state)
+
+
+def test_the_ladder_runs_from_the_progress_line_s_last_ok(pod, tmp_path):
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    env["POD_GUARD_WARN_SECONDS"] = "600"
+    env["POD_GUARD_URGENT_SECONDS"] = "6000"
+    env["POD_GUARD_BACKUP_SECONDS"] = "6000"
+    env["POD_GUARD_DELETE_SECONDS"] = "6000"
+    started = clock_of(env)
+    # Slow since 595 s before arming: the warning comes about five ticks in, not at once.
+    _progress_each_tick(env, tmp_path, state, f"$c {started - 595} slow page-rate 0.20 a minute")
+    run_until(["sh", str(GUARD), "5"], env, lambda: "idle warning" in log_of(state))
+    warned = next(line for line in log_of(state).splitlines() if "idle warning" in line)
+    assert "idle for 6" in warned and "the run reports slow" in warned
+    assert len(lines(tmp_path / "ticks")) >= 5
+    assert lines(calls) == []
+
+
+def test_a_stale_progress_line_falls_back_to_the_counters(pod, tmp_path):
+    env, calls, state = pod
+    _progress_each_tick(env, tmp_path, state, "$((c - 301)) $((c - 301)) ok page-rate fine")
+    run_guard(env, "5")
+    assert "pod delete testpod" in lines(calls)
+    assert "no GPU, CPU or network work" in log_of(state)
+
+
+def test_a_garbled_progress_line_falls_back_to_the_counters(pod, tmp_path):
+    env, calls, state = pod
+    _progress_each_tick(env, tmp_path, state, "$c soon ok")
+    run_guard(env, "5")
+    assert "pod delete testpod" in lines(calls)
+    assert "no GPU, CPU or network work" in log_of(state)
+
+
+def test_a_slow_stage_is_backed_up_but_never_deleted(pod, tmp_path):
+    """A stage still making pages, only slowly, is a working pod: the ladder warns and
+    backs up, and the delete step holds and says why."""
+    env, calls, state = pod
+    local = tmp_path / "local" / "run-1"
+    local.mkdir(parents=True)
+    (local / "page.json").write_text("{}\n")
+    (state).mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    (state / "backup-testpod").write_text(f"{local}\n")
+    _progress_each_tick(env, tmp_path, state, "$c $((c - 7200)) slow page-rate 0.20 a minute")
+    run_until(
+        ["sh", str(GUARD), "5"],
+        env,
+        lambda: "not deleting" in log_of(state) and len(lines(tmp_path / "ticks")) >= 10,
+    )
+    assert lines(calls) == []
+    assert "and verified the copy" in log_of(state)
+    assert "not deleting: the run reports slow, not stalled: it is still working" in log_of(state)
+    assert _notices(tmp_path, "will not delete it because the run reports slow")

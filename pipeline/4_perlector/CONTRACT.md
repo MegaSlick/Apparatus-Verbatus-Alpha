@@ -41,7 +41,8 @@ published. An absent Perlector chair reads nothing: every page is `not-run`
 ## Records, per page, in publication order
 
 Every page's feed is published before any page is read, so a live pass knows exactly
-which pages it will send before its chair starts.
+which pages it will send before its first call. Its chair loads meanwhile, on a
+background thread, so the cold start overlaps the feeds (see the pass rules below).
 
 **`page-feed`** (subject `page_id`, outcome `read`): everything one call is shown —
 the sealed switches, the page render (or none), each shown witness's units with ids
@@ -94,7 +95,12 @@ differ from an unbatched one in low-order bits.
   and the serving receipt's seed. `sampling` records that row as sent and as the
   pinned engine applies it.
 - `capacity` is the admitted `{capacity, answer_reserve, max_tokens}`; the call sends
-  that `max_tokens` with thinking off.
+  that `max_tokens` with thinking off. It is the sealed page cap, the context the
+  prompt leaves, or the answer reserve times the sealed `answer_headroom_bp` but at
+  least `answer_floor_tokens` (`config/decoding.toml`), whichever is smallest, and
+  `answer_reserve` records the headroom and floor it was bounded by. A reply that
+  reaches it stops on `length` and is held as cut off. A re-ask is bounded the same
+  way from its own reserve.
 - `provenance` names the chair, its resolved identity and revision, the serving
   receipt of what answered (the live receipt, never a declared one beside a real
   reading), the witness regime and the adapter revision.
@@ -252,15 +258,39 @@ The re-read is also accounted against the page's evidence like any reading.
 
 ## Live reading
 
-- One chair per pass, started on the first page actually sent, so a resumed pass with
-  nothing left to send loads no model, and stopped before the stage seal, so a failed
-  shutdown is never reported over a sealed stage.
+- One chair per pass. A live pass with a page that has no sealed first reading, none
+  an interrupted pass already sent, and a reading deadline (if any) that admits the
+  start-up timeout and every such page, starts it on a background thread before the
+  feeds are built and waits for it before the first call; a failed start stops the
+  pass on the main thread. A pass that stops while the chair is still loading does not
+  wait: the start's thread stops the chair as soon as its load returns, and the
+  process exits only after that. Otherwise (a resumed pass with earlier sends, or only
+  re-asks and re-reads left) it starts on the first page actually sent, so a resumed
+  pass with nothing left to send loads no model. A pass whose unread pages all turn
+  out not to be sent (refused by the Exemplar, over capacity) has started a chair it
+  does not use. The chair is stopped before the stage seal, so a failed shutdown is
+  never reported over a sealed stage, with one exception: when the orchestrator runs
+  the Coniector next (`--hand-off-to-coniector`) and the reconstructor's sealed row
+  shares this chair's service (`shares_service_with = "perlector"`), a chair that is
+  up is left serving after the seal, for the Coniector to take over and stop
+  (`operations/serving/README.md`, "A shared service"). A failed shutdown of it is
+  then reported by the Coniector, not here. A pass that fails before its seal stops
+  its chair as always.
 - `--perlector-concurrency` keeps up to that many calls in flight (ceiling and default:
-  the served row's `max_num_seqs`); records are still written strictly in page order.
+  the launched row's `max_num_seqs`, the row's own or the run's `--capacity-plan` width); records are still written strictly in the order
+  the calls were drawn. A page's re-ask is drawn as soon as its first reading is
+  published, ahead of the next page's first reading, so the card is not idle
+  between first readings and re-asks. It joins only when the reading deadline holds
+  it with every call the window has still to finish (each unfinished first reading
+  and each re-ask already joined); otherwise it waits for the re-ask phase, which
+  checks the deadline as before. A re-ask an interrupted pass already sent also
+  waits until every first reading is finished, so that no reply of this pass is out
+  when its earlier send is judged (see Resume).
   An error finishes every page already sent before it stops the pass; an interrupt
   first records every reply that has arrived.
 - `--reading-deadline` refuses to start, or to send another page, when the chair's
-  start-up time plus the pages left would run past it.
+  start-up time plus the pages left would run past it. After the feeds it is checked
+  against what is left of a background start's timeout and every page to send.
 - The engine's `stop` and `length` are the reading's own words; anything else is a
   `call-failed` reading with its retained bytes named.
 

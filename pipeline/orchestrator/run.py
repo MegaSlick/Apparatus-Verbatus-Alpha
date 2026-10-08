@@ -31,8 +31,10 @@ sequence and to checkpoint. Its three jobs:
 """
 
 import argparse
+import functools
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -47,6 +49,7 @@ from common.armarium_formats import DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH  # noqa
 from common.background import DEFAULT_INK_MAP_CONFIG_PATH  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.outcomes import ArmariumCategory, check_algebra_is_total  # noqa: E402
+from common.contracts.serving import SERVING_LAUNCH_AUDIT_SCHEMA  # noqa: E402
 from common.contracts.stages import (  # noqa: E402
     ARCHETYPUS,
     ARMARIUM,
@@ -67,7 +70,12 @@ from common.page_review import held_by_recensor, held_share  # noqa: E402
 from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH  # noqa: E402
 from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH  # noqa: E402
 from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, alarm_line  # noqa: E402
-from common.runtree.store import RunTree  # noqa: E402
+from common.runtree.store import (  # noqa: E402
+    BLOBS_DIR,
+    LAUNCH_AUDIT_NOTE_PREFIX,
+    SERVING_LOGS_DIR,
+    RunTree,
+)
 from common.runtree.sync import RunTreeSync, RunTreeSyncError  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_DECODING_CONFIG_PATH,
@@ -147,10 +155,23 @@ GPU_QUERY = (
     "--query-gpu=utilization.gpu,memory.used",
     "--format=csv,noheader,nounits",
 )
-GPU_SAMPLE_INTERVAL_SECONDS = 5.0
-GPU_SAMPLES_KEPT = 720
+# A stage's GPU phases last minutes (a model load, a reading pass), so a read every
+# 15 s still shows each; every 5 s spent a process on every stage, CPU-only ones too.
+GPU_SAMPLE_INTERVAL_SECONDS = 15.0
+# The journal keeps at most this many samples, every Nth read across the whole stage
+# (`sample_stride`), so a long stage's line stays short and still shows its start.
+GPU_SAMPLES_KEPT = 120
 GPU_BUSY_PERCENT = 95
 GPU_SAMPLER_JOIN_SECONDS = 30
+
+
+@functools.cache
+def _nvidia_smi_path() -> str | None:
+    """Where `nvidia-smi` is, looked up once per process; `None` on a host without one."""
+    return shutil.which(GPU_QUERY[0])
+
+
+_FIND_NVIDIA_SMI = object()
 
 
 class GpuSampler:
@@ -159,12 +180,15 @@ class GpuSampler:
     Each read is parsed per card and per field: a field the driver reports as
     `[N/A]` is `None` and costs nothing else. A sample's utilisation is its
     busiest card's, and the busy measure counts samples above 95%. Mean, max
-    and busy fraction cover every read; only the stored list is capped. A read
+    and busy fraction cover every read; the stored list is every `sample_stride`th
+    read, at most `GPU_SAMPLES_KEPT` of them. On a host with no `nvidia-smi` on PATH
+    nothing is started and the result is `None` plus that reason. A read
     with no utilisation is counted in `failed_reads` and never becomes a zero:
     with no successful read the result is `None` plus the reason. The sampler
     never raises into the stage. A thread still alive after the join timeout is
     abandoned and its partial statistics are never published. `run`, `interval`
-    and `join_timeout` are injectable for tests.
+    `join_timeout` and `nvidia_smi` (the binary's path, or `None` for none) are
+    injectable for tests.
     """
 
     def __init__(
@@ -172,8 +196,10 @@ class GpuSampler:
         run=subprocess.run,
         interval: float = GPU_SAMPLE_INTERVAL_SECONDS,
         join_timeout: float = GPU_SAMPLER_JOIN_SECONDS,
+        nvidia_smi: str | None | object = _FIND_NVIDIA_SMI,
     ):
         self._run = run
+        self._nvidia_smi = _nvidia_smi_path() if nvidia_smi is _FIND_NVIDIA_SMI else nvidia_smi
         self._interval = interval
         self._join_timeout = join_timeout
         self._abandoned = False
@@ -189,6 +215,9 @@ class GpuSampler:
         self._reason: str | None = None
 
     def __enter__(self) -> "GpuSampler":
+        if self._nvidia_smi is None:
+            self._reason = f"{GPU_QUERY[0]} is not on PATH, so the card was not sampled"
+            return self
         try:
             self._thread.start()
             self._started = True
@@ -223,7 +252,9 @@ class GpuSampler:
             return None
 
     def _read(self) -> None:
-        result = self._run(list(GPU_QUERY), capture_output=True, text=True, timeout=10)
+        result = self._run(
+            [self._nvidia_smi, *GPU_QUERY[1:]], capture_output=True, text=True, timeout=10
+        )
         if result.returncode != 0:
             self._fail(f"nvidia-smi exited {result.returncode}: {result.stderr.strip()[:200]}")
             return
@@ -255,7 +286,6 @@ class GpuSampler:
                 "cards": cards,
             }
         )
-        del self._samples[:-GPU_SAMPLES_KEPT]
 
     def result(self) -> tuple[dict[str, object] | None, str | None]:
         """The journal's `gpu_utilization` and, when it is `None`, why."""
@@ -264,9 +294,11 @@ class GpuSampler:
             return None, f"the GPU sampler did not stop within {self._join_timeout:g} s"
         if not self._count:
             return None, self._reason or "the stage ended before the first read"
+        stride = -(-len(self._samples) // GPU_SAMPLES_KEPT) or 1
         return {
             "interval_seconds": self._interval,
-            "samples": list(self._samples),
+            "sample_stride": stride,
+            "samples": self._samples[::stride],
             "sample_count": self._count,
             "failed_reads": self._failed,
             "first_failure_reason": self._reason,
@@ -382,8 +414,12 @@ def _require_absolute_caller_paths(args: argparse.Namespace) -> None:
             )
 
 
-def invoke(program: str, args: argparse.Namespace) -> int:
-    """Run one stage as a program and return its exit code."""
+def invoke(program: str, args: argparse.Namespace, *, coniector_next: bool = False) -> int:
+    """Run one stage as a program and return its exit code.
+
+    `coniector_next` tells the Perlector the Coniector runs right after it in this
+    invocation, so it may leave a chair the two share running for it.
+    """
     require_coherent_ingress_options(args)
     _require_absolute_caller_paths(args)
     command = [
@@ -393,6 +429,8 @@ def invoke(program: str, args: argparse.Namespace) -> int:
         # operator's PYTHONPATH/sitecustomize here would execute unsealed code
         # before the stage reached its first refusal boundary.
         "-I",
+        # Unbuffered: a stage's lines reach the transcript as they are printed.
+        "-u",
         str(ROOT / program),
         *_argv(
             (
@@ -437,11 +475,15 @@ def invoke(program: str, args: argparse.Namespace) -> int:
             ),
             omit_unset=True,
         )
-    # The placement tier is a measured runtime fact of the card, not run
-    # configuration, so an unset one is omitted and stage_parser's
+    # The placement tier and the capacity plan are measured runtime facts of the card,
+    # not run configuration, so an unset one is omitted and stage_parser's
     # own default (None) governs.
     command += _argv(
-        (("--pdf-target-dpi", args.pdf_target_dpi), ("--placement-tier", args.placement_tier)),
+        (
+            ("--pdf-target-dpi", args.pdf_target_dpi),
+            ("--placement-tier", args.placement_tier),
+            ("--capacity-plan", getattr(args, "capacity_plan", None)),
+        ),
         omit_unset=True,
     )
     if getattr(args, "mechanics_qualification", False):
@@ -463,6 +505,8 @@ def invoke(program: str, args: argparse.Namespace) -> int:
             (("--perlector-concurrency", getattr(args, "perlector_concurrency", None)),),
             omit_unset=True,
         )
+        if coniector_next:
+            command.append("--hand-off-to-coniector")
 
     # Streams are inherited, not buffered: stage output is unbounded, and a
     # partial Door's private refusal report must reach the operator's terminal.
@@ -470,8 +514,10 @@ def invoke(program: str, args: argparse.Namespace) -> int:
     # `stage_environment()` is not optional and is the reason this call is not a
     # bare subprocess.run: it drops the transfer credentials from every stage's
     # environment, so only the upload-only verb can ever see them.
+    stage_name = _PROGRAM_NAMES.get(program, program)
     started = _clock()
     started_at = _stamp()
+    print(f"run {args.run_id}: {stage_name} started at {started_at}", flush=True)
     # Bound before the try: set inside it, an interrupted stage would leave it
     # unbound and `finally` would raise a NameError that hides the real error.
     exit_code: int | None = None
@@ -487,6 +533,12 @@ def invoke(program: str, args: argparse.Namespace) -> int:
         exit_code = completed.returncode
     finally:
         finished_at, ended = finished or (_stamp(), _clock())
+        spans = _serving_spans(args, program, started_at)
+        print(
+            f"run {args.run_id}: {stage_name} ended, exit {exit_code}, after "
+            f"{ended - started:.0f}s" + "".join(_span_words(span) for span in spans or ()),
+            flush=True,
+        )
         # The invocations a reader most wants timed are the ones that went wrong.
         _record_stage_timing(
             args,
@@ -496,10 +548,24 @@ def invoke(program: str, args: argparse.Namespace) -> int:
             duration_ms=max(0, round((ended - started) * 1000)),
             exit_code=exit_code,
             gpu_utilization=sampler.result(),
+            serving_spans=spans,
         )
     if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED):
         raise ContractError(f"{program} exited {completed.returncode}")
     return completed.returncode
+
+
+def _span_words(span: dict[str, object]) -> str:
+    """One chair on a stage's end line: a model load, or a model taken over."""
+    if span.get("adopted_at"):
+        return (
+            f"; chair {span['chair']} adopted {span['adopted_at']} (no model load; the "
+            f"service was launched {span['started_at']})"
+        )
+    return (
+        f"; chair {span['chair']} launched {span['started_at']}, ready "
+        f"{span['ready_at']} ({span['ready_seconds']}s)"
+    )
 
 
 def _positive_int(value: str) -> int:
@@ -535,6 +601,84 @@ def repository_commit(args: argparse.Namespace) -> tuple[str | None, str | None]
     return commit, None
 
 
+def _seconds_between(start: str, end: str) -> int | None:
+    try:
+        first = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        last = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except (AttributeError, ValueError):
+        return None
+    return round((last - first).total_seconds())
+
+
+# A launch audit is a few kilobytes; a blob far larger is not one.
+_LAUNCH_AUDIT_MAX_BYTES = 256 * 1024
+
+
+def _serving_spans(
+    args: argparse.Namespace, program: str, started_at: str
+) -> list[dict[str, object]] | None:
+    """Each chair the stage launched during this invocation, from its launch audits.
+
+    The audits are found by the notes the stage leaves beside its engine logs
+    (`RunTree.note_launch_audit`), one per launch, so only those blobs are read and
+    never the stage's pages, calls or replies. Read after the stage ended, best
+    effort: a span is for the watcher and the journal, never evidence, and a failure
+    gives `None`.
+    """
+    stage = Path(args.run_root) / args.run_id / Path(program).parent.name
+    logs = stage / SERVING_LOGS_DIR
+    spans: list[dict[str, object]] = []
+    try:
+        if not logs.is_dir():
+            return spans
+        for note in sorted(logs.iterdir()):
+            digest = note.name.removeprefix(LAUNCH_AUDIT_NOTE_PREFIX)
+            if (
+                digest == note.name
+                or len(digest) != 64
+                or not all(c in "0123456789abcdef" for c in digest)
+            ):
+                continue
+            path = stage / BLOBS_DIR / digest
+            if not path.is_file() or path.stat().st_size > _LAUNCH_AUDIT_MAX_BYTES:
+                continue
+            try:
+                audit = json.loads(path.read_bytes())
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
+            if not isinstance(audit, dict) or audit.get("schema") != SERVING_LAUNCH_AUDIT_SCHEMA:
+                continue
+            launched = audit.get("started_at")
+            ready = (audit.get("readiness") or {}).get("ready_at")
+            # A service taken over from the stage before keeps its launch moment; it is
+            # this invocation's from the moment it was taken over.
+            adopted_at = (audit.get("adoption") or {}).get("adopted_at")
+            moment = adopted_at if isinstance(adopted_at, str) else launched
+            # Only this invocation's launches; an earlier pass's audits stay in the store.
+            if not isinstance(moment, str) or moment < started_at:
+                continue
+            spans.append(
+                {
+                    "chair": audit.get("chair"),
+                    "launch_purpose": audit.get("launch_purpose"),
+                    "started_at": launched,
+                    "ready_at": ready,
+                    "adopted_at": adopted_at if isinstance(adopted_at, str) else None,
+                    "ready_seconds": (
+                        _seconds_between(launched, ready) if isinstance(ready, str) else None
+                    ),
+                }
+            )
+    except (OSError, AttributeError, TypeError) as error:
+        print(
+            f"run {args.run_id}: serving spans could not be read from {logs}: {error}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return None
+    return sorted(spans, key=lambda span: str(span["started_at"]))
+
+
 def _record_stage_timing(
     args: argparse.Namespace,
     *,
@@ -544,6 +688,7 @@ def _record_stage_timing(
     duration_ms: int,
     exit_code: int | None,
     gpu_utilization: tuple[dict[str, object] | None, str | None],
+    serving_spans: list[dict[str, object]] | None = None,
 ) -> None:
     """Append one stage's clock to the timing journal, best effort.
 
@@ -581,7 +726,53 @@ def _record_stage_timing(
             if program == STAGE_PROGRAMS["perlector"]
             else None
         ),
+        # Each chair this invocation launched, from its launch audit: the launch and
+        # ready moments, so a reader can tell loading from reading. Optional, so the
+        # journal stays v4 (readers check the schema and run only); `None` when the
+        # audits could not be read. The serving manager records no stop moment; the
+        # entry's `finished_at` bounds it.
+        "serving_spans": serving_spans,
     }
+    _append_journal(args, path, entry, f"the {program} timing entry")
+
+
+def _record_sync_timing(
+    args: argparse.Namespace,
+    *,
+    after: str,
+    started_at: str,
+    finished_at: str,
+    duration_ms: int,
+    copied: int | None,
+    failure: str | None,
+) -> None:
+    """Append one volume sync's clock to the timing journal, best effort.
+
+    Its own line, named `volume sync after <stage>`: the sync runs beside the next
+    stage, so its time is not that stage's. `exit_code` is 0 for a sync that
+    finished and `None` for one that failed, which `failure` names.
+    """
+    journal = getattr(args, "stage_timing_journal", None)
+    if journal is None:
+        return
+    entry: dict[str, object] = {
+        "schema": STAGE_TIMING_JOURNAL_SCHEMA,
+        "run_id": args.run_id,
+        "run_root": str(args.run_root),
+        "stage": f"volume sync after {after}",
+        "kind": "volume-sync",
+        "program": None,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_ms": duration_ms,
+        "exit_code": 0 if failure is None else None,
+        "files_copied": copied,
+        "failure": failure,
+    }
+    _append_journal(args, Path(journal), entry, f"the volume sync after {after}")
+
+
+def _append_journal(args: argparse.Namespace, path: Path, entry: dict, what: str) -> None:
     try:
         # Inside the try: this runs from a `finally`, and a refusal here would
         # replace the stage failure already propagating. A resume at another
@@ -613,10 +804,73 @@ def _record_stage_timing(
             handle.write(json.dumps(entry, sort_keys=True).encode("utf-8") + b"\n")
     except Exception as error:  # noqa: BLE001 -- a stopwatch never fails a stage
         print(
-            f"run {args.run_id}: the {program} timing entry could not be journaled "
-            f"to {path}: {error}",
+            f"run {args.run_id}: {what} could not be journaled to {path}: {error}",
             file=sys.stderr,
+            flush=True,
         )
+
+
+class _VolumeSync:
+    """One stage's volume sync, copying on a thread while the next stage runs.
+
+    The file list is frozen here, on the main thread, at the stage boundary
+    (`RunTreeSync.plan`), so the next stage's new files wait for the next sync.
+    `join` waits for the copy, prints and journals it, and raises a failure as the
+    refusal naming the stage whose sync it was.
+    """
+
+    def __init__(self, args: argparse.Namespace, after: str) -> None:
+        self._args = args
+        self._after = after
+        self._copied: int | None = None
+        self._error: BaseException | None = None
+        print(f"run {args.run_id}: volume sync after {after} started", flush=True)
+        self._started_at = _stamp()
+        self._began = _clock()
+        try:
+            plan = args.stage_sync.plan()
+        except (OSError, RunTreeSyncError) as error:
+            self._error = error
+            self._thread = None
+            return
+        self._thread = threading.Thread(
+            target=self._copy, args=(plan,), name="volume-sync", daemon=False
+        )
+        self._thread.start()
+
+    def _copy(self, plan) -> None:
+        try:
+            self._copied = self._args.stage_sync.copy(plan)
+        except BaseException as error:  # noqa: BLE001 -- raised by `join`
+            self._error = error
+
+    def join(self) -> None:
+        if self._thread is not None:
+            self._thread.join()
+        seconds = _clock() - self._began
+        error = self._error
+        failure = None if error is None else f"{type(error).__name__}: {error}"
+        _record_sync_timing(
+            self._args,
+            after=self._after,
+            started_at=self._started_at,
+            finished_at=_stamp(),
+            duration_ms=max(0, round(seconds * 1000)),
+            copied=self._copied,
+            failure=failure,
+        )
+        if error is None:
+            print(
+                f"run {self._args.run_id}: volume sync after {self._after} copied "
+                f"{self._copied} files in {seconds:.0f}s",
+                flush=True,
+            )
+            return
+        if not isinstance(error, (OSError, RunTreeSyncError)):
+            raise error
+        raise ContractError(
+            f"run {self._args.run_id}: {self._after} finished, but its volume sync failed: {error}"
+        ) from error
 
 
 def main() -> int:
@@ -778,6 +1032,14 @@ def main() -> int:
             "the measured placement tier of the card serving this run; forwarded "
             "to every stage when set, omitted (not sealed) otherwise — see "
             "stage_parser's own flag for the full rationale"
+        ),
+    )
+    parser.add_argument(
+        "--capacity-plan",
+        default=None,
+        help=(
+            "PREFLIGHT's capacity plan for the card serving this run; forwarded to every "
+            "stage when set, omitted (not sealed) otherwise, like --placement-tier"
         ),
     )
     parser.add_argument(
@@ -991,7 +1253,7 @@ def run_sequence(
         try:
             _record_stop(args, EXIT_FATAL, exported=False)
         except ContractError as lost:
-            print(f"{type(lost).__name__}: {lost}", file=sys.stderr)
+            print(f"{type(lost).__name__}: {lost}", file=sys.stderr, flush=True)
         raise
     _record_stop(args, exit_code, exported=exported)
     return exit_code
@@ -1015,21 +1277,50 @@ def _drive(
     every hold and how to go on. The run continues past the Recensor once
     nothing is held, or once an advance record passes its current seal.
     """
+    syncing: list[_VolumeSync] = []
+    try:
+        return _drive_stages(args, names, mode, hard_failure_policy, syncing)
+    except BaseException as raised:
+        # A stage that failed still waits for the sync already running, which may
+        # name its own failure beside the stage's.
+        for pending in syncing:
+            try:
+                pending.join()
+            except BaseException as sync_error:  # noqa: BLE001 -- noted on the raised error
+                raised.add_note(f"{type(sync_error).__name__}: {sync_error}")
+        syncing.clear()
+        raise
+    finally:
+        # The last stage's sync, before this invocation reports how it ended.
+        while syncing:
+            syncing.pop().join()
+
+
+def _drive_stages(
+    args: argparse.Namespace,
+    names: tuple[str, ...],
+    mode: str,
+    hard_failure_policy: dict,
+    syncing: list,
+) -> tuple[int, bool]:
     for name in names:
         if name in (ARCHETYPUS, ARMARIUM):
             held = recensor_holds(args)
             if held:
-                print(f"run {args.run_id}: stopped at a held recensor, before the {name}")
+                print(
+                    f"run {args.run_id}: stopped at a held recensor, before the {name}", flush=True
+                )
                 report_held_recensor(args, held)
                 return EXIT_HELD, False
-        result = invoke(STAGE_PROGRAMS[name], args)
+        result = invoke(
+            STAGE_PROGRAMS[name], args, coniector_next=name == "perlector" and CONIECTOR in names
+        )
         if getattr(args, "stage_sync", None) is not None:
-            try:
-                args.stage_sync.sync()
-            except (OSError, RunTreeSyncError) as error:
-                raise ContractError(
-                    f"run {args.run_id}: {name} finished, but its volume sync failed: {error}"
-                ) from error
+            # The previous stage's sync ran beside this stage; it ends before this
+            # stage's begins, and this one runs beside the next stage's cold start.
+            while syncing:
+                syncing.pop().join()
+            syncing.append(_VolumeSync(args, name))
         if result == EXIT_RUN_HALTED:
             return _halt(args, _entry_halt(args, name, hard_failure_policy)), False
         if name == "door" and result in (EXIT_COMPLETE, EXIT_HELD):
@@ -1042,12 +1333,12 @@ def _drive(
         # An Attestatores hold means its attempt tally is unestablished, so no
         # later member may advance even when the stage already sealed evidence.
         if name == ATTESTATORES and result == EXIT_HELD:
-            print(f"run {args.run_id}: held; its reason is on stderr above")
+            print(f"run {args.run_id}: held; its reason is on stderr above", flush=True)
             return EXIT_HELD, False
         # A range that ends at the Armarium runs through held boundaries as auto mode
         # does, so its export names every hold; the Armarium is terminal either way.
         if mode in ("semi", "manual") and result == EXIT_HELD and names[-1] != "armarium":
-            print(f"run {args.run_id}: {mode} mode stopped at held {name}")
+            print(f"run {args.run_id}: {mode} mode stopped at held {name}", flush=True)
             if name == RECENSOR:
                 report_held_recensor(args, held_by_recensor(_run_tree(args)))
             return EXIT_HELD, False
@@ -1059,9 +1350,9 @@ def _drive(
     # path afterwards would leave a check/use window at the last boundary.
     export = verify_final_seal(_run_tree(args))
     status, lines = terminal_report(export)
-    print(f"run {args.run_id}: {status}")
+    print(f"run {args.run_id}: {status}", flush=True)
     for line in lines:
-        print(f"  - {line}")
+        print(f"  - {line}", flush=True)
     return (EXIT_COMPLETE if status == "complete" else EXIT_HELD), True
 
 
@@ -1083,7 +1374,8 @@ def recensor_holds(args) -> list[dict]:
         report_systemic_share(args)
         print(
             f"run {args.run_id}: the recensor holds {len(held)} item(s); an advance record "
-            "passes its current seal, so the run continues and the export names every hold"
+            "passes its current seal, so the run continues and the export names every hold",
+            flush=True,
         )
         return []
     return held
@@ -1101,11 +1393,12 @@ def report_systemic_share(args) -> None:
     if share is None:
         print(
             f"run {args.run_id}: this run sealed no review policy, so whether its held share "
-            "is systemic was not checked"
+            "is systemic was not checked",
+            flush=True,
         )
     elif share["systemic"]:
         args.systemic_line = alarm_line(args.run_id, share["held_pages"], share["pages"], share)
-        print(args.systemic_line)
+        print(args.systemic_line, flush=True)
 
 
 def report_held_recensor(args, held: list[dict]) -> None:
@@ -1117,17 +1410,22 @@ def report_held_recensor(args, held: list[dict]) -> None:
     """
     report_systemic_share(args)
     print(
-        f"  the recensor holds {len(held)} item(s), and nothing is exported until they are decided:"
+        f"  the recensor holds {len(held)} item(s), and nothing is exported until they are decided:",
+        flush=True,
     )
     for item in held:
         codes = ", ".join(item["hold_codes"])
-        print(f"  - {item['what']} ({item['subject_id']})" + (f": {codes}" if codes else ""))
+        print(
+            f"  - {item['what']} ({item['subject_id']})" + (f": {codes}" if codes else ""),
+            flush=True,
+        )
     print(
         "  next: record operator review decisions in this run, then resume it from the "
         "recensor (--from recensor --to armarium), which applies them, or from the perlector "
         "(--from perlector --to armarium) when a page re-ask asks for a page to be read "
         "again; it continues past the recensor once nothing is held, or once "
-        "`verbatus advance --stage recensor` passes its current seal"
+        "`verbatus advance --stage recensor` passes its current seal",
+        flush=True,
     )
 
 
@@ -1184,7 +1482,8 @@ def checkpoint(args, checkpoint_name: str, hard_failure_policy: dict) -> dict | 
     if tally["count"] == tally["threshold"] and tally["count"] > 0:
         print(
             f"run {args.run_id}: {tally['count']} hard failure(s) so far — the project lead's ruling "
-            f"treats this as an early warning; one more halts the run at the next checkpoint"
+            f"treats this as an early warning; one more halts the run at the next checkpoint",
+            flush=True,
         )
     return dict(tally, checkpoint=checkpoint_name) if tally["breached"] else None
 
@@ -1195,11 +1494,12 @@ def report_halt(args, tally: dict) -> None:
         f"run {args.run_id}: halted at the {tally['checkpoint']} checkpoint — {tally['count']} "
         f"hard failure(s) exceed the run-level cap of {tally['threshold']} (the project lead's ruling: "
         f"more than {tally['threshold']} needs fixing, not another automatic stage). The "
-        "section already in flight finished; nothing further was invoked"
+        "section already in flight finished; nothing further was invoked",
+        flush=True,
     )
     for kind, subjects in tally["by_kind"].items():
         if subjects:
-            print(f"  - {kind}: {subjects}")
+            print(f"  - {kind}: {subjects}", flush=True)
 
 
 def _run_tree(args) -> RunTree:
@@ -1231,5 +1531,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except ContractError as error:
-        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        print(f"{type(error).__name__}: {error}", file=sys.stderr, flush=True)
         raise SystemExit(2) from error

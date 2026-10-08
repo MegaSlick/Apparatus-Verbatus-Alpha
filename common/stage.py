@@ -92,7 +92,7 @@ from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
     load_decoding_policy,
-    perlector_page_max_tokens,
+    perlector_page_generation,
     verify_call_sampling,
 )
 from common.durability import is_unpublished_blob_temporary
@@ -694,7 +694,17 @@ class StageContext:
                 "construct serving through open_context"
             )
         self._require_run_sealed_serving_inputs(audit)
-        return self._write_serving_blob(audit, "serving launch audit")
+        reference = self._write_serving_blob(audit, "serving launch audit")
+        try:
+            self.tree.note_launch_audit(self.stage, reference["sha256"])
+        except (OSError, ContractError) as error:
+            # A watcher's convenience; the audit itself is stored and referenced.
+            print(
+                f"{self.stage}: the launch audit was stored but not noted for the watcher: {error}",
+                file=sys.stderr,
+                flush=True,
+            )
+        return reference
 
     def write_serving_evidence_manifest(
         self,
@@ -1429,6 +1439,17 @@ def stage_parser(description: str) -> argparse.ArgumentParser:
             "why the receipt records the caps that actually bound the serving "
             "moment (the launch audit's profile.tier) rather than folding this into "
             "the reproducibility contract config_digest exists to protect."
+        ),
+    )
+    parser.add_argument(
+        "--capacity-plan",
+        default=None,
+        help=(
+            "the capacity plan green PREFLIGHT derived for the card serving this run "
+            "(canonical JSON, operations/serving/capacity.py): how many sequences each "
+            "chair is launched with, never fewer than its row's max_num_seqs. Unsealed "
+            "like --placement-tier: a measured runtime fact of the card, recorded in each "
+            "launch audit; omitted, every row launches as written."
         ),
     )
     return parser
@@ -3073,11 +3094,11 @@ def _verify_capacity(context, what, chair, payload, feed, text, shown) -> None:
         policy, _digest = sealed_decoding_policy(context)
         expected: Any = (
             page_path.request_capacity(
-                row, chair.serving_recipe, feed, text, perlector_page_max_tokens(policy)
+                row, chair.serving_recipe, feed, text, perlector_page_generation(policy)
             )
             if shown is None
             else page_path.reask_request_capacity(
-                row, chair.serving_recipe, feed, shown, text, perlector_page_max_tokens(policy)
+                row, chair.serving_recipe, feed, shown, text, perlector_page_generation(policy)
             )
         )
         problems = None

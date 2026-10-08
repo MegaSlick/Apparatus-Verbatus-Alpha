@@ -719,7 +719,7 @@ def build_parser() -> PlainParser:
         type=Path,
         metavar="FOLDER",
         help="the folder holding copies of pod-run-report-<run id>.json and its -liveness, "
-        "-timings and -estimate siblings (the hand route's names)",
+        "-timings, -estimate and -progress siblings (the hand route's names)",
     )
     where.add_argument(
         "--report", type=Path, help="the copy of the pod-run report, when it has another name"

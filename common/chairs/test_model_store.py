@@ -9,6 +9,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1303,6 +1304,37 @@ def test_materializer_refuses_store_lock_after_bounded_wait(tmp_path, monkeypatc
     assert isinstance(caught.value.__cause__, BlockingIOError)
 
 
+def test_a_second_pod_waits_out_another_pod_s_store_work_and_says_so(tmp_path, monkeypatch, capsys):
+    """A pod booting while another holds the store lock through a seven-minute check waits,
+    saying so each minute, rather than refusing after one."""
+    assert model_store.MATERIALIZATION_LOCK_TIMEOUT_SECONDS >= 15 * 60
+    clock = [0.0]
+    attempts = []
+
+    def flock(fd, operation):
+        if operation & model_store.fcntl.LOCK_UN:
+            return
+        attempts.append(clock[0])
+        if clock[0] < 7 * 60:
+            raise BlockingIOError("held by the other pod")
+
+    def sleep(seconds):
+        clock[0] += 30
+
+    monkeypatch.setattr(model_store.fcntl, "flock", flock)
+    monkeypatch.setattr(
+        model_store, "time", SimpleNamespace(monotonic=lambda: clock[0], sleep=sleep)
+    )
+
+    with model_store._materialization_lock(tmp_path / "store"):
+        pass
+
+    assert attempts[-1] == 7 * 60
+    waits = [line for line in capsys.readouterr().err.splitlines() if "waiting" in line]
+    assert len(waits) == 6
+    assert waits[0].startswith("model-store: waiting 60 s of 1200 s for the materialization lock")
+
+
 def test_materializer_clears_staging_left_after_failed_cleanup_on_next_fetch(tmp_path, monkeypatch):
     class FailingFetcher:
         def fetch(self, repo: str, revision: str, destination: Path) -> None:
@@ -1336,12 +1368,147 @@ def test_a_second_boot_verifies_the_whole_store_once_not_once_per_artifact(tmp_p
     calls = []
     real = model_store.verify_store
     monkeypatch.setattr(
-        model_store, "verify_store", lambda root: (calls.append(root), real(root))[1]
+        model_store,
+        "verify_store",
+        lambda root, **kwargs: (calls.append(root), real(root, **kwargs))[1],
     )
     receipt = materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
 
     assert len(calls) == 1
     assert {row["artifact"] for row in receipt["artifacts"]} == present
+
+
+def _hashed_artifacts(monkeypatch):
+    """Which store snapshots `verify_store` read byte for byte, by artifact."""
+    hashed: list[str] = []
+    real = model_store.verify_snapshot
+
+    def record(identity, snapshot, manifest, **kwargs):  # type: ignore[no-untyped-def]
+        hashed.append(identity.role)
+        return real(identity, snapshot, manifest, **kwargs)
+
+    monkeypatch.setattr(model_store, "verify_snapshot", record)
+    return hashed
+
+
+def test_a_boot_whose_copies_hash_the_bytes_checks_the_store_structure_only(tmp_path, monkeypatch):
+    fetcher = _FakeMaterializationFetcher()
+    materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
+    hashed = _hashed_artifacts(monkeypatch)
+
+    receipt = materialize_real_roster(
+        tmp_path,
+        fetcher,
+        _FakeBundleFetcher(),
+        hashed_at_copy=("perlector", "reconstructor", "attestator_1"),
+    )
+
+    assert sorted(hashed) == [
+        "churro-3B",
+        "dai-recordgold-atr",
+        "surya2-detection",
+        "yolov26-record-detection",
+    ]
+    assert receipt["real_roster_complete"] is True
+    assert receipt["store_bytes"]["hashed_at_copy"] == {
+        "artifacts": ["chandra-ocr-2", "qwen3.8-27B"],
+        "roles": ["attestator_1", "perlector", "reconstructor"],
+    }
+    assert receipt["store_bytes"]["hashed_at_fetch"] == []
+    assert receipt["store_bytes"]["statement"].startswith(
+        "bytes verified at copy, for roles attestator_1, perlector, reconstructor:"
+    )
+
+
+def test_structure_only_still_refuses_a_missing_or_resized_store_file(tmp_path):
+    record = _store(tmp_path)
+    entry = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
+    weights = tmp_path / entry["snapshot"] / "model.safetensors"
+    data = weights.read_bytes()
+    weights.write_bytes(data[:-2] + b"X\n")
+    verify_store(tmp_path, bytes_hashed_elsewhere=("qwen3.8-27B",))
+
+    with pytest.raises(DigestMismatchRefusal, match="model.safetensors"):
+        verify_store(tmp_path)
+    weights.write_bytes(data + b"longer")
+    with pytest.raises(DigestMismatchRefusal, match="model.safetensors: size"):
+        verify_store(tmp_path, bytes_hashed_elsewhere=("qwen3.8-27B",))
+    weights.unlink()
+    with pytest.raises(DigestMismatchRefusal, match="model.safetensors"):
+        verify_store(tmp_path, bytes_hashed_elsewhere=("qwen3.8-27B",))
+
+
+def test_artifacts_fetched_in_this_call_are_not_hashed_a_second_time(tmp_path, monkeypatch):
+    hashed = _hashed_artifacts(monkeypatch)
+
+    receipt = materialize_real_roster(tmp_path, _FakeMaterializationFetcher(), _FakeBundleFetcher())
+
+    assert hashed == []
+    assert receipt["store_bytes"]["hashed_at_boot"] == []
+    assert len(receipt["store_bytes"]["hashed_at_fetch"]) == 6
+    assert "statement" not in receipt["store_bytes"]
+
+
+SMALL_CARD_ROLES = (
+    "attestator_1",
+    "attestator_2",
+    "attestator_3",
+    "designator_surya",
+    "secondary_proposer",
+)
+BIG_CARD_ROLES = ("perlector", "reconstructor")
+
+
+def test_each_half_of_a_split_fetches_and_verifies_only_its_own_artifacts(tmp_path, monkeypatch):
+    qwen = next(item for item in REQUIRED_ARTIFACTS if item.chair == "perlector")
+    fetcher = _FakeMaterializationFetcher()
+
+    small = materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher(), roles=SMALL_CARD_ROLES)
+
+    assert (qwen.repo, qwen.revision) not in fetcher.calls
+    assert small["selection_complete"] is True
+    assert small["real_roster_complete"] is False
+    assert "qwen3.8-27B" not in {row["artifact"] for row in small["artifacts"]}
+    states = {
+        item["artifact"]: item["state"] for item in load_download_record(tmp_path)["artifacts"]
+    }
+    assert states["qwen3.8-27B"] == "pending-fetch"
+
+    fetcher.calls.clear()
+    bundles = _FakeBundleFetcher()
+    hashed = _hashed_artifacts(monkeypatch)
+    big = materialize_real_roster(tmp_path, fetcher, bundles, roles=BIG_CARD_ROLES)
+
+    assert fetcher.calls == [(qwen.repo, qwen.revision)]
+    assert (bundles.checked, bundles.calls) == ([], [])
+    assert hashed == []
+    assert big["selection_complete"] is True
+    assert big["real_roster_complete"] is False
+    assert big["store_bytes"]["not_verified"] == sorted(
+        {item.artifact for item in REQUIRED_ARTIFACTS} - {"qwen3.8-27B"}
+    )
+
+    whole = materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
+    assert whole["selection"] is None
+    assert whole["real_roster_complete"] is True
+    assert whole["store_bytes"]["not_verified"] == []
+
+
+def test_a_selection_whose_artifact_is_absent_is_not_complete(tmp_path):
+    class _Unreachable(_FakeBundleFetcher):
+        def fetch(self, artifact: str, destination: Path) -> None:
+            raise OSError("model host unreachable")
+
+    with pytest.raises(OSError):
+        materialize_real_roster(
+            tmp_path, _FakeMaterializationFetcher(), _Unreachable(), roles=SMALL_CARD_ROLES
+        )
+    # The big card does not need the bundle, so its half is complete without it.
+    big = materialize_real_roster(
+        tmp_path, _FakeMaterializationFetcher(), _Unreachable(), roles=BIG_CARD_ROLES
+    )
+    assert big["selection_complete"] is True
+    assert big["complete"] is False
 
 
 def test_materializer_receipt_digest_names_the_record_whole_store_verification_checked(
@@ -1354,8 +1521,8 @@ def test_materializer_receipt_digest_names_the_record_whole_store_verification_c
     verify = model_store.verify_store
     observed: dict[str, str] = {}
 
-    def verify_then_advance_active_record(root):  # type: ignore[no-untyped-def]
-        inventory = verify(root)
+    def verify_then_advance_active_record(root, **kwargs):  # type: ignore[no-untyped-def]
+        inventory = verify(root, **kwargs)
         observed["verified"] = inventory["download_record_sha256"]
         replacement = load_download_record(root)
         # Every artifact is present, so the valid change is the entries' order.
@@ -1765,7 +1932,7 @@ def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothin
         assert declares_nothing == (requirement.license_declaration is None), requirement.chair
 
 
-def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(tmp_path):
+def test_registry_populates_and_reuses_digest_caches_from_verified_store_sources(tmp_path):
     """Six cache roles are supplied locally, including both Chandra roles."""
 
     record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
@@ -1822,9 +1989,14 @@ def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(t
     for identity in source_identities:
         registry.ensure(identity)
 
-    assert set(fetcher.calls) == set(chairs)
+    # The Perlector and the Coniector's reconstructor pin one manifest: one copy.
+    digests = {identity.digest_manifest for identity in source_identities}
+    assert len(fetcher.calls) == len(digests) < len(chairs)
+    assert {"perlector", "reconstructor"} - set(fetcher.calls) != set()
     for identity in source_identities:
-        assert (tmp_path / "chair-cache" / identity.role / CACHE_DESCRIPTOR).is_file()
+        assert (
+            tmp_path / "chair-cache" / "by-digest" / identity.digest_manifest / CACHE_DESCRIPTOR
+        ).is_file()
 
     fetcher.calls.clear()
     restarted = ChairRegistry(config, cache_root=tmp_path / "chair-cache", fetcher=fetcher)
@@ -1852,13 +2024,60 @@ def test_role_fetch_reads_record_without_rehashing_whole_store(tmp_path, monkeyp
         fetcher.plan(replace(identity, revision="0" * 40))
 
 
+def test_role_fetch_hashes_each_file_as_it_copies_and_refuses_a_difference(tmp_path):
+    record = _store(tmp_path)
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    row = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
+    identity = replace(real.chairs["perlector"], digest_manifest=row["digest_manifest"])
+    manifest = read_manifest(
+        tmp_path / row["manifest"], expected_digest=row["digest_manifest"], chair="perlector"
+    )
+    pinned = {item.path: item.sha256 for item in manifest.rows}
+    fetcher = StoreRoleFetcher(tmp_path)
+    paths = ("config.json", "model.safetensors")
+
+    first = tmp_path / "first-copy"
+    first.mkdir()
+    ledger = fetcher.fetch(identity, first, paths)
+    assert ledger.digests == {path: pinned[path] for path in paths}
+
+    snapshot = tmp_path / row["snapshot"]
+    weights = (snapshot / "model.safetensors").read_bytes()
+    (snapshot / "model.safetensors").write_bytes(weights[:-2] + b"X\n")
+    second = tmp_path / "second-copy"
+    second.mkdir()
+    with pytest.raises(DigestMismatchRefusal, match="model.safetensors: sha256"):
+        fetcher.fetch(identity, second, paths)
+    with pytest.raises(DigestMismatchRefusal, match="not in the manifest"):
+        fetcher.fetch(identity, second, ("unpinned.bin",))
+
+
+def test_role_fetch_copies_through_a_shared_pool_when_given_one(tmp_path):
+    from common.chairs.manifests import CopyPool
+    from common.cpus import IoWorkers
+
+    record = _store(tmp_path)
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    row = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
+    identity = replace(real.chairs["perlector"], digest_manifest=row["digest_manifest"])
+    destination = tmp_path / "shared-copy"
+    destination.mkdir()
+
+    with CopyPool(IoWorkers(5, "shared")) as pool:
+        ledger = StoreRoleFetcher(tmp_path, pool=pool).fetch(
+            identity, destination, ("config.json", "model.safetensors")
+        )
+        assert pool._threads, "the copies ran on the shared pool's workers"
+
+    assert ledger.workers == IoWorkers(5, "shared")
+    assert sorted(ledger.digests) == ["config.json", "model.safetensors"]
+
+
 def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path):
     """Pointing cache_root at the store makes the registry stamp its descriptor.
 
     The generic refusal for that ("extra file") names the file but not the
-    cause; a store is keyed by artifact and a cache by role, and the two chairs
-    sharing chandra-ocr-2 would in any case write two different descriptors
-    over the one stored directory.
+    cause; a store is keyed by artifact and a cache by manifest digest.
     """
 
     record = _store(tmp_path)

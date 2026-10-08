@@ -92,6 +92,29 @@ findings, not_made}`. Outcome `made` or `not-made`.
   whose pieces the Coniector reads as not one act. One failing departure leaves
   its whole act, or join, not made; the rest of the page stands.
 
+## Calls
+
+A live pass with a call that has no sealed record starts its chair on a background
+thread once the plan is published, while the calls are drawn, and waits for it
+before the first call is sent; a failed start stops the pass on the main thread. A
+pass whose every call is already sealed loads no model. A pass whose calls all turn
+out not to be sent (over capacity) has started a chair it does not use: it waits
+for that start and stops the chair before its seal; a pass that stops while the chair is still loading does not wait
+for the load, whose thread stops the chair once it returns. When the
+Perlector left its chair serving for this stage and the reconstructor's row shares
+that service, starting the chair takes the running service over instead of loading
+the model again; its receipt names the reconstructor and keeps the service's start
+moment, and its launch audit says `launch_purpose = "adopted"` and what it was
+taken over from. A take-over any check refuses stops that service and starts the
+chair as usual, the reason in the launch audit (`operations/serving/README.md`, "A
+shared service"). A pass that sends nothing stops a service left for it before its
+seal. Calls are
+sent through `common.in_order_window`: up to the launched row's `max_num_seqs` (the row's
+own, or the run's `--capacity-plan` width) in flight at once on a live row, one at a time otherwise. Only the request itself
+leaves the main thread; each call's record and its reconstructions are published
+on the main thread in plan order, whatever order the replies arrive in, so the
+records are the bytes a serial pass publishes.
+
 ## Resume
 
 A page whose `reconstruction-call` is sealed is not asked again: its record is
@@ -101,8 +124,11 @@ derived again from its reply. That includes a call that failed or was refused:
 its record is sealed evidence, and asking again would publish different bytes
 under the same identity, so reconstructing that page again takes a new run,
 unless an operator re-read changed the readings and the plan with them. A
-live call interrupted before its record was published is asked again; its
-retained reply stays in the run tree.
+live call interrupted before any reply was retained is asked again. One whose
+reply or call record was retained but is named by no record stops the resumed
+pass before it sends anything: asking again would ask that page twice, so it is
+reconstructed in a new run, and the retained bytes stay in the run tree as the
+interrupted pass's evidence (`common.retained_replies`).
 
 A chain's pieces are never subjects of their own: they are asked as one join.
 When the Coniector reads them as not one act, the join is `does-not-continue`

@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
+import itertools
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
+import stat
+import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable, Iterable, TypeVar
+from typing import Any, Callable, Iterable, Mapping, TypeVar
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of
+from common.cpus import IoWorkers, io_workers
 
-from .errors import DigestMismatchRefusal
+from .errors import ConfigurationRefusal, DigestMismatchRefusal
 from .filesystem import read_limited_bytes
 from .models import ChairIdentity, DigestManifest, ManifestRow, VerifiedSnapshot, is_sha256
 
@@ -23,6 +28,22 @@ HASH_WORKERS_MAX = 16
 
 _Item = TypeVar("_Item")
 _Result = TypeVar("_Result")
+
+
+@dataclass(frozen=True, slots=True)
+class CopyLedger:
+    """The SHA-256 of each file as it was written by a verifying copy.
+
+    Every digest here already matched its manifest row when the copy wrote it;
+    a verifier can then check the copied tree's structure without reading those
+    bytes again.
+    """
+
+    digests: Mapping[str, str]
+    workers: IoWorkers
+
+    def to_record(self) -> dict[str, object]:
+        return {"copied_files": len(self.digests), "io_workers": self.workers.to_record()}
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,8 +132,14 @@ def verify_snapshot(
     manifest: DigestManifest,
     *,
     ignored_paths: Iterable[str] = (),
+    copied: Mapping[str, str] | None = None,
 ) -> VerifiedSnapshot:
-    """Verify every expected file and refuse the lexical first difference or extra."""
+    """Verify every expected file and refuse the lexical first difference or extra.
+
+    `copied` holds digests a verifying copy measured as it wrote those files
+    (`CopyLedger.digests`); they are compared with the manifest instead of
+    reading the bytes again. Every other check still runs on every file.
+    """
 
     _inspect_snapshot(
         identity,
@@ -120,8 +147,33 @@ def verify_snapshot(
         manifest,
         ignored_paths=ignored_paths,
         allow_missing=False,
+        copied=copied or {},
     )
     return _verified(identity, snapshot_root, manifest)
+
+
+def verify_snapshot_structure(
+    identity: ChairIdentity,
+    snapshot_root: str | Path,
+    manifest: DigestManifest,
+    *,
+    ignored_paths: Iterable[str] = (),
+) -> None:
+    """Every check of `verify_snapshot` except reading the bytes.
+
+    Missing and extra files, links, non-regular entries and sizes are refused as
+    there. For a store snapshot whose bytes are hashed against this same manifest
+    when they are copied to where they are used; it proves no byte's content.
+    """
+
+    _inspect_snapshot(
+        identity,
+        snapshot_root,
+        manifest,
+        ignored_paths=ignored_paths,
+        allow_missing=False,
+        hash_bytes=False,
+    )
 
 
 def inspect_snapshot_for_repair(
@@ -158,6 +210,8 @@ def _inspect_snapshot(
     *,
     ignored_paths: Iterable[str],
     allow_missing: bool,
+    copied: Mapping[str, str] | None = None,
+    hash_bytes: bool = True,
 ) -> tuple[str, ...]:
     """Inventory and verify a snapshot once, returning the pinned paths it lacks.
 
@@ -199,7 +253,12 @@ def _inspect_snapshot(
                 identity.role,
                 f"snapshot differs at {relative}: size {size}, expected {row.size}",
             )
-        actual_sha = file_digest(path, identity.role, relative)
+        if copied and relative in copied:
+            actual_sha = copied[relative]
+        elif not hash_bytes:
+            return None
+        else:
+            actual_sha = file_digest(path, identity.role, relative)
         if actual_sha != row.sha256:
             if allow_missing:
                 raise DigestMismatchRefusal(
@@ -221,6 +280,43 @@ def _inspect_snapshot(
     )
 
 
+FileStat = tuple[str, int, int, int, int, int]
+
+
+def snapshot_stat_identity(
+    snapshot_root: str | Path, *, ignored_paths: Iterable[str] = ()
+) -> tuple[FileStat, ...] | None:
+    """Each regular file's path, device, inode, size, mtime and ctime, in path order.
+
+    Any rewrite, replacement, addition or removal of a file changes this value.
+    None when the tree cannot be walked or holds anything but regular files, so a
+    caller falls back to full verification, which names the problem.
+    """
+
+    root = Path(snapshot_root)
+    ignored = set(ignored_paths)
+    try:
+        files = _regular_files(root, chair="snapshot")
+        stats: list[FileStat] = []
+        for relative, path in files:
+            if relative in ignored:
+                continue
+            status = path.stat(follow_symlinks=False)
+            stats.append(
+                (
+                    relative,
+                    status.st_dev,
+                    status.st_ino,
+                    status.st_size,
+                    status.st_mtime_ns,
+                    status.st_ctime_ns,
+                )
+            )
+    except (OSError, DigestMismatchRefusal):
+        return None
+    return tuple(stats)
+
+
 def _map_files_in_order(items: list[_Item], work: Callable[[_Item], _Result]) -> list[_Result]:
     """Hash independent files concurrently, then observe results in lexical order."""
 
@@ -231,6 +327,165 @@ def _map_files_in_order(items: list[_Item], work: Callable[[_Item], _Result]) ->
         return [work(item) for item in items]
     with ThreadPoolExecutor(max_workers=workers) as pool:
         return list(pool.map(work, items))
+
+
+def copy_and_digest(source: Path, target: Path, row: ManifestRow, *, chair: str) -> str:
+    """Copy one pinned file, hashing the bytes as they are written; refuse a mismatch.
+
+    The source is opened without following a link, its size is checked against
+    the row before any byte is read, and the digest of what was written must
+    equal the row's. Returns that digest.
+    """
+
+    at = f"snapshot differs at {row.path}"
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    hasher = hashlib.sha256()
+    written = 0
+    try:
+        descriptor = os.open(source, flags)
+    except OSError as error:
+        raise DigestMismatchRefusal(chair, f"{at}: cannot be read: {error}") from error
+    try:
+        status = os.fstat(descriptor)
+        if not stat.S_ISREG(status.st_mode):
+            raise DigestMismatchRefusal(chair, f"{at}: not a regular file")
+        if status.st_size != row.size:
+            raise DigestMismatchRefusal(chair, f"{at}: size {status.st_size}, expected {row.size}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with os.fdopen(descriptor, "rb", closefd=False) as reader, target.open("xb") as writer:
+            while chunk := reader.read(HASH_CHUNK_BYTES):
+                writer.write(chunk)
+                hasher.update(chunk)
+                written += len(chunk)
+    except OSError as error:
+        raise DigestMismatchRefusal(chair, f"{at}: cannot be copied: {error}") from error
+    finally:
+        os.close(descriptor)
+    if written != row.size:
+        raise DigestMismatchRefusal(chair, f"{at}: size {written} copied, expected {row.size}")
+    actual = hasher.hexdigest()
+    if actual != row.sha256:
+        raise DigestMismatchRefusal(chair, f"{at}: sha256 {actual}, expected {row.sha256}")
+    return actual
+
+
+class CopyPool:
+    """Copy workers shared by several concurrent fills, always taking the largest waiting file.
+
+    One pool across every file of every snapshot being filled keeps all workers
+    busy until the last file: a snapshot whose one large file is its long pole
+    no longer leaves the other workers idle behind a per-snapshot barrier.
+    Threads start as work arrives, never more than `workers.count`.
+    """
+
+    def __init__(self, workers: IoWorkers) -> None:
+        self.workers = workers
+        self._waiting: list[tuple[int, int, Callable[[], Any], Future[Any]]] = []
+        self._order = itertools.count()
+        self._condition = threading.Condition()
+        self._threads: list[threading.Thread] = []
+        self._closed = False
+
+    def run(self, jobs: Iterable[tuple[int, Callable[[], _Result]]]) -> list[_Result]:
+        """Run `(size, job)` pairs, largest first among everything waiting; results in order.
+
+        A closed pool runs them in the calling thread instead, one at a time.
+        """
+
+        futures: list[Future[_Result]] = []
+        with self._condition:
+            if self._closed:
+                ordered = sorted(enumerate(jobs), key=lambda entry: -entry[1][0])
+                done = {index: job() for index, (_, job) in ordered}
+                return [done[index] for index in sorted(done)]
+            for size, job in jobs:
+                future: Future[_Result] = Future()
+                heapq.heappush(self._waiting, (-size, next(self._order), job, future))
+                futures.append(future)
+            while len(self._threads) < min(self.workers.count, len(self._waiting)):
+                thread = threading.Thread(target=self._work, name="chair-copy", daemon=True)
+                self._threads.append(thread)
+                thread.start()
+            self._condition.notify_all()
+        return [future.result() for future in futures]
+
+    def close(self) -> None:
+        """Let the workers finish what is waiting, then stop them."""
+
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+        for thread in self._threads:
+            thread.join()
+
+    def __enter__(self) -> "CopyPool":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def _work(self) -> None:
+        while True:
+            with self._condition:
+                while not self._waiting and not self._closed:
+                    self._condition.wait()
+                if not self._waiting:
+                    return
+                _, _, job, future = heapq.heappop(self._waiting)
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                future.set_result(job())
+            except BaseException as error:  # handed to the waiting caller
+                future.set_exception(error)
+
+
+def copy_pool(*, chair: str) -> CopyPool:
+    """A pool sized by `io_workers`, with a bad override refused as configuration."""
+
+    try:
+        return CopyPool(io_workers())
+    except ValueError as error:
+        raise ConfigurationRefusal(chair, str(error)) from error
+
+
+def copy_and_digest_files(
+    items: Iterable[tuple[Path, Path, ManifestRow]],
+    *,
+    chair: str,
+    pool: CopyPool | None = None,
+) -> CopyLedger:
+    """Copy many pinned files in one pool, largest first, and return their ledger.
+
+    `pool` shares workers with other fills running at the same time; without
+    one, a pool is made for these files alone. Every copy runs to its end, then
+    the lexically first refusal is raised, so the file a refusal names does not
+    depend on which worker finished first.
+    """
+
+    work = sorted(items, key=lambda item: (-item[2].size, item[2].path))
+    if pool is None:
+        with copy_pool(chair=chair) as own:
+            return copy_and_digest_files(work, chair=chair, pool=own)
+
+    def copy(
+        item: tuple[Path, Path, ManifestRow],
+    ) -> tuple[str, str | None, DigestMismatchRefusal | None]:
+        source, target, row = item
+        try:
+            return row.path, copy_and_digest(source, target, row, chair=chair), None
+        except DigestMismatchRefusal as refusal:
+            return row.path, None, refusal
+
+    jobs = [(item[2].size, lambda item=item: copy(item)) for item in work]
+    results = sorted(pool.run(jobs), key=lambda result: result[0])
+    for _, _, refusal in results:
+        if refusal is not None:
+            raise DigestMismatchRefusal(refusal.chair, refusal.difference) from refusal
+    return CopyLedger(
+        digests={path: digest for path, digest, _ in results if digest is not None},
+        workers=pool.workers,
+    )
 
 
 def _verified(

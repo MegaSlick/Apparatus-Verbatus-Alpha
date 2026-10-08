@@ -39,6 +39,7 @@ from common.chairs.models import (
 )
 from common.chairs.receipts import build_receipt
 from common.chairs.registry import ChairRegistry
+from common.contracts.canonical import canonical_bytes
 from common.runtree.store import RunTree
 from common.sealed_config import parse_sealed_toml, read_sealed_toml
 from common.stage import StageContext, run_config_bindings
@@ -58,6 +59,7 @@ from .assembly import (
     _load_bound_configuration,
     assemble_serving_smoke_reader,
 )
+from .capacity import CapacityPlan, ChairCapacity
 from .client import ServingModeRefusal, serving_mode_for
 from .config import (
     MAX_JSON_DEPTH,
@@ -683,6 +685,7 @@ def manager_for(
     probe_http_status: int | None = None,
     usage: Mapping[str, object] | None = None,
     launch_purpose: object | None = None,
+    capacity_plan: CapacityPlan | None = None,
 ):
     clock = Clock()
     http = FakeHttp(
@@ -724,6 +727,8 @@ def manager_for(
         monotonic=clock.monotonic,
         sleep=clock.sleep,
         residency_lease=residency_lease or FileResidencyLease(tmp_path / "pod-gpu.lock"),
+        capacity_plan=capacity_plan,
+        placement_table=_PLACEMENT if capacity_plan is not None else None,
         _launch_purpose=launch_purpose,
     )
     return manager, clock, http, launcher, registry, publisher
@@ -2774,7 +2779,7 @@ def test_pod_assembly_refuses_recipe_or_placement_path_substitution_before_effec
     copied_placement.write_bytes(
         (root / "config/pod_placement.toml")
         .read_bytes()
-        .replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+        .replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     )
 
     with pytest.raises(ServingConfigurationError, match="serving recipes differ"):
@@ -2824,7 +2829,7 @@ def test_load_placement_table_parses_the_bytes_it_is_given_and_not_the_path(
 
     root = Path(__file__).resolve().parents[2]
     sealed = (root / "config/pod_placement.toml").read_bytes()
-    altered = sealed.replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+    altered = sealed.replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     assert altered != sealed, "the fixture no longer contains the batch size this test flips"
 
     path = tmp_path / "pod_placement.toml"
@@ -2834,7 +2839,7 @@ def test_load_placement_table_parses_the_bytes_it_is_given_and_not_the_path(
     from_path = load_placement_table(path)
 
     assert from_bytes.choose(Decimal(24)).recipe.batch_size == 1
-    assert from_path.choose(Decimal(24)).recipe.batch_size == 9
+    assert from_path.choose(Decimal(24)).recipe.batch_size == 3
 
 
 def test_bound_configuration_parses_the_snapshot_it_digested_not_a_second_read(
@@ -2845,7 +2850,7 @@ def test_bound_configuration_parses_the_snapshot_it_digested_not_a_second_read(
     root = Path(__file__).resolve().parents[2]
     recipes_path = root / "config/serving_recipes.toml"
     sealed = (root / "config/pod_placement.toml").read_bytes()
-    altered = sealed.replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+    altered = sealed.replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     assert altered != sealed, "the fixture no longer contains the batch size this test flips"
 
     placement_path = tmp_path / "pod_placement.toml"
@@ -3072,7 +3077,7 @@ def test_serving_recipe_and_placement_bytes_are_bound_into_the_run_configuration
     )["config_digest"]
     assert first != second
     copied_placement.write_bytes(
-        copied_placement.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+        copied_placement.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     )
     third = run_config_bindings(
         models,
@@ -5118,3 +5123,528 @@ def test_the_smoke_refuses_recordgold_chairs_without_a_verified_gold_text(
         )
     with pytest.raises(RecordGoldSmokeRefusal, match="recordgold-smoke-text-mismatch"):
         _recordgold_smoke(record, TEST_GOLD_TEXT + ".", page_sha256)
+
+
+_PLACEMENT = load_placement_table(Path(__file__).resolve().parents[2] / "config/pod_placement.toml")
+
+
+def _reader_plan(
+    *,
+    row_max_num_seqs: int = 1,
+    max_num_seqs: int = 6,
+    inputs: ServingConfigInputs | None = None,
+    cap: int = 48,
+) -> CapacityPlan:
+    return CapacityPlan(
+        max_num_seqs_cap=cap,
+        vram_gib=Decimal("95.5"),
+        gpu_count=1,
+        compute_capability="12.0",
+        tier=TIER,
+        serving_config_inputs=inputs or ServingConfigInputs("1" * 64, "2" * 64),
+        chairs={
+            "reader": ChairCapacity(
+                recipe="reader-v1",
+                row_max_num_seqs=row_max_num_seqs,
+                max_num_seqs=max_num_seqs,
+                weights_gib=Decimal("10"),
+                kv_gib_per_seq=Decimal("1"),
+                memory_fraction=Decimal("0.85"),
+            )
+        },
+    )
+
+
+def test_without_a_plan_the_row_launches_as_written_and_the_audit_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
+    handle = manager.start(chair, TIER)
+    assert _value_after(launcher.calls[0][0], "--max-num-seqs") == "1"
+    assert handle.profile.max_num_seqs == 1
+    assert "capacity" not in handle.launch_audit
+    handle.stop()
+
+
+def test_a_plan_widens_the_launch_and_the_audit_records_row_derived_card_and_digest(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    plan = _reader_plan()
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair, capacity_plan=plan)
+    handle = manager.start(chair, TIER)
+    argv = launcher.calls[0][0]
+    assert _value_after(argv, "--max-num-seqs") == "6"
+    # Nothing else in the launch moves.
+    assert _value_after(argv, "--max-num-batched-tokens") == "256"
+    assert _value_after(argv, "--gpu-memory-utilization") == "0.85"
+    assert _value_after(argv, "--max-model-len") == "2048"
+    assert handle.profile.max_num_seqs == 6
+    audit = handle.launch_audit
+    assert audit["capacity"] == {  # type: ignore[index]
+        "plan_sha256": plan.digest,
+        "card": {"vram_gib": "95.5", "gpu_count": 1, "compute_capability": "12.0"},
+        "row_max_num_seqs": 1,
+        "max_num_seqs": 6,
+        "row_ceiling": 2,
+        "planned_ceiling": 48,
+    }
+    assert audit["profile"]["max_num_seqs"] == 6  # type: ignore[index]
+    # The fields the serving spans and the pod watcher read are still there.
+    for key in ("schema", "chair", "launch_purpose", "started_at", "readiness", "command"):
+        assert key in audit
+    expected_argv_digest = hashlib.sha256(
+        json.dumps(list(argv), ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert audit["command"]["argv_sha256"] == expected_argv_digest  # type: ignore[index]
+    handle.stop()
+
+
+def test_a_plan_derived_from_another_row_is_refused_before_launch(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, capacity_plan=_reader_plan(row_max_num_seqs=2)
+    )
+    with pytest.raises(ServingRecipeRefusal, match="max_num_seqs"):
+        manager.start(chair, TIER)
+    assert launcher.calls == []
+
+
+def test_a_plan_from_other_serving_configuration_is_refused_at_construction(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    with pytest.raises(ServingConfigurationError, match="sealed"):
+        reader_manager(
+            tmp_path,
+            chair=chair,
+            capacity_plan=_reader_plan(inputs=ServingConfigInputs("3" * 64, "2" * 64)),
+        )
+
+
+# --- a shared service: handed off by one stage's process, taken over by the next ----
+
+
+def _shared_rows(**reconstructor_changes: object) -> tuple[dict[str, object], ...]:
+    perlector_row = profile_row(
+        recipe="perlector-v1", chair="perlector", served_model_id="shared-api", port=8106
+    )
+    reconstructor_row = {
+        **profile_row(
+            recipe="reconstructor-v1",
+            chair="reconstructor",
+            served_model_id="shared-api",
+            port=8106,
+        ),
+        "shares_service_with": "perlector",
+        **reconstructor_changes,
+    }
+    return perlector_row, reconstructor_row
+
+
+def _shared_identities(**reconstructor_changes: object) -> dict[str, ChairIdentity]:
+    perlector_chair = identity("perlector", "perlector-v1")
+    reconstructor_chair = replace(
+        perlector_chair, role="reconstructor", serving_recipe="reconstructor-v1"
+    )
+    return {
+        "perlector": perlector_chair,
+        "reconstructor": replace(reconstructor_chair, **reconstructor_changes),
+        "witness": identity("witness", "witness-v1"),
+    }
+
+
+class _AddressedPublisher(FakePublisher):
+    """Names the launch audit by its canonical digest, as the run tree's blob store does."""
+
+    def publish(self, receipt, launch_audit):  # type: ignore[no-untyped-def]
+        publication = super().publish(receipt, launch_audit)
+        digest = hashlib.sha256(canonical_bytes(dict(launch_audit))).hexdigest()
+        return ReceiptPublication(
+            publication.receipt_reference,
+            {"relative_path": f"stages/blobs/sha256/{digest}", "sha256": digest},
+            publication.evidence_reference,
+        )
+
+
+def _shared_managers(
+    tmp_path: Path,
+    *,
+    second_scope: str = "run-a",
+    identities: Mapping[str, ChairIdentity] | None = None,
+    rows: tuple[dict[str, object], ...] | None = None,
+    capacity_plan: CapacityPlan | None = None,
+):
+    """Two managers as two stage processes on one pod: one card (endpoint), one lease
+    and one hand-off path, each with its own launcher, registry and publisher."""
+    identities = identities or _shared_identities()
+    rows = rows or _shared_rows()
+    witness_row = profile_row(
+        recipe="witness-v1", chair="witness", served_model_id="witness-api", port=8200
+    )
+    clock = Clock()
+    http = FakeHttp(model_ids=("shared-api", "witness-api"))
+    built = []
+    for scope in ("run-a", second_scope):
+        registry = FakeRegistry(identities, tmp_path)
+        # One digest-keyed cache directory serves both roles, as the real registry does.
+        registry.snapshots = {
+            role: replace(snapshot, root=tmp_path / snapshot.manifest_digest)
+            for role, snapshot in registry.snapshots.items()
+        }
+        launcher = FakeLauncher(http)
+        publisher = _AddressedPublisher(http)
+        manager = ServingManager(
+            registry=registry,
+            recipes=recipes(*rows, witness_row, identities=identities),
+            config_inputs=ServingConfigInputs("1" * 64, "2" * 64),
+            launcher=launcher,
+            http=http,
+            receipt_publisher=publisher,
+            log_root=tmp_path / "logs",
+            package_inspector=FakePackages({"vllm": "0.test"}),
+            now=clock.now,
+            monotonic=clock.monotonic,
+            sleep=clock.sleep,
+            residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
+            hand_off_path=tmp_path / "pod-gpu.hand-off.json",
+            service_scope=scope,
+            capacity_plan=capacity_plan,
+            placement_table=_PLACEMENT if capacity_plan is not None else None,
+        )
+        built.append(SimpleNamespace(manager=manager, launcher=launcher, publisher=publisher))
+    return built[0], built[1], identities, clock
+
+
+def _hand_off_from_first(first, identities, clock) -> ServiceHandle:
+    handle = first.manager.start(identities["perlector"], TIER)
+    clock.seconds += 600
+    assert handle.hand_off() is True
+    return handle
+
+
+def test_a_sharing_row_takes_over_the_handed_off_service_and_records_it(tmp_path: Path) -> None:
+    first, second, identities, clock = _shared_managers(tmp_path)
+    original = _hand_off_from_first(first, identities, clock)
+    assert (tmp_path / "pod-gpu.hand-off.json").is_file()
+    # The handing-off manager owns nothing now: it cannot stop or read the service.
+    with pytest.raises(ServiceStopError, match="not this manager's active"):
+        original.stop()
+
+    adopted = second.manager.start(identities["reconstructor"], TIER)
+
+    assert second.launcher.calls == []
+    assert second.launcher.attached == [first.launcher.processes[0]]
+    assert not (tmp_path / "pod-gpu.hand-off.json").exists()
+    receipt, audit = second.publisher.calls[-1]
+    assert receipt.identity == identities["reconstructor"]
+    assert receipt.details.started_at == original.receipt.details.started_at
+    assert receipt.details.endpoint == original.receipt.details.endpoint
+    assert audit["launch_purpose"] == "adopted"
+    assert audit["chair"] == "reconstructor"
+    assert audit["started_at"] == original.launch_audit["started_at"]
+    assert audit["command"]["argv_sha256"] == original.launch_audit["command"]["argv_sha256"]
+    assert audit["readiness"] == thawed_json(original.launch_audit["readiness"])
+    assert audit["adoption"]["from_chair"] == "perlector"
+    assert audit["adoption"]["launched_for"] == "normal"
+    assert audit["adoption"]["audit_reference"] == dict(original.audit_reference)
+    assert audit["adoption"]["adopted_at"] > audit["started_at"]
+
+    adopted.stop()
+    assert first.launcher.processes[0].terminate_calls == 1
+    # The lease went with the service: any manager may now start a chair.
+    witness = second.manager.start(identities["witness"], TIER)
+    witness.stop()
+
+
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("another-run", "handed off by another run"),
+        ("other-checkpoint", "serves another checkpoint"),
+        ("other-shape", "render another vLLM command"),
+        ("process-gone", "the handed-off process is gone"),
+    ],
+)
+def test_a_refused_take_over_stops_the_service_and_starts_cold_saying_why(
+    tmp_path: Path, case: str, reason: str
+) -> None:
+    options: dict[str, object] = {}
+    if case == "another-run":
+        options["second_scope"] = "run-b"
+    if case == "other-checkpoint":
+        options["identities"] = _shared_identities(revision="c" * 40)
+    first, second, identities, clock = _shared_managers(tmp_path, **options)
+    _hand_off_from_first(first, identities, clock)
+    if case == "other-shape":
+        # The same rows, but this manager renders its vLLM command another way.
+        second.manager.command_prefix = (*second.manager.command_prefix, "--other")
+        second.manager.package_inspector = FakePackages({"vllm": "0.test"})
+    if case == "process-gone":
+        first.launcher.processes[0].exit_code = 0
+
+    started = second.manager.start(identities["reconstructor"], TIER)
+
+    assert len(second.launcher.calls) == 1
+    _receipt, audit = second.publisher.calls[-1]
+    assert audit["launch_purpose"] == "normal"
+    assert reason in audit["adoption_refused"]
+    expected = "already-exited" if case == "process-gone" else "stopped"
+    assert audit["displaced_service"] == {
+        "chair": "perlector",
+        "pid": first.launcher.processes[0].pid,
+        "outcome": expected,
+    }
+    if expected == "stopped":
+        assert first.launcher.processes[0].terminate_calls == 1
+    assert not (tmp_path / "pod-gpu.hand-off.json").exists()
+    started.stop()
+
+
+def test_a_start_that_shares_nothing_stops_a_handed_off_service_first(tmp_path: Path) -> None:
+    first, second, identities, clock = _shared_managers(tmp_path)
+    _hand_off_from_first(first, identities, clock)
+
+    witness = second.manager.start(identities["witness"], TIER)
+
+    _receipt, audit = second.publisher.calls[-1]
+    assert "adoption_refused" not in audit
+    assert audit["displaced_service"]["outcome"] == "stopped"
+    assert first.launcher.processes[0].terminate_calls == 1
+    witness.stop()
+
+
+def test_an_unreadable_hand_off_record_is_discarded_and_said(tmp_path: Path) -> None:
+    _first, second, identities, _clock = _shared_managers(tmp_path)
+    (tmp_path / "pod-gpu.hand-off.json").write_text("{not json", encoding="utf-8")
+
+    started = second.manager.start(identities["reconstructor"], TIER)
+
+    _receipt, audit = second.publisher.calls[-1]
+    assert "could not be read" in audit["hand_off_discarded"]
+    assert not (tmp_path / "pod-gpu.hand-off.json").exists()
+    started.stop()
+
+
+def test_a_stage_that_never_starts_its_chair_reclaims_the_handed_off_service(
+    tmp_path: Path,
+) -> None:
+    first, second, identities, clock = _shared_managers(tmp_path)
+    _hand_off_from_first(first, identities, clock)
+
+    reclaimed = second.manager.reclaim_hand_off()
+
+    assert reclaimed == {
+        "chair": "perlector",
+        "pid": first.launcher.processes[0].pid,
+        "outcome": "stopped",
+    }
+    assert second.manager.reclaim_hand_off() is None
+    witness = second.manager.start(identities["witness"], TIER)
+    witness.stop()
+
+
+def test_a_service_without_a_hand_off_path_is_not_handed_off(tmp_path: Path) -> None:
+    first, _second, identities, _clock = _shared_managers(tmp_path)
+    first.manager.hand_off_path = None
+    handle = first.manager.start(identities["perlector"], TIER)
+
+    assert handle.hand_off() is False
+    handle.stop()
+    assert first.launcher.processes[0].terminate_calls == 1
+
+
+def test_a_shared_row_must_match_its_partners_launch_fields() -> None:
+    perlector_row, reconstructor_row = _shared_rows(max_num_seqs=2)
+    with pytest.raises(
+        ServingConfigurationError, match=r"launch fields differ: \['max_num_seqs'\]"
+    ):
+        recipes(perlector_row, reconstructor_row)
+    lonely = {**reconstructor_row, "shares_service_with": "nobody", "max_num_seqs": 1}
+    with pytest.raises(ServingConfigurationError, match="has no vllm row at that tier"):
+        recipes(perlector_row, lonely)
+
+
+def test_only_a_sharing_pair_may_share_an_endpoint_and_a_served_id() -> None:
+    perlector_row, reconstructor_row = _shared_rows()
+    catalogue = recipes(perlector_row, reconstructor_row)
+    assert {row.chair for row in catalogue.profiles} == {"perlector", "reconstructor"}
+    unshared = {
+        key: value for key, value in reconstructor_row.items() if key != "shares_service_with"
+    }
+    with pytest.raises(ServingConfigurationError, match="assigned to more than one chair"):
+        recipes(perlector_row, unshared)
+    intruder = profile_row(
+        recipe="witness-v1", chair="witness", served_model_id="witness-api", port=8106
+    )
+    with pytest.raises(ServingConfigurationError, match="endpoint"):
+        recipes(perlector_row, reconstructor_row, intruder)
+
+
+def test_the_real_catalogue_shares_the_perlector_service_with_the_reconstructor() -> None:
+    catalogue = load_serving_recipes(
+        Path(__file__).resolve().parents[2] / "config" / "serving_recipes_real.toml"
+    )
+    [row] = [
+        profile
+        for profile in catalogue.profiles
+        if isinstance(profile, ServingProfile) and profile.chair == "reconstructor"
+    ]
+    assert row.shares_service_with == "perlector"
+
+
+def _planned_shared_rows() -> tuple[dict[str, object], ...]:
+    capacity = {"weights_gib": "10", "kv_gib_per_seq": "1"}
+    perlector_row, reconstructor_row = _shared_rows(**capacity)
+    return {**perlector_row, **capacity}, reconstructor_row
+
+
+def test_under_a_plan_a_shared_pair_launches_at_one_width_and_the_take_over_holds(
+    tmp_path: Path,
+) -> None:
+    """The plan gives the reconstructor the width it gives the Perlector, so the
+    Coniector's chair renders the command the Perlector's service was launched with
+    and takes it over: 0.78 x 48 GiB - 10 - 4 leaves 23 sequences of 1 GiB."""
+    from operations.serving.capacity import derive_capacity_plan
+
+    identities = _shared_identities()
+    rows = _planned_shared_rows()
+    plan = derive_capacity_plan(
+        vram_gib=Decimal("48"),
+        gpu_count=1,
+        compute_capability="8.6",
+        tier=TIER,
+        engine_memory_fraction=Decimal("0.78"),
+        recipes=recipes(*rows, identities=identities),
+        chairs=identities,
+        serving_config_inputs=ServingConfigInputs("1" * 64, "2" * 64),
+        max_num_seqs_cap=48,
+    )
+    assert plan.chairs["perlector"].max_num_seqs == plan.chairs["reconstructor"].max_num_seqs
+    assert plan.chairs["reconstructor"].max_num_seqs == 23
+    first, second, identities, clock = _shared_managers(
+        tmp_path, identities=identities, rows=rows, capacity_plan=plan
+    )
+    original = _hand_off_from_first(first, identities, clock)
+    launched = first.launcher.calls[0][0]
+    assert launched[launched.index("--max-num-seqs") + 1] == "23"
+
+    adopted = second.manager.start(identities["reconstructor"], TIER)
+
+    assert second.launcher.calls == []
+    _receipt, audit = second.publisher.calls[-1]
+    assert audit["launch_purpose"] == "adopted"
+    assert audit["command"]["argv_sha256"] == original.launch_audit["command"]["argv_sha256"]
+    assert audit["capacity"]["max_num_seqs"] == 23
+    assert audit["capacity"]["row_max_num_seqs"] == 1
+    assert audit["capacity"]["plan_sha256"] == plan.digest
+    assert adopted.profile.max_num_seqs == 23
+    adopted.stop()
+
+
+def test_a_plan_that_split_a_shared_pair_would_cost_the_take_over(tmp_path: Path) -> None:
+    """Why the pair is planned once: a reconstructor width other than the
+    Perlector's renders another command, and the service is stopped and reloaded."""
+    identities = _shared_identities()
+    figures = {
+        "row_max_num_seqs": 1,
+        "weights_gib": Decimal("10"),
+        "kv_gib_per_seq": Decimal("1"),
+        "memory_fraction": Decimal("0.78"),
+    }
+    split = CapacityPlan(
+        max_num_seqs_cap=48,
+        vram_gib=Decimal("48"),
+        gpu_count=1,
+        compute_capability="8.6",
+        tier=TIER,
+        serving_config_inputs=ServingConfigInputs("1" * 64, "2" * 64),
+        chairs={
+            "perlector": ChairCapacity(recipe="perlector-v1", max_num_seqs=23, **figures),
+            "reconstructor": ChairCapacity(recipe="reconstructor-v1", max_num_seqs=8, **figures),
+        },
+    )
+    first, second, identities, clock = _shared_managers(
+        tmp_path, identities=identities, rows=_planned_shared_rows(), capacity_plan=split
+    )
+    _hand_off_from_first(first, identities, clock)
+
+    started = second.manager.start(identities["reconstructor"], TIER)
+
+    _receipt, audit = second.publisher.calls[-1]
+    assert audit["launch_purpose"] == "normal"
+    assert "render another vLLM command" in audit["adoption_refused"]
+    started.stop()
+
+
+def test_a_server_gone_with_its_engine_still_running_is_stopped_not_forgotten(
+    tmp_path: Path,
+) -> None:
+    """vLLM's engine process can outlive the server that leads its group and keep the
+    card. Such a service is not taken over, and not recorded as already exited: its
+    group is signalled, and only then is the record consumed."""
+    first, second, identities, clock = _shared_managers(tmp_path)
+    _hand_off_from_first(first, identities, clock)
+    leader = first.launcher.processes[0]
+    leader.exit_code = 0
+    leader.engine_outlives_leader = True
+
+    started = second.manager.start(identities["reconstructor"], TIER)
+
+    _receipt, audit = second.publisher.calls[-1]
+    assert "has exited, though its process group still runs" in audit["adoption_refused"]
+    assert audit["displaced_service"]["outcome"] == "stopped"
+    assert leader.terminate_calls == 1 and not leader.group_running
+    assert not (tmp_path / "pod-gpu.hand-off.json").exists()
+    started.stop()
+
+
+def test_a_gone_service_whose_lease_is_still_held_keeps_its_record(tmp_path: Path) -> None:
+    first, second, identities, clock = _shared_managers(tmp_path)
+    _hand_off_from_first(first, identities, clock)
+    first.launcher.processes[0].exit_code = 0
+    holder = FileResidencyLease(tmp_path / "pod-gpu.lock").acquire(identities["witness"])
+    try:
+        with pytest.raises(ServiceStopError, match="lease is still held"):
+            second.manager.reclaim_hand_off()
+        assert (tmp_path / "pod-gpu.hand-off.json").exists()
+    finally:
+        holder.release()
+    assert second.manager.reclaim_hand_off()["outcome"] == "already-exited"
+    assert not (tmp_path / "pod-gpu.hand-off.json").exists()
+
+
+def test_a_plan_not_bound_by_the_tier_s_planned_ceiling_is_refused_before_launch(
+    tmp_path: Path,
+) -> None:
+    """generic-48gb sets planned_batch_ceiling 48; a plan derived under 64 could launch
+    past it, so it is refused before anything starts."""
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, capacity_plan=_reader_plan(max_num_seqs=60, cap=64)
+    )
+    with pytest.raises(ServingRecipeRefusal, match="planned_batch_ceiling 48"):
+        manager.start(chair, TIER)
+    assert launcher.calls == []
+
+
+def test_a_plan_without_the_placement_table_is_refused_at_construction(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="placement table"):
+        ServingManager(
+            registry=FakeRegistry({}, tmp_path),
+            recipes=recipes(
+                profile_row(
+                    recipe="reader-v1", chair="reader", served_model_id="reader-api", port=8000
+                ),
+                identities={"reader": identity("reader", "reader-v1")},
+            ),
+            config_inputs=ServingConfigInputs("1" * 64, "2" * 64),
+            launcher=FakeLauncher(FakeHttp(model_ids=())),
+            http=FakeHttp(model_ids=()),
+            receipt_publisher=FakePublisher(FakeHttp(model_ids=())),
+            log_root=tmp_path / "logs",
+            package_inspector=FakePackages({"vllm": "0.test"}),
+            residency_lease=FileResidencyLease(tmp_path / "pod-gpu.lock"),
+            capacity_plan=_reader_plan(),
+        )

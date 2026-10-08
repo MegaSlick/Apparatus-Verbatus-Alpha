@@ -1,7 +1,7 @@
 # Pod-plus-attached-volume money ceilings. config/README.md describes the keys and
 # operations/pod/spend.py refuses any that are missing, unknown or inconsistent.
 # This file being configured is not permission to launch (AGENTS.md, "Who decides").
-schema = "pod-spend.v4"
+schema = "pod-spend.v5"
 state = "configured"
 currency = "USD"
 
@@ -24,10 +24,18 @@ shutdown_deadline_seconds = 900
 # The verifier's accepted maximum; not a measured RunPod value.
 billing_cutoff_margin_seconds = 3600
 
-# A pod's default budget: soft and hard maximums in time from creation and in metered
-# cost, whichever is reached first. The guard's deadline sits at the soft maximum, so
-# hard_lifetime_seconds and max_estimated_metered_cost_usd may not pass it. From the soft
-# to the hard maximum is an extension only the lead makes. The lead's budget.
+# The lead's switches, both off. pod_budget = "on" arms the budget below: the guard's
+# deadline at the soft maximum and the backstop at the hard maximum. Off, a pod gets no
+# deadline unless the lead gives one hours, and the four maximums bind nothing.
+# ladder_delete = "on" lets the guard delete a pod idle for two hours, once its run tree
+# is backed up; off, the guard only warns.
+pod_budget = "off"
+ladder_delete = "off"
+
+# A pod's budget when pod_budget = "on": soft and hard maximums in time from creation and
+# in metered cost, whichever is reached first. The guard's deadline sits at the soft
+# maximum, so hard_lifetime_seconds and max_estimated_metered_cost_usd may not pass it.
+# From the soft to the hard maximum is an extension only the lead makes.
 soft_max_seconds = 7200
 soft_max_cost_usd = "5.00"
 hard_max_seconds = 10800

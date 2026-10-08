@@ -585,11 +585,13 @@ def live(live_reask, tmp_path):
     return dataclasses.replace(live_reask, root=root)
 
 
-def test_a_live_re_ask_is_sent_after_every_first_reading_with_the_same_images(
+def test_a_live_re_ask_is_sent_once_its_first_reading_is_published_with_the_same_images(
     live, tmp_path, monkeypatch
 ):
+    # Page 1's re-ask joins the window as soon as its first reading is published,
+    # ahead of page 2's first reading.
     endpoint, exit_code = _read_pages(
-        live, tmp_path, monkeypatch, _first_act_only(), _page_two(), _recovered()
+        live, tmp_path, monkeypatch, _first_act_only(), _recovered(), _page_two()
     )
     assert exit_code == 0
     requests = _chat_requests(endpoint)
@@ -602,12 +604,12 @@ def test_a_live_re_ask_is_sent_after_every_first_reading_with_the_same_images(
         ]
         for request in requests
     ]
-    assert images[2] == images[0]
+    assert images[1] == images[0] != images[2]
     feed = _on_page(live.root, "page-feed", 1)[0]["payload"]
     reask = _reading(live.root, 1, 2)["payload"]["reask"]
     shown = {key: reask[key] for key in ("prior_entries", "named")}
     recipe = reask["prompt"]["serving_recipe"]
-    text = requests[2]["messages"][0]["content"][-1]["text"]
+    text = requests[1]["messages"][0]["content"][-1]["text"]
     assert text == page_prompt.page_reask_prompt(recipe, feed, shown)
     sent = _records(live.root, "reader-sent")
     assert sorted((r["payload"]["pass"], r["payload"]["attempt_ordinal"]) for r in sent) == [
@@ -622,7 +624,7 @@ def test_a_live_re_ask_is_sent_after_every_first_reading_with_the_same_images(
     assert payload["disposition"] == "read" and payload["engine_call"] is not None
     assert payload["sampling"] == _reading(live.root, 1, 1)["payload"]["sampling"]
     assert payload["capacity"]["capacity"]["fits"] is True
-    assert requests[2]["max_tokens"] == payload["capacity"]["max_tokens"]
+    assert requests[1]["max_tokens"] == payload["capacity"]["max_tokens"]
     assert any(_names(ref, reask_sent[0]) for ref in second["inputs"])
     recovered = [
         r for r in _on_page(live.root, "perlectio", 1) if "reading_attempt" in r["payload"]
@@ -632,7 +634,7 @@ def test_a_live_re_ask_is_sent_after_every_first_reading_with_the_same_images(
 
 def test_a_resumed_live_pass_adopts_its_sealed_re_ask_and_asks_nothing(live, tmp_path, monkeypatch):
     _endpoint, exit_code = _read_pages(
-        live, tmp_path, monkeypatch, _first_act_only(), _page_two(), _recovered()
+        live, tmp_path, monkeypatch, _first_act_only(), _recovered(), _page_two()
     )
     assert exit_code == 0
     before = file_bytes_snapshot(live.root / "r" / "4_perlector" / "artifacts")
@@ -653,11 +655,13 @@ def test_a_re_ask_stopped_after_its_send_with_its_reply_retained_is_refused_by_n
 
     monkeypatch.setattr(page_run, "_publish_reading", stopped_before_the_re_ask_is_recorded)
     with pytest.raises(KeyboardInterrupt):
-        _read_pages(live, tmp_path, monkeypatch, _first_act_only(), _page_two(), _recovered())
+        _read_pages(live, tmp_path, monkeypatch, _first_act_only(), _recovered(), _page_two())
     monkeypatch.setattr(page_run, "_publish_reading", original)
     assert _reading(live.root, 1, 2) is None
+    # The resumed pass reads page 2, then judges the earlier re-ask send with nothing
+    # of its own out, and refuses it.
     with pytest.raises(ContractError, match="asking again would read them twice"):
-        _read_pages(live, tmp_path / "again", monkeypatch, _recovered())
+        _read_pages(live, tmp_path / "again", monkeypatch, _page_two(), _recovered())
     assert _reading(live.root, 1, 2) is None
 
 
@@ -673,7 +677,7 @@ def test_a_re_ask_stopped_after_its_send_with_no_reply_retained_is_sent_again(
 
     monkeypatch.setattr(page_run, "_call", stopped_before_the_call)
     with pytest.raises(KeyboardInterrupt):
-        _read_pages(live, tmp_path, monkeypatch, _first_act_only(), _page_two(), _recovered())
+        _read_pages(live, tmp_path, monkeypatch, _first_act_only(), _recovered(), _page_two())
     monkeypatch.setattr(page_run, "_call", original)
     assert _reading(live.root, 1, 2) is None
     reask_sent = [
@@ -682,10 +686,14 @@ def test_a_re_ask_stopped_after_its_send_with_no_reply_retained_is_sent_again(
         if r["payload"]["pass"] == "page-reask"
     ]
     assert reask_sent == [2]
-    # Its send has no reply that could be its answer, so the resumed pass asks again.
-    endpoint, exit_code = _read_pages(live, tmp_path / "again", monkeypatch, _recovered())
+    # Its send has no reply that could be its answer, so the resumed pass asks again,
+    # after page 2's first reading: a re-ask an earlier pass sent waits for the first
+    # readings, so no reply of this pass is out when its earlier send is judged.
+    endpoint, exit_code = _read_pages(
+        live, tmp_path / "again", monkeypatch, _page_two(), _recovered()
+    )
     assert exit_code == 0
-    assert len(_chat_requests(endpoint)) == 1
+    assert len(_chat_requests(endpoint)) == 2
     second = _reading(live.root, 1, 2)["payload"]
     assert second["disposition"] == "read" and second["engine_call"] is not None
     assert len(_on_page(live.root, "perlectio", 1)) == 2
@@ -722,7 +730,7 @@ def test_a_failed_live_re_ask_call_is_failed_and_its_page_stands_on_its_first_re
     root = live.root
     transport = ScriptedAnswer(transport_failure="connection reset after dispatch")
     _endpoint, exit_code = _read_pages(
-        live, tmp_path, monkeypatch, _first_act_only(), _page_two(), transport
+        live, tmp_path, monkeypatch, _first_act_only(), transport, _page_two()
     )
     assert exit_code == 0
     second = _reading(root, 1, 2)
@@ -802,3 +810,69 @@ def test_the_page_doubt_hold_counts_the_first_reading_and_its_re_ask_together(
     assert all(page_path.PAGE_DOUBT_SHARE_HIGH in r["payload"]["holds"] for r in readings), [
         r["payload"]["holds"] for r in readings
     ]
+
+
+# ========================= early re-asks and the reading deadline =========================
+
+
+def _early_reask_pass(monkeypatch, *, deadline_seconds: int | None):
+    """Drive the first readings' job source over two pages, page 1 planning a re-ask.
+
+    Every first reading and the re-ask would be sent; each planned call takes 100 s
+    and the chair is already up.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    deadline = (
+        None
+        if deadline_seconds is None
+        else datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds)
+    )
+    state = SimpleNamespace(
+        live=True,
+        run=SimpleNamespace(args=SimpleNamespace(reading_deadline=deadline), page_max_tokens=1),
+    )
+    pages = [page_run._Page(page_id=f"p{n}", ordinal=n, page_record={}) for n in (1, 2)]
+
+    def finish(_state, page, _result):
+        if page.ordinal == 1:
+            page.reask = page_run._Request(page_run.REASK_READING, page_run.PAGE_REASK_PASS)
+
+    monkeypatch.setattr(page_run, "_sends", lambda *_args: True)
+    monkeypatch.setattr(page_run, "_joins_early", lambda *_args: True)
+    monkeypatch.setattr(page_run, "_startup_left", lambda _state: 0)
+    monkeypatch.setattr(page_run, "planned_seconds_per_page", lambda _cap: 100)
+    monkeypatch.setattr(page_run, "_finish", finish)
+    monkeypatch.setattr(
+        page_run, "_job", lambda _state, page, request, done: ((page.ordinal, request), done)
+    )
+    joined: set[str] = set()
+    source = page_run._first_and_early_reask_jobs(state, pages, joined)
+    drawn, finishes = [], []
+    # Width 2: both first readings are drawn, then page 1's reply finishes while page 2's
+    # call is still out, and the source is asked for more.
+    for _ in range(2):
+        (ordinal, request), done = next(source)
+        drawn.append((ordinal, request.ordinal))
+        finishes.append(done)
+    finishes[0](None)
+    drawn += [(ordinal, request.ordinal) for (ordinal, request), _done in source]
+    return drawn, joined
+
+
+def test_a_deadline_that_holds_only_the_first_readings_left_keeps_the_re_ask_for_its_phase(
+    monkeypatch,
+):
+    # Page 2's first reading is still out (100 s); the re-ask would need 100 s more.
+    drawn, joined = _early_reask_pass(monkeypatch, deadline_seconds=150)
+    assert drawn == [(1, 1), (2, 1)]
+    # Left for the re-ask window, which judges it against the deadline as before.
+    assert joined == set()
+
+
+def test_a_deadline_that_holds_the_re_ask_too_lets_it_join_the_first_readings(monkeypatch):
+    drawn, joined = _early_reask_pass(monkeypatch, deadline_seconds=250)
+    assert drawn == [(1, 1), (2, 1), (1, 2)]
+    assert joined == {"p1"}
+    drawn, joined = _early_reask_pass(monkeypatch, deadline_seconds=None)
+    assert joined == {"p1"}

@@ -2069,82 +2069,104 @@ def publish_detector_page_testimonium(
     )
 
 
-def _read_detector_page(
+def _read_detector_record(
     context,
     *,
     client: ChairClient,
     resolved: ChairIdentity,
     adapter,
-    units: list[dict[str, Any]],
-) -> list[tuple[dict[str, Any], dict[str, Any], Attempt]]:
-    """Read one DAI page's records in detector order.
-
-    Every response is retained as it arrives; the page record is sealed only
-    once all its records are read, so a pass interrupted inside a page asks
-    that page's records again.
-    """
-    served: list[tuple[dict[str, Any], dict[str, Any], Attempt]] = []
-    for region in units:
-        source = presentation_for_region(region)
-        what = f"the {resolved.witness_adapter} request for record {region['subject_id']}"
-        try:
-            built = live_witness.record_chair_request(
-                context, adapter, source, profile=client.handle.profile
-            )
-        except RequestCapacityRefusal as error:
-            presented = adapter.present(context, dict(source))
-            attempt = capacity_refusal_attempt(
-                error, receipt_ref=client.handle.receipt_reference, what=what, adapter=adapter
-            )
-        else:
-            response = client.read(built.request)
-            attempt = live_witness.read_unless_unmeasured_stop(
+    region: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], Attempt]:
+    """Read one DAI record crop: one request, its response retained as it arrives."""
+    source = presentation_for_region(region)
+    what = f"the {resolved.witness_adapter} request for record {region['subject_id']}"
+    try:
+        built = live_witness.record_chair_request(
+            context, adapter, source, profile=client.handle.profile
+        )
+    except RequestCapacityRefusal as error:
+        presented = adapter.present(context, dict(source))
+        attempt = capacity_refusal_attempt(
+            error, receipt_ref=client.handle.receipt_reference, what=what, adapter=adapter
+        )
+    else:
+        response = client.read(built.request)
+        attempt = live_witness.read_unless_unmeasured_stop(
+            response,
+            adapter=adapter,
+            what=f"the {resolved.witness_adapter} response for record {region['subject_id']}",
+            read=partial(
+                live_witness.live_attempt_from_response,
+                context,
+                adapter,
+                resolved.witness_adapter,
                 response,
-                adapter=adapter,
-                what=f"the {resolved.witness_adapter} response for record {region['subject_id']}",
-                read=partial(
-                    live_witness.live_attempt_from_response,
-                    context,
-                    adapter,
-                    resolved.witness_adapter,
-                    response,
-                    presentation=source,
-                    presented=built.presented,
-                    prompt=built.prompt,
-                    generation_declared=built.request.generation_declared,
-                    parser="text",
-                    generation_accounting=built.generation_accounting,
-                ),
-            )
-            presented = built.presented
-        witness_adapters.validate_adapter_presentation(resolved.witness_adapter, source, presented)
-        served.append((region, presented, attempt))
-    return served
+                presentation=source,
+                presented=built.presented,
+                prompt=built.prompt,
+                generation_declared=built.request.generation_declared,
+                parser="text",
+                generation_accounting=built.generation_accounting,
+            ),
+        )
+        presented = built.presented
+    witness_adapters.validate_adapter_presentation(resolved.witness_adapter, source, presented)
+    return region, presented, attempt
 
 
-def _serve_detector_page(
-    served: list[tuple[dict[str, Any], dict[str, Any], Attempt]],
-    *,
+def _detector_record_jobs(
     context,
+    *,
     client: ChairClient,
     chair: str,
     resolved: ChairIdentity,
+    adapter,
     page_ordinal: int,
+    units: list[dict[str, Any]],
     ordinal: int,
     page_ids: dict[int, str],
-) -> None:
-    """Seal one DAI page after its records have all been read."""
-    publish_detector_page_testimonium(
-        context,
-        chair=chair,
-        resolved=resolved,
-        page_ordinal=page_ordinal,
-        ordinal=ordinal,
-        served=served,
-        receipt_ref=dict(client.handle.receipt_reference),
-        page_ids=page_ids,
-        detection_count=None,
-    )
+):
+    """One window job per record of a DAI page; the last record to finish seals the page.
+
+    The records of every page share the chair's window, so a page's records are read
+    side by side and the next page's start while this one's last are out. A record's
+    finish only keeps its reading at its detector position; once every record of the
+    page has finished, the page record is sealed over all of them, in the detector's
+    order. A pass interrupted inside a page has sealed nothing for it, so a resume asks
+    that page's records again. The finish that seals returns `True`, every other one
+    `None`, so the pages sealed are the finishes that return true.
+    """
+    served: list[tuple[dict[str, Any], dict[str, Any], Attempt] | None] = [None] * len(units)
+
+    def finish(result, *, index: int) -> bool | None:
+        served[index] = result
+        if any(item is None for item in served):
+            return None
+        publish_detector_page_testimonium(
+            context,
+            chair=chair,
+            resolved=resolved,
+            page_ordinal=page_ordinal,
+            ordinal=ordinal,
+            served=list(served),
+            receipt_ref=dict(client.handle.receipt_reference),
+            page_ids=page_ids,
+            detection_count=None,
+        )
+        return True
+
+    for index, region in enumerate(units):
+        yield (
+            partial(
+                _read_detector_record,
+                context,
+                client=client,
+                resolved=resolved,
+                adapter=adapter,
+                region=region,
+            ),
+            partial(finish, index=index),
+        )
 
 
 def detector_pages_to_read(
@@ -2525,25 +2547,16 @@ def live_pass(
                 def jobs(chair=chair, resolved=resolved, adapter=adapter):
                     for page_ordinal in sorted(to_read[chair]):
                         if chair in detector_chairs:
-                            yield (
-                                partial(
-                                    _read_detector_page,
-                                    context,
-                                    client=client,
-                                    resolved=resolved,
-                                    adapter=adapter,
-                                    units=detector[0][page_ordinal],
-                                ),
-                                partial(
-                                    _serve_detector_page,
-                                    context=context,
-                                    client=client,
-                                    chair=chair,
-                                    resolved=resolved,
-                                    page_ordinal=page_ordinal,
-                                    ordinal=ordinal,
-                                    page_ids=page_ids,
-                                ),
+                            yield from _detector_record_jobs(
+                                context,
+                                client=client,
+                                chair=chair,
+                                resolved=resolved,
+                                adapter=adapter,
+                                page_ordinal=page_ordinal,
+                                units=detector[0][page_ordinal],
+                                ordinal=ordinal,
+                                page_ids=page_ids,
                             )
                         else:
                             yield (
@@ -2572,10 +2585,16 @@ def live_pass(
 
                 # Chandra's native retry loop publishes its intent and attempt records
                 # while it reads, so it stays one page at a time: in parallel those
-                # records would land in arrival order, not page order.
+                # records would land in arrival order, not page order. A record
+                # reader's jobs are its records, and only a page's last one seals.
                 chandra = resolved.witness_adapter == "chandra.v1"
                 width = 1 if chandra else client.handle.profile.max_num_seqs
-                recorded += len(in_order_window(width, jobs()))
+                if chair in detector_chairs:
+                    recorded += sum(
+                        1 for sealed_page in in_order_window(width, jobs()) if sealed_page
+                    )
+                else:
+                    recorded += len(in_order_window(width, jobs()))
     except ServingError as error:
         # Reported as a refusal; everything that arrived is already sealed.
         raise ContractError(f"a live witness reading was refused: {error}") from error

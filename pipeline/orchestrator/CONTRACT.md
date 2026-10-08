@@ -140,3 +140,45 @@ byte-identity tests above require. Other contracts use a field named `mode` for 
 vocabularies, so the field name alone identifies no selection
 (the ingress record in `common/contracts/approval.py`, `parse_ingress_record`, and the
 crop-policy `mode` of `pipeline/2_designator/geometry_layer.py`, `yolo_obb`).
+
+## Transcript lines and the timing journal
+
+Every stage runs unbuffered (`python -I -u`), and the orchestrator flushes each line
+it prints, so a transcript shows lines as they happen. Around each stage it prints
+one line when the stage starts and one when it ends, with its exit and duration and
+each chair it launched (launch and ready moments, from the stage's launch audits,
+found by the empty `launch-audit-<digest>` note the stage leaves beside its engine
+logs, so no other blob is read);
+around a volume sync, one line when it starts and one with the files copied and its
+duration.
+
+With `--stage-sync-root`, each stage's run tree is copied to the volume after it
+ends. The file list is frozen at the stage boundary, on the main thread
+(`RunTreeSync.plan`); the copy then runs on a thread while the next stage starts, so
+that stage's cold start overlaps the copy. Each sync is joined before the next one
+starts and before the invocation returns, whatever way it ends: a stage that fails
+still waits for the sync running beside it, and a failed sync stops the run when the
+stage beside it ends, before any further stage. The volume therefore holds a stage's
+files by the end of the stage after it, not before that stage starts: a pod lost
+while that stage runs may lack part of the stage before it on the volume.
+Each sync is journaled on its own line, `stage` `volume sync after <stage>`, `kind`
+`volume-sync`, with its duration, `files_copied`, and `exit_code` 0, or `None` with
+`failure` naming why.
+
+The optional stage-timing journal (`--stage-timing-journal`, `stage-timing-journal.v4`)
+gets one line per stage invocation, written even when the stage fails. Its readers
+check only the schema and the run, so optional fields are added without a new
+version. `gpu_utilization` holds summary statistics over every read and at most 120
+samples, every `sample_stride`th read; the card is read every 15 s, and not at all
+on a host with no `nvidia-smi` on PATH (`None` plus that reason). `serving_spans`
+lists each chair the invocation launched with its `started_at`, `ready_at` and
+`ready_seconds` (`None` when the audits could not be read); the serving manager
+records no stop moment, so the entry's `finished_at` bounds it. A chair taken over
+from the stage before keeps its launch and ready moments and adds `adopted_at`, the
+moment this invocation took it over; the stage's end line says `adopted` for it, with
+no model load, where a launched chair's load would be said.
+
+When a selection runs the Coniector right after the Perlector, the Perlector is
+invoked with `--hand-off-to-coniector`, a scheduling hint that is not sealed: a
+Perlector whose chair the reconstructor's row shares leaves it serving for the
+Coniector to take over (`operations/serving/README.md`, "A shared service").

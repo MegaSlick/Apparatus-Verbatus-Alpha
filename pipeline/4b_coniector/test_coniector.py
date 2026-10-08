@@ -298,11 +298,19 @@ def _live_chair(client):
 CALL = {"page_ordinal": 1, "subjects": ["p1:1"], "chains": [], "context": []}
 
 
+def _asked(stage, chair, call, text, policy, max_tokens, what):
+    """One live call as the pass makes it: admitted, sent, and its reply or failure."""
+    admitted = stage._admit(chair, call, text, policy, max_tokens)
+    if "reply_text" in admitted:
+        return admitted
+    return stage._answered(admitted, stage._send(chair, text, admitted, what))
+
+
 def test_a_live_call_sends_one_text_turn_thinking_off_with_its_capacity():
     stage = load_stage("4b_coniector", "run")
     client = _Client(reply='{"acts": [], "joins": []}')
-    asked = stage._ask(
-        _live_chair(client), CALL, "the prompt", load_reconstruction_policy(), 8192, "page 1"
+    asked = _asked(
+        stage, _live_chair(client), CALL, "the prompt", load_reconstruction_policy(), 8192, "page 1"
     )
     (request,) = client.requests
     assert [dict(message) for message in request.messages] == [
@@ -327,7 +335,8 @@ def test_a_live_call_that_fails_leaves_no_reply_and_names_its_retained_bytes():
         receipt_ref={"relative_path": "receipt", "sha256": "d" * 64},
         served_model_id="m",
     )
-    asked = stage._ask(
+    asked = _asked(
+        stage,
         _live_chair(_Client(error=refusal)),
         CALL,
         "the prompt",
@@ -467,7 +476,7 @@ def _refused_for_capacity():
     chair = _live_chair(_Client(reply="unused"))
     small = SimpleNamespace(**{**vars(chair.row()), "max_model_len": 64})
     chair.row = lambda: small
-    asked = stage._ask(chair, CALL, "the prompt", load_reconstruction_policy(), 8192, "page 1")
+    asked = _asked(stage, chair, CALL, "the prompt", load_reconstruction_policy(), 8192, "page 1")
     assert chair.client.requests == []
     return asked
 
@@ -485,7 +494,8 @@ def _failed_call():
         receipt_ref={"relative_path": "receipt", "sha256": "d" * 64},
         served_model_id="m",
     )
-    return stage._ask(
+    return _asked(
+        stage,
         _live_chair(_Client(error=refusal)),
         CALL,
         "the prompt",
@@ -516,7 +526,7 @@ def test_a_row_that_cannot_measure_a_request_stops_the_stage_rather_than_recordi
     unmeasurable = SimpleNamespace(**{**vars(chair.row()), "max_model_len": None})
     chair.row = lambda: unmeasurable
     with pytest.raises(RequestCapacityRefusal, match="no positive max_model_len"):
-        stage._ask(chair, CALL, "the prompt", load_reconstruction_policy(), 8192, "page 1")
+        _asked(stage, chair, CALL, "the prompt", load_reconstruction_policy(), 8192, "page 1")
 
 
 @pytest.mark.parametrize(
@@ -603,7 +613,7 @@ def test_a_retained_call_asked_otherwise_is_not_adopted(unconsecutive, tmp_path,
 TIER = "generic-48gb"
 
 
-def _vllm_row(identity, tier: str) -> dict:
+def _vllm_row(identity, tier: str, max_num_seqs: int = 1) -> dict:
     """A proven `kind = "vllm"` row for the reconstructor, in the live seam's shape
     (`pipeline/test_live_reading_seam_e2e.py`); every figure is a test value."""
     from operations.serving.config import chair_preflight_identity_digest, profile_preflight_digest
@@ -620,7 +630,7 @@ def _vllm_row(identity, tier: str) -> dict:
         "seed": 7,
         "required_packages": {"vllm": "0.test"},
         "max_model_len": 16384,
-        "max_num_seqs": 1,
+        "max_num_seqs": max_num_seqs,
         "max_num_batched_tokens": 256,
         "gpu_memory_utilization": "0.85",
         "min_pixels": 1,
@@ -661,7 +671,7 @@ def _toml_profile(row: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _live_reconstructor_catalogue(catalogue: Path, models: Path) -> None:
+def _live_reconstructor_catalogue(catalogue: Path, models: Path, max_num_seqs: int = 1) -> None:
     """The catalogue with the reconstructor's fixture rows served live."""
     from common.chairs.registry import ChairRegistry
     from operations.serving.config import load_serving_recipes
@@ -676,7 +686,7 @@ def _live_reconstructor_catalogue(catalogue: Path, models: Path) -> None:
             'chair"\n'
         )
         assert text.count(fixture) == 1, tier
-        text = text.replace(fixture, _toml_profile(_vllm_row(identity, tier)))
+        text = text.replace(fixture, _toml_profile(_vllm_row(identity, tier, max_num_seqs)))
     catalogue.write_text(text, encoding="utf-8")
     load_serving_recipes(catalogue)
 
@@ -697,23 +707,15 @@ def _declared_answers() -> list[str]:
     ]
 
 
-@pytest.fixture(scope="module")
-def live(tmp_path_factory):
-    """The `unconsecutive` run with its reconstructor served live: a real ChairClient and
-    ServingManager over a scripted endpoint, the stage's own `main` in process."""
-    from operations.serving.assembly import retain_chair_bytes
-    from operations.serving.client import ChairClient
-    from operations.serving.config import ServingConfigInputs, load_serving_recipes
-    from operations.serving.fakes import FakeEndpoint, FakeLauncher, FakePackages, ScriptedAnswer
-    from operations.serving.manager import ServingManager, StageContextReceiptPublisher
-    from operations.serving.residency import FileResidencyLease
-
-    base = tmp_path_factory.mktemp("live")
+def _live_tree(base: Path, *, max_num_seqs: int = 1) -> tuple[Path, dict]:
+    """The `unconsecutive` run up to the Coniector, its reconstructor row served live."""
     repository = Path(__file__).resolve().parents[2]
     catalogue = base / "live-models" / "serving_recipes.toml"
     catalogue.parent.mkdir(parents=True)
     catalogue.write_bytes((repository / "config" / "serving_recipes.toml").read_bytes())
-    _live_reconstructor_catalogue(catalogue, repository / "config" / "models.toml")
+    _live_reconstructor_catalogue(
+        catalogue, repository / "config" / "models.toml", max_num_seqs=max_num_seqs
+    )
     roster = {"serving_recipes_config": catalogue}
     root, options = build_page_tree(
         base, "happy", reconstruction_config=_config(base / "config-r"), **roster
@@ -721,10 +723,18 @@ def live(tmp_path_factory):
     for program in AFTER_PERLECTOR[:2]:
         result = run_stage(root, RUN_ID, "happy", program, **options)
         assert result.returncode in (0, 3), f"{program}: {result.stderr}"
-    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
-    endpoint.script(
-        *(ScriptedAnswer(content=answer, finish_reason="stop") for answer in _declared_answers())
-    )
+    return root, options
+
+
+def _run_live(base: Path, root: Path, options: dict, endpoint) -> int:
+    """The stage's own `main` in process over a real ChairClient and ServingManager
+    whose engine is `endpoint`."""
+    from operations.serving.assembly import retain_chair_bytes
+    from operations.serving.client import ChairClient
+    from operations.serving.config import ServingConfigInputs, load_serving_recipes
+    from operations.serving.fakes import FakeLauncher, FakePackages
+    from operations.serving.manager import ServingManager, StageContextReceiptPublisher
+    from operations.serving.residency import FileResidencyLease
 
     def factory(context, identity, tier, *, decoding_policy, decoding_config_sha256):
         manager = ServingManager(
@@ -756,11 +766,142 @@ def live(tmp_path_factory):
     original = sys.argv
     sys.argv = argv
     try:
-        assert stage.main(serving_factory=factory) == EXIT_COMPLETE
+        return stage.main(serving_factory=factory)
     finally:
         sys.argv = original
+
+
+@pytest.fixture(scope="module")
+def live(tmp_path_factory):
+    """The `unconsecutive` run with its reconstructor served live, one call at a time."""
+    from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
+
+    base = tmp_path_factory.mktemp("live")
+    root, options = _live_tree(base)
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    endpoint.script(
+        *(ScriptedAnswer(content=answer, finish_reason="stop") for answer in _declared_answers())
+    )
+    assert _run_live(base, root, options, endpoint) == EXIT_COMPLETE
     assert len(endpoint.requests) == 2
     return root, options
+
+
+def test_a_two_wide_chair_sends_both_pages_at_once_and_publishes_them_in_order(
+    tmp_path, monkeypatch
+):
+    """Page 2 answers first while page 1 is still out; page 1's records still come first,
+    and every record is published on the main thread."""
+    import threading
+
+    from common.stage import StageContext
+    from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
+
+    answers = dict(zip((1, 2), _declared_answers(), strict=True))
+    both_out = threading.Barrier(2)
+    second_answered = threading.Event()
+    lock = threading.Lock()
+
+    class TwoWide(FakeEndpoint):
+        def request(self, method, url, *, body, timeout_seconds):
+            if method != "POST" or not self._readiness_probe_answered:
+                return super().request(method, url, body=body, timeout_seconds=timeout_seconds)
+            page = 2 if b"p2:1" in body else 1
+            both_out.wait(timeout=5)
+            if page == 1:
+                assert second_answered.wait(timeout=5)
+            with lock:
+                self.script(ScriptedAnswer(content=answers[page], finish_reason="stop"))
+                response = super().request(method, url, body=body, timeout_seconds=timeout_seconds)
+            if page == 2:
+                second_answered.set()
+            return response
+
+    published: list[tuple[str, int | None, bool]] = []
+    publish = StageContext.publish
+
+    def recorded(self, **kwargs):
+        published.append(
+            (
+                kwargs["kind"],
+                kwargs["payload"].get("page_ordinal"),
+                threading.current_thread() is threading.main_thread(),
+            )
+        )
+        return publish(self, **kwargs)
+
+    monkeypatch.setattr(StageContext, "publish", recorded)
+    root, options = _live_tree(tmp_path, max_num_seqs=2)
+    endpoint = TwoWide(served_model_id="served-reconstructor")
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert second_answered.is_set()
+    assert len(endpoint.requests) == 2
+    assert all(on_main for _kind, _page, on_main in published)
+    calls = [page for kind, page, _main in published if kind == CALL_KIND]
+    assert calls == [1, 2]
+    # Each page's reconstructions follow its own call record, page 1's before page 2's.
+    kinds = [kind for kind, _page, _main in published if kind != PLAN_KIND]
+    assert kinds.index(RECONSTRUCTION_KIND) < kinds.index(CALL_KIND, 1)
+    verified = _verified(root, options)
+    assert all(record["made"] for record in verified["acts"].values())
+
+
+def test_a_resume_refuses_while_an_interrupted_call_left_a_reply_no_record_names(live, tmp_path):
+    """A pass stopped after page 2's reply arrived and before its record was published
+    leaves the reply in the store; the resumed pass refuses rather than ask again."""
+    from conftest import _stage_records
+    from operations.serving.fakes import FakeEndpoint
+
+    source, options = live
+    root = tmp_path / "runs"
+    shutil.copytree(source, root)
+    stage = root / RUN_ID / "4b_coniector"
+    for kind in (RECONSTRUCTION_KIND, "stage-seal"):
+        shutil.rmtree(stage / "artifacts" / kind)
+    (stage / "manifest.json").unlink()
+    [path] = [
+        path
+        for path, record in _stage_records(root, RUN_ID, "4b_coniector", CALL_KIND)
+        if record["payload"]["page_ordinal"] == 2
+    ]
+    path.unlink()
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    with pytest.raises(ContractError, match="retained a reply that no reconstruction call"):
+        _run_live(tmp_path, root, options, endpoint)
+    assert endpoint.requests == []
+    assert not any(
+        record["payload"]["page_ordinal"] == 2
+        for _path, record in _stage_records(root, RUN_ID, "4b_coniector", CALL_KIND)
+    )
+
+
+def test_a_resume_asks_again_a_call_interrupted_before_any_reply_was_retained(live, tmp_path):
+    """A pass stopped while page 2 was out, before its reply arrived, left nothing of that
+    call; the resumed pass starts the chair and asks page 2 only."""
+    from conftest import _stage_records
+    from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
+
+    source, options = live
+    root = tmp_path / "runs"
+    shutil.copytree(source, root)
+    stage = root / RUN_ID / "4b_coniector"
+    for kind in (RECONSTRUCTION_KIND, "stage-seal"):
+        shutil.rmtree(stage / "artifacts" / kind)
+    (stage / "manifest.json").unlink()
+    [(path, record)] = [
+        (path, record)
+        for path, record in _stage_records(root, RUN_ID, "4b_coniector", CALL_KIND)
+        if record["payload"]["page_ordinal"] == 2
+    ]
+    for name in ("raw_response_ref", "call_record_ref"):
+        (root / RUN_ID / record["payload"]["engine_call"][name]["relative_path"]).unlink()
+    path.unlink()
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    endpoint.script(ScriptedAnswer(content=_declared_answers()[1], finish_reason="stop"))
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert len(endpoint.requests) == 1
+    verified = _verified(root, options)
+    assert all(record["made"] for record in verified["acts"].values())
 
 
 def test_a_live_reconstruction_is_verified_against_the_request_its_engine_was_sent(live):
@@ -864,7 +1005,9 @@ def _main_on_a_real_submission(monkeypatch, tree, serving_mode: str):
         coniector,
         "_Chair",
         lambda *_a: SimpleNamespace(
-            identity=SimpleNamespace(role="reconstructor"), serving_mode=serving_mode
+            identity=SimpleNamespace(role="reconstructor"),
+            serving_mode=serving_mode,
+            reclaim=lambda: None,
         ),
     )
     monkeypatch.setattr(coniector, "_publish_plan", lambda *_a: published.append("plan"))
@@ -890,3 +1033,112 @@ def test_a_real_submission_that_asks_nothing_is_not_refused(off, monkeypatch):
     published, error = _main_on_a_real_submission(monkeypatch, off, "fixture")
     assert error is None
     assert published == ["plan", "seal"]
+
+
+def test_the_call_window_is_as_wide_as_the_chair_is_launched(monkeypatch):
+    """The Coniector's window is the launched row's `max_num_seqs`, so a capacity plan
+    that widens the reconstructor widens it; a fixture chair stays at one."""
+    stage = load_stage("4b_coniector", "run")
+    monkeypatch.setattr(stage, "launch_row", lambda *_args: SimpleNamespace(max_num_seqs=17))
+    context = SimpleNamespace(args=SimpleNamespace(placement_tier="generic-80gb-plus"))
+    live = SimpleNamespace(live=True, identity=object())
+    assert stage._Pass(context, live, None, None, 1, False).width() == 17
+    fixture = SimpleNamespace(live=False, identity=object())
+    assert stage._Pass(context, fixture, None, None, 1, False).width() == 1
+
+
+def test_a_live_chair_starts_on_a_background_thread_while_the_calls_are_drawn(
+    tmp_path, monkeypatch
+):
+    """A plan with an unsealed call starts its chair off the main thread before the
+    first call is drawn; every record is still published on the main thread."""
+    import threading
+
+    from common.stage import StageContext
+    from operations.serving.client import ChairClient
+    from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
+
+    entered: list[str] = []
+    enter = ChairClient.__enter__
+
+    def recorded_enter(self):
+        entered.append(threading.current_thread().name)
+        return enter(self)
+
+    publishers: list[bool] = []
+    publish = StageContext.publish
+
+    def recorded_publish(self, **kwargs):
+        publishers.append(threading.current_thread() is threading.main_thread())
+        return publish(self, **kwargs)
+
+    monkeypatch.setattr(ChairClient, "__enter__", recorded_enter)
+    monkeypatch.setattr(StageContext, "publish", recorded_publish)
+    root, options = _live_tree(tmp_path)
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    endpoint.script(
+        *(ScriptedAnswer(content=answer, finish_reason="stop") for answer in _declared_answers())
+    )
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert entered == ["chair-start"]
+    assert publishers and all(publishers)
+    assert len(endpoint.requests) == 2
+
+
+def test_a_resumed_pass_with_every_call_sealed_starts_no_chair(live, tmp_path, monkeypatch):
+    from operations.serving.client import ChairClient
+    from operations.serving.fakes import FakeEndpoint
+
+    source, options = live
+    root = tmp_path / "runs"
+    shutil.copytree(source, root)
+    monkeypatch.setattr(
+        ChairClient, "__enter__", lambda self: pytest.fail("a chair was started for nothing")
+    )
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert endpoint.requests == []
+
+
+def test_a_chair_started_for_calls_all_refused_for_capacity_stops_before_the_seal(
+    tmp_path, monkeypatch
+):
+    """Every unsealed call turns out over capacity, so no call waits for the background
+    start; the pass still waits for it and stops the chair before it seals."""
+    import time
+
+    import common.request_capacity as request_capacity
+    from common.stage import StageContext
+    from operations.serving.client import ChairClient
+    from operations.serving.fakes import FakeEndpoint
+
+    measured = request_capacity.reconstruction_request_capacity
+
+    def over_capacity(*args, **kwargs):
+        admitted = measured(*args, **kwargs)
+        raise request_capacity.RequestCapacityRefusal(
+            "over capacity in this test", capacity=admitted["capacity"]
+        )
+
+    enter = ChairClient.__enter__
+
+    def slow_enter(self):
+        time.sleep(0.5)
+        return enter(self)
+
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    at_seal: list[tuple[bool, bool]] = []
+    seal = StageContext.seal_boundary
+
+    def recorded_seal(self):
+        process = endpoint._process
+        at_seal.append((process is not None, process is not None and process.poll() is not None))
+        return seal(self)
+
+    monkeypatch.setattr(request_capacity, "reconstruction_request_capacity", over_capacity)
+    monkeypatch.setattr(ChairClient, "__enter__", slow_enter)
+    monkeypatch.setattr(StageContext, "seal_boundary", recorded_seal)
+    root, options = _live_tree(tmp_path)
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert endpoint.requests == []
+    assert at_seal == [(True, True)], "the chair was not started and stopped before the seal"
