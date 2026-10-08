@@ -130,7 +130,9 @@ the registry check the copied tree's structure (missing and extra files, sizes,
 links) without reading those bytes again; files carried over from a damaged cache
 are hashed again. They are carried by renaming them into the candidate on the
 cache's own filesystem, not by copying, and are renamed back if the repair fails,
-so an incomplete cache is left as it was.
+so an incomplete cache is left as it was. A file that cannot be renamed back is
+not deleted: the candidate is kept as `.<digest>.unreturned-*` and the refusal
+names it and says how to recover.
 
 Within one process, a `ChairRegistry` remembers each snapshot it fully verified,
 by manifest digest and root, with every file's device, inode, size, mtime and

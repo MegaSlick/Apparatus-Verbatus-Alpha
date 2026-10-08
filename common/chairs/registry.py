@@ -627,9 +627,12 @@ class ChairRegistry:
                 manifest_digest=verified.manifest_digest,
                 verification=_copy_verification(ledger, copied, manifest),
             )
-        except Exception:
+        except Exception as error:
             if candidate.exists():
-                _return_carried_files(candidate, target, carried)
+                unreturned = _return_carried_files(candidate, target, carried)
+                if unreturned:
+                    _name_kept_files(error, candidate, target, unreturned)
+                    raise
                 shutil.rmtree(candidate, ignore_errors=True)
             raise
 
@@ -876,17 +879,50 @@ def _carry_existing_files(
         carried.append(row.path)
 
 
-def _return_carried_files(candidate: Path, target: Path, carried: list[str]) -> None:
-    """Put carried files back into a cache whose repair failed, so it is left as it was."""
+def _return_carried_files(candidate: Path, target: Path, carried: list[str]) -> list[str]:
+    """Put carried files back into a cache whose repair failed; return those that would not go.
+
+    The caller keeps the candidate when any file stays in it, so no cache byte is
+    deleted unseen.
+    """
 
     if not target.is_dir():
-        return
+        return list(carried)
+    unreturned: list[str] = []
     for relative in carried:
         try:
             (target / relative).parent.mkdir(parents=True, exist_ok=True)
             os.replace(candidate / relative, target / relative)
         except OSError:
-            continue
+            unreturned.append(relative)
+    return unreturned
+
+
+def _name_kept_files(
+    error: Exception, candidate: Path, target: Path, unreturned: list[str]
+) -> None:
+    """Add to the repair's own error where the cache files it could not put back now are.
+
+    The candidate is renamed out of the `.candidate-` namespace, so the next fill's
+    clean-up of abandoned work does not delete those files.
+    """
+
+    kept = candidate.with_name(candidate.name.replace(".candidate-", ".unreturned-", 1))
+    try:
+        os.replace(candidate, kept)
+    except OSError:
+        kept = candidate
+    note = (
+        f"; {len(unreturned)} file(s) of the existing cache could not be put back into "
+        f"{target} (first: {unreturned[0]!r}) and are kept in {kept}: move them back into "
+        "the cache, or delete that directory to let the next fill copy them again"
+    )
+    if isinstance(error, ChairRefusal):
+        # The same refusal, its text extended, so its code and cause stay as raised.
+        error.difference += note
+        error.args = (f"chair {error.chair!r}: {error.difference}",)
+    else:
+        error.add_note(note.lstrip("; "))
 
 
 def _promote(candidate: Path, target: Path) -> None:

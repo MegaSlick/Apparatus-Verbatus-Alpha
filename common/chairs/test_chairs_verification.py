@@ -879,6 +879,47 @@ def test_a_failed_repair_puts_the_files_it_carried_back(hf_world):
     assert not (snapshot.root / "nested/weights.bin").exists()
 
 
+def test_a_carried_file_that_cannot_go_back_is_kept_and_named_not_deleted(hf_world, monkeypatch):
+    identity = hf_world.identity()
+    snapshot = hf_world.registry.ensure(identity)
+    (snapshot.root / "nested/weights.bin").unlink()
+    hf_world.fetcher.files["nested/weights.bin"] = b"corrupted on the way back\n"
+    fetched = threading.Event()
+    real_fetch = hf_world.fetcher.fetch
+
+    def fetch(identity, destination, paths):
+        fetched.set()
+        return real_fetch(identity, destination, paths)
+
+    hf_world.fetcher.fetch = fetch
+    real_replace = os.replace
+
+    def replace(source, destination):
+        if fetched.is_set() and Path(destination) == snapshot.root / "config.json":
+            raise PermissionError("cannot write into the cache")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", replace)
+
+    with pytest.raises(DigestMismatchRefusal) as caught:
+        hf_world.registry.ensure(identity)
+
+    message = str(caught.value)
+    assert "nested/weights.bin" in message, "the original refusal still leads"
+    assert "could not be put back" in message and "'config.json'" in message
+    (kept,) = [
+        entry
+        for entry in (hf_world.registry.cache_root / "by-digest").iterdir()
+        if ".unreturned-" in entry.name
+    ]
+    assert str(kept) in message
+    assert (kept / "config.json").read_bytes() == hf_world.files["config.json"]
+    monkeypatch.setattr(os, "replace", real_replace)
+    hf_world.fetcher.files["nested/weights.bin"] = b"fixture weights\n"
+    hf_world.registry.ensure(identity)
+    assert kept.is_dir(), "the next fill's clean-up leaves the kept files alone"
+
+
 def test_a_cache_holding_a_file_the_pin_does_not_name_is_refused_before_any_refetch(hf_world):
     identity = hf_world.identity()
     snapshot = hf_world.registry.ensure(identity)
