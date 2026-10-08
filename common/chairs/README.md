@@ -102,7 +102,8 @@ checked against the roster's manifest before it replaces anything.
 
 The store is shared with the future pod, and the two sides key their directories
 differently: a store directory is per **artifact** (chandra-ocr-2 fills two
-chairs at one revision and is stored once), a `cache_root` entry is per **role**.
+chairs at one revision and is stored once), a `cache_root` entry is per **pinned
+manifest digest**, under `cache_root/by-digest/<digest_manifest>`.
 Each present snapshot and manifest is held to its artifact-keyed canonical path,
 so one roster row cannot claim another artifact's verified directory and pin.
 `model_root` is the local-repository half, resolved relative to
@@ -111,11 +112,16 @@ snapshot used as a cache entry directly, naming that cause rather than reporting
 an extra file.
 
 Each configured Hugging Face role is bound to its exact repository, revision and
-manifest when its stage fills its cache. `StoreRoleFetcher` copies these sources
-into separate role caches, and `ChairRegistry` verifies and publishes each cache
-with its own identity descriptor. When making room, the registry may remove a
-configured role's unused cache and abandoned `.<role>.candidate-*` and
-`.<role>.prior-*` directories;
+manifest when its stage fills its cache. Roles pinned to the same manifest digest
+share one cache copy: the Perlector and the Coniector's `reconstructor` read one
+copy of their model. The cache's descriptor records only the digest it holds; the
+role that asked travels in the returned `VerifiedSnapshot` and in every receipt.
+`StoreRoleFetcher` copies a missing snapshot into a candidate directory,
+`ChairRegistry` verifies it and promotes it under that digest. A per-digest lock
+(`by-digest/.<digest>.lock`) serialises concurrent fills of one digest, across
+processes. When making room, the registry may remove a configured digest's unused
+cache and abandoned `.<digest>.candidate-*` and `.<digest>.prior-*` directories,
+least recently used first and never while another fill holds that digest's lock;
 it leaves all other entries under `cache_root` alone. Cache preparation and
 preflight do not fall back to network downloads when retained bytes are missing
 or invalid.

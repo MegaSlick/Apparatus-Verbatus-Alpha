@@ -1209,8 +1209,9 @@ def verify_store(store_root: str | Path) -> dict[str, Any]:
                 item["artifact"],
                 f"the chair registry's cache descriptor {CACHE_DESCRIPTOR!r} is inside this "
                 "store snapshot: a store directory is keyed by artifact and is not a "
-                "cache_root entry, which is keyed by chair role. Fill "
-                "cache_root/<role> from this snapshot through StoreRoleFetcher instead",
+                "cache_root entry, which is keyed by manifest digest. Fill "
+                "cache_root/by-digest/<digest_manifest> from this snapshot through "
+                "StoreRoleFetcher instead",
             )
         identity = ChairIdentity(
             role=item["artifact"],

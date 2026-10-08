@@ -26,11 +26,10 @@ def is_hf_revision(value: object) -> bool:
 
 
 def is_plain_role(role: object) -> bool:
-    """A role names exactly one cache directory, so it is a single visible name.
+    """A role is a single visible name: no path separator and no leading dot.
 
-    Path separators would reach outside the cache root, and a leading dot would
-    name `.`, `..` or the registry's own hidden `.{role}.candidate-` and
-    `.{role}.prior-` work directories.
+    Such a name is safe wherever a role ends up in a path or a log line, and
+    cannot be mistaken for `.`, `..` or a hidden file.
     """
 
     return (

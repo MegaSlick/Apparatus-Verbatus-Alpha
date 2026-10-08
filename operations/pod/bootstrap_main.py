@@ -304,7 +304,7 @@ class Plan:
 class RegistryChairCacheVerifier:
     """The production ``ChairCacheVerifier``: one ``ensure`` per configured chair.
 
-    ``ChairRegistry.ensure`` verifies the exact pinned snapshot in the role
+    ``ChairRegistry.ensure`` verifies the exact pinned snapshot in the chair
     cache, filling it from the retained store if needed, and returns the
     verified snapshot or raises the chair's named refusal. A mismatch is
     reported once, by chair, with its original cause; no automatic repair is

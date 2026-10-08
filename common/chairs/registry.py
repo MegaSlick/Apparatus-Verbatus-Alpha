@@ -5,6 +5,7 @@ Every stored reading carries the resolved identity and revision of the model tha
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import shutil
@@ -39,11 +40,14 @@ from .models import (
     ServingDetails,
     ServingReceipt,
     VerifiedSnapshot,
-    is_plain_role,
+    is_sha256,
 )
 from .receipts import build_receipt
 
 CACHE_DESCRIPTOR = ".chair-identity.json"
+# Caches are keyed by manifest digest, so chairs pinned to the same bytes share
+# one copy: `cache_root/by-digest/<digest_manifest>`.
+DIGEST_CACHE_DIRECTORY = "by-digest"
 # The real roster must be parseable before materialization, but no verification,
 # receipt, or serving path may treat this placeholder as a pin.
 PRE_MATERIALIZATION_SENTINEL = "0" * 64
@@ -442,8 +446,9 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(
                 identity.role, "no cache_root was supplied for Hugging Face chair"
             )
-        if not is_plain_role(identity.role):
-            raise CacheRevisionRefusal(identity.role, "role is unsafe as a cache path")
+        digest = identity.digest_manifest
+        if not is_sha256(digest):
+            raise CacheRevisionRefusal(identity.role, "digest_manifest is unsafe as a cache path")
         # The cache writes its descriptor inside the snapshot root, and would
         # overwrite a pinned file of that name after verification passed.
         if any(row.path == CACHE_DESCRIPTOR for row in manifest.rows):
@@ -452,10 +457,18 @@ class ChairRegistry:
                 f"the pinned manifest names {CACHE_DESCRIPTOR!r}, which is the cache's own "
                 "identity descriptor; a snapshot cannot hold both under one name",
             )
-        with _cache_write(identity.role, f"cache root {self.cache_root} cannot be created"):
-            self.cache_root.mkdir(parents=True, exist_ok=True)
-        target = self.cache_root / identity.role
-        descriptor = identity.cache_descriptor()
+        digests_root = self.cache_root / DIGEST_CACHE_DIRECTORY
+        with _cache_write(identity.role, f"cache root {digests_root} cannot be created"):
+            digests_root.mkdir(parents=True, exist_ok=True)
+        with _digest_lock(digests_root, digest, identity.role):
+            return self._ensure_digest_locked(identity, manifest, digests_root)
+
+    def _ensure_digest_locked(
+        self, identity: ChairIdentity, manifest: DigestManifest, digests_root: Path
+    ) -> VerifiedSnapshot:
+        digest = identity.digest_manifest
+        target = digests_root / digest
+        descriptor = digest_cache_descriptor(identity)
         missing: tuple[str, ...]
         if target.exists():
             _verify_cache_descriptor(target, identity.role, descriptor)
@@ -473,11 +486,9 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(
                 identity.role, "no fetcher is configured for a missing pinned snapshot"
             )
-        self._make_room(identity, manifest)
+        self._make_room(identity, manifest, digests_root)
         with _cache_write(identity.role, "no candidate cache directory could be created"):
-            candidate = Path(
-                tempfile.mkdtemp(prefix=f".{identity.role}.candidate-", dir=self.cache_root)
-            )
+            candidate = Path(tempfile.mkdtemp(prefix=f".{digest}.candidate-", dir=digests_root))
         try:
             if target.exists():
                 with _cache_write(identity.role, "the existing cache could not be carried over"):
@@ -510,37 +521,48 @@ class ChairRegistry:
         with _cache_write(role, "cache use time could not be recorded"):
             os.utime(target, None)
 
-    def _make_room(self, identity: ChairIdentity, manifest: DigestManifest) -> None:
-        cache_root = self.cache_root
-        if cache_root is None:
-            raise UnresolvedChairRefusal(identity.role, "no cache_root was supplied")
-        configured_roles = {
-            role
-            for role, configured in self.config.chairs.items()
+    def _configured_digests(self) -> set[str]:
+        return {
+            configured.digest_manifest
+            for configured in self.config.chairs.values()
             if isinstance(configured, ChairIdentity)
+            and configured.source == "huggingface"
+            and is_sha256(configured.digest_manifest)
         }
+
+    def _make_room(
+        self, identity: ChairIdentity, manifest: DigestManifest, digests_root: Path
+    ) -> None:
+        """Clear abandoned work and evict least recently used caches until the pin fits.
+
+        Only caches of configured digests are touched, and only while no other
+        ensure holds that digest's lock; the caller holds the incoming digest's.
+        """
+
+        own = identity.digest_manifest
+        configured = self._configured_digests()
         with _cache_write(identity.role, "abandoned chair work directories could not be removed"):
-            for other in cache_root.iterdir():
-                if not any(
-                    other.name.startswith((f".{role}.candidate-", f".{role}.prior-"))
-                    for role in configured_roles
-                ):
+            for other in sorted(digests_root.iterdir()):
+                owner = _work_directory_digest(other.name, configured)
+                if owner is None:
                     continue
-                if other.is_symlink():
-                    other.unlink()
-                elif other.is_dir():
-                    shutil.rmtree(other)
+                if owner == own:
+                    _remove(other)
+                    continue
+                with _try_digest_lock(digests_root, owner, identity.role) as held:
+                    if held:
+                        _remove(other)
         required = sum(row.size for row in manifest.rows)
         with _cache_write(identity.role, "container-local free space could not be measured"):
-            free = shutil.disk_usage(cache_root).free
+            free = shutil.disk_usage(digests_root).free
         if free < required:
             with _cache_write(identity.role, "other chair caches could not be evicted"):
                 candidates = sorted(
                     (
                         other
-                        for other in cache_root.iterdir()
-                        if other.name in configured_roles
-                        and other.name != identity.role
+                        for other in digests_root.iterdir()
+                        if other.name in configured
+                        and other.name != own
                         and (other.is_symlink() or other.is_dir())
                     ),
                     key=lambda other: (other.stat(follow_symlinks=False).st_mtime_ns, other.name),
@@ -548,18 +570,81 @@ class ChairRegistry:
                 for other in candidates:
                     if free >= required:
                         break
-                    if other.is_symlink():
-                        other.unlink()
-                    else:
-                        shutil.rmtree(other)
-                    free = shutil.disk_usage(cache_root).free
+                    with _try_digest_lock(digests_root, other.name, identity.role) as held:
+                        if held:
+                            _remove(other)
+                    free = shutil.disk_usage(digests_root).free
         if free < required:
             raise DiskSpaceRefusal(
                 identity.role,
                 f"container disk too small for chair {identity.role}: {free} bytes free "
-                f"under {cache_root}, need at least {required} bytes for its pinned "
+                f"under {digests_root}, need at least {required} bytes for its pinned "
                 "snapshot; increase container_disk_gb",
             )
+
+
+def digest_cache_descriptor(identity: ChairIdentity) -> dict[str, object]:
+    """What a digest-keyed cache records about itself: only the bytes it holds.
+
+    Several roles, and even several repositories, can pin one manifest; the role
+    that asked travels in the returned `VerifiedSnapshot` and its receipts.
+    """
+
+    return {"digest_manifest": identity.digest_manifest}
+
+
+def _work_directory_digest(name: str, digests: set[str]) -> str | None:
+    """The configured digest a `.<digest>.candidate-*` or `.<digest>.prior-*` belongs to."""
+
+    for marker in (".candidate-", ".prior-"):
+        head, found, _ = name.partition(marker)
+        if found and head.startswith(".") and head[1:] in digests:
+            return head[1:]
+    return None
+
+
+def _remove(path: Path) -> None:
+    if path.is_symlink() or not path.is_dir():
+        path.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(path)
+
+
+def _lock_path(digests_root: Path, digest: str) -> Path:
+    return digests_root / f".{digest}.lock"
+
+
+@contextmanager
+def _digest_lock(digests_root: Path, digest: str, chair: str):
+    """Serialise every fill, repair and eviction of one digest's cache, across processes."""
+
+    with _cache_write(chair, "the cache lock could not be opened"):
+        handle = _lock_path(digests_root, digest).open("a+b")
+    with handle:
+        with _cache_write(chair, "the cache lock could not be taken"):
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _try_digest_lock(digests_root: Path, digest: str, chair: str):
+    """Yield whether another digest's lock was free, holding it while it was."""
+
+    with _cache_write(chair, "the cache lock could not be opened"):
+        handle = _lock_path(digests_root, digest).open("a+b")
+    with handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 @contextmanager

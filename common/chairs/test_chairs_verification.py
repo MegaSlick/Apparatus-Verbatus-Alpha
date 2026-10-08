@@ -228,35 +228,104 @@ def test_a_second_ensure_hashes_each_complete_cache_file_once_and_fetches_nothin
     assert len(hf_world.fetcher.calls) == 1, "a complete verified cache is not re-fetched"
 
 
-def test_an_incoming_chair_keeps_other_complete_caches_when_space_suffices(hf_world, monkeypatch):
-    first = hf_world.registry.ensure(hf_world.identity())
+class PerRoleFetcher(RecordingFetcher):
+    """The fetch seam when each role is pinned to its own bytes."""
+
+    def __init__(self, files_by_role):
+        super().__init__({})
+        self.files_by_role = files_by_role
+
+    def fetch(self, identity, destination, paths):
+        self.files = self.files_by_role[identity.role]
+        super().fetch(identity, destination, paths)
+
+
+def _distinct_pins(tmp_path, roles):
+    """A registry whose roles each pin different bytes, so each has its own cache."""
+    files_by_role = {role: {"weights.bin": f"{role} weights\n".encode()} for role in roles}
+    chairs = {}
+    for role in roles:
+        remote = write_snapshot(tmp_path / "remote" / role, files_by_role[role])
+        chairs[role] = hf_chair(role, pin_snapshot(remote, tmp_path / "manifests" / f"{role}.json"))
+    fetcher = PerRoleFetcher(files_by_role)
+    return registry_for(config_of(tmp_path, chairs), tmp_path, fetcher), fetcher
+
+
+def test_two_roles_bound_to_one_pin_share_one_verified_copy(hf_world):
+    """attestator_1 and attestator_2 pin the same manifest: one copy serves both."""
+    first = hf_world.registry.ensure(hf_world.identity("attestator_1"))
+    second = hf_world.registry.ensure(hf_world.identity("attestator_2"))
+
+    assert first.root == second.root
+    assert first.root == hf_world.registry.cache_root / "by-digest" / hf_world.pin
+    assert first.identity.role == "attestator_1"
+    assert second.identity.role == "attestator_2"
+    assert first.manifest_digest == second.manifest_digest == hf_world.pin
+    assert hf_world.fetcher.calls == [("attestator_1", ("config.json", "nested/weights.bin"))]
+    caches = [
+        entry.name
+        for entry in (hf_world.registry.cache_root / "by-digest").iterdir()
+        if not entry.name.startswith(".")
+    ]
+    assert caches == [hf_world.pin]
+    assert sorted(entry.name for entry in hf_world.registry.cache_root.iterdir()) == ["by-digest"]
+
+
+def test_concurrent_ensures_of_one_pin_fetch_it_once(hf_world):
+    """Two chairs on one pin, ensured at once, wait on the digest's lock, not race."""
+    entered = threading.Event()
+    release = threading.Event()
+    real_fetch = hf_world.fetcher.fetch
+
+    def slow_fetch(identity, destination, paths):
+        entered.set()
+        release.wait(timeout=5)
+        real_fetch(identity, destination, paths)
+
+    hf_world.fetcher.fetch = slow_fetch
+    results = {}
+
+    def ensure(role):
+        results[role] = hf_world.registry.ensure(hf_world.identity(role))
+
+    first = threading.Thread(target=ensure, args=("attestator_1",))
+    first.start()
+    assert entered.wait(timeout=5)
+    second = threading.Thread(target=ensure, args=("attestator_2",))
+    second.start()
+    second.join(timeout=0.2)
+    assert second.is_alive(), "the second ensure waits for the first fill to finish"
+    release.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+
+    assert results["attestator_1"].root == results["attestator_2"].root
+    assert hf_world.fetcher.roles == ["attestator_1"]
+
+
+def test_an_incoming_chair_keeps_other_complete_caches_when_space_suffices(tmp_path, monkeypatch):
+    registry, fetcher = _distinct_pins(tmp_path, ("attestator_1", "attestator_2"))
+    first = registry.ensure(registry.resolve("attestator_1"))
     monkeypatch.setattr(
         "common.chairs.registry.shutil.disk_usage",
         lambda path: SimpleNamespace(free=10**12),
     )
 
-    second = hf_world.registry.ensure(hf_world.identity("attestator_2"))
-    hf_world.registry.ensure(hf_world.identity())
-    hf_world.registry.ensure(hf_world.identity("attestator_2"))
+    second = registry.ensure(registry.resolve("attestator_2"))
+    registry.ensure(registry.resolve("attestator_1"))
+    registry.ensure(registry.resolve("attestator_2"))
 
     assert first.root.is_dir()
     assert second.root.is_dir()
-    assert hf_world.fetcher.calls == [
-        ("attestator_1", ("config.json", "nested/weights.bin")),
-        ("attestator_2", ("config.json", "nested/weights.bin")),
+    assert first.root != second.root
+    assert fetcher.calls == [
+        ("attestator_1", ("weights.bin",)),
+        ("attestator_2", ("weights.bin",)),
     ]
 
 
-def test_insufficient_space_evicts_least_recently_used_chair_first(tmp_path, monkeypatch):
-    files = {"weights.bin": b"fixture weights\n"}
-    remote = write_snapshot(tmp_path / "remote", files)
-    pin = pin_snapshot(remote, tmp_path / "manifests" / "chair.json")
-    chairs = {
-        role: hf_chair(role, pin, manifest="manifests/chair.json")
-        for role in ("old", "recent", "incoming")
-    }
-    fetcher = RecordingFetcher(files)
-    registry = registry_for(config_of(tmp_path, chairs), tmp_path, fetcher)
+def test_insufficient_space_evicts_least_recently_used_digest_first(tmp_path, monkeypatch):
+    registry, fetcher = _distinct_pins(tmp_path, ("old", "recent", "incoming"))
     old = registry.ensure(registry.resolve("old"))
     recent = registry.ensure(registry.resolve("recent"))
     os.utime(old.root, ns=(1, 1))
@@ -265,29 +334,44 @@ def test_insufficient_space_evicts_least_recently_used_chair_first(tmp_path, mon
 
     monkeypatch.setattr(
         "common.chairs.registry.shutil.disk_usage",
-        lambda path: SimpleNamespace(
-            free=len(files["weights.bin"]) if not recent.root.exists() else 0
-        ),
+        lambda path: SimpleNamespace(free=10**6 if not recent.root.exists() else 0),
     )
-    registry.ensure(registry.resolve("incoming"))
+    incoming = registry.ensure(registry.resolve("incoming"))
 
     assert old.root.is_dir()
     assert not recent.root.exists()
-    assert (registry.cache_root / "incoming").is_dir()
+    assert incoming.root == registry.cache_root / "by-digest" / incoming.manifest_digest
     assert fetcher.roles == ["old", "recent", "incoming"]
 
 
-def test_insufficient_space_after_eviction_refuses_the_incoming_chair(hf_world, monkeypatch):
-    first = hf_world.registry.ensure(hf_world.identity())
+def test_a_digest_another_ensure_holds_is_not_evicted(tmp_path, monkeypatch):
+    from common.chairs import registry as registry_module
+
+    registry, fetcher = _distinct_pins(tmp_path, ("busy", "incoming"))
+    busy = registry.ensure(registry.resolve("busy"))
+    monkeypatch.setattr(
+        "common.chairs.registry.shutil.disk_usage", lambda path: SimpleNamespace(free=0)
+    )
+
+    with registry_module._digest_lock(busy.root.parent, busy.manifest_digest, "busy"):
+        with pytest.raises(DiskSpaceRefusal):
+            registry.ensure(registry.resolve("incoming"))
+
+    assert busy.root.is_dir()
+
+
+def test_insufficient_space_after_eviction_refuses_the_incoming_chair(tmp_path, monkeypatch):
+    registry, fetcher = _distinct_pins(tmp_path, ("attestator_1", "attestator_2"))
+    first = registry.ensure(registry.resolve("attestator_1"))
     monkeypatch.setattr(
         "common.chairs.registry.shutil.disk_usage", lambda path: SimpleNamespace(free=0)
     )
 
     with pytest.raises(DiskSpaceRefusal, match="container disk too small for chair"):
-        hf_world.registry.ensure(hf_world.identity("attestator_2"))
+        registry.ensure(registry.resolve("attestator_2"))
 
     assert not first.root.exists()
-    assert hf_world.fetcher.roles == ["attestator_1"]
+    assert fetcher.roles == ["attestator_1"]
 
 
 # --- One flipped byte, a missing file, an extra file --------------------------------
@@ -437,8 +521,8 @@ def test_a_failed_verification_leaves_the_previously_verified_snapshot_untouched
     }
     assert surviving == {name: data for name, data in before.items() if name != "config.json"}
     assert not any(
-        entry.name.startswith(".attestator_1.candidate-")
-        for entry in hf_world.registry.cache_root.iterdir()
+        ".candidate-" in entry.name
+        for entry in (hf_world.registry.cache_root / "by-digest").iterdir()
     ), "a refused candidate snapshot is removed rather than left beside the cache"
 
 

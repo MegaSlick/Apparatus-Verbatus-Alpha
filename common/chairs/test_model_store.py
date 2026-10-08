@@ -1765,7 +1765,7 @@ def test_the_store_agrees_with_the_roster_about_which_repository_declares_nothin
         assert declares_nothing == (requirement.license_declaration is None), requirement.chair
 
 
-def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(tmp_path):
+def test_registry_populates_and_reuses_digest_caches_from_verified_store_sources(tmp_path):
     """Six cache roles are supplied locally, including both Chandra roles."""
 
     record = _mark_pending(tmp_path, _store(tmp_path), "surya2-detection", "local bundle pending")
@@ -1822,9 +1822,14 @@ def test_registry_populates_and_reuses_role_caches_from_verified_store_sources(t
     for identity in source_identities:
         registry.ensure(identity)
 
-    assert set(fetcher.calls) == set(chairs)
+    # The Perlector and the Coniector's reconstructor pin one manifest: one copy.
+    digests = {identity.digest_manifest for identity in source_identities}
+    assert len(fetcher.calls) == len(digests) < len(chairs)
+    assert {"perlector", "reconstructor"} - set(fetcher.calls) != set()
     for identity in source_identities:
-        assert (tmp_path / "chair-cache" / identity.role / CACHE_DESCRIPTOR).is_file()
+        assert (
+            tmp_path / "chair-cache" / "by-digest" / identity.digest_manifest / CACHE_DESCRIPTOR
+        ).is_file()
 
     fetcher.calls.clear()
     restarted = ChairRegistry(config, cache_root=tmp_path / "chair-cache", fetcher=fetcher)
@@ -1856,9 +1861,7 @@ def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path
     """Pointing cache_root at the store makes the registry stamp its descriptor.
 
     The generic refusal for that ("extra file") names the file but not the
-    cause; a store is keyed by artifact and a cache by role, and the two chairs
-    sharing chandra-ocr-2 would in any case write two different descriptors
-    over the one stored directory.
+    cause; a store is keyed by artifact and a cache by manifest digest.
     """
 
     record = _store(tmp_path)
