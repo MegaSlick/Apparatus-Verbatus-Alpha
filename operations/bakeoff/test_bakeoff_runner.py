@@ -36,7 +36,7 @@ def _weights(tmp_path: Path, name: str) -> str:
 
 
 class FakeDetector:
-    def __init__(self, *_args):
+    def __init__(self, *_args, **_kwargs):
         pass
 
     def records(self, page_png):
@@ -143,3 +143,66 @@ def _png(width: int, height: int) -> bytes:
     buffer = io.BytesIO()
     Image.new("L", (width, height), 255).save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+class EmptyDetector(FakeDetector):
+    settings = {"imgsz": 1024, "conf": 0.25}
+
+    def records(self, page_png):
+        return []
+
+
+def _dai_argv(pages: Path, out: Path, tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "run", "--model", "dai", "--pages", str(pages), "--out", str(out),
+        "--port", str(_free_port()), "--max-num-seqs", "1", "--startup-timeout", "60",
+        "--vllm-cmd", sys.executable, str(FAKE),
+        "--detector-weights", str(tmp_path), "--weights", str(tmp_path / "weights" / "dai"),
+        *extra,
+    ]  # fmt: skip
+
+
+def test_dai_whole_page_fallback_and_record_cache_settings(tmp_path, monkeypatch):
+    monkeypatch.setattr(A, "RecordDetector", EmptyDetector)
+    pages, out = tmp_path / "pages", tmp_path / "cache"
+    _pages(pages, 1)
+    _weights(tmp_path, "dai")
+
+    # No record and no fallback: a valid, empty page, and the cache says what was asked.
+    assert W.main(_dai_argv(pages, out, tmp_path)) == 0
+    page = json.loads((out / "dai" / "p000.json").read_text())
+    assert page["empty"] and page["finish_reason"] == "no-records" and not page["units"]
+    assert page["whole_page_fallback"] is False
+    records = json.loads((out / "dai" / "_records" / "p000.json").read_text())
+    assert records["detected"] == 0 and records["records"] == []
+    assert records["settings"] == {"conf": None, "imgsz": None, "fallback": "none"}
+    assert records["detector_settings"] == EmptyDetector.settings
+
+    # Other settings: the record cache is rebuilt, the page is shown whole, read as one unit.
+    out2 = tmp_path / "cache2"
+    extra = (
+        "--record-fallback",
+        "whole-page",
+        "--detector-conf",
+        "0.1",
+        "--detector-imgsz",
+        "1536",
+    )
+    assert W.main(_dai_argv(pages, out2, tmp_path, "--label", "dai", *extra)) == 0
+    page = json.loads((out2 / "dai" / "p000.json").read_text())
+    assert not page["empty"] and page["record_units"] == ["whole-page"]
+    assert page["whole_page_fallback"] is True
+    assert page["units"][0]["request"]["bounds"] == {"x": 0, "y": 0, "w": 400, "h": 300}
+    records = json.loads((out2 / "dai" / "_records" / "p000.json").read_text())
+    assert records["settings"] == {"conf": 0.1, "imgsz": 1536, "fallback": "whole-page"}
+    assert records["records"][0]["fallback"] == "whole-page" and records["detected"] == 0
+
+
+def test_whole_page_record_and_scored_boxes_keep_order():
+    whole = A.whole_page_record(800, 600)
+    assert whole["w"] == 800 and whole["fallback"] == "whole-page" and whole["score"] is None
+    scored = [
+        {"x": 500, "y": 10, "w": 200, "h": 50, "score": 0.9},
+        {"x": 10, "y": 100, "w": 300, "h": 50, "score": 0.4},
+    ]
+    assert [b["score"] for b in A.order_records(scored, 800)] == [0.4, 0.9]
