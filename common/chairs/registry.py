@@ -374,8 +374,13 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(role, "role is not present in models.toml")
         return value
 
-    def ensure(self, identity: ChairIdentity) -> VerifiedSnapshot:
-        """Fetch missing pinned files only, then verify the complete exact snapshot."""
+    def ensure(self, identity: ChairIdentity, *, evict: bool = True) -> VerifiedSnapshot:
+        """Fetch missing pinned files only, then verify the complete exact snapshot.
+
+        With `evict=False` a fill that lacks room is refused (`DiskSpaceRefusal`)
+        instead of removing another chair's cache; for a fill that runs beside
+        other work and must not take a cache that work may be about to use.
+        """
 
         self._require_current_identity(identity)
         manifest = self._manifest(identity)
@@ -388,7 +393,22 @@ class ChairRegistry:
             verified = verify_snapshot(identity, root, manifest)
             self._remember(identity, root, before)
             return verified
-        return self._ensure_huggingface(identity, manifest)
+        return self._ensure_huggingface(identity, manifest, evict=evict)
+
+    def adopt_verifications(self, other: "ChairRegistry") -> None:
+        """Take over another registry's in-process verifications of the same caches.
+
+        Only when both read the same roster, manifests and cache root, so a
+        snapshot is remembered under the pin it was verified against. Each one
+        is still checked against its files' stat identity when it is used.
+        """
+
+        if (
+            other.config == self.config
+            and other.manifest_root == self.manifest_root
+            and other.cache_root == self.cache_root
+        ):
+            self._verified.update(other._verified)
 
     def verify_local_copy(
         self, identity: ChairIdentity, copied: Mapping[str, str]
@@ -517,7 +537,7 @@ class ChairRegistry:
         return resolve_local_path(identity, model_root)
 
     def _ensure_huggingface(
-        self, identity: ChairIdentity, manifest: DigestManifest
+        self, identity: ChairIdentity, manifest: DigestManifest, *, evict: bool = True
     ) -> VerifiedSnapshot:
         if self.cache_root is None:
             raise UnresolvedChairRefusal(
@@ -538,10 +558,15 @@ class ChairRegistry:
         with _cache_write(identity.role, f"cache root {digests_root} cannot be created"):
             digests_root.mkdir(parents=True, exist_ok=True)
         with _digest_lock(digests_root, digest, identity.role):
-            return self._ensure_digest_locked(identity, manifest, digests_root)
+            return self._ensure_digest_locked(identity, manifest, digests_root, evict=evict)
 
     def _ensure_digest_locked(
-        self, identity: ChairIdentity, manifest: DigestManifest, digests_root: Path
+        self,
+        identity: ChairIdentity,
+        manifest: DigestManifest,
+        digests_root: Path,
+        *,
+        evict: bool,
     ) -> VerifiedSnapshot:
         digest = identity.digest_manifest
         target = digests_root / digest
@@ -570,13 +595,14 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(
                 identity.role, "no fetcher is configured for a missing pinned snapshot"
             )
-        self._make_room(identity, manifest, digests_root)
+        self._make_room(identity, manifest, digests_root, evict=evict)
         with _cache_write(identity.role, "no candidate cache directory could be created"):
             candidate = Path(tempfile.mkdtemp(prefix=f".{digest}.candidate-", dir=digests_root))
+        carried: list[str] = []
         try:
             if target.exists():
                 with _cache_write(identity.role, "the existing cache could not be carried over"):
-                    _copy_existing_files(target, candidate, manifest)
+                    _carry_existing_files(target, candidate, manifest, carried)
             try:
                 ledger = self.fetcher.fetch(identity, candidate, missing)
             except ChairRefusal:
@@ -601,8 +627,12 @@ class ChairRegistry:
                 manifest_digest=verified.manifest_digest,
                 verification=_copy_verification(ledger, copied, manifest),
             )
-        except Exception:
+        except Exception as error:
             if candidate.exists():
+                unreturned = _return_carried_files(candidate, target, carried)
+                if unreturned:
+                    _name_kept_files(error, candidate, target, unreturned)
+                    raise
                 shutil.rmtree(candidate, ignore_errors=True)
             raise
 
@@ -621,12 +651,18 @@ class ChairRegistry:
         }
 
     def _make_room(
-        self, identity: ChairIdentity, manifest: DigestManifest, digests_root: Path
+        self,
+        identity: ChairIdentity,
+        manifest: DigestManifest,
+        digests_root: Path,
+        *,
+        evict: bool = True,
     ) -> None:
         """Clear abandoned work and evict least recently used caches until the pin fits.
 
         Only caches of configured digests are touched, and only while no other
         ensure holds that digest's lock; the caller holds the incoming digest's.
+        Without `evict`, no finished cache is removed.
         """
 
         own = identity.digest_manifest
@@ -645,7 +681,7 @@ class ChairRegistry:
         required = sum(row.size for row in manifest.rows)
         with _cache_write(identity.role, "container-local free space could not be measured"):
             free = shutil.disk_usage(digests_root).free
-        if free < required:
+        if free < required and evict:
             with _cache_write(identity.role, "other chair caches could not be evicted"):
                 candidates = sorted(
                     (
@@ -822,14 +858,71 @@ def _write_cache_descriptor(target: Path, descriptor: dict[str, object]) -> None
     (target / CACHE_DESCRIPTOR).write_bytes(canonical_bytes(descriptor))
 
 
-def _copy_existing_files(target: Path, candidate: Path, manifest: DigestManifest) -> None:
+def _carry_existing_files(
+    target: Path, candidate: Path, manifest: DigestManifest, carried: list[str]
+) -> None:
+    """Move the files an incomplete cache still holds into the candidate, appending each to `carried`.
+
+    A rename on the one cache filesystem, not a copy: the bytes are not read or
+    written again here (verification still hashes every carried file). Moving
+    rather than linking leaves each inode with one name, so removing the old
+    cache after promotion does not touch the stat identity just verified.
+    """
+
     for row in manifest.rows:
         source = target / row.path
         if not source.exists():
             continue
         destination = candidate / row.path
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
+        os.replace(source, destination)
+        carried.append(row.path)
+
+
+def _return_carried_files(candidate: Path, target: Path, carried: list[str]) -> list[str]:
+    """Put carried files back into a cache whose repair failed; return those that would not go.
+
+    The caller keeps the candidate when any file stays in it, so no cache byte is
+    deleted unseen.
+    """
+
+    if not target.is_dir():
+        return list(carried)
+    unreturned: list[str] = []
+    for relative in carried:
+        try:
+            (target / relative).parent.mkdir(parents=True, exist_ok=True)
+            os.replace(candidate / relative, target / relative)
+        except OSError:
+            unreturned.append(relative)
+    return unreturned
+
+
+def _name_kept_files(
+    error: Exception, candidate: Path, target: Path, unreturned: list[str]
+) -> None:
+    """Add to the repair's own error where the cache files it could not put back now are.
+
+    The candidate is renamed out of the `.candidate-` namespace, so the next fill's
+    clean-up of abandoned work does not delete those files.
+    """
+
+    kept = candidate.with_name(candidate.name.replace(".candidate-", ".unreturned-", 1))
+    try:
+        os.replace(candidate, kept)
+    except OSError:
+        kept = candidate
+    note = (
+        f"; {len(unreturned)} file(s) of the existing cache could not be put back into "
+        f"{target} (first: {unreturned[0]!r}) and are kept in {kept}: move them back into "
+        "the cache, or delete that directory to let the next fill copy them again"
+    )
+    if isinstance(error, ChairRefusal):
+        # The same refusal, its text extended, so its code and cause stay as raised.
+        error.difference += note
+        error.args = (f"chair {error.chair!r}: {error.difference}",)
+    else:
+        error.add_note(note.lstrip("; "))
 
 
 def _promote(candidate: Path, target: Path) -> None:
