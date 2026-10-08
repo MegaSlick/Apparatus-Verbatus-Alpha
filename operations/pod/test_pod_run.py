@@ -482,6 +482,27 @@ def _armed(
     return _guard_deadline(ws, value, heartbeat=clock.now().timestamp() - 30)
 
 
+def test_the_backup_list_names_only_trees_that_exist_and_is_cleared(tmp_path: Path) -> None:
+    local, volume = tmp_path / "local" / "run", tmp_path / "volume" / "run"
+    listed = tmp_path / "backup-pod123"
+    backup = pod_run.BackupList(listed, (local, volume, local))
+    backup.refresh()
+    assert lines(listed) == []
+    volume.mkdir(parents=True)
+    backup.refresh()
+    assert lines(listed) == [str(volume)]
+    local.mkdir(parents=True)
+    backup.refresh()
+    assert lines(listed) == [str(local), str(volume)]
+    backup.clear()
+    assert not listed.exists()
+    pod_run.BackupList(None, (local,)).refresh()
+
+
+def lines(path: Path) -> list[str]:
+    return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+
 def _guard_deadline(ws: Workspace, value: int, *, heartbeat: float | None = None) -> Path:
     guard = ws.volume / pod_run.POD_GUARD_DIRECTORY
     guard.mkdir()
@@ -512,9 +533,12 @@ def test_hand_run_uses_local_disk_and_requires_the_final_volume_sync(
         stored = ws.volume / "runs" / "first-real-run"
         stored.mkdir(parents=True)
         (stored / "record.json").write_bytes(b"older")
-    recorded = RecordedRunner(returncode=0)
+    recorded = RecordedRunner(returncode=0, ticks=1)
+    backup = deadline.with_name("backup-pod123")
+    listed_at_start: list[str] = []
 
     def runner(*args, **kwargs):  # type: ignore[no-untyped-def]
+        listed_at_start.extend(lines(backup))
         run.mkdir(parents=True, exist_ok=True)
         (run / "record.json").write_bytes(b"new")
         return recorded(*args, **kwargs)
@@ -539,11 +563,16 @@ def test_hand_run_uses_local_disk_and_requires_the_final_volume_sync(
         assert (ws.volume / "runs" / "first-real-run" / "record.json").read_bytes() == b"older"
         assert deadline.read_text(encoding="ascii") != f"{int(clock.now().timestamp())}\n"
         assert not deadline.with_name("released-pod123").exists()
+        # The guard's hour-idle backup keeps both trees, from the start (the volume's run
+        # was copied to local disk before the bootstrap) to past the failed sync.
+        assert listed_at_start == lines(backup) == [str(run), str(stored)]
     else:
         assert code == EXIT_COMPLETE
         assert report["state"] == "complete"
         assert (ws.volume / "runs" / "first-real-run" / "record.json").read_bytes() == b"new"
         assert deadline.with_name("released-pod123").exists()
+        assert listed_at_start == [], "only trees that exist are listed"
+        assert not backup.exists(), "a clean finish leaves nothing to back up"
 
 
 @pytest.mark.parametrize(

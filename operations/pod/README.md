@@ -622,8 +622,11 @@ notice if a warning had gone out. The latest step is in `alert-<pod id>` as one 
 `<epoch> <step> <detail>`. The steps are `POD_GUARD_WARN_SECONDS`,
 `POD_GUARD_URGENT_SECONDS`, `POD_GUARD_URGENT_REPEAT`, `POD_GUARD_BACKUP_SECONDS` and
 `POD_GUARD_DELETE_SECONDS` in the guard's environment; `POD_GUARD_DELETE=on` is
-`ladder_delete`, which the start command passes in. Nothing writes `backup-<pod id>` yet,
-so today the backup step finds nothing to back up.
+`ladder_delete`, which the start command passes in. `pod_run` writes `backup-<pod id>`
+from its start: the run's local tree and its volume run directory, each listed once it
+exists, and removes the file once the run has finished and its final sync, if any, went
+through. A run whose final sync failed leaves it, so the guard copies the local tree that
+never reached the volume.
 
 `pod_run` touches the keep-alive file on every liveness tick on which its progress check
 (`-progress.json` above) says `ok`, and writes the check's verdict to

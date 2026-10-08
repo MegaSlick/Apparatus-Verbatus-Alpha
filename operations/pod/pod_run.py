@@ -1374,6 +1374,44 @@ def _guard_file(volume: Path, pod_id: str | None, name: str) -> Path | None:
     return guard / f"{name}-{pod_id}"
 
 
+class BackupList:
+    """`backup-<pod id>`: the run's trees, one absolute path per line, that the guard
+    copies to the volume when the pod has been idle for an hour.
+
+    Only trees that exist are listed, since the guard reads a listed path that is
+    missing as a lost run and refuses to delete the pod. Best effort: a failed write
+    says so and never stops the run.
+    """
+
+    def __init__(self, path: Path | None, trees: Sequence[Path]) -> None:
+        self._path = path
+        self._trees = tuple(dict.fromkeys(tree.absolute() for tree in trees))
+        self._listed: tuple[Path, ...] | None = None
+
+    def refresh(self) -> None:
+        if self._path is None:
+            return
+        present = tuple(tree for tree in self._trees if tree.is_dir())
+        if present == self._listed:
+            return
+        try:
+            atomic_write(self._path, "".join(f"{tree}\n" for tree in present).encode())
+            self._listed = present
+        except OSError as error:
+            print(f"pod_run could not write the guard's backup list: {error}", file=sys.stderr)
+
+    def clear(self) -> None:
+        """At a clean finish every record is on the volume, so nothing is left to back up."""
+
+        if self._path is None:
+            return
+        try:
+            self._path.unlink(missing_ok=True)
+            self._listed = None
+        except OSError as error:
+            print(f"pod_run could not remove the guard's backup list: {error}", file=sys.stderr)
+
+
 def _guard_keepalive(volume: Path, pod_id: str | None) -> Callable[[], None]:
     """Touch this pod's guard keep-alive file, so a running orchestrator counts as work.
 
@@ -1990,6 +2028,11 @@ def main(
         "started_at": started_at,
     }
     _write_run_report(plan, {**base, "state": "bootstrapping", "exit_code": None})
+    backup = BackupList(
+        _guard_file(plan.bootstrap.volume_mount_path, pod_id, "backup"),
+        (plan.run_root / plan.run_id, plan.volume_run_root / plan.run_id),
+    )
+    backup.refresh()
 
     report = bootstrap_main.run_bootstrap(
         bootstrap_plan, now=now, actions_factory=actions_factory, environment=environment
@@ -2006,6 +2049,7 @@ def main(
                 "finished_at": _stamp(now()),
             },
         )
+        backup.clear()
         return EXIT_REFUSED
     if not report.green:
         _write_run_report(
@@ -2018,6 +2062,7 @@ def main(
                 "finished_at": _stamp(now()),
             },
         )
+        backup.clear()
         return EXIT_BOOTSTRAP_RED
     try:
         placement_tier, serving_config_inputs = _placement_tier(report)
@@ -2069,6 +2114,7 @@ def main(
             },
         )
         print(f"pod_run refused: {refusal}", file=sys.stderr)
+        backup.clear()
         return EXIT_REFUSED
 
     stop_record = Path(stop_directory.name) / "stop.json"
@@ -2115,6 +2161,7 @@ def main(
         journal(pid, alive)
         if not alive:
             return
+        backup.refresh()
         current = sample.refresh()
         try:
             deadline_watch.tick()
@@ -2307,6 +2354,8 @@ def main(
         final = {**final, "systemic": systemic, "systemic_notification": notice}
         print(f"pod_run {plan.run_id}: {systemic}; {notice}")
     _write_run_report(plan, final)
+    if sync_failure is None:
+        backup.clear()
     if plan.no_hold:
         if sync_failure is not None:
             print(
