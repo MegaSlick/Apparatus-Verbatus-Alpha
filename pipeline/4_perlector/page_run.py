@@ -1327,16 +1327,43 @@ def _joins_early(state: _PagePass, page: _Page) -> bool:
     )
 
 
+def _deadline_admits(state: _PagePass, sends: int) -> bool:
+    """Whether the reading deadline holds the chair's start, if still due, and `sends`
+    more calls at the planned rate; always, with no deadline."""
+    deadline = state.run.args.reading_deadline
+    if deadline is None:
+        return True
+    needed = _startup_left(state) + sends * planned_seconds_per_page(state.run.page_max_tokens)
+    return (deadline - datetime.now(timezone.utc)).total_seconds() >= needed
+
+
 def _first_and_early_reask_jobs(state: _PagePass, prepared: list[_Page], joined: set[str]):
     """Every page's first reading in page order, each re-ask joining as soon as it is planned.
 
     A page's re-ask is planned by its first reading's finish, so it is drawn only
     after that reading is published, before the next first reading is drawn. The
-    window still finishes jobs strictly in the order drawn. A re-ask planned after
-    the last first reading was drawn, or one `_joins_early` keeps back, is left for
-    the re-ask window; `joined` names the pages whose re-ask was drawn here.
+    window still finishes jobs strictly in the order drawn. A re-ask that would be
+    sent joins only when the reading deadline holds it together with every call
+    this window has still to finish: each first reading not yet finished and each
+    re-ask already joined. A re-ask planned after the last first reading was
+    drawn, one `_joins_early` keeps back, or one the deadline does not hold here is
+    left for the re-ask window, which judges it against the deadline as before;
+    `joined` names the pages whose re-ask was drawn here.
     """
     seen = 0
+    # The re-asks this window sends whose replies are not yet finished.
+    reasks_out: set[str] = set()
+
+    def calls_left() -> int:
+        firsts = sum(
+            1 for page in prepared if not page.first_finished and _sends(state, page, page.first)
+        )
+        return firsts + len(reasks_out)
+
+    def joins(page: _Page) -> bool:
+        if page.reask is None or not _joins_early(state, page):
+            return False
+        return not _sends(state, page, page.reask) or _deadline_admits(state, calls_left() + 1)
 
     def planned_since():
         nonlocal seen
@@ -1344,13 +1371,19 @@ def _first_and_early_reask_jobs(state: _PagePass, prepared: list[_Page], joined:
         while seen < len(prepared) and prepared[seen].first_finished:
             page = prepared[seen]
             seen += 1
-            if page.reask is not None and _joins_early(state, page):
+            if joins(page):
                 joined.add(page.page_id)
-                yield _job(state, page, page.reask, partial(_finish_reask, state, page))
+                if _sends(state, page, page.reask):
+                    reasks_out.add(page.page_id)
+                yield _job(state, page, page.reask, partial(finish_reask, page))
 
     def finish_first(page: _Page, result) -> None:
         _finish(state, page, result)
         page.first_finished = True
+
+    def finish_reask(page: _Page, result) -> None:
+        reasks_out.discard(page.page_id)
+        _finish_reask(state, page, result)
 
     for page in prepared:
         yield from planned_since()
