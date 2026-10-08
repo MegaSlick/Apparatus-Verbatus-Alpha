@@ -793,10 +793,60 @@ console). Container disk at least 120 GB (`models.BIG_CARD_CONTAINER_DISK_GB`). 
 network volume mounted at exactly `/workspace/private`. Serving is sequential, so one card
 serves every chair in turn.
 
+### Set up the Mac (free)
+
+The Mac needs macOS 13 (Ventura) or later, Intel or Apple silicon: the PDF library
+(pypdfium2) ships wheels only for macOS 13 and later (`sw_vers -productVersion; uname -m`).
+git needs the Xcode Command Line Tools (`xcode-select --install`). Their `python3` is too
+old for this repository, so run Python only as `uv run …` or `.venv/bin/python …`; uv
+builds `.venv` on the interpreter `.python-version` names. uv must be exactly the version
+`pyproject.toml` requires (`[tool.uv] required-version`, 0.12.1 today; `uv self update
+0.12.1` moves an older one). From a fresh clone:
+
+```sh
+curl -LsSf https://astral.sh/uv/0.12.1/install.sh | sh
+git clone https://github.com/MegaSlick/Apparatus-Verbatus-Alpha
+cd Apparatus-Verbatus-Alpha
+uv sync --frozen --group test --group audit
+sh .githooks/install.sh
+sh .githooks/check-static.sh
+source .venv/bin/activate          # once per Terminal window; puts `verbatus` on PATH
+verbatus spend show
+```
+
+`runpodctl` 2.x (`brew install runpod/runpodctl/runpodctl`; `runpodctl version`) needs the
+account's API key, and `upload` and `fetch-run` need the RunPod S3 keys. They go in the
+shell only, never in a file here:
+
+```sh
+read -rs RUNPOD_API_KEY; export RUNPOD_API_KEY
+read -rs RUNPOD_S3_ACCESS_KEY; export RUNPOD_S3_ACCESS_KEY
+read -rs RUNPOD_S3_SECRET_KEY; export RUNPOD_S3_SECRET_KEY
+runpodctl gpu list
+```
+
+`runpodctl config --apiKey <key>` instead stores the key in `~/.runpod/config.toml`,
+outside the repository, but also leaves it in the shell's history; prefer the variable.
+
 ### Before renting (free)
 
-1. The page images are on the volume: `verbatus upload --network-volume DATACENTER:VOLUME_ID`
-   wrote `submission/` and `submission-manifest.json` at the volume root.
+1. The page images are on the volume. Seal and send them from `private/` (clear Finder's
+   `.DS_Store` files first: the Door refuses them):
+
+   ```sh
+   verbatus --state-dir private/verbatus-state upload --source private/<pages> \
+     --manifest-out private/<pages>-manifest.json
+   verbatus upload --source private/<pages> --sealed-manifest private/<pages>-manifest.json \
+     --network-volume DATACENTER:VOLUME_ID
+   ```
+
+   The first seals the folder and copies it to a local folder only, which a local
+   `verbatus --state-dir private/verbatus-state run` can check at the Door for free
+   (`operations/operator/README.md`, "`run`, `export` and holds"); the second writes
+   `submission/` and `submission-manifest.json` at the volume root. A second sealed set on
+   the same volume needs its own `--prefix` (`--prefix spreads` writes `spreads/` and
+   `spreads-manifest.json`). Prepared spreads go with their triage documents
+   (`operations/operator/README.md`, "Sending prepared scans to a pod").
 2. **Prove the S3 path home.** With the two storage-key variables `upload --network-volume`
    uses set in the laptop shell, run
 
@@ -843,7 +893,7 @@ the pod at the hard maximum (3 h from creation) even if the guard never started.
 The image must carry CUDA 13.0: on a Blackwell card FlashInfer compiles its sampling
 kernel at the first engine start and needs `nvcc` 12.9 or newer. A `cu1281` image fails
 every vLLM chair with `FlashInfer requires GPUs with sm75 or higher` (observed
-2026-10-06; LIVE_READINESS.md step 6). The `cu1300` image booted on a PRO 6000 with
+2026-10-06). The `cu1300` image booted on a PRO 6000 with
 `nvcc` 13.0 and needed nothing by hand (2026-10-07).
 `runpodctl pod get <pod id>` shows the SSH details. The `runpodctl` lines here need a
 current CLI: v1.14.3 has no `pod` subcommand. The RunPod API's pod create takes the same
@@ -936,6 +986,17 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   every chair's weights onto the volume during the paid bootstrap.
 - Add `--perlector-protocol-config <path in the repository>` to choose the Perlector's
   protocol; omitted, the orchestrator's default.
+- **Another prefix.** For a set uploaded with `--prefix spreads`, use
+  `--submission-folder $V/spreads --submission-manifest $V/spreads-manifest.json`. For
+  prepared spreads, also name their triage documents:
+  `--triage-decision-manifest $V/<prefix>-triage-decision-manifest.json
+  --triage-producer-recipe $V/<prefix>-triage-producer-recipe.json`; the Door then cuts
+  each page from its original as `prepare` decided.
+- **Two cards.** The split runs the same run id, submission and `--store-root` on both:
+  the witness pod adds `--models small` before `--` (Door through Attestatores, on a 24 GB
+  card with `--container-disk-in-gb 100`), and the big pod adds `--from perlector --to
+  coniector` ([`pod_run.py`](#pod_runpy-running-the-pipeline-on-a-pod)). Recensor onward
+  runs off the GPU, on the Mac or a CPU pod, from the fetched tree.
 - The file names carry the run id so a second run on the same volume cannot overwrite
   them. A gated Hugging Face model needs its token in the environment and
   `--keep-env HF_TOKEN` in the bootstrap half, never on the command line.
@@ -949,6 +1010,21 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   the lead approves more time, write the new deadline file before the old one passes.
 
 ### Watching it
+
+From the Mac, `verbatus watch` reads copies of the report files; it fetches nothing, so
+copy fresh ones in a loop over the pod's direct SSH port (the `ssh.runpod.io` proxy cannot
+carry `scp`):
+
+```sh
+mkdir -p ~/verbatus-watch
+while :; do
+  scp -q -P <RUNPOD_TCP_PORT_22> "root@<RUNPOD_PUBLIC_IP>:/workspace/private/pod-run-report-<run id>{.json,-liveness.json,-timings.json,-estimate.json,-progress.json}" ~/verbatus-watch/
+  verbatus watch --run-id <run id> --receipts ~/verbatus-watch
+  sleep 60
+done
+```
+
+`operations/operator/README.md` ("`watch`") says what each line means. On the pod:
 
 ```sh
 cat $V/pod-run-report-$RUN.json          # state: bootstrapping, running, then the outcome
@@ -1011,7 +1087,14 @@ verbatus fetch-run --run-id <run id> --into <local root> \
 ```
 
 There is no launch receipt on this route, so each key is named. A run that held (not
-`--no-hold`) also has `pod-run-report-<run id>-hold.json`.
+`--no-hold`) also has `pod-run-report-<run id>-hold.json`. Then read, export and back it
+up on the laptop (`operations/operator/README.md`):
+
+```sh
+verbatus review --run-root <local root> --run-id <run id>
+verbatus export --run-id <run id> --run-root <local root>
+verbatus backup --run-root <local root> --run-id <run id> --mac-directory <synced folder>
+```
 
 ## The pod CLI
 
