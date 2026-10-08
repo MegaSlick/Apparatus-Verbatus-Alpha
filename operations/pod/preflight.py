@@ -5,8 +5,11 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import threading
+import time
 import tomllib
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -734,6 +737,17 @@ with eviction, once the smoke has finished.
 """
 
 
+# How long the next chair's fill may run before preflight calls it stuck: three
+# times what its snapshot takes at the 13.6 GB/min one copy pass was measured at
+# (review 01), never less than a quarter of an hour.
+PREFETCH_BYTES_PER_SECOND = 13.6e9 / 60 / 3
+PREFETCH_MINIMUM_SECONDS = 15 * 60
+
+
+class PrefetchTimeout(RuntimeError):
+    """The background fill of a chair's cache did not finish by its deadline."""
+
+
 class _CacheLookahead:
     """Verify the next chair's cache on one background thread while the card smokes.
 
@@ -747,22 +761,37 @@ class _CacheLookahead:
         verify: Callable[[ChairIdentity], dict[str, object]],
         prefetch: CachePrefetcher | None,
         order: list[ChairIdentity],
+        *,
+        snapshot_bytes: Callable[[ChairIdentity], int] = lambda _identity: 0,
+        bytes_per_second: float = PREFETCH_BYTES_PER_SECOND,
+        minimum_seconds: float = PREFETCH_MINIMUM_SECONDS,
     ) -> None:
         self._verify = verify
         self._prefetch = prefetch
         self._order = order
-        self._pending: dict[str, Future[dict[str, object]]] = {}
-        self._executor = (
-            ThreadPoolExecutor(max_workers=1, thread_name_prefix="cache-lookahead")
-            if prefetch is not None
-            else None
-        )
+        self._snapshot_bytes = snapshot_bytes
+        self._bytes_per_second = bytes_per_second
+        self._minimum_seconds = minimum_seconds
+        # Each pending prefetch, and the monotonic time it must be done by.
+        self._pending: dict[str, tuple[Future[dict[str, object]], float]] = {}
+        # Set once a prefetch overran: its thread cannot be stopped, so nothing
+        # more is prefetched and nothing waits for it again.
+        self._expired = False
 
     def verify(self, identity: ChairIdentity) -> dict[str, object]:
-        future = self._pending.pop(identity.role, None)
-        if future is not None:
+        pending = self._pending.pop(identity.role, None)
+        if pending is not None:
+            future, deadline = pending
             try:
-                return future.result()
+                return future.result(timeout=max(0.0, deadline - time.monotonic()))
+            except FutureTimeout as expired:
+                # A running prefetch cannot be cancelled: its thread is left to
+                # finish or hang on its own, and this chair counts as not filled.
+                self._expired = True
+                raise PrefetchTimeout(
+                    f"chair {identity.role}'s cache fill beside the previous smoke did not "
+                    "finish by its deadline; a copy or a store read has stalled"
+                ) from expired
             except DiskSpaceRefusal:
                 pass  # no room without evicting; verified below, where evicting is safe
         return self._verify(identity)
@@ -770,7 +799,7 @@ class _CacheLookahead:
     def start_next(self, identity: ChairIdentity) -> None:
         """Begin verifying the chair after `identity`, if there is one."""
 
-        if self._executor is None or self._prefetch is None:
+        if self._prefetch is None or self._expired:
             return
         roles = [chair.role for chair in self._order]
         if identity.role not in roles:
@@ -780,11 +809,44 @@ class _CacheLookahead:
             return
         following = self._order[position]
         if following.role not in self._pending:
-            self._pending[following.role] = self._executor.submit(self._prefetch, following)
+            try:
+                size = self._snapshot_bytes(following)
+            except Exception:
+                size = 0
+            deadline = time.monotonic() + max(self._minimum_seconds, size / self._bytes_per_second)
+            self._pending[following.role] = (self._run(self._prefetch, following), deadline)
+
+    @staticmethod
+    def _run(prefetch: CachePrefetcher, identity: ChairIdentity) -> Future[dict[str, object]]:
+        """Start one prefetch on a daemon thread, so a hung one cannot hold up exit."""
+
+        future: Future[dict[str, object]] = Future()
+        future.set_running_or_notify_cancel()
+
+        def work() -> None:
+            try:
+                future.set_result(prefetch(identity))
+            except BaseException as error:  # handed to `verify`, as the call would raise it
+                future.set_exception(error)
+
+        threading.Thread(target=work, name="cache-lookahead", daemon=True).start()
+        return future
 
     def close(self) -> None:
-        if self._executor is not None:
-            self._executor.shutdown(wait=True, cancel_futures=True)
+        """Let a prefetch nobody collected finish, unless one has already overrun.
+
+        After an overrun nothing waits again: the stuck thread is left behind, so
+        preflight still returns its report.
+        """
+
+        for future, deadline in self._pending.values():
+            if self._expired:
+                break
+            try:
+                future.result(timeout=max(0.0, deadline - time.monotonic()))
+            except Exception:
+                continue
+        self._pending.clear()
 
 
 SubprocessChecker = Callable[
@@ -967,8 +1029,12 @@ class PreflightRunner:
         subprocess_checker: SubprocessChecker = check_subprocess_environment,
         chair_fixtures: dict[str, str | Path] | None = None,
         cache_prefetcher: CachePrefetcher | None = None,
+        prefetch_bytes_per_second: float = PREFETCH_BYTES_PER_SECOND,
+        prefetch_minimum_seconds: float = PREFETCH_MINIMUM_SECONDS,
     ) -> None:
         self.models = models
+        self.prefetch_bytes_per_second = prefetch_bytes_per_second
+        self.prefetch_minimum_seconds = prefetch_minimum_seconds
         # Fills the next chair's cache while the current one smokes; None to
         # verify each chair only when its turn comes.
         self.cache_prefetcher = cache_prefetcher
@@ -1049,6 +1115,11 @@ class PreflightRunner:
                 if role in serving_profiles
                 and not isinstance(serving_profiles[role], UnsupportedProfile)
             ],
+            snapshot_bytes=lambda identity: sum(
+                row.size for row in self.cache_verifier.manifest(identity).rows
+            ),
+            bytes_per_second=self.prefetch_bytes_per_second,
+            minimum_seconds=self.prefetch_minimum_seconds,
         )
         try:
             self._run_chairs(
@@ -1431,6 +1502,17 @@ class PreflightRunner:
                 if self._lookahead is not None
                 else self.cache_verifier.verify(identity)
             )
+        except PrefetchTimeout as expired:
+            issues.append(
+                PreflightIssue(
+                    "cache-prefetch-timeout",
+                    f"{expired}.",
+                    "Check the model volume and the container disk (a hung network mount, "
+                    "a full disk), then run preflight again; the chair was not filled.",
+                    identity.role,
+                )
+            )
+            return None
         except Exception as initial_error:
             issues.append(
                 PreflightIssue(

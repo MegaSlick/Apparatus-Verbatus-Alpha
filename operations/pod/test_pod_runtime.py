@@ -6827,6 +6827,53 @@ def test_a_prefetch_without_room_is_verified_again_after_the_smoke() -> None:
         assert log.events.index(f"smoke {before}") < log.events.index(f"verify {after}")
 
 
+def test_a_prefetch_that_never_finishes_is_a_named_issue_and_the_report_still_returns() -> None:
+    never = threading.Event()
+    prefetched: list[str] = []
+
+    def prefetch(identity):  # type: ignore[no-untyped-def]
+        prefetched.append(identity.role)
+        never.wait(timeout=30)
+        return {"manifest_digest": identity.digest_manifest}
+
+    class Sized(FakeCache):
+        def manifest(self, identity):  # type: ignore[no-untyped-def]
+            raise CacheMismatch("no manifest in this fake")
+
+    cache = Sized()
+    root = Path(__file__).resolve().parents[2]
+    runner = PreflightRunner(
+        load_models_toml(root / "config/models.toml"),
+        load_placement_table(root / "config/pod_placement.toml"),
+        cache,
+        FakeSmoke(),
+        root / "proof/fixtures/synthetic-two-page-v0/page-1.png",
+        cache_prefetcher=prefetch,
+        prefetch_minimum_seconds=0.2,
+    )
+    began = time.monotonic()
+    try:
+        report = runner.run(_EIGHTY)
+    finally:
+        never.set()
+
+    assert time.monotonic() - began < 10, "the report returns without waiting on the stuck fill"
+    assert report.color == "red"
+    stuck = prefetched[0]
+    timeouts = [issue for issue in report.issues if issue.code == "cache-prefetch-timeout"]
+    assert [
+        (issue.chair, "did not finish by its deadline" in issue.message) for issue in timeouts
+    ] == [(stuck, True)]
+    assert stuck not in {receipt["chair"] for receipt in report.cache_receipts}
+    assert prefetched == [stuck], "nothing more is prefetched once one has overrun"
+    later = [
+        r["chair"] for r in report.cache_receipts if r["chair"] != report.cache_receipts[0]["chair"]
+    ]
+    assert all(cache.verify_calls.get(chair) == 1 for chair in later), (
+        "the chairs after it are verified in the foreground"
+    )
+
+
 def test_a_prefetch_that_refuses_is_that_chair_s_cache_issue() -> None:
     def prefetch(identity):  # type: ignore[no-untyped-def]
         if identity.role == "attestator_2":
