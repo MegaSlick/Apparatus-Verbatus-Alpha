@@ -25,6 +25,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import tomllib
 from argparse import Namespace
 from dataclasses import dataclass, field
@@ -497,6 +498,64 @@ def test_the_backup_list_names_only_trees_that_exist_and_is_cleared(tmp_path: Pa
     backup.clear()
     assert not listed.exists()
     pod_run.BackupList(None, (local,)).refresh()
+
+
+def test_the_bootstrap_and_the_final_sync_tell_the_guard_they_are_working(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither has a liveness tick; a thread writes the progress line through both, and
+    the line is gone once the run ends."""
+    ws = _prepared(tmp_path)
+    local_root = tmp_path / "local-runs"
+    monkeypatch.setattr(pod_run, "DEFAULT_LOCAL_RUNS_DIRECTORY", local_root)
+    _policy(ws, roots=[str(ws.volume), str(local_root)])
+    clock = Clock()
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, int(clock.now().timestamp()) + 3600)
+    progress = deadline.with_name("progress-pod123")
+    seen: dict[str, list[str]] = {}
+
+    class Watched(PreflightedActions):
+        def run_preflight(self) -> dict[str, object]:
+            # The thread writes once a second here (--interval-seconds 1).
+            give_up = time.monotonic() + 10
+            while "preflight" not in progress.read_text(encoding="ascii"):
+                assert time.monotonic() < give_up, progress.read_text(encoding="ascii")
+                time.sleep(0.05)
+            seen["bootstrap"] = progress.read_text(encoding="ascii").split(" ", 4)
+            return super().run_preflight()
+
+    real_sync = pod_run.RunTreeSync.sync
+
+    def watched_sync(self):  # type: ignore[no-untyped-def]
+        seen["sync"] = progress.read_text(encoding="ascii").split(" ", 4)
+        return real_sync(self)
+
+    monkeypatch.setattr(pod_run.RunTreeSync, "sync", watched_sync)
+    run = local_root / "first-real-run"
+    recorded = RecordedRunner(returncode=0)
+
+    def runner(*args, **kwargs):  # type: ignore[no-untyped-def]
+        run.mkdir(parents=True, exist_ok=True)
+        (run / "record.json").write_bytes(b"new")
+        return recorded(*args, **kwargs)
+
+    argv = _run_argv(ws, extra=("--no-hold",))
+    index = argv.index("--run-root")
+    del argv[index : index + 2]
+    code = main(
+        argv,
+        environ=_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: Watched(),
+        runner=runner,
+    )
+
+    assert code == EXIT_COMPLETE
+    assert seen["bootstrap"][2:4] == ["bootstrapping", "bootstrap"]
+    assert seen["bootstrap"][4].startswith("preflight for ")
+    assert seen["sync"][2:4] == ["ok", "final-sync"]
+    assert not progress.exists()
 
 
 def lines(path: Path) -> list[str]:

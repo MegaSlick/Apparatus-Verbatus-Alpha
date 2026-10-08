@@ -632,8 +632,13 @@ never reached the volume.
 (`-progress.json` above) says `ok`, and writes the check's verdict to
 `progress-<pod id>` as one line, `<epoch now> <epoch last ok> <ok|slow|stalled> <check>
 <detail>`. CPU time is not progress, because an idle model server in the run's process
-tree uses a little on every tick, and its engine log keeps growing too. `pod_run` sends no
-notice of its own about a slow or stalled run; the guard's ladder does. An unreadable CPU counter never
+tree uses a little on every tick, and its engine log keeps growing too. The bootstrap and
+the final volume sync have no liveness tick, so a thread writes the line through both:
+`bootstrapping bootstrap <step> for <seconds>` and `ok final-sync`. Either counts as work
+for an hour per step; after that the line stops moving its last `ok` (the sync's says
+`stalled`) and the ladder climbs. When the run ends `pod_run` removes the line and the
+counters decide again. `pod_run` sends no notice of its own about a slow or stalled run;
+the guard's ladder does. An unreadable CPU counter never
 deletes a pod. If it cannot be read from the start, or stays unreadable, the guard counts
 the pod as busy, keeps trying the read every minute, and sends one notice ("CPU idle
 detection unavailable on <pod>; held until its deadline <time>", or "counted as busy, and

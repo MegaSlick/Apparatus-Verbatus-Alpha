@@ -1403,13 +1403,17 @@ class BackupList:
     def clear(self) -> None:
         """At a clean finish every record is on the volume, so nothing is left to back up."""
 
-        if self._path is None:
-            return
-        try:
-            self._path.unlink(missing_ok=True)
-            self._listed = None
-        except OSError as error:
-            print(f"pod_run could not remove the guard's backup list: {error}", file=sys.stderr)
+        _remove(self._path)
+        self._listed = None
+
+
+def _remove(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        print(f"pod_run could not remove {path}: {error}", file=sys.stderr)
 
 
 def _guard_keepalive(volume: Path, pod_id: str | None) -> Callable[[], None]:
@@ -2033,10 +2037,25 @@ def main(
         (plan.run_root / plan.run_id, plan.volume_run_root / plan.run_id),
     )
     backup.refresh()
+    progress_line = _guard_file(plan.bootstrap.volume_mount_path, pod_id, "progress")
 
-    report = bootstrap_main.run_bootstrap(
-        bootstrap_plan, now=now, actions_factory=actions_factory, environment=environment
-    )
+    # The bootstrap has no liveness tick: a thread tells the guard which step runs, so a
+    # long hash or model load at low CPU is not read as an idle pod.
+    journal_path = bootstrap_plan.journal
+    with progress_watch.ProgressTicker(
+        progress_line,
+        status="bootstrapping",
+        late_status="bootstrapping",
+        check="bootstrap",
+        step=lambda: (
+            "running" if journal_path is None else progress_watch.bootstrap_step(journal_path)
+        ),
+        now=now,
+        interval_seconds=plan.interval_seconds,
+    ):
+        report = bootstrap_main.run_bootstrap(
+            bootstrap_plan, now=now, actions_factory=actions_factory, environment=environment
+        )
     if isinstance(report, bootstrap_main.BootstrapRefused):
         _write_run_report(
             plan,
@@ -2050,6 +2069,7 @@ def main(
             },
         )
         backup.clear()
+        _remove(progress_line)
         return EXIT_REFUSED
     if not report.green:
         _write_run_report(
@@ -2063,6 +2083,7 @@ def main(
             },
         )
         backup.clear()
+        _remove(progress_line)
         return EXIT_BOOTSTRAP_RED
     try:
         placement_tier, serving_config_inputs = _placement_tier(report)
@@ -2115,6 +2136,7 @@ def main(
         )
         print(f"pod_run refused: {refusal}", file=sys.stderr)
         backup.clear()
+        _remove(progress_line)
         return EXIT_REFUSED
 
     stop_record = Path(stop_directory.name) / "stop.json"
@@ -2220,7 +2242,16 @@ def main(
     sync_failure = None
     if plan.local_run:
         try:
-            RunTreeSync(plan.run_root / plan.run_id, plan.volume_run_root / plan.run_id).sync()
+            with progress_watch.ProgressTicker(
+                progress_line,
+                status="ok",
+                late_status="stalled",
+                check="final-sync",
+                step=lambda: "final volume sync",
+                now=now,
+                interval_seconds=plan.interval_seconds,
+            ):
+                RunTreeSync(plan.run_root / plan.run_id, plan.volume_run_root / plan.run_id).sync()
         except (OSError, RunTreeSyncError) as error:
             sync_failure = str(error)
             exit_code = EXIT_FAILED
@@ -2354,6 +2385,8 @@ def main(
         final = {**final, "systemic": systemic, "systemic_notification": notice}
         print(f"pod_run {plan.run_id}: {systemic}; {notice}")
     _write_run_report(plan, final)
+    # The run is over: the guard's counters decide again.
+    _remove(progress_line)
     if sync_failure is None:
         backup.clear()
     if plan.no_hold:
