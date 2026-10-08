@@ -95,7 +95,12 @@ differ from an unbatched one in low-order bits.
   and the serving receipt's seed. `sampling` records that row as sent and as the
   pinned engine applies it.
 - `capacity` is the admitted `{capacity, answer_reserve, max_tokens}`; the call sends
-  that `max_tokens` with thinking off.
+  that `max_tokens` with thinking off. It is the sealed page cap, the context the
+  prompt leaves, or the answer reserve times the sealed `answer_headroom_bp` but at
+  least `answer_floor_tokens` (`config/decoding.toml`), whichever is smallest, and
+  `answer_reserve` records the headroom and floor it was bounded by. A reply that
+  reaches it stops on `length` and is held as cut off. A re-ask is bounded the same
+  way from its own reserve.
 - `provenance` names the chair, its resolved identity and revision, the serving
   receipt of what answered (the live receipt, never a declared one beside a real
   reading), the witness regime and the adapter revision.
@@ -266,7 +271,15 @@ The re-read is also accounted against the page's evidence like any reading.
   does not use. The chair is stopped before the stage seal, so a failed shutdown is
   never reported over a sealed stage.
 - `--perlector-concurrency` keeps up to that many calls in flight (ceiling and default:
-  the served row's `max_num_seqs`); records are still written strictly in page order.
+  the served row's `max_num_seqs`); records are still written strictly in the order
+  the calls were drawn. A page's re-ask is drawn as soon as its first reading is
+  published, ahead of the next page's first reading, so the card is not idle
+  between first readings and re-asks. It joins only when the reading deadline holds
+  it with every call the window has still to finish (each unfinished first reading
+  and each re-ask already joined); otherwise it waits for the re-ask phase, which
+  checks the deadline as before. A re-ask an interrupted pass already sent also
+  waits until every first reading is finished, so that no reply of this pass is out
+  when its earlier send is judged (see Resume).
   An error finishes every page already sent before it stops the pass; an interrupt
   first records every reply that has arrived.
 - `--reading-deadline` refuses to start, or to send another page, when the chair's

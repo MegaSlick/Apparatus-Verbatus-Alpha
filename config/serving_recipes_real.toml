@@ -258,7 +258,10 @@ dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 8192
-max_num_seqs = 4
+# 8 record crops at once: 8 x ~0.47 GiB of KV at 8,192 tokens is 3.8 GiB, against
+# 0.88 x 80 GB - 15.5 GiB of weights = 50 GiB left on the tier's smallest card.
+# The KV pool, not this cap, is what a card fills; the stage's window is this value.
+max_num_seqs = 8
 max_num_batched_tokens = 2048
 gpu_memory_utilization = "0.88"
 min_pixels = 3136
@@ -345,7 +348,10 @@ dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 max_model_len = 32768
-max_num_seqs = 4
+# 8 pages at once: 8 x ~1.1 GiB of KV at 32,768 tokens (header note) is 8.8 GiB,
+# against 0.88 x 80 GB - 7 GiB of weights = 58 GiB left on the tier's smallest
+# card. The stage's window is this value.
+max_num_seqs = 8
 max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.88"
 min_pixels = 401408
@@ -450,11 +456,12 @@ seed = 0
 required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
 # The Perlector's own launch shape: the same model on the same card, served as
 # its makers serve it, asked text only by the Coniector. Its requests are text,
-# far shorter than a whole-page reading, so four sequences fit wherever the
-# Perlector's four do (the KV arithmetic in the Perlector row above), and the
-# Coniector keeps that many calls in flight.
+# far shorter than a whole-page reading: eight of them at even 16,384 tokens hold
+# 8 x 1 GiB of KV (64 KiB a token, the Perlector row's arithmetic), half of what
+# the Perlector's four full-length pages take, so eight fit wherever those four
+# do. The Coniector keeps that many calls in flight.
 max_model_len = 65536
-max_num_seqs = 4
+max_num_seqs = 8
 max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.88"
 min_pixels = 65536

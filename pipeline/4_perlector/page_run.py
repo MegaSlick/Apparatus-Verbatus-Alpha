@@ -233,6 +233,8 @@ class _Page:
     plans: list[dict[str, Any]] = field(default_factory=list)
     # The page's operator re-reads in attempt order: those already read, then a new one.
     rereads: list[_Request] = field(default_factory=list)
+    # Whether its first reading has been finished: published or adopted, its re-ask planned.
+    first_finished: bool = False
     # The entry plans an operator re-read is planned against: the first reading's
     # with any the re-ask added, then the last operator re-read's that read anything
     # and kept every act it replaced.
@@ -381,7 +383,7 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
         state,
         request,
         lambda row: page_path.request_capacity(
-            row, run.chair.serving_recipe, feed, request.text, run.page_max_tokens
+            row, run.chair.serving_recipe, feed, request.text, run.page_generation
         ),
     )
     return page
@@ -651,7 +653,7 @@ def _prepare_reread(
         state,
         request,
         lambda row: page_path.request_capacity(
-            row, run.chair.serving_recipe, page.feed, request.text, run.page_max_tokens
+            row, run.chair.serving_recipe, page.feed, request.text, run.page_generation
         ),
     )
     return request
@@ -724,7 +726,7 @@ def _prepare_reask(
         state,
         request,
         lambda row: page_path.reask_request_capacity(
-            row, run.chair.serving_recipe, page.feed, shown, request.text, run.page_max_tokens
+            row, run.chair.serving_recipe, page.feed, shown, request.text, run.page_generation
         ),
     )
     return request
@@ -1312,14 +1314,92 @@ def _prepare_all(state: _PagePass, pages: dict[int, str]) -> list[_Page]:
     return prepared
 
 
+def _joins_early(state: _PagePass, page: _Page) -> bool:
+    """Whether a page's planned re-ask may join the first readings' window.
+
+    Only one no earlier pass sent: deciding whether a retained reply could answer an
+    earlier send (`_left_to_send`) reads every reply the run holds, and while this
+    pass's own calls are out their replies would count as unaccounted for. Those
+    re-asks wait for the first readings to finish and are judged then, as before.
+    """
+    return not state.live or not live_calls.sent_records(
+        state.context, page.page_id, page_key(page.ordinal), REASK_READING, PAGE_REASK_PASS
+    )
+
+
+def _deadline_admits(state: _PagePass, sends: int) -> bool:
+    """Whether the reading deadline holds the chair's start, if still due, and `sends`
+    more calls at the planned rate; always, with no deadline."""
+    deadline = state.run.args.reading_deadline
+    if deadline is None:
+        return True
+    needed = _startup_left(state) + sends * planned_seconds_per_page(state.run.page_max_tokens)
+    return (deadline - datetime.now(timezone.utc)).total_seconds() >= needed
+
+
+def _first_and_early_reask_jobs(state: _PagePass, prepared: list[_Page], joined: set[str]):
+    """Every page's first reading in page order, each re-ask joining as soon as it is planned.
+
+    A page's re-ask is planned by its first reading's finish, so it is drawn only
+    after that reading is published, before the next first reading is drawn. The
+    window still finishes jobs strictly in the order drawn. A re-ask that would be
+    sent joins only when the reading deadline holds it together with every call
+    this window has still to finish: each first reading not yet finished and each
+    re-ask already joined. A re-ask planned after the last first reading was
+    drawn, one `_joins_early` keeps back, or one the deadline does not hold here is
+    left for the re-ask window, which judges it against the deadline as before;
+    `joined` names the pages whose re-ask was drawn here.
+    """
+    seen = 0
+    # The re-asks this window sends whose replies are not yet finished.
+    reasks_out: set[str] = set()
+
+    def calls_left() -> int:
+        firsts = sum(
+            1 for page in prepared if not page.first_finished and _sends(state, page, page.first)
+        )
+        return firsts + len(reasks_out)
+
+    def joins(page: _Page) -> bool:
+        if page.reask is None or not _joins_early(state, page):
+            return False
+        return not _sends(state, page, page.reask) or _deadline_admits(state, calls_left() + 1)
+
+    def planned_since():
+        nonlocal seen
+        # Pages are finished in page order, so their re-asks are planned in it too.
+        while seen < len(prepared) and prepared[seen].first_finished:
+            page = prepared[seen]
+            seen += 1
+            if joins(page):
+                joined.add(page.page_id)
+                if _sends(state, page, page.reask):
+                    reasks_out.add(page.page_id)
+                yield _job(state, page, page.reask, partial(finish_reask, page))
+
+    def finish_first(page: _Page, result) -> None:
+        _finish(state, page, result)
+        page.first_finished = True
+
+    def finish_reask(page: _Page, result) -> None:
+        reasks_out.discard(page.page_id)
+        _finish_reask(state, page, result)
+
+    for page in prepared:
+        yield from planned_since()
+        yield _job(state, page, page.first, partial(finish_first, page))
+    yield from planned_since()
+
+
 def read_the_pages(run) -> None:
     """Read every sealed Exemplar page once, re-ask the planned ones, then read again
     each page a person asked for.
 
-    Each phase publishes its pages in page order, so a re-asked page's
-    attempt-2 records follow every page's first reading. Nothing reads the
-    records in the order written: each names its inputs, and every reader
-    orders by page.
+    A page's re-ask joins the first readings' window as soon as its first reading is
+    published, so the card is not left idle between the phases; a page's attempt-2
+    records always follow its own first reading, and may come before later pages'
+    first readings. Nothing reads the records in the order written: each names its
+    inputs, and every reader orders by page.
     """
     context = run.context
     pages = exemplar_page_ids(context)
@@ -1341,11 +1421,11 @@ def read_the_pages(run) -> None:
     )
     prepared = _prepare_all(state, pages)
     print(f"perlector: reading {len(pages)} pages whole", file=sys.stderr)
+    joined: set[str] = set()
     live_calls.in_order_window(
-        run.concurrency,
-        (_job(state, page, page.first, partial(_finish, state, page)) for page in prepared),
+        run.concurrency, _first_and_early_reask_jobs(state, prepared, joined)
     )
-    planned = [page for page in prepared if page.reask is not None]
+    planned = [page for page in prepared if page.reask is not None and page.page_id not in joined]
     if planned:
         if state.live:
             left = _left_to_send(state, planned, _reask_requests)

@@ -92,7 +92,7 @@ from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
     load_decoding_policy,
-    perlector_page_max_tokens,
+    perlector_page_generation,
     verify_call_sampling,
 )
 from common.durability import is_unpublished_blob_temporary
@@ -3083,11 +3083,11 @@ def _verify_capacity(context, what, chair, payload, feed, text, shown) -> None:
         policy, _digest = sealed_decoding_policy(context)
         expected: Any = (
             page_path.request_capacity(
-                row, chair.serving_recipe, feed, text, perlector_page_max_tokens(policy)
+                row, chair.serving_recipe, feed, text, perlector_page_generation(policy)
             )
             if shown is None
             else page_path.reask_request_capacity(
-                row, chair.serving_recipe, feed, shown, text, perlector_page_max_tokens(policy)
+                row, chair.serving_recipe, feed, shown, text, perlector_page_generation(policy)
             )
         )
         problems = None

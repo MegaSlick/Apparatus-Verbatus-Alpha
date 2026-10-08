@@ -1460,6 +1460,114 @@ def test_a_live_chair_uses_its_sequence_width_and_seals_pages_in_order(monkeypat
     assert sealed == [(page, f"answer-{page}") for page in range(1, 6)]
 
 
+def _record_reader_pass(monkeypatch, *, width: int, records: dict[int, int], read, seal):
+    """Run the live pass over one record reader with the record call and the seal replaced."""
+    chair = "attestator_2"
+    resolved = SimpleNamespace(witness_adapter="dai.v1")
+    context = SimpleNamespace(registry=SimpleNamespace(config={}, resolve=lambda _chair: resolved))
+    client = SimpleNamespace(
+        handle=SimpleNamespace(
+            profile=SimpleNamespace(max_num_seqs=width), receipt_reference={"receipt": "r"}
+        )
+    )
+    units = {
+        page: [{"subject_id": f"p{page}-r{index}"} for index in range(count)]
+        for page, count in records.items()
+    }
+
+    class ResidentChair:
+        def __enter__(self):
+            return client
+
+        def __exit__(self, *_args):
+            return None
+
+    def record(_context, *, region, **_kwargs):
+        return region, {"crop": region["subject_id"]}, read(region["subject_id"])
+
+    def publish(_context, *, page_ordinal, served, **_kwargs):
+        assert threading.current_thread() is threading.main_thread()
+        seal(page_ordinal, [attempt for _region, _presented, attempt in served])
+
+    monkeypatch.setattr(attestatores, "page_witness_roster", lambda _context: [chair])
+    monkeypatch.setattr(attestatores, "reads_detector_records", lambda _resolved: True)
+    monkeypatch.setattr(attestatores, "detector_units_by_page", lambda _context: (units, {}))
+    monkeypatch.setattr(attestatores, "_sealed_page_testimonia", lambda *_args: {})
+    monkeypatch.setattr(attestatores.witness_adapters, "framing_for", lambda *_args: None)
+    monkeypatch.setattr(
+        attestatores.witness_adapters, "resolve_runnable_adapter", lambda _name: object()
+    )
+    monkeypatch.setattr(attestatores, "_read_detector_record", record)
+    monkeypatch.setattr(attestatores, "publish_detector_page_testimonium", publish)
+    pages = [(page, f"p{page}") for page in sorted(records)]
+    return attestatores.live_pass(
+        context,
+        pages,
+        1,
+        page_ids=dict(pages),
+        serving_factory=lambda *_args: ResidentChair(),
+        tier=TIER,
+    )
+
+
+def test_a_record_readers_records_share_the_window_and_each_page_seals_once_whole(monkeypatch):
+    active = most = 0
+    lock = threading.Lock()
+    # Page 1's three records and page 2's first are all out together before any returns.
+    four_out = threading.Barrier(4)
+    sealed: list[tuple[int, list[str]]] = []
+
+    def read(subject):
+        nonlocal active, most
+        with lock:
+            active += 1
+            most = max(most, active)
+        if subject in {"p1-r0", "p1-r1", "p1-r2", "p2-r0"}:
+            four_out.wait(timeout=5)
+        with lock:
+            active -= 1
+        return f"answer-{subject}"
+
+    recorded = _record_reader_pass(
+        monkeypatch,
+        width=4,
+        records={1: 3, 2: 2, 3: 1},
+        read=read,
+        seal=lambda page, attempts: sealed.append((page, attempts)),
+    )
+
+    assert recorded == 3
+    assert most == 4
+    assert sealed == [
+        (1, ["answer-p1-r0", "answer-p1-r1", "answer-p1-r2"]),
+        (2, ["answer-p2-r0", "answer-p2-r1"]),
+        (3, ["answer-p3-r0"]),
+    ]
+
+
+def test_a_record_reader_interrupted_inside_a_page_seals_only_whole_pages(monkeypatch):
+    sealed: list[int] = []
+    page_one_sealed = threading.Event()
+
+    def read(subject):
+        if subject == "p2-r1":
+            # Page 2's second record never answers before the pass is interrupted.
+            page_one_sealed.wait(timeout=5)
+            raise KeyboardInterrupt
+        return f"answer-{subject}"
+
+    def seal(page, _attempts):
+        sealed.append(page)
+        page_one_sealed.set()
+
+    with pytest.raises(KeyboardInterrupt):
+        _record_reader_pass(monkeypatch, width=3, records={1: 2, 2: 2}, read=read, seal=seal)
+
+    # Page 1 is sealed whole; page 2 has a record unanswered, so nothing of it is sealed
+    # and a resume asks both its records again.
+    assert sealed == [1]
+
+
 def test_a_live_roster_reads_each_chair_once_through_its_own_scope(live_run, tmp_path):
     run_root = fresh_tree(live_run, tmp_path)
     world = LiveWorld(live_run, tmp_path)

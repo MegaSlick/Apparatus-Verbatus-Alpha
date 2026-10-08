@@ -1402,7 +1402,8 @@ def test_a_real_act_set_aside_is_published_but_its_page_holds(live_tree, tmp_pat
         {"id": "B2", "reason": "not an entry"},
     ]
     # a2's lines are left outside every entry, so the page is re-asked about them;
-    # the re-ask sets them aside too.
+    # the re-ask sets them aside too. It is sent as soon as page 1's first reading is
+    # published, before page 2's.
     reask = _scripted(
         {
             "acts": [],
@@ -1410,7 +1411,7 @@ def test_a_real_act_set_aside_is_published_but_its_page_holds(live_tree, tmp_pat
         }
     )
     _endpoint, exit_code = _read_pages(
-        live_tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1], reask
+        live_tree, tmp_path, monkeypatch, _scripted(answer), reask, _answers()[1]
     )
     assert exit_code == 0
     reading = _records(root, "page-reading")[0]

@@ -35,6 +35,7 @@ from common import page_feed, page_prompt  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.decoding import (  # noqa: E402
     load_decoding_policy,
+    perlector_page_generation,
     perlector_page_max_tokens,
 )
 from common.imaging import encode_grayscale_png_deterministic  # noqa: E402
@@ -187,13 +188,18 @@ def page_request(row: ServingProfile, feed: dict[str, Any]) -> dict[str, Any]:
         prompt_parts=page_prompt.prompt_parts("unproven-real-perlector", feed),
         template_digest=page_prompt.BUILDER_SHA256,
         answer_measure=feed["answer_measure"],
-        page_max_tokens=page_max_tokens(),
+        generation=page_generation(),
     )
 
 
 def page_max_tokens() -> int:
     policy, _ = load_decoding_policy(ROOT / "config" / "decoding.toml")
     return perlector_page_max_tokens(policy)
+
+
+def page_generation() -> dict[str, int]:
+    policy, _ = load_decoding_policy(ROOT / "config" / "decoding.toml")
+    return perlector_page_generation(policy)
 
 
 def page_fit_table(pages: list[dict[str, Any]]) -> dict[str, dict[str, int]]:
