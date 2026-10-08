@@ -280,7 +280,10 @@ The re-read is also accounted against the page's evidence like any reading.
   the launched row's `max_num_seqs`, the row's own or the run's `--capacity-plan` width); records are still written strictly in the order
   the calls were drawn. A page's re-ask is drawn as soon as its first reading is
   published, ahead of the next page's first reading, so the card is not idle
-  between first readings and re-asks; a re-ask an interrupted pass already sent
+  between first readings and re-asks. It joins only when the reading deadline holds
+  it with every call the window has still to finish (each unfinished first reading
+  and each re-ask already joined); otherwise it waits for the re-ask phase, which
+  checks the deadline as before. A re-ask an interrupted pass already sent also
   waits until every first reading is finished, so that no reply of this pass is out
   when its earlier send is judged (see Resume).
   An error finishes every page already sent before it stops the pass; an interrupt
