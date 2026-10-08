@@ -113,6 +113,7 @@ from .spend import (
     CHALLENGE_BYTES,
     CONFIRMATION_PREFIX,
     POD_BUDGET_ENVIRONMENT,
+    SPEND_SCHEMA,
     SpendAssessment,
     SpendPolicy,
     confirmation_phrase,
@@ -2827,6 +2828,7 @@ def test_guarded_create_seals_dead_man_facts_into_the_creation_request(tmp_path:
         "VERBATUS_SOFT_MAX_COST_USD": "1000.00",
         "VERBATUS_HARD_MAX_COST_USD": "1000.00",
     }
+    assert submitted.metadata["VERBATUS_POD_BUDGET"] == "on"
 
 
 def test_default_runtime_refuses_paid_create_without_an_approved_controller_harness(
@@ -6661,6 +6663,10 @@ def test_the_shipped_spend_policy_carries_the_reviewed_ceilings() -> None:
     assert policy.shutdown_poll_interval_seconds == 30
     assert policy.shutdown_deadline_seconds == 900
     assert policy.billing_cutoff_margin_seconds == 3600
+    # The lead's switches: the budget and the guard's idle delete are both off.
+    assert policy.pod_budget == "off"
+    assert policy.ladder_delete == "off"
+    assert policy.budget_environment() == {"VERBATUS_POD_BUDGET": "off"}
 
 
 @pytest.mark.parametrize(
@@ -6946,6 +6952,11 @@ def test_an_unconfigured_spend_policy_refuses_both_paid_paths_end_to_end(tmp_pat
         ({"hard_lifetime_seconds": "18000"}, "hard lifetime cannot exceed the soft maximum"),
         ({"max_estimated_metered_cost_usd": '"2.50"'}, "cannot exceed the soft maximum cost"),
         ({"schema": '"pod-spend.v3"'}, "soft and hard pod budget maximums"),
+        ({"schema": '"pod-spend.v4"'}, "pod_budget and ladder_delete"),
+        ({"pod_budget": None}, "pod_budget must be 'on' or 'off'"),
+        ({"pod_budget": '"yes"'}, "pod_budget must be 'on' or 'off'"),
+        ({"ladder_delete": "true"}, "ladder_delete must be 'on' or 'off'"),
+        ({"soft_max_seconds": None}, "missing a required ceiling"),
     ],
 )
 def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
@@ -6954,7 +6965,7 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
     from .spend import load_spend_policy
 
     base: dict[str, str | None] = {
-        "schema": '"pod-spend.v4"',
+        "schema": f'"{SPEND_SCHEMA}"',
         "state": '"configured"',
         "currency": '"USD"',
         "max_hourly_usd": '"1.00"',
@@ -6970,6 +6981,8 @@ def test_spend_policy_loader_refuses_each_widening_or_malformed_file(
         "hard_max_seconds": "21600",
         "soft_max_cost_usd": '"2.00"',
         "hard_max_cost_usd": '"3.00"',
+        "pod_budget": '"on"',
+        "ladder_delete": '"off"',
     }
     base.update(mutation)
     path = tmp_path / "spend.toml"
@@ -7074,8 +7087,66 @@ def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceilin
     detail = str(refusal.value)
     assert "retired" in detail
     assert "account_balance_alert_usd" in detail
-    assert "pod-spend.v4" in detail
+    assert SPEND_SCHEMA in detail
     assert "missing a required ceiling" not in detail
+
+
+def _budget_off_policy_text(**mutation: str | None) -> str:
+    fields: dict[str, str | None] = {
+        "schema": f'"{SPEND_SCHEMA}"',
+        "state": '"configured"',
+        "currency": '"USD"',
+        "max_hourly_usd": '"1.00"',
+        "max_estimated_metered_cost_usd": '"2.00"',
+        "account_balance_floor_usd": '"50.00"',
+        "account_balance_alert_usd": '"75.00"',
+        "hard_lifetime_seconds": "3600",
+        "laptop_heartbeat_timeout_seconds": "30",
+        "shutdown_poll_interval_seconds": "1",
+        "shutdown_deadline_seconds": "5",
+        "billing_cutoff_margin_seconds": "3600",
+        "pod_budget": '"off"',
+        "ladder_delete": '"off"',
+    }
+    fields.update(mutation)
+    return "\n".join(f"{key} = {value}" for key, value in fields.items() if value is not None)
+
+
+def test_a_budget_off_policy_needs_no_maximums_and_seals_only_the_switch(tmp_path: Path) -> None:
+    from .spend import load_spend_policy
+
+    path = tmp_path / "spend.toml"
+    path.write_text(_budget_off_policy_text() + "\n", encoding="utf-8")
+
+    policy = load_spend_policy(path)
+
+    assert policy.configured and not policy.budget_on
+    assert policy.soft_max_seconds is None and policy.hard_max_cost_usd is None
+    assert policy.budget_environment() == {"VERBATUS_POD_BUDGET": "off"}
+
+
+def test_a_budget_off_policy_keeps_its_maximums_inert(tmp_path: Path) -> None:
+    """Off, the maximums may stay in the file out of order with each other and the launch
+    ceilings, ready for the lead to turn the budget on; they are still checked as numbers."""
+    from .spend import load_spend_policy
+
+    inert = {
+        "soft_max_seconds": "1800",
+        "hard_max_seconds": "900",
+        "soft_max_cost_usd": '"1.00"',
+        "hard_max_cost_usd": '"0.50"',
+    }
+    path = tmp_path / "spend.toml"
+    path.write_text(_budget_off_policy_text(**inert) + "\n", encoding="utf-8")
+
+    policy = load_spend_policy(path)
+
+    assert policy.soft_max_seconds == 1800
+    assert policy.budget_environment() == {"VERBATUS_POD_BUDGET": "off"}
+
+    path.write_text(_budget_off_policy_text(soft_max_seconds="0") + "\n", encoding="utf-8")
+    with pytest.raises(SpendRefusal, match="soft maximum seconds must be a positive integer"):
+        load_spend_policy(path)
 
 
 def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path: Path) -> None:
@@ -7083,7 +7154,7 @@ def test_unconfigured_spend_policy_file_may_carry_only_schema_and_state(tmp_path
 
     path = tmp_path / "spend.toml"
     path.write_text(
-        'schema = "pod-spend.v4"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
+        f'schema = "{SPEND_SCHEMA}"\nstate = "unconfigured"\nmax_hourly_usd = "9.99"\n',
         encoding="utf-8",
     )
 

@@ -48,7 +48,12 @@ from operations.notify.client import NotifyOutcome
 
 from .durable import atomic_write, canonical_json
 from .models import POD_GUARD_DIRECTORY, POD_VOLUME_MOUNT_PATH, SpendRefusal
-from .spend import POD_BUDGET_ENVIRONMENT, SpendPolicy, load_spend_policy_bytes
+from .spend import (
+    POD_BUDGET_ENVIRONMENT,
+    POD_BUDGET_SWITCH_ENVIRONMENT,
+    SpendPolicy,
+    load_spend_policy_bytes,
+)
 
 ESTIMATE_SCHEMA: Final = "pod-run-estimate.v1"
 RESULTS_HOME_MARGIN_SECONDS: Final = 20 * 60
@@ -62,6 +67,8 @@ can be off several times over; a notice it raised would use up the one notice
 for that deadline. Five pages over ten minutes smooths that and still warns
 hours ahead on a multi-hour stage."""
 NOTICE_ATTEMPTS: Final = 3
+BUDGET_OFF: Final = "budget off (lead's choice)"
+"""Why a pod has no budget when the spend policy's ``pod_budget`` is off."""
 """Sends tried for one crossing when the notification command reports it did not arrive."""
 
 
@@ -295,6 +302,8 @@ class Budget:
 
     @classmethod
     def from_policy(cls, policy: SpendPolicy) -> Budget:
+        if policy.configured and not policy.budget_on:
+            raise SpendRefusal(BUDGET_OFF)
         if (
             not policy.configured
             or policy.soft_max_seconds is None
@@ -337,8 +346,11 @@ def load_budget(path: Path) -> tuple[Budget | None, str | None, str | None]:
 def sealed_budget(environment: Mapping[str, str | None]) -> tuple[Budget | None, str | None]:
     """The budget a launch sealed into the pod's environment, or None and why not.
 
-    Each value is required: a budget sealed in part is not filled from elsewhere."""
+    Each value is required: a budget sealed in part is not filled from elsewhere. A
+    budget sealed off is none."""
 
+    if environment.get(POD_BUDGET_SWITCH_ENVIRONMENT) == "off":
+        return None, BUDGET_OFF
     values = {field: environment.get(name) for field, name in POD_BUDGET_ENVIRONMENT.items()}
     missing = [POD_BUDGET_ENVIRONMENT[field] for field, value in values.items() if value is None]
     if missing:

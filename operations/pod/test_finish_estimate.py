@@ -11,6 +11,7 @@ import json
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -39,13 +40,14 @@ from .finish_estimate import (
     pod_created_at,
     sealed_budget,
 )
+from .models import SpendRefusal
 from .notify_hooks import NO_GUARD_TOPIC, _unsafe_reason
-from .spend import load_spend_policy
+from .spend import POD_BUDGET_ENVIRONMENT, SpendPolicy, load_spend_policy
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_SPEND = ROOT / "config" / "spend.toml"
 T0 = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
-# The budget `config/spend.toml` ships.
+# The budget `config/spend.toml` ships, for when the lead turns it on.
 SHIPPED_BUDGET = Budget(
     soft_max_seconds=7_200,
     hard_max_seconds=10_800,
@@ -64,23 +66,31 @@ BUDGET = Budget(
 # --- the spend policy's soft and hard maximums ---------------------------------------
 
 
-def test_the_shipped_policy_carries_the_default_budget() -> None:
+def _shipped_policy_with_budget_on() -> SpendPolicy:
+    return replace(load_spend_policy(SHIPPED_SPEND), pod_budget="on")
+
+
+def test_the_shipped_policy_has_the_budget_off_and_carries_the_default_budget() -> None:
     policy = load_spend_policy(SHIPPED_SPEND)
 
-    assert Budget.from_policy(policy) == SHIPPED_BUDGET
+    with pytest.raises(SpendRefusal, match="budget off"):
+        Budget.from_policy(policy)
+    assert sealed_budget(policy.budget_environment()) == (None, "budget off (lead's choice)")
+    on = _shipped_policy_with_budget_on()
+    assert Budget.from_policy(on) == SHIPPED_BUDGET
     # The guard is armed from the launch ceilings, at the soft maximum, never past it.
-    assert policy.hard_lifetime_seconds == policy.soft_max_seconds
-    assert policy.max_estimated_metered_cost_usd == policy.soft_max_cost_usd
+    assert on.hard_lifetime_seconds == on.soft_max_seconds
+    assert on.max_estimated_metered_cost_usd == on.soft_max_cost_usd
 
 
 @pytest.mark.parametrize("bad", ["abc", "0", "-1", "NaN", "Infinity", " 2", "2 ", "1_0", " 1_0 "])
 def test_a_sealed_budget_value_that_is_not_a_positive_number_leaves_the_budget_unknown(
     bad: str,
 ) -> None:
-    sealed = load_spend_policy(SHIPPED_SPEND).budget_environment()
+    sealed = _shipped_policy_with_budget_on().budget_environment()
     assert sealed_budget(sealed) == (SHIPPED_BUDGET, None)
 
-    for name in sealed:
+    for name in POD_BUDGET_ENVIRONMENT.values():
         assert sealed_budget({**sealed, name: bad}) == (None, f"unusable {name}"), bad
 
 
@@ -94,7 +104,7 @@ def test_a_sealed_budget_value_that_is_not_a_positive_number_leaves_the_budget_u
 def test_a_sealed_soft_maximum_above_its_hard_maximum_leaves_the_budget_unknown(
     soft: str, hard: str, value: str
 ) -> None:
-    sealed = load_spend_policy(SHIPPED_SPEND).budget_environment()
+    sealed = _shipped_policy_with_budget_on().budget_environment()
 
     assert sealed_budget({**sealed, soft: value}) == (None, f"unusable {soft} above {hard}")
 

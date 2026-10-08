@@ -7,7 +7,7 @@ from decimal import Decimal
 
 from .models import BILLING_CUTOFF_MARGIN_ENV, PodCreateRequest
 from .shutdown import VerifiedShutdown
-from .spend import SpendPolicy
+from .spend import SPEND_SCHEMA, SpendPolicy
 
 # An explicit no-op child: these requests are never booted, so the bootstrap
 # argv only has to satisfy the request's shape checks.
@@ -97,6 +97,8 @@ def configured_policy(**overrides: object) -> SpendPolicy:
         "hard_max_seconds": 86_400,
         "soft_max_cost_usd": Decimal("1000.00"),
         "hard_max_cost_usd": Decimal("1000.00"),
+        "pod_budget": "on",
+        "ladder_delete": "off",
     }
     values.update(overrides)
     return SpendPolicy(**values)  # type: ignore[arg-type]
@@ -107,7 +109,7 @@ def configured_spend_toml(
 ) -> str:
     return "\n".join(
         (
-            'schema = "pod-spend.v4"',
+            f'schema = "{SPEND_SCHEMA}"',
             'state = "configured"',
             'currency = "USD"',
             'max_hourly_usd = "1.00"',
@@ -123,6 +125,8 @@ def configured_spend_toml(
             "hard_max_seconds = 86400",
             'soft_max_cost_usd = "1000.00"',
             'hard_max_cost_usd = "1000.00"',
+            'pod_budget = "on"',
+            'ladder_delete = "off"',
             "",
         )
     )

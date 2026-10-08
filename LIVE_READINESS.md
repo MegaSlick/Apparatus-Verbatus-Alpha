@@ -13,7 +13,10 @@ been checked against the real tool or account. Nothing here is permission to spe
 the RunPod console). The guard drill (step 6) uses the cheapest card, `NVIDIA RTX A5000`,
 $0.27/h.
 
-**The pod budget** is the lead's, in `config/spend.toml` (`pod-spend.v4`): at most
+**The pod budget** is the lead's, in `config/spend.toml` (`pod-spend.v5`). It is
+committed off (`pod_budget = "off"`): a pod then has no guard deadline or backstop unless
+started with a number of hours, and the guard's idle ladder warns without deleting unless
+`ladder_delete = "on"` (`operations/pod/README.md`). With the budget on: at most
 $2.10/h for pod plus volume, a soft maximum of 2 h or $5.00 and a hard maximum of 3 h or
 $7.00, whichever comes first. A pod's window is 2 h: the guard's deadline sits at the
 soft maximum. Going past it is an extension only the lead makes, and the hard maximum

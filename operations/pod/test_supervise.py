@@ -31,7 +31,7 @@ from .lease import LeaseStore, PodLease
 from .models import PodCreateRequest, ProviderFailure
 from .notify_bridge import NotifyOutcome
 from .shutdown import VerifiedShutdown
-from .spend import SpendPolicy
+from .spend import SPEND_SCHEMA, SpendPolicy
 
 START = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
 LEASE_ID = "a" * 32
@@ -1044,7 +1044,7 @@ def test_a_final_record_write_failure_on_the_refusal_path_is_named_not_raised(
 
     spend_path = tmp_path / "spend.toml"
     spend_path.write_text(
-        "\n".join(['schema = "pod-spend.v4"', 'state = "unconfigured"', ""]),
+        "\n".join([f'schema = "{SPEND_SCHEMA}"', 'state = "unconfigured"', ""]),
         encoding="utf-8",
     )
 

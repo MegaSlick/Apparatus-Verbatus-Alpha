@@ -1526,6 +1526,15 @@ class PacedRunner(RecordedRunner):
         )
 
 
+# The shipped spend policy with the lead's budget switched on.
+SHIPPED_SPEND_BUDGET_ON = (
+    (ROOT / "config" / "spend.toml")
+    .read_bytes()
+    .replace(b'pod_budget = "off"', b'pod_budget = "on"', 1)
+)
+assert b'pod_budget = "on"' in SHIPPED_SPEND_BUDGET_ON
+
+
 @pytest.mark.parametrize(
     ("flags", "rates", "hourly", "source"),
     [
@@ -1549,9 +1558,7 @@ def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
     source: str,
 ) -> None:
     ws = _prepared(tmp_path)
-    (ws.repository / "config" / "spend.toml").write_bytes(
-        (ROOT / "config" / "spend.toml").read_bytes()
-    )
+    (ws.repository / "config" / "spend.toml").write_bytes(SHIPPED_SPEND_BUDGET_ON)
     clock = Clock()
     _first_process(tmp_path, monkeypatch, "pod123")
     _guard_deadline(ws, int(clock.now().timestamp()) + 3600)
@@ -1591,7 +1598,7 @@ SEALED_BUDGET = {
     "VERBATUS_SOFT_MAX_COST_USD": "1.00",
     "VERBATUS_HARD_MAX_COST_USD": "1.50",
 }
-SHIPPED_SPEND_SHA256 = hashlib.sha256((ROOT / "config" / "spend.toml").read_bytes()).hexdigest()
+SHIPPED_SPEND_SHA256 = hashlib.sha256(SHIPPED_SPEND_BUDGET_ON).hexdigest()
 
 
 @pytest.mark.parametrize(
@@ -1626,9 +1633,7 @@ def test_the_deadline_notice_quotes_the_budget_that_armed_the_pod(
     laptop may not have launched with, is used only when nothing was sealed, and then
     named with its digest. A budget sealed in part is never filled from the checkout."""
     ws = _prepared(tmp_path)
-    (ws.repository / "config" / "spend.toml").write_bytes(
-        (ROOT / "config" / "spend.toml").read_bytes()
-    )
+    (ws.repository / "config" / "spend.toml").write_bytes(SHIPPED_SPEND_BUDGET_ON)
     clock = Clock()
     _first_process(tmp_path, monkeypatch, "pod123")
     created = int(clock.now().timestamp())
