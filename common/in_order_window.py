@@ -1,18 +1,25 @@
 """Keep a bounded window of calls in flight and finish their jobs in input order."""
 
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from typing import Any, Final
+
+# How many answered jobs, per slot of width, may wait behind an unanswered head before
+# no further job is drawn. It bounds the replies held in memory, not the engine's batch.
+HELD_PER_SLOT: Final = 4
 
 
 def in_order_window(width: int, jobs) -> list[Any]:
-    """Run jobs' calls with at most `width` jobs unfinished; finish every job in order here.
+    """Run jobs' calls with at most `width` in flight; finish every job in order here.
 
     A job is `(call, finish)`, and `call` is `None` for a job that only publishes. Jobs
-    are drawn lazily, so the next is prepared, and its deadline checked, only once fewer
-    than `width` are unfinished. `finish` runs on this thread, strictly in job order,
-    with what `call` returned (`None` without a call), so records are published in the
-    order a serial pass publishes them. Width 1 calls inline, with no thread.
+    are drawn lazily on this thread, so the next is prepared, and its deadline checked,
+    only once fewer than `width` calls are in flight and fewer than
+    `HELD_PER_SLOT * width` answered jobs wait behind an unanswered one. A slow call
+    therefore never stops later calls being sent. `finish` runs on this thread,
+    strictly in job order, with what `call` returned (`None` without a call), so
+    records are published in the order a serial pass publishes them. Width 1 calls
+    inline, with no thread.
 
     Every job drawn is finished: if drawing a job, a call or a finish raises, the jobs
     already drawn are still finished in order, so no reply is left without its record,
@@ -27,6 +34,7 @@ def in_order_window(width: int, jobs) -> list[Any]:
         for call, finish in jobs:
             finished.append(finish(call() if call is not None else None))
         return finished
+    held = HELD_PER_SLOT * width
     pool = ThreadPoolExecutor(max_workers=width)
     window: deque = deque()
 
@@ -34,13 +42,27 @@ def in_order_window(width: int, jobs) -> list[Any]:
         future, finish = window.popleft()
         finished.append(finish(future.result() if future is not None else None))
 
+    def out() -> list:
+        return [future for future, _ in window if future is not None and not future.done()]
+
     error: Exception | None = None
     try:
         try:
-            for call, finish in jobs:
-                window.append((pool.submit(call) if call is not None else None, finish))
-                while window and (len(window) == width or window[0][0] is None):
+            source = iter(jobs)
+            drawing = True
+            while drawing or window:
+                while window and (window[0][0] is None or window[0][0].done()):
                     finish_first()
+                pending = out()
+                if drawing and len(pending) < width and len(window) - len(pending) < held:
+                    try:
+                        call, finish = next(source)
+                    except StopIteration:
+                        drawing = False
+                        continue
+                    window.append((pool.submit(call) if call is not None else None, finish))
+                elif pending:
+                    wait(pending, return_when=FIRST_COMPLETED)
         except Exception as raised:
             error = raised
         while window:

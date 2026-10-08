@@ -36,6 +36,7 @@ from common.contracts.canonical import digest_bytes, self_hash
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.stages import ATTESTATORES, PERLECTOR
 from common.decoding import load_decoding_policy
+from common.in_order_window import HELD_PER_SLOT
 from common.page_path import distinct_refs
 from common.page_testimonia import validate_page_testimonium_record
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
@@ -866,26 +867,91 @@ def test_the_window_finishes_in_order_within_its_bound():
     assert most == 3
 
 
-def test_the_window_never_holds_more_than_width_unfinished_jobs():
-    unfinished = most = 0
+def test_the_window_never_has_more_than_width_calls_in_flight():
+    lock = threading.Lock()
+    in_flight = most = 0
     order: list[str] = []
 
+    def call() -> None:
+        nonlocal in_flight, most
+        with lock:
+            in_flight += 1
+            most = max(most, in_flight)
+        time.sleep(0.02)
+        with lock:
+            in_flight -= 1
+
     def jobs():
-        nonlocal unfinished, most
         for index in range(6):
-            unfinished += 1
-            most = max(most, unfinished)
-            call = None if index % 3 == 0 else partial(time.sleep, 0.02)
-            yield call, partial(finish, str(index))
+            yield (None if index % 3 == 0 else call), partial(finish, str(index))
 
     def finish(name: str, _result) -> None:
-        nonlocal unfinished
-        unfinished -= 1
         order.append(name)
 
     live_calls.in_order_window(2, jobs())
     assert most == 2
     assert order == [str(index) for index in range(6)]
+
+
+def test_a_slow_head_does_not_stop_later_jobs_being_sent():
+    """Answered jobs wait behind the head; the free slots keep sending."""
+    later_sent = threading.Event()
+    sent: list[int] = []
+    finished: list[int] = []
+    drawn_on: set[str] = set()
+
+    def call(index: int) -> int:
+        sent.append(index)
+        if index == 0:
+            assert later_sent.wait(timeout=5)
+        elif index == 4:
+            later_sent.set()
+        return index
+
+    def jobs():
+        for index in range(6):
+            drawn_on.add(threading.current_thread().name)
+            yield partial(call, index), finished.append
+
+    live_calls.in_order_window(2, jobs())
+    # Job 0 answers only once job 4 has been sent: a blocked window would time out.
+    assert later_sent.is_set()
+    assert sorted(sent) == list(range(6))
+    assert finished == list(range(6))
+    assert drawn_on == {threading.main_thread().name}
+
+
+def test_answered_jobs_held_behind_a_slow_head_are_bounded():
+    width = 2
+    release = threading.Event()
+    drawn = unfinished = most = 0
+
+    def call(index: int) -> int:
+        if index == 0:
+            assert release.wait(timeout=5)
+        return index
+
+    def jobs():
+        nonlocal drawn, unfinished, most
+        for index in range(40):
+            drawn += 1
+            unfinished += 1
+            most = max(most, unfinished)
+            yield partial(call, index), finish
+
+    def finish(_result) -> None:
+        nonlocal unfinished
+        unfinished -= 1
+
+    timer = threading.Timer(0.3, release.set)
+    timer.start()
+    try:
+        live_calls.in_order_window(width, jobs())
+    finally:
+        timer.cancel()
+    assert drawn == 40
+    assert most <= width + HELD_PER_SLOT * width
+    assert most > width
 
 
 def test_a_call_that_raises_re_raises_at_its_place_after_every_sent_job_is_finished():
