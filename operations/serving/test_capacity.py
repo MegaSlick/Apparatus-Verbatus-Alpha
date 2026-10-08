@@ -51,7 +51,8 @@ def _plan(vram_gib: int) -> CapacityPlan:
 
 # (row max_num_seqs, planned max_num_seqs) per chair, from the shipped rows' own
 # weights and KV figures with 4 GiB of engine overhead. DAI is attestator_2, Churro
-# attestator_3, the Qwen3.8-27B the Perlector and the reconstructor. Chandra
+# attestator_3, the Qwen3.8-27B the Perlector and the reconstructor, which shares the
+# Perlector's service and so always gets the Perlector's width. Chandra
 # (attestator_1) states no KV figure and is never planned.
 DERIVED = {
     24: {"attestator_2": (1, 4), "attestator_3": (1, 2)},
@@ -60,19 +61,19 @@ DERIVED = {
         "attestator_2": (8, 64),
         "attestator_3": (8, 54),
         "perlector": (4, 4),
-        "reconstructor": (8, 8),
+        "reconstructor": (4, 4),
     },
     96: {
         "attestator_2": (8, 64),
         "attestator_3": (8, 64),
         "perlector": (4, 7),
-        "reconstructor": (8, 8),
+        "reconstructor": (4, 7),
     },
     141: {
         "attestator_2": (8, 64),
         "attestator_3": (8, 64),
         "perlector": (4, 17),
-        "reconstructor": (8, 17),
+        "reconstructor": (4, 17),
     },
 }
 
@@ -220,3 +221,11 @@ def test_a_stage_sizes_its_window_from_the_launch_row(monkeypatch):
     )
     with pytest.raises(ContractError, match="capacity plan"):
         assembly.launch_row(context(other.to_argument()), perlector, tier)
+
+
+def test_the_shared_perlector_and_reconstructor_get_one_width_on_every_card():
+    """The reconstructor shares the Perlector's service, so the plan gives the pair one
+    width (from the Perlector's row) and the Coniector can take the service over."""
+    for vram_gib in (80, 96, 141):
+        chairs = _plan(vram_gib).chairs
+        assert chairs["reconstructor"].max_num_seqs == chairs["perlector"].max_num_seqs

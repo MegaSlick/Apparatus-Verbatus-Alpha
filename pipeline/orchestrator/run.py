@@ -414,8 +414,12 @@ def _require_absolute_caller_paths(args: argparse.Namespace) -> None:
             )
 
 
-def invoke(program: str, args: argparse.Namespace) -> int:
-    """Run one stage as a program and return its exit code."""
+def invoke(program: str, args: argparse.Namespace, *, coniector_next: bool = False) -> int:
+    """Run one stage as a program and return its exit code.
+
+    `coniector_next` tells the Perlector the Coniector runs right after it in this
+    invocation, so it may leave a chair the two share running for it.
+    """
     require_coherent_ingress_options(args)
     _require_absolute_caller_paths(args)
     command = [
@@ -501,6 +505,8 @@ def invoke(program: str, args: argparse.Namespace) -> int:
             (("--perlector-concurrency", getattr(args, "perlector_concurrency", None)),),
             omit_unset=True,
         )
+        if coniector_next:
+            command.append("--hand-off-to-coniector")
 
     # Streams are inherited, not buffered: stage output is unbounded, and a
     # partial Door's private refusal report must reach the operator's terminal.
@@ -530,12 +536,7 @@ def invoke(program: str, args: argparse.Namespace) -> int:
         spans = _serving_spans(args, program, started_at)
         print(
             f"run {args.run_id}: {stage_name} ended, exit {exit_code}, after "
-            f"{ended - started:.0f}s"
-            + "".join(
-                f"; chair {span['chair']} launched {span['started_at']}, ready "
-                f"{span['ready_at']} ({span['ready_seconds']}s)"
-                for span in spans or ()
-            ),
+            f"{ended - started:.0f}s" + "".join(_span_words(span) for span in spans or ()),
             flush=True,
         )
         # The invocations a reader most wants timed are the ones that went wrong.
@@ -552,6 +553,19 @@ def invoke(program: str, args: argparse.Namespace) -> int:
     if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED):
         raise ContractError(f"{program} exited {completed.returncode}")
     return completed.returncode
+
+
+def _span_words(span: dict[str, object]) -> str:
+    """One chair on a stage's end line: a model load, or a model taken over."""
+    if span.get("adopted_at"):
+        return (
+            f"; chair {span['chair']} adopted {span['adopted_at']} (no model load; the "
+            f"service was launched {span['started_at']})"
+        )
+    return (
+        f"; chair {span['chair']} launched {span['started_at']}, ready "
+        f"{span['ready_at']} ({span['ready_seconds']}s)"
+    )
 
 
 def _positive_int(value: str) -> int:
@@ -636,8 +650,12 @@ def _serving_spans(
                 continue
             launched = audit.get("started_at")
             ready = (audit.get("readiness") or {}).get("ready_at")
+            # A service taken over from the stage before keeps its launch moment; it is
+            # this invocation's from the moment it was taken over.
+            adopted_at = (audit.get("adoption") or {}).get("adopted_at")
+            moment = adopted_at if isinstance(adopted_at, str) else launched
             # Only this invocation's launches; an earlier pass's audits stay in the store.
-            if not isinstance(launched, str) or launched < started_at:
+            if not isinstance(moment, str) or moment < started_at:
                 continue
             spans.append(
                 {
@@ -645,6 +663,7 @@ def _serving_spans(
                     "launch_purpose": audit.get("launch_purpose"),
                     "started_at": launched,
                     "ready_at": ready,
+                    "adopted_at": adopted_at if isinstance(adopted_at, str) else None,
                     "ready_seconds": (
                         _seconds_between(launched, ready) if isinstance(ready, str) else None
                     ),
@@ -714,6 +733,46 @@ def _record_stage_timing(
         # entry's `finished_at` bounds it.
         "serving_spans": serving_spans,
     }
+    _append_journal(args, path, entry, f"the {program} timing entry")
+
+
+def _record_sync_timing(
+    args: argparse.Namespace,
+    *,
+    after: str,
+    started_at: str,
+    finished_at: str,
+    duration_ms: int,
+    copied: int | None,
+    failure: str | None,
+) -> None:
+    """Append one volume sync's clock to the timing journal, best effort.
+
+    Its own line, named `volume sync after <stage>`: the sync runs beside the next
+    stage, so its time is not that stage's. `exit_code` is 0 for a sync that
+    finished and `None` for one that failed, which `failure` names.
+    """
+    journal = getattr(args, "stage_timing_journal", None)
+    if journal is None:
+        return
+    entry: dict[str, object] = {
+        "schema": STAGE_TIMING_JOURNAL_SCHEMA,
+        "run_id": args.run_id,
+        "run_root": str(args.run_root),
+        "stage": f"volume sync after {after}",
+        "kind": "volume-sync",
+        "program": None,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_ms": duration_ms,
+        "exit_code": 0 if failure is None else None,
+        "files_copied": copied,
+        "failure": failure,
+    }
+    _append_journal(args, Path(journal), entry, f"the volume sync after {after}")
+
+
+def _append_journal(args: argparse.Namespace, path: Path, entry: dict, what: str) -> None:
     try:
         # Inside the try: this runs from a `finally`, and a refusal here would
         # replace the stage failure already propagating. A resume at another
@@ -745,11 +804,73 @@ def _record_stage_timing(
             handle.write(json.dumps(entry, sort_keys=True).encode("utf-8") + b"\n")
     except Exception as error:  # noqa: BLE001 -- a stopwatch never fails a stage
         print(
-            f"run {args.run_id}: the {program} timing entry could not be journaled "
-            f"to {path}: {error}",
+            f"run {args.run_id}: {what} could not be journaled to {path}: {error}",
             file=sys.stderr,
             flush=True,
         )
+
+
+class _VolumeSync:
+    """One stage's volume sync, copying on a thread while the next stage runs.
+
+    The file list is frozen here, on the main thread, at the stage boundary
+    (`RunTreeSync.plan`), so the next stage's new files wait for the next sync.
+    `join` waits for the copy, prints and journals it, and raises a failure as the
+    refusal naming the stage whose sync it was.
+    """
+
+    def __init__(self, args: argparse.Namespace, after: str) -> None:
+        self._args = args
+        self._after = after
+        self._copied: int | None = None
+        self._error: BaseException | None = None
+        print(f"run {args.run_id}: volume sync after {after} started", flush=True)
+        self._started_at = _stamp()
+        self._began = _clock()
+        try:
+            plan = args.stage_sync.plan()
+        except (OSError, RunTreeSyncError) as error:
+            self._error = error
+            self._thread = None
+            return
+        self._thread = threading.Thread(
+            target=self._copy, args=(plan,), name="volume-sync", daemon=False
+        )
+        self._thread.start()
+
+    def _copy(self, plan) -> None:
+        try:
+            self._copied = self._args.stage_sync.copy(plan)
+        except BaseException as error:  # noqa: BLE001 -- raised by `join`
+            self._error = error
+
+    def join(self) -> None:
+        if self._thread is not None:
+            self._thread.join()
+        seconds = _clock() - self._began
+        error = self._error
+        failure = None if error is None else f"{type(error).__name__}: {error}"
+        _record_sync_timing(
+            self._args,
+            after=self._after,
+            started_at=self._started_at,
+            finished_at=_stamp(),
+            duration_ms=max(0, round(seconds * 1000)),
+            copied=self._copied,
+            failure=failure,
+        )
+        if error is None:
+            print(
+                f"run {self._args.run_id}: volume sync after {self._after} copied "
+                f"{self._copied} files in {seconds:.0f}s",
+                flush=True,
+            )
+            return
+        if not isinstance(error, (OSError, RunTreeSyncError)):
+            raise error
+        raise ContractError(
+            f"run {self._args.run_id}: {self._after} finished, but its volume sync failed: {error}"
+        ) from error
 
 
 def main() -> int:
@@ -1156,6 +1277,32 @@ def _drive(
     every hold and how to go on. The run continues past the Recensor once
     nothing is held, or once an advance record passes its current seal.
     """
+    syncing: list[_VolumeSync] = []
+    try:
+        return _drive_stages(args, names, mode, hard_failure_policy, syncing)
+    except BaseException as raised:
+        # A stage that failed still waits for the sync already running, which may
+        # name its own failure beside the stage's.
+        for pending in syncing:
+            try:
+                pending.join()
+            except BaseException as sync_error:  # noqa: BLE001 -- noted on the raised error
+                raised.add_note(f"{type(sync_error).__name__}: {sync_error}")
+        syncing.clear()
+        raise
+    finally:
+        # The last stage's sync, before this invocation reports how it ended.
+        while syncing:
+            syncing.pop().join()
+
+
+def _drive_stages(
+    args: argparse.Namespace,
+    names: tuple[str, ...],
+    mode: str,
+    hard_failure_policy: dict,
+    syncing: list,
+) -> tuple[int, bool]:
     for name in names:
         if name in (ARCHETYPUS, ARMARIUM):
             held = recensor_holds(args)
@@ -1165,23 +1312,15 @@ def _drive(
                 )
                 report_held_recensor(args, held)
                 return EXIT_HELD, False
-        result = invoke(STAGE_PROGRAMS[name], args)
+        result = invoke(
+            STAGE_PROGRAMS[name], args, coniector_next=name == "perlector" and CONIECTOR in names
+        )
         if getattr(args, "stage_sync", None) is not None:
-            # Printed, not journaled: the stage's journal entry is already written,
-            # and a sync line of its own would count as a stage entry to its readers.
-            print(f"run {args.run_id}: volume sync after {name} started", flush=True)
-            sync_started = _clock()
-            try:
-                copied = args.stage_sync.sync()
-                print(
-                    f"run {args.run_id}: volume sync after {name} copied {copied} files "
-                    f"in {_clock() - sync_started:.0f}s",
-                    flush=True,
-                )
-            except (OSError, RunTreeSyncError) as error:
-                raise ContractError(
-                    f"run {args.run_id}: {name} finished, but its volume sync failed: {error}"
-                ) from error
+            # The previous stage's sync ran beside this stage; it ends before this
+            # stage's begins, and this one runs beside the next stage's cold start.
+            while syncing:
+                syncing.pop().join()
+            syncing.append(_VolumeSync(args, name))
         if result == EXIT_RUN_HALTED:
             return _halt(args, _entry_halt(args, name, hard_failure_policy)), False
         if name == "door" and result in (EXIT_COMPLETE, EXIT_HELD):

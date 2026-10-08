@@ -1,5 +1,7 @@
 """Stage checkpoints copy local evidence to the volume without removing older files."""
 
+import json
+import threading
 from argparse import Namespace
 from pathlib import Path
 
@@ -11,27 +13,49 @@ from common.runtree.sync import RunTreeSync, RunTreeSyncError
 from pipeline.orchestrator import run as orchestrator
 
 
-def test_fake_run_syncs_before_each_next_stage_and_never_deletes_volume_files(
+def test_each_stage_syncs_beside_the_next_and_every_sync_ends_before_the_run_does(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A stage's sync is planned at its boundary and copied while the next stage runs;
+    it is joined before the next sync starts and before the invocation returns. The
+    volume never loses a file it held."""
     local = tmp_path / "local" / "run"
     volume = tmp_path / "volume" / "run"
     local.mkdir(parents=True)
     volume.mkdir(parents=True)
     (volume / "older-evidence.json").write_bytes(b"retained")
     seen: list[str] = []
+    copying = threading.Event()
+    release = threading.Event()
+    copy = RunTreeSync.copy
 
-    def invoke(program: str, args: Namespace) -> int:
+    def held_copy(self, plan):
+        copying.set()
+        assert release.wait(timeout=10)
+        return copy(self, plan)
+
+    def invoke(program: str, args: Namespace, **_options) -> int:
         if seen:
-            assert (volume / "first.json").read_bytes() == b"first"
+            # The first stage's sync is still copying while this stage runs.
+            assert copying.wait(timeout=10)
+            assert not (volume / "first.json").exists()
+            release.set()
         name = "first.json" if not seen else "second.json"
         (local / name).write_bytes(name.removesuffix(".json").encode())
         seen.append(program)
         return orchestrator.EXIT_COMPLETE
 
+    monkeypatch.setattr(RunTreeSync, "copy", held_copy)
     monkeypatch.setattr(orchestrator, "invoke", invoke)
     monkeypatch.setattr(orchestrator, "checkpoint", lambda *args: None)
-    args = Namespace(run_id="run", run_root=local.parent, stage_sync=RunTreeSync(local, volume))
+    journal = tmp_path / "timings.jsonl"
+    args = Namespace(
+        run_id="run",
+        run_root=local.parent,
+        stage_sync=RunTreeSync(local, volume),
+        stage_timing_journal=journal,
+        repository_commit=None,
+    )
 
     result, exported = orchestrator._drive(args, (orchestrator.INK_MAP, "designator"), "semi", {})
 
@@ -41,6 +65,12 @@ def test_fake_run_syncs_before_each_next_stage_and_never_deletes_volume_files(
     assert (volume / "first.json").read_bytes() == b"first"
     assert (volume / "second.json").read_bytes() == b"second"
     assert (volume / "older-evidence.json").read_bytes() == b"retained"
+    lines = [json.loads(line) for line in journal.read_text().splitlines()]
+    assert [(line["stage"], line["kind"], line["exit_code"]) for line in lines] == [
+        (f"volume sync after {orchestrator.INK_MAP}", "volume-sync", 0),
+        ("volume sync after designator", "volume-sync", 0),
+    ]
+    assert [line["files_copied"] for line in lines] == [1, 1]
 
 
 def test_a_changed_volume_file_refuses_the_stage_checkpoint(tmp_path: Path) -> None:
@@ -57,9 +87,11 @@ def test_a_changed_volume_file_refuses_the_stage_checkpoint(tmp_path: Path) -> N
     assert (volume / "record.json").read_bytes() == b"older"
 
 
-def test_a_failed_stage_checkpoint_stops_before_the_next_stage(
+def test_a_failed_sync_stops_the_run_at_the_next_boundary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The sync after the first stage fails while the second runs; the run stops when
+    that stage ends, and no third stage starts."""
     local = tmp_path / "local" / "run"
     volume = tmp_path / "volume" / "run"
     local.mkdir(parents=True)
@@ -67,19 +99,57 @@ def test_a_failed_stage_checkpoint_stops_before_the_next_stage(
     (volume / "record.json").write_bytes(b"older")
     invoked: list[str] = []
 
-    def invoke(program: str, args: Namespace) -> int:
+    def invoke(program: str, args: Namespace, **_options) -> int:
         invoked.append(program)
-        (local / "record.json").write_bytes(b"new")
+        if len(invoked) == 1:
+            (local / "record.json").write_bytes(b"new")
         return orchestrator.EXIT_COMPLETE
 
     monkeypatch.setattr(orchestrator, "invoke", invoke)
+    monkeypatch.setattr(orchestrator, "checkpoint", lambda *args: None)
     args = Namespace(run_id="run", run_root=local.parent, stage_sync=RunTreeSync(local, volume))
 
-    with pytest.raises(ContractError, match="volume sync failed"):
+    with pytest.raises(ContractError, match=f"{orchestrator.INK_MAP} finished, but its volume"):
+        orchestrator._drive(args, (orchestrator.INK_MAP, "designator", "attestatores"), "semi", {})
+
+    assert len(invoked) == 2
+    assert (volume / "record.json").read_bytes() == b"older"
+
+
+def test_a_failed_stage_still_waits_for_the_sync_running_beside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    local = tmp_path / "local" / "run"
+    volume = tmp_path / "volume" / "run"
+    local.mkdir(parents=True)
+    volume.mkdir(parents=True)
+
+    def invoke(program: str, args: Namespace, **_options) -> int:
+        if (local / "first.json").exists():
+            raise ContractError(f"{program} exited 1")
+        (local / "first.json").write_bytes(b"first")
+        return orchestrator.EXIT_COMPLETE
+
+    monkeypatch.setattr(orchestrator, "invoke", invoke)
+    monkeypatch.setattr(orchestrator, "checkpoint", lambda *args: None)
+    args = Namespace(run_id="run", run_root=local.parent, stage_sync=RunTreeSync(local, volume))
+
+    with pytest.raises(ContractError, match="exited 1"):
         orchestrator._drive(args, (orchestrator.INK_MAP, "designator"), "semi", {})
 
-    assert len(invoked) == 1
-    assert (volume / "record.json").read_bytes() == b"older"
+    assert (volume / "first.json").read_bytes() == b"first"
+
+
+def test_a_plan_names_only_the_files_present_at_the_boundary(tmp_path: Path) -> None:
+    local, volume = _trees(tmp_path, {"a.json": b"a"})
+    sync_object = RunTreeSync(local, volume)
+    plan = sync_object.plan()
+    (local / "b.json").write_bytes(b"b")
+
+    assert sync_object.copy(plan) == 1
+    assert not (volume / "b.json").exists()
+    assert sync_object.sync() == 1
+    assert (volume / "b.json").read_bytes() == b"b"
 
 
 # --- the verified ledger ------------------------------------------------------------

@@ -45,7 +45,12 @@ from .manager import (
 )
 from .preflight import ServingSmokeReader, SmokeCall
 from .process import ProcessLauncher, SubprocessLauncher
-from .residency import POD_RESIDENCY_LOCK_PATH, FileResidencyLease, ResidencyLease
+from .residency import (
+    POD_HAND_OFF_PATH,
+    POD_RESIDENCY_LOCK_PATH,
+    FileResidencyLease,
+    ResidencyLease,
+)
 
 
 class ProfileProbe(Protocol):
@@ -202,7 +207,8 @@ def stage_chair_client(
 ) -> ChairClient:
     """The client a stage reads one configured chair through; nothing starts until
     it is entered. Logs travel with the run tree; the residency lease belongs to the
-    pod's one card, so every stage and run id contends for it on container-local disk.
+    pod's one card, so every stage and run id contends for it on container-local disk,
+    and so does the record of a service handed from one stage's process to the next.
     ``decoding_policy`` is the policy the stage already loaded and sealed; the client
     sends its chair's row of it."""
 
@@ -216,6 +222,9 @@ def stage_chair_client(
         receipt_publisher=StageContextReceiptPublisher(context),
         log_root=context.tree.resolve(context.tree.serving_log_path(context.stage)),
         residency_lease=FileResidencyLease(POD_RESIDENCY_LOCK_PATH),
+        # A service handed off on this pod is taken over only within its own run.
+        hand_off_path=POD_HAND_OFF_PATH,
+        service_scope=str(context.tree.root),
         producer=f"pipeline/{stage_directory(context.stage)}/run.py",
         capacity_plan=stage_capacity_plan(context),
         _launch_purpose=(

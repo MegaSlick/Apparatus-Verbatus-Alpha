@@ -94,7 +94,12 @@ def test_mode_independent_driver_holds_match_advance_boundaries(
         visited: list[str] = []
 
         def invoke(
-            program: str, _args: object, *, visited: list[str] = visited, stage: str = stage
+            program: str,
+            _args: object,
+            *,
+            visited: list[str] = visited,
+            stage: str = stage,
+            **_options: object,
         ) -> int:
             name = next(name for name, path in driver.STAGE_PROGRAMS.items() if path == program)
             visited.append(name)

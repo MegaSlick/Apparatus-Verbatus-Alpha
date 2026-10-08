@@ -41,6 +41,7 @@ from common.decoding import (  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     PERLECTOR_CHAIR,
+    RECONSTRUCTOR_CHAIR,
     open_stage_context,
     refuse_unlive_real_reading,
     run_stage,
@@ -52,7 +53,8 @@ from operations.serving.assembly import (  # noqa: E402
     stage_chair_client,
 )
 from operations.serving.client import ChairClient, serving_mode_for  # noqa: E402
-from operations.serving.errors import ChairResponseRefusal  # noqa: E402
+from operations.serving.config import ServingProfile  # noqa: E402
+from operations.serving.errors import ChairResponseRefusal, ServingError  # noqa: E402
 
 DESCRIPTION = "Perlector: reads each sealed page whole, with the testimonia as fallible clues."
 
@@ -86,6 +88,8 @@ class ResidentChair:
     `main` closes it in a `finally`, and the pass closes it before sealing, so a failed
     shutdown is never reported over a sealed stage; `close` is idempotent for that
     reason. A `ServiceStopError` propagates: an unverified shutdown must be reported.
+    The one exception is a chair handed to the Coniector (`hand_off`), which is left
+    running after the seal for the Coniector to take over and stop.
     """
 
     __slots__ = ("client", "starting")
@@ -104,6 +108,22 @@ class ResidentChair:
         client, self.client = self.client, None
         if client is not None:
             client.__exit__()
+
+    def hand_off(self) -> None:
+        """Leave the running chair for the Coniector's process, or stop it if it cannot be."""
+        starting, self.starting = self.starting, None
+        if starting is not None and starting.abandon():
+            return
+        client = self.client
+        if client is not None and client.hand_off():
+            self.client = None
+            print(
+                "perlector: the chair is left serving for the Coniector to take over",
+                file=sys.stderr,
+                flush=True,
+            )
+            return
+        self.close()
 
 
 def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
@@ -131,12 +151,38 @@ def _read_the_pages(registry_factory, serving_factory, service: ResidentChair) -
     """One Perlector pass: every sealed page read whole (`page_run.py`), then the seal."""
     run = _open_pass(registry_factory, serving_factory, service)
     page_run.read_the_pages(run)
-    # Before the seal, so a failed shutdown is never reported over a sealed stage;
-    # `close` is idempotent with `main`'s `finally`.
-    service.close()
+    handing_off = _coniector_takes_over(run)
+    if not handing_off:
+        # Before the seal, so a failed shutdown is never reported over a sealed stage;
+        # `close` is idempotent with `main`'s `finally`.
+        service.close()
     run.context.seal_boundary()
     run.context.finish()
+    if handing_off:
+        # Only after the seal: a pass that fails to seal stops its chair in `main`.
+        service.hand_off()
     return EXIT_COMPLETE
+
+
+def _coniector_takes_over(run: "_Pass") -> bool:
+    """Whether to leave the running chair for the Coniector instead of stopping it.
+
+    Only when the orchestrator runs the Coniector next (`--hand-off-to-coniector`), the
+    chair is up, and the reconstructor's sealed row shares this chair's service, so
+    the Coniector can take it over rather than load the same model again.
+    """
+    if not run.args.hand_off_to_coniector or run.service.client is None:
+        return False
+    reconstructor = run.context.registry.resolve(RECONSTRUCTOR_CHAIR)
+    if not isinstance(reconstructor, ChairIdentity):
+        return False
+    try:
+        row = bound_serving_recipes(run.context, run.args.serving_recipes_config).for_identity(
+            reconstructor, run.args.placement_tier
+        )
+    except ServingError:
+        return False
+    return isinstance(row, ServingProfile) and row.shares_service_with == PERLECTOR_CHAIR
 
 
 @dataclass
@@ -181,6 +227,12 @@ def _open_pass(registry_factory, serving_factory, service: ResidentChair) -> _Pa
         help="reader calls a live pass keeps in flight at once, so the engine can batch "
         "them; capped by the served row's max_num_seqs, which is also the default. "
         "A fixture pass reads one page at a time",
+    )
+    parser.add_argument(
+        "--hand-off-to-coniector",
+        action="store_true",
+        help="the Coniector runs next: when its chair's sealed row shares this chair's "
+        "service, leave the chair running after the seal for it to take over",
     )
     args = parser.parse_args()
     context = open_stage_context(args, PERLECTOR, registry_factory=registry_factory)

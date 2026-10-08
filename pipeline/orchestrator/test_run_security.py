@@ -108,6 +108,39 @@ def test_invoke_forwards_perlector_concurrency_to_the_perlector_alone(tmp_path, 
     )
 
 
+def test_the_perlector_is_told_to_hand_off_only_when_the_coniector_runs_next(tmp_path, monkeypatch):
+    orchestrator = load_stage("orchestrator")
+    commands = []
+
+    def completed(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(orchestrator.subprocess, "run", completed)
+    args = _invoke_args(tmp_path)
+    perlector = orchestrator.STAGE_PROGRAMS["perlector"]
+    assert orchestrator.invoke(perlector, args, coniector_next=True) == 0
+    assert orchestrator.invoke(perlector, args) == 0
+    assert [command.count("--hand-off-to-coniector") for command in commands] == [1, 0]
+
+    asked: list[tuple[str, bool]] = []
+
+    def recorded(program, _args, *, coniector_next=False):
+        asked.append((program, coniector_next))
+        return orchestrator.EXIT_COMPLETE
+
+    monkeypatch.setattr(orchestrator, "invoke", recorded)
+    monkeypatch.setattr(orchestrator, "checkpoint", lambda *_args: None)
+    args.stage_sync = None
+    for names in (("perlector", "coniector"), ("perlector",)):
+        orchestrator._drive(args, names, "semi", {})
+    assert asked == [
+        (perlector, True),
+        (orchestrator.STAGE_PROGRAMS["coniector"], False),
+        (perlector, False),
+    ]
+
+
 def test_the_timing_journal_names_the_perlector_concurrency_asked_for(tmp_path):
     orchestrator = load_stage("orchestrator")
     journal = tmp_path / "timings.jsonl"
@@ -322,11 +355,35 @@ def test_serving_spans_are_this_invocations_noted_launch_audits_and_nothing_else
             "launch_purpose": "stage",
             "started_at": "2026-10-07T10:00:05Z",
             "ready_at": "2026-10-07T10:06:20Z",
+            "adopted_at": None,
             "ready_seconds": 375,
         }
     ]
     # A stage with no serving logs launched nothing.
     assert orchestrator._serving_spans(args, "pipeline/5_recensor/run.py", "2026") == []
+
+
+def test_a_service_taken_over_is_this_invocations_from_the_moment_it_was_taken(tmp_path):
+    """The Coniector's audit of the Perlector's service keeps the Perlector's launch
+    moment, which is before the Coniector started; it is still the Coniector's span."""
+    orchestrator = load_stage("orchestrator")
+    args = argparse.Namespace(run_root=tmp_path / "runs", run_id="r")
+    adopted = json.loads(_audit("reconstructor", "2026-10-07T10:00:05Z", "2026-10-07T10:06:20Z"))
+    adopted["launch_purpose"] = "adopted"
+    adopted["adoption"] = {"adopted_at": "2026-10-07T11:00:01Z"}
+    digest = "a" * 64
+    _stage_with_blobs(tmp_path, {digest: json.dumps(adopted).encode()}, [digest])
+    (tmp_path / "runs" / "r" / "4_perlector").rename(tmp_path / "runs" / "r" / "4b_coniector")
+    program = orchestrator.STAGE_PROGRAMS["coniector"]
+    [span] = orchestrator._serving_spans(args, program, "2026-10-07T11:00:00Z")
+    assert span["launch_purpose"] == "adopted"
+    assert span["adopted_at"] == "2026-10-07T11:00:01Z"
+    assert span["started_at"] == "2026-10-07T10:00:05Z"
+    assert orchestrator._serving_spans(args, program, "2026-10-07T12:00:00Z") == []
+    # The stage's end line says a model was taken over, where a load would be said.
+    assert "chair reconstructor adopted 2026-10-07T11:00:01Z (no model load" in (
+        orchestrator._span_words(span)
+    )
 
 
 def test_serving_spans_read_no_blob_but_the_noted_audits(tmp_path, monkeypatch):

@@ -8,6 +8,7 @@ import os
 import stat
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
@@ -41,6 +42,15 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+@dataclass(frozen=True)
+class SyncPlan:
+    """The run tree as it stood at a stage boundary: directories, and files with
+    their size and mtime, relative to the run tree."""
+
+    directories: tuple[Path, ...]
+    files: tuple[tuple[Path, tuple[int, int]], ...]
+
+
 class RunTreeSync:
     """Verify each new local file on the target; leave all target files in place.
 
@@ -57,33 +67,55 @@ class RunTreeSync:
         self._directories: set[Path] = set()
 
     def sync(self) -> int:
+        """Copy and check every new file now; the number of files copied."""
+        return self.copy(self.plan())
+
+    def plan(self) -> "SyncPlan":
+        """Freeze what to sync: every run file and its size and mtime, read locally.
+
+        Only the local tree is read, so this is quick; `copy` does the rest and may
+        run on another thread while the next stage writes files this plan does not
+        name.
+        """
         if not self.source.is_dir() or self.source.is_symlink():
             raise RunTreeSyncError(f"run tree is missing or linked: {self.source}")
-        if self._verified is None:
-            self._verified = self._read_ledger()
-        self._directory(self.target)
-        pending: list[tuple[Path, Path, Path, tuple[int, int]]] = []
-        for parent, directories, files in os.walk(self.source, followlinks=False):
+        directories: list[Path] = []
+        files: list[tuple[Path, tuple[int, int]]] = []
+        for parent, children, names in os.walk(self.source, followlinks=False):
             source_directory = Path(parent)
-            relative_directory = source_directory.relative_to(self.source)
-            target_directory = self.target / relative_directory
-            self._directory(target_directory)
-            for name in directories:
+            directories.append(source_directory.relative_to(self.source))
+            for name in children:
                 if (source_directory / name).is_symlink():
                     raise RunTreeSyncError(f"run tree contains a linked directory: {name}")
-            for name in files:
+            for name in names:
                 if name.startswith(SYNC_PREFIX):
                     continue
                 source = source_directory / name
-                relative = source.relative_to(self.source)
                 mode = source.lstat().st_mode
                 if not stat.S_ISREG(mode):
                     raise RunTreeSyncError(f"run tree contains a non-file: {source}")
                 before = source.stat()
-                identity = (before.st_size, before.st_mtime_ns)
-                if self._verified.get(relative) == identity:
-                    continue
-                pending.append((relative, source, target_directory / name, identity))
+                files.append(
+                    (source.relative_to(self.source), (before.st_size, before.st_mtime_ns))
+                )
+        return SyncPlan(tuple(directories), tuple(files))
+
+    def copy(self, plan: "SyncPlan") -> int:
+        """Copy and check every planned file the ledger does not already hold.
+
+        A planned file that changed since the plan is refused (`_copy_one`): run
+        files are written once.
+        """
+        if self._verified is None:
+            self._verified = self._read_ledger()
+        self._directory(self.target)
+        for relative_directory in plan.directories:
+            self._directory(self.target / relative_directory)
+        pending = [
+            (relative, self.source / relative, self.target / relative, identity)
+            for relative, identity in plan.files
+            if self._verified.get(relative) != identity
+        ]
         copied = 0
         linked: set[Path] = set()
         with ThreadPoolExecutor(max_workers=COPY_WORKERS) as pool:

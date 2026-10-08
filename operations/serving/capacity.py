@@ -269,12 +269,15 @@ def derive_capacity_plan(
 ) -> CapacityPlan:
     """The plan for every configured chair whose row at ``tier`` states its capacity.
 
+    A row with ``shares_service_with`` takes the width planned for the chair whose
+    service it shares, so both render the same launch.
+
     The budget is the fraction the engine is launched with: the row's
     ``gpu_memory_utilization``, which PREFLIGHT holds at or under the tier's
     ``engine_memory_fraction``; the smaller of the two is used.
     """
 
-    planned: dict[str, ChairCapacity] = {}
+    rows: dict[str, ServingProfile] = {}
     for role, identity in sorted(chairs.items()):
         if not isinstance(identity, ChairIdentity):
             continue
@@ -283,23 +286,29 @@ def derive_capacity_plan(
         except ServingError:
             # PREFLIGHT reports a missing row itself; the chair is simply not planned.
             continue
-        if not isinstance(row, ServingProfile):
+        if isinstance(row, ServingProfile):
+            rows[role] = row
+    planned: dict[str, ChairCapacity] = {}
+    for role, row in rows.items():
+        # A row sharing another chair's service is launched as that chair's service
+        # was, so the pair is planned once, from the shared chair's row, and both get
+        # the same width; otherwise taking the service over would be refused.
+        source = rows.get(row.shares_service_with or "", row)
+        if source.weights_gib is None or source.kv_gib_per_seq is None:
             continue
-        if row.weights_gib is None or row.kv_gib_per_seq is None:
-            continue
-        fraction = min(row.gpu_memory_utilization, engine_memory_fraction)
+        fraction = min(source.gpu_memory_utilization, engine_memory_fraction)
         planned[role] = ChairCapacity(
             recipe=row.recipe,
             row_max_num_seqs=row.max_num_seqs,
             max_num_seqs=derive_max_num_seqs(
                 vram_gib=vram_gib,
                 memory_fraction=fraction,
-                weights_gib=row.weights_gib,
-                kv_gib_per_seq=row.kv_gib_per_seq,
-                row_max_num_seqs=row.max_num_seqs,
+                weights_gib=source.weights_gib,
+                kv_gib_per_seq=source.kv_gib_per_seq,
+                row_max_num_seqs=source.max_num_seqs,
             ),
-            weights_gib=row.weights_gib,
-            kv_gib_per_seq=row.kv_gib_per_seq,
+            weights_gib=source.weights_gib,
+            kv_gib_per_seq=source.kv_gib_per_seq,
             memory_fraction=fraction,
         )
     return CapacityPlan(
