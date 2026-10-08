@@ -28,6 +28,11 @@ from common.contracts.serving import (
     CALLER_GENERATION_FIELDS,
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_STREAM_CALL_RECORD_FIELDS,
+    CHAIR_STREAM_CALL_RECORD_SCHEMA,
+    CHAIR_STREAM_SCHEMA,
+    CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_SCHEMA,
     CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
     CHAIR_TRANSPORT_PROBLEM_FIELDS,
@@ -42,8 +47,10 @@ from common.decoding import (
     chair_decoding,
     decoded_wire_decimals,
     engine_effective_sampling,
+    perlector_loop_guard,
     recorded_wire_decimals,
 )
+from common.repetition_loop import LoopScanner
 from common.sealed_config import table_seal
 
 from .config import (
@@ -64,12 +71,18 @@ from .errors import (
     ServingError,
 )
 from .http import (
+    SSE_DONE,
     EndpointUnavailable,
     HttpResponse,
     chandra_native_request_body,
     chat_image_bytes_all,
     parse_openai_reading,
+    parse_openai_stream_reading,
+    peek_stream_model,
     request_body,
+    sse_data,
+    sse_events,
+    stream_chunk_content,
 )
 from .manager import ServiceHandle, ServingManager
 
@@ -196,6 +209,12 @@ class ChairRequest:
     arithmetic a request was admitted on beside the request itself. ``None``
     where the caller states none.
 
+    ``loop_guard``, when given, streams the reply and abandons it at the first
+    repetition loop (``common.repetition_loop``); it must be the sealed guard of
+    the client's chair (``common.decoding.perlector_loop_guard``, the Perlector's
+    alone), and the call is recorded under the stream schemas. ``None`` sends the
+    plain, whole-response request every other chair sends.
+
     **The capacity record is sealed at construction, all the way down.** It is
     not flat -- it carries an ``images`` list of per-image dictionaries -- and
     every production builder keeps its own reference to the same object it
@@ -213,9 +232,12 @@ class ChairRequest:
     generation_declared: Mapping[str, object]
     generation_sent: Mapping[str, object]
     capacity: Mapping[str, object] | None = None
+    loop_guard: Mapping[str, int] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "messages", tuple(self.messages))
+        if self.loop_guard is not None:
+            object.__setattr__(self, "loop_guard", MappingProxyType(dict(self.loop_guard)))
         object.__setattr__(self, "image_sha256s", tuple(self.image_sha256s))
         if self.capacity is not None:
             object.__setattr__(self, "capacity", _sealed_capacity(self.capacity))
@@ -235,7 +257,12 @@ class ChairResponse:
     stop reason at all. ``parse_problem`` is the field a caller checks to
     tell a retained body apart from a reading; a stage records the
     engine-silent case as ``STOP_REASON_UNREPORTED``, not by inferring it
-    from a ``None`` here."""
+    from a ``None`` here.
+
+    ``loop_stop`` is the repetition loop a streamed reply was abandoned on
+    (``common.repetition_loop.LoopScanner.finding``); ``content`` is then the
+    reply up to the stop, and ``finish_reason`` the engine's word, if any had
+    arrived (as a rule none). ``None`` for every reply the engine ended itself."""
 
     chair: str
     served_model_id: str
@@ -250,6 +277,33 @@ class ChairResponse:
     receipt_ref: Mapping[str, str]
     launch_audit_ref: Mapping[str, str]
     parse_problem: str | None
+    loop_stop: Mapping[str, object] | None = None
+
+
+class _LoopWatch:
+    """Reads a streamed reply's events as they arrive and says when to stop it.
+
+    Each complete event's content goes to a `LoopScanner`; the read stops at the
+    piece in which the scanner first finds a loop. An event this cannot read adds
+    nothing here; the parser judges the whole stream once it is retained.
+    """
+
+    def __init__(self, guard: Mapping[str, int]) -> None:
+        self.scanner = LoopScanner(guard)
+        self._pending = b""
+
+    def __call__(self, chunk: bytes) -> bool:
+        events, self._pending = sse_events(self._pending + chunk)
+        for event in events:
+            try:
+                data = sse_data(event)
+            except UnicodeDecodeError:
+                continue
+            if data is None or data == SSE_DONE:
+                continue
+            if self.scanner.feed(stream_chunk_content(data)) is not None:
+                return True
+        return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -593,6 +647,7 @@ class ChairClient:
         """Shared one-call implementation; native use is an already-sealed capability."""
 
         handle = self.handle
+        guard = self._loop_guard(request, native=native_dispatch is not None)
         if native_dispatch is None:
             _refuse_unbuildable_request(request)
             # Built and checked before the request leaves: a generation value
@@ -620,6 +675,7 @@ class ChairClient:
                 seed=actual_seed,
                 deterministic=False,
                 sampling=sampling,
+                stream=guard is not None,
             )
         else:
             if native_intent_ref is None:
@@ -633,10 +689,16 @@ class ChairClient:
         request_sha256 = (
             digest_bytes(body) if native_dispatch is None else native_dispatch.request_sha256
         )
+        watch = _LoopWatch(guard) if guard is not None else None
         try:
-            response = handle.request_reading(
-                request.kind, body, handle.profile.request_timeout_seconds
-            )
+            if watch is None:
+                response = handle.request_reading(
+                    request.kind, body, handle.profile.request_timeout_seconds
+                )
+            else:
+                response = handle.stream_reading(
+                    request.kind, body, handle.profile.request_timeout_seconds, watch
+                )
         except EndpointUnavailable as error:
             transport_problem = {
                 "schema": CHAIR_TRANSPORT_PROBLEM_SCHEMA,
@@ -654,6 +716,8 @@ class ChairClient:
                 "schema": (
                     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA
                     if native_dispatch is not None
+                    else CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_SCHEMA
+                    if guard is not None
                     else CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA
                 ),
                 "chair": self._identity.role,
@@ -685,9 +749,13 @@ class ChairClient:
             }
             if native_dispatch is not None:
                 failure_record["native_attempt_intent_ref"] = native_intent_ref
+            if guard is not None:
+                failure_record["stream"] = _stream_record(guard, None)
             expected_failure_fields = (
                 CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_FIELDS
                 if native_dispatch is not None
+                else CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_FIELDS
+                if guard is not None
                 else CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS
             )
             if set(failure_record) != expected_failure_fields:
@@ -708,12 +776,16 @@ class ChairClient:
         # not attribution -- a foreign-model body still never becomes a
         # reading -- but the bytes exist afterward so the refusal can name them.
         raw_response_ref = self._retain(response.body)
+        loop_stop = watch.scanner.finding if watch is not None else None
+        # A streamed 200 is server-sent events; anything else is one JSON body.
+        peek = peek_stream_model if watch is not None and response.status == 200 else _peek_model
         early_refusal: ChairResponseRefusal | None = None
         try:
             _refuse_bytes_from_the_wrong_source(
                 response,
                 expected_model_id=handle.profile.served_model_id,
                 raw_response_ref=raw_response_ref,
+                peek=peek,
             )
         except ChairResponseRefusal as error:
             early_refusal = error
@@ -727,16 +799,24 @@ class ChairClient:
             parse_problem = early_refusal.code
         else:
             try:
-                result = parse_openai_reading(
-                    response, kind=request.kind, expected_model_id=handle.profile.served_model_id
+                result = (
+                    parse_openai_reading(
+                        response,
+                        kind=request.kind,
+                        expected_model_id=handle.profile.served_model_id,
+                    )
+                    if watch is None
+                    else parse_openai_stream_reading(
+                        response,
+                        kind=request.kind,
+                        expected_model_id=handle.profile.served_model_id,
+                        stopped=loop_stop is not None,
+                    )
                 )
             except ChairResponseRefusal as error:
                 content = None
                 parse_problem = error.code
-                if (
-                    parse_problem == "CHAIR_RESPONSE_MODEL_MISMATCH"
-                    and _peek_model(response.body) is None
-                ):
+                if parse_problem == "CHAIR_RESPONSE_MODEL_MISMATCH" and peek(response.body) is None:
                     # `_refuse_bytes_from_the_wrong_source` already let this body
                     # through retention because it names no model at all — that is
                     # a malformed body, not evidence of a foreign source, and the
@@ -754,6 +834,8 @@ class ChairClient:
             "schema": (
                 CHANDRA_NATIVE_CALL_RECORD_SCHEMA
                 if native_dispatch is not None
+                else CHAIR_STREAM_CALL_RECORD_SCHEMA
+                if guard is not None
                 else CHAIR_CALL_RECORD_SCHEMA
             ),
             "chair": self._identity.role,
@@ -773,7 +855,7 @@ class ChairClient:
             "raw_response_ref": dict(raw_response_ref),
             "response_sha256": raw_response_ref["sha256"],
             "response_status": response.status,
-            "response_model": _peek_model(response.body),
+            "response_model": peek(response.body),
             "finish_reason": finish_reason,
             "usage": dict(usage) if usage is not None else None,
             "parse_problem": parse_problem,
@@ -785,9 +867,13 @@ class ChairClient:
         }
         if native_dispatch is not None:
             record["native_attempt_intent_ref"] = native_intent_ref
+        if guard is not None:
+            record["stream"] = _stream_record(guard, loop_stop)
         expected_record_fields = (
             CHANDRA_NATIVE_CALL_RECORD_FIELDS
             if native_dispatch is not None
+            else CHAIR_STREAM_CALL_RECORD_FIELDS
+            if guard is not None
             else CHAIR_CALL_RECORD_FIELDS
         )
         if set(record) != expected_record_fields:
@@ -821,7 +907,45 @@ class ChairClient:
             receipt_ref=dict(handle.receipt_reference),
             launch_audit_ref=dict(handle.audit_reference),
             parse_problem=parse_problem,
+            loop_stop=MappingProxyType(dict(loop_stop)) if loop_stop is not None else None,
         )
+
+    def _loop_guard(self, request: ChairRequest, *, native: bool) -> dict[str, int] | None:
+        """The sealed guard a streamed request is watched under, or ``None`` for a plain one.
+
+        A request may ask only for its chair's sealed guard, and only the Perlector
+        has one; a Chandra native request is never streamed.
+        """
+
+        if request.loop_guard is None:
+            return None
+        try:
+            sealed = (
+                perlector_loop_guard(self._decoding_policy)
+                if self._identity.role == "perlector" and not native
+                else None
+            )
+        except ContractError as error:
+            raise ChairRequestRefusal("CHAIR_REQUEST_INVALID", str(error)) from error
+        if sealed is None or dict(request.loop_guard) != sealed:
+            raise ChairRequestRefusal(
+                "CHAIR_REQUEST_INVALID",
+                f"a streamed request's loop guard {dict(request.loop_guard)!r} is not the sealed "
+                f"repetition-loop guard of chair {self._identity.role!r}",
+            )
+        return sealed
+
+
+def _stream_record(
+    guard: Mapping[str, int], stopped: Mapping[str, object] | None
+) -> dict[str, object]:
+    """The call record's ``stream``: the guard watched under, and the loop that stopped it."""
+
+    return {
+        "schema": CHAIR_STREAM_SCHEMA,
+        "loop_guard": dict(guard),
+        "stopped": dict(stopped) if stopped is not None else None,
+    }
 
 
 def usage_against_capacity(
@@ -979,6 +1103,7 @@ def _refuse_bytes_from_the_wrong_source(
     *,
     expected_model_id: str,
     raw_response_ref: Mapping[str, str],
+    peek: Callable[[bytes], str | None] | None = None,
 ) -> None:
     """Refuse a response that is not this chair's, with its bytes already retained.
 
@@ -999,7 +1124,7 @@ def _refuse_bytes_from_the_wrong_source(
             f"{dict(raw_response_ref)!r} and begins {_body_preview(response.body)}",
             raw_response_ref=raw_response_ref,
         )
-    model = _peek_model(response.body)
+    model = (peek or _peek_model)(response.body)
     if model is not None and model != expected_model_id:
         raise ChairResponseRefusal(
             "CHAIR_RESPONSE_MODEL_MISMATCH",

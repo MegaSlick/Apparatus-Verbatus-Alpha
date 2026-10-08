@@ -68,7 +68,7 @@ from common.contracts.outcomes import (
     WITNESS_READING_OUTCOMES as _WITNESS_READING_OUTCOMES,
 )
 from common.contracts.serving import (
-    CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_STREAM_CALL_RECORD_SCHEMA,
     RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS,
     SERVING_CONFIG_INPUTS_FIELDS,
     SERVING_CONFIG_INPUTS_SCHEMA,
@@ -92,6 +92,7 @@ from common.corpus_register import read_snapshot, verify_snapshot_is_current
 from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
     load_decoding_policy,
+    perlector_loop_guard,
     perlector_page_generation,
     verify_call_sampling,
 )
@@ -367,9 +368,13 @@ class ServingReader(Protocol):
         ...
 
     def reading_reply(
-        self, *, status: Any, body: bytes, kind: Any, model_id: str
+        self, *, status: Any, body: bytes, kind: Any, model_id: str, stopped: bool | None = None
     ) -> tuple[str, str | None]:
-        """`(content, finish_reason)` of one retained chat reply, parsed as the client did."""
+        """`(content, finish_reason)` of one retained chat reply, parsed as the client did.
+
+        `stopped` is `None` for a whole reply, else the reply was streamed and says
+        whether the client stopped it (`chair-stream-call-record`).
+        """
         ...
 
     def request_bytes(
@@ -379,9 +384,11 @@ class ServingReader(Protocol):
         model_id: str,
         seed: Any,
         sampling: Mapping[str, Any] | None = None,
+        stream: bool = False,
     ) -> bytes:
         """The exact request bytes the client renders for a sampled `payload`, with the
-        chair's sealed `sampling` row added when the payload does not already carry it."""
+        chair's sealed `sampling` row added when the payload does not already carry it,
+        streamed when `stream`."""
         ...
 
 
@@ -2887,7 +2894,9 @@ def _refs_by_path(references: Any, what: str) -> list[dict[str, str]]:
 
 # The fields a reading derives from what the engine said, or from why it was not asked.
 _REPLY_FIELDS: Final = ("parse_state", "answer", "problems", "finish_reason", "stop_reason")
-_REPLY_STATES: Final = frozenset({page_path.PARSED, page_path.MALFORMED, page_path.CUT_OFF})
+_REPLY_STATES: Final = frozenset(
+    {page_path.PARSED, page_path.MALFORMED, page_path.CUT_OFF, page_path.REPETITION_LOOP}
+)
 
 
 def _verify_reply(
@@ -3166,14 +3175,19 @@ def _verify_engine_call(context, what, chair, reading, payload, feed, text, imag
             },
             model_id=engine_call["served_model_id"],
             seed=generation.get("seed"),
+            stream=True,
         )
         policy, _digest = sealed_decoding_policy(context)
+        stream = call.get("stream")
+        guard = perlector_loop_guard(policy)
     except FatalAccounting:
         raise
     except (ContractError, KeyError, TypeError, ValueError) as error:
         raise FatalAccounting(f"{what}'s call record cannot be read again: {error}") from error
     _require(
-        call.get("schema") == CHAIR_CALL_RECORD_SCHEMA
+        call.get("schema") == CHAIR_STREAM_CALL_RECORD_SCHEMA
+        and isinstance(stream, Mapping)
+        and stream.get("loop_guard") == guard
         and call.get("chair") == PERLECTOR_CHAIR
         and call.get("kind") == "chat-completions"
         and call.get("request_sha256") == digest_bytes(body)
@@ -3187,7 +3201,8 @@ def _verify_engine_call(context, what, chair, reading, payload, feed, text, imag
         and call.get("receipt_ref") == provenance.get("receipt_ref")
         and payload.get("sampling") == page_path.page_sampling(policy, chair.role),
         f"{what}'s engine_call is not this page's request: its call record's request, images, "
-        "capacity, receipt, model or sampling is not what the feed and the sealed row give",
+        "capacity, receipt, model, sampling or repetition-loop guard is not what the feed and "
+        "the sealed rows give",
     )
 
 

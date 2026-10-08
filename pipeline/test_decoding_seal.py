@@ -83,7 +83,7 @@ def test_a_run_refused_for_its_decoding_policy_creates_nothing(tmp_path, change:
         "sampling": source.replace(
             "[chair_decoding.perlector]\n", "[chair_decoding.perlector]\ndo_sample = true\n", 1
         ),
-        "legacy": source.replace('schema = "decoding.v8"', 'schema = "decoding.v3"', 1),
+        "legacy": source.replace('schema = "decoding.v9"', 'schema = "decoding.v3"', 1),
     }[change]
     substitute.write_text(body, encoding="utf-8")
     run_root = tmp_path / "runs"

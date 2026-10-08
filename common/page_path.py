@@ -49,10 +49,17 @@ from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusa
 from common.contracts.identities import act_id as derive_act_id
 from common.contracts.identities import attempt_id, perlector_attempt_id
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES
-from common.contracts.serving import reading_stop_reason
+from common.contracts.serving import (
+    CHAIR_STREAM_CALL_RECORD_SCHEMA,
+    CHAIR_STREAM_FIELDS,
+    CHAIR_STREAM_SCHEMA,
+    READER_STOP_REPETITION_LOOP,
+    reading_stop_reason,
+)
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, INK_MAP
 from common.decoding import chair_decoding, engine_effective_sampling, recorded_wire_decimals
 from common.page_witness_units import DAI, READ_OUTCOME, WITNESS_LETTERS, witness_reading
+from common.repetition_loop import first_repetition_loop, validate_guard
 from common.request_capacity import page_request_capacity
 from common.residual_ink import (
     INK_NOT_MEASURABLE,
@@ -121,6 +128,9 @@ PERLECTIO_OPERATION: Final = "perlegere"
 PARSED: Final = page_answer.PARSED
 MALFORMED: Final = page_answer.MALFORMED
 CUT_OFF: Final = "cut-off"
+# A streamed reply the client abandoned on a repetition loop (`common/repetition_loop.py`):
+# held whole like a cut-off, never parsed.
+REPETITION_LOOP: Final = READER_STOP_REPETITION_LOOP
 REFUSED_CAPACITY: Final = "refused-capacity"
 CALL_FAILED: Final = "call-failed"
 NOT_RUN: Final = "not-run"
@@ -587,6 +597,11 @@ def retained_reply(
     are read digest-checked, and `reader` (the stage's `common.stage.ServingReader`)
     parses the response as the serving client parsed it. Returns `{content,
     finish_reason, stop_reason}`.
+
+    A streamed reply (`chair-stream-call-record`) is scanned again under the guard
+    its call record names, and the loop found must be exactly the one the record
+    says stopped it, or none; its `stop_reason` is then `repetition-loop`. Whether
+    a reply looped is measured from its bytes, never taken from the record.
     """
     if not isinstance(engine_call, Mapping):
         raise ContractError("a live page reading's engine_call is not an object")
@@ -596,19 +611,46 @@ def retained_reply(
     )
     if not isinstance(call, dict):
         raise ContractError("a page reading's call record is not a JSON object")
+    stream = _call_stream(call)
     try:
         content, finish_reason = reader.reading_reply(
             status=call.get("response_status"),
             body=body,
             kind=call.get("kind"),
             model_id=engine_call["served_model_id"],
+            **({} if stream is None else {"stopped": stream["stopped"] is not None}),
         )
         stop_reason = reading_stop_reason(finish_reason)
     except (ContractError, ValueError) as error:
         raise ContractError(
             f"a page reading's retained response is not a reading: {error}"
         ) from error
+    if stream is not None:
+        loop = first_repetition_loop(content, stream["loop_guard"])
+        if loop != stream["stopped"]:
+            raise ContractError(
+                f"a page reading's streamed reply shows the repetition loop {loop!r}, but its "
+                f"call record says it was stopped on {stream['stopped']!r}"
+            )
+        if loop is not None:
+            stop_reason = REPETITION_LOOP
     return {"content": content, "finish_reason": finish_reason, "stop_reason": stop_reason}
+
+
+def _call_stream(call: Mapping[str, Any]) -> dict[str, Any] | None:
+    """A streamed call record's `stream`, its guard checked, or `None` for a whole reply."""
+    if call.get("schema") != CHAIR_STREAM_CALL_RECORD_SCHEMA:
+        return None
+    stream = call.get("stream")
+    if (
+        not isinstance(stream, dict)
+        or set(stream) != CHAIR_STREAM_FIELDS
+        or stream["schema"] != CHAIR_STREAM_SCHEMA
+        or not (stream["stopped"] is None or isinstance(stream["stopped"], dict))
+    ):
+        raise ContractError("a page reading's streamed call record has no valid stream record")
+    validate_guard(stream["loop_guard"])
+    return stream
 
 
 def read_reply(
@@ -618,10 +660,23 @@ def read_reply(
     accounting_policy: page_accounting.PageAccountingPolicy,
     named: list[str] | None = None,
 ) -> tuple[str, Any, list[dict[str, Any]]]:
-    """`(parse_state, answer, problems)` for a reply the engine finished or was cut on.
+    """`(parse_state, answer, problems)` for a reply the engine finished or was cut on,
+    or the client stopped on a repetition loop.
 
     `named` is `None` for a first reading, and a re-ask's named ids for its reply.
     """
+    if stop_reason == REPETITION_LOOP:
+        return (
+            REPETITION_LOOP,
+            None,
+            [
+                {
+                    "code": REPETITION_LOOP,
+                    "detail": "the reply repeated the same line or block of lines over and "
+                    "over, and was stopped; the answer is held whole",
+                }
+            ],
+        )
     if stop_reason == "length":
         return (
             CUT_OFF,

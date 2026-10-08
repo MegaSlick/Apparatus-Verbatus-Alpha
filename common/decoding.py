@@ -19,13 +19,11 @@ from common.contracts.serving import (
     WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
+from common.repetition_loop import GUARD_FIELDS, validate_guard
 from common.sealed_config import read_sealed_toml
 
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
-_PERLECTOR_BOUNDS = ("page_max_tokens", "answer_headroom_bp", "answer_floor_tokens")
-# Basis points of the answer reserve: below 10,000 a reading would be cut short of
-# the reserve its page was admitted on.
-_MIN_ANSWER_HEADROOM_BP = 10_000
+_PERLECTOR_BOUNDS = ("page_max_tokens", *GUARD_FIELDS)
 _RECONSTRUCTOR_BOUNDS = ("answer_max_tokens",)
 # Every sampling field a chair's row may carry, each a top-level field of the
 # pinned vLLM 0.30.0 `ChatCompletionRequest`. Only the sealed table puts them on
@@ -114,7 +112,8 @@ def _validate_decoding_policy(policy: Any) -> None:
     The exact, closed Chandra native inference recipe is required for Attestator 1.
     `chair_decoding` holds one row per reading chair with its makers' sampling
     values and where they were read. `perlector_generation` caps one whole-page
-    reading's output and bounds it from its answer reserve, and
+    reading's output and seals the repetition-loop guard its streamed reply is
+    stopped by, and
     `reconstructor_generation` caps one Coniector answer.
     """
     if not isinstance(policy, dict):
@@ -128,9 +127,10 @@ def _validate_decoding_policy(policy: Any) -> None:
         "decoding.v5",
         "decoding.v6",
         "decoding.v7",
+        "decoding.v8",
     }:
         raise ContractError(f"sealed under {schema}, which this build no longer reads; re-run")
-    if schema != "decoding.v8":
+    if schema != "decoding.v9":
         raise ContractError("decoding configuration has an unsupported schema")
     expected_sections = {
         "schema",
@@ -144,14 +144,13 @@ def _validate_decoding_policy(policy: Any) -> None:
     _require_output_bounds(
         policy["perlector_generation"],
         _PERLECTOR_BOUNDS,
-        "decoding perlector_generation must declare a positive integer output bound, "
-        "answer headroom and answer floor for a whole-page reading",
+        "decoding perlector_generation must declare a positive integer output bound and "
+        "repetition-loop guard for a whole-page reading",
     )
-    if policy["perlector_generation"]["answer_headroom_bp"] < _MIN_ANSWER_HEADROOM_BP:
-        raise ContractError(
-            "decoding perlector_generation answer_headroom_bp is below 10000, which would cut "
-            "a reading short of the answer reserve its page was admitted on"
-        )
+    try:
+        validate_guard({name: policy["perlector_generation"][name] for name in GUARD_FIELDS})
+    except ContractError as error:
+        raise ContractError(f"decoding perlector_generation: {error}") from error
     _require_output_bounds(
         policy["reconstructor_generation"],
         _RECONSTRUCTOR_BOUNDS,
@@ -416,7 +415,14 @@ def perlector_page_max_tokens(policy: Mapping[str, Any]) -> int:
 
 
 def perlector_page_generation(policy: Mapping[str, Any]) -> dict[str, int]:
-    """Return the sealed bounds of one whole-page reading's output, as
-    `common.request_capacity.page_request_capacity` takes them."""
+    """Return the sealed bound of one whole-page reading's output, as
+    `common.request_capacity.page_request_capacity` takes it."""
     _validate_decoding_policy(policy)
-    return dict(policy["perlector_generation"])
+    return {"page_max_tokens": policy["perlector_generation"]["page_max_tokens"]}
+
+
+def perlector_loop_guard(policy: Mapping[str, Any]) -> dict[str, int]:
+    """Return the sealed repetition-loop guard a whole-page reading's streamed reply is
+    stopped by (`common.repetition_loop`)."""
+    _validate_decoding_policy(policy)
+    return {name: policy["perlector_generation"][name] for name in GUARD_FIELDS}
