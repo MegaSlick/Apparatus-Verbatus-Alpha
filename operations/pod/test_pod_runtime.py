@@ -5067,8 +5067,14 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
 ) -> None:
     observed: dict[str, object] = {}
 
-    def materialize(root, fetcher, bundle_fetcher):  # type: ignore[no-untyped-def]
-        observed.update(root=root, fetcher=fetcher, bundle_fetcher=bundle_fetcher)
+    def materialize(root, fetcher, bundle_fetcher, *, roles, hashed_at_copy):  # type: ignore[no-untyped-def]
+        observed.update(
+            root=root,
+            fetcher=fetcher,
+            bundle_fetcher=bundle_fetcher,
+            roles=roles,
+            hashed_at_copy=hashed_at_copy,
+        )
         return {"artifacts": [], "complete": False}
 
     monkeypatch.setattr("operations.pod.bootstrap.materialize_real_roster", materialize)
@@ -5077,6 +5083,8 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
         tmp_path / "models",
         fetcher,  # type: ignore[arg-type]
         bundle_fetcher,  # type: ignore[arg-type]
+        roles=("perlector", "reconstructor"),
+        hashed_at_copy=("perlector",),
     )
 
     assert action.materialize() == {"artifacts": [], "complete": False}
@@ -5084,6 +5092,8 @@ def test_model_store_bootstrap_action_delegates_pinned_materialization(
         "root": tmp_path / "models",
         "fetcher": fetcher,
         "bundle_fetcher": bundle_fetcher,
+        "roles": ("perlector", "reconstructor"),
+        "hashed_at_copy": ("perlector",),
     }
 
 
@@ -6296,13 +6306,33 @@ def test_production_bootstrap_refuses_an_incomplete_model_store_receipt(tmp_path
         materialize_model_store=lambda: {
             "complete": False,
             "real_roster_complete": False,
+            "selection_complete": False,
         },
         cache=None,  # type: ignore[arg-type]
         preflight=lambda: {"color": "green"},
     )
 
-    with pytest.raises(BootstrapStepFailure, match="every real-roster repository"):
+    with pytest.raises(BootstrapStepFailure, match="selected chairs need"):
         actions.materialize_model_store()
+
+
+def test_a_split_pod_needs_only_its_selection_s_repositories(tmp_path: Path) -> None:
+    """A witness pod's store may still lack the Perlector's model; its own chairs may not."""
+
+    def actions_with(receipt: dict[str, object]) -> SubprocessBootstrapActions:
+        return SubprocessBootstrapActions(
+            configuration=lambda: {"profile": "fixture"},
+            repository=tmp_path,
+            transfer=lambda: {},
+            materialize_model_store=lambda: receipt,
+            cache=None,  # type: ignore[arg-type]
+            preflight=lambda: {"color": "green"},
+        )
+
+    partial = {"real_roster_complete": False, "selection_complete": True}
+    assert actions_with(partial).materialize_model_store() == partial
+    with pytest.raises(BootstrapStepFailure, match="selected chairs need"):
+        actions_with({"real_roster_complete": True}).materialize_model_store()
 
 
 def test_red_preflight_details_survive_into_the_bootstrap_failure(tmp_path: Path) -> None:

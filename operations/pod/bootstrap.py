@@ -888,13 +888,27 @@ class ModelStoreBootstrapAction:
         store_root: str | Path,
         fetcher: MaterializationFetcher,
         bundle_fetcher: BundleFetcher,
+        *,
+        roles: tuple[str, ...] | None = None,
+        hashed_at_copy: tuple[str, ...] = (),
     ) -> None:
         self.store_root = Path(store_root)
         self.fetcher = fetcher
         self.bundle_fetcher = bundle_fetcher
+        # The chairs this pod's selected stages use; None for every chair.
+        self.roles = roles
+        # Roles whose store bytes CHAIR_CACHE or PREFLIGHT copy into the chair
+        # cache, hashing them against the same pinned manifest as they copy.
+        self.hashed_at_copy = hashed_at_copy
 
     def materialize(self) -> dict[str, object]:
-        return materialize_real_roster(self.store_root, self.fetcher, self.bundle_fetcher)
+        return materialize_real_roster(
+            self.store_root,
+            self.fetcher,
+            self.bundle_fetcher,
+            roles=self.roles,
+            hashed_at_copy=self.hashed_at_copy,
+        )
 
 
 class SubprocessBootstrapActions:
@@ -1239,10 +1253,11 @@ class SubprocessBootstrapActions:
 
     def materialize_model_store(self) -> dict[str, object]:
         result = self.materialize()
-        if result.get("real_roster_complete") is not True:
+        if result.get("selection_complete") is not True:
             raise BootstrapStepFailure(
                 BootstrapStep.MODEL_STORE,
-                "model-store materialization did not verify every real-roster repository",
+                "model-store materialization did not verify every repository this pod's "
+                "selected chairs need",
                 "Resume the same pinned materialization; do not advance to chair-source "
                 "planning while a real-roster artifact is absent or unverified.",
             )
