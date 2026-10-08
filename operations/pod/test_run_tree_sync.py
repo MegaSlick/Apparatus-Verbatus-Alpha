@@ -246,3 +246,24 @@ def test_an_unreadable_ledger_is_started_again(
 
     monkeypatch.setattr(sync, "_digest", no_hashing)
     assert RunTreeSync(local, volume).sync() == 0
+
+
+@pytest.mark.parametrize("change", ["rewritten", "removed"])
+def test_a_verified_file_changed_after_the_plan_is_refused_not_skipped(
+    tmp_path: Path, change: str
+) -> None:
+    """A file the ledger already verified is skipped only while its source is unchanged:
+    a stage that rewrites or removes it after the boundary fails the sync, rather than
+    the volume keeping the old bytes under a sync that reported success."""
+    local, volume = _trees(tmp_path, {"a.json": b"a"})
+    sync_object = RunTreeSync(local, volume)
+    assert sync_object.sync() == 1
+    plan = sync_object.plan()
+    if change == "rewritten":
+        (local / "a.json").write_bytes(b"a changed")
+    else:
+        (local / "a.json").unlink()
+
+    with pytest.raises(RunTreeSyncError, match="changed during copy|gone since the plan"):
+        sync_object.copy(plan)
+    assert (volume / "a.json").read_bytes() == b"a"

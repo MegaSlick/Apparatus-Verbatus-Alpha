@@ -111,11 +111,15 @@ class RunTreeSync:
         self._directory(self.target)
         for relative_directory in plan.directories:
             self._directory(self.target / relative_directory)
-        pending = [
-            (relative, self.source / relative, self.target / relative, identity)
-            for relative, identity in plan.files
-            if self._verified.get(relative) != identity
-        ]
+        pending = []
+        for relative, identity in plan.files:
+            source = self.source / relative
+            if self._verified.get(relative) == identity:
+                # Skipped only while the source is still the file the ledger verified;
+                # one changed or removed since the plan is refused, as a copied one is.
+                self._require_unchanged(source, identity)
+                continue
+            pending.append((relative, source, self.target / relative, identity))
         copied = 0
         linked: set[Path] = set()
         with ThreadPoolExecutor(max_workers=COPY_WORKERS) as pool:
@@ -132,6 +136,15 @@ class RunTreeSync:
         for directory in sorted(linked):
             _fsync_directory(directory)
         return copied
+
+    @staticmethod
+    def _require_unchanged(source: Path, identity: tuple[int, int]) -> None:
+        try:
+            now = source.stat()
+        except OSError as error:
+            raise RunTreeSyncError(f"local run file is gone since the plan: {source}") from error
+        if (now.st_size, now.st_mtime_ns) != identity:
+            raise RunTreeSyncError(f"local run file changed during copy: {source}")
 
     def _copy_one(self, source: Path, target: Path, identity: tuple[int, int]) -> tuple[str, bool]:
         """Copy one file unless the target already holds it; `(sha256, copied)`."""
