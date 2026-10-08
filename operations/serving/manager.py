@@ -55,6 +55,7 @@ from .errors import (
     ProcessLaunchError,
     ReadinessError,
     ReceiptPublicationError,
+    ResidencyError,
     RuntimePinError,
     ServiceStopError,
     ServingConfigurationError,
@@ -448,8 +449,8 @@ class ServingManager:
         self.hand_off_path = Path(hand_off_path) if hand_off_path is not None else None
         self.service_scope = service_scope
         # True while the active service was taken over: its lease is held by the
-        # service's own process, so stopping it proves the lease free instead of
-        # releasing it.
+        # service's own processes, so stopping it leaves the lease to them
+        # instead of releasing it (`_leave_adopted_lease`).
         self._adopted = False
         self._active: ServiceHandle | None = None
         self._residency_handle: ResidencyHandle | None = None
@@ -813,13 +814,34 @@ class ServingManager:
     def _prove_lease_free(self, identity: ChairIdentity | None) -> None:
         """After a handed-off service stopped, show its lease went with it."""
 
-        try:
-            self.residency_lease.acquire(identity).release()  # type: ignore[arg-type]
-        except ServingError as error:
+        held = self._await_lease_free(identity)
+        if held is not None:
             raise ServiceStopError(
                 f"the handed-off service is stopped or gone, but the card's lease is still "
-                f"held: {error}"
-            ) from error
+                f"held: {held}"
+            ) from held
+
+    def _await_lease_free(self, identity: ChairIdentity | None) -> ResidencyError | None:
+        """Wait up to the shutdown timeout for the card's lease to come free.
+
+        Returns `None` once it was acquired and released, or the last refusal
+        when it is still held. The lease a handed-off service carries is the
+        launching manager's descriptor, inherited by the service's processes;
+        one of them that left the service's process group can keep it a little
+        past the group's end.
+        """
+
+        deadline = self.monotonic() + self.shutdown_timeout_seconds
+        while True:
+            try:
+                self.residency_lease.acquire(identity).release()  # type: ignore[arg-type]
+            except ResidencyError as error:
+                held = error
+            else:
+                return None
+            if self.monotonic() >= deadline:
+                return held
+            self.sleep(self._time_left(deadline, 0.25))
 
     def _read_hand_off(self) -> Mapping[str, Any] | None:
         """The hand-off record beside the lease, `None` when there is none."""
@@ -934,7 +956,7 @@ class ServingManager:
             self._stop_process(handle.process)
             self._assert_endpoint_absent(handle.endpoint)
             if self._adopted:
-                self._prove_lease_free(handle.identity)
+                self._leave_adopted_lease(handle)
             else:
                 self._release_residency()
         except BaseException as error:
@@ -948,6 +970,28 @@ class ServingManager:
         else:
             self._active = None
             self._adopted = False
+
+    def _leave_adopted_lease(self, handle: ServiceHandle) -> None:
+        """After a taken-over service stopped, leave its lease to whoever still holds it.
+
+        This manager never held that lease: the launching manager's descriptor
+        went to the service's processes, and only they can let it go. On
+        2026-10-08 one of them still held it after the
+        whole process group had exited and the endpoint was gone, and failing
+        here cost the Coniector its seal although its service was stopped. The
+        group and the endpoint are what this stop verifies; the lease stays
+        the gate every later start must pass, so while such a process lives
+        no server can start on the card. Its holders are named on stderr.
+        """
+
+        held = self._await_lease_free(handle.identity)
+        if held is not None:
+            print(
+                f"serving: chair {handle.identity.role!r}'s taken-over service is stopped "
+                f"and its endpoint is gone, but the card's lease is still held, so no "
+                f"chair can start until it is free: {held}",
+                file=sys.stderr,
+            )
 
     def hand_off(self, handle: ServiceHandle) -> bool:
         """Leave this running service for the next stage's process to take over.
