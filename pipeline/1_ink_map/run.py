@@ -25,24 +25,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from common.background import (  # noqa: E402
-    BackgroundInferenceRefusal,
-    load_background_config,
-    resolve_background_policy,
-)
+from common import ink_map_measure  # noqa: E402
+from common.background import load_background_config  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.approval import parse_ingress_record  # noqa: E402
 from common.contracts.canonical import is_plain_int  # noqa: E402
 from common.contracts.errors import FatalAccounting  # noqa: E402
 from common.contracts.stages import EXEMPLAR, INK_MAP  # noqa: E402
-from common.exemplar_boundary import sealed_page_bytes, verify_sealed_page_pixels  # noqa: E402
-from common.imaging import UnsettledReadingPolicy, grayscale_rows  # noqa: E402
-from common.residual_ink import (  # noqa: E402
-    INK_NOT_MEASURABLE,
-    ink_map_page,
-    load_coverage_audit_config,
-    resolve_coverage_audit_policy,
-)
+from common.exemplar_boundary import verify_sealed_page_pixels  # noqa: E402
+from common.ink_map_measure import NOT_MEASURABLE, measure_pages  # noqa: E402
+from common.residual_ink import INK_NOT_MEASURABLE, load_coverage_audit_config  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     open_stage_context,
@@ -109,9 +101,7 @@ def measured_page_bytes(tree, ordinal: int, page: dict) -> bytes:
     would make peak memory the size of the shard's pixels. The Recensor reads
     inside its own loop for the same reason.
     """
-    return sealed_page_bytes(
-        tree, page, what=f"the ink map (page {ordinal})", refusal=FatalAccounting
-    )
+    return ink_map_measure.measured_page_bytes(tree, ordinal, page)
 
 
 def artifact_finding(finding: dict) -> dict:
@@ -156,35 +146,15 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
     # splits its counts on. Read once for the run for the same reason.
     coverage_config = load_coverage_audit_config(context.args.ink_map_config)
     context.require_sealed_config("ink-map", coverage_config["config_sha256"])
-    for ordinal, page, page_path in sealed_pages(context):
-        image_bytes = measured_page_bytes(context.tree, ordinal, page)
-        try:
-            # `measured_page_bytes` proves these bytes match the digest the
-            # Exemplar sealed, not that the decoder can read them. Earlier pages
-            # are already published, so either refusal says the map is
-            # incomplete and names its own cause.
-            width, height, rows = grayscale_rows(image_bytes)
-        except UnsettledReadingPolicy as error:
-            raise FatalAccounting(
-                f"the ink map cannot measure sealed Exemplar page {ordinal}: the pipeline has "
-                f"no settled policy for reading its pixels as grey ({error}); the bytes are "
-                "intact, no boundary was sealed, and the records already published for "
-                "earlier pages of this run are an incomplete map"
-            ) from error
-        except ValueError as error:
-            raise FatalAccounting(
-                f"the ink map cannot measure sealed Exemplar page {ordinal}: its own "
-                f"digest-verified pixels do not decode ({error}); no boundary was "
-                "sealed, and the records already published for earlier pages of this "
-                "run are an incomplete map"
-            ) from error
-        policy = resolve_background_policy(background_config, width, height)
-        audit_policy = resolve_coverage_audit_policy(coverage_config, width, height)
-        try:
-            measured = ink_map_page(
-                width, height, rows, background_policy=policy, coverage_policy=audit_policy
-            )
-        except BackgroundInferenceRefusal as error:
+    pages = measure_pages(
+        context.tree,
+        sealed_pages(context),
+        background_config,
+        coverage_config,
+        read_page=measured_page_bytes,
+    )
+    for ordinal, page, page_path, (kind, measured) in pages:
+        if kind == NOT_MEASURABLE:
             # Named, and still in the census: the Designator still cuts this
             # page, and the Armarium reconciles its page denominator against
             # the census. `mapped` with zero counts would be an audit passing by
@@ -197,7 +167,7 @@ def main(registry_factory=ChairRegistry.from_toml) -> int:
                 payload={
                     "page_ordinal": ordinal,
                     "ink_measurable": False,
-                    "background_refusal": str(error),
+                    "background_refusal": measured,
                     "background_config_sha256": background_config["config_sha256"],
                 },
             )
