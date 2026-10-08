@@ -281,6 +281,65 @@ def test_a_pool_of_copies_runs_largest_first_and_refuses_the_lexically_first_fil
         assert "snapshot differs at a.bin" in str(caught.value)
 
 
+def test_one_pool_takes_the_largest_waiting_file_across_every_fill(tmp_path):
+    """Two fills share one worker; it always takes the largest file still waiting."""
+    from common.cpus import IoWorkers
+
+    order: list[str] = []
+    started = threading.Event()
+    release = threading.Event()
+
+    def job(name):
+        def run():
+            if name == "first":
+                started.set()
+                assert release.wait(timeout=5)
+            order.append(name)
+            return name
+
+        return run
+
+    with manifests.CopyPool(IoWorkers(1, "test")) as pool:
+        results: dict[str, list[str]] = {}
+        blocker = threading.Thread(
+            target=lambda: results.update(a=pool.run([(100, job("first")), (5, job("a-small"))]))
+        )
+        blocker.start()
+        assert started.wait(timeout=5)
+        other = threading.Thread(
+            target=lambda: results.update(b=pool.run([(10, job("b-large")), (2, job("b-tiny"))]))
+        )
+        other.start()
+        deadline = 50
+        while len(pool._waiting) < 3 and deadline:
+            deadline -= 1
+            threading.Event().wait(0.01)
+        release.set()
+        blocker.join(timeout=5)
+        other.join(timeout=5)
+
+    assert order[0] == "first"
+    assert order[1:] == ["b-large", "a-small", "b-tiny"]
+    assert results == {"a": ["first", "a-small"], "b": ["b-large", "b-tiny"]}
+    assert len(pool._threads) == 1
+
+
+def test_files_copied_through_a_shared_pool_record_its_worker_count(tmp_path):
+    from common.cpus import IoWorkers
+
+    files = {"a.bin": b"a\n", "b.bin": b"bbbb\n"}
+    remote = write_snapshot(tmp_path / "remote", files)
+    rows = {row.path: row for row in build_manifest(remote).rows}
+    items = [(remote / name, tmp_path / "copy" / name, rows[name]) for name in sorted(files)]
+
+    with manifests.CopyPool(IoWorkers(3, "shared-test")) as pool:
+        ledger = manifests.copy_and_digest_files(items, chair="attestator_1", pool=pool)
+
+    assert ledger.digests == {name: rows[name].sha256 for name in files}
+    assert ledger.workers == IoWorkers(3, "shared-test")
+    assert len(pool._threads) == 2, "never more threads than files waiting"
+
+
 def test_a_malformed_worker_override_is_a_configuration_refusal(tmp_path, monkeypatch):
     monkeypatch.setenv("VERBATUS_IO_WORKERS", "many")
 

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from common.chairs.errors import ChairRefusal, DiskSpaceRefusal
+from common.chairs.manifests import CopyPool
 from common.chairs.models import ChairIdentity, is_witness_role
 from common.chairs.registry import DIGEST_CACHE_DIRECTORY, ChairRegistry
 
@@ -63,6 +64,9 @@ class PrefillChairs:
     registry: ChairRegistry
     chairs: tuple[ChairIdentity, ...]
     deferred: tuple[dict[str, str], ...] = ()
+    # The copy workers the registry's fetcher shares across the concurrent fills;
+    # closed when the prefill ends.
+    pool: CopyPool | None = None
 
 
 @dataclass(slots=True)
@@ -71,6 +75,7 @@ class _Outcome:
     deferred: list[dict[str, str]] = field(default_factory=list)
     failure: BaseException | None = None
     seconds: float | None = None
+    copy_pool: dict[str, object] | None = None
 
 
 class ChairCachePrefill:
@@ -126,7 +131,10 @@ class ChairCachePrefill:
         self._outcome.deferred.extend(plan.deferred)
         chairs = self._fitting(plan, dict(reserved or {}))
         self._thread = threading.Thread(
-            target=self._fill, args=(plan.registry, chairs), name="chair-cache-prefill", daemon=True
+            target=self._fill,
+            args=(plan.registry, chairs, plan.pool),
+            name="chair-cache-prefill",
+            daemon=True,
         )
         self._thread.start()
 
@@ -146,6 +154,7 @@ class ChairCachePrefill:
             "filled": list(self._outcome.filled),
             "deferred": list(self._outcome.deferred),
             "seconds": self._outcome.seconds,
+            "copy_pool": self._outcome.copy_pool,
         }
 
     def _fitting(self, plan: PrefillChairs, reserved: dict[int, int]) -> list[ChairIdentity]:
@@ -196,24 +205,62 @@ class ChairCachePrefill:
             chosen.append(chair)
         return chosen
 
-    def _fill(self, registry: ChairRegistry, chairs: list[ChairIdentity]) -> None:
+    def _fill(
+        self, registry: ChairRegistry, chairs: list[ChairIdentity], pool: CopyPool | None
+    ) -> None:
+        """Fill each digest on its own thread, all copying through one shared pool.
+
+        Chairs that share a digest fill in turn on one thread (the second finds
+        the first's verified copy). The record and any refusal are taken in
+        chair order afterwards, so neither depends on which fill finished first.
+        """
+
         began = time.monotonic()
-        try:
-            for chair in chairs:
+        by_digest: dict[str, list[ChairIdentity]] = {}
+        for chair in chairs:
+            by_digest.setdefault(chair.digest_manifest, []).append(chair)
+        results: dict[str, object] = {}
+
+        def fill(group: list[ChairIdentity]) -> None:
+            for chair in group:
                 try:
-                    snapshot = registry.ensure(chair, evict=False)
+                    results[chair.role] = registry.ensure(chair, evict=False)
                 except DiskSpaceRefusal as refusal:
-                    self._outcome.deferred.append({"chair": chair.role, "reason": str(refusal)})
-                    continue
+                    results[chair.role] = refusal
+                except BaseException as error:  # surfaced by `wait`, in the step that waits
+                    results[chair.role] = error
+                    return
+
+        try:
+            threads = [
+                threading.Thread(target=fill, args=(group,), name="chair-cache-fill", daemon=True)
+                for group in by_digest.values()
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        finally:
+            if pool is not None:
+                pool.close()
+        for chair in chairs:
+            result = results.get(chair.role)
+            if result is None:
+                continue
+            if isinstance(result, DiskSpaceRefusal):
+                self._outcome.deferred.append({"chair": chair.role, "reason": str(result)})
+            elif isinstance(result, BaseException):
+                if self._outcome.failure is None:
+                    self._outcome.failure = result
+            else:
                 filled: dict[str, object] = {
                     "chair": chair.role,
-                    "manifest_digest": snapshot.manifest_digest,
-                    "root": str(snapshot.root),
+                    "manifest_digest": result.manifest_digest,
+                    "root": str(result.root),
                 }
-                if snapshot.verification is not None:
-                    filled["verification"] = dict(snapshot.verification)
+                if result.verification is not None:
+                    filled["verification"] = dict(result.verification)
                 self._outcome.filled.append(filled)
-        except BaseException as error:  # surfaced by `wait`, in the step that waits
-            self._outcome.failure = error
-        finally:
-            self._outcome.seconds = round(time.monotonic() - began, 1)
+        if pool is not None:
+            self._outcome.copy_pool = pool.workers.to_record()
+        self._outcome.seconds = round(time.monotonic() - began, 1)

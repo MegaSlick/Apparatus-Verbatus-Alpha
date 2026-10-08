@@ -23,18 +23,24 @@ FREE = 10**9
 
 
 class PerRoleFetcher(RecordingFetcher):
-    """Each role pins its own bytes; optionally blocks until released."""
+    """Each role pins its own bytes; optionally waits on a gate or a barrier first."""
 
     def __init__(self, files_by_role, *, gate: threading.Event | None = None):
         super().__init__({})
         self.files_by_role = files_by_role
         self.gate = gate
+        self.barrier: threading.Barrier | None = None
 
     def fetch(self, identity, destination: Path, paths):
+        self.calls.append((identity.role, paths))
         if self.gate is not None:
             assert self.gate.wait(timeout=10)
-        self.files = self.files_by_role[identity.role]
-        super().fetch(identity, destination, paths)
+        if self.barrier is not None:
+            self.barrier.wait(timeout=10)
+        for relative in paths:
+            path = destination / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(self.files_by_role[identity.role][relative])
 
 
 def _world(tmp_path: Path, roles, *, gate=None):
@@ -91,7 +97,7 @@ def test_the_fill_runs_in_the_background_and_its_record_names_each_verified_copy
     gate.set()
     record = prefill.wait()
 
-    assert fetcher.roles == ["attestator_1", "perlector"]
+    assert sorted(fetcher.roles) == ["attestator_1", "perlector"]
     assert record["started_at_step"] == "uv-environment"
     assert [item["chair"] for item in record["filled"]] == ["attestator_1", "perlector"]
     for item in record["filled"]:
@@ -99,6 +105,82 @@ def test_the_fill_runs_in_the_background_and_its_record_names_each_verified_copy
         assert item["root"].endswith(item["manifest_digest"])
     assert record["deferred"] == []
     assert prefill.registry is registry
+
+
+def test_each_digest_fills_at_the_same_time_and_the_pool_is_closed_after(tmp_path: Path) -> None:
+    from common.chairs.manifests import CopyPool
+    from common.cpus import IoWorkers
+
+    registry, fetcher = _world(tmp_path, ("attestator_1", "attestator_3", "perlector"))
+    # Every fill must be in flight at once for any of them to pass.
+    fetcher.barrier = threading.Barrier(3)
+    pool = CopyPool(IoWorkers(2, "test"))
+    chairs = tuple(registry.resolve(role) for role in ("attestator_1", "attestator_3", "perlector"))
+    prefill = ChairCachePrefill(
+        lambda: PrefillChairs(registry, chairs, (), pool),
+        free_bytes=lambda _path: FREE,
+        filesystem_key=lambda _path: 1,
+    )
+
+    prefill.start("uv-environment")
+    record = prefill.wait()
+
+    assert [item["chair"] for item in record["filled"]] == [
+        "attestator_1",
+        "attestator_3",
+        "perlector",
+    ]
+    assert record["copy_pool"] == {"workers": 2, "source": "test"}
+    assert pool._closed and pool.run([(1, lambda: "inline")]) == ["inline"]
+
+
+def test_the_refusal_raised_is_the_first_chair_s_whichever_fill_finished_first(
+    tmp_path: Path,
+) -> None:
+    registry, fetcher = _world(tmp_path, ("attestator_1", "perlector"))
+    fetcher.files_by_role["attestator_1"] = {"weights.bin": b"a flipped byte lands here!!\n"}
+    fetcher.files_by_role["perlector"] = {"weights.bin": b"another flipped byte here!!\n"}
+    perlector_done = threading.Event()
+    real_fetch = fetcher.fetch
+
+    def ordered(identity, destination, paths):
+        if identity.role == "attestator_1":
+            assert perlector_done.wait(timeout=10)
+        try:
+            return real_fetch(identity, destination, paths)
+        finally:
+            if identity.role == "perlector":
+                perlector_done.set()
+
+    fetcher.fetch = ordered
+    prefill = _prefill(registry, ("attestator_1", "perlector"))
+
+    prefill.start("uv-environment")
+
+    with pytest.raises(DigestMismatchRefusal) as caught:
+        prefill.wait()
+    assert caught.value.chair == "attestator_1"
+
+
+def test_two_chairs_on_one_digest_fill_it_once(tmp_path: Path) -> None:
+    files = {"weights.bin": b"27B weights\n"}
+    remote = write_snapshot(tmp_path / "remote", files)
+    pin = pin_snapshot(remote, tmp_path / "manifests" / "perlector.json")
+    chairs = {
+        "perlector": hf_chair("perlector", pin),
+        "reconstructor": hf_chair("reconstructor", pin, manifest="manifests/perlector.json"),
+    }
+    fetcher = RecordingFetcher(files)
+    registry = registry_for(config_of(tmp_path, chairs, witness_floor=0), tmp_path, fetcher)
+    prefill = _prefill(registry, ("perlector", "reconstructor"), free=len(files["weights.bin"]))
+
+    prefill.start("uv-environment")
+    record = prefill.wait()
+
+    assert fetcher.roles == ["perlector"]
+    assert [item["root"] for item in record["filled"]] == [
+        str(registry.cache_root / "by-digest" / pin)
+    ] * 2
 
 
 def test_a_second_start_and_a_second_wait_do_not_copy_again(tmp_path: Path) -> None:

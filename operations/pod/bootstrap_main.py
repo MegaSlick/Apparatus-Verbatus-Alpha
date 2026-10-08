@@ -110,7 +110,7 @@ from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from common.chairs.config import parse_models_config
 from common.chairs.errors import ChairRefusal
-from common.chairs.manifests import CopyLedger, verify_snapshot
+from common.chairs.manifests import CopyLedger, copy_pool, verify_snapshot
 from common.chairs.model_store import (
     StoreRoleFetcher,
     artifacts_for_roles,
@@ -1142,7 +1142,8 @@ def _prefill_chairs(plan: Plan) -> PrefillChairs | None:
 
     if plan.models_config is None or plan.cache_root is None or plan.store_root is None:
         return None
-    fetcher = StoreRoleFetcher(plan.store_root)
+    # One pool of copy workers across every file of every chair, largest first.
+    fetcher = StoreRoleFetcher(plan.store_root, pool=copy_pool(chair="chair-cache"))
     registry = ChairRegistry.from_toml(plan.models_config, cache_root=plan.cache_root)
     registry.fetcher = fetcher
     chairs: list[ChairIdentity] = []
@@ -1161,7 +1162,7 @@ def _prefill_chairs(plan: Plan) -> PrefillChairs | None:
             deferred.append({"chair": role, "reason": f"store source not ready: {refusal}"})
             continue
         chairs.append(identity)
-    return PrefillChairs(registry, tuple(chairs), tuple(deferred))
+    return PrefillChairs(registry, tuple(chairs), tuple(deferred), fetcher.pool)
 
 
 def _place_local_chair(

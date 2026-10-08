@@ -2020,6 +2020,27 @@ def test_role_fetch_hashes_each_file_as_it_copies_and_refuses_a_difference(tmp_p
         fetcher.fetch(identity, second, ("unpinned.bin",))
 
 
+def test_role_fetch_copies_through_a_shared_pool_when_given_one(tmp_path):
+    from common.chairs.manifests import CopyPool
+    from common.cpus import IoWorkers
+
+    record = _store(tmp_path)
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    row = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
+    identity = replace(real.chairs["perlector"], digest_manifest=row["digest_manifest"])
+    destination = tmp_path / "shared-copy"
+    destination.mkdir()
+
+    with CopyPool(IoWorkers(5, "shared")) as pool:
+        ledger = StoreRoleFetcher(tmp_path, pool=pool).fetch(
+            identity, destination, ("config.json", "model.safetensors")
+        )
+        assert pool._threads, "the copies ran on the shared pool's workers"
+
+    assert ledger.workers == IoWorkers(5, "shared")
+    assert sorted(ledger.digests) == ["config.json", "model.safetensors"]
+
+
 def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path):
     """Pointing cache_root at the store makes the registry stamp its descriptor.
 

@@ -1101,8 +1101,9 @@ def test_the_background_fill_takes_selected_store_ready_chairs_in_stage_order(
     )
 
     class Fetcher:
-        def __init__(self, root: Path) -> None:
+        def __init__(self, root: Path, *, pool=None) -> None:  # type: ignore[no-untyped-def]
             assert root == tmp_path / "store"
+            self.pool = pool
 
         def plan(self, identity):  # type: ignore[no-untyped-def]
             if identity.role == "attestator_2":
@@ -1127,6 +1128,8 @@ def test_the_background_fill_takes_selected_store_ready_chairs_in_stage_order(
 
     assert [chair.role for chair in chairs.chairs] == ["attestator_1", "perlector", "reconstructor"]
     assert isinstance(chairs.registry.fetcher, Fetcher)
+    assert chairs.pool is not None and chairs.registry.fetcher.pool is chairs.pool
+    chairs.pool.close()
     (deferred,) = chairs.deferred
     assert deferred["chair"] == "attestator_2"
     assert "not present" in deferred["reason"]
