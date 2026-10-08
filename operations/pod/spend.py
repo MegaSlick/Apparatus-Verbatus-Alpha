@@ -21,7 +21,7 @@ from .models import (
 )
 from .shutdown import BILLING_RECONCILIATION_ATTEMPTS, BILLING_RECONCILIATION_RETRY_SECONDS
 
-SPEND_SCHEMA = "pod-spend.v4"
+SPEND_SCHEMA = "pod-spend.v5"
 
 RETIRED_SPEND_SCHEMAS = {
     "pod-spend.v2": (
@@ -31,6 +31,10 @@ RETIRED_SPEND_SCHEMAS = {
     "pod-spend.v3": (
         "a configured pod-spend.v3 policy predates the required soft and hard pod budget "
         "maximums (soft_max_seconds, hard_max_seconds, soft_max_cost_usd, hard_max_cost_usd)"
+    ),
+    "pod-spend.v4": (
+        "a configured pod-spend.v4 policy predates the required pod_budget and ladder_delete "
+        "switches, which say whether the budget and the guard's idle delete are on"
     ),
 }
 """Schemas this loader once accepted, and what changed under each name.
@@ -106,6 +110,11 @@ POD_BUDGET_ENVIRONMENT = {
 }
 """The pod environment a launch seals its policy's soft and hard maximums into, by field."""
 
+POD_BUDGET_SWITCH_ENVIRONMENT = "VERBATUS_POD_BUDGET"
+"""The pod environment that says whether the budget is on: "on" or "off"."""
+
+SWITCH_VALUES = frozenset({"on", "off"})
+
 
 @dataclass(frozen=True, slots=True)
 class SpendPolicy:
@@ -131,6 +140,11 @@ class SpendPolicy:
     (``hard_lifetime_seconds``, ``max_estimated_metered_cost_usd``) may not pass
     it: time past the soft maximum is an extension only the lead makes, and the
     hard maximum bounds what an extension may reach.
+
+    ``pod_budget`` turns that budget on or off. Off, the four maximums may stay in the
+    file but bind nothing: no guard deadline, no backstop. ``ladder_delete`` says whether
+    the guard's idle ladder ends with deleting the pod. The hourly, metered-cost,
+    balance and lifetime ceilings govern every launch either way.
     """
 
     state: str
@@ -148,23 +162,34 @@ class SpendPolicy:
     hard_max_seconds: int | None = None
     soft_max_cost_usd: Decimal | None = None
     hard_max_cost_usd: Decimal | None = None
+    pod_budget: str | None = None
+    ladder_delete: str | None = None
 
     @property
     def configured(self) -> bool:
         return self.state == "configured"
 
+    @property
+    def budget_on(self) -> bool:
+        return self.pod_budget == "on"
+
     def budget_environment(self) -> dict[str, str]:
-        """The soft and hard maximums as the pod's environment carries them; none when
-        unconfigured."""
+        """The budget switch, and the soft and hard maximums when it is on, as the pod's
+        environment carries them; none when unconfigured."""
 
         if not self.configured:
             return {}
-        return {name: str(getattr(self, field)) for field, name in POD_BUDGET_ENVIRONMENT.items()}
+        if not self.budget_on:
+            return {POD_BUDGET_SWITCH_ENVIRONMENT: "off"}
+        return {
+            POD_BUDGET_SWITCH_ENVIRONMENT: "on",
+            **{name: str(getattr(self, field)) for field, name in POD_BUDGET_ENVIRONMENT.items()},
+        }
 
     def __post_init__(self) -> None:
         if self.state not in {"unconfigured", "configured"}:
             raise SpendRefusal("spend state must be 'unconfigured' or 'configured'")
-        values = (
+        ceilings = (
             self.max_hourly_usd,
             self.max_estimated_metered_cost_usd,
             self.account_balance_floor_usd,
@@ -174,16 +199,29 @@ class SpendPolicy:
             self.shutdown_poll_interval_seconds,
             self.shutdown_deadline_seconds,
             self.billing_cutoff_margin_seconds,
+        )
+        maximums = (
             self.soft_max_seconds,
             self.hard_max_seconds,
             self.soft_max_cost_usd,
             self.hard_max_cost_usd,
         )
         if not self.configured:
-            if any(value is not None for value in values):
+            if any(
+                value is not None
+                for value in (*ceilings, *maximums, self.pod_budget, self.ladder_delete)
+            ):
                 raise SpendRefusal("unconfigured spend policy cannot carry latent paid ceilings")
             return
-        if any(value is None for value in values):
+        for label, switch in (
+            ("pod_budget", self.pod_budget),
+            ("ladder_delete", self.ladder_delete),
+        ):
+            if switch not in SWITCH_VALUES:
+                raise SpendRefusal(f"{label} must be 'on' or 'off'")
+        if any(value is None for value in ceilings) or (
+            self.budget_on and any(value is None for value in maximums)
+        ):
             raise SpendRefusal("configured spend policy is missing a required ceiling")
         object.__setattr__(self, "max_hourly_usd", as_decimal(self.max_hourly_usd, "max hourly"))
         object.__setattr__(
@@ -216,30 +254,10 @@ class SpendPolicy:
             ("laptop heartbeat timeout", self.laptop_heartbeat_timeout_seconds),
             ("shutdown poll interval", self.shutdown_poll_interval_seconds),
             ("shutdown deadline", self.shutdown_deadline_seconds),
-            ("soft maximum seconds", self.soft_max_seconds),
-            ("hard maximum seconds", self.hard_max_seconds),
         ):
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise SpendRefusal(f"{label} must be a positive integer")
-        object.__setattr__(
-            self, "soft_max_cost_usd", as_decimal(self.soft_max_cost_usd, "soft maximum cost")
-        )
-        object.__setattr__(
-            self, "hard_max_cost_usd", as_decimal(self.hard_max_cost_usd, "hard maximum cost")
-        )
-        if self.soft_max_cost_usd <= 0:
-            raise SpendRefusal("soft maximum cost must be positive")
-        if self.soft_max_seconds > self.hard_max_seconds:
-            raise SpendRefusal("soft maximum seconds cannot exceed the hard maximum seconds")
-        if self.soft_max_cost_usd > self.hard_max_cost_usd:
-            raise SpendRefusal("soft maximum cost cannot exceed the hard maximum cost")
-        # The launch ceilings arm the guard's deadline, which sits at the soft
-        # maximum; a launch ceiling past it would let a pod run beyond the soft
-        # maximum with no extension.
-        if self.hard_lifetime_seconds > self.soft_max_seconds:
-            raise SpendRefusal("hard lifetime cannot exceed the soft maximum seconds")
-        if self.max_estimated_metered_cost_usd > self.soft_max_cost_usd:
-            raise SpendRefusal("max estimated metered cost cannot exceed the soft maximum cost")
+        self._check_maximums()
         if self.laptop_heartbeat_timeout_seconds >= self.hard_lifetime_seconds:
             raise SpendRefusal("laptop heartbeat timeout must be shorter than hard lifetime")
         if self.shutdown_poll_interval_seconds > self.shutdown_deadline_seconds:
@@ -270,6 +288,48 @@ class SpendPolicy:
             )
         except ValueError as error:
             raise SpendRefusal(str(error)) from error
+
+    def _check_maximums(self) -> None:
+        """Each maximum present must be positive; with the budget on all four are present
+        and must be ordered against each other and the launch ceilings."""
+
+        for label, value in (
+            ("soft maximum seconds", self.soft_max_seconds),
+            ("hard maximum seconds", self.hard_max_seconds),
+        ):
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            ):
+                raise SpendRefusal(f"{label} must be a positive integer")
+        for field, label in (
+            ("soft_max_cost_usd", "soft maximum cost"),
+            ("hard_max_cost_usd", "hard maximum cost"),
+        ):
+            value = getattr(self, field)
+            if value is not None:
+                object.__setattr__(self, field, as_decimal(value, label))
+                if getattr(self, field) <= 0:
+                    raise SpendRefusal(f"{label} must be positive")
+        if not self.budget_on:
+            return
+        # Narrowing, not a check: `__post_init__` raises `SpendRefusal` before this call
+        # on a policy whose budget is on and that is missing any of these, and a `raise`
+        # survives `-O`.
+        assert self.soft_max_seconds is not None and self.hard_max_seconds is not None
+        assert self.soft_max_cost_usd is not None and self.hard_max_cost_usd is not None
+        assert self.hard_lifetime_seconds is not None
+        assert self.max_estimated_metered_cost_usd is not None
+        if self.soft_max_seconds > self.hard_max_seconds:
+            raise SpendRefusal("soft maximum seconds cannot exceed the hard maximum seconds")
+        if self.soft_max_cost_usd > self.hard_max_cost_usd:
+            raise SpendRefusal("soft maximum cost cannot exceed the hard maximum cost")
+        # The launch ceilings arm the guard's deadline, which sits at the soft
+        # maximum; a launch ceiling past it would let a pod run beyond the soft
+        # maximum with no extension.
+        if self.hard_lifetime_seconds > self.soft_max_seconds:
+            raise SpendRefusal("hard lifetime cannot exceed the soft maximum seconds")
+        if self.max_estimated_metered_cost_usd > self.soft_max_cost_usd:
+            raise SpendRefusal("max estimated metered cost cannot exceed the soft maximum cost")
 
 
 class SpendRefusalCause(StrEnum):
@@ -424,7 +484,7 @@ def load_spend_policy_bytes(data: bytes, *, source: str | Path = "<bytes>") -> S
         retired = RETIRED_SPEND_SCHEMAS.get(schema) if isinstance(schema, str) else None
         if retired is not None:
             raise SpendRefusal(
-                f"spend policy schema {schema!r} is retired: {retired}. Add that ceiling "
+                f"spend policy schema {schema!r} is retired: {retired}. Add those fields "
                 f"deliberately and rename the schema to {SPEND_SCHEMA!r}"
             )
         raise SpendRefusal(f"spend policy schema must be {SPEND_SCHEMA!r}")
@@ -451,12 +511,16 @@ def load_spend_policy_bytes(data: bytes, *, source: str | Path = "<bytes>") -> S
         "hard_max_seconds",
         "soft_max_cost_usd",
         "hard_max_cost_usd",
+        "pod_budget",
+        "ladder_delete",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
         raise SpendRefusal(f"spend policy has unknown field(s) {unknown}")
     if raw.get("currency") != "USD":
         raise SpendRefusal("configured spend policy currency must be USD")
+    # The maximums bind only with the budget on; off, they may be left out.
+    maximum_required = raw.get("pod_budget") == "on"
     try:
         return SpendPolicy(
             state="configured",
@@ -477,8 +541,14 @@ def load_spend_policy_bytes(data: bytes, *, source: str | Path = "<bytes>") -> S
             billing_cutoff_margin_seconds=raw.get("billing_cutoff_margin_seconds"),
             soft_max_seconds=raw.get("soft_max_seconds"),
             hard_max_seconds=raw.get("hard_max_seconds"),
-            soft_max_cost_usd=_decimal_text(raw.get("soft_max_cost_usd"), "soft_max_cost_usd"),
-            hard_max_cost_usd=_decimal_text(raw.get("hard_max_cost_usd"), "hard_max_cost_usd"),
+            soft_max_cost_usd=_decimal_text(
+                raw.get("soft_max_cost_usd"), "soft_max_cost_usd", required=maximum_required
+            ),
+            hard_max_cost_usd=_decimal_text(
+                raw.get("hard_max_cost_usd"), "hard_max_cost_usd", required=maximum_required
+            ),
+            pod_budget=raw.get("pod_budget"),
+            ladder_delete=raw.get("ladder_delete"),
         )
     except (TypeError, ValueError, SpendRefusal) as error:
         if isinstance(error, SpendRefusal):
@@ -646,8 +716,10 @@ def require_confirmation(value: str | None, expected: str) -> None:
     )
 
 
-def _decimal_text(value: object, label: str) -> Decimal:
+def _decimal_text(value: object, label: str, *, required: bool = True) -> Decimal | None:
     if value is None:
+        if not required:
+            return None
         raise SpendRefusal(f"configured spend policy is missing {label}")
     if not isinstance(value, str):
         raise SpendRefusal(f"{label} must be a decimal string, not a TOML number")

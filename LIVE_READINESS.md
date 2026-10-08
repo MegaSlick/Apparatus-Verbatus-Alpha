@@ -13,7 +13,10 @@ been checked against the real tool or account. Nothing here is permission to spe
 the RunPod console). The guard drill (step 6) uses the cheapest card, `NVIDIA RTX A5000`,
 $0.27/h.
 
-**The pod budget** is the lead's, in `config/spend.toml` (`pod-spend.v4`): at most
+**The pod budget** is the lead's, in `config/spend.toml` (`pod-spend.v5`). It is
+committed off (`pod_budget = "off"`): a pod then has no guard deadline or backstop unless
+started with a number of hours, and the guard's idle ladder warns without deleting unless
+`ladder_delete = "on"` (`operations/pod/README.md`). With the budget on: at most
 $2.10/h for pod plus volume, a soft maximum of 2 h or $5.00 and a hard maximum of 3 h or
 $7.00, whichever comes first. A pod's window is 2 h: the guard's deadline sits at the
 soft maximum. Going past it is an extension only the lead makes, and the hard maximum
@@ -240,8 +243,9 @@ runpodctl pod get <pod id>          # shows the SSH details
 ```
 
 `pod_start_command.sh` exits 0 and prints the start command, or exits 2 and prints
-nothing when the hours are past the hard maximum (3 h) or the hard maximum cannot be read
-from `config/spend.toml`. The `&&` keeps a refusal from creating a pod: written inline as
+nothing when the hours are zero or `pod_budget` cannot be read from `config/spend.toml`,
+and, with the budget on, when the hours are past the hard maximum (3 h) or the hard
+maximum cannot be read. The `&&` keeps a refusal from creating a pod: written inline as
 `--docker-args "$(...)"`, the create would still run, with no guard. The backstop counts
 the hard maximum from when the command is printed, so print it afresh for every pod. That
 moment is read from the laptop's clock, so keep it set automatically (System Settings,
@@ -262,8 +266,9 @@ A 40 GB volume ran out mid-fetch; 200 GB held it with room to spare. Fetching to
 8 minutes in EU-RO-1.
 
 Over SSH, `tail /workspace/private/.pod_guard/guard.log` must show `armed for pod <id>`;
-if not, `runpodctl pod delete <pod id>` and stop. Otherwise leave it: idle, it should
-delete itself after about 30 minutes. Confirm as in step 10. (Drill disk size: to confirm.)
+if not, `runpodctl pod delete <pod id>` and stop. Otherwise leave it: idle, the phone
+hears at 15 and 30 minutes, and the guard deletes the pod at its one-hour deadline (the
+idle ladder itself deletes only with `ladder_delete = "on"`, and only after two hours). Confirm as in step 10. (Drill disk size: to confirm.)
 
 ## 7. Launch a real run
 
@@ -277,8 +282,8 @@ sed -n 's/^NTFY_TOPIC=//p' private/ntfy.conf | tail -n 1 | tr -d "\"'" |
 
 Create the pod as in step 6, but with `--name verbatus-<run id>`,
 `--gpu-id "NVIDIA RTX PRO 6000 Blackwell Server Edition"`, `--container-disk-in-gb 120`
-and `pod_start_command.sh 2 <sha>` (the 2 h window, the soft maximum; it refuses more
-than the 3 h hard maximum). Then, on the
+and `pod_start_command.sh 2 <sha>` (the 2 h window, the soft maximum; with the budget on
+it refuses more than the 3 h hard maximum). Then, on the
 pod over SSH, the checks from `operations/pod/README.md` ("On the pod, over SSH"):
 `findmnt /workspace/private`, the guard log, `echo "$RUNPOD_POD_ID"`, the deadline file,
 then

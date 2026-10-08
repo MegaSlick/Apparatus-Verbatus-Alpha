@@ -20,7 +20,7 @@ from .cli import _request
 from .conftest import configured_spend_toml
 from .models import PodCreateRequest, utc_now
 from .preflight import load_placement_table
-from .spend import SpendPolicy, load_spend_policy
+from .spend import SPEND_SCHEMA, SpendPolicy, load_spend_policy
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 PLACEMENT = REPOSITORY / "config" / "pod_placement.toml"
@@ -43,6 +43,8 @@ def configured(**overrides: object) -> SpendPolicy:
         "hard_max_seconds": 86_400,
         "soft_max_cost_usd": Decimal("1000.00"),
         "hard_max_cost_usd": Decimal("1000.00"),
+        "pod_budget": "on",
+        "ladder_delete": "off",
     }
     fields.update(overrides)
     return SpendPolicy(**fields)  # type: ignore[arg-type]
@@ -301,7 +303,7 @@ def test_main_exits_two_on_an_uncommitted_unconfigured_policy(
     """Against a policy file this test writes itself, so the refusal path keeps
     its own coverage now that the committed config/spend.toml is configured."""
     spend = tmp_path / "spend.toml"
-    spend.write_text('schema = "pod-spend.v4"\nstate = "unconfigured"\n', encoding="utf-8")
+    spend.write_text(f'schema = "{SPEND_SCHEMA}"\nstate = "unconfigured"\n', encoding="utf-8")
 
     status = main(["--spend", str(spend), "--placement", str(PLACEMENT)])
 
@@ -320,7 +322,9 @@ def test_main_refuses_an_unreadable_spend_policy_instead_of_raising(
     """
 
     spend = tmp_path / "spend.toml"
-    spend.write_text('schema = "pod-spend.v4"\nstate = "configured"\nmax_hourly', encoding="utf-8")
+    spend.write_text(
+        f'schema = "{SPEND_SCHEMA}"\nstate = "configured"\nmax_hourly', encoding="utf-8"
+    )
 
     status = main(["--spend", str(spend), "--placement", str(PLACEMENT)])
 

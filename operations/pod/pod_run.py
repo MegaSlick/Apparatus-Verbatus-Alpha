@@ -50,8 +50,8 @@ sealed, this process holds to the
 shared hard deadline exactly as ``bootstrap_main`` does, re-journaling a
 liveness line beside the run report.  That hold is paid idle time between a
 finished run and the deadline, because ``pod_timer`` reads any earlier exit as
-``completed-early``.  The pod guard deletes an idle pod after its idle window
-and nothing here touches its keep-alive, so the guard ends the hold early:
+``completed-early``.  Nothing here touches the pod guard's keep-alive, so its
+idle ladder, when switched to delete, ends the hold early:
 ``held_to_hard_deadline`` records the choice to hold, and the hold journal's
 last tick records when the hold actually ended.
 
@@ -94,7 +94,7 @@ only here.
 **``--no-hold`` is for a run started by hand, outside the pod timer.**  After
 the final report of any run past a green bootstrap, it returns instead of
 holding and moves this pod's guard deadline to now, so the guard deletes the
-pod within about a minute rather than after its idle window.  It first leaves
+pod within about a minute rather than leaving it to the idle ladder.  It first leaves
 the run id and outcome in ``released-<pod id>`` beside the deadline, which the
 guard's delete notice carries.  The pod id is the container's own, read from
 its first process when that is readable, and a shell exporting a different
@@ -197,7 +197,7 @@ from .run_exits import (
     EXIT_REFUSED,
     EXIT_SELECTION_COMPLETE,
 )
-from .spend import POD_BUDGET_ENVIRONMENT
+from .spend import POD_BUDGET_ENVIRONMENT, POD_BUDGET_SWITCH_ENVIRONMENT
 
 RUN_REPORT_SCHEMA = "pod-run-report.v1"
 RUN_REFUSAL_SCHEMA = "pod-run-refusal.v1"
@@ -1451,7 +1451,7 @@ def _require_live_guard_for_release(
             f"--no-hold needs this pod's id from its first process ({PID1_ENVIRON} names no "
             f"{POD_ID_ENVIRONMENT}), and a shell's own value is never trusted for it: without "
             "that id no guard armed for this pod, so there is nothing to release. Run without "
-            "--no-hold; the guard's idle deletion still applies",
+            "--no-hold; the guard's idle ladder still applies",
             report_path=report_path,
         )
     if not _is_pod_id(first_process_pod_id):
@@ -1490,9 +1490,10 @@ def release_pod_guard(
     the guard adds to its delete notice: without it, a phone ping after a
     finished run reads exactly like one after a window that ran out mid-run.
     ``guard_alive`` says whether this pod's guard touched its heartbeat
-    recently; ``released`` alone only says the deadline was written. Never
-    raises: a failed release leaves the guard's idle window, which still
-    deletes the pod.
+    recently; ``released`` alone only says the deadline was written. A guard
+    started with no deadline (the budget off) writes no file but honours one
+    written later, so with no file and a live guard the deadline is written. Never
+    raises: a failed release leaves the pod to the guard's idle ladder and the lead.
     """
 
     if not _is_pod_id(pod_id):
@@ -1500,10 +1501,11 @@ def release_pod_guard(
     guard = volume / POD_GUARD_DIRECTORY
     path = guard / f"deadline-{pod_id}"
     record: dict[str, object] = {"path": str(path)}
-    # The guard writes this file when it arms; without it no guard is watching
-    # this pod, and a new file would be read only by the start command's backstop.
+    current: int | None
     try:
         current = int(path.read_text(encoding="ascii").strip())
+    except FileNotFoundError:
+        current = None
     except (OSError, ValueError) as error:
         return {
             **record,
@@ -1529,7 +1531,14 @@ def release_pod_guard(
             f"{GUARD_HEARTBEAT_STALE_SECONDS} s, so nothing is known to act on the deadline; "
             "delete the pod by hand and confirm it is gone"
         )
-    if current <= stamp:
+    if current is None and not record["guard_alive"]:
+        return {
+            **record,
+            "released": False,
+            "detail": "no guard deadline for this pod and no live guard to read a new one; "
+            "delete the pod by hand",
+        }
+    if current is not None and current <= stamp:
         return {**record, "released": True, "deadline": current}
     try:
         atomic_write(path, f"{stamp}\n".encode("ascii"))
@@ -1579,7 +1588,8 @@ def _pod_budget(
 
     A launch seals the budget of the spend policy it armed the pod with into the
     pod's environment; that is the budget, and a part of it missing leaves it
-    unknown. Only a pod with none sealed (started by hand, or adopted) falls back
+    unknown. A budget the lead switched off is sealed as VERBATUS_POD_BUDGET=off and
+    reported as off, not unknown. Only a pod with none sealed (started by hand, or adopted) falls back
     to the checkout's own spend policy, which the launching laptop may not have
     used, so it is named with its digest.
     """
@@ -1602,7 +1612,7 @@ def _deadline_watch(
     plan: RunPlan,
     *,
     pod_id: str | None,
-    hard_deadline: datetime,
+    hard_deadline: datetime | None,
     launch_token: str | None,
     rates: Mapping[str, str | None],
     sealed_budget: Mapping[str, str | None],
@@ -1613,7 +1623,7 @@ def _deadline_watch(
     """The finish estimate and deadline-at-risk notice for this run.
 
     Under the pod timer (a launch token) its hard deadline ends the pod; otherwise
-    this pod's guard deadline does (`finish_estimate.PodDeadline`). The budget is
+    this pod's guard deadline does, when it has one (`finish_estimate.PodDeadline`). The budget is
     the one the launch sealed into the pod (`_pod_budget`), and the page witnesses
     come from the run's models configuration.
     """
@@ -1904,7 +1914,10 @@ def main(
     launch_token = environment.get("VERBATUS_LAUNCH_TOKEN") or None
     shell_pod_id = environment.get(POD_ID_ENVIRONMENT) or None
     rates = {name: environment.get(name) for name in HOURLY_RATE_ENVIRONMENT}
-    sealed_budget = {name: environment.get(name) for name in POD_BUDGET_ENVIRONMENT.values()}
+    sealed_budget = {
+        name: environment.get(name)
+        for name in (*POD_BUDGET_ENVIRONMENT.values(), POD_BUDGET_SWITCH_ENVIRONMENT)
+    }
     # Only the container's first process names this pod (see PID1_ENVIRON).
     pod_id = container_pod_id()
     try:
@@ -1919,6 +1932,13 @@ def main(
         )
         args = build_parser().parse_flags(run_argv, run_report)
         plan = resolve_run_plan(args, bootstrap_plan, launch_token)
+        if hard_deadline is None and not plan.no_hold:
+            raise RunRefusal(
+                f"{bootstrap_main.HARD_DEADLINE_ENV}={bootstrap_main.NO_HARD_DEADLINE} says "
+                "there is no deadline, which only a run that will not hold can use: add "
+                "--no-hold, or set a hard deadline",
+                report_path=plan.report_path,
+            )
         if plan.no_hold and launch_token:
             raise RunRefusal(
                 "--no-hold is for a run started by hand; under a launch token the pod timer "
@@ -1959,7 +1979,7 @@ def main(
         # than the approved policy, and a reader of this report should not have
         # to guess which.
         "skipped_storage_roots": list(skipped_roots),
-        "hard_deadline": _stamp(hard_deadline),
+        "hard_deadline": None if hard_deadline is None else _stamp(hard_deadline),
         "started_at": started_at,
     }
     _write_run_report(plan, {**base, "state": "bootstrapping", "exit_code": None})
@@ -2320,6 +2340,8 @@ def main(
         )
         return exit_code
     print(f"pod_run {plan.run_id}: {state} (exit {exit_code}); holding to the hard deadline")
+    # A run with no hard deadline is refused before the bootstrap unless it will not hold.
+    assert hard_deadline is not None
     hold(
         report_path=plan.hold_path,
         hard_deadline=hard_deadline,
