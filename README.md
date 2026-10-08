@@ -15,8 +15,9 @@ It should also work, to a lesser degree, on other archival records — censuses,
 ledgers, notarial contracts — and on some English-language records.
 
 **Status: alpha.** The staged pipeline, accounting, and export pass synthetic tests.
-Real pages have run through three witnesses on a GPU pod, but no real final export
-exists, so accuracy is unestablished. The live reader is asked to use `[[?]]` for
+73 real pages have run on pods through the witnesses, the Perlector, the Coniector and
+the Recensor; the Recensor held every page, so no real export exists yet and accuracy is
+unestablished. The live reader is asked to use `[[?]]` for
 unreadable ink and `[[reading]]` for doubt; they become gaps and uncertain spans.
 
 ## How it works
