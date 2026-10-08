@@ -219,9 +219,10 @@ def test_a_cache_with_no_readable_descriptor_at_all_is_refused(world):
         traced.ensure(identity)
 
 
-def test_a_hidden_role_is_refused_before_it_names_a_cache_directory(world, tmp_path):
-    """A leading dot would name `.`, `..` or one of the registry's own hidden work
-    directories under the cache root."""
+def test_a_role_never_names_a_cache_directory(world, tmp_path):
+    """The cache is keyed by the pinned manifest digest, so even a role the parser
+    would refuse, such as a leading dot, cannot reach `.`, `..` or the registry's
+    own hidden work directories."""
     traced, fetcher = world
 
     # Built directly rather than through the parser, which refuses this role
@@ -240,12 +241,23 @@ def test_a_hidden_role_is_refused_before_it_names_a_cache_directory(world, tmp_p
         config, manifest_root=tmp_path, cache_root=traced.cache_root, fetcher=fetcher
     )
 
-    with pytest.raises(CacheRevisionRefusal, match="unsafe as a cache path") as caught:
-        registry.ensure(registry.resolve(".hidden"))
+    snapshot = registry.ensure(registry.resolve(".hidden"))
 
-    assert caught.value.chair == ".hidden"
-    assert fetcher.calls == []
+    assert snapshot.root == traced.cache_root / "by-digest" / hidden.digest_manifest
+    assert snapshot.identity.role == ".hidden"
     assert not (traced.cache_root / ".hidden").exists()
+
+
+def test_an_unsafe_digest_is_refused_before_it_names_a_cache_directory(world, tmp_path):
+    traced, fetcher = world
+    from dataclasses import replace
+
+    unsafe = replace(traced.resolve("attestator_1"), digest_manifest="../escape")
+
+    with pytest.raises(CacheRevisionRefusal, match="unsafe as a cache path"):
+        traced._ensure_huggingface(unsafe, traced.manifest(traced.resolve("attestator_1")))
+    assert fetcher.calls == []
+    assert not (tmp_path / "escape").exists()
 
 
 # --- 5. A serving recipe that will not start ------------------------------------------
@@ -413,24 +425,32 @@ def test_a_refusal_carries_the_concrete_difference_and_not_only_the_chair(world)
 def test_filling_a_chair_keeps_foreign_dirs_and_evicts_its_abandoned_work_dirs(tmp_path):
     write_snapshot(tmp_path / "remote", dict(FILES))
     pin = pin_snapshot(tmp_path / "remote", tmp_path / "manifests" / "chair.json")
+    other_files = {"weights.bin": b"the base chair's own bytes\n"}
+    write_snapshot(tmp_path / "remote-base", other_files)
+    base_pin = pin_snapshot(tmp_path / "remote-base", tmp_path / "manifests" / "base.json")
     chairs = {
         "attestator_1": hf_chair("attestator_1", pin, manifest="manifests/chair.json"),
-        "base": hf_chair("base", pin, manifest="manifests/chair.json", revision="b" * 40),
+        "base": hf_chair("base", base_pin, manifest="manifests/base.json"),
     }
     traced = traced_for(config_of(tmp_path, chairs), tmp_path, RecordingFetcher(dict(FILES)))
     traced.ensure(traced.resolve("attestator_1"))
-    cache = tmp_path / "cache"
-    (cache / ".base.candidate-abandoned").mkdir()
-    orphaned_backup = cache / ".base.prior-4242"
+    cache = tmp_path / "cache" / "by-digest"
+    (cache / f".{base_pin}.candidate-abandoned").mkdir()
+    orphaned_backup = cache / f".{pin}.prior-4242"
     orphaned_backup.mkdir()
     (orphaned_backup / "weights").write_bytes(b"a promote that died mid-swap")
     foreign = cache / "no-longer-configured"
     foreign.mkdir()
     (foreign / "user-data").write_text("keep", encoding="utf-8")
+    beside = tmp_path / "cache" / "beside"
+    beside.mkdir()
 
+    traced.fetcher = RecordingFetcher(other_files)
     traced.ensure(traced.resolve("base"))
 
-    assert (cache / "base" / CACHE_DESCRIPTOR).is_file()
-    assert not (cache / ".base.candidate-abandoned").exists()
+    assert (cache / base_pin / CACHE_DESCRIPTOR).is_file()
+    assert (cache / pin / CACHE_DESCRIPTOR).is_file()
+    assert not (cache / f".{base_pin}.candidate-abandoned").exists()
     assert not orphaned_backup.exists()
     assert (foreign / "user-data").read_text(encoding="utf-8") == "keep"
+    assert beside.is_dir()

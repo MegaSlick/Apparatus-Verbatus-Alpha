@@ -107,7 +107,9 @@ class FakeActions:
         return self._step(BootstrapStep.TRANSFER, {"state": "nothing-to-transfer"})
 
     def materialize_model_store(self) -> dict[str, object]:
-        return self._step(BootstrapStep.MODEL_STORE, {"real_roster_complete": True})
+        return self._step(
+            BootstrapStep.MODEL_STORE, {"real_roster_complete": True, "selection_complete": True}
+        )
 
     def verify_chair_cache(self) -> dict[str, object]:
         return self._step(BootstrapStep.CHAIR_CACHE, {"chairs": []})
@@ -1049,6 +1051,7 @@ def test_chair_cache_receipt_says_sources_were_planned(monkeypatch: pytest.Monke
         models_config=Path("/repo/models.toml"),
         cache_root=Path("/volume/cache"),
         store_root=Path("/volume/store"),
+        preflight_roles=None,
     )
 
     assert bootstrap_main._build_cache(plan) == {
@@ -1100,7 +1103,10 @@ def _local_chair_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from types import SimpleNamespace
 
     plan = SimpleNamespace(
-        models_config=models, cache_root=tmp_path / "cache", store_root=tmp_path / "store"
+        models_config=models,
+        cache_root=tmp_path / "cache",
+        store_root=tmp_path / "store",
+        preflight_roles=None,
     )
     return plan, config / "real-models" / "designator_surya", snapshot
 
@@ -1121,6 +1127,60 @@ def test_chair_cache_places_a_local_chair_s_verified_bundle_where_the_roster_bin
     assert bootstrap_main._build_cache(plan)["chairs"] == [
         {"chair": "designator_surya", "state": "local-verified", "root": str(placed)}
     ]
+
+
+def test_chair_cache_places_a_local_chair_through_a_verifying_copy_reading_it_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from common.chairs import manifests
+
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    rows = {row.path: row for row in manifests.build_manifest(snapshot).rows}
+    digested: list[str] = []
+    real_digest = manifests.file_digest
+
+    def record_digest(path, chair, relative):  # type: ignore[no-untyped-def]
+        digested.append(relative)
+        return real_digest(path, chair, relative)
+
+    monkeypatch.setattr(manifests, "file_digest", record_digest)
+
+    # A plain copy returns no ledger, so the placed bundle is read again to verify it.
+    bootstrap_main._build_cache(plan)
+    assert set(digested) == set(rows)
+    shutil.rmtree(placed)
+    digested.clear()
+
+    ledgers: list[manifests.CopyLedger] = []
+
+    def verifying_fetch(self, identity, destination: Path, paths):  # type: ignore[no-untyped-def]
+        self.copies += 1
+        ledger = manifests.copy_and_digest_files(
+            [(snapshot / p, destination / p, rows[p]) for p in paths], chair=identity.role
+        )
+        ledgers.append(ledger)
+        return ledger
+
+    monkeypatch.setattr(bootstrap_main.StoreRoleFetcher, "fetch", verifying_fetch)
+    monkeypatch.setenv("VERBATUS_IO_WORKERS", "3")
+    receipt = bootstrap_main._build_cache(plan)
+
+    assert digested == []
+    assert len(ledgers) == 1 and sorted(ledgers[0].digests) == sorted(rows)
+    assert receipt["chairs"][0]["verification"]["copied_files"] == len(ledgers[0].digests)
+    assert receipt["chairs"] == [
+        {
+            "chair": "designator_surya",
+            "state": "local-placed",
+            "snapshot": str(snapshot),
+            "verification": {
+                "bytes": "hashed while copying",
+                "copied_files": 3,
+                "io_workers": {"workers": 3, "source": "VERBATUS_IO_WORKERS"},
+            },
+        }
+    ]
+    assert (placed / "surya_layout2" / "rfdetr_layout.pth").read_bytes() == b"weights\n"
 
 
 def test_chair_cache_replaces_a_placed_bundle_that_no_longer_verifies(
@@ -2137,6 +2197,35 @@ def test_the_disk_check_counts_each_local_bundle_chair_cache_copies(tmp_path: Pa
     assert bundles[target] == sum(row.size for row in manifest.rows) > 0
 
 
+def test_model_store_leaves_byte_hashing_to_the_copies_of_every_configured_chair(
+    tmp_path: Path,
+) -> None:
+    """MODEL_STORE checks the store's structure for each chair CHAIR_CACHE or
+    PREFLIGHT will copy, since those copies hash the same bytes against the same
+    pinned manifest; an absent chair is not copied, so it is hashed at boot."""
+    from common.chairs.config import load_models_toml
+    from common.chairs.models import ChairIdentity
+
+    from .bootstrap_main import _build_model_store, build_parser, resolve_plan
+
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    configured = sorted(
+        role
+        for role, chair in load_models_toml(ws.models_config).chairs.items()
+        if isinstance(chair, ChairIdentity)
+    )
+
+    assert _build_model_store(plan).hashed_at_copy == tuple(configured)
+    # With a stage selection, only the selected chairs are copied, so only they
+    # leave their bytes to the copy; every other chair is excluded.
+    selected = ("attestator_2", "perlector")
+    assert set(selected) < set(configured)
+    hashed = _build_model_store(replace(plan, preflight_roles=selected)).hashed_at_copy
+    assert hashed == tuple(sorted(selected))
+    assert set(hashed).isdisjoint(set(configured) - set(selected))
+
+
 def test_the_bundle_fetcher_s_environment_is_synced_while_the_store_lacks_a_bundle(
     tmp_path: Path,
 ) -> None:
@@ -2172,6 +2261,65 @@ def test_the_bundle_fetcher_s_environment_is_synced_while_the_store_lacks_a_bund
     (plan.store_root / "download_record.json").write_text("{}", encoding="utf-8")
     with pytest.raises(BootstrapStepFailure, match="cannot say what it still needs"):
         _subprocess_environments(plan)
+
+
+SMALL_CARD = ("attestator_1", "attestator_2", "attestator_3", SURYA_CHAIR, "secondary_proposer")
+BIG_CARD = ("perlector", "reconstructor")
+
+
+def test_each_half_of_a_two_card_split_prepares_only_the_chairs_its_stages_need(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The witness card never fetches or copies the Perlector's model, and the big
+    card never places Surya or syncs the bundle fetcher's environment."""
+    from .bootstrap_main import (
+        _build_model_store,
+        _bundle_fetcher,
+        _local_bundles,
+        _store_environments,
+        build_parser,
+        resolve_plan,
+    )
+
+    monkeypatch.setattr(
+        bootstrap_main, "pending_local_artifacts", lambda root: ("surya2-detection",)
+    )
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    small = replace(plan, preflight_roles=SMALL_CARD)
+    big = replace(plan, preflight_roles=BIG_CARD)
+
+    assert _build_model_store(small).roles == SMALL_CARD
+    assert _build_model_store(small).hashed_at_copy == tuple(sorted(SMALL_CARD))
+    assert _build_model_store(big).roles == BIG_CARD
+    assert _build_model_store(big).hashed_at_copy == tuple(sorted(BIG_CARD))
+    # The fixture roster binds every chair to a bundle in the checkout.
+    assert sorted(path.name for path in _local_bundles(small)) == sorted(SMALL_CARD)
+    assert sorted(path.name for path in _local_bundles(big)) == sorted(BIG_CARD)
+    assert _store_environments(small) == frozenset({_bundle_fetcher().environment})
+    assert _store_environments(big) == frozenset()
+    # A bare bootstrap, with no stage selection, prepares every chair.
+    assert _build_model_store(plan).roles is None
+    assert sorted(path.name for path in _local_bundles(plan)) == sorted(SMALL_CARD + BIG_CARD)
+    assert _store_environments(plan) == frozenset({_bundle_fetcher().environment})
+
+
+def test_chair_cache_places_a_local_chair_only_on_the_card_whose_stages_use_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    big = SimpleNamespace(**{**vars(plan), "preflight_roles": BIG_CARD})
+    small = SimpleNamespace(**{**vars(plan), "preflight_roles": SMALL_CARD})
+
+    assert bootstrap_main._build_cache(big)["chairs"] == [
+        {"chair": SURYA_CHAIR, "state": "not-selected"}
+    ]
+    assert not placed.exists()
+    assert bootstrap_main._build_cache(small)["chairs"] == [
+        {"chair": SURYA_CHAIR, "state": "local-placed", "snapshot": str(snapshot)}
+    ]
 
 
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(

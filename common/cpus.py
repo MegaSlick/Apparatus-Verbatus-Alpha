@@ -1,25 +1,43 @@
-"""How much of the machine a stage may use: CPUs it may run on and memory it may fill.
+"""How many CPUs this process may really use, and how many disk or process workers to run.
 
-A pod's container sees every core of its host in `os.cpu_count()` and often in
-its affinity mask too, while its cgroup quota allows only a share of them. Work
-fanned out past the quota only queues, so every pool is sized here.
+A container sees its host's `os.cpu_count()`, often far above its own share. Its
+share shows in the affinity mask, or in the cgroup v2 quota in `cpu.max`.
 """
 
 from __future__ import annotations
 
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
+IO_WORKERS_ENV = "VERBATUS_IO_WORKERS"
+IO_WORKERS_MIN = 2
+IO_WORKERS_MAX = 32
 CGROUP_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
 MEMINFO = Path("/proc/meminfo")
 
 
-def _quota_cpus(cpu_max: Path) -> int | None:
-    """The whole CPUs a cgroup v2 `cpu.max` quota allows, or None when it sets none."""
+def usable_cpus(cpu_max: Path = CGROUP_CPU_MAX) -> int:
+    """The smaller of the affinity mask and the cgroup CPU quota, at least one."""
+
+    if hasattr(os, "sched_getaffinity"):
+        count = len(os.sched_getaffinity(0))
+    else:
+        count = os.cpu_count() or 1
+    quota = _cgroup_quota(cpu_max)
+    if quota is not None:
+        count = min(count, quota)
+    return max(1, count)
+
+
+def _cgroup_quota(path: Path) -> int | None:
+    """Whole CPUs granted by `cpu.max` ("<quota> <period>"), or None for no limit."""
+
     try:
-        fields = cpu_max.read_text().split()
-    except OSError:
+        fields = path.read_text(encoding="ascii").split()
+    except (OSError, UnicodeDecodeError):
         return None
     if len(fields) != 2 or fields[0] == "max":
         return None
@@ -29,37 +47,63 @@ def _quota_cpus(cpu_max: Path) -> int | None:
         return None
     if quota <= 0 or period <= 0:
         return None
-    return max(1, math.floor(quota / period))
+    return max(1, math.ceil(quota / period))
 
 
-def usable_cpus(cpu_max: Path = CGROUP_CPU_MAX) -> int:
-    """The CPUs this process can keep busy: its affinity mask, else the machine's
-    count, never more than its cgroup quota allows, and one at the least."""
-    if hasattr(os, "sched_getaffinity"):
-        cpus = len(os.sched_getaffinity(0))
-    else:
-        cpus = os.cpu_count() or 1
-    quota = _quota_cpus(cpu_max)
-    if quota is not None:
-        cpus = min(cpus, quota)
-    return max(1, cpus)
+@dataclass(frozen=True, slots=True)
+class IoWorkers:
+    """A worker count for a pool of file copies or hashes, and where it came from."""
+
+    count: int
+    source: str
+
+    def to_record(self) -> dict[str, object]:
+        return {"workers": self.count, "source": self.source}
+
+
+def io_workers(
+    environ: Mapping[str, str] | None = None, *, cpu_max: Path = CGROUP_CPU_MAX
+) -> IoWorkers:
+    """Usable CPUs clamped to 2..32, unless `VERBATUS_IO_WORKERS` names a count.
+
+    Reading model files is disk-bound, so even a one-CPU share keeps two reads in
+    flight, and past a few dozen the disk, not the CPU, is the limit. An override
+    outside 1..32 or not an integer is refused rather than silently clamped.
+    """
+
+    environment = os.environ if environ is None else environ
+    raw = environment.get(IO_WORKERS_ENV)
+    if raw is not None:
+        try:
+            count = int(raw)
+        except ValueError:
+            count = 0
+        if not 1 <= count <= IO_WORKERS_MAX:
+            raise ValueError(
+                f"{IO_WORKERS_ENV}={raw!r} is not a worker count from 1 to {IO_WORKERS_MAX}"
+            )
+        return IoWorkers(count, IO_WORKERS_ENV)
+    count = min(max(usable_cpus(cpu_max), IO_WORKERS_MIN), IO_WORKERS_MAX)
+    return IoWorkers(count, "usable-cpus")
 
 
 def available_memory_bytes(meminfo: Path = MEMINFO) -> int | None:
     """The memory the kernel says can be taken without swapping, or None where it says nothing."""
+
     try:
-        for line in meminfo.read_text().splitlines():
+        for line in meminfo.read_text(encoding="ascii").splitlines():
             if line.startswith("MemAvailable:"):
                 return int(line.split()[1]) * 1024
-    except (OSError, ValueError, IndexError):
+    except (OSError, UnicodeDecodeError, ValueError, IndexError):
         return None
     return None
 
 
 def pool_workers(tasks: int, *, bytes_per_task: int, meminfo: Path = MEMINFO) -> int:
-    """Workers for `tasks` independent tasks each holding about `bytes_per_task`:
-    the usable CPUs, no more than the tasks, no more than the available memory
-    holds at once, and one at the least."""
+    """Processes for `tasks` independent CPU-bound tasks each holding about
+    `bytes_per_task`: the usable CPUs, no more than the tasks, no more than the
+    available memory holds at once, and one at the least."""
+
     workers = min(usable_cpus(), tasks)
     memory = available_memory_bytes(meminfo)
     if memory is not None:
