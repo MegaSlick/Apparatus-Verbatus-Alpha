@@ -183,7 +183,10 @@ time, with as much of the card as stays stable — so every tier is single-resid
 tier sets the engine memory fraction, context cap, pixel cap and batch size that model
 gets. Its `card_profile` rows are prebuilt plans for the cards this project rents, with
 the reviewed hourly price the launch gate estimates against; an unknown card falls back
-to computed placement. Naming a card here does not choose one, and no number here has
+to computed placement. A tier's `planned_batch_ceiling` caps the capacity plan
+(`operations/serving/capacity.py`): at launch PREFLIGHT measures the card and may widen
+each serving row's `max_num_seqs` up to that ceiling (64 when the tier sets none), never
+below the row's own value. Naming a card here does not choose one, and no number here has
 been benchmarked on real hardware.
 
 **`ink_map.toml`.** Sealed as `ink-map`: `[background]` (`common/background.py`),
