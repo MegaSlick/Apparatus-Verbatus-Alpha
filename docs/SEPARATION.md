@@ -14,7 +14,7 @@ Nothing has moved yet; this page only classifies.
 - **HISTORY** stays in alpha: records of how alpha was built.
 - **PRIVATE** is local and gitignored; only the folder's README is tracked. Beta keeps
   the folders the product uses (`private/`, `scriptorium/`); `workbench/` is the
-  harness's own.
+  harness's own. Session handoffs, plans and run reports live in `workbench/`, not in git.
 - **AMBIGUOUS** marks a path whose class is still to be decided, with the question
   under [Decisions](#decisions). None is open today.
 
@@ -94,10 +94,9 @@ for a script to read.
 | `private/` | PRIVATE | |
 | `proof/` | PRODUCT | synthetic fixtures and their tests |
 | `pyproject.toml` | PRODUCT | |
-| `review-notes/` | HISTORY | session reviews, plans and lead reports |
 | `scriptorium/` | PRIVATE | |
 | `uv.lock` | PRODUCT | |
-| `workbench/` | PRIVATE | the harness's notes; stays in alpha |
+| `workbench/` | PRIVATE | the harness's notes, session handoffs and run reports; stays in alpha |
 
 ## Decisions
 
