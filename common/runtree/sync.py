@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Final
 
 # Every name with this prefix is the sync's own: a copy in flight on the
-# target, or the ledger in the source. None is ever copied.
+# target, or the ledger, in the source unless the caller puts it elsewhere.
+# None is ever copied, and `fetch-run` sets one aside rather than refusing it.
 SYNC_PREFIX: Final = ".verbatus-sync-"
 # One JSON object per line: first the target it records, then one line per
 # file verified on that target. Lines are appended as files are verified, so a
@@ -55,14 +56,17 @@ class RunTreeSync:
     """Verify each new local file on the target; leave all target files in place.
 
     A file is copied and verified once: its source size, mtime and sha256 go to
-    a ledger in the source tree, so a later sync, in this process or a new one,
-    passes over a file whose source is unchanged and whose target is still
-    there at that size. Anything else is hashed and checked again.
+    a ledger, in the source tree unless `ledger` names another file, so a later
+    sync, in this process or a new one, passes over a file whose source is
+    unchanged and whose target is still there at that size. Anything else is
+    hashed and checked again. A ledger elsewhere is for a source that must not
+    be written to, such as the volume's copy of a run being brought to local disk.
     """
 
-    def __init__(self, source: Path, target: Path):
+    def __init__(self, source: Path, target: Path, *, ledger: Path | None = None):
         self.source = source
         self.target = target
+        self.ledger = source / LEDGER_NAME if ledger is None else ledger
         self._verified: dict[Path, tuple[int, int]] | None = None
         self._directories: set[Path] = set()
 
@@ -70,12 +74,14 @@ class RunTreeSync:
         """Copy and check every new file now; the number of files copied."""
         return self.copy(self.plan())
 
-    def plan(self) -> "SyncPlan":
+    def plan(self, skip_directories: frozenset[str] = frozenset()) -> "SyncPlan":
         """Freeze what to sync: every run file and its size and mtime, read locally.
 
         Only the local tree is read, so this is quick; `copy` does the rest and may
         run on another thread while the next stage writes files this plan does not
-        name.
+        name. A directory named in `skip_directories`, at any depth, is left out
+        with everything under it: for files still being written, such as a served
+        engine's log, which a later full sync copies once they are static.
         """
         if not self.source.is_dir() or self.source.is_symlink():
             raise RunTreeSyncError(f"run tree is missing or linked: {self.source}")
@@ -87,6 +93,7 @@ class RunTreeSync:
             for name in children:
                 if (source_directory / name).is_symlink():
                     raise RunTreeSyncError(f"run tree contains a linked directory: {name}")
+            children[:] = [name for name in children if name not in skip_directories]
             for name in names:
                 if name.startswith(SYNC_PREFIX):
                     continue
@@ -203,7 +210,7 @@ class RunTreeSync:
         again; a line that cannot be read, or whose target file is gone or no
         longer that size, is left out, so that file is hashed and checked again.
         """
-        path = self.source / LEDGER_NAME
+        path = self.ledger
         verified: dict[Path, tuple[int, int]] = {}
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
@@ -241,5 +248,5 @@ class RunTreeSync:
             "mtime_ns": identity[1],
             "sha256": digest,
         }
-        with (self.source / LEDGER_NAME).open("a", encoding="utf-8") as ledger:
+        with self.ledger.open("a", encoding="utf-8") as ledger:
             ledger.write(json.dumps(row, sort_keys=True) + "\n")

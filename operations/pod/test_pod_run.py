@@ -624,6 +624,10 @@ def test_hand_run_uses_local_disk_and_requires_the_final_volume_sync(
         assert report["state"] == "failed"
         assert "final volume sync failed" in report["detail"]
         assert (ws.volume / "runs" / "first-real-run" / "record.json").read_bytes() == b"older"
+        # The volume's run was copied to local disk first; the copy's ledger stays
+        # beside the local tree, and the volume's tree gains nothing but evidence.
+        assert not list(stored.rglob(f"{pod_run.SYNC_PREFIX}*"))
+        assert (local_root / f"{pod_run.SYNC_PREFIX}hydrate-first-real-run.jsonl").is_file()
         assert deadline.read_text(encoding="ascii") != f"{int(clock.now().timestamp())}\n"
         assert not deadline.with_name("released-pod123").exists()
         # The guard's hour-idle backup keeps both trees, from the start (the volume's run

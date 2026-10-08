@@ -144,7 +144,7 @@ from common.contracts.identities import validate_run_id
 from common.contracts.stages import SEAL_PREDECESSORS
 from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH, load_reconstruction_policy
 from common.runtree.store import SERVING_LOGS_DIR, RunTree
-from common.runtree.sync import RunTreeSync, RunTreeSyncError
+from common.runtree.sync import SYNC_PREFIX, RunTreeSync, RunTreeSyncError
 from common.sealed_config import read_sealed_toml
 from common.stage import (
     DEFAULT_PERLECTOR_PROTOCOL_CONFIG_PATH,
@@ -1088,13 +1088,19 @@ def require_approved_submission_folder(plan: RunPlan) -> tuple[tuple[str, ...], 
 
 
 def _hydrate_local_run(plan: RunPlan) -> None:
+    """Copy the volume's run tree to local disk before the orchestrator continues it.
+
+    The sync's ledger stays beside the local tree, never on the volume: the volume's
+    run tree holds evidence only, and `fetch-run` sets aside anything else it finds.
+    """
     if not plan.local_run:
         return
     stored = plan.volume_run_root / plan.run_id
     if not stored.exists():
         return
+    ledger = plan.run_root / f"{SYNC_PREFIX}hydrate-{plan.run_id}.jsonl"
     try:
-        RunTreeSync(stored, plan.run_root / plan.run_id).sync()
+        RunTreeSync(stored, plan.run_root / plan.run_id, ledger=ledger).sync()
     except (OSError, RunTreeSyncError) as error:
         raise RunRefusal(
             f"the volume's existing run could not be verified on local disk: {error}",
