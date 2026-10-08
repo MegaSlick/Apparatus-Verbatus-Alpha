@@ -256,8 +256,13 @@ correct immediate close.
   `cuInit(0)` to succeed through the compatibility library before it puts
   `/usr/local/cuda-13.0/compat` first in `LD_LIBRARY_PATH` for preflight and `pod_run`'s
   orchestrator, whose serving children inherit it. A GeForce card with an older driver
-  is refused before the serving stack download. The receipt records the action, including
-  each resume recheck when a restart has removed the container-local installation.
+  is refused before the serving stack download. On every driver, new or old, it then
+  calls `cuInit(0)` and `cuDeviceGetCount` through `libcuda.so.1` (the compatibility copy
+  when one is installed) and refuses the host by its hostname, driver and cards when
+  either fails or no device is counted: a host that lists its cards but cannot initialise
+  CUDA would otherwise spend the whole setup before its first GPU stage fails. The receipt
+  records the action and the device count, including each resume recheck when a restart
+  has removed the container-local installation.
 - **Refusals come before any action**: a journal or report path outside the mounted volume;
   a lockfile that is not the checkout's `uv.lock`; a volume that fails a real write-and-read
   probe (it never creates the mount point it requires); a missing hard deadline; a

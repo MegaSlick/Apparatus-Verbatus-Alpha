@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -56,6 +57,7 @@ CUDA_COMPAT_PATH = "/usr/local/cuda-13.0/compat"
 CUDA_COMPAT_PACKAGE = "cuda-compat-13-0"
 CUDA_COMPAT_VERSION = "580.178.04-1ubuntu1"
 CUDA_13_MIN_DRIVER = (580, 65, 6)
+CUDA_DRIVER_LIBRARY = "libcuda.so.1"
 BOOTSTRAP_ENVIRONMENT = {
     "PATH": "/usr/local/bin:/usr/bin:/bin",
     "LANG": "C.UTF-8",
@@ -1041,6 +1043,7 @@ class SubprocessBootstrapActions:
             "package": None,
         }
         if tuple(int(part) for part in driver.split(".")) >= CUDA_13_MIN_DRIVER:
+            receipt["cuda_devices"] = _initialise_cuda(CUDA_DRIVER_LIBRARY, driver, gpus)
             return receipt
         if any("GeForce" in name for name in gpus):
             raise BootstrapStepFailure(
@@ -1085,24 +1088,9 @@ class SubprocessBootstrapActions:
                 f"installed {CUDA_COMPAT_PACKAGE} version {installed_version!r} differs from pinned {CUDA_COMPAT_VERSION}",
                 "Install the pinned CUDA compatibility package and resume this journal.",
             )
-        library = f"{CUDA_COMPAT_PATH}/libcuda.so.1"
-        try:
-            cuda = ctypes.CDLL(library)
-            cuda.cuInit.argtypes = [ctypes.c_uint]
-            cuda.cuInit.restype = ctypes.c_int
-            result = cuda.cuInit(0)
-        except (OSError, AttributeError) as error:
-            raise BootstrapStepFailure(
-                BootstrapStep.CUDA_COMPAT,
-                f"CUDA compatibility library {library} could not initialize: {error}",
-                "Use a supported GPU and compatible driver, then resume.",
-            ) from error
-        if result != 0:
-            raise BootstrapStepFailure(
-                BootstrapStep.CUDA_COMPAT,
-                f"CUDA compatibility cuInit(0) failed with code {result} on {gpus}",
-                "Use a supported GPU and compatible driver, then resume.",
-            )
+        receipt["cuda_devices"] = _initialise_cuda(
+            f"{CUDA_COMPAT_PATH}/{CUDA_DRIVER_LIBRARY}", driver, gpus
+        )
         receipt["compat_path"] = CUDA_COMPAT_PATH
         return receipt
 
@@ -1330,6 +1318,40 @@ class SubprocessBootstrapActions:
             check=False,
             timeout=timeout,
         )
+
+
+def _initialise_cuda(library: str, driver: str, gpus: list[str]) -> int:
+    """Initialise CUDA through `library` the way every GPU stage will, and count its
+    devices. A host whose driver lists its cards but cannot initialise CUDA is refused
+    here, before the environment install and the model store spend most of an hour."""
+
+    host = socket.gethostname()
+
+    def refuse(what: str) -> BootstrapStepFailure:
+        return BootstrapStepFailure(
+            BootstrapStep.CUDA_COMPAT,
+            f"host {host} (driver {driver}, {gpus}) cannot use CUDA through {library}: {what}",
+            "Delete this pod and start one on another host; this one cannot run a GPU stage.",
+        )
+
+    try:
+        cuda = ctypes.CDLL(library)
+        cuda.cuInit.argtypes = [ctypes.c_uint]
+        cuda.cuInit.restype = ctypes.c_int
+        cuda.cuDeviceGetCount.argtypes = [ctypes.POINTER(ctypes.c_int)]
+        cuda.cuDeviceGetCount.restype = ctypes.c_int
+        result = cuda.cuInit(0)
+        if result != 0:
+            raise refuse(f"cuInit(0) failed with code {result}")
+        count = ctypes.c_int(0)
+        result = cuda.cuDeviceGetCount(ctypes.pointer(count))
+    except (OSError, AttributeError) as error:
+        raise refuse(f"the library could not be loaded or called: {error}") from error
+    if result != 0:
+        raise refuse(f"cuDeviceGetCount failed with code {result}")
+    if count.value < 1:
+        raise refuse("it reports no CUDA device")
+    return count.value
 
 
 def _apply_cuda_compat(receipt: dict[str, object], environment: MutableMapping[str, str]) -> None:

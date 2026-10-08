@@ -5315,6 +5315,90 @@ def test_production_bootstrap_refuses_a_lockfile_other_than_checked_out_uv_lock(
         actions.sync_uv_environment(other)
 
 
+class FakeCuda:
+    """libcuda.so.1 as ctypes loads it: cuInit and cuDeviceGetCount return the codes given,
+    and the count is what the host reports."""
+
+    def __init__(self, *, init: int = 0, count: int = 0, devices: int = 1) -> None:
+        self.paths: list[str] = []
+        self.init_calls: list[int] = []
+
+        def cuInit(flags: int) -> int:
+            self.init_calls.append(flags)
+            return init
+
+        def cuDeviceGetCount(pointer) -> int:  # type: ignore[no-untyped-def]
+            pointer.contents.value = devices
+            return count
+
+        self.cuInit = cuInit
+        self.cuDeviceGetCount = cuDeviceGetCount
+
+    def load(self, path: str) -> FakeCuda:
+        self.paths.append(path)
+        return self
+
+
+def _new_driver_actions(tmp_path: Path) -> SubprocessBootstrapActions:
+    return SubprocessBootstrapActions(
+        repository=tmp_path,
+        configuration=lambda: {},
+        transfer=lambda: {},
+        materialize_model_store=lambda: {},
+        cache=None,
+        preflight=lambda: {},
+        runner=lambda argv, cwd: subprocess.CompletedProcess(
+            argv, 0, stdout="580.178.04, NVIDIA H100 80GB HBM3\n", stderr=""
+        ),
+    )
+
+
+def test_a_new_driver_host_still_initialises_cuda_before_the_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cuda = FakeCuda(devices=1)
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
+
+    receipt = _new_driver_actions(tmp_path).configure_cuda_compat()
+
+    assert (receipt["action"], receipt["cuda_devices"]) == ("not-needed", 1)
+    assert cuda.paths == ["libcuda.so.1"] and cuda.init_calls == [0]
+
+
+@pytest.mark.parametrize(
+    ("cuda", "expected"),
+    [
+        (FakeCuda(init=999), r"cuInit\(0\) failed with code 999"),
+        (FakeCuda(count=3), "cuDeviceGetCount failed with code 3"),
+        (FakeCuda(devices=0), "reports no CUDA device"),
+    ],
+    ids=["init", "count", "none"],
+)
+def test_a_host_that_cannot_initialise_cuda_is_refused_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cuda: FakeCuda, expected: str
+) -> None:
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
+    monkeypatch.setattr(bootstrap_module.socket, "gethostname", lambda: "a1b2c3d4e5")
+
+    with pytest.raises(BootstrapStepFailure, match=expected) as refusal:
+        _new_driver_actions(tmp_path).configure_cuda_compat()
+
+    assert "host a1b2c3d4e5 (driver 580.178.04, ['NVIDIA H100 80GB HBM3'])" in refusal.value.detail
+    assert "another host" in refusal.value.remediation
+
+
+def test_a_missing_driver_library_is_refused_by_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def missing(path: str) -> None:
+        raise OSError(f"{path}: cannot open shared object file")
+
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", missing)
+
+    with pytest.raises(BootstrapStepFailure, match="could not be loaded or called"):
+        _new_driver_actions(tmp_path).configure_cuda_compat()
+
+
 @pytest.mark.parametrize(
     ("driver", "gpu", "expected"),
     [
@@ -5352,9 +5436,8 @@ def test_cuda_compat_decision_uses_reported_driver_and_card(
         return subprocess.CompletedProcess(argv, 0, stdout=output, stderr="")
 
     monkeypatch.setattr(Path, "is_dir", is_dir)
-    cuda = unittest.mock.Mock()
-    cuda.cuInit.return_value = 0
-    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+    cuda = FakeCuda(init=0)
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
     actions = SubprocessBootstrapActions(
         repository=tmp_path,
         configuration=lambda: {},
@@ -5374,7 +5457,7 @@ def test_cuda_compat_decision_uses_reported_driver_and_card(
         assert receipt["gpus"] == [gpu]
         if expected == "installed":
             assert receipt["installed_version"] == "580.178.04-1ubuntu1"
-            cuda.cuInit.assert_called_once_with(0)
+            assert cuda.init_calls == [0]
     assert [command[0] for command in commands] == (
         ["/usr/bin/nvidia-smi", "/usr/bin/apt-cache", "/usr/bin/apt-get", "/usr/bin/dpkg-query"]
         if expected == "installed"
@@ -5424,9 +5507,8 @@ def test_cuda_compat_refuses_named_failures(
 ) -> None:
     commands: list[list[str]] = []
     monkeypatch.setattr(Path, "is_dir", lambda path: False)
-    cuda = unittest.mock.Mock()
-    cuda.cuInit.return_value = cu_result
-    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+    cuda = FakeCuda(init=cu_result)
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
 
     def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         commands.append(argv)
@@ -5466,9 +5548,8 @@ def test_cuda_compat_existing_pin_is_probed_without_apt(
 ) -> None:
     commands: list[str] = []
     monkeypatch.setattr(Path, "is_dir", lambda path: True)
-    cuda = unittest.mock.Mock()
-    cuda.cuInit.return_value = 0
-    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", lambda path: cuda)
+    cuda = FakeCuda(init=0)
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", cuda.load)
 
     def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         commands.append(Path(argv[0]).name)
@@ -5492,7 +5573,7 @@ def test_cuda_compat_existing_pin_is_probed_without_apt(
     assert receipt["action"] == "already-present"
     assert receipt["installed_version"] == "580.178.04-1ubuntu1"
     assert commands == ["nvidia-smi", "dpkg-query"]
-    cuda.cuInit.assert_called_once_with(0)
+    assert cuda.init_calls == [0]
 
 
 def test_cuda_compat_command_timeouts_are_named(
@@ -5550,7 +5631,10 @@ def test_git_and_uv_command_timeouts_are_named(
     assert seen == [("repo-tool", 600), ("env-tool", 3600)]
 
 
-def test_new_enough_cuda_host_keeps_library_path_untouched(tmp_path: Path) -> None:
+def test_new_enough_cuda_host_keeps_library_path_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(bootstrap_module.ctypes, "CDLL", FakeCuda().load)
     environment = {"LD_LIBRARY_PATH": "/original"}
     actions = SubprocessBootstrapActions(
         repository=tmp_path,
