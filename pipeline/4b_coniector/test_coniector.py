@@ -1005,7 +1005,9 @@ def _main_on_a_real_submission(monkeypatch, tree, serving_mode: str):
         coniector,
         "_Chair",
         lambda *_a: SimpleNamespace(
-            identity=SimpleNamespace(role="reconstructor"), serving_mode=serving_mode
+            identity=SimpleNamespace(role="reconstructor"),
+            serving_mode=serving_mode,
+            reclaim=lambda: None,
         ),
     )
     monkeypatch.setattr(coniector, "_publish_plan", lambda *_a: published.append("plan"))
@@ -1031,3 +1033,100 @@ def test_a_real_submission_that_asks_nothing_is_not_refused(off, monkeypatch):
     published, error = _main_on_a_real_submission(monkeypatch, off, "fixture")
     assert error is None
     assert published == ["plan", "seal"]
+
+
+def test_a_live_chair_starts_on_a_background_thread_while_the_calls_are_drawn(
+    tmp_path, monkeypatch
+):
+    """A plan with an unsealed call starts its chair off the main thread before the
+    first call is drawn; every record is still published on the main thread."""
+    import threading
+
+    from common.stage import StageContext
+    from operations.serving.client import ChairClient
+    from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
+
+    entered: list[str] = []
+    enter = ChairClient.__enter__
+
+    def recorded_enter(self):
+        entered.append(threading.current_thread().name)
+        return enter(self)
+
+    publishers: list[bool] = []
+    publish = StageContext.publish
+
+    def recorded_publish(self, **kwargs):
+        publishers.append(threading.current_thread() is threading.main_thread())
+        return publish(self, **kwargs)
+
+    monkeypatch.setattr(ChairClient, "__enter__", recorded_enter)
+    monkeypatch.setattr(StageContext, "publish", recorded_publish)
+    root, options = _live_tree(tmp_path)
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    endpoint.script(
+        *(ScriptedAnswer(content=answer, finish_reason="stop") for answer in _declared_answers())
+    )
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert entered == ["chair-start"]
+    assert publishers and all(publishers)
+    assert len(endpoint.requests) == 2
+
+
+def test_a_resumed_pass_with_every_call_sealed_starts_no_chair(live, tmp_path, monkeypatch):
+    from operations.serving.client import ChairClient
+    from operations.serving.fakes import FakeEndpoint
+
+    source, options = live
+    root = tmp_path / "runs"
+    shutil.copytree(source, root)
+    monkeypatch.setattr(
+        ChairClient, "__enter__", lambda self: pytest.fail("a chair was started for nothing")
+    )
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert endpoint.requests == []
+
+
+def test_a_chair_started_for_calls_all_refused_for_capacity_stops_before_the_seal(
+    tmp_path, monkeypatch
+):
+    """Every unsealed call turns out over capacity, so no call waits for the background
+    start; the pass still waits for it and stops the chair before it seals."""
+    import time
+
+    import common.request_capacity as request_capacity
+    from common.stage import StageContext
+    from operations.serving.client import ChairClient
+    from operations.serving.fakes import FakeEndpoint
+
+    measured = request_capacity.reconstruction_request_capacity
+
+    def over_capacity(*args, **kwargs):
+        admitted = measured(*args, **kwargs)
+        raise request_capacity.RequestCapacityRefusal(
+            "over capacity in this test", capacity=admitted["capacity"]
+        )
+
+    enter = ChairClient.__enter__
+
+    def slow_enter(self):
+        time.sleep(0.5)
+        return enter(self)
+
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    at_seal: list[tuple[bool, bool]] = []
+    seal = StageContext.seal_boundary
+
+    def recorded_seal(self):
+        process = endpoint._process
+        at_seal.append((process is not None, process is not None and process.poll() is not None))
+        return seal(self)
+
+    monkeypatch.setattr(request_capacity, "reconstruction_request_capacity", over_capacity)
+    monkeypatch.setattr(ChairClient, "__enter__", slow_enter)
+    monkeypatch.setattr(StageContext, "seal_boundary", recorded_seal)
+    root, options = _live_tree(tmp_path)
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert endpoint.requests == []
+    assert at_seal == [(True, True)], "the chair was not started and stopped before the seal"

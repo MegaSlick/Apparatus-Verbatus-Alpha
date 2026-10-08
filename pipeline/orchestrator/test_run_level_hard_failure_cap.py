@@ -263,7 +263,9 @@ def test_exactly_two_hard_failures_is_only_a_warning_and_the_run_continues(
     """Two is the named early warning: said at every boundary, and nothing stops."""
     orchestrator = load_stage("orchestrator")
     invoked: list[str] = []
-    monkeypatch.setattr(orchestrator, "invoke", lambda program, _args: invoked.append(program))
+    monkeypatch.setattr(
+        orchestrator, "invoke", lambda program, _args, **_options: invoked.append(program)
+    )
     monkeypatch.setattr(
         orchestrator,
         "tally_hard_failures",
@@ -300,7 +302,9 @@ def test_a_breach_first_seen_at_a_stage_boundary_stops_the_rest_of_the_sequence(
     """
     orchestrator = load_stage("orchestrator")
     invoked: list[str] = []
-    monkeypatch.setattr(orchestrator, "invoke", lambda program, _args: invoked.append(program))
+    monkeypatch.setattr(
+        orchestrator, "invoke", lambda program, _args, **_options: invoked.append(program)
+    )
     monkeypatch.setattr(
         orchestrator,
         "checkpoint",

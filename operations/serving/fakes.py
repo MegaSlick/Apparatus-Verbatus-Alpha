@@ -18,6 +18,7 @@ from common.decoding import load_decoding_policy
 
 from .client import ChairClient, RetainBytes
 from .config import SubprocessProfile
+from .errors import ProcessLaunchError
 from .http import EndpointUnavailable, HttpResponse
 from .manager import ReceiptPublication, ServingManager
 from .surya_detector import SuryaRun, contract, declared_page_documents, surya_run
@@ -108,25 +109,40 @@ class FakeProcess:
         self.wait_calls = 0
         self.ignore_terminate = ignore_terminate
         self.ignore_kill = ignore_kill
+        # Another member of this process's group (vLLM's engine) that outlives the
+        # leader until the group is signalled.
+        self.engine_outlives_leader = False
+
+    @property
+    def group_running(self) -> bool:
+        return self.exit_code is None or self.engine_outlives_leader
+
+    @property
+    def start_marker(self) -> str | None:
+        return f"fake-start-{self.pid}"
 
     def poll(self) -> int | None:
         return self.exit_code
 
     def terminate(self) -> None:
         self.terminate_calls += 1
-        if not self.ignore_terminate and self.exit_code is None:
-            self.exit_code = 0
+        if not self.ignore_terminate:
+            self.engine_outlives_leader = False
+            if self.exit_code is None:
+                self.exit_code = 0
 
     def kill(self) -> None:
         self.kill_calls += 1
-        if not self.ignore_kill and self.exit_code is None:
-            self.exit_code = -9
+        if not self.ignore_kill:
+            self.engine_outlives_leader = False
+            if self.exit_code is None:
+                self.exit_code = -9
 
     def wait(self, timeout_seconds: float) -> int:
         del timeout_seconds
         self.wait_calls += 1
-        if self.exit_code is None:
-            raise TimeoutError("fake child is still live")
+        if self.group_running:
+            raise TimeoutError("fake child or its group is still live")
         return self.exit_code
 
     def read_tail(self, maximum_bytes: int = 16_384) -> str:
@@ -343,6 +359,7 @@ class FakeLauncher:
         self.calls: list[tuple[tuple[str, ...], Path]] = []
         self.inherited_fds: list[tuple[int, ...]] = []
         self.processes: list[FakeProcess] = []
+        self.attached: list[FakeProcess] = []
 
     def launch(
         self,
@@ -363,6 +380,27 @@ class FakeLauncher:
         )
         self.processes.append(process)
         self.endpoint.bind(process)
+        return process
+
+    def attach(self, pid: int, start_marker: str, log_path: Path) -> FakeProcess:
+        """The live process the shared endpoint is bound to, when it is the one named.
+
+        Another manager's launcher started it; both launchers share one endpoint,
+        as two stages on one pod share one card.
+        """
+
+        del log_path
+        process = getattr(self.endpoint, "process", None) or getattr(
+            self.endpoint, "_process", None
+        )
+        if (
+            process is None
+            or process.pid != pid
+            or process.start_marker != start_marker
+            or not process.group_running
+        ):
+            raise ProcessLaunchError(f"no live process group {pid} ({start_marker!r})")
+        self.attached.append(process)
         return process
 
 
