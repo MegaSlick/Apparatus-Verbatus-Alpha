@@ -104,7 +104,13 @@ class ChairCachePrefill:
             return
         self._registry = plan.registry
         self._outcome.deferred.extend(plan.deferred)
-        chairs = self._fitting(plan, dict(reserved or {}))
+        try:
+            chairs = self._fitting(plan, dict(reserved or {}))
+        except Exception as error:  # as above: nothing is filled early, nothing fails
+            self._outcome.deferred.append(
+                {"chair": "*", "reason": f"the cache disk could not be measured: {error}"}
+            )
+            chairs = []
         self._thread = threading.Thread(
             target=self._fill,
             args=(plan.registry, chairs, plan.pool),
