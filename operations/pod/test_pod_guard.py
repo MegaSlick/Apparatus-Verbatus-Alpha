@@ -930,14 +930,20 @@ def test_a_backup_that_fails_blocks_the_delete(pod, tmp_path):
 
 
 def test_the_start_command_with_the_budget_off_arms_no_deadline_and_no_backstop(pod):
+    """A deadline file from an earlier start of the pod is removed, so the only deadline is
+    one written during this start (the lead's, or pod_run --no-hold's release)."""
     env, calls, state = pod
     env["FAKE_GPU_UTIL"] = "80"
+    state.mkdir()
+    (state / "deadline-testpod").write_text(f"{clock_of(env) - 60}\n")
     argv, env = start_command(env, "off", budget="off")
     assert "runpodctl" not in argv[2]
     run_until(argv, env, lambda: "armed for pod testpod" in log_of(state))
     assert "deadline none (off)" in log_of(state)
+    assert "predates this guard" not in log_of(state)
     assert not (state / "deadline-testpod").exists()
     assert (state / "created-testpod").read_text().strip().isdigit()
+    assert lines(calls) == []
 
 
 def test_the_start_command_retries_the_guard_fetch(pod):

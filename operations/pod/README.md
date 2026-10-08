@@ -620,7 +620,8 @@ from this public repository at a pinned commit (ten tries, 30 s apart), starts i
 then hands over to the image's `/start.sh`. It reads `pod_budget` from the checkout's
 `config/spend.toml`, or from `VERBATUS_POD_BUDGET` when that is set:
 
-- **Budget off, `off`:** no deadline file and no backstop.
+- **Budget off, `off`:** no deadline file (one left by an earlier start of the pod is
+  removed) and no backstop.
 - **Budget off, `<hours>`:** a deadline `<hours>` from container start, and a backstop that
   deletes the pod an hour after the deadline (the one the guard keeps on the volume, so
   extensions count) even if the guard never ran. The hard maximum is not read.
@@ -657,8 +658,8 @@ the guard is fetched from an older commit.
   move it over `/workspace/private/.pod_guard/deadline-<pod id>`; the guard and the
   backstop, when there is one, both read it. A deadline moved earlier ends the pod on the
   guard's next tick; that is what `pod_run --no-hold` does. A pod that was stopped and is
-  started again keeps its old deadline file, so write a new one when the lead approves
-  more time.
+  started again with `<hours>` keeps its old deadline file, so write a new one when the
+  lead approves more time; started with `off`, the start command removes it.
 - **Records:** `/workspace/private/.pod_guard/guard.log`; with a topic in
   `/workspace/private/.pod_guard/ntfy_topic` it pings at each ladder step, for each
   ignored deadline value, and when it deletes, fails to delete, or has to stop the pod

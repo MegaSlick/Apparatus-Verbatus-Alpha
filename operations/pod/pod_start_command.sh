@@ -15,7 +15,8 @@
 #
 # pod_budget in config/spend.toml (or VERBATUS_POD_BUDGET, which overrides it) decides
 # what bounds the pod in time:
-#   off, with `off`:   no deadline and no backstop; the guard warns while the pod is idle.
+#   off, with `off`:   no deadline (an earlier start's deadline file is removed) and no
+#                      backstop; the guard warns while the pod is idle.
 #   off, with <hours>: a deadline <hours> from container start, and a backstop that
 #                      deletes the pod an hour after the deadline even if the guard never
 #                      started.
@@ -103,9 +104,11 @@ read_deadline="dl=\$(cat $id 2>/dev/null); case \$dl in \"\"|*[!0-9]*) dl=\$firs
 [ \"\$dl\" -le \$((\$(date +%s) + 604800)) ] || dl=\$first;"
 
 if [ "$hours" = off ]; then
+  # A deadline file left by an earlier start of this pod is not this start's.
   cat <<COMMAND
 bash -c 'd=\${POD_GUARD_DIR:-$guard_dir}; export POD_GUARD_DIR=\$d; \
 $record \
+rm -f $id 2>/dev/null; \
 $(guard off) \
 $handover'
 COMMAND

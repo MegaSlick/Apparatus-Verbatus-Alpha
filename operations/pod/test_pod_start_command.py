@@ -137,7 +137,7 @@ def test_the_shipped_policy_has_the_budget_off_and_off_arms_no_deadline_or_backs
     assert result.returncode == 0, result.stderr
     printed = result.stdout
     assert "runpodctl" not in printed
-    assert "deadline-" not in printed
+    assert 'rm -f "$d/deadline-$RUNPOD_POD_ID"' in printed and "echo $first" not in printed
     assert "created-$RUNPOD_POD_ID" in printed
     assert "POD_GUARD_DELETE=off sh /tmp/pod_guard.sh off)" in printed
     assert "POD_GUARD_FETCH_TRIES:-10" in printed
