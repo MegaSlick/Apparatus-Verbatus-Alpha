@@ -331,7 +331,10 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   (A5000, `--container-disk-in-gb 100`) adds `--models small` before `--` (Door through
   Attestatores); the big card (PRO 6000, 120 GB disk) adds `--from perlector --to
   coniector` with the **same run id, submission folder and `--store-root`**, and checks
-  the sealed Attestatores on the volume before its boot. Do not use `--models big` for
+  the sealed Attestatores on the volume before its boot. The launch paths stay the same:
+  the big card sets the witness's bootstrap journal aside as
+  `bootstrap-journal-$RUN.pod-<witness pod id>.json` and bootstraps for its own GPU, and
+  a replacement for a dead pod does the same. Do not use `--models big` for
   the split: it runs on to the Armarium. The Mac then runs Recensor to Armarium
   (`operations/operator/README.md`). With `--no-hold` the guard deletes each pod within
   a minute of its run ending; a pod on its own disk (`mounts.persistent`) instead runs

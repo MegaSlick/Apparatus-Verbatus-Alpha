@@ -937,7 +937,11 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
 - Add `--perlector-protocol-config <path in the repository>` to choose the Perlector's
   protocol; omitted, the orchestrator's default.
 - The file names carry the run id so a second run on the same volume cannot overwrite
-  them. A gated Hugging Face model needs its token in the environment and
+  them. A second pod on the same run id may reuse these exact paths: the journal records
+  which pod wrote it, so the same pod resumes it, while another pod (a replacement for a
+  dead one, or the big card after the witness) renames it to
+  `bootstrap-journal-$RUN.pod-<old pod id>.json` and bootstraps afresh for its own GPU.
+  A gated Hugging Face model needs its token in the environment and
   `--keep-env HF_TOKEN` in the bootstrap half, never on the command line.
 - A refusal or a red bootstrap leaves the pod up: read the report, fix, and launch
   again. The guard's ladder warns after 15 idle minutes, and deletes the pod after two

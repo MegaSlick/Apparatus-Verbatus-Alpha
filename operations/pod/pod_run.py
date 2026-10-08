@@ -2088,7 +2088,12 @@ def main(
         interval_seconds=plan.interval_seconds,
     ):
         report = bootstrap_main.run_bootstrap(
-            bootstrap_plan, now=now, actions_factory=actions_factory, environment=environment
+            bootstrap_plan,
+            now=now,
+            actions_factory=actions_factory,
+            environment=environment,
+            # A journal another pod left on the shared volume is set aside, not resumed.
+            pod_id=pod_id if _is_pod_id(pod_id) else None,
         )
     if isinstance(report, bootstrap_main.BootstrapRefused):
         _write_run_report(
