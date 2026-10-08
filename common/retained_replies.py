@@ -11,11 +11,22 @@ from typing import Any, Final
 
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_STREAM_CALL_RECORD_SCHEMA,
+    CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_SCHEMA,
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
     SERVING_LAUNCH_AUDIT_SCHEMA,
 )
 from common.image_sniff import PNG_SIGNATURE
 
+# The call records a chair call leaves, whole or streamed.
+CALL_RECORD_SCHEMAS: Final = frozenset(
+    {
+        CHAIR_CALL_RECORD_SCHEMA,
+        CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+        CHAIR_STREAM_CALL_RECORD_SCHEMA,
+        CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_SCHEMA,
+    }
+)
 # Blobs the serving manager keeps in a stage's own store beside the chair's calls.
 SERVING_BLOB_SCHEMAS: Final = frozenset({SERVING_LAUNCH_AUDIT_SCHEMA, "serving-evidence.v1"})
 
@@ -57,7 +68,7 @@ def unrecorded_replies(context, stage: str) -> tuple[list[dict[str, Any]], bool]
             continue
         record = json_object(data)
         schema = record.get("schema") if record is not None else None
-        if schema in {CHAIR_CALL_RECORD_SCHEMA, CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA}:
+        if schema in CALL_RECORD_SCHEMAS:
             reply = record.get("raw_response_ref")
             if reply is not None:
                 named.add(reply["relative_path"])

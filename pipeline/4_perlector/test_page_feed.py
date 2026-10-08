@@ -856,11 +856,7 @@ def test_a_dense_page_is_refused_at_32k_and_fits_65k(change, need):
         prompt_parts=page_prompt.prompt_parts("unproven-real-perlector", feed),
         template_digest=page_prompt.BUILDER_SHA256,
         answer_measure=feed["answer_measure"],
-        generation={
-            "page_max_tokens": 12288,
-            "answer_headroom_bp": 20000,
-            "answer_floor_tokens": 4096,
-        },
+        generation={"page_max_tokens": 12288},
     )
     with pytest.raises(RequestCapacityRefusal) as refusal:
         page_request_capacity(_perlector_row(), **arguments)
@@ -1137,11 +1133,7 @@ def test_a_200_line_churro_only_page_is_reserved_on_its_likely_acts_under_the_ca
         prompt_parts=page_prompt.prompt_parts("unproven-real-perlector", feed),
         template_digest=page_prompt.BUILDER_SHA256,
         answer_measure=feed["answer_measure"],
-        generation={
-            "page_max_tokens": 12288,
-            "answer_headroom_bp": 20000,
-            "answer_floor_tokens": 4096,
-        },
+        generation={"page_max_tokens": 12288},
     )
     assert admitted["answer_reserve"]["tokens"] < 12288
 

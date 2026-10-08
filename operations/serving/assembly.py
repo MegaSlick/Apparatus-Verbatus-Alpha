@@ -33,6 +33,7 @@ from .http import (
     HttpTransport,
     UrllibHttpTransport,
     parse_openai_reading,
+    parse_openai_stream_reading,
     request_body,
 )
 from .manager import (
@@ -162,11 +163,16 @@ class _BoundServingReader:
             raise ContractError(str(error)) from error
 
     def reading_reply(
-        self, *, status: Any, body: bytes, kind: Any, model_id: str
+        self, *, status: Any, body: bytes, kind: Any, model_id: str, stopped: bool | None = None
     ) -> tuple[str, str | None]:
+        response = HttpResponse(status=status, body=body)
         try:
-            result = parse_openai_reading(
-                HttpResponse(status=status, body=body), kind=kind, expected_model_id=model_id
+            result = (
+                parse_openai_reading(response, kind=kind, expected_model_id=model_id)
+                if stopped is None
+                else parse_openai_stream_reading(
+                    response, kind=kind, expected_model_id=model_id, stopped=stopped
+                )
             )
         except (ChairRequestRefusal, ChairResponseRefusal) as error:
             raise ContractError(str(error)) from error
@@ -179,10 +185,16 @@ class _BoundServingReader:
         model_id: str,
         seed: Any,
         sampling: Mapping[str, Any] | None = None,
+        stream: bool = False,
     ) -> bytes:
         try:
             return request_body(
-                payload, model_id=model_id, seed=seed, deterministic=False, sampling=sampling
+                payload,
+                model_id=model_id,
+                seed=seed,
+                deterministic=False,
+                sampling=sampling,
+                stream=stream,
             )
         except ServingError as error:
             raise ContractError(str(error)) from error

@@ -1,29 +1,29 @@
 # Its values are sealed into every run's decoding provenance.
-schema = "decoding.v8"
+schema = "decoding.v9"
 
 [perlector_generation]
 # The output cap of one whole-page reading, which answers every act on the page
-# in one JSON object. A dense synthetic page (20 acts, about 12,000 characters
-# per witness, 120 Surya lines each cited on its own) reserves 7,319 tokens for
-# its answer (`common/request_capacity.py`, `page_answer_bound`); this leaves
-# room above that for doubt marks and long set-aside lists while still stopping
-# a runaway reply as a visible length cut-off. It is the policy cap, seen
-# through this file's digest; the value sent is cut to the context the prompt
-# leaves and is recorded on each call record.
+# in one JSON object. The value sent is this cap or the context the prompt
+# leaves, whichever is smaller (`common/request_capacity.py`,
+# `page_answer_max_tokens`), and is recorded on each call record. It is never
+# bounded by an estimate of the answer's length: on the 2026-10-08 run (73
+# pages) a bound of twice that estimate, at least 4,096, cut 13 well-formed,
+# non-repeating answers of dense index pages short (one ran to 536 lines in
+# 4,096 tokens); finished replies used about 30 completion tokens per Surya
+# line, and two needed over 5,000.
 page_max_tokens = 12288
-# What one reading may run to beyond the answer reserve its page was admitted
-# on (`common/request_capacity.py`, `page_answer_bound`): `max_tokens` sent is
-# the page cap, the context left, or the reserve times this headroom (basis
-# points, 20,000 = twice the reserve) but never below the floor, whichever is
-# smallest. A reply that runs away from its page then stops at the bound, a
-# visible length cut-off held unread, instead of decoding to the page cap (one
-# such reply took 6-8 minutes on the 2026-10-07 pod). A legitimate reply at the
-# bound is held the same way, so both are set wide: the reserve already
-# estimates the answer from the page's longest witness text at a carried rate
-# with its margin, and the floor covers a page whose witnesses read little of
-# its ink. Neither is measured against real completions yet.
-answer_headroom_bp = 20000
-answer_floor_tokens = 4096
+# What stops a reply that has fallen into a degenerate loop long before the cap
+# (`common/repetition_loop.py`). The reply is streamed, and the call is
+# abandoned as soon as the same whitespace-trimmed line has come
+# `loop_line_repeats` times in a row, or the same block of 2 to
+# `loop_block_max_lines` lines `loop_block_repeats` times in a row; the reply
+# is held whole as `repetition-loop`, never parsed. Only exact repeats count: a
+# dense index has many similar rows in a row (one surname over and over), but
+# each differs by its given name or folio, so 30 identical lines, or the same
+# block 10 times over, is a loop and not a page. Chosen wide, not measured.
+loop_line_repeats = 30
+loop_block_repeats = 10
+loop_block_max_lines = 8
 
 [reconstructor_generation]
 # The output cap of one Coniector answer: every act of a page with its findings

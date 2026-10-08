@@ -1320,6 +1320,56 @@ def test_an_answer_that_cannot_stand_is_held_whole_with_no_act_record(
         assert failure["raw_response_ref"] in readings[0]["inputs"]
 
 
+def test_a_looping_reply_is_stopped_and_held_whole_and_read_again_from_its_bytes(
+    live_tree, tmp_path, monkeypatch
+):
+    """A reply that repeats one line over and over is abandoned at the sealed thirtieth
+    repeat, held `repetition-loop` (never parsed, never a cut-off), and a later stage
+    reading the page again finds the same loop in the retained bytes. Synthetic text."""
+    root = live_tree.root
+    head = '{"acts": [{"n": 1, "kind": "other", "label": "index", "cites": ["A1"], "text": "\n'
+    looped = ScriptedAnswer(
+        content=head + "Tremblay, Jean f. 12\n" * 300 + '"}], "set_aside": []}',
+        finish_reason="length",
+    )
+    endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, looped, _answers()[1])
+    assert exit_code == 0
+    assert endpoint.streams_stopped == 1
+    first, second = _records(root, "page-reading")
+    reading = first["payload"]
+    assert (reading["parse_state"], reading["disposition"], first["outcome"]) == (
+        "repetition-loop",
+        "held",
+        "held",
+    )
+    assert (reading["stop_reason"], reading["finish_reason"], reading["answer"]) == (
+        "repetition-loop",
+        None,
+        None,
+    )
+    assert [problem["code"] for problem in reading["problems"]] == ["repetition-loop"]
+    # Sent the page cap or the context left, never a bound from the answer's estimate.
+    assert reading["capacity"]["max_tokens"] == _chat_requests(endpoint)[0]["max_tokens"]
+    call = json.loads(
+        (root / "r" / reading["engine_call"]["call_record_ref"]["relative_path"]).read_text("utf-8")
+    )
+    assert call["stream"]["stopped"] == {
+        "kind": "line",
+        "block_lines": 1,
+        "repeats": 30,
+        "line": 31,
+    }
+    raw = (root / "r" / reading["engine_call"]["raw_response_ref"]["relative_path"]).read_bytes()
+    assert digest_bytes(raw) == reading["engine_call"]["response_sha256"]
+    assert b"[DONE]" not in raw
+    assert second["payload"]["parse_state"] == "parsed"
+    assert not [r for r in _records(root, "act-region") if r["payload"]["page_ordinal"] == 1]
+    rows = reading_acts(_denominator_context(live_tree))
+    assert ("p1:unread", "page-unread", "held") in [
+        (row["act_key"], row["class"], row["disposition"]) for row in rows
+    ]
+
+
 def test_a_failed_page_call_is_counted_unread_and_tallied_as_a_hard_failure(
     live_tree, tmp_path, monkeypatch
 ):
