@@ -5443,10 +5443,21 @@ def test_a_cuda_probe_that_does_not_answer_refuses_the_host(
 
 def test_the_cuda_probe_process_is_killed_when_it_hangs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(bootstrap_module, "_CUDA_PROBE_SOURCE", "import time\ntime.sleep(60)\n")
+    children: list[subprocess.Popen[str]] = []
+    real_popen = subprocess.Popen
+
+    def recording_popen(*args: object, **kwargs: object) -> subprocess.Popen[str]:
+        child = real_popen(*args, **kwargs)  # type: ignore[call-overload]
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(bootstrap_module.subprocess, "Popen", recording_popen)
     started = time.monotonic()
 
     assert REAL_CUDA_PROBE("libcuda.so.1", 0.5) is None
     assert time.monotonic() - started < 10
+    # The sleeping child must be gone, not merely abandoned within the time limit.
+    assert len(children) == 1 and children[0].poll() is not None
 
 
 def test_the_cuda_probe_process_reports_a_missing_library(tmp_path: Path) -> None:
