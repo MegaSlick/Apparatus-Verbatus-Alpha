@@ -47,11 +47,13 @@ Two known gaps in that proof wait on the first live run:
 
 ## What exists here
 
-The runtime is fake-first. **It has never started, inspected or billed a live pod**: every
-adapter test uses an in-memory transport (the redirect-refusal test uses two loopback
-servers). The RunPod field names come from RunPod's documentation, cited page by page in
-`provider_runpod.py`, not from observed responses. Before the first live run, work through
-the [first gated live-pod checklist](#first-gated-live-pod-checklist).
+The pod CLI's runtime (provider adapters, lease, supervisor and pod timer) is fake-first.
+**It has never started, inspected or billed a live pod**: every adapter test uses an
+in-memory transport (the redirect-refusal test uses two loopback servers). The RunPod field
+names come from RunPod's documentation, cited page by page in `provider_runpod.py`, not from
+observed responses. Every paid run so far took [the hand route](#the-hand-route-a-proof-run-started-by-hand)
+instead: `runpodctl`, the pod guard, `pod_run` and its bootstrap. Before the first live run
+through the pod CLI, work through the [first gated live-pod checklist](#first-gated-live-pod-checklist).
 
 ### Provider seam and RunPod adapter
 
@@ -62,7 +64,9 @@ adapters, one per REST route, behind that seam and one `HttpTransport`.
   2026-11-15. `V2_MIGRATION.md` maps every v1 endpoint, field, status code and lifecycle word
   to v2, and says what is done and what waits on a live run.
 - **`RunPodProvider`** (`rest.runpod.io/v1`) stays selectable until the first live run under
-  v2 is green, then is deleted in its own commit.
+  v2 is green, then is deleted in its own commit. The live runs so far created their pods
+  with `runpodctl`, not through either adapter, so that run is still to come, and RunPod
+  retires v1 on 2026-11-15 whether or not it has happened.
 - **Choosing a route.** An untracked `--provider-factory` calls
   `provider_runpod.live_runpod_provider(key, pod_price=..., volume_price=..., route=...)`;
   `route` defaults to `"v2"` and `"v1"` selects the old adapter. Each adapter refuses a live
@@ -583,9 +587,13 @@ preflight steps.
 
 `preflight.py` measures CUDA, driver, capability, VRAM and disk, selects a plan from
 `config/pod_placement.toml` (prebuilt profiles for rented cards, computed otherwise),
-verifies every chair, and checks a stochastic proof-page read. **Serving is sequential**:
-one model at a time, so tiers differ only in memory fraction, context cap, pixel cap and
-batch size. **`assembly_proven` is derived, never declared**: true only when a real driver
+verifies each chair the pod's selected stages use, and checks a stochastic proof-page read.
+**Serving is sequential**: one model at a time on a card (the Coniector adopts the
+Perlector's running server instead of loading the 27B again). Tiers differ in memory
+fraction, context cap, pixel cap, batch size and `planned_batch_ceiling`: PREFLIGHT derives
+a capacity plan from the measured card (`operations/serving/capacity.py`), which sets how
+many sequences each chair runs at once, up to the tier's ceiling, and smoke-reads each
+chair at that width. **`assembly_proven` is derived, never declared**: true only when a real driver
 read the card (`GpuProfile.measured`) *and* a chair read the golden page back through an
 engine that served it (`SmokeResult.served_by`). Both carry an opaque module-private token
 minted only by the `nvidia-smi` probe and the serving evidence path and refused from any
@@ -601,9 +609,9 @@ builds that environment right after the project's own, with
 `uv sync --locked --project operations/serving/surya`, when the checked-out catalogue
 has a subprocess row for a chair the roster configures and the pod's selected roles
 include, or whenever the model store still lacks Surya's bundle, and counts its 14 GiB,
-with the bundle CHAIR_CACHE copies, in the container disk it checks first. The store fetches the bundle whatever the roster
-configures, so a fresh store costs those 14 GiB even on a pod whose stages never run
-Surya. The MODEL_STORE step then fetches Surya's
+with the bundle CHAIR_CACHE copies, in the container disk it checks first. The store fetches the bundle only when a chair the pod
+prepares needs it, so a pod whose stages never run Surya neither syncs that environment
+nor fetches the bundle (a bare `bootstrap_main` run prepares every chair). The MODEL_STORE step then fetches Surya's
 weight bundle onto the network volume by running `operations/serving/surya/prefetch.py`
 in that environment, and refuses it unless its measured manifest is the pinned one, so
 MODEL_STORE needs that environment synced first. The CHAIR_CACHE step copies the
@@ -779,19 +787,21 @@ that does not answer within 30 seconds. The same report (pod ids and states)
 
 ## The hand route: a proof run started by hand
 
-The project lead starts the first real proof run from the laptop with `runpodctl` and SSH,
-without the pod CLI, lease, supervisor or pod timer. The pod guard is then the only thing
-that ends the pod, so it is armed at creation. **The card, the hours and the spend are the
-lead's decision**; this section names what the code needs, not what to rent. Nothing here
-has run against a live pod yet: the `runpodctl` flags are from its documentation, and the
-guard's own "not yet observed" list above applies.
+The project lead starts a run from the laptop with `runpodctl` and SSH, without the pod
+CLI, lease, supervisor or pod timer. Every paid run so far (2026-10-06 to 2026-10-08) took
+this route. The pod guard is then the only thing that ends the pod, so it is armed at
+creation. **The card, the hours and the spend are the lead's decision**; this section names
+what the code needs, not what to rent.
 
 **What the run needs.** The 27B Perlector needs the `generic-80gb-plus` tier in
 `config/pod_placement.toml`; its one reviewed card is `NVIDIA RTX PRO 6000 Blackwell
-Server Edition` (96 GB, $1.99/h on the sheet, the id string still to be confirmed in the
-console). Container disk at least 120 GB (`models.BIG_CARD_CONTAINER_DISK_GB`). The
-network volume mounted at exactly `/workspace/private`. Serving is sequential, so one card
-serves every chair in turn.
+Server Edition` (96 GB, $1.99/h on the sheet). Container disk at least 120 GB on that card
+(`models.BIG_CARD_CONTAINER_DISK_GB`) and 100 GB on a smaller one
+(`models.DEFAULT_CONTAINER_DISK_GB`). The network volume mounted at exactly
+`/workspace/private`. A card serves its chairs one at a time, and the work is split across
+cards: a 24 GB witness card runs Door through Attestatores, the big card runs the Perlector
+and then the Coniector on the same server, and Recensor onward needs no GPU ("Two cards"
+below). PREFLIGHT's capacity plan sizes each chair's width on the card it measured.
 
 ### Set up the Mac (free)
 
@@ -983,7 +993,8 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   and Armarium, as `--models big` does; a first proof run should reach the Armarium.
 - **`--store-root`** names the model store on the volume. If the weights were
   materialized under another root on this volume, name that one; a new root downloads
-  every chair's weights onto the volume during the paid bootstrap.
+  the weights of the chairs this pod's stages use (every chair's, with no selection)
+  during the paid bootstrap.
 - Add `--perlector-protocol-config <path in the repository>` to choose the Perlector's
   protocol; omitted, the orchestrator's default.
 - **Another prefix.** For a set uploaded with `--prefix spreads`, use
@@ -1381,6 +1392,9 @@ billing card, once per pod.
 
 ## First gated live-pod checklist
 
+Not used live: it is for the pod CLI's lease route, and every paid run so far took the hand
+route instead.
+
 A checklist for one authorized live demonstration, not authorization to create a pod.
 Record the pod id, timestamps, provider responses, and whether each item is **verified**,
 **unverified** or **not run**. No unchecked item may be reported as a pass.
@@ -1476,6 +1490,9 @@ Record the pod id, timestamps, provider responses, and whether each item is **ve
 
 ## Deferred items
 
+These belong to the pod CLI's lease route, which no paid run has used yet; the hand route's
+runs close none of them.
+
 Each open item closes on its named condition, not on being noticed again. The code cites
 these IDs.
 
@@ -1493,6 +1510,9 @@ these IDs.
 | 04-10 | The real serving stack could not be locked | **Closed**; see "The serving stack, re-planned and locked". |
 
 ## The boot plan: Boot A, the drill, before Boot B, the real thing
+
+Not used live: it plans the pod CLI's lease route, and every paid run so far took the
+hand route instead.
 
 The first live demonstration is split because its most load-bearing item, the
 acknowledgement channel, is the one no offline test can measure; a single boot that ends
