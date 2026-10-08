@@ -1,5 +1,5 @@
 # Its values are sealed into every run's decoding provenance.
-schema = "decoding.v7"
+schema = "decoding.v8"
 
 [perlector_generation]
 # The output cap of one whole-page reading, which answers every act on the page
@@ -11,6 +11,19 @@ schema = "decoding.v7"
 # through this file's digest; the value sent is cut to the context the prompt
 # leaves and is recorded on each call record.
 page_max_tokens = 12288
+# What one reading may run to beyond the answer reserve its page was admitted
+# on (`common/request_capacity.py`, `page_answer_bound`): `max_tokens` sent is
+# the page cap, the context left, or the reserve times this headroom (basis
+# points, 20,000 = twice the reserve) but never below the floor, whichever is
+# smallest. A reply that runs away from its page then stops at the bound, a
+# visible length cut-off held unread, instead of decoding to the page cap (one
+# such reply took 6-8 minutes on the 2026-10-07 pod). A legitimate reply at the
+# bound is held the same way, so both are set wide: the reserve already
+# estimates the answer from the page's longest witness text at a carried rate
+# with its margin, and the floor covers a page whose witnesses read little of
+# its ink. Neither is measured against real completions yet.
+answer_headroom_bp = 20000
+answer_floor_tokens = 4096
 
 [reconstructor_generation]
 # The output cap of one Coniector answer: every act of a page with its findings

@@ -95,7 +95,12 @@ differ from an unbatched one in low-order bits.
   and the serving receipt's seed. `sampling` records that row as sent and as the
   pinned engine applies it.
 - `capacity` is the admitted `{capacity, answer_reserve, max_tokens}`; the call sends
-  that `max_tokens` with thinking off.
+  that `max_tokens` with thinking off. It is the sealed page cap, the context the
+  prompt leaves, or the answer reserve times the sealed `answer_headroom_bp` but at
+  least `answer_floor_tokens` (`config/decoding.toml`), whichever is smallest, and
+  `answer_reserve` records the headroom and floor it was bounded by. A reply that
+  reaches it stops on `length` and is held as cut off. A re-ask is bounded the same
+  way from its own reserve.
 - `provenance` names the chair, its resolved identity and revision, the serving
   receipt of what answered (the live receipt, never a declared one beside a real
   reading), the witness regime and the adapter revision.

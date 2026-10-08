@@ -473,7 +473,7 @@ def request_digest(text: str, image_sha256s: list[str]) -> str:
 
 
 def request_capacity(
-    row: Any, serving_recipe: Any, feed: Mapping[str, Any], text: str, page_max_tokens: int
+    row: Any, serving_recipe: Any, feed: Mapping[str, Any], text: str, generation: Mapping[str, int]
 ) -> dict[str, Any]:
     """The page request admitted against its sealed serving row, or `RequestCapacityRefusal`."""
     from common import page_feed, page_prompt
@@ -485,7 +485,7 @@ def request_capacity(
         prompt_parts=page_prompt.prompt_parts(serving_recipe, feed),
         template_digest=page_prompt.BUILDER_SHA256,
         answer_measure=feed["answer_measure"],
-        page_max_tokens=page_max_tokens,
+        generation=generation,
     )
 
 
@@ -533,7 +533,7 @@ def reask_request_capacity(
     feed: Mapping[str, Any],
     reask: Mapping[str, Any],
     text: str,
-    page_max_tokens: int,
+    generation: Mapping[str, int],
 ) -> dict[str, Any]:
     """The re-ask admitted against the page's sealed row, or `RequestCapacityRefusal`.
 
@@ -559,7 +559,7 @@ def reask_request_capacity(
         prompt_parts=page_prompt.reask_prompt_parts(serving_recipe, feed, reask),
         template_digest=page_prompt.BUILDER_SHA256,
         answer_measure=reask_answer_measure(units, len(named), named_lines=len(named & lines)),
-        page_max_tokens=page_max_tokens,
+        generation=generation,
     )
 
 

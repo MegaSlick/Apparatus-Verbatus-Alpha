@@ -33,6 +33,7 @@ ROW = SimpleNamespace(
     merge_size=2,
 )
 MEASURE = {"longest_witness_characters": 12_000, "act_entries": 20, "surya_lines": 0}
+GENERATION = {"page_max_tokens": 12288, "answer_headroom_bp": 20000, "answer_floor_tokens": 4096}
 
 
 def _fixed(text):
@@ -48,7 +49,13 @@ def _bound(text, parts=None):
 
 
 def _admit(
-    row=ROW, *, text="x" * 40_000, parts=None, measure=MEASURE, cap=12288, images=((1978, 2560),)
+    row=ROW,
+    *,
+    text="x" * 40_000,
+    parts=None,
+    measure=MEASURE,
+    generation=GENERATION,
+    images=((1978, 2560),),
 ):
     return page_request_capacity(
         row,
@@ -57,7 +64,7 @@ def _admit(
         prompt_parts=_fixed(text) if parts is None else parts,
         template_digest=PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST,
         answer_measure=measure,
-        page_max_tokens=cap,
+        generation=generation,
     )
 
 
@@ -142,7 +149,7 @@ def test_an_estimate_above_the_cap_is_clamped_to_it_and_recorded():
     assert admitted["capacity"]["answer_budget"] == 12288
 
 
-def test_an_admitted_page_is_sent_the_cap_or_the_context_left_whichever_is_smaller():
+def test_a_dense_page_is_sent_the_cap_or_the_context_left_whichever_is_smaller():
     admitted = _admit()
     record = admitted["capacity"]
     assert record["fits"]
@@ -155,9 +162,52 @@ def test_an_admitted_page_is_sent_the_cap_or_the_context_left_whichever_is_small
         "tokens": 6903,
         "reserve_clamped": False,
         "page_max_tokens": 12288,
+        "answer_headroom_bp": 20000,
+        "answer_floor_tokens": 4096,
     }
     roomy = SimpleNamespace(**{**vars(ROW), "max_model_len": 65536})
+    # Twice this dense page's reserve is past the page cap, so the cap binds.
     assert _admit(roomy)["max_tokens"] == 12288
+
+
+ROOMY = SimpleNamespace(**{**vars(ROW), "max_model_len": 65536})
+
+
+def test_a_page_is_sent_its_reserve_times_the_headroom_when_that_is_smallest():
+    measure = {"longest_witness_characters": 6_000, "act_entries": 6, "surya_lines": 0}
+    admitted = _admit(ROOMY, measure=measure)
+    reserve = admitted["answer_reserve"]["tokens"]
+    assert 4096 < 2 * reserve < 12288
+    # A reply that runs away from its page stops at twice its reserve, not the page cap.
+    assert admitted["max_tokens"] == 2 * reserve
+    # Rounded up, never down, so the bound is never below reserve x headroom.
+    odd = _admit(ROOMY, measure=measure, generation={**GENERATION, "answer_headroom_bp": 15001})
+    assert odd["max_tokens"] == -(-reserve * 15001 // 10_000)
+
+
+def test_a_page_whose_witnesses_read_little_is_sent_at_least_the_floor():
+    measure = {"longest_witness_characters": 300, "act_entries": 1, "surya_lines": 0}
+    admitted = _admit(ROOMY, measure=measure)
+    assert 2 * admitted["answer_reserve"]["tokens"] < 4096
+    assert admitted["max_tokens"] == 4096
+    # The floor never lifts the bound past the page cap or the context left.
+    assert (
+        _admit(ROOMY, measure=measure, generation={**GENERATION, "answer_floor_tokens": 20000})[
+            "max_tokens"
+        ]
+        == 12288
+    )
+
+
+def test_a_page_with_no_witness_text_is_sent_the_whole_cap():
+    measure = {"longest_witness_characters": 0, "act_entries": 3, "surya_lines": 3}
+    assert _admit(ROOMY, measure=measure)["max_tokens"] == 12288
+
+
+def test_generation_bounds_that_are_not_exactly_the_sealed_three_are_refused():
+    for generation in ({"page_max_tokens": 12288}, {**GENERATION, "extra": 1}):
+        with pytest.raises(RequestCapacityRefusal, match="generation bounds"):
+            _admit(ROOMY, generation=generation)
 
 
 def test_a_page_that_does_not_fit_is_refused_whole_with_its_record():

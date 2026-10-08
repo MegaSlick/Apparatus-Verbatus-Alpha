@@ -381,7 +381,7 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
         state,
         request,
         lambda row: page_path.request_capacity(
-            row, run.chair.serving_recipe, feed, request.text, run.page_max_tokens
+            row, run.chair.serving_recipe, feed, request.text, run.page_generation
         ),
     )
     return page
@@ -651,7 +651,7 @@ def _prepare_reread(
         state,
         request,
         lambda row: page_path.request_capacity(
-            row, run.chair.serving_recipe, page.feed, request.text, run.page_max_tokens
+            row, run.chair.serving_recipe, page.feed, request.text, run.page_generation
         ),
     )
     return request
@@ -724,7 +724,7 @@ def _prepare_reask(
         state,
         request,
         lambda row: page_path.reask_request_capacity(
-            row, run.chair.serving_recipe, page.feed, shown, request.text, run.page_max_tokens
+            row, run.chair.serving_recipe, page.feed, shown, request.text, run.page_generation
         ),
     )
     return request

@@ -131,13 +131,15 @@ def test_k_is_the_most_crops_round_two_fits_and_one_more_does_not():
     row = perlector_row()
     capacity = page_request(row, feed)["capacity"]
     crop = crop_size((4000, 5500), 5000, 2500)
-    # Round two carries the longest round-one reply the engine allows (the page cap,
-    # since the context leaves more) and two turns; then room for exactly two crops.
+    # Round two carries the longest round-one reply the request allows (its answer
+    # bound, since the context leaves more) and two turns; then room for exactly two crops.
     per_crop = request_fits(row, [crop], 0, 0)["need"] + CHAT_IMAGE_TOKENS
-    base = capacity["need"] + page_max_tokens() + 2 * CHAT_TURN_TOKENS
+    reply = page_request(row, feed)["max_tokens"]
+    base = capacity["need"] + reply + 2 * CHAT_TURN_TOKENS
     tight = replace(row, max_model_len=base + 2 * per_crop + per_crop - 1)
     tight_request = page_request(tight, feed)
-    assert tight_request["max_tokens"] == page_max_tokens() > capacity["answer_budget"]
+    assert tight_request["max_tokens"] == reply > capacity["answer_budget"]
+    assert reply <= page_max_tokens()
     assert admitted_crops(tight, tight_request, crop, 8) == 2
     assert admitted_crops(tight, tight_request, crop, 1) == 1
     roomy = replace(row, max_model_len=base + 3 * per_crop)
