@@ -150,7 +150,20 @@ each chair it launched (launch and ready moments, from the stage's launch audits
 found by the empty `launch-audit-<digest>` note the stage leaves beside its engine
 logs, so no other blob is read);
 around a volume sync, one line when it starts and one with the files copied and its
-duration. The sync is printed, not journaled.
+duration.
+
+With `--stage-sync-root`, each stage's run tree is copied to the volume after it
+ends. The file list is frozen at the stage boundary, on the main thread
+(`RunTreeSync.plan`); the copy then runs on a thread while the next stage starts, so
+that stage's cold start overlaps the copy. Each sync is joined before the next one
+starts and before the invocation returns, whatever way it ends: a stage that fails
+still waits for the sync running beside it, and a failed sync stops the run when the
+stage beside it ends, before any further stage. The volume therefore holds a stage's
+files by the end of the stage after it, not before that stage starts: a pod lost
+while that stage runs may lack part of the stage before it on the volume.
+Each sync is journaled on its own line, `stage` `volume sync after <stage>`, `kind`
+`volume-sync`, with its duration, `files_copied`, and `exit_code` 0, or `None` with
+`failure` naming why.
 
 The optional stage-timing journal (`--stage-timing-journal`, `stage-timing-journal.v4`)
 gets one line per stage invocation, written even when the stage fails. Its readers
