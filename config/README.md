@@ -25,7 +25,7 @@ The knobs. One question per file, each answerable without reading code.
 | `page_accounting.toml` | the page accounting's policy: when a box counts as inside the reading regions (`[inside]`), how much witness text a reading may leave unaccounted for or set aside (`[witness_text]`), the text alignment's anchors and bounds (`[alignment]`), what makes a unit's text distinctive (`[identity]`), and when two entries claim one region or a unit's box is too large for its text (`[region]`) |
 | `reconstruction.toml` | whether the Coniector runs, whether the submitted pages are consecutive leaves of one register, and the bounds past which a departure is not applied |
 | `triage_modes.toml` | the three triage modes (`manual`, `semi`, `auto`) and their review thresholds |
-| `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's whole-page output cap and the reconstructor's answer cap; and Chandra's native recipe |
+| `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's whole-page output cap and repetition-loop guard, and the reconstructor's answer cap; and Chandra's native recipe |
 
 Beside the rosters:
 

@@ -21,7 +21,7 @@ from typing import Any
 from common.chair_wire import chat_template_kwargs_for
 from common.contracts.canonical import digest_bytes
 from common.contracts.errors import ContractError
-from common.contracts.serving import reading_stop_reason
+from common.contracts.serving import READER_STOP_REPETITION_LOOP, reading_stop_reason
 from operations.serving.client import ChairClient, ChairRequest
 
 
@@ -103,6 +103,7 @@ def send_chat_request(
     capacity: Mapping[str, Any],
     max_tokens: int,
     what: str,
+    loop_guard: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """Send one user turn and return what the engine answered.
 
@@ -110,9 +111,14 @@ def send_chat_request(
     text-only call, or content blocks with every image before the text;
     `image_sha256s` the digests of the images it embeds, in order; `capacity` the
     request-capacity record it was admitted on, copied onto the retained call
-    record; `max_tokens` the admitted output cap.
+    record; `max_tokens` the admitted output cap; `loop_guard` the chair's sealed
+    repetition-loop guard, which streams the reply and abandons it at the first
+    loop (`ChairRequest.loop_guard`), or `None` for a plain call.
 
-    Returns `{content, stop_reason, finish_reason, request_sha256, engine_call}`.
+    Returns `{content, stop_reason, finish_reason, request_sha256, engine_call}`,
+    and with a `loop_guard` also `loop_stop`: the loop a reply was abandoned on, or
+    `None`. A reply abandoned on a loop has `stop_reason` `"repetition-loop"`; its
+    content is what arrived before the stop.
     """
     generation_sent: dict[str, Any] = {"max_tokens": max_tokens}
     template_kwargs = chat_template_kwargs_for(client.identity.role)
@@ -125,6 +131,7 @@ def send_chat_request(
         generation_declared={},
         generation_sent=generation_sent,
         capacity=capacity,
+        loop_guard=loop_guard,
     )
     response = client.read(request)
     if response.parse_problem is not None:
@@ -134,13 +141,19 @@ def send_chat_request(
             f"response bytes are retained at {dict(response.raw_response_ref)!r}",
             response,
         )
-    return {
+    answer = {
         "content": response.content,
         "stop_reason": mapped_stop_reason(response.finish_reason, what=what, response=response),
         "finish_reason": response.finish_reason,
         "request_sha256": response.request_sha256,
         "engine_call": engine_call_of(response),
     }
+    if loop_guard is None:
+        return answer
+    loop_stop = response.loop_stop
+    if loop_stop is not None:
+        answer["stop_reason"] = READER_STOP_REPETITION_LOOP
+    return {**answer, "loop_stop": dict(loop_stop) if loop_stop is not None else None}
 
 
 def _data_uri(image_bytes: bytes) -> str:
@@ -160,12 +173,14 @@ def send_page_request(
     capacity: Mapping[str, Any],
     max_tokens: int,
     what: str,
+    loop_guard: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """Send one whole-page reading: the page render (and its overlay), then the prompt.
 
     `images` are the page render and then, when drawn, its overlay, in that
     order; `text` is `page_prompt.build_page_prompt`'s rendered text, sent after
-    them. Returns what `send_chat_request` returns.
+    them; `loop_guard` as `send_chat_request` takes it. Returns what
+    `send_chat_request` returns.
     """
     return send_chat_request(
         client,
@@ -174,4 +189,5 @@ def send_page_request(
         capacity=capacity,
         max_tokens=max_tokens,
         what=what,
+        loop_guard=loop_guard,
     )
