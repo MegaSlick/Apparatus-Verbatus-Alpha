@@ -455,15 +455,17 @@ def _run(child, pages: dict[int, bytes], **kwargs) -> surya_detector.SuryaRun:
 
 
 def _slices(child) -> list[tuple[int, list[str]]]:
-    """Each runner process the child saw: its first ordinal and the page files given."""
-    return [
+    """Each runner process the child saw: its first ordinal and the page files given,
+    in ordinal order. The runners start in their own threads, so the order the child
+    saw them in is not page order."""
+    return sorted(
         (
             int(argv[argv.index("--first-ordinal") + 1]),
             [Path(page).name for page in argv[argv.index("--output-dir") + 2 :]],
         )
         for argv, _env in child.calls
         if "--check" not in argv
-    ]
+    )
 
 
 def test_the_runner_runs_under_its_own_interpreter_with_nothing_inherited(environment, monkeypatch):

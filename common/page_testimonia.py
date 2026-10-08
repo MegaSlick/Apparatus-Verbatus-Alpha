@@ -19,6 +19,7 @@ import copy
 import json
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any, Final
 
@@ -404,21 +405,26 @@ def _derive_presented_pages(tree, records: list[dict[str, Any]]) -> None:
             _derive_page(tree.read_bytes, image_path, keys)
         return
     root, run_id = str(Path(tree.root).parent), tree.run_id
-    with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn")) as pool:
-        results = pool.map(
-            _derive_page_in_worker,
-            [root] * len(jobs),
-            [run_id] * len(jobs),
-            [image_path for image_path, _ in jobs],
-            [keys for _, keys in jobs],
-        )
-        for result in results:
-            if result is None:
-                continue
-            digest, size, derived = result
-            remember_dimensions(digest, size)
-            for key, sha256 in derived:
-                remember_derived_presentation(digest, key, sha256)
+    try:
+        with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+            results = pool.map(
+                _derive_page_in_worker,
+                [root] * len(jobs),
+                [run_id] * len(jobs),
+                [image_path for image_path, _ in jobs],
+                [keys for _, keys in jobs],
+            )
+            for result in results:
+                if result is None:
+                    continue
+                digest, size, derived = result
+                remember_dimensions(digest, size)
+                for key, sha256 in derived:
+                    remember_derived_presentation(digest, key, sha256)
+    except (BrokenProcessPool, OSError):
+        # A worker killed (out of memory, say) or never started. The pages it
+        # did not warm are derived by the validation that follows, one by one.
+        return
 
 
 def _derive_page(

@@ -162,10 +162,17 @@ def test_a_local_file_changed_after_its_ledger_line_is_checked_against_the_volum
     assert (volume / changed).read_bytes() == FILES[changed]
 
 
-def test_an_unreadable_ledger_is_started_again(tmp_path: Path) -> None:
+def test_an_unreadable_ledger_is_started_again(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     local, volume = _trees(tmp_path, FILES)
     RunTreeSync(local, volume).sync()
     (local / sync.LEDGER_NAME).write_bytes(b"\xff not a ledger")
 
     assert RunTreeSync(local, volume).sync() == 0
+
+    def no_hashing(path: Path) -> str:
+        raise AssertionError(f"{path} was hashed again: the ledger was not rewritten")
+
+    monkeypatch.setattr(sync, "_digest", no_hashing)
     assert RunTreeSync(local, volume).sync() == 0

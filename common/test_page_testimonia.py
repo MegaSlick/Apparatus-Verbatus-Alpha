@@ -8,6 +8,7 @@ from the sealed roster, and what it refuses, is every stage's answer.
 
 import copy
 from collections import OrderedDict
+from concurrent.futures.process import BrokenProcessPool
 from types import SimpleNamespace
 
 import pytest
@@ -296,3 +297,35 @@ def test_a_held_derivation_is_the_derivation_and_a_refusal_is_never_held(cold_ca
         with pytest.raises(ValueError, match="fall outside"):
             native_witness.derived_presentation_sha256(page, outside)
     assert len(native_witness._DERIVED_SHA256) == 1
+
+
+def test_a_broken_worker_pool_leaves_validation_to_derive_every_page_itself(
+    page_read, cold_caches, monkeypatch
+):
+    root, options = page_read
+    serial = current_page_testimonia(page_context(root, "r", "happy", options))
+
+    monkeypatch.setattr(page_testimonia, "_CURRENT_PAGE_TESTIMONIA", {})
+    monkeypatch.setattr(native_witness, "_DERIVED_SHA256", {})
+    monkeypatch.setattr(imaging, "_PAGE_SIZES", OrderedDict())
+    monkeypatch.setattr(page_testimonia, "POOL_MIN_PAGE_BYTES", 0)
+    monkeypatch.setattr(page_testimonia, "pool_workers", lambda tasks, bytes_per_task: 2)
+
+    class BrokenPool:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def map(self, *_args):
+            raise BrokenProcessPool("a worker was killed")
+
+    monkeypatch.setattr(page_testimonia, "ProcessPoolExecutor", BrokenPool)
+    recovered = current_page_testimonia(page_context(root, "r", "happy", options))
+
+    assert recovered == serial
+    assert native_witness._DERIVED_SHA256, "validation derived no crop itself"
