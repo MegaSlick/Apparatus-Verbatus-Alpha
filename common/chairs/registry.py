@@ -31,7 +31,14 @@ from .errors import (
     UnresolvedChairRefusal,
 )
 from .filesystem import apfs_alias
-from .manifests import CopyLedger, inspect_snapshot_for_repair, read_manifest, verify_snapshot
+from .manifests import (
+    CopyLedger,
+    FileStat,
+    inspect_snapshot_for_repair,
+    read_manifest,
+    snapshot_stat_identity,
+    verify_snapshot,
+)
 from .models import (
     AbsentChair,
     ChairIdentity,
@@ -344,6 +351,10 @@ class ChairRegistry:
         self.manifest_root = Path(manifest_root).resolve() if manifest_root is not None else None
         self.cache_root = Path(cache_root).resolve() if cache_root is not None else None
         self.fetcher = fetcher
+        # Snapshots this registry fully verified, by (digest, root), with the
+        # stat identity of their files at that moment. A later ensure in this
+        # process whose files are unchanged need not read the bytes again.
+        self._verified: dict[tuple[str, str], tuple[FileStat, ...]] = {}
 
     @classmethod
     def from_toml(
@@ -369,7 +380,14 @@ class ChairRegistry:
         self._require_current_identity(identity)
         manifest = self._manifest(identity)
         if identity.source == "local-repository":
-            return verify_snapshot(identity, self._resolve_local_path(identity), manifest)
+            root = self._resolve_local_path(identity)
+            remembered = self._remembered(identity, root)
+            if remembered is not None:
+                return remembered
+            before = snapshot_stat_identity(root)
+            verified = verify_snapshot(identity, root, manifest)
+            self._remember(identity, root, before)
+            return verified
         return self._ensure_huggingface(identity, manifest)
 
     def verify_local_copy(
@@ -386,9 +404,44 @@ class ChairRegistry:
         if identity.source != "local-repository":
             raise LocalPathRefusal(identity.role, "a placed copy is only a local-repository chair")
         manifest = self._manifest(identity)
-        return verify_snapshot(
-            identity, self._resolve_local_path(identity), manifest, copied=copied
+        root = self._resolve_local_path(identity)
+        before = snapshot_stat_identity(root)
+        verified = verify_snapshot(identity, root, manifest, copied=copied)
+        self._remember(identity, root, before)
+        return verified
+
+    def _remembered(
+        self, identity: ChairIdentity, root: Path, *, ignored_paths: tuple[str, ...] = ()
+    ) -> VerifiedSnapshot | None:
+        """This process's earlier full verification of `root`, if no file has changed since."""
+
+        key = (identity.digest_manifest, str(root.resolve()))
+        seen = self._verified.get(key)
+        if seen is None:
+            return None
+        if snapshot_stat_identity(root, ignored_paths=ignored_paths) != seen:
+            del self._verified[key]
+            return None
+        return VerifiedSnapshot(
+            identity=identity,
+            root=root.resolve(),
+            manifest_digest=identity.digest_manifest,
+            verification={"bytes": "verified earlier in this process; no file changed since"},
         )
+
+    def _remember(
+        self,
+        identity: ChairIdentity,
+        root: Path,
+        before: tuple[FileStat, ...] | None,
+        *,
+        ignored_paths: tuple[str, ...] = (),
+    ) -> None:
+        """Record a full verification, unless a file changed while it ran."""
+
+        after = snapshot_stat_identity(root, ignored_paths=ignored_paths)
+        if before is not None and after == before:
+            self._verified[(identity.digest_manifest, str(root.resolve()))] = after
 
     def manifest(self, identity: ChairIdentity) -> DigestManifest:
         """The configured identity's pinned digest manifest, checked against its pin."""
@@ -494,12 +547,19 @@ class ChairRegistry:
         target = digests_root / digest
         descriptor = digest_cache_descriptor(identity)
         missing: tuple[str, ...]
+        ignored = (CACHE_DESCRIPTOR,)
         if target.exists():
             _verify_cache_descriptor(target, identity.role, descriptor)
+            remembered = self._remembered(identity, target, ignored_paths=ignored)
+            if remembered is not None:
+                self._mark_used(target, identity.role)
+                return remembered
+            before = snapshot_stat_identity(target, ignored_paths=ignored)
             inspection = inspect_snapshot_for_repair(
-                identity, target, manifest, ignored_paths=(CACHE_DESCRIPTOR,)
+                identity, target, manifest, ignored_paths=ignored
             )
             if inspection.verified is not None:
+                self._remember(identity, target, before, ignored_paths=ignored)
                 self._mark_used(target, identity.role)
                 return inspection.verified
             missing = inspection.missing
@@ -526,10 +586,14 @@ class ChairRegistry:
                     identity.role, f"pinned fetch failed: {error}"
                 ) from error
             copied = _fresh_copies(ledger, missing)
+            before = snapshot_stat_identity(candidate)
             verified = verify_snapshot(identity, candidate, manifest, copied=copied)
             with _cache_write(identity.role, "the verified snapshot could not be promoted"):
                 _write_cache_descriptor(candidate, descriptor)
                 _promote(candidate, target)
+            # A rename keeps each file's inode and times, so the candidate's
+            # verified stat identity is the promoted cache's.
+            self._remember(identity, target, before, ignored_paths=ignored)
             self._mark_used(target, identity.role)
             return VerifiedSnapshot(
                 identity=verified.identity,

@@ -125,7 +125,15 @@ process's usable CPUs (affinity mask and cgroup `cpu.max`) clamped to 2..32, or
 `VERBATUS_IO_WORKERS`; the count and its source are recorded in the verification
 receipt. The returned ledger lets the registry check the copied tree's structure
 (missing and extra files, sizes, links) without reading those bytes again; files
-carried over from a damaged cache are hashed again. A per-digest lock
+carried over from a damaged cache are hashed again.
+
+Within one process, a `ChairRegistry` remembers each snapshot it fully verified,
+by manifest digest and root, with every file's device, inode, size, mtime and
+ctime at that moment. A later `ensure` of the same snapshot in that process
+re-reads the manifest and the cache descriptor and walks the tree, and reads the
+bytes again only if any file was added, removed, rewritten or replaced. So
+preflight's verification followed by the smoke's `ServingManager.start` hashes a
+chair once. A new process remembers nothing and verifies from the bytes. A per-digest lock
 (`by-digest/.<digest>.lock`) serialises concurrent fills of one digest, across
 processes. When making room, the registry may remove a configured digest's unused
 cache and abandoned `.<digest>.candidate-*` and `.<digest>.prior-*` directories,

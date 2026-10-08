@@ -250,6 +250,43 @@ def _inspect_snapshot(
     )
 
 
+FileStat = tuple[str, int, int, int, int, int]
+
+
+def snapshot_stat_identity(
+    snapshot_root: str | Path, *, ignored_paths: Iterable[str] = ()
+) -> tuple[FileStat, ...] | None:
+    """Each regular file's path, device, inode, size, mtime and ctime, in path order.
+
+    Any rewrite, replacement, addition or removal of a file changes this value.
+    None when the tree cannot be walked or holds anything but regular files, so a
+    caller falls back to full verification, which names the problem.
+    """
+
+    root = Path(snapshot_root)
+    ignored = set(ignored_paths)
+    try:
+        files = _regular_files(root, chair="snapshot")
+        stats: list[FileStat] = []
+        for relative, path in files:
+            if relative in ignored:
+                continue
+            status = path.stat(follow_symlinks=False)
+            stats.append(
+                (
+                    relative,
+                    status.st_dev,
+                    status.st_ino,
+                    status.st_size,
+                    status.st_mtime_ns,
+                    status.st_ctime_ns,
+                )
+            )
+    except (OSError, DigestMismatchRefusal):
+        return None
+    return tuple(stats)
+
+
 def _map_files_in_order(items: list[_Item], work: Callable[[_Item], _Result]) -> list[_Result]:
     """Hash independent files concurrently, then observe results in lexical order."""
 

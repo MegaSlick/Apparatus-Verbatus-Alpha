@@ -394,7 +394,7 @@ def test_a_complete_match_verifies_and_fetches_exactly_the_pinned_paths(hf_world
     assert (snapshot.root / CACHE_DESCRIPTOR).is_file()
 
 
-def test_a_second_ensure_hashes_each_complete_cache_file_once_and_fetches_nothing(
+def test_a_second_ensure_in_another_process_hashes_each_cache_file_once_and_fetches_nothing(
     hf_world, monkeypatch
 ):
     """The re-verification that keeping provenance intact requires has to be survivable.
@@ -402,24 +402,95 @@ def test_a_second_ensure_hashes_each_complete_cache_file_once_and_fetches_nothin
     A registry that leaves its own bookkeeping inside the snapshot directory
     passes the first verification and then refuses every one after it, because
     its own marker file is an unpinned extra. The descriptor is excluded by name
-    from the comparison, and this is the test that says so.
+    from the comparison, and this is the test that says so. A fresh registry
+    stands for a new process, which has verified nothing yet.
     """
     identity = hf_world.identity()
     first = hf_world.registry.ensure(identity)
-    real_digest = manifests.file_digest
-    digested: list[str] = []
-
-    def record_digest(path, chair, relative):
-        digested.append(relative)
-        return real_digest(path, chair, relative)
-
-    monkeypatch.setattr(manifests, "file_digest", record_digest)
-    second = hf_world.registry.ensure(identity)
+    digested = _digest_log(monkeypatch)
+    restarted = registry_for(hf_world.registry.config, hf_world.tmp_path, hf_world.fetcher)
+    second = restarted.ensure(identity)
 
     assert second.root == first.root
     assert second.manifest_digest == first.manifest_digest
     assert sorted(digested) == ["config.json", "nested/weights.bin"]
     assert len(hf_world.fetcher.calls) == 1, "a complete verified cache is not re-fetched"
+
+
+def test_a_second_ensure_in_the_same_process_reads_no_byte_of_an_unchanged_cache(
+    hf_world, monkeypatch
+):
+    """Preflight verifies a chair and its smoke then starts it: one hash, not two."""
+    identity = hf_world.identity()
+    first = hf_world.registry.ensure(identity)
+    digested = _digest_log(monkeypatch)
+
+    second = hf_world.registry.ensure(identity)
+    bystander = hf_world.registry.ensure(hf_world.identity("attestator_2"))
+
+    assert digested == []
+    assert second.root == first.root
+    assert second.identity == identity
+    assert bystander.identity.role == "attestator_2"
+    assert second.verification == {
+        "bytes": "verified earlier in this process; no file changed since"
+    }
+    assert len(hf_world.fetcher.calls) == 1
+
+
+@pytest.mark.parametrize("change", ["same-bytes-rewrite", "touch", "replace", "extra", "remove"])
+def test_any_change_to_a_cache_file_sends_the_next_ensure_back_to_the_bytes(
+    hf_world, monkeypatch, change
+):
+    identity = hf_world.identity()
+    first = hf_world.registry.ensure(identity)
+    weights = first.root / "nested/weights.bin"
+    data = weights.read_bytes()
+    if change == "same-bytes-rewrite":
+        os.utime(weights, ns=(1, 1))
+        weights.write_bytes(data)
+    elif change == "touch":
+        os.utime(weights, ns=(5, 5))
+    elif change == "replace":
+        replacement = weights.with_name("weights.tmp")
+        replacement.write_bytes(data)
+        os.replace(replacement, weights)
+    elif change == "extra":
+        (first.root / "z-unpinned.json").write_bytes(b"{}\n")
+    else:
+        weights.unlink()
+    digested = _digest_log(monkeypatch)
+
+    if change == "extra":
+        with pytest.raises(DigestMismatchRefusal, match="z-unpinned.json"):
+            hf_world.registry.ensure(identity)
+        return
+    hf_world.registry.ensure(identity)
+
+    assert digested, "a changed file is verified from its bytes again"
+
+
+def test_a_tampered_file_with_restored_times_is_still_caught_by_its_ctime(hf_world):
+    identity = hf_world.identity()
+    first = hf_world.registry.ensure(identity)
+    weights = first.root / "nested/weights.bin"
+    status = weights.stat()
+    weights.write_bytes(b"fixture weightX\n")
+    os.utime(weights, ns=(status.st_atime_ns, status.st_mtime_ns))
+
+    with pytest.raises(DigestMismatchRefusal, match="nested/weights.bin"):
+        hf_world.registry.ensure(identity)
+
+
+def test_a_failed_verification_is_never_remembered(hf_world, monkeypatch):
+    identity = hf_world.identity()
+    first = hf_world.registry.ensure(identity)
+    hf_world.registry._verified.clear()
+    (first.root / "nested/weights.bin").write_bytes(b"fixture weightX\n")
+    for _ in range(2):
+        with pytest.raises(DigestMismatchRefusal):
+            hf_world.registry.ensure(identity)
+    assert hf_world.registry._verified == {}
 
 
 class PerRoleFetcher(RecordingFetcher):

@@ -211,7 +211,9 @@ correct immediate close.
   Chairs pinned to one manifest (the Perlector and the reconstructor) share one copy.
   Each copy hashes the bytes as it writes them, across files in one pool sized from the
   container's usable CPUs (or `VERBATUS_IO_WORKERS`), so a fresh copy is read once, not
-  copied and then re-read; the receipt records the worker count.
+  copied and then re-read; the receipt records the worker count. Within one process a
+  verified, unchanged cache is not hashed again, so PREFLIGHT's smoke start reuses the
+  verification its cache check just made; each stage process still verifies from the bytes.
   An adapter base remains available while its adapter is filled. The at-most-one same-pin
   re-fetch is not wired (04-8); a mismatch is red and names the chair.
 - **Transfer is optional.** No submission manifest on the volume is a vacuous success; a

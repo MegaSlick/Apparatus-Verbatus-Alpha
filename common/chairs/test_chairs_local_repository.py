@@ -60,6 +60,30 @@ def test_a_local_repository_round_trip_never_touches_the_network(tmp_path):
     assert fetcher.calls == []
 
 
+def test_a_local_chair_verified_once_in_a_process_is_not_read_again_until_it_changes(
+    tmp_path, monkeypatch
+):
+    from common.chairs import manifests
+
+    registry, snapshot, _ = _world(tmp_path)
+    identity = registry.resolve("perlector")
+    registry.ensure(identity)
+    digested: list[str] = []
+    real_digest = manifests.file_digest
+
+    def record_digest(path, chair, relative):
+        digested.append(relative)
+        return real_digest(path, chair, relative)
+
+    monkeypatch.setattr(manifests, "file_digest", record_digest)
+    registry.ensure(identity)
+    assert digested == []
+
+    (snapshot / "nested/weights.bin").write_bytes(b"fixture weightX\n")
+    with pytest.raises(DigestMismatchRefusal, match="nested/weights.bin"):
+        registry.ensure(identity)
+
+
 def test_one_flipped_byte_under_the_model_root_fails_naming_that_file(tmp_path):
     registry, snapshot, _ = _world(tmp_path)
     (snapshot / "nested/weights.bin").write_bytes(b"different weights entirely\n")
