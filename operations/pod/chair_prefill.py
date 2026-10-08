@@ -31,12 +31,13 @@ from common.chairs.registry import DIGEST_CACHE_DIRECTORY, ChairRegistry
 
 from .bootstrap import BootstrapStep, BootstrapStepFailure, _filesystem_key, _free_bytes
 
-# How long a waiting step gives the fill before calling it stuck: a third of the
-# 13.6 GB/min one copy pass was measured at (review 01), so three times the time
-# the bytes should take, and never less than a quarter of an hour, for a slow
-# volume or a disk shared with the uv sync. Present caches count too: they are
-# read once to be verified.
-PREFILL_BYTES_PER_SECOND = 13.6e9 / 60 / 3
+# How long a waiting step gives the fill before calling it stuck: a tenth of the
+# 13.6 GB/min one copy pass was measured at (review 01), so ten times the time
+# the bytes should take, and never less than a quarter of an hour. A network
+# volume read while the uv sync shares the disk runs far below the measured
+# rate, and a fill called stuck turns MODEL_STORE red on a billing pod. Present
+# caches count too: they are read once to be verified.
+PREFILL_BYTES_PER_SECOND = 13.6e9 / 60 / 10
 PREFILL_MINIMUM_SECONDS = 15 * 60
 
 
@@ -154,7 +155,7 @@ class ChairCachePrefill:
                 step,
                 f"the chair-cache prefill started at {self._started_at_step} is still "
                 f"copying {self._planned_bytes} bytes after its deadline "
-                f"({self._planned_bytes / self._bytes_per_second:.0f} s at a third of "
+                f"({self._planned_bytes / self._bytes_per_second:.0f} s at a tenth of "
                 "13.6 GB/min, at least "
                 f"{self._minimum_seconds:.0f} s); a copy or a store read has stalled",
                 "Check the model volume and the container disk (a hung network mount, a "

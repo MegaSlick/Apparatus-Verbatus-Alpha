@@ -748,10 +748,11 @@ with eviction, once the smoke has finished.
 """
 
 
-# How long the next chair's fill may run before preflight calls it stuck: three
+# How long the next chair's fill may run before preflight calls it stuck: ten
 # times what its snapshot takes at the 13.6 GB/min one copy pass was measured at
-# (review 01), never less than a quarter of an hour.
-PREFETCH_BYTES_PER_SECOND = 13.6e9 / 60 / 3
+# (review 01), never less than a quarter of an hour. A fill called stuck is a red
+# preflight, so a slow network volume gets the same allowance as the prefill.
+PREFETCH_BYTES_PER_SECOND = 13.6e9 / 60 / 10
 PREFETCH_MINIMUM_SECONDS = 15 * 60
 
 

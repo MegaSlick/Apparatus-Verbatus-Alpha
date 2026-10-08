@@ -815,8 +815,11 @@ class _VolumeSync:
 
     The file list is frozen here, on the main thread, at the stage boundary
     (`RunTreeSync.plan`), so the next stage's new files wait for the next sync.
-    `join` waits for the copy, prints and journals it, and raises a failure as the
-    refusal naming the stage whose sync it was.
+    Serving logs are left out: a chair the Perlector hands to the Coniector keeps
+    appending to the Perlector's log while this sync copies, and a file that grows
+    during its copy fails the sync. `pod_run`'s final sync, after every chair has
+    stopped, copies them. `join` waits for the copy, prints and journals it, and
+    raises a failure as the refusal naming the stage whose sync it was.
     """
 
     def __init__(self, args: argparse.Namespace, after: str) -> None:
@@ -828,7 +831,7 @@ class _VolumeSync:
         self._started_at = _stamp()
         self._began = _clock()
         try:
-            plan = args.stage_sync.plan()
+            plan = args.stage_sync.plan(skip_directories=frozenset({SERVING_LOGS_DIR}))
         except (OSError, RunTreeSyncError) as error:
             self._error = error
             self._thread = None

@@ -3466,6 +3466,34 @@ def test_fetch_run_brings_the_whole_tree_home_verified_and_reuses_it_next_time(
     assert not (surface.workspace / "private" / "canary").exists()
 
 
+def test_fetch_run_sets_aside_a_syncs_own_files_rather_than_refusing_the_tree(
+    tmp_path: Path,
+) -> None:
+    """A pod's run-tree sync keeps a ledger and leaves a copy in flight behind when
+    killed; neither is evidence, so both are set aside like publication residue and the
+    rest of the tree still comes home verified."""
+    from common.runtree.sync import SYNC_PREFIX
+
+    volume, reader = _volume_run(tmp_path)
+    tree = volume / "runs" / "brought-home"
+    (tree / f"{SYNC_PREFIX}ledger.jsonl").write_bytes(b'{"target": "/local/run"}\n')
+    (tree / "2_designator" / "artifacts" / f"{SYNC_PREFIX}abc123").write_bytes(b"half a copy")
+    surface = _surface(tmp_path, workspace=tmp_path / "workspace")
+    into = tmp_path / "local-runs"
+
+    receipt = surface.fetch_run(run_id="brought-home", into=into, reader=reader)
+
+    payload = surface.receipts.read(receipt)["payload"]
+    assert payload["state"] == "verified"
+    assert payload["excluded_publication_temporaries"] == [
+        f"{SYNC_PREFIX}ledger.jsonl",
+        "2_designator/.manifest.json.tmp-residue",
+        f"2_designator/artifacts/{SYNC_PREFIX}abc123",
+    ]
+    assert not list((into / "brought-home").rglob(f"{SYNC_PREFIX}*"))
+    assert _files_under(into / "brought-home") == _files_under(tree)
+
+
 def test_fetch_run_seals_one_private_alarm_and_sends_one_decision_ping(tmp_path, monkeypatch):
     from common import stage
     from operations.corpus import canary

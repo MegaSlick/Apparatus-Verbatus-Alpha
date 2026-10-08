@@ -297,3 +297,126 @@ def test_a_verified_file_changed_after_the_plan_is_refused_not_skipped(
     with pytest.raises(RunTreeSyncError, match="changed during copy|gone since the plan"):
         sync_object.copy(plan)
     assert (volume / "a.json").read_bytes() == b"a"
+
+
+# --- files left out of a stage sync -------------------------------------------------
+
+
+def test_a_log_growing_under_a_skipped_directory_never_fails_the_sync(tmp_path: Path) -> None:
+    """A served engine appends to its log across the stage boundary; a plan that skips
+    `serving-logs` neither copies nor checks it, and the full sync that follows, once
+    the log is static, copies it once."""
+    local, volume = _trees(
+        tmp_path,
+        {"a.json": b"a", "4_perlector/serving-logs/engine.log": b"starting\n"},
+    )
+    log = local / "4_perlector" / "serving-logs" / "engine.log"
+    sync_object = RunTreeSync(local, volume)
+    plan = sync_object.plan(skip_directories=frozenset({"serving-logs"}))
+    with log.open("ab") as handle:
+        handle.write(b"still serving\n")
+
+    assert sync_object.copy(plan) == 1
+    assert not (volume / "4_perlector" / "serving-logs").exists()
+    assert (volume / "a.json").read_bytes() == b"a"
+
+    assert RunTreeSync(local, volume).sync() == 1
+    assert (volume / "4_perlector" / "serving-logs" / "engine.log").read_bytes() == (
+        b"starting\nstill serving\n"
+    )
+    assert RunTreeSync(local, volume).sync() == 0
+
+
+def test_a_skipped_directory_name_is_skipped_at_any_depth_and_nowhere_else(
+    tmp_path: Path,
+) -> None:
+    local, volume = _trees(
+        tmp_path,
+        {
+            "serving-logs/top.log": b"top",
+            "stage/serving-logs/deep.log": b"deep",
+            "stage/artifacts/serving-logs.json": b"a file, not the directory",
+        },
+    )
+
+    assert RunTreeSync(local, volume).sync() == 3
+    other = tmp_path / "other"
+    other.mkdir()
+    sync_object = RunTreeSync(local, other)
+    assert sync_object.copy(sync_object.plan(skip_directories=frozenset({"serving-logs"}))) == 1
+    assert sorted(path.relative_to(other).as_posix() for path in other.rglob("*.json")) == [
+        "stage/artifacts/serving-logs.json"
+    ]
+    assert not list(other.rglob("*.log"))
+
+
+def test_the_stage_sync_leaves_the_log_a_handed_off_chair_still_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The Perlector's chair keeps serving, and logging, through the Coniector; the sync
+    after the Perlector copies its evidence and not the log, so the growing log never
+    fails the run. The log reaches the volume with the next full sync."""
+    local = tmp_path / "local" / "run"
+    volume = tmp_path / "volume" / "run"
+    local.mkdir(parents=True)
+    volume.mkdir(parents=True)
+    log = local / "4_perlector" / orchestrator.SERVING_LOGS_DIR / "engine.log"
+    log.parent.mkdir(parents=True)
+    seen: list[str] = []
+    copy = RunTreeSync.copy
+
+    def appending_copy(self, plan):
+        # The chair writes while the copy runs, as it does beside the next stage.
+        with log.open("ab") as handle:
+            handle.write(b"serving the coniector\n")
+        return copy(self, plan)
+
+    def invoke(program: str, args: Namespace, **_options) -> int:
+        name = "perlector.json" if not seen else "coniector.json"
+        (local / name).write_bytes(name.encode())
+        with log.open("ab") as handle:
+            handle.write(f"{name}\n".encode())
+        seen.append(program)
+        return orchestrator.EXIT_COMPLETE
+
+    monkeypatch.setattr(RunTreeSync, "copy", appending_copy)
+    monkeypatch.setattr(orchestrator, "invoke", invoke)
+    monkeypatch.setattr(orchestrator, "checkpoint", lambda *args: None)
+    args = Namespace(run_id="run", run_root=local.parent, stage_sync=RunTreeSync(local, volume))
+
+    result, _exported = orchestrator._drive(args, ("perlector", orchestrator.CONIECTOR), "semi", {})
+
+    assert result == orchestrator.EXIT_COMPLETE
+    assert len(seen) == 2
+    assert (volume / "perlector.json").exists() and (volume / "coniector.json").exists()
+    assert not (volume / "4_perlector" / orchestrator.SERVING_LOGS_DIR).exists()
+    assert not list(volume.rglob(f"{sync.SYNC_PREFIX}*"))
+    monkeypatch.setattr(RunTreeSync, "copy", copy)
+    assert RunTreeSync(local, volume).sync() == 1
+    assert (volume / "4_perlector" / orchestrator.SERVING_LOGS_DIR / "engine.log").read_bytes() == (
+        log.read_bytes()
+    )
+
+
+# --- a ledger kept away from the source ---------------------------------------------
+
+
+def test_a_ledger_elsewhere_leaves_the_source_tree_untouched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run brought from the volume to local disk is synced with the volume as the
+    source; its ledger goes where the caller says, so the volume's tree gains nothing
+    that is not evidence, and a later sync still reads it."""
+    stored, local = _trees(tmp_path, FILES)
+    ledger = tmp_path / f"{sync.SYNC_PREFIX}hydrate-run.jsonl"
+
+    assert RunTreeSync(stored, local, ledger=ledger).sync() == len(FILES)
+    assert not list(stored.rglob(f"{sync.SYNC_PREFIX}*")), "the volume's tree was written to"
+    assert not list(local.rglob(f"{sync.SYNC_PREFIX}*"))
+    assert ledger.is_file()
+
+    def no_hashing(path: Path) -> str:
+        raise AssertionError(f"{path} was hashed again")
+
+    monkeypatch.setattr(sync, "_digest", no_hashing)
+    assert RunTreeSync(stored, local, ledger=ledger).sync() == 0
