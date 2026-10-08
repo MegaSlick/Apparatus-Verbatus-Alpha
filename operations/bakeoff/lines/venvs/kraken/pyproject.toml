@@ -1,0 +1,25 @@
+# kraken's own environment, for the kraken PP-OCRv6 arms and the blla line source.
+# kraken pins torch and lightning versions the project environment does not share, so
+# it runs apart: the arm modules run in the project environment and call this
+# environment's `kraken` command, reading only the files it writes.
+#
+# Licence record (CONTRIBUTING.md):
+#   kraken==7.1.1   Apache-2.0 (code)   github.com/mittagessen/kraken
+# Its default segmentation model, blla.mlmodel, ships inside the kraken wheel.
+# The PP-OCRv6 weights (Zenodo 10.5281/zenodo.21788410, Apache-2.0) are fetched by
+# `kraken_ppocr.py fetch`, never stored in this tree.
+[project]
+name = "verbatus-bakeoff-kraken"
+version = "0.0.0"
+description = "kraken 7.1 for the bake-off's CTC line arms"
+requires-python = "==3.12.*"
+dependencies = ["kraken==7.1.1"]
+
+[tool.uv]
+required-version = "==0.12.1"
+package = false
+# The pod (CPU beside the GPU arms) and the lead's Mac.
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]

@@ -1,0 +1,26 @@
+# PyLaia's own environment, for the Teklia PyLaia arms. PyLaia 1.1.2 pins torch 1.13,
+# pytorch-lightning 1.4.2 and Python below 3.11, none of which the project shares, so it
+# runs apart: the arm module runs in the project environment and calls this
+# environment's `pylaia-htr-decode-ctc` command, reading only what it prints.
+#
+# Licence record (CONTRIBUTING.md):
+#   pylaia==1.1.2   MIT (code)   gitlab.teklia.com/atr/pylaia
+# The Teklia/pylaia-belfort and Teklia/pylaia-popp weights (MIT) are fetched by
+# `pylaia.py fetch`, never stored in this tree.
+[project]
+name = "verbatus-bakeoff-pylaia"
+version = "0.0.0"
+description = "PyLaia 1.1.2 for the bake-off's CTC line arms"
+requires-python = "==3.10.*"
+# torchmetrics 0.7 (pulled by pytorch-lightning 1.4.2) imports pkg_resources, which
+# setuptools no longer ships by default; an older setuptools provides it. PyLaia logs
+# `python -m pip freeze` at start and stops if pip is missing, as it is in a uv venv.
+dependencies = ["pylaia==1.1.2", "setuptools==70.3.0", "pip==25.2"]
+
+[tool.uv]
+required-version = "==0.12.1"
+package = false
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]

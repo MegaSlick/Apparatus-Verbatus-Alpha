@@ -1,0 +1,27 @@
+# Party's own environment. Party is a kraken model plugin that requires kraken 7.0.x
+# (`kraken~=7.0.0b5` in its own pyproject), so it cannot share the kraken 7.1
+# environment the PP-OCRv6 arms use, nor the project's. The arm module runs in the
+# project environment and calls this environment's `party` command.
+#
+# Licence record (CONTRIBUTING.md):
+#   party @ c2589b1b515ed690f883c6afaef6c01ce29bf72d   Apache-2.0 (code)   github.com/mittagessen/party
+#   kraken==7.0.3                                      Apache-2.0 (code)
+# The Party base model (Zenodo 10.5281/zenodo.20642057, Apache-2.0) is fetched by
+# `party.py fetch`, never stored in this tree.
+[project]
+name = "verbatus-bakeoff-party"
+version = "0.0.0"
+description = "Party (page-wise recognition) for the bake-off"
+requires-python = "==3.12.*"
+dependencies = [
+    "party @ git+https://github.com/mittagessen/party@c2589b1b515ed690f883c6afaef6c01ce29bf72d",
+    "kraken==7.0.3",
+]
+
+[tool.uv]
+required-version = "==0.12.1"
+package = false
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
