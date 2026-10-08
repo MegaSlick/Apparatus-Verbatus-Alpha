@@ -17,7 +17,8 @@ from common.chairs.conftest import (
 )
 from common.chairs.errors import DigestMismatchRefusal, DiskSpaceRefusal
 
-from .chair_prefill import ChairCachePrefill, PrefillChairs, in_stage_need_order
+from .chair_order import in_stage_need_order
+from .chair_prefill import ChairCachePrefill, PrefillChairs
 
 FREE = 10**9
 

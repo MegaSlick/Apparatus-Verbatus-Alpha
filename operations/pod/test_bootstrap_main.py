@@ -1139,6 +1139,23 @@ def test_the_background_fill_takes_selected_store_ready_chairs_in_stage_order(
     )
 
 
+def test_preflight_s_lookahead_fill_never_evicts_a_cache() -> None:
+    from types import SimpleNamespace
+
+    calls: list[dict[str, object]] = []
+
+    class Registry:
+        def ensure(self, identity, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(kwargs)
+            return SimpleNamespace(manifest_digest="d" * 64, root=Path("/c"), verification=None)
+
+    verifier = bootstrap_main.RegistryChairCacheVerifier(Registry())  # type: ignore[arg-type]
+    identity = SimpleNamespace(role="perlector")
+
+    assert verifier.prefetch(identity) == verifier.verify(identity)  # type: ignore[arg-type]
+    assert calls == [{"evict": False}, {}]
+
+
 def _local_chair_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A roster binding one local-repository chair, and a store snapshot of it."""
     from common.chairs.manifests import build_manifest, write_manifest

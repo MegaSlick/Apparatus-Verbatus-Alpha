@@ -6527,6 +6527,139 @@ def test_preflight_uses_the_configured_vram_table(vram: str, expected: str) -> N
     assert all(item.residency in {"single", None} for item in report.placements)
 
 
+_EIGHTY = GpuProfile("synthetic", "12.4", "550", (8, 0), Decimal("80"), Decimal("100"), "bfloat16")
+
+
+class LookaheadLog:
+    """One timeline of verifications, prefetches and smokes, from every thread."""
+
+    def __init__(self) -> None:
+        self.events: list[str] = []
+        self.lock = threading.Lock()
+        self.smoking = 0
+        self.overlapping_smokes = False
+
+    def add(self, event: str) -> None:
+        with self.lock:
+            self.events.append(event)
+
+
+class LoggedCache(FakeCache):
+    def __init__(self, log: LookaheadLog, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        super().__init__(**kwargs)
+        self.log = log
+
+    def verify(self, identity):  # type: ignore[no-untyped-def]
+        self.log.add(f"verify {identity.role}")
+        return super().verify(identity)
+
+
+class LoggedSmoke(FakeSmoke):
+    def __init__(self, log: LookaheadLog) -> None:
+        super().__init__()
+        self.log = log
+
+    def read(self, identity, fixture, placement):  # type: ignore[no-untyped-def]
+        with self.log.lock:
+            self.log.smoking += 1
+            self.log.overlapping_smokes |= self.log.smoking > 1
+        self.log.add(f"smoke {identity.role}")
+        time.sleep(0.02)
+        with self.log.lock:
+            self.log.smoking -= 1
+        return super().read(identity, fixture, placement)
+
+
+def _lookahead_runner(cache, smoke, prefetch) -> PreflightRunner:  # type: ignore[no-untyped-def]
+    root = Path(__file__).resolve().parents[2]
+    return PreflightRunner(
+        load_models_toml(root / "config/models.toml"),
+        load_placement_table(root / "config/pod_placement.toml"),
+        cache,
+        smoke,
+        root / "proof/fixtures/synthetic-two-page-v0/page-1.png",
+        cache_prefetcher=prefetch,
+    )
+
+
+def test_preflight_fills_the_next_chair_while_the_current_one_smokes_one_smoke_at_a_time() -> None:
+    order = [
+        "designator_surya",
+        "secondary_proposer",
+        "attestator_1",
+        "attestator_2",
+        "attestator_3",
+        "perlector",
+        "reconstructor",
+    ]
+    log = LookaheadLog()
+    cache = LoggedCache(log)
+    started = {role: threading.Event() for role in order}
+
+    def prefetch(identity):  # type: ignore[no-untyped-def]
+        log.add(f"prefetch {identity.role}")
+        started[identity.role].set()
+        return {"manifest_digest": identity.digest_manifest, "prefetched": True}
+
+    class Overlapping(LoggedSmoke):
+        def read(self, identity, fixture, placement):  # type: ignore[no-untyped-def]
+            position = order.index(identity.role)
+            if position + 1 < len(order):
+                # The next chair's fill is under way while this one is on the card.
+                assert started[order[position + 1]].wait(timeout=5)
+            return super().read(identity, fixture, placement)
+
+    serial = _preflight(FakeCache(), FakeSmoke()).run(_EIGHTY)
+    report = _lookahead_runner(cache, Overlapping(log), prefetch).run(_EIGHTY)
+
+    assert report.color == "green"
+    assert not log.overlapping_smokes, "the card smokes one chair at a time"
+    smoked = [event.split()[1] for event in log.events if event.startswith("smoke")]
+    assert smoked == order
+    assert [receipt["chair"] for receipt in report.smoke_receipts] == order
+    # Only the first chair is verified in the foreground; every later one was
+    # prefetched while the chair before it smoked.
+    assert cache.verify_calls == {order[0]: 1}
+    assert all(receipt.get("prefetched") for receipt in report.cache_receipts[1:])
+    assert sorted(r["chair"] for r in report.cache_receipts) == sorted(
+        r["chair"] for r in serial.cache_receipts
+    )
+
+
+def test_a_prefetch_without_room_is_verified_again_after_the_smoke() -> None:
+    log = LookaheadLog()
+    cache = LoggedCache(log)
+
+    def prefetch(identity):  # type: ignore[no-untyped-def]
+        log.add(f"prefetch {identity.role}")
+        raise DiskSpaceRefusal(identity.role, "container disk too small")
+
+    report = _lookahead_runner(cache, LoggedSmoke(log), prefetch).run(_EIGHTY)
+
+    assert report.color == "green"
+    smoked = [event.split()[1] for event in log.events if event.startswith("smoke")]
+    assert set(cache.verify_calls) >= set(smoked)
+    for before, after in itertools.pairwise(smoked):
+        assert log.events.index(f"smoke {before}") < log.events.index(f"verify {after}")
+
+
+def test_a_prefetch_that_refuses_is_that_chair_s_cache_issue() -> None:
+    def prefetch(identity):  # type: ignore[no-untyped-def]
+        if identity.role == "attestator_2":
+            raise CacheMismatch("digest differs")
+        return {"manifest_digest": identity.digest_manifest}
+
+    cache = FakeCache()
+    report = _lookahead_runner(cache, FakeSmoke(), prefetch).run(_EIGHTY)
+    expected = _preflight(FakeCache(always_mismatch="attestator_2"), FakeSmoke()).run(_EIGHTY)
+
+    assert report.color == "red"
+    assert [(issue.code, issue.chair, issue.message) for issue in report.issues] == [
+        (issue.code, issue.chair, issue.message) for issue in expected.issues
+    ]
+    assert "attestator_2" not in cache.verify_calls, "the refusal is not retried"
+
+
 def _table() -> PlacementTable:
     root = Path(__file__).resolve().parents[2]
     return load_placement_table(root / "config/pod_placement.toml")

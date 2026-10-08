@@ -116,7 +116,13 @@ from common.chairs.model_store import (
     artifacts_for_roles,
     pending_local_artifacts,
 )
-from common.chairs.models import ChairIdentity, DigestManifest, ModelsConfig, ServingReceipt
+from common.chairs.models import (
+    ChairIdentity,
+    DigestManifest,
+    ModelsConfig,
+    ServingReceipt,
+    VerifiedSnapshot,
+)
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
     ChairRegistry,
@@ -177,7 +183,8 @@ from .bootstrap import (
     SubprocessBootstrapActions,
     verify_image_contract,
 )
-from .chair_prefill import ChairCachePrefill, PrefillChairs, in_stage_need_order
+from .chair_order import in_stage_need_order
+from .chair_prefill import ChairCachePrefill, PrefillChairs
 from .durable import atomic_write, canonical_json, exclusive_write
 from .models import POD_VOLUME_MOUNT_PATH, REQUESTED_GPU_COUNT, require_utc, utc_now
 from .preflight import (
@@ -325,7 +332,15 @@ class RegistryChairCacheVerifier:
         self.registry = registry
 
     def verify(self, identity: ChairIdentity) -> dict[str, object]:
-        snapshot = self.registry.ensure(identity)
+        return self._receipt(identity, self.registry.ensure(identity))
+
+    def prefetch(self, identity: ChairIdentity) -> dict[str, object]:
+        """`verify` without evicting any other cache, for a fill beside a running smoke."""
+
+        return self._receipt(identity, self.registry.ensure(identity, evict=False))
+
+    @staticmethod
+    def _receipt(identity: ChairIdentity, snapshot: VerifiedSnapshot) -> dict[str, object]:
         receipt: dict[str, object] = {
             "chair": identity.role,
             "manifest_digest": snapshot.manifest_digest,
@@ -1476,16 +1491,18 @@ def _build_preflight(
             residency_lease=FileResidencyLease(chosen.residency_lock),
             producer="operations.pod.bootstrap_main",
         )
+        cache_verifier = RegistryChairCacheVerifier(registry)
         runner = PreflightRunner(
             registry.config,
             placement,
-            RegistryChairCacheVerifier(registry),
+            cache_verifier,
             reader,
             fixture,
             serving_recipes=recipes,
             subprocess_checker=chosen.subprocess_checker,
             selected_roles=selected_roles,
             chair_fixtures=chair_fixtures,
+            cache_prefetcher=cache_verifier.prefetch,
         )
         report = runner.run(profile)
         record = report.to_record()

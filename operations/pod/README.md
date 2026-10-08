@@ -233,7 +233,8 @@ correct immediate close.
   re-fetch is not wired (04-8); a mismatch is red and names the chair.
 - **Transfer is optional.** No submission manifest on the volume is a vacuous success; a
   manifest with no configured target is a refusal.
-- **`PREFLIGHT`** runs `ChairRegistry.ensure` for the selected roles, then a smoke read through the
+- **`PREFLIGHT`** runs `ChairRegistry.ensure` for the selected roles, in the order the
+  stages first need them, then a smoke read through the
   serving package's production seam (`assemble_serving_smoke_reader` around
   `ServingManager`, fed `operations/serving/smoke.py::VisionSmokeCall`). The witness value
   is drawn from the CSPRNG on the pod and rendered onto a golden page under
@@ -241,7 +242,10 @@ correct immediate close.
   prompt. The DAI chair reads a pinned public RecordGold record instead, fetched and
   verified against its digests at preflight and scored by character error rate
   (`operations/serving/recordgold_smoke.py`); a fetch failure is a named refusal, not a
-  chair failure. Serving receipts, launch audits and evidence manifests land
+  chair failure. While one chair smokes, one background thread copies and verifies the
+  next chair's cache (never evicting, so the cache being served stays put; a chair it
+  finds no room for is filled after the smoke, as before). The card still serves one
+  chair at a time. Serving receipts, launch audits and evidence manifests land
   content-addressed in the same directory. `--fixture` with `--page-witness-file` supplies
   a golden page instead.
   Ordinary serving refuses an unproven row; only this smoke assembly may launch one, for
