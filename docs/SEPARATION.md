@@ -77,7 +77,6 @@ for a script to read.
 | `operations/corpus/` | PRODUCT | RecordGold evaluation |
 | `operations/http_deadline.py` | PRODUCT | |
 | `operations/maintenance/` | PRODUCT | watches the pinned vendor revisions |
-| `operations/metrics/` | HARNESS | code-size counts for cleanups |
 | `operations/notify/` | PRODUCT | the operator and pod notices use it |
 | `operations/operator/` | PRODUCT | |
 | `operations/pod/` | PRODUCT | |
@@ -102,7 +101,8 @@ for a script to read.
 - **`.coderabbit.yaml` is HARNESS.** Its instructions speak to the lead and to the
   AI-written workflow. If beta wants the app, it gets a fresh, short configuration.
 The cleanup train has landed: the spike, the bench, the review-candidate code and the
-old metrics are gone. When a later deletion lands, the check fails on the row that no
+code-size metrics tool are out of git (the metrics tool is kept in the local
+`workbench/tools/`). When a later deletion lands, the check fails on the row that no
 longer matches anything, and that row goes. The inventory is final only once it is taken
 against the `main` that beta is copied from.
 
