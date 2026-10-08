@@ -84,11 +84,11 @@
 #   for this checkpoint, written out so the sealed catalogue says what it was
 #   asked with. Surya is a `subprocess` in its own locked environment
 #   (operations/serving/surya); its thread count and time allowances are
-#   planning values. `workers` runner processes each read one slice of the pages
-#   with `threads` threads: measured 2026-10-07 on live pods, one process at 8
-#   threads took 35-66 s a page (52 min for 47 pages on a 32-vCPU host) while
-#   the card sat idle, so 6 processes use 48 of those vCPUs' worth of threads and
-#   the stage caps them at the CPUs the host actually has, divided by `threads`.
+#   planning values. Runner processes each read one slice of the pages with
+#   `threads` threads, as many processes as the CPUs the stage can use (its
+#   affinity mask under the container's cgroup quota) give `threads` each: one
+#   process at 8 threads took 35-66 s a page on live pods while the card sat
+#   idle. A row may set `workers` as a ceiling on the processes; these set none.
 #
 # Not yet verified on a pod: whether vLLM 0.30.0 honours `--mm-processor-kwargs`
 #   for Qwen3-VL (each call record's `usage_reconciliation` compares the
@@ -448,11 +448,14 @@ served_model_id = "reconstructor-qwen3.8-27b"
 dtype = "bfloat16"
 seed = 0
 required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
-# The Perlector's own launch shape: the same model served as its makers serve
-# it, asked text only by the Coniector.
+# The Perlector's own launch shape: the same model on the same card, served as
+# its makers serve it, asked text only by the Coniector. Its requests are text,
+# far shorter than a whole-page reading, so four sequences fit wherever the
+# Perlector's four do (the KV arithmetic in the Perlector row above), and the
+# Coniector keeps that many calls in flight.
 max_model_len = 65536
-max_num_seqs = 2
-max_num_batched_tokens = 4096
+max_num_seqs = 4
+max_num_batched_tokens = 8192
 gpu_memory_utilization = "0.88"
 min_pixels = 65536
 max_pixels = 5299200
@@ -519,7 +522,6 @@ engine = "surya"
 environment = "operations/serving/surya"
 device = "cpu"
 threads = 8
-workers = 6
 startup_timeout_seconds = 600
 seconds_per_page = 60
 required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }
@@ -533,7 +535,6 @@ engine = "surya"
 environment = "operations/serving/surya"
 device = "cpu"
 threads = 8
-workers = 6
 startup_timeout_seconds = 600
 seconds_per_page = 60
 required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }
@@ -547,7 +548,6 @@ engine = "surya"
 environment = "operations/serving/surya"
 device = "cpu"
 threads = 8
-workers = 6
 startup_timeout_seconds = 600
 seconds_per_page = 60
 required_packages = { "surya-ocr" = "0.22.1", torch = "2.14.0" }

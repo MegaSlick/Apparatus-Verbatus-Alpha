@@ -28,7 +28,10 @@ from common.imaging import (
     _to_display_mode,
     carries_only_image_chunks,
     convert_png_to_rgb,
+    crop_from_decoded,
     crop_png,
+    decode_page,
+    dimensions,
     encode_grayscale_png,
     encode_grayscale_png_deterministic,
     image_shown,
@@ -806,3 +809,28 @@ def test_a_mode_no_sealed_crop_arrives_in_is_refused_by_name():
 def test_undecodable_bytes_reach_a_named_value_error_not_a_library_exception():
     with pytest.raises(ValueError, match="not decodable for colour conversion"):
         convert_png_to_rgb(b"not an image at all")
+
+
+def test_a_crop_from_the_decoded_page_is_the_crop_of_its_bytes():
+    """`crop_from_decoded` writes exactly what `crop_png` writes, for either decoder."""
+    colour = BytesIO()
+    Image.linear_gradient("L").resize((30, 20)).convert("RGB").save(colour, format="PNG")
+    grey = encode_grayscale_png_deterministic(
+        8, 6, [bytearray(range(row, row + 8)) for row in range(6)]
+    )
+    bounds = {"x": 2, "y": 1, "w": 5, "h": 4}
+    for page in (colour.getvalue(), grey):
+        decoded = decode_page(page)
+        assert crop_from_decoded(decoded, bounds) == crop_png(page, bounds)
+        assert decode_page(page) is decoded, "the same bytes were decoded twice"
+        assert dimensions(page) == (decoded.width, decoded.height)
+
+
+def test_bytes_that_fail_to_decode_are_refused_every_time():
+    """A refusal is never remembered as a page: the second ask is refused again."""
+    broken = PNG_SIGNATURE + b"\x00" * 64
+    for _ in range(2):
+        with pytest.raises(ValueError, match="not a decodable image"):
+            dimensions(broken)
+        with pytest.raises(ValueError):
+            crop_png(broken, {"x": 0, "y": 0, "w": 1, "h": 1})

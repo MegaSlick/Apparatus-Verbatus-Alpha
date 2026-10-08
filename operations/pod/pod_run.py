@@ -467,7 +467,10 @@ class RunPlan:
             sys.executable,
             # Ignore PYTHON* startup controls and the user site, as the
             # orchestrator does for its own stages: nothing unsealed runs first.
+            # Unbuffered, so the transcript shows each line as it is printed, not
+            # in blocks when a buffer fills or the process ends.
             "-I",
+            "-u",
             str(self.repository / "pipeline" / "orchestrator" / "run.py"),
             "--fixture",
             self.fixture,

@@ -20,6 +20,7 @@ leaves the diplomatic reading delivered and says why.
 """
 
 import sys
+from functools import partial
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,6 +33,7 @@ from common.contracts.canonical import text_sha256  # noqa: E402
 from common.contracts.errors import ContractError  # noqa: E402
 from common.contracts.stages import CONIECTOR  # noqa: E402
 from common.decoding import load_decoding_policy, reconstructor_max_tokens  # noqa: E402
+from common.in_order_window import in_order_window  # noqa: E402
 from common.reconstruction import load_reconstruction_policy  # noqa: E402
 from common.reconstruction_prompt import PROMPT_VERSION, shown_keys  # noqa: E402
 from common.reconstruction_records import (  # noqa: E402
@@ -67,6 +69,7 @@ from common.request_capacity import (  # noqa: E402
     RequestCapacityRefusal,
     reconstruction_request_capacity,
 )
+from common.retained_replies import unrecorded_replies  # noqa: E402
 from common.stage import (  # noqa: E402
     EXIT_COMPLETE,
     fixture_serving_details,
@@ -217,23 +220,23 @@ def _not_asked(code: str, detail: str) -> dict:
     }
 
 
-def _ask(chair: _Chair, call: dict, text: str, policy, max_tokens: int, what: str) -> dict:
-    """One call's reply, or why it was not asked; nothing here publishes."""
-    if not chair.present:
-        return _not_asked(CHAIR_ABSENT, "no reconstructor chair is configured for this run")
-    if not chair.live:
-        reply = fixture_reply(chair.context, call, policy.pages_are_consecutive)
-        return {
-            "reply_text": reply["content"],
-            "finish_reason": reply["stop_reason"],
-            "stop_reason": reply["stop_reason"],
-            "engine_call": None,
-            "failure": None,
-            "capacity": None,
-            "problems": [],
-        }
+def _fixture_asked(chair: _Chair, call: dict, policy) -> dict:
+    reply = fixture_reply(chair.context, call, policy.pages_are_consecutive)
+    return {
+        "reply_text": reply["content"],
+        "finish_reason": reply["stop_reason"],
+        "stop_reason": reply["stop_reason"],
+        "engine_call": None,
+        "failure": None,
+        "capacity": None,
+        "problems": [],
+    }
+
+
+def _admit(chair: _Chair, call: dict, text: str, policy, max_tokens: int) -> dict:
+    """The live call's admitted capacity, or, as `asked`, why it was not sent."""
     try:
-        admitted = reconstruction_request_capacity(
+        return reconstruction_request_capacity(
             chair.row(),
             prompt_text=text,
             acts=len(call["subjects"]),
@@ -248,10 +251,29 @@ def _ask(chair: _Chair, call: dict, text: str, policy, max_tokens: int, what: st
             **_not_asked(REQUEST_OVER_CAPACITY, str(refusal)),
             "capacity": {"capacity": refusal.capacity, "answer_reserve": None, "max_tokens": None},
         }
-    if chair.client is None:
-        chair.start()
+
+
+def _refuse_unrecorded_replies(context) -> None:
+    """Refuse to ask again while a reply an earlier pass retained is bound by no record.
+
+    A pass stopped after a reply arrived and before its call record was published
+    leaves that reply in the store; asking its page again would read it twice and
+    leave the first answer unrecorded.
+    """
+    calls, unattributed = unrecorded_replies(context, CONIECTOR)
+    if calls or unattributed:
+        raise ContractError(
+            "an interrupted Coniector pass retained a reply that no reconstruction call "
+            "record names; asking again would ask its page twice. Reconstruct in a new run; "
+            "the retained reply remains that pass's evidence"
+        )
+
+
+def _send(chair: _Chair, text: str, admitted: dict, what: str):
+    """The live call, safe on a worker thread: it publishes nothing, and a failure of
+    the call itself is returned, not raised."""
     try:
-        result = send_chat_request(
+        return send_chat_request(
             chair.client,
             content=text,
             image_sha256s=[],
@@ -260,14 +282,20 @@ def _ask(chair: _Chair, call: dict, text: str, policy, max_tokens: int, what: st
             what=what,
         )
     except _CALL_FAILURES as error:
+        return error
+
+
+def _answered(admitted: dict, result) -> dict:
+    """What a sent call left: its reply, or the failure the serving layer observed."""
+    if isinstance(result, Exception):
         refs = {
-            name: dict(getattr(error, name))
+            name: dict(getattr(result, name))
             for name in ("raw_response_ref", "call_record_ref")
-            if getattr(error, name, None) is not None
+            if getattr(result, name, None) is not None
         }
         failure = {
-            "code": getattr(error, "code", type(error).__name__),
-            "detail": str(error),
+            "code": getattr(result, "code", type(result).__name__),
+            "detail": str(result),
             **refs,
         }
         return {
@@ -308,72 +336,128 @@ def _inputs(context, shown: dict, keys: list, asked: dict) -> list:
     return unique
 
 
-def _publish_call(
-    context, chair: _Chair, call: dict, shown: dict, policy, max_tokens: int, replanned: bool
-):
-    """Publish one call's record, or adopt the one already sealed for its page and call.
+class _Pass:
+    """One Coniector pass's calls: drawn and finished on the main thread, sent in a window."""
 
-    After a replan (`_publish_plan`), a page whose call the new readings change
-    is asked again, as its next generation; the earlier call stays as sealed.
-    """
-    page_id = call_page_id(call, shown)
-    text = call_prompt(call, shown, policy)
-    keys = shown_keys(call, shown)
-    generations = sealed_generations(context.tree, CALL_KIND, page_id)
-    sealed = next(
-        (record for record in generations if record["payload"].get("call") == call),
-        None if replanned or not generations else generations[0],
-    )
-    if sealed is not None:
-        payload = sealed["payload"]
-        maker = payload.get("maker")
-        if (
-            payload.get("call") != call
-            or payload.get("prompt_sha256") != text_sha256(text)
-            or payload.get("serving_mode") != chair.serving_mode
-            or not isinstance(maker, dict)
-            or maker != expected_maker(chair.identity, maker.get("receipt_ref"))
+    def __init__(self, context, chair, shown, policy, max_tokens: int, replanned: bool) -> None:
+        self.context = context
+        self.chair = chair
+        self.shown = shown
+        self.policy = policy
+        self.max_tokens = max_tokens
+        self.replanned = replanned
+
+    def width(self) -> int:
+        """How many calls may be in flight: only a live engine batches, up to its row."""
+        if self.chair is None or not self.chair.live:
+            return 1
+        return self.chair.row().max_num_seqs
+
+    def jobs(self, calls: list):
+        for call in calls:
+            yield self.draw(call)
+
+    def draw(self, call: dict):
+        """One call's job: adopt its sealed record, or prepare its send.
+
+        After a replan (`_publish_plan`), a page whose call the new readings change
+        is asked again, as its next generation; the earlier call stays as sealed.
+        """
+        context, chair = self.context, self.chair
+        page_id = call_page_id(call, self.shown)
+        text = call_prompt(call, self.shown, self.policy)
+        keys = shown_keys(call, self.shown)
+        generations = sealed_generations(context.tree, CALL_KIND, page_id)
+        sealed = next(
+            (record for record in generations if record["payload"].get("call") == call),
+            None if self.replanned or not generations else generations[0],
+        )
+        if sealed is not None:
+            payload = sealed["payload"]
+            maker = payload.get("maker")
+            if (
+                payload.get("call") != call
+                or payload.get("prompt_sha256") != text_sha256(text)
+                or payload.get("serving_mode") != chair.serving_mode
+                or not isinstance(maker, dict)
+                or maker != expected_maker(chair.identity, maker.get("receipt_ref"))
+            ):
+                raise ContractError(
+                    f"page {page_id}'s retained reconstruction call was asked from another "
+                    "plan, other readings or another chair than this run has now; it is not "
+                    "adopted. Reconstruct in a new run"
+                )
+            return None, partial(self.derive, call, sealed)
+        finish = partial(self.finish, call, page_id, text, keys, len(generations))
+        if not chair.present:
+            asked = _not_asked(CHAIR_ABSENT, "no reconstructor chair is configured for this run")
+            return None, lambda _result: finish(asked)
+        if not chair.live:
+            return None, lambda _result: finish(_fixture_asked(chair, call, self.policy))
+        admitted = _admit(chair, call, text, self.policy, self.max_tokens)
+        if "reply_text" in admitted:
+            return None, lambda _result: finish(admitted)
+        if chair.client is None:
+            _refuse_unrecorded_replies(context)
+            chair.start()
+        what = f"the reconstruction of page {call['page_ordinal']}"
+        return (
+            partial(_send, chair, text, admitted, what),
+            lambda result: finish(_answered(admitted, result)),
+        )
+
+    def finish(self, call, page_id, text, keys, earlier: int, asked: dict) -> None:
+        """Publish one call's record, read it back, and publish its reconstructions."""
+        context, chair = self.context, self.chair
+        state, _answer, problems = reply_state(asked["reply_text"], asked["stop_reason"], call)
+        if asked["reply_text"] is None:
+            problems = asked["problems"]
+        payload = {
+            "schema": CALL_SCHEMA,
+            "page_id": page_id,
+            "page_ordinal": call["page_ordinal"],
+            "call": call,
+            "prompt_version": PROMPT_VERSION,
+            "prompt_sha256": text_sha256(text),
+            "shown": keys,
+            "serving_mode": chair.serving_mode,
+            "capacity": asked["capacity"],
+            "engine_call": asked["engine_call"],
+            "failure": asked["failure"],
+            "reply_text": asked["reply_text"],
+            "finish_reason": asked["finish_reason"],
+            "stop_reason": asked["stop_reason"],
+            "parse_state": state,
+            "problems": problems,
+            "maker": chair.maker(asked=asked["reply_text"] is not None),
+        }
+        context.publish(
+            kind=CALL_KIND,
+            subject_id=page_id,
+            outcome=call_outcome(state),
+            attempt=generation_attempt(CALL_KIND, page_id, earlier + 1),
+            inputs=_inputs(context, self.shown, keys, asked),
+            payload=payload,
+        )
+        self.derive(call, sealed_generations(context.tree, CALL_KIND, page_id)[-1], None)
+
+    def derive(self, call: dict, record: dict, _result) -> None:
+        """Publish, or adopt, every reconstruction of one sealed call record."""
+        context = self.context
+        payload = record["payload"]
+        _state, answer, _problems = reply_state(payload["reply_text"], payload["stop_reason"], call)
+        call_ref = context.artifact_ref(CONIECTOR, CALL_KIND, record["artifact_id"])
+        for derived in derive_reconstructions(
+            call,
+            self.shown,
+            parse_state=payload["parse_state"],
+            answer=answer,
+            problems=payload["problems"],
+            policy=self.policy,
+            call_ref=call_ref,
+            maker=payload["maker"],
         ):
-            raise ContractError(
-                f"page {page_id}'s retained reconstruction call was asked from another plan, "
-                "other readings or another chair than this run has now; it is not adopted. "
-                "Reconstruct in a new run"
-            )
-        return sealed
-    what = f"the reconstruction of page {call['page_ordinal']}"
-    asked = _ask(chair, call, text, policy, max_tokens, what)
-    state, _answer, problems = reply_state(asked["reply_text"], asked["stop_reason"], call)
-    if asked["reply_text"] is None:
-        problems = asked["problems"]
-    payload = {
-        "schema": CALL_SCHEMA,
-        "page_id": page_id,
-        "page_ordinal": call["page_ordinal"],
-        "call": call,
-        "prompt_version": PROMPT_VERSION,
-        "prompt_sha256": text_sha256(text),
-        "shown": keys,
-        "serving_mode": chair.serving_mode,
-        "capacity": asked["capacity"],
-        "engine_call": asked["engine_call"],
-        "failure": asked["failure"],
-        "reply_text": asked["reply_text"],
-        "finish_reason": asked["finish_reason"],
-        "stop_reason": asked["stop_reason"],
-        "parse_state": state,
-        "problems": problems,
-        "maker": chair.maker(asked=asked["reply_text"] is not None),
-    }
-    attempt = generation_attempt(CALL_KIND, page_id, len(generations) + 1)
-    context.publish(
-        kind=CALL_KIND,
-        subject_id=page_id,
-        outcome=call_outcome(state),
-        attempt=attempt,
-        inputs=_inputs(context, shown, keys, asked),
-        payload=payload,
-    )
-    return sealed_generations(context.tree, CALL_KIND, page_id)[-1]
+            _publish_reconstruction(context, derived, call_ref, self.replanned)
 
 
 def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
@@ -400,25 +484,8 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
         refuse_unlive_real_reading(context, chair.identity, chair.serving_mode, stage="Coniector")
     replanned = _publish_plan(context, plan)
     try:
-        max_tokens = reconstructor_max_tokens(decoding)
-        for call in plan["calls"]:
-            record = _publish_call(context, chair, call, shown, policy, max_tokens, replanned)
-            payload = record["payload"]
-            _state, answer, _problems = reply_state(
-                payload["reply_text"], payload["stop_reason"], call
-            )
-            call_ref = context.artifact_ref(CONIECTOR, CALL_KIND, record["artifact_id"])
-            for derived in derive_reconstructions(
-                call,
-                shown,
-                parse_state=payload["parse_state"],
-                answer=answer,
-                problems=payload["problems"],
-                policy=policy,
-                call_ref=call_ref,
-                maker=payload["maker"],
-            ):
-                _publish_reconstruction(context, derived, call_ref, replanned)
+        calls = _Pass(context, chair, shown, policy, reconstructor_max_tokens(decoding), replanned)
+        in_order_window(calls.width(), calls.jobs(plan["calls"]))
     except ChairResponseRefusal as refusal:
         raise ContractError(f"{type(refusal).__name__}: {refusal}") from refusal
     finally:

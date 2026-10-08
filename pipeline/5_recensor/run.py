@@ -13,8 +13,10 @@ that can mark a unit under-witnessed and the run visibly partial.
     python pipeline/5_recensor/run.py --run-root <dir> --run-id <id>
 """
 
+import copy
+import json
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -232,17 +234,37 @@ def publish_review(
         return publish_at(prior["payload"]["attempt_ordinal"] + 1)
 
 
+def measured_once(measure: Callable[..., dict[int, dict]]) -> Callable[..., dict[int, dict]]:
+    """`measure` taken once per distinct set of regions, each caller given its own copy.
+
+    The reviews and the receipt plan the same reviews from the same regions in
+    one pass. Residual ink reads only the sealed Exemplar pages and the sealed
+    `ink-map` policy, sealed before the Recensor opens, so the same regions give
+    the same findings; the receipt still measures every review on disk against them.
+    """
+    held: dict[str, dict[int, dict]] = {}
+
+    def once(context, *, regions: dict[int, list[dict]]) -> dict[int, dict]:
+        key = json.dumps(sorted(regions.items()), sort_keys=True)
+        if key not in held:
+            held[key] = measure(context, regions=regions)
+        return copy.deepcopy(held[key])
+
+    return once
+
+
 def review_a_page_read_run(context, denominator: dict) -> int:
     """The page path (`page_review.py`): every counted unit reviewed, then the receipt."""
+    findings = measured_once(page_coverage_findings)
     held = page_review.review_pages(
         context,
         denominator,
-        page_coverage_findings=page_coverage_findings,
+        page_coverage_findings=findings,
         publish_review=publish_review,
     )
     # The receipt needs the current manifest and may refuse before the seal.
     context.finish()
-    page_review.write_reading_receipt(context, page_coverage_findings=page_coverage_findings)
+    page_review.write_reading_receipt(context, page_coverage_findings=findings)
     context.seal_boundary()
     context.finish()
     return EXIT_HELD if held else EXIT_COMPLETE
