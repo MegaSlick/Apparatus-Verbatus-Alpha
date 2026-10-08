@@ -8,6 +8,7 @@ or preference: correspondence is a consumer lookup, never witness testimony.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable
 from typing import Any, Final
@@ -26,6 +27,7 @@ from common.imaging import (
     convert_png_to_rgb,
     crop_png,
     dimensions,
+    page_sha256,
     resize_png_lanczos,
 )
 from common.imaging_ports import CHURRO_MAX_INLINE_IMAGE_DIM, resize_to_fit_churro
@@ -518,9 +520,9 @@ def validate_native_witness_geometry(
     return payload
 
 
-def _replay_colour_mode(presented: dict[str, Any], derived: bytes) -> bytes:
+def _replay_colour_mode(transform: dict[str, Any], derived: bytes) -> bytes:
     """Run the recorded colour step, or nothing at all where none was recorded."""
-    if presented["transform"].get("colour_mode") != "rgb":
+    if transform.get("colour_mode") != "rgb":
         return derived
     try:
         return convert_png_to_rgb(derived)
@@ -529,6 +531,51 @@ def _replay_colour_mode(presented: dict[str, Any], derived: bytes) -> bytes:
             f"an adapter-crop presentation's colour conversion cannot be replayed from "
             f"its sealed page ({error})"
         ) from error
+
+
+# The sha256 each adapter-crop transform re-derives from a page, by the page's
+# sha256 and the transform. The derivation is a pure function of the two, and one
+# process asks for the same one several times: several stages' checks, and the
+# presentations of one page to several chairs. A derivation that refused is
+# never held, so it refuses again.
+_DERIVED_SHA256: dict[tuple[str, str], str] = {}
+
+
+def transform_key(transform: dict[str, Any]) -> str:
+    """The name a transform is held under: its JSON with sorted keys."""
+    return json.dumps(transform, sort_keys=True)
+
+
+def derived_presentation_sha256(page_bytes: bytes, transform: dict[str, Any]) -> str:
+    """The sha256 of the image an adapter-crop transform cuts and replays from `page_bytes`."""
+    key = (page_sha256(page_bytes), transform_key(transform))
+    held = _DERIVED_SHA256.get(key)
+    if held is None:
+        held = digest_bytes(_derive_adapter_crop(page_bytes, transform))
+        _DERIVED_SHA256[key] = held
+    return held
+
+
+def remember_derived_presentation(page_digest: str, key: str, sha256: str) -> None:
+    """Hold a derivation another process made from bytes with sha256 `page_digest`."""
+    _DERIVED_SHA256[(page_digest, key)] = sha256
+
+
+def _derive_adapter_crop(page_bytes: bytes, transform: dict[str, Any]) -> bytes:
+    operation = transform["operation"]
+    derived = crop_png(page_bytes, transform["bounds"])
+    colour_before_resize = operation in _COLOUR_BEFORE_RESIZE
+    if colour_before_resize:
+        derived = _replay_colour_mode(transform, derived)
+    if operation in RESIZING_ADAPTER_CROP_OPERATIONS:
+        resize = transform["resize"]
+        # A colour step cannot change dimensions, so this holds either order.
+        if dimensions(derived) != (resize["source_width_px"], resize["source_height_px"]):
+            raise SchemaRefusal("a resized adapter-crop recipe disagrees with its sealed crop")
+        derived = resize_png_lanczos(derived, resize["target_width_px"], resize["target_height_px"])
+    if not colour_before_resize:
+        derived = _replay_colour_mode(transform, derived)
+    return derived
 
 
 def validate_presented_page_binding(
@@ -580,21 +627,7 @@ def validate_presented_page_binding(
             raise SchemaRefusal(
                 "an adapter-crop presentation cannot be re-derived without its sealed page bytes"
             )
-        derived = crop_png(page_bytes, bounds)
-        colour_before_resize = operation in _COLOUR_BEFORE_RESIZE
-        if colour_before_resize:
-            derived = _replay_colour_mode(presented, derived)
-        if operation in RESIZING_ADAPTER_CROP_OPERATIONS:
-            resize = presented["transform"]["resize"]
-            # A colour step cannot change dimensions, so this holds either order.
-            if dimensions(derived) != (resize["source_width_px"], resize["source_height_px"]):
-                raise SchemaRefusal("a resized adapter-crop recipe disagrees with its sealed crop")
-            derived = resize_png_lanczos(
-                derived, resize["target_width_px"], resize["target_height_px"]
-            )
-        if not colour_before_resize:
-            derived = _replay_colour_mode(presented, derived)
-        expected_sha256 = digest_bytes(derived)
+        expected_sha256 = derived_presentation_sha256(page_bytes, presented["transform"])
         if presented["image_sha256"] != expected_sha256:
             raise SchemaRefusal(
                 "an adapter-crop presentation blob does not re-derive from its sealed page transform"

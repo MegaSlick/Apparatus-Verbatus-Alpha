@@ -15,16 +15,27 @@ reads `common.stage`.
 
 from __future__ import annotations
 
+import copy
+import json
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 from typing import Any, Final
 
 from common.chairs.models import AbsentChair
 from common.chandra_native_retry import validate_trace as validate_chandra_trace
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import FatalAccounting, SchemaRefusal
-from common.contracts.stages import ATTESTATORES, DESIGNATOR, PERLECTOR
+from common.contracts.identities import artifact_id
+from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR
+from common.cpus import pool_workers
 from common.exemplar_boundary import read_sealed_page
-from common.imaging import dimensions
+from common.imaging import dimensions, page_sha256, remember_dimensions
 from common.native_witness import (
+    derived_presentation_sha256,
     record_presentations,
+    remember_derived_presentation,
+    transform_key,
     validate_capture_text_view,
     validate_native_capture,
     validate_native_witness_geometry,
@@ -41,6 +52,7 @@ from common.page_path import (
 from common.page_path import declared_page_witness_chairs as declared_page_witness_chairs
 from common.page_path import require_page_roster as require_page_roster
 from common.page_witness_units import reads_detector_records
+from common.runtree.store import RunTree
 from common.stage import (
     ATTEMPTED_WITNESS_OUTCOMES,
     latest_per_chair,
@@ -284,19 +296,62 @@ def verify_page_native_capture(
 # --- every page ------------------------------------------------------------------------
 
 
+# Every page's validated current Testimonia, by run, configuration and the
+# digest of the Attestatores' inventory. Safe for the reason `stage_manifest`
+# holds upstream manifests: the Attestatores are sealed before any stage that
+# reads page witnesses opens, so one inventory always validates the same way.
+# The Attestatores themselves, still writing, are never served from here.
+_CURRENT_PAGE_TESTIMONIA: dict[tuple[str, str, str, str], dict[str, list[dict]]] = {}
+
+# Page bytes below which re-deriving every page in this process costs less than
+# starting worker processes to share the work.
+POOL_MIN_PAGE_BYTES: Final = 4 << 20
+# What one worker holds while it re-derives a page: the decoded page, a crop of
+# it and the crop's resized and colour-converted copies.
+_BYTES_PER_PAGE_WORKER: Final = 400 << 20
+
+
 def current_page_testimonia(context) -> dict[str, list[dict]]:
     """Every page's current page Testimonium per chair, by page id, each fully validated.
 
     Every record is validated, its native capture included, but only each
     chair's latest attempt is current. A page no witness testified to is absent.
+    A stage asks once per pass; later asks in the same process get a copy of
+    the first answer while the Attestatores' inventory is unchanged.
     """
+    manifest = stage_manifest(context, ATTESTATORES)
+    key = _testimonia_key(context, manifest)
+    held = _CURRENT_PAGE_TESTIMONIA.get(key) if key is not None else None
+    if held is None:
+        held = _validate_current_page_testimonia(context, manifest)
+        if key is None:
+            return held
+        _CURRENT_PAGE_TESTIMONIA[key] = held
+    return copy.deepcopy(held)
+
+
+def _testimonia_key(context, manifest: dict[str, Any]) -> tuple[str, str, str, str] | None:
+    tree = context.tree
+    root = getattr(tree, "root", None)
+    run_id = getattr(tree, "run_id", None)
+    writing = getattr(context, "stage", None)
+    run = getattr(context, "run", None)
+    config = run.get("config_digest") if isinstance(run, dict) else None
+    if None in (root, run_id, writing, config) or writing == ATTESTATORES:
+        return None
+    inventory = digest_bytes(json.dumps(manifest, sort_keys=True).encode())
+    return str(root), str(run_id), str(config), inventory
+
+
+def _validate_current_page_testimonia(context, manifest: dict[str, Any]) -> dict[str, list[dict]]:
+    records = [
+        context.tree.read_artifact(ATTESTATORES, PAGE_TESTIMONIUM_KIND, entry["artifact_id"])
+        for entry in manifest["artifacts"]
+        if entry["kind"] == PAGE_TESTIMONIUM_KIND
+    ]
+    _derive_presented_pages(context.tree, records)
     by_page: dict[str, list[dict[str, Any]]] = {}
-    for entry in stage_manifest(context, ATTESTATORES)["artifacts"]:
-        if entry["kind"] != PAGE_TESTIMONIUM_KIND:
-            continue
-        record = context.tree.read_artifact(
-            ATTESTATORES, PAGE_TESTIMONIUM_KIND, entry["artifact_id"]
-        )
+    for record in records:
         validate_page_testimonium_record(context, record)
         capture = record["payload"].get("native_capture")
         if capture is not None:
@@ -312,6 +367,86 @@ def current_page_testimonia(context) -> dict[str, list[dict]]:
         page_id: latest_per_chair(records, f"page Testimonium for page {page_id}")
         for page_id, records in by_page.items()
     }
+
+
+def _derive_presented_pages(tree, records: list[dict[str, Any]]) -> None:
+    """Size every presented page and re-derive its adapter crops, each page decoded once.
+
+    Only warms the caches validation reads: a derivation is a pure function of
+    the page's bytes and the transform, held under the bytes' sha256, so a
+    held one is the one validation would make. Anything that fails here is
+    skipped and refused by the validation that follows, in page order. Pages
+    are shared among worker processes when there are enough bytes to repay
+    starting them.
+    """
+    transforms: dict[str, set[str]] = {}
+    for record in records:
+        try:
+            page_id = record["subject_id"]
+            for shown in record_presentations(record["payload"]):
+                if shown["kind"] == "adapter-crop" and shown["source_page_id"] == page_id:
+                    transforms.setdefault(page_id, set()).add(transform_key(shown["transform"]))
+        except Exception:  # validation refuses this record by name
+            continue
+    jobs = []
+    page_bytes = 0
+    for page_id, keys in transforms.items():
+        try:
+            page = tree.read_artifact(EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", page_id))
+            image_path = page["payload"]["image_path"]
+            page_bytes += tree.resolve(image_path).stat().st_size
+        except Exception:  # validation refuses this page by name
+            continue
+        jobs.append((image_path, sorted(keys)))
+    workers = pool_workers(len(jobs), bytes_per_task=_BYTES_PER_PAGE_WORKER)
+    if workers < 2 or page_bytes < POOL_MIN_PAGE_BYTES:
+        for image_path, keys in jobs:
+            _derive_page(tree.read_bytes, image_path, keys)
+        return
+    root, run_id = str(Path(tree.root).parent), tree.run_id
+    with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+        results = pool.map(
+            _derive_page_in_worker,
+            [root] * len(jobs),
+            [run_id] * len(jobs),
+            [image_path for image_path, _ in jobs],
+            [keys for _, keys in jobs],
+        )
+        for result in results:
+            if result is None:
+                continue
+            digest, size, derived = result
+            remember_dimensions(digest, size)
+            for key, sha256 in derived:
+                remember_derived_presentation(digest, key, sha256)
+
+
+def _derive_page(
+    read_bytes, image_path: str, keys: list[str]
+) -> tuple[str, tuple[int, int], list[tuple[str, str]]] | None:
+    """One page's size and the sha256 each transform derives from it, or None where it fails."""
+    try:
+        data = read_bytes(image_path)
+        size = dimensions(data)
+    except Exception:  # validation refuses this page by name
+        return None
+    derived = []
+    for key in keys:
+        try:
+            derived.append((key, derived_presentation_sha256(data, json.loads(key))))
+        except Exception:  # validation refuses this presentation by name
+            continue
+    return page_sha256(data), size, derived
+
+
+def _derive_page_in_worker(
+    root: str, run_id: str, image_path: str, keys: list[str]
+) -> tuple[str, tuple[int, int], list[tuple[str, str]]] | None:
+    try:
+        tree = RunTree(Path(root), run_id)
+    except Exception:  # validation refuses this page by name
+        return None
+    return _derive_page(tree.read_bytes, image_path, keys)
 
 
 # --- the witnesses a page reading was shown ------------------------------------------

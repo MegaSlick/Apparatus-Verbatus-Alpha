@@ -841,10 +841,7 @@ def dimensions(png_bytes: bytes) -> tuple[int, int]:
     except (*_DECODE_FAILURES, ValueError) as error:
         raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
     size = (page.width, page.height)
-    with _CACHE_LOCK:
-        _PAGE_SIZES[digest] = size
-        while len(_PAGE_SIZES) > _PAGE_SIZES_HELD:
-            _PAGE_SIZES.popitem(last=False)
+    remember_dimensions(digest, size)
     return size
 
 
@@ -875,6 +872,20 @@ _PAGE_SIZES: OrderedDict[str, tuple[int, int]] = OrderedDict()
 _RECENT_DIGESTS_HELD: Final = 4
 _RECENT_DIGESTS: list[tuple[bytes, str]] = []
 _CACHE_LOCK = threading.Lock()
+
+
+def remember_dimensions(digest: str, size: tuple[int, int]) -> None:
+    """Hold the size another process decoded bytes with this sha256 to, as `dimensions` would."""
+    with _CACHE_LOCK:
+        _PAGE_SIZES[digest] = size
+        _PAGE_SIZES.move_to_end(digest)
+        while len(_PAGE_SIZES) > _PAGE_SIZES_HELD:
+            _PAGE_SIZES.popitem(last=False)
+
+
+def page_sha256(data: bytes) -> str:
+    """The sha256 the decoded-page and size caches know `data` by."""
+    return _bytes_digest(data)
 
 
 def _bytes_digest(data: bytes) -> str:

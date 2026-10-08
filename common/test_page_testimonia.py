@@ -7,15 +7,19 @@ from the sealed roster, and what it refuses, is every stage's answer.
 """
 
 import copy
+from collections import OrderedDict
 from types import SimpleNamespace
 
 import pytest
 
-from common import page_testimonia
+from common import imaging, native_witness, page_testimonia
 from common.chairs.models import AbsentChair, ChairIdentity
+from common.contracts.canonical import digest_bytes
 from common.contracts.errors import FatalAccounting, SchemaRefusal
 from common.contracts.stages import ATTESTATORES
+from common.imaging import encode_grayscale_png_deterministic
 from common.page_testimonia import (
+    current_page_testimonia,
     declared_page_witness_chairs,
     require_page_roster,
     validate_page_testimonium_record,
@@ -192,3 +196,103 @@ def test_blank_testimony_needs_a_census_of_no_record_below_a_stated_cap(
     monkeypatch.setattr(page_testimonia, "empty_detector_page", lambda *_args: None)
     with pytest.raises(SchemaRefusal, match="not one of no record below a stated cap"):
         validate_page_testimonium_record(context, record)
+
+
+# --- one validation per pass, shared work across pages --------------------------------
+
+
+@pytest.fixture(scope="module")
+def page_read(tmp_path_factory):
+    """`happy`, read page by page: every page Testimonium presents adapter crops."""
+    return build_page_tree(tmp_path_factory.mktemp("happy"), "happy")
+
+
+@pytest.fixture
+def cold_caches(monkeypatch):
+    monkeypatch.setattr(page_testimonia, "_CURRENT_PAGE_TESTIMONIA", {})
+    monkeypatch.setattr(native_witness, "_DERIVED_SHA256", {})
+    monkeypatch.setattr(imaging, "_PAGE_SIZES", OrderedDict())
+    monkeypatch.setattr(imaging, "_DECODED_PAGES", OrderedDict())
+
+
+def _counting_validation(monkeypatch) -> list[str]:
+    validated: list[str] = []
+    real = page_testimonia.validate_page_testimonium_record
+
+    def counting(context, record):
+        validated.append(record["artifact_id"])
+        real(context, record)
+
+    monkeypatch.setattr(page_testimonia, "validate_page_testimonium_record", counting)
+    return validated
+
+
+def test_a_pass_validates_the_page_witnesses_once_and_hands_out_copies(
+    page_read, cold_caches, monkeypatch
+):
+    root, options = page_read
+    validated = _counting_validation(monkeypatch)
+
+    first = current_page_testimonia(page_context(root, "r", "happy", options))
+    assert validated, "nothing was validated"
+    expected = copy.deepcopy(first)
+    for records in first.values():
+        records.clear()
+    second = current_page_testimonia(page_context(root, "r", "happy", options))
+
+    assert second == expected, "a caller's change reached the next caller"
+    assert len(validated) == sum(len(records) for records in expected.values())
+
+
+def test_the_attestatores_are_validated_afresh_on_every_ask(page_read, cold_caches, monkeypatch):
+    root, options = page_read
+    validated = _counting_validation(monkeypatch)
+    context = page_context(root, "r", "happy", options, stage=ATTESTATORES)
+
+    current_page_testimonia(context)
+    once = len(validated)
+    current_page_testimonia(context)
+
+    assert len(validated) == 2 * once
+
+
+def test_worker_processes_warm_exactly_what_validation_derives_itself(
+    page_read, cold_caches, monkeypatch
+):
+    root, options = page_read
+    serial = current_page_testimonia(page_context(root, "r", "happy", options))
+    derived_here = dict(native_witness._DERIVED_SHA256)
+    assert derived_here, "the fixture presents no adapter crop"
+
+    monkeypatch.setattr(page_testimonia, "_CURRENT_PAGE_TESTIMONIA", {})
+    monkeypatch.setattr(native_witness, "_DERIVED_SHA256", {})
+    monkeypatch.setattr(imaging, "_PAGE_SIZES", OrderedDict())
+    monkeypatch.setattr(page_testimonia, "POOL_MIN_PAGE_BYTES", 0)
+    monkeypatch.setattr(page_testimonia, "pool_workers", lambda tasks, bytes_per_task: 2)
+
+    def no_derivation_here(*_args):
+        raise AssertionError("the parent re-derived a crop the workers had derived")
+
+    monkeypatch.setattr(native_witness, "_derive_adapter_crop", no_derivation_here)
+    pooled = current_page_testimonia(page_context(root, "r", "happy", options))
+
+    assert pooled == serial
+    assert native_witness._DERIVED_SHA256 == derived_here
+
+
+def test_a_held_derivation_is_the_derivation_and_a_refusal_is_never_held(cold_caches):
+    page = encode_grayscale_png_deterministic(
+        12, 10, [bytearray((row * 12 + column) % 256 for column in range(12)) for row in range(10)]
+    )
+    transform = {"operation": "crop", "bounds": {"x": 1, "y": 2, "w": 6, "h": 5}}
+    expected = digest_bytes(native_witness._derive_adapter_crop(page, transform))
+
+    assert native_witness.derived_presentation_sha256(page, transform) == expected
+    assert native_witness.derived_presentation_sha256(page, dict(transform)) == expected
+    assert len(native_witness._DERIVED_SHA256) == 1
+
+    outside = {**transform, "bounds": {"x": 8, "y": 2, "w": 6, "h": 5}}
+    for _ in range(2):
+        with pytest.raises(ValueError, match="fall outside"):
+            native_witness.derived_presentation_sha256(page, outside)
+    assert len(native_witness._DERIVED_SHA256) == 1
