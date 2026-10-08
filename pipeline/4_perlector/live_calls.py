@@ -10,22 +10,17 @@ The page path (`page_run.py`) reads its evidence through these helpers; nothing 
 publishes a reading.
 """
 
-import json
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Final
 
 import operations.serving.errors as serving_errors
+from common import retained_replies
 from common.contracts.errors import ContractError, SchemaRefusal
 from common.contracts.identities import artifact_id
 from common.contracts.identities import attempt_id as derived_attempt_id
-from common.contracts.serving import (
-    CHAIR_CALL_RECORD_SCHEMA,
-    CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
-    SERVING_LAUNCH_AUDIT_SCHEMA,
-)
+from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA as CHAIR_CALL_RECORD_SCHEMA
 from common.contracts.stages import PERLECTOR
-from common.image_sniff import PNG_SIGNATURE
 from common.in_order_window import in_order_window as in_order_window
 from common.stage import verify_retained_call_sampling
 from operations.serving.chat_request import EngineSignalRefusal
@@ -46,9 +41,6 @@ _SENT_FIELDS: Final = frozenset(
         "image_sha256s",
     }
 )
-
-# Blobs the serving manager keeps in a stage's own store beside the chair's calls.
-_SERVING_BLOB_SCHEMAS: Final = frozenset({SERVING_LAUNCH_AUDIT_SCHEMA, "serving-evidence.v1"})
 
 
 def start_chair(run) -> None:
@@ -98,7 +90,9 @@ def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict
                 f"path are {observed!r}"
             )
         references.append(observed)
-    call = _json_object(context.tree.read_bytes(engine_call["call_record_ref"]["relative_path"]))
+    call = retained_replies.json_object(
+        context.tree.read_bytes(engine_call["call_record_ref"]["relative_path"])
+    )
     if call is None:
         raise SchemaRefusal("a live reading's call record is not a JSON object")
     try:
@@ -200,52 +194,9 @@ def publish_sent(
     )
 
 
-def _json_object(data: bytes) -> dict[str, Any] | None:
-    try:
-        value = json.loads(data)
-    except (ValueError, UnicodeDecodeError):
-        return None
-    return value if isinstance(value, dict) else None
-
-
 def unrecorded_replies(context) -> tuple[list[dict[str, Any]], bool]:
-    """Every retained reply no record of this stage binds, as far as it can be attributed.
-
-    Returns the unbound call records that carry a reply, and whether any retained blob is
-    a reply that cannot be attributed at all. The client retains a reply's raw bytes
-    before the call record that names them, so a pass stopped between the two leaves
-    bytes no call record names: every blob that is not a call record, a reply one names,
-    serving evidence, a page render, or an input of some record is counted as such a
-    reply, and so is a call record of another schema, since nothing here can read it.
-    """
-    manifest = context.tree.build_manifest(PERLECTOR)
-    bound = {
-        reference["relative_path"]
-        for entry in manifest["artifacts"]
-        for reference in context.tree.read_artifact(PERLECTOR, entry["kind"], entry["artifact_id"])[
-            "inputs"
-        ]
-    }
-    calls, named, others = [], set(), []
-    for name in manifest["blobs"]:
-        path = context.tree.blob_path(PERLECTOR, name)
-        data = context.tree.read_bytes(path)
-        if data.startswith(PNG_SIGNATURE):
-            # A page render this stage cut for a reader call; a chat endpoint's reply is
-            # never an image.
-            continue
-        record = _json_object(data)
-        schema = record.get("schema") if record is not None else None
-        if schema in {CHAIR_CALL_RECORD_SCHEMA, CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA}:
-            reply = record.get("raw_response_ref")
-            if reply is not None:
-                named.add(reply["relative_path"])
-                if path not in bound:
-                    calls.append(record)
-        elif schema not in _SERVING_BLOB_SCHEMAS:
-            others.append(path)
-    unattributed = any(path not in bound and path not in named for path in others)
-    return calls, unattributed
+    """Every retained reply no Perlector record binds (`common.retained_replies`)."""
+    return retained_replies.unrecorded_replies(context, PERLECTOR)
 
 
 def answers_a_send(calls: list[dict[str, Any]], markers: list[dict[str, Any]]) -> bool:
