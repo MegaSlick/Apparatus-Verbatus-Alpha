@@ -246,3 +246,90 @@ def test_the_stand_in_namespace_mirrors_the_argv_surface_it_claims_to():
                 f"{attribute}={value!r} names a config file that does not exist; a stand-in "
                 "for the real argv surface must not carry a path the real run could not use"
             )
+
+
+def test_invoke_runs_the_stage_unbuffered_and_prints_its_start_and_end(
+    tmp_path, monkeypatch, capsys
+):
+    orchestrator = load_stage("orchestrator")
+    commands = []
+
+    def completed(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(orchestrator.subprocess, "run", completed)
+    assert (
+        orchestrator.invoke(orchestrator.STAGE_PROGRAMS["perlector"], _invoke_args(tmp_path)) == 0
+    )
+    assert commands[0][1:3] == ["-I", "-u"]
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("run r: perlector started at ")
+    assert lines[1].startswith("run r: perlector ended, exit 0, after ")
+
+
+def _audit(chair: str, started_at: str, ready_at: str) -> bytes:
+    from common.contracts.serving import SERVING_LAUNCH_AUDIT_SCHEMA
+
+    return json.dumps(
+        {
+            "schema": SERVING_LAUNCH_AUDIT_SCHEMA,
+            "chair": chair,
+            "launch_purpose": "stage",
+            "started_at": started_at,
+            "readiness": {"ready_at": ready_at},
+        }
+    ).encode()
+
+
+def test_serving_spans_are_this_invocations_launch_audits_and_nothing_else(tmp_path):
+    orchestrator = load_stage("orchestrator")
+    args = argparse.Namespace(run_root=tmp_path / "runs", run_id="r")
+    blobs = tmp_path / "runs" / "r" / "4_perlector" / "blobs" / "sha256"
+    blobs.mkdir(parents=True)
+    (blobs / "a").write_bytes(_audit("perlector", "2026-10-07T10:00:05Z", "2026-10-07T10:06:20Z"))
+    # An earlier pass's launch, a reply, a page render and a large blob are not spans.
+    (blobs / "b").write_bytes(_audit("perlector", "2026-10-06T10:00:00Z", "2026-10-06T10:05:00Z"))
+    (blobs / "c").write_bytes(b'{"schema": "chair-call-record.v1"}')
+    (blobs / "d").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (blobs / "e").write_bytes(b"{" + b" " * (orchestrator._LAUNCH_AUDIT_MAX_BYTES + 1))
+    spans = orchestrator._serving_spans(
+        args, orchestrator.STAGE_PROGRAMS["perlector"], "2026-10-07T10:00:00Z"
+    )
+    assert spans == [
+        {
+            "chair": "perlector",
+            "launch_purpose": "stage",
+            "started_at": "2026-10-07T10:00:05Z",
+            "ready_at": "2026-10-07T10:06:20Z",
+            "ready_seconds": 375,
+        }
+    ]
+    # A stage with no blob store launched nothing.
+    assert orchestrator._serving_spans(args, "pipeline/5_recensor/run.py", "2026") == []
+
+
+def test_the_timing_journal_carries_serving_spans_and_stays_v4(tmp_path):
+    orchestrator = load_stage("orchestrator")
+    journal = tmp_path / "timings.jsonl"
+    args = argparse.Namespace(
+        stage_timing_journal=journal,
+        run_id="r",
+        run_root=tmp_path / "runs",
+        repository_commit=None,
+        perlector_concurrency=None,
+    )
+    span = {"chair": "perlector", "started_at": "a", "ready_at": "b", "ready_seconds": 1}
+    orchestrator._record_stage_timing(
+        args,
+        program=orchestrator.STAGE_PROGRAMS["perlector"],
+        started_at="2026-01-01T00:00:00Z",
+        finished_at="2026-01-01T00:00:01Z",
+        duration_ms=1000,
+        exit_code=0,
+        gpu_utilization=(None, "not sampled"),
+        serving_spans=[span],
+    )
+    (entry,) = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert entry["schema"] == "stage-timing-journal.v4"
+    assert entry["serving_spans"] == [span]
