@@ -1009,3 +1009,67 @@ def test_with_the_budget_off_the_backstop_deletes_an_hour_after_the_deadline(pod
     assert clock_of(env) <= started + 4
     assert (state / "deadline-testpod").read_text().strip() == str(started + 1)
     assert not (state / "deadline-testpod.new").exists()
+
+
+def _progress_each_tick(env, tmp_path, state, line):
+    """Writes pod_run's progress line on every tick; `line` is a shell word that may use
+    $c, the clock's epoch now."""
+    state.mkdir(exist_ok=True)
+    clock = tmp_path / "clock"
+    target = state / "progress-testpod"
+    on_each_tick(
+        env,
+        tmp_path,
+        f'c=$(cat "{clock}")\nprintf "%s\\n" "{line}" > "{target}.new"\nmv "{target}.new" "{target}"\n',
+    )
+
+
+def test_a_fresh_ok_progress_line_holds_a_pod_whose_counters_read_idle(pod, tmp_path):
+    env, calls, state = pod
+    _progress_each_tick(env, tmp_path, state, "$c $c ok page-rate 1.00 pages a minute")
+    run_guard(env, "0.002")
+    assert "approved time is up" in log_of(state)
+    assert "idle warning" not in log_of(state)
+
+
+def test_a_fresh_stalled_line_climbs_the_ladder_while_the_gpu_is_busy(pod, tmp_path):
+    """An engine spinning on a hung request keeps the GPU busy; the run's own verdict wins."""
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    _progress_each_tick(env, tmp_path, state, "$c $((c - 7200)) stalled page-quiet no new page")
+    run_guard(env, "5")
+    assert "pod delete testpod" in lines(calls)
+    assert "the run reports stalled (page-quiet no new page)" in log_of(state)
+
+
+def test_the_ladder_runs_from_the_progress_line_s_last_ok(pod, tmp_path):
+    env, calls, state = pod
+    env["FAKE_GPU_UTIL"] = "80"
+    env["POD_GUARD_WARN_SECONDS"] = "600"
+    env["POD_GUARD_URGENT_SECONDS"] = "6000"
+    env["POD_GUARD_BACKUP_SECONDS"] = "6000"
+    env["POD_GUARD_DELETE_SECONDS"] = "6000"
+    started = clock_of(env)
+    # Slow since 595 s before arming: the warning comes about five ticks in, not at once.
+    _progress_each_tick(env, tmp_path, state, f"$c {started - 595} slow page-rate 0.20 a minute")
+    run_until(["sh", str(GUARD), "5"], env, lambda: "idle warning" in log_of(state))
+    warned = next(line for line in log_of(state).splitlines() if "idle warning" in line)
+    assert "idle for 6" in warned and "the run reports slow" in warned
+    assert len(lines(tmp_path / "ticks")) >= 5
+    assert lines(calls) == []
+
+
+def test_a_stale_progress_line_falls_back_to_the_counters(pod, tmp_path):
+    env, calls, state = pod
+    _progress_each_tick(env, tmp_path, state, "$((c - 301)) $((c - 301)) ok page-rate fine")
+    run_guard(env, "5")
+    assert "pod delete testpod" in lines(calls)
+    assert "no GPU, CPU or network work" in log_of(state)
+
+
+def test_a_garbled_progress_line_falls_back_to_the_counters(pod, tmp_path):
+    env, calls, state = pod
+    _progress_each_tick(env, tmp_path, state, "$c soon ok")
+    run_guard(env, "5")
+    assert "pod delete testpod" in lines(calls)
+    assert "no GPU, CPU or network work" in log_of(state)

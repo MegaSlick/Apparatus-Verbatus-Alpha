@@ -603,8 +603,12 @@ and is not honoured; the guard says so in its log and on the phone.
 **The idle ladder.** The pod is idle while it does no work: no GPU use (under 5 % at
 every one-minute sample; a GPU that cannot report counts as busy), no container CPU use
 (under half a core, from the container's own cgroup, not the shared host's load), no
-download (under 256 KB/s received), and no touch of the pod's keep-alive file. As idle
-time grows the guard:
+download (under 256 KB/s received), and no touch of the pod's keep-alive file. While a run
+is going, `pod_run`'s own verdict replaces those counters: a `progress-<pod id>` line
+written in the last five minutes (below) that says `ok` is work, even when the counters
+read idle, and one that says anything else is idle time counted from its last `ok`, even
+when the GPU is busy. A line that is older, garbled or missing leaves the counters to
+decide. As idle time grows the guard:
 
 | Idle for | Step |
 | --- | --- |
