@@ -1,9 +1,9 @@
 # Report for the lead: 2026-10-08 pod-efficiency session
 
 Short version: nine pull requests take the measured idle time out of a pod run and stop
-the guard deleting working pods. Six are merged (#287-#292), one is in review (#293) and
-two are queued to open (shared 27B server; card capacity plan). Nothing has run on a pod
-yet; the next pod is the real test. No pod was started this session.
+the guard deleting working pods. Eight are merged (#287-#294); the ninth, the card
+capacity plan (#295), is in review. Nothing has run on a pod yet; the next pod is the
+real test. No pod was started this session.
 
 ## What changed, and what it saves (estimates from the 2026-10-07 numbers)
 
@@ -17,6 +17,7 @@ yet; the next pod is the real test. No pod was started this session.
 | #292 merged | Bootstrap copies the selected chairs into the cache while uv syncs; one copy pool across all chairs, largest file first; PREFLIGHT copies the next chair while the current one smokes, in stage order; cache repair moves files by rename; a stuck copy or prefetch fails its step with a named error instead of holding the pod | ~6 min of setup on a big-card pod plus the next chair's copy hidden behind each smoke (estimates; measure `prefill.seconds` on the next pod) |
 | #293 merged | DAI records go through the window one by one; DAI, Churro and reconstructor rows 4 -> 8 on 80 GB+; a Perlector reply is bounded by its page's reserve x headroom 2.0 (floor 4,096); re-asks sent as soon as a page's first reading is published | Attestatores batching several-fold on multi-record pages; each run-away reply ~3-5 min shorter; no idle gap before re-asks (estimates) |
 | #294 merged | The Coniector takes over the Perlector's running 27B (hand-off record, full identity checks, cold-start fallback); Coniector chair starts while calls are drawn; volume sync overlaps the next stage; reconstructor row back to 4 to match the live server | Most of the ~10 min per chunk of 27B reload; several minutes per stage boundary on FUSE hosts (estimates) |
+| #295 open | Capacity plan: PREFLIGHT measures the card and derives each chair's width (row as floor, cap 64, 4 GiB overhead guess); pod_run forwards `--capacity-plan`; ServingManager launches the row at the planned width and audits row + launched + plan digest; windows follow; smoke runs at the planned width; a shared Perlector/reconstructor pair is planned once | Witnesses 38-64 wide on 48-96 GB cards, the 27B 7 wide on 96 GB and 17 on 141 GB (derived, unmeasured) |
 
 The five review reports with file:line anchors are in `review-notes/2026-10-08-reviews/`.
 
