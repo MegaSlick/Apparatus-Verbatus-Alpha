@@ -1136,15 +1136,6 @@ def test_chair_cache_places_a_local_chair_through_a_verifying_copy_reading_it_on
 
     plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
     rows = {row.path: row for row in manifests.build_manifest(snapshot).rows}
-
-    def verifying_fetch(self, identity, destination: Path, paths):  # type: ignore[no-untyped-def]
-        self.copies += 1
-        return manifests.copy_and_digest_files(
-            [(snapshot / p, destination / p, rows[p]) for p in paths], chair=identity.role
-        )
-
-    monkeypatch.setattr(bootstrap_main.StoreRoleFetcher, "fetch", verifying_fetch)
-    monkeypatch.setenv("VERBATUS_IO_WORKERS", "3")
     digested: list[str] = []
     real_digest = manifests.file_digest
 
@@ -1153,9 +1144,30 @@ def test_chair_cache_places_a_local_chair_through_a_verifying_copy_reading_it_on
         return real_digest(path, chair, relative)
 
     monkeypatch.setattr(manifests, "file_digest", record_digest)
+
+    # A plain copy returns no ledger, so the placed bundle is read again to verify it.
+    bootstrap_main._build_cache(plan)
+    assert set(digested) == set(rows)
+    shutil.rmtree(placed)
+    digested.clear()
+
+    ledgers: list[manifests.CopyLedger] = []
+
+    def verifying_fetch(self, identity, destination: Path, paths):  # type: ignore[no-untyped-def]
+        self.copies += 1
+        ledger = manifests.copy_and_digest_files(
+            [(snapshot / p, destination / p, rows[p]) for p in paths], chair=identity.role
+        )
+        ledgers.append(ledger)
+        return ledger
+
+    monkeypatch.setattr(bootstrap_main.StoreRoleFetcher, "fetch", verifying_fetch)
+    monkeypatch.setenv("VERBATUS_IO_WORKERS", "3")
     receipt = bootstrap_main._build_cache(plan)
 
     assert digested == []
+    assert len(ledgers) == 1 and sorted(ledgers[0].digests) == sorted(rows)
+    assert receipt["chairs"][0]["verification"]["copied_files"] == len(ledgers[0].digests)
     assert receipt["chairs"] == [
         {
             "chair": "designator_surya",
@@ -2205,6 +2217,13 @@ def test_model_store_leaves_byte_hashing_to_the_copies_of_every_configured_chair
     )
 
     assert _build_model_store(plan).hashed_at_copy == tuple(configured)
+    # With a stage selection, only the selected chairs are copied, so only they
+    # leave their bytes to the copy; every other chair is excluded.
+    selected = ("attestator_2", "perlector")
+    assert set(selected) < set(configured)
+    hashed = _build_model_store(replace(plan, preflight_roles=selected)).hashed_at_copy
+    assert hashed == tuple(sorted(selected))
+    assert set(hashed).isdisjoint(set(configured) - set(selected))
 
 
 def test_the_bundle_fetcher_s_environment_is_synced_while_the_store_lacks_a_bundle(
@@ -2273,10 +2292,10 @@ def test_each_half_of_a_two_card_split_prepares_only_the_chairs_its_stages_need(
     assert _build_model_store(small).roles == SMALL_CARD
     assert _build_model_store(small).hashed_at_copy == tuple(sorted(SMALL_CARD))
     assert _build_model_store(big).roles == BIG_CARD
-    assert _build_model_store(big).hashed_at_copy == BIG_CARD
+    assert _build_model_store(big).hashed_at_copy == tuple(sorted(BIG_CARD))
     # The fixture roster binds every chair to a bundle in the checkout.
     assert sorted(path.name for path in _local_bundles(small)) == sorted(SMALL_CARD)
-    assert sorted(path.name for path in _local_bundles(big)) == list(BIG_CARD)
+    assert sorted(path.name for path in _local_bundles(big)) == sorted(BIG_CARD)
     assert _store_environments(small) == frozenset({_bundle_fetcher().environment})
     assert _store_environments(big) == frozenset()
     # A bare bootstrap, with no stage selection, prepares every chair.

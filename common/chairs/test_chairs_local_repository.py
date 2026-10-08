@@ -19,6 +19,7 @@ from .conftest import (
     config_of,
     local_chair,
     pin_snapshot,
+    wait_for_a_later_ctime,
     write_snapshot,
 )
 
@@ -79,6 +80,7 @@ def test_a_local_chair_verified_once_in_a_process_is_not_read_again_until_it_cha
     registry.ensure(identity)
     assert digested == []
 
+    wait_for_a_later_ctime(snapshot / "nested/weights.bin", tmp_path)
     (snapshot / "nested/weights.bin").write_bytes(b"fixture weightX\n")
     with pytest.raises(DigestMismatchRefusal, match="nested/weights.bin"):
         registry.ensure(identity)

@@ -54,6 +54,7 @@ from .conftest import (
     pin_snapshot,
     registry_for,
     serving_details,
+    wait_for_a_later_ctime,
     write_snapshot,
 )
 
@@ -350,20 +351,26 @@ def test_a_ledger_never_vouches_for_a_file_the_fetch_was_not_asked_for(hf_world)
 
     first = hf_world.registry.ensure(hf_world.identity())
     (first.root / "nested/weights.bin").unlink()
-    (first.root / "config.json").write_bytes(b'{"fixture": TRUE}\n')
     manifest = hf_world.registry.manifest(hf_world.identity())
     rows = {row.path: row for row in manifest.rows}
 
     class Vouching(LedgerFetcher):
         def fetch(self, identity, destination, paths):
             ledger = super().fetch(identity, destination, paths)
+            # The carried-over copy changes inside the candidate, same size.
+            carried = destination / "config.json"
+            original = carried.read_bytes()
+            carried.write_bytes(original.upper()[: len(original)])
+            assert carried.read_bytes() != original
             return replace(
                 ledger, digests={**ledger.digests, "config.json": rows["config.json"].sha256}
             )
 
-    hf_world.registry.fetcher = Vouching(hf_world.tmp_path / "remote", manifest)
-    with pytest.raises(DigestMismatchRefusal, match="config.json"):
+    vouching = Vouching(hf_world.tmp_path / "remote", manifest)
+    hf_world.registry.fetcher = vouching
+    with pytest.raises(DigestMismatchRefusal, match="config.json: sha256"):
         hf_world.registry.ensure(hf_world.identity())
+    assert vouching.calls == [("attestator_1", ("nested/weights.bin",))]
 
 
 def test_a_verifying_copy_still_refuses_an_extra_file(hf_world):
@@ -447,6 +454,7 @@ def test_any_change_to_a_cache_file_sends_the_next_ensure_back_to_the_bytes(
     weights = first.root / "nested/weights.bin"
     data = weights.read_bytes()
     if change == "same-bytes-rewrite":
+        wait_for_a_later_ctime(weights, hf_world.tmp_path)
         os.utime(weights, ns=(1, 1))
         weights.write_bytes(data)
     elif change == "touch":
@@ -475,6 +483,7 @@ def test_a_tampered_file_with_restored_times_is_still_caught_by_its_ctime(hf_wor
     first = hf_world.registry.ensure(identity)
     weights = first.root / "nested/weights.bin"
     status = weights.stat()
+    wait_for_a_later_ctime(weights, hf_world.tmp_path)
     weights.write_bytes(b"fixture weightX\n")
     os.utime(weights, ns=(status.st_atime_ns, status.st_mtime_ns))
 
