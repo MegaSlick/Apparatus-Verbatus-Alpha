@@ -27,8 +27,8 @@ repository's `bounds` `{x, y, w, h}` in sealed-page pixels.
   with no Surya census shows none and says so on the feed.
 - The Ink Map's runs for each page.
 - Sealed configuration: `perlector-protocol` (the `[feed]` switches, the page render
-  size, the truncation floor), `decoding` (the Perlector's sampling row and page
-  answer cap), `page-accounting`, `alignment` (the dissent step budget), `recovery`
+  size, the truncation floor), `decoding` (the Perlector's sampling row, page
+  answer cap and repetition-loop guard), `page-accounting`, `alignment` (the dissent step budget), `recovery`
   (whether a page may be re-asked) and the serving catalogue. `perlector-audit` is
   sealed and recorded on every reading as not run.
 
@@ -78,7 +78,10 @@ differ from an unbatched one in low-order bits.
 
 - `parse_state`: `parsed` (`answer` is the object exactly as given); `malformed` (not
   the answer grammar); `cut-off` (the engine stopped at the output cap; never
-  parsed); `refused-capacity` (the request does not fit the sealed serving row;
+  parsed); `repetition-loop` (the reply repeated the same line or block of lines
+  over and over and the call was stopped; never parsed, `stop_reason`
+  `repetition-loop`, `finish_reason` the engine's word if one had arrived, as a
+  rule none); `refused-capacity` (the request does not fit the sealed serving row;
   nothing sent, nothing trimmed); `call-failed` (an engine or transport failure,
   `failure` naming what was observed and its retained bytes as inputs); `not-run`
   (nothing asked: `page-not-sealed`, `chair-absent`, `no-witness-testimony` or
@@ -92,15 +95,26 @@ differ from an unbatched one in low-order bits.
 - `engine_call` (live only) is `{call_record_ref, raw_response_ref, response_sha256,
   finish_reason, served_model_id}`; both blobs are direct inputs, re-derived from disk
   wherever the reading is bound, and the call record is held to the sealed sampling row
-  and the serving receipt's seed. `sampling` records that row as sent and as the
+  and the serving receipt's seed. The reply is streamed, so the call record is a
+  `chair-stream-call-record` (`common/contracts/serving.py`): the response blob is
+  the server-sent event bytes exactly as received, up to any stop, and `stream`
+  names the sealed guard the reply was watched under and the loop that stopped it,
+  or none. Wherever the reading is bound, the reply is scanned again from those
+  bytes and must show exactly that loop. `sampling` records that row as sent and as the
   pinned engine applies it.
 - `capacity` is the admitted `{capacity, answer_reserve, max_tokens}`; the call sends
-  that `max_tokens` with thinking off. It is the sealed page cap, the context the
-  prompt leaves, or the answer reserve times the sealed `answer_headroom_bp` but at
-  least `answer_floor_tokens` (`config/decoding.toml`), whichever is smallest, and
-  `answer_reserve` records the headroom and floor it was bounded by. A reply that
-  reaches it stops on `length` and is held as cut off. A re-ask is bounded the same
-  way from its own reserve.
+  that `max_tokens` with thinking off. It is the sealed page cap or the context the
+  prompt leaves, whichever is smaller; the answer reserve decides only whether the
+  page fits, never how long its reply may run, since a dense index page answers far
+  past any estimate of it. A reply that reaches the cap stops on `length` and is
+  held as cut off. A re-ask is bounded the same way.
+- A reply that falls into a degenerate loop is stopped long before the cap: the
+  call is streamed and abandoned as soon as the same whitespace-trimmed line has
+  come `loop_line_repeats` times in a row, or the same block of 2 to
+  `loop_block_max_lines` lines `loop_block_repeats` times in a row (sealed in
+  `[perlector_generation]` of `config/decoding.toml`; `common/repetition_loop.py`).
+  Only exact repeats count, so many similar rows in a row (one surname over and
+  over) never stop a reply. The page is held `repetition-loop`, like a cut-off.
 - `provenance` names the chair, its resolved identity and revision, the serving
   receipt of what answered (the live receipt, never a declared one beside a real
   reading), the witness regime and the adapter revision.

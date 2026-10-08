@@ -459,6 +459,7 @@ def _call(run, page: _Page, request: _Request, images: list[bytes]) -> dict[str,
             capacity=request.capacity["capacity"],
             max_tokens=request.capacity["max_tokens"],
             what=f"page {page.page_id}",
+            loop_guard=run.loop_guard,
         )
     except live_calls.CALL_FAILURES as error:
         return error

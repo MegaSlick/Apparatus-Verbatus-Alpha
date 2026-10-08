@@ -365,7 +365,9 @@ receipt is refused by name. `--stage` runs one boundary, `--from` and
 `--to` run an inclusive range, and no selection runs the full sequence. `--models small`
 selects Door through Attestatores on a cheap card; `--models big` resumes Perlector
 through Armarium on a big card, after verifying this run's sealed Attestatores
-stage on the volume before bootstrap. The two model toggles use the same range validation.
+stage on the volume before bootstrap. The big card sets the witness pod's bootstrap journal
+aside as `bootstrap-journal-$RUN.pod-<witness pod id>.json` and bootstraps for its own
+GPU; a replacement for a dead pod does the same. The two model toggles use the same range validation.
 For the hand route that finishes model work on the pod, use `--from perlector --to
 coniector` in a later invocation after a `--models small` run, or use `--from door --to
 coniector` for an unsplit run.
@@ -1009,7 +1011,11 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   coniector` ([`pod_run.py`](#pod_runpy-running-the-pipeline-on-a-pod)). Recensor onward
   runs off the GPU, on the Mac or a CPU pod, from the fetched tree.
 - The file names carry the run id so a second run on the same volume cannot overwrite
-  them. A gated Hugging Face model needs its token in the environment and
+  them. A second pod on the same run id may reuse these exact paths: the journal records
+  which pod wrote it, so the same pod resumes it, while another pod (a replacement for a
+  dead one, or the big card after the witness) renames it to
+  `bootstrap-journal-$RUN.pod-<old pod id>.json` and bootstraps afresh for its own GPU.
+  A gated Hugging Face model needs its token in the environment and
   `--keep-env HF_TOKEN` in the bootstrap half, never on the command line.
 - A refusal or a red bootstrap leaves the pod up: read the report, fix, and launch
   again. The guard's ladder warns after 15 idle minutes, and deletes the pod after two
