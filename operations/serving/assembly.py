@@ -129,14 +129,14 @@ def bound_serving_recipes(context: Any, recipes_path: str | Path) -> ServingReci
 
 def _bound_serving(
     context: Any, recipes_path: str | Path
-) -> tuple[ServingRecipes, ServingConfigInputs]:
+) -> tuple[ServingRecipes, ServingConfigInputs, PlacementTable]:
     if context.serving_config_inputs is None:
         raise ContractError(
             "this run authority seals no serving configuration inputs, so the serving "
             "posture of its chairs cannot be proven; open the run with `open_stage_context`"
         )
     try:
-        recipes, _, inputs = _load_bound_configuration(
+        recipes, placement, inputs = _load_bound_configuration(
             sealed_config_inputs=dict(context.serving_config_inputs),
             recipes_path=recipes_path,
             placement_path=DEFAULT_POD_PLACEMENT_CONFIG_PATH,
@@ -146,7 +146,7 @@ def _bound_serving(
             f"the sealed serving configuration was refused for {recipes_path} and "
             f"{DEFAULT_POD_PLACEMENT_CONFIG_PATH}: {error}; rerun with the files this run sealed"
         ) from error
-    return recipes, inputs
+    return recipes, inputs, placement
 
 
 class _BoundServingReader:
@@ -212,7 +212,7 @@ def stage_chair_client(
     ``decoding_policy`` is the policy the stage already loaded and sealed; the client
     sends its chair's row of it."""
 
-    recipes, config_inputs = _bound_serving(context, context.args.serving_recipes_config)
+    recipes, config_inputs, placement = _bound_serving(context, context.args.serving_recipes_config)
     manager = ServingManager(
         registry=context.registry,
         recipes=recipes,
@@ -227,6 +227,7 @@ def stage_chair_client(
         service_scope=str(context.tree.root),
         producer=f"pipeline/{stage_directory(context.stage)}/run.py",
         capacity_plan=stage_capacity_plan(context),
+        placement_table=placement,
         _launch_purpose=(
             MECHANICS_QUALIFICATION_PURPOSE
             if getattr(context.args, "mechanics_qualification", False)
@@ -376,6 +377,7 @@ def _make_reader(
         # The smoke reads at the planned width, so the card is proven at the shape
         # the stages will launch.
         capacity_plan=capacity_plan,
+        placement_table=placement,
         _launch_purpose=_PREFLIGHT_QUALIFICATION_PURPOSE,
     )
     return ServingSmokeReader(

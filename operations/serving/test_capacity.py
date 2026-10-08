@@ -19,6 +19,7 @@ from operations.serving.capacity import (
     derive_capacity_plan,
     derive_max_num_seqs,
     plan_from_argument,
+    planned_ceiling,
 )
 from operations.serving.config import (
     ServingConfigInputs,
@@ -46,11 +47,13 @@ def _plan(vram_gib: int) -> CapacityPlan:
         recipes=RECIPES,
         chairs=MODELS.chairs,
         serving_config_inputs=INPUTS,
+        max_num_seqs_cap=planned_ceiling(tier),
     )
 
 
 # (row max_num_seqs, planned max_num_seqs) per chair, from the shipped rows' own
-# weights and KV figures with 4 GiB of engine overhead. DAI is attestator_2, Churro
+# weights and KV figures with 4 GiB of engine overhead, under each tier's
+# planned_batch_ceiling (24 GB: 8, 48 GB: 48, 80 GB+: 64). DAI is attestator_2, Churro
 # attestator_3, the Qwen3.8-27B the Perlector and the reconstructor, which shares the
 # Perlector's service and so always gets the Perlector's width. Chandra
 # (attestator_1) states no KV figure and is never planned.
@@ -196,7 +199,9 @@ def test_a_stage_sizes_its_window_from_the_launch_row(monkeypatch):
     from operations.serving import assembly
 
     monkeypatch.setattr(assembly, "bound_serving_recipes", lambda _context, _path: RECIPES)
-    monkeypatch.setattr(assembly, "_bound_serving", lambda _context, _path: (RECIPES, INPUTS))
+    monkeypatch.setattr(
+        assembly, "_bound_serving", lambda _context, _path: (RECIPES, INPUTS, PLACEMENT)
+    )
     perlector = MODELS.chairs["perlector"]
     plan = _plan(141)
 
@@ -229,3 +234,50 @@ def test_the_shared_perlector_and_reconstructor_get_one_width_on_every_card():
     for vram_gib in (80, 96, 141):
         chairs = _plan(vram_gib).chairs
         assert chairs["reconstructor"].max_num_seqs == chairs["perlector"].max_num_seqs
+
+
+def test_the_tier_s_configured_ceiling_bounds_the_plan():
+    """The cap is the placement tier's `planned_batch_ceiling`, not a constant."""
+    ceilings = {tier.identifier: planned_ceiling(tier) for tier in PLACEMENT.tiers}
+    assert ceilings == {"generic-24gb": 8, "generic-48gb": 48, "generic-80gb-plus": 64}
+    for vram_gib in DERIVED:
+        plan = _plan(vram_gib)
+        assert plan.max_num_seqs_cap == ceilings[plan.tier]
+        assert all(chair.max_num_seqs <= plan.max_num_seqs_cap for chair in plan.chairs.values())
+    tier = PLACEMENT.choose(Decimal(48))
+    tight = derive_capacity_plan(
+        vram_gib=Decimal(48),
+        gpu_count=1,
+        compute_capability="9.0",
+        tier=tier.identifier,
+        engine_memory_fraction=tier.recipe.engine_memory_fraction,
+        recipes=RECIPES,
+        chairs=MODELS.chairs,
+        serving_config_inputs=INPUTS,
+        max_num_seqs_cap=16,
+    )
+    assert tight.chairs["attestator_2"].max_num_seqs == 16
+
+
+def test_preflight_holds_the_planned_width_to_the_tier_s_ceiling(tmp_path):
+    """The smoke checks the row against `batch_size` and the width a plan would launch
+    it with against `planned_batch_ceiling`, before any chair starts."""
+    from operations.serving.preflight import ServingSmokeReader
+
+    plan = _plan(48)
+    loose = replace(
+        plan,
+        max_num_seqs_cap=64,
+        chairs={
+            **plan.chairs,
+            "attestator_2": replace(plan.chairs["attestator_2"], max_num_seqs=60),
+        },
+    )
+    manager = SimpleNamespace(
+        recipes=RECIPES,
+        capacity_plan=loose,
+        start=lambda *_args: pytest.fail("a plan past the ceiling must not start a chair"),
+    )
+    reader = ServingSmokeReader(manager, smoke_call=None)
+    with pytest.raises(ServingConfigurationError, match="planned_batch_ceiling of 48"):
+        reader.read(MODELS.chairs["attestator_2"], tmp_path / "page.png", PLACEMENT.choose(48))

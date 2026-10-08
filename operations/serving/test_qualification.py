@@ -1119,7 +1119,7 @@ def test_qualification_refuses_partial_or_red_evidence(tmp_path: Path) -> None:
 def test_qualification_refuses_changed_source_or_artifact_bytes(tmp_path: Path) -> None:
     paths, wrapper = _qualification_fixture(tmp_path)
     paths["placement"].write_bytes(
-        paths["placement"].read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+        paths["placement"].read_bytes().replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     )
     with pytest.raises(QualificationRefusal, match="inputs do not match"):
         _qualify(paths)

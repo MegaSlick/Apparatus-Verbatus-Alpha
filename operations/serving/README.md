@@ -54,11 +54,15 @@ card and the KV one full-length sequence holds, from the catalogue's notes) can 
 launched wider on a card with room. PREFLIGHT derives the capacity plan
 (`capacity.py`, schema `capacity-plan.v1`) from the card `SystemGpuProbe` measured:
 
-    n = clamp(floor((U x VRAM - W - A) / P), row max_num_seqs, 64)
+    n = clamp(floor((U x VRAM - W - A) / P), row max_num_seqs, C)
 
 with U the fraction the row launches with (its `gpu_memory_utilization`, at or under
 the tier's `engine_memory_fraction`), W `weights_gib`, P `kv_gib_per_seq` and A 4 GiB
-for everything else the engine holds (activations, the vision encoder, CUDA graphs).
+for everything else the engine holds (activations, the vision encoder, CUDA graphs),
+and C the tier's `planned_batch_ceiling` in `config/pod_placement.toml` (24 GB 8,
+48 GB 48, 80 GB+ 64; 64 when a tier sets none). `batch_size` still bounds the row;
+PREFLIGHT checks the row against it and the planned width against C, and
+`ServingManager.start` refuses a plan derived under another ceiling or wider than C.
 A is not measured: a pod's launch log reports the KV pool vLLM allocated, which is
 what to size it from. Only `max_num_seqs` moves; `gpu_memory_utilization`,
 `max_num_batched_tokens` and every field that shapes a reading stay at the row, and
@@ -75,7 +79,8 @@ n is not below the row. The handle's profile is the launched row, so the stage
 windows (`handle.profile`, or `assembly.launch_row` before a chair starts) take n.
 The PREFLIGHT smoke launches at n, so each chair is proven on the card at the width
 the stages use. The launch audit's `profile` is the launched shape and its `capacity`
-block records the row's width, n, the card and the plan digest. No plan (no
+block records the row's width, n, both ceilings (`row_ceiling`, `planned_ceiling`),
+the card and the plan digest. No plan (no
 `--capacity-plan`, or a card the probe could not measure) launches every row as
 written, and the audit carries no `capacity` block.
 

@@ -1600,7 +1600,7 @@ def test_a_placement_value_changed_after_a_green_bootstrap_refuses_the_resume(
     assert isinstance(first, BootstrapReport) and first.green
 
     ws.placement_config.write_bytes(
-        ws.placement_config.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 9\n", 1)
+        ws.placement_config.read_bytes().replace(b"batch_size = 1\n", b"batch_size = 3\n", 1)
     )
     resumed_actions = _configuration_actions(plan)
     resumed = bootstrap_main.run_bootstrap(

@@ -36,9 +36,18 @@ CAPACITY_PLAN_SCHEMA: Final = "capacity-plan.v1"
 # reports the KV pool vLLM actually allocated, which is what to size this from.
 ENGINE_OVERHEAD_GIB: Final = Decimal("4")
 
-# Never plan more sequences than this at once, whatever the card holds: past it a
-# stage's window threads and prepared requests cost more than the batch gains.
+# The cap when a placement tier sets no `planned_batch_ceiling`
+# (config/pod_placement.toml): past it a stage's window threads and prepared
+# requests cost more than the batch gains.
 MAX_NUM_SEQS_CAP: Final = 64
+
+
+def planned_ceiling(tier: Any) -> int:
+    """The most sequences a plan may launch a row with at this placement tier."""
+
+    ceiling = tier.recipe.planned_batch_ceiling
+    return MAX_NUM_SEQS_CAP if ceiling is None else ceiling
+
 
 _PLAN_FIELDS: Final = frozenset(
     {
@@ -78,7 +87,7 @@ def derive_max_num_seqs(
     """How many sequences one chair may run at once on this card.
 
     ``floor((fraction x VRAM - weights - overhead) / KV per sequence)``, at most
-    ``cap`` and never below the row's own ``max_num_seqs``.
+    ``cap`` (the tier's planned ceiling) and never below the row's own ``max_num_seqs``.
     """
 
     room = memory_fraction * vram_gib - weights_gib - overhead_gib
@@ -266,6 +275,7 @@ def derive_capacity_plan(
     recipes: ServingRecipes,
     chairs: Mapping[str, object],
     serving_config_inputs: ServingConfigInputs,
+    max_num_seqs_cap: int = MAX_NUM_SEQS_CAP,
 ) -> CapacityPlan:
     """The plan for every configured chair whose row at ``tier`` states its capacity.
 
@@ -306,6 +316,7 @@ def derive_capacity_plan(
                 weights_gib=source.weights_gib,
                 kv_gib_per_seq=source.kv_gib_per_seq,
                 row_max_num_seqs=source.max_num_seqs,
+                cap=max_num_seqs_cap,
             ),
             weights_gib=source.weights_gib,
             kv_gib_per_seq=source.kv_gib_per_seq,
@@ -318,6 +329,7 @@ def derive_capacity_plan(
         tier=tier,
         serving_config_inputs=serving_config_inputs,
         chairs=planned,
+        max_num_seqs_cap=max_num_seqs_cap,
     )
 
 
@@ -385,4 +397,5 @@ def plan_for_measured_card(
         recipes=recipes,
         chairs=chairs,
         serving_config_inputs=serving_config_inputs,
+        max_num_seqs_cap=planned_ceiling(tier),
     )
