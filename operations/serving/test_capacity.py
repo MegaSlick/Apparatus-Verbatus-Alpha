@@ -7,10 +7,12 @@ import tomllib
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from common.chairs.config import load_models_toml
+from common.contracts.errors import ContractError
 from operations.pod.preflight import load_placement_table
 from operations.serving.capacity import (
     CapacityPlan,
@@ -185,3 +187,36 @@ def test_a_row_s_capacity_figures_must_be_positive_decimal_strings(value):
     row["kv_gib_per_seq"] = value
     with pytest.raises(ServingConfigurationError, match="kv_gib_per_seq"):
         parse_serving_recipes(raw)
+
+
+def test_a_stage_sizes_its_window_from_the_launch_row(monkeypatch):
+    """`launch_row` is the row the stage's chair will be launched with: widened under
+    the run's plan, the sealed row without one."""
+    from operations.serving import assembly
+
+    monkeypatch.setattr(assembly, "bound_serving_recipes", lambda _context, _path: RECIPES)
+    monkeypatch.setattr(assembly, "_bound_serving", lambda _context, _path: (RECIPES, INPUTS))
+    perlector = MODELS.chairs["perlector"]
+    plan = _plan(141)
+
+    def context(argument):
+        return SimpleNamespace(
+            args=SimpleNamespace(serving_recipes_config="sealed", capacity_plan=argument)
+        )
+
+    tier = "generic-80gb-plus"
+    assert assembly.launch_row(context(None), perlector, tier).max_num_seqs == 4
+    assert assembly.launch_row(context(plan.to_argument()), perlector, tier).max_num_seqs == 17
+    assert assembly.stage_capacity_plan(context(plan.to_argument())) == plan
+    other = derive_capacity_plan(
+        vram_gib=Decimal(141),
+        gpu_count=1,
+        compute_capability="9.0",
+        tier=tier,
+        engine_memory_fraction=Decimal("0.88"),
+        recipes=RECIPES,
+        chairs=MODELS.chairs,
+        serving_config_inputs=ServingConfigInputs("c" * 64, "b" * 64),
+    )
+    with pytest.raises(ContractError, match="capacity plan"):
+        assembly.launch_row(context(other.to_argument()), perlector, tier)

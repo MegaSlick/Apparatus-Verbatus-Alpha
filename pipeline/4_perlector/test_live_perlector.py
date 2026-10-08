@@ -988,6 +988,15 @@ def test_a_fixture_pass_reads_one_page_at_a_time():
     assert perlector._reading_concurrency(SimpleNamespace(), args, None, "fixture") == 1
 
 
+def test_a_live_pass_reads_as_wide_as_its_chair_is_launched(monkeypatch):
+    """The width is the launched row's `max_num_seqs`, which a capacity plan widens;
+    `--perlector-concurrency` only ever narrows it."""
+    monkeypatch.setattr(perlector, "launch_row", lambda *_args: SimpleNamespace(max_num_seqs=7))
+    for asked, width in ((None, 7), (3, 3), (10, 7)):
+        args = SimpleNamespace(perlector_concurrency=asked, placement_tier="generic-80gb-plus")
+        assert perlector._reading_concurrency(SimpleNamespace(), args, None, "live") == width
+
+
 def test_the_window_finishes_in_order_within_its_bound():
     lock = threading.Lock()
     in_flight = most = 0
