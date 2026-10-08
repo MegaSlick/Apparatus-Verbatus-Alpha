@@ -509,10 +509,6 @@ class ProgressWatch:
             return str(error)
         return None
 
-    @property
-    def last_ok(self) -> datetime | None:
-        return self._last_ok
-
     def stage_rates(self) -> list[dict[str, object]]:
         """Each page stage's pages and pace as pod_run saw them, in the order first seen."""
 
