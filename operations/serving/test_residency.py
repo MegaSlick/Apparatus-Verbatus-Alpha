@@ -9,6 +9,7 @@ but closing the descriptor afterward does not.
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import os
 import re
@@ -307,6 +308,7 @@ def test_a_relinquished_lease_stays_held_by_the_child_until_an_attached_stop() -
             with pytest.raises(ResidencyError):
                 lease.acquire(None)  # type: ignore[arg-type]
 
+            # A pid that now names another process is never taken for the service.
             with pytest.raises(Exception, match="no longer the service"):
                 SubprocessLauncher().attach(child.pid, marker + "0", root / "child.log")
             attached = SubprocessLauncher().attach(child.pid, marker, root / "child.log")
@@ -318,3 +320,39 @@ def test_a_relinquished_lease_stays_held_by_the_child_until_an_attached_stop() -
         finally:
             child.kill()
             child.wait(5)
+
+
+def test_an_attached_group_whose_leader_exited_is_still_stopped() -> None:
+    """A real group whose leader exited while a member (the engine's stand-in) runs:
+    attaching finds it, and stopping signals the member, not nobody."""
+    import sys
+    import tempfile
+
+    from .process import SubprocessLauncher, _group_has_running_member, process_start_marker
+
+    if process_start_marker(os.getpid()) is None:
+        pytest.skip("no /proc on this host, so no process can be handed over")
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        leader = SubprocessLauncher().launch(
+            (
+                sys.executable,
+                "-c",
+                "import subprocess, sys; "
+                "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])",
+            ),
+            root / "leader.log",
+        )
+        marker = leader.start_marker
+        assert marker is not None
+        leader.process.wait(10)  # the leader exits; its child keeps the group
+        try:
+            assert _group_has_running_member(leader.pid)
+            attached = SubprocessLauncher().attach(leader.pid, marker, root / "leader.log")
+            assert attached.poll() == -1
+            attached.terminate()
+            attached.wait(5)
+            assert not _group_has_running_member(leader.pid)
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(leader.pid, 9)

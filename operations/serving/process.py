@@ -66,7 +66,10 @@ class ProcessLauncher(Protocol):
     def attach(self, pid: int, start_marker: str, log_path: Path) -> ServerProcess:
         """The process group another manager launched and handed over.
 
-        Refuses unless ``pid`` is still the very process ``start_marker`` names.
+        Returns a handle while ``pid`` is still the very process ``start_marker``
+        names, or while its group still has a running member (an engine process
+        can outlive its leader and keep the card); its ``poll`` then says whether
+        the leader itself still runs. Refuses only when the whole group is gone.
         """
 
 
@@ -194,11 +197,23 @@ class SubprocessLauncher:
         )
 
     def attach(self, pid: int, start_marker: str, log_path: Path) -> ServerProcess:
-        if process_start_marker(pid) != start_marker:
+        observed = process_start_marker(pid)
+        if observed == start_marker:
+            return AttachedServerProcess(pid, start_marker, log_path)
+        if observed is not None:
+            # The pid now names a later process: the service is gone, and that
+            # process is never signalled.
             raise ProcessLaunchError(
                 f"process {pid} is no longer the service that was handed over "
                 f"(start marker {start_marker!r})"
             )
+        if not _group_has_running_member(pid):
+            raise ProcessLaunchError(
+                f"the service handed over as process {pid} has exited, and its group "
+                "has no running member"
+            )
+        # The leader exited; a member of its group (the engine) still runs. While
+        # it does, the kernel keeps the group's id from being reused.
         return AttachedServerProcess(pid, start_marker, log_path)
 
 
