@@ -432,6 +432,62 @@ def test_a_launch_the_reading_deadline_cannot_cover_is_refused_before_the_chair_
     assert endpoints[0].requests == []
 
 
+def test_the_chair_starts_while_pages_are_prepared_and_is_up_before_the_first_send(
+    live_run, tmp_path, monkeypatch
+):
+    """The first page's preparation waits for the chair's start to begin: it can only
+    finish because the start runs beside it, not after it."""
+    page_run = perlector.page_run
+    began = threading.Event()
+    started_on: list[str] = []
+    start_chair = live_calls.start_chair
+
+    def start(run):
+        started_on.append(threading.current_thread().name)
+        began.set()
+        start_chair(run)
+
+    prepare = page_run._prepare
+
+    def prepared(state, ordinal, page_id):
+        assert began.wait(timeout=10), "the chair did not start while pages were prepared"
+        return prepare(state, ordinal, page_id)
+
+    monkeypatch.setattr(live_calls, "start_chair", start)
+    monkeypatch.setattr(page_run, "_prepare", prepared)
+    endpoint, exit_code = _run_perlector(
+        live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+    )
+    assert exit_code == 0
+    assert started_on == ["chair-start"]
+    assert endpoint.requests
+
+
+def test_a_chair_that_fails_to_start_in_the_background_stops_the_pass_on_the_main_thread(
+    live_run, tmp_path, monkeypatch
+):
+    def refuse(run):
+        raise ContractError("the engine would not load")
+
+    monkeypatch.setattr(live_calls, "start_chair", refuse)
+    with pytest.raises(ContractError, match="the engine would not load"):
+        _run_perlector(
+            live_run, tmp_path, monkeypatch, ScriptedAnswer(content=READING, finish_reason="stop")
+        )
+
+
+def test_a_failed_preparation_keeps_its_error_and_notes_a_failed_start(monkeypatch):
+    def refuse(run):
+        raise RuntimeError("no card")
+
+    monkeypatch.setattr(live_calls, "start_chair", refuse)
+    starting = live_calls.BackgroundStart(SimpleNamespace())
+    raised = ContractError("a page could not be prepared")
+    starting.join_quietly(raised)
+    assert "no card" in raised.__notes__[0]
+    starting.join()  # the failure was reported once, on the error that propagated
+
+
 def test_a_typed_transport_failure_preserves_unknown_completion_call_evidence():
     """A dispatched request's uncertain outcome keeps its closed call evidence."""
     call_ref = {

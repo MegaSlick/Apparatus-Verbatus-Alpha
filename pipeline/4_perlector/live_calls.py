@@ -10,6 +10,8 @@ The page path (`page_run.py`) reads its evidence through these helpers; nothing 
 publishes a reading.
 """
 
+import threading
+import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Final
@@ -54,6 +56,50 @@ def start_chair(run) -> None:
     run.service.client = run.client_factory(run.context, run.chair, run.args.placement_tier)
     run.service.client.__enter__()
     run.receipt_ref = dict(run.service.client.handle.receipt_reference)
+
+
+class BackgroundStart:
+    """The pass's chair started on a background thread while the main thread prepares pages.
+
+    `start_chair` only loads and launches; it publishes nothing a page record names
+    except the receipt, which every live record reads from `run.receipt_ref` after
+    `join`. A failed start is raised by `join` on the main thread.
+    """
+
+    def __init__(self, run) -> None:
+        self._run = run
+        self._error: BaseException | None = None
+        self._began = time.monotonic()
+        self._thread = threading.Thread(target=self._start, name="chair-start", daemon=True)
+        self._thread.start()
+
+    def _start(self) -> None:
+        try:
+            start_chair(self._run)
+        except BaseException as error:  # noqa: BLE001 -- raised again by `join`
+            self._error = error
+
+    @property
+    def done(self) -> bool:
+        return not self._thread.is_alive()
+
+    def elapsed_seconds(self) -> int:
+        return int(time.monotonic() - self._began)
+
+    def join(self) -> None:
+        """Wait for the start; raise its failure here, once."""
+        self._thread.join()
+        error, self._error = self._error, None
+        if error is not None:
+            raise error
+
+    def join_quietly(self, raised: BaseException) -> None:
+        """Wait for the start while `raised` propagates, so the chair can be stopped;
+        a failed start is attached to `raised` rather than replacing it."""
+        self._thread.join()
+        error, self._error = self._error, None
+        if error is not None:
+            raised.add_note(f"the chair's start also failed: {type(error).__name__}: {error}")
 
 
 def engine_call_inputs(context, engine_call: dict[str, Any] | None) -> list[dict[str, str]]:
