@@ -206,3 +206,22 @@ def test_whole_page_record_and_scored_boxes_keep_order():
         {"x": 10, "y": 100, "w": 300, "h": 50, "score": 0.4},
     ]
     assert [b["score"] for b in A.order_records(scored, 800)] == [0.4, 0.9]
+
+
+def test_whole_page_fallback_unit_is_width_capped_like_a_crop():
+    # A page wider than DAI's 1,500 px ceiling: the fallback unit keeps the page's
+    # bounds but the image DAI is shown is scaled down to 1,500 px, aspect kept.
+    page = _png(3000, 1200)
+    units = A.page_units(A.ARMS["dai"], page, [A.whole_page_record(3000, 1200)])
+    assert [u["unit"] for u in units] == ["whole-page"]
+    assert units[0]["bounds"] == {"x": 0, "y": 0, "w": 3000, "h": 1200}
+    assert A._size(units[0]["png"]) == (1500, 600)
+
+
+def test_record_dicts_from_an_old_cache_still_order_and_crop():
+    # Records written before scores existed carry only x, y, w and h.
+    old = [{"x": 210, "y": 0, "w": 190, "h": 150}, {"x": 0, "y": 0, "w": 199, "h": 300}]
+    ordered = A.order_records(old, 400)
+    units = A.page_units(A.ARMS["dai"], _png(400, 300), ordered)
+    assert [u["unit"] for u in units] == ["record-0", "record-1"]
+    assert units[0]["bounds"] == {"x": 0, "y": 0, "w": 199, "h": 300}
