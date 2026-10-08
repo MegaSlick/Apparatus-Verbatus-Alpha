@@ -94,8 +94,13 @@ findings, not_made}`. Outcome `made` or `not-made`.
 
 ## Calls
 
-A live chair is started on the main thread when the first call that will be sent
-is drawn, so a pass whose every call is already sealed loads no model. When the
+A live pass with a call that has no sealed record starts its chair on a background
+thread once the plan is published, while the calls are drawn, and waits for it
+before the first call is sent; a failed start stops the pass on the main thread. A
+pass whose every call is already sealed loads no model. A pass whose calls all turn
+out not to be sent (over capacity) has started a chair it does not use, and stops
+it with the pass; a pass that stops while the chair is still loading does not wait
+for the load, whose thread stops the chair once it returns. When the
 Perlector left its chair serving for this stage and the reconstructor's row shares
 that service, starting the chair takes the running service over instead of loading
 the model again; its receipt names the reconstructor and keeps the service's start

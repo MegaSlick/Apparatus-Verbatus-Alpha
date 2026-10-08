@@ -1033,3 +1033,56 @@ def test_a_real_submission_that_asks_nothing_is_not_refused(off, monkeypatch):
     published, error = _main_on_a_real_submission(monkeypatch, off, "fixture")
     assert error is None
     assert published == ["plan", "seal"]
+
+
+def test_a_live_chair_starts_on_a_background_thread_while_the_calls_are_drawn(
+    tmp_path, monkeypatch
+):
+    """A plan with an unsealed call starts its chair off the main thread before the
+    first call is drawn; every record is still published on the main thread."""
+    import threading
+
+    from common.stage import StageContext
+    from operations.serving.client import ChairClient
+    from operations.serving.fakes import FakeEndpoint, ScriptedAnswer
+
+    entered: list[str] = []
+    enter = ChairClient.__enter__
+
+    def recorded_enter(self):
+        entered.append(threading.current_thread().name)
+        return enter(self)
+
+    publishers: list[bool] = []
+    publish = StageContext.publish
+
+    def recorded_publish(self, **kwargs):
+        publishers.append(threading.current_thread() is threading.main_thread())
+        return publish(self, **kwargs)
+
+    monkeypatch.setattr(ChairClient, "__enter__", recorded_enter)
+    monkeypatch.setattr(StageContext, "publish", recorded_publish)
+    root, options = _live_tree(tmp_path)
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    endpoint.script(
+        *(ScriptedAnswer(content=answer, finish_reason="stop") for answer in _declared_answers())
+    )
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert entered == ["chair-start"]
+    assert publishers and all(publishers)
+    assert len(endpoint.requests) == 2
+
+
+def test_a_resumed_pass_with_every_call_sealed_starts_no_chair(live, tmp_path, monkeypatch):
+    from operations.serving.client import ChairClient
+    from operations.serving.fakes import FakeEndpoint
+
+    source, options = live
+    root = tmp_path / "runs"
+    shutil.copytree(source, root)
+    monkeypatch.setattr(
+        ChairClient, "__enter__", lambda self: pytest.fail("a chair was started for nothing")
+    )
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert endpoint.requests == []

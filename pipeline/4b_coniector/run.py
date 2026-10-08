@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 import operations.serving.errors as serving_errors  # noqa: E402
+from common.background_start import BackgroundStart  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import text_sha256  # noqa: E402
@@ -122,6 +123,8 @@ class _Chair:
         self.client_factory = client_factory
         self.client = None
         self.started = False
+        # A start running on a background thread (`begin`), joined by `ready`.
+        self.starting = None
         self.receipt_ref = None
         self.fixture_receipt_ref = None
 
@@ -147,10 +150,40 @@ class _Chair:
         self.client.__enter__()
         self.receipt_ref = dict(self.client.handle.receipt_reference)
 
+    def begin(self) -> None:
+        """Start the chair on a background thread while the pass draws its calls.
+
+        Refused first, on this thread, when an interrupted pass left a reply no
+        record names: asking again would ask its page twice.
+        """
+        _refuse_unrecorded_replies(self.context)
+        self.started = True
+        self.starting = BackgroundStart(self.start, self.close, stage="coniector")
+
+    def ready(self) -> None:
+        """Have the chair up before the first call is sent: join a background start,
+        or start it here when none was begun."""
+        starting, self.starting = self.starting, None
+        if starting is not None:
+            starting.join()
+        elif self.client is None:
+            _refuse_unrecorded_replies(self.context)
+            self.start()
+
     def close(self) -> None:
-        client, self.client = self.client, None
-        if client is not None:
-            client.__exit__()
+        """Stop the chair; one still starting is left to its start's thread, which
+        stops it when the start returns, so a stopped pass does not wait for a load."""
+        starting, self.starting = self.starting, None
+        if starting is not None and starting.abandon():
+            return
+        try:
+            if starting is not None:
+                # A start no call waited for still reports its failure.
+                starting.join()
+        finally:
+            client, self.client = self.client, None
+            if client is not None:
+                client.__exit__()
 
     def reclaim(self) -> None:
         """Stop the Perlector's chair if it was left serving for this stage and never taken
@@ -388,6 +421,26 @@ class _Pass:
             return 1
         return self.chair.row().max_num_seqs
 
+    def sends_any(self, calls: list) -> bool:
+        """Whether some call has no sealed record, so a live chair will be needed.
+
+        Read from the records alone, before any call is drawn: a call refused for
+        capacity still counts, so at worst the chair starts for a pass that sends
+        nothing, and is stopped with it.
+        """
+        if self.chair is None or not (self.chair.present and self.chair.live):
+            return False
+        return any(self._sealed(call) is None for call in calls)
+
+    def _sealed(self, call: dict):
+        generations = sealed_generations(
+            self.context.tree, CALL_KIND, call_page_id(call, self.shown)
+        )
+        return next(
+            (record for record in generations if record["payload"].get("call") == call),
+            None if self.replanned or not generations else generations[0],
+        )
+
     def jobs(self, calls: list):
         for call in calls:
             yield self.draw(call)
@@ -403,10 +456,7 @@ class _Pass:
         text = call_prompt(call, self.shown, self.policy)
         keys = shown_keys(call, self.shown)
         generations = sealed_generations(context.tree, CALL_KIND, page_id)
-        sealed = next(
-            (record for record in generations if record["payload"].get("call") == call),
-            None if self.replanned or not generations else generations[0],
-        )
+        sealed = self._sealed(call)
         if sealed is not None:
             payload = sealed["payload"]
             maker = payload.get("maker")
@@ -432,9 +482,7 @@ class _Pass:
         admitted = _admit(chair, call, text, self.policy, self.max_tokens)
         if "reply_text" in admitted:
             return None, lambda _result: finish(admitted)
-        if chair.client is None:
-            _refuse_unrecorded_replies(context)
-            chair.start()
+        chair.ready()
         what = f"the reconstruction of page {call['page_ordinal']}"
         return (
             partial(_send, chair, text, admitted, what),
@@ -521,6 +569,9 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     replanned = _publish_plan(context, plan)
     try:
         calls = _Pass(context, chair, shown, policy, reconstructor_max_tokens(decoding), replanned)
+        if calls.sends_any(plan["calls"]):
+            # The chair loads (or takes over the Perlector's) while the calls are drawn.
+            chair.begin()
         in_order_window(calls.width(), calls.jobs(plan["calls"]))
     except ChairResponseRefusal as refusal:
         raise ContractError(f"{type(refusal).__name__}: {refusal}") from refusal
