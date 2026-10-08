@@ -1077,6 +1077,65 @@ def test_chair_cache_receipt_says_sources_were_planned(monkeypatch: pytest.Monke
     }
 
 
+def test_the_background_fill_takes_selected_store_ready_chairs_in_stage_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from common.chairs.conftest import hf_chair, local_chair, write_models_toml
+    from common.chairs.errors import DigestMismatchRefusal
+
+    pin = "1" * 64
+    models = write_models_toml(
+        tmp_path,
+        {
+            "reconstructor": hf_chair("reconstructor", pin),
+            "perlector": hf_chair("perlector", pin),
+            "attestator_1": hf_chair("attestator_1", pin),
+            "attestator_2": hf_chair("attestator_2", pin),
+            "designator_surya": local_chair("designator_surya", pin),
+            "secondary_proposer": hf_chair("secondary_proposer", pin),
+        },
+        witness_floor=0,
+        model_root="real-models",
+    )
+
+    class Fetcher:
+        def __init__(self, root: Path) -> None:
+            assert root == tmp_path / "store"
+
+        def plan(self, identity):  # type: ignore[no-untyped-def]
+            if identity.role == "attestator_2":
+                raise DigestMismatchRefusal(identity.role, "model-store artifact is not present")
+            return {"snapshot": "store"}
+
+    monkeypatch.setattr(bootstrap_main, "StoreRoleFetcher", Fetcher)
+    plan = SimpleNamespace(
+        models_config=models,
+        cache_root=tmp_path / "cache",
+        store_root=tmp_path / "store",
+        preflight_roles=(
+            "attestator_1",
+            "attestator_2",
+            "designator_surya",
+            "perlector",
+            "reconstructor",
+        ),
+    )
+
+    chairs = bootstrap_main._prefill_chairs(plan)
+
+    assert [chair.role for chair in chairs.chairs] == ["attestator_1", "perlector", "reconstructor"]
+    assert isinstance(chairs.registry.fetcher, Fetcher)
+    (deferred,) = chairs.deferred
+    assert deferred["chair"] == "attestator_2"
+    assert "not present" in deferred["reason"]
+    assert (
+        bootstrap_main._prefill_chairs(SimpleNamespace(**{**vars(plan), "store_root": None}))
+        is None
+    )
+
+
 def _local_chair_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """A roster binding one local-repository chair, and a store snapshot of it."""
     from common.chairs.manifests import build_manifest, write_manifest
@@ -2127,6 +2186,30 @@ def test_preflight_measures_the_placement_table_the_run_seals(tmp_path: Path) ->
     record = _build_preflight(plan, seams)()
 
     assert record["serving_config_inputs"]["pod_placement_sha256"] == sealed  # type: ignore[index]
+
+
+def test_preflight_adopts_what_the_background_fill_verified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from .bootstrap_main import _build_preflight, build_parser, resolve_plan
+
+    ws, identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    seams, _http, _launcher = _preflight_seams(tmp_path, identities)
+    filled = object()
+    adopted: list[object] = []
+    monkeypatch.setattr(
+        bootstrap_main.ChairRegistry,
+        "adopt_verifications",
+        lambda self, other: adopted.append(other),
+    )
+
+    _build_preflight(plan, seams, prefill=SimpleNamespace(registry=filled))()  # type: ignore[arg-type]
+    _build_preflight(plan, seams, prefill=SimpleNamespace(registry=None))()  # type: ignore[arg-type]
+
+    assert adopted == [filled]
 
 
 def test_bootstrap_syncs_a_subprocess_environment_only_for_a_row_that_runs_in_it(

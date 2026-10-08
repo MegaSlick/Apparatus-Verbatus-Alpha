@@ -374,8 +374,13 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(role, "role is not present in models.toml")
         return value
 
-    def ensure(self, identity: ChairIdentity) -> VerifiedSnapshot:
-        """Fetch missing pinned files only, then verify the complete exact snapshot."""
+    def ensure(self, identity: ChairIdentity, *, evict: bool = True) -> VerifiedSnapshot:
+        """Fetch missing pinned files only, then verify the complete exact snapshot.
+
+        With `evict=False` a fill that lacks room is refused (`DiskSpaceRefusal`)
+        instead of removing another chair's cache; for a fill that runs beside
+        other work and must not take a cache that work may be about to use.
+        """
 
         self._require_current_identity(identity)
         manifest = self._manifest(identity)
@@ -388,7 +393,22 @@ class ChairRegistry:
             verified = verify_snapshot(identity, root, manifest)
             self._remember(identity, root, before)
             return verified
-        return self._ensure_huggingface(identity, manifest)
+        return self._ensure_huggingface(identity, manifest, evict=evict)
+
+    def adopt_verifications(self, other: "ChairRegistry") -> None:
+        """Take over another registry's in-process verifications of the same caches.
+
+        Only when both read the same roster, manifests and cache root, so a
+        snapshot is remembered under the pin it was verified against. Each one
+        is still checked against its files' stat identity when it is used.
+        """
+
+        if (
+            other.config == self.config
+            and other.manifest_root == self.manifest_root
+            and other.cache_root == self.cache_root
+        ):
+            self._verified.update(other._verified)
 
     def verify_local_copy(
         self, identity: ChairIdentity, copied: Mapping[str, str]
@@ -517,7 +537,7 @@ class ChairRegistry:
         return resolve_local_path(identity, model_root)
 
     def _ensure_huggingface(
-        self, identity: ChairIdentity, manifest: DigestManifest
+        self, identity: ChairIdentity, manifest: DigestManifest, *, evict: bool = True
     ) -> VerifiedSnapshot:
         if self.cache_root is None:
             raise UnresolvedChairRefusal(
@@ -538,10 +558,15 @@ class ChairRegistry:
         with _cache_write(identity.role, f"cache root {digests_root} cannot be created"):
             digests_root.mkdir(parents=True, exist_ok=True)
         with _digest_lock(digests_root, digest, identity.role):
-            return self._ensure_digest_locked(identity, manifest, digests_root)
+            return self._ensure_digest_locked(identity, manifest, digests_root, evict=evict)
 
     def _ensure_digest_locked(
-        self, identity: ChairIdentity, manifest: DigestManifest, digests_root: Path
+        self,
+        identity: ChairIdentity,
+        manifest: DigestManifest,
+        digests_root: Path,
+        *,
+        evict: bool,
     ) -> VerifiedSnapshot:
         digest = identity.digest_manifest
         target = digests_root / digest
@@ -570,7 +595,7 @@ class ChairRegistry:
             raise UnresolvedChairRefusal(
                 identity.role, "no fetcher is configured for a missing pinned snapshot"
             )
-        self._make_room(identity, manifest, digests_root)
+        self._make_room(identity, manifest, digests_root, evict=evict)
         with _cache_write(identity.role, "no candidate cache directory could be created"):
             candidate = Path(tempfile.mkdtemp(prefix=f".{digest}.candidate-", dir=digests_root))
         try:
@@ -621,12 +646,18 @@ class ChairRegistry:
         }
 
     def _make_room(
-        self, identity: ChairIdentity, manifest: DigestManifest, digests_root: Path
+        self,
+        identity: ChairIdentity,
+        manifest: DigestManifest,
+        digests_root: Path,
+        *,
+        evict: bool = True,
     ) -> None:
         """Clear abandoned work and evict least recently used caches until the pin fits.
 
         Only caches of configured digests are touched, and only while no other
         ensure holds that digest's lock; the caller holds the incoming digest's.
+        Without `evict`, no finished cache is removed.
         """
 
         own = identity.digest_manifest
@@ -645,7 +676,7 @@ class ChairRegistry:
         required = sum(row.size for row in manifest.rows)
         with _cache_write(identity.role, "container-local free space could not be measured"):
             free = shutil.disk_usage(digests_root).free
-        if free < required:
+        if free < required and evict:
             with _cache_write(identity.role, "other chair caches could not be evicted"):
                 candidates = sorted(
                     (

@@ -5679,6 +5679,120 @@ def test_sync_uv_environment_refuses_a_checkout_without_suryas_lock(tmp_path: Pa
         actions.sync_uv_environment(lockfile)
 
 
+class FakePrefill:
+    """Records how the steps drive the background chair-cache fill."""
+
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.failure = failure
+        self.events: list[tuple[str, object]] = []
+
+    def start(self, step: str, reserved=None) -> None:  # type: ignore[no-untyped-def]
+        self.events.append(("start", (step, dict(reserved) if reserved is not None else None)))
+
+    def wait(self) -> dict[str, object] | None:
+        self.events.append(("wait", None))
+        if self.failure is not None:
+            raise self.failure
+        return {"filled": [{"chair": "perlector"}], "deferred": []}
+
+
+def _prefill_actions(tmp_path: Path, prefill: FakePrefill, *, order: list[str]):
+    repository, lockfile = _checkout_with_locks(tmp_path)
+
+    def runner(argv: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        order.append("uv")
+        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+    def materialize() -> dict[str, object]:
+        order.append("materialize")
+        return {"selection_complete": True}
+
+    class Cache:
+        def verify(self) -> dict[str, object]:
+            order.append("cache")
+            return {"chairs": [], "cache_root": "/cache"}
+
+    actions = SubprocessBootstrapActions(
+        configuration=lambda: {"profile": "fixture"},
+        repository=repository,
+        transfer=lambda: {},
+        materialize_model_store=materialize,
+        cache=Cache(),
+        preflight=lambda: {"color": "green"},
+        runner=runner,
+        free_bytes=lambda _path: 512 * 1024**3,
+        environment={**BOOTSTRAP_ENVIRONMENT, "UV_CACHE_DIR": str(tmp_path / "uv-cache")},
+        prefill=prefill,
+    )
+    return actions, lockfile
+
+
+def test_the_chair_cache_fill_starts_before_uv_syncs_and_both_later_steps_wait_for_it(
+    tmp_path: Path,
+) -> None:
+    order: list[str] = []
+    prefill = FakePrefill()
+    actions, lockfile = _prefill_actions(tmp_path, prefill, order=order)
+
+    actions.sync_uv_environment(lockfile)
+    assert order == ["uv"]
+    (start,) = prefill.events
+    step, reserved = start[1]
+    assert step == "uv-environment"
+    # What uv will still write, per filesystem, is held back from the fill.
+    assert sum(reserved.values()) == (
+        bootstrap_module.UV_CACHE_REQUIRED_BYTES + bootstrap_module.REPOSITORY_VENV_REQUIRED_BYTES
+    )
+
+    model_store = actions.materialize_model_store()
+    chair_cache = actions.verify_chair_cache()
+
+    assert model_store == {"selection_complete": True}
+    assert [name for name, _ in prefill.events] == ["start", "start", "wait", "wait"]
+    assert prefill.events[1] == ("start", ("model-store", None))
+    assert order == ["uv", "materialize", "cache"]
+    assert chair_cache == {
+        "chairs": [],
+        "cache_root": "/cache",
+        "prefill": {"filled": [{"chair": "perlector"}], "deferred": []},
+    }
+
+
+def test_a_refused_background_copy_fails_model_store_with_the_chair_s_refusal(
+    tmp_path: Path,
+) -> None:
+    order: list[str] = []
+    refusal = DigestMismatchRefusal("perlector", "snapshot differs at model.safetensors: sha256 x")
+    actions, lockfile = _prefill_actions(tmp_path, FakePrefill(failure=refusal), order=order)
+    journal = BootstrapJournal(
+        tmp_path / "bootstrap.json", BootstrapPlan("c" * 40, lockfile), now=lambda: START
+    )
+
+    class Composed(FakeBootstrapActions):
+        def sync_uv_environment(self, lockfile: Path) -> dict[str, object]:
+            return actions.sync_uv_environment(lockfile)
+
+        def materialize_model_store(self) -> dict[str, object]:
+            return actions.materialize_model_store()
+
+    report = Bootstrapper(journal, Composed()).run()
+
+    assert not report.green
+    assert report.failure_step is BootstrapStep.MODEL_STORE
+    assert "perlector" in report.detail and "model.safetensors" in report.detail
+    assert report.completed[-1] is BootstrapStep.TRANSFER
+
+
+def test_a_model_store_that_fails_does_not_wait_for_the_background_fill(tmp_path: Path) -> None:
+    prefill = FakePrefill()
+    actions, _ = _prefill_actions(tmp_path, prefill, order=[])
+    actions.materialize = lambda: {"selection_complete": False}
+
+    with pytest.raises(BootstrapStepFailure):
+        actions.materialize_model_store()
+    assert [name for name, _ in prefill.events] == ["start"]
+
+
 def test_production_bootstrap_uses_absolute_tools_and_an_explicit_environment(
     tmp_path: Path, monkeypatch
 ) -> None:

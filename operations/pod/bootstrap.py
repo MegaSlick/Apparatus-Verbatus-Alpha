@@ -880,6 +880,14 @@ class ChairCachePlan(Protocol):
     def verify(self) -> dict[str, object]: ...
 
 
+class ChairCachePrefillPlan(Protocol):
+    """A background fill of the chair cache (`chair_prefill.ChairCachePrefill`)."""
+
+    def start(self, step: str, reserved: Mapping[int, int] | None = None) -> None: ...
+
+    def wait(self) -> dict[str, object] | None: ...
+
+
 class ModelStoreBootstrapAction:
     """Launch-time acquisition of the real roster onto the mounted model volume."""
 
@@ -934,8 +942,12 @@ class SubprocessBootstrapActions:
         free_bytes: Callable[[Path], int] | None = None,
         subprocess_environments: Callable[[], frozenset[str]] = frozenset,
         local_bundles: Callable[[], Mapping[Path, int]] = dict,
+        prefill: ChairCachePrefillPlan | None = None,
     ) -> None:
         self.repository = Path(repository)
+        # Copies the selected chairs into the chair cache while uv syncs;
+        # MODEL_STORE and CHAIR_CACHE wait for it before they complete.
+        self.prefill = prefill
         # Read after checkout, like the roster the stages read: the environments
         # the checked-out catalogue's subprocess rows run in, for configured chairs.
         self.subprocess_environments = subprocess_environments
@@ -1141,7 +1153,9 @@ class SubprocessBootstrapActions:
                     "Restore the pinned checkout; a subprocess environment is synced from its "
                     "own uv.lock.",
                 )
-        self._require_container_disk(environments)
+        reserved = self._require_container_disk(environments)
+        if self.prefill is not None:
+            self.prefill.start(BootstrapStep.UV_ENVIRONMENT.value, reserved)
         # `--group pod` is the serving stack: vLLM, transformers, qwen-vl-utils and
         # everything they drag in, including torch and the CUDA libraries. It is
         # named here and nowhere else, because the pod is the only machine that may
@@ -1184,7 +1198,7 @@ class SubprocessBootstrapActions:
             ],
         }
 
-    def _require_container_disk(self, environments: list[str]) -> None:
+    def _require_container_disk(self, environments: list[str]) -> dict[int, int]:
         """Refuse a sync the container-local disk cannot hold, before it starts.
 
         The create request states a container disk size, but nothing proves the
@@ -1196,6 +1210,9 @@ class SubprocessBootstrapActions:
         failure is uv's own ENOSPC part way through a ten-gigabyte download
         that was already paid for, which must never happen silently: a
         cost with nothing to show and no named reason.
+
+        Returns the bytes required per filesystem (`st_dev`), which a chair-cache
+        prefill running beside the sync must leave free.
 
         Measured on the container-local disk deliberately. The preflight's GPU
         probe measures ``disk_path=volume_mount_path`` -- the network volume --
@@ -1247,11 +1264,15 @@ class SubprocessBootstrapActions:
                     "the pod request) and boot again; uv would otherwise fill this disk "
                     "part way through the download and fail with no space left.",
                 )
+        return shared
 
     def resume_transfer(self) -> dict[str, object]:
         return self.transfer()
 
     def materialize_model_store(self) -> dict[str, object]:
+        if self.prefill is not None:
+            # On a resume past UV_ENVIRONMENT the sync has already written its bytes.
+            self.prefill.start(BootstrapStep.MODEL_STORE.value)
         result = self.materialize()
         if result.get("selection_complete") is not True:
             raise BootstrapStepFailure(
@@ -1261,10 +1282,18 @@ class SubprocessBootstrapActions:
                 "Resume the same pinned materialization; do not advance to chair-source "
                 "planning while a real-roster artifact is absent or unverified.",
             )
+        if self.prefill is not None:
+            # A copy that refused (a store byte differing from its pin) fails this
+            # step, whose receipt says those bytes are verified at copy.
+            self.prefill.wait()
         return result
 
     def verify_chair_cache(self) -> dict[str, object]:
-        return self.cache.verify()
+        prefilled = self.prefill.wait() if self.prefill is not None else None
+        receipt = self.cache.verify()
+        if prefilled is not None:
+            receipt = {**receipt, "prefill": prefilled}
+        return receipt
 
     def run_preflight(self) -> dict[str, object]:
         result = self.preflight()

@@ -214,6 +214,14 @@ correct immediate close.
   copied and then re-read; the receipt records the worker count. Within one process a
   verified, unchanged cache is not hashed again, so PREFLIGHT's smoke start reuses the
   verification its cache check just made; each stage process still verifies from the bytes.
+  The Hugging Face chairs' copies start early: UV_ENVIRONMENT starts them on a background
+  thread (`chair_prefill.py`) while uv downloads, in the order the stages first need the
+  chairs, and MODEL_STORE and CHAIR_CACHE wait for them before completing. A copy that
+  refuses fails MODEL_STORE, whose receipt says those store bytes are verified at copy.
+  The background copy never evicts a cache; a chair whose store artifact is not present
+  yet, or that does not fit beside what uv will still write, is left for PREFLIGHT as
+  before. CHAIR_CACHE's receipt lists under `prefill` what was filled and what was left,
+  and PREFLIGHT takes over those verifications instead of hashing the bytes again.
   A pod given a stage selection (`pod_run`'s `preflight_roles`) prepares only the chairs
   those stages use: MODEL_STORE fetches and checks only their artifacts, CHAIR_CACHE plans
   and places only them (others read `not-selected`), and the disk and environment checks

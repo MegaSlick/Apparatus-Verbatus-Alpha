@@ -43,6 +43,7 @@ from common.chairs.models import ChairIdentity
 from common.chairs.registry import (
     CACHE_DESCRIPTOR,
     PRE_MATERIALIZATION_SENTINEL,
+    ChairRegistry,
     HuggingFaceMaterializationFetcher,
 )
 from common.contracts.canonical import canonical_bytes, digest_bytes
@@ -646,6 +647,53 @@ def test_insufficient_space_after_eviction_refuses_the_incoming_chair(tmp_path, 
 
     assert not first.root.exists()
     assert fetcher.roles == ["attestator_1"]
+
+
+def test_a_fill_that_may_not_evict_refuses_and_keeps_every_other_cache(tmp_path, monkeypatch):
+    """A background fill must not take a cache another step may be about to use."""
+    registry, fetcher = _distinct_pins(tmp_path, ("attestator_1", "attestator_2"))
+    first = registry.ensure(registry.resolve("attestator_1"))
+    monkeypatch.setattr(
+        "common.chairs.registry.shutil.disk_usage", lambda path: SimpleNamespace(free=0)
+    )
+
+    with pytest.raises(DiskSpaceRefusal, match="container disk too small for chair"):
+        registry.ensure(registry.resolve("attestator_2"), evict=False)
+
+    assert first.root.is_dir()
+    assert fetcher.roles == ["attestator_1"]
+    assert not [entry for entry in first.root.parent.iterdir() if ".candidate-" in entry.name], (
+        "a refused fill leaves no candidate behind"
+    )
+
+
+def test_a_registry_adopts_another_s_verifications_only_for_the_same_roster(hf_world, monkeypatch):
+    """PREFLIGHT's registry takes over what the bootstrap's background fill verified."""
+    identity = hf_world.identity()
+    hf_world.registry.ensure(identity)
+    reads: list[str] = []
+    real_digest = manifests.file_digest
+    monkeypatch.setattr(
+        manifests,
+        "file_digest",
+        lambda path, chair, relative: reads.append(relative) or real_digest(path, chair, relative),
+    )
+
+    adopting = registry_for(hf_world.registry.config, hf_world.tmp_path)
+    adopting.adopt_verifications(hf_world.registry)
+    remembered = adopting.ensure(identity)
+
+    assert reads == []
+    assert remembered.verification == {
+        "bytes": "verified earlier in this process; no file changed since"
+    }
+    other_root = ChairRegistry(
+        hf_world.registry.config,
+        manifest_root=hf_world.tmp_path,
+        cache_root=hf_world.tmp_path / "elsewhere",
+    )
+    other_root.adopt_verifications(hf_world.registry)
+    assert other_root._verified == {}
 
 
 # --- One flipped byte, a missing file, an extra file --------------------------------
