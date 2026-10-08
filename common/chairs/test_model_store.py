@@ -1857,6 +1857,34 @@ def test_role_fetch_reads_record_without_rehashing_whole_store(tmp_path, monkeyp
         fetcher.plan(replace(identity, revision="0" * 40))
 
 
+def test_role_fetch_hashes_each_file_as_it_copies_and_refuses_a_difference(tmp_path):
+    record = _store(tmp_path)
+    real = load_models_toml(ROOT / "config" / "models-real.toml")
+    row = next(item for item in record["artifacts"] if item["artifact"] == "qwen3.8-27B")
+    identity = replace(real.chairs["perlector"], digest_manifest=row["digest_manifest"])
+    manifest = read_manifest(
+        tmp_path / row["manifest"], expected_digest=row["digest_manifest"], chair="perlector"
+    )
+    pinned = {item.path: item.sha256 for item in manifest.rows}
+    fetcher = StoreRoleFetcher(tmp_path)
+    paths = ("config.json", "model.safetensors")
+
+    first = tmp_path / "first-copy"
+    first.mkdir()
+    ledger = fetcher.fetch(identity, first, paths)
+    assert ledger.digests == {path: pinned[path] for path in paths}
+
+    snapshot = tmp_path / row["snapshot"]
+    weights = (snapshot / "model.safetensors").read_bytes()
+    (snapshot / "model.safetensors").write_bytes(weights[:-2] + b"X\n")
+    second = tmp_path / "second-copy"
+    second.mkdir()
+    with pytest.raises(DigestMismatchRefusal, match="model.safetensors: sha256"):
+        fetcher.fetch(identity, second, paths)
+    with pytest.raises(DigestMismatchRefusal, match="not in the manifest"):
+        fetcher.fetch(identity, second, ("unpinned.bin",))
+
+
 def test_verify_store_refuses_a_snapshot_used_directly_as_a_cache_entry(tmp_path):
     """Pointing cache_root at the store makes the registry stamp its descriptor.
 

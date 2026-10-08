@@ -117,7 +117,15 @@ share one cache copy: the Perlector and the Coniector's `reconstructor` read one
 copy of their model. The cache's descriptor records only the digest it holds; the
 role that asked travels in the returned `VerifiedSnapshot` and in every receipt.
 `StoreRoleFetcher` copies a missing snapshot into a candidate directory,
-`ChairRegistry` verifies it and promotes it under that digest. A per-digest lock
+`ChairRegistry` verifies it and promotes it under that digest. The copy hashes
+each file as it writes it (`copy_and_digest`: the source opened without following
+a link, its size checked before a byte is read, a differing digest refused by file
+name), with all files in one thread pool, largest first. The pool's size is the
+process's usable CPUs (affinity mask and cgroup `cpu.max`) clamped to 2..32, or
+`VERBATUS_IO_WORKERS`; the count and its source are recorded in the verification
+receipt. The returned ledger lets the registry check the copied tree's structure
+(missing and extra files, sizes, links) without reading those bytes again; files
+carried over from a damaged cache are hashed again. A per-digest lock
 (`by-digest/.<digest>.lock`) serialises concurrent fills of one digest, across
 processes. When making room, the registry may remove a configured digest's unused
 cache and abandoned `.<digest>.candidate-*` and `.<digest>.prior-*` directories,

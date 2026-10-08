@@ -16,6 +16,7 @@ import json
 import os
 import threading
 import unittest.mock
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -184,6 +185,199 @@ def test_parallel_verification_refuses_the_same_first_corrupt_file(tmp_path, mon
         inspect_snapshot_for_repair(identity, snapshot, manifest)
     assert "a.bin" in str(repair_serial.value)
     assert str(repair_parallel.value) == str(repair_serial.value)
+
+
+# --- Hashing while copying ---------------------------------------------------------
+
+
+def _row_for(snapshot, relative):
+    return next(row for row in build_manifest(snapshot).rows if row.path == relative)
+
+
+def test_copy_and_digest_returns_the_digest_of_the_bytes_it_wrote(tmp_path):
+    remote = write_snapshot(tmp_path / "remote", {"weights.bin": b"fixture weights\n"})
+    row = _row_for(remote, "weights.bin")
+
+    digest = manifests.copy_and_digest(
+        remote / "weights.bin", tmp_path / "copy" / "weights.bin", row, chair="attestator_1"
+    )
+
+    assert digest == row.sha256 == digest_bytes(b"fixture weights\n")
+    assert (tmp_path / "copy" / "weights.bin").read_bytes() == b"fixture weights\n"
+
+
+def test_copy_and_digest_refuses_a_size_mismatch_before_reading_or_writing(tmp_path, monkeypatch):
+    remote = write_snapshot(tmp_path / "remote", {"weights.bin": b"fixture weights\n"})
+    row = replace(_row_for(remote, "weights.bin"), size=999)
+    monkeypatch.setattr(
+        manifests.os, "fdopen", lambda *a, **k: pytest.fail("bytes read before the size check")
+    )
+
+    with pytest.raises(DigestMismatchRefusal, match="weights.bin: size 16, expected 999"):
+        manifests.copy_and_digest(
+            remote / "weights.bin", tmp_path / "copy.bin", row, chair="attestator_1"
+        )
+    assert not (tmp_path / "copy.bin").exists()
+
+
+def test_copy_and_digest_refuses_bytes_whose_digest_differs_naming_the_file(tmp_path):
+    remote = write_snapshot(tmp_path / "remote", {"weights.bin": b"fixture weights\n"})
+    row = _row_for(remote, "weights.bin")
+    (remote / "weights.bin").write_bytes(b"fixture weightX\n")
+
+    with pytest.raises(DigestMismatchRefusal, match="weights.bin: sha256 .*, expected"):
+        manifests.copy_and_digest(
+            remote / "weights.bin", tmp_path / "copy.bin", row, chair="attestator_1"
+        )
+
+
+@pytest.mark.hostile_local
+def test_copy_and_digest_never_follows_a_source_link(tmp_path):
+    remote = write_snapshot(tmp_path / "remote", {"weights.bin": b"fixture weights\n"})
+    row = _row_for(remote, "weights.bin")
+    (tmp_path / "link.bin").symlink_to(remote / "weights.bin")
+
+    with pytest.raises(DigestMismatchRefusal, match="cannot be read"):
+        manifests.copy_and_digest(
+            tmp_path / "link.bin", tmp_path / "copy.bin", row, chair="attestator_1"
+        )
+
+
+def test_a_pool_of_copies_runs_largest_first_and_refuses_the_lexically_first_file(
+    tmp_path, monkeypatch
+):
+    files = {"a.bin": b"a\n", "b.bin": b"bbbbbbbb\n", "c.bin": b"cccc\n"}
+    remote = write_snapshot(tmp_path / "remote", files)
+    rows = {row.path: row for row in build_manifest(remote).rows}
+    monkeypatch.setenv("VERBATUS_IO_WORKERS", "1")
+    order: list[str] = []
+    real = manifests.copy_and_digest
+
+    def record(source, target, row, *, chair):
+        order.append(row.path)
+        return real(source, target, row, chair=chair)
+
+    monkeypatch.setattr(manifests, "copy_and_digest", record)
+    items = [(remote / name, tmp_path / "copy" / name, rows[name]) for name in sorted(files)]
+    ledger = manifests.copy_and_digest_files(items, chair="attestator_1")
+
+    assert order == ["b.bin", "c.bin", "a.bin"]
+    assert ledger.digests == {name: rows[name].sha256 for name in files}
+    assert ledger.to_record() == {
+        "copied_files": 3,
+        "io_workers": {"workers": 1, "source": "VERBATUS_IO_WORKERS"},
+    }
+
+    (remote / "a.bin").write_bytes(b"A\n")
+    (remote / "c.bin").write_bytes(b"CCCC\n")
+    for workers in ("1", "4"):
+        monkeypatch.setenv("VERBATUS_IO_WORKERS", workers)
+        target = tmp_path / f"copy-{workers}"
+        items = [(remote / name, target / name, rows[name]) for name in sorted(files)]
+        with pytest.raises(DigestMismatchRefusal) as caught:
+            manifests.copy_and_digest_files(items, chair="attestator_1")
+        assert "snapshot differs at a.bin" in str(caught.value)
+
+
+def test_a_malformed_worker_override_is_a_configuration_refusal(tmp_path, monkeypatch):
+    monkeypatch.setenv("VERBATUS_IO_WORKERS", "many")
+
+    with pytest.raises(ConfigurationRefusal, match="VERBATUS_IO_WORKERS"):
+        manifests.copy_and_digest_files([], chair="attestator_1")
+
+
+class LedgerFetcher(RecordingFetcher):
+    """A fetch seam that copies through `copy_and_digest_files`, as the store fetcher does."""
+
+    def __init__(self, remote, manifest):
+        super().__init__({})
+        self.remote = remote
+        self.rows = {row.path: row for row in manifest.rows}
+
+    def fetch(self, identity, destination, paths):
+        self.calls.append((identity.role, paths))
+        return manifests.copy_and_digest_files(
+            [(self.remote / p, destination / p, self.rows[p]) for p in paths],
+            chair=identity.role,
+        )
+
+
+def _digest_log(monkeypatch):
+    digested: list[str] = []
+    real_digest = manifests.file_digest
+
+    def record_digest(path, chair, relative):
+        digested.append(relative)
+        return real_digest(path, chair, relative)
+
+    monkeypatch.setattr(manifests, "file_digest", record_digest)
+    return digested
+
+
+def test_a_fill_through_a_verifying_copy_reads_no_copied_byte_twice(hf_world, monkeypatch):
+    manifest = hf_world.registry.manifest(hf_world.identity())
+    hf_world.registry.fetcher = LedgerFetcher(hf_world.tmp_path / "remote", manifest)
+    digested = _digest_log(monkeypatch)
+
+    snapshot = hf_world.registry.ensure(hf_world.identity())
+
+    assert digested == []
+    assert snapshot.manifest_digest == hf_world.pin
+    assert snapshot.verification["bytes"] == "hashed while copying"
+    assert snapshot.verification["hashed_at_copy"] == 2
+    assert snapshot.verification["rehashed"] == 0
+
+
+def test_a_repair_through_a_verifying_copy_rehashes_only_files_already_present(
+    hf_world, monkeypatch
+):
+    manifest = hf_world.registry.manifest(hf_world.identity())
+    first = hf_world.registry.ensure(hf_world.identity())
+    (first.root / "nested/weights.bin").unlink()
+    hf_world.registry.fetcher = LedgerFetcher(hf_world.tmp_path / "remote", manifest)
+    digested = _digest_log(monkeypatch)
+
+    repaired = hf_world.registry.ensure(hf_world.identity())
+
+    # Once while inspecting the damaged cache, once after carrying it over.
+    assert digested == ["config.json", "config.json"]
+    assert repaired.verification["hashed_at_copy"] == 1
+    assert repaired.verification["rehashed"] == 1
+
+
+def test_a_ledger_never_vouches_for_a_file_the_fetch_was_not_asked_for(hf_world):
+    """Carried-over files are re-hashed even when the fetcher claims their digest."""
+
+    first = hf_world.registry.ensure(hf_world.identity())
+    (first.root / "nested/weights.bin").unlink()
+    (first.root / "config.json").write_bytes(b'{"fixture": TRUE}\n')
+    manifest = hf_world.registry.manifest(hf_world.identity())
+    rows = {row.path: row for row in manifest.rows}
+
+    class Vouching(LedgerFetcher):
+        def fetch(self, identity, destination, paths):
+            ledger = super().fetch(identity, destination, paths)
+            return replace(
+                ledger, digests={**ledger.digests, "config.json": rows["config.json"].sha256}
+            )
+
+    hf_world.registry.fetcher = Vouching(hf_world.tmp_path / "remote", manifest)
+    with pytest.raises(DigestMismatchRefusal, match="config.json"):
+        hf_world.registry.ensure(hf_world.identity())
+
+
+def test_a_verifying_copy_still_refuses_an_extra_file(hf_world):
+    manifest = hf_world.registry.manifest(hf_world.identity())
+
+    class Generous(LedgerFetcher):
+        def fetch(self, identity, destination, paths):
+            ledger = super().fetch(identity, destination, paths)
+            (destination / "z-unpinned.json").write_bytes(b"{}\n")
+            return ledger
+
+    hf_world.registry.fetcher = Generous(hf_world.tmp_path / "remote", manifest)
+    with pytest.raises(DigestMismatchRefusal, match="z-unpinned.json: extra file"):
+        hf_world.registry.ensure(hf_world.identity())
 
 
 # --- A complete match ---------------------------------------------------------------

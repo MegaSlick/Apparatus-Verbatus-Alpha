@@ -209,6 +209,9 @@ correct immediate close.
   `cache_root/by-digest/<digest_manifest>`, verify the copy against its pinned manifest,
   and evict the least recently used other digests when the next fill would not fit.
   Chairs pinned to one manifest (the Perlector and the reconstructor) share one copy.
+  Each copy hashes the bytes as it writes them, across files in one pool sized from the
+  container's usable CPUs (or `VERBATUS_IO_WORKERS`), so a fresh copy is read once, not
+  copied and then re-read; the receipt records the worker count.
   An adapter base remains available while its adapter is filled. The at-most-one same-pin
   re-fetch is not wired (04-8); a mismatch is red and names the chair.
 - **Transfer is optional.** No submission manifest on the volume is a vacuous success; a

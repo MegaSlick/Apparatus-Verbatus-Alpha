@@ -13,7 +13,7 @@ import stat
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Protocol
+from typing import Mapping, Protocol
 
 import huggingface_hub
 
@@ -31,7 +31,7 @@ from .errors import (
     UnresolvedChairRefusal,
 )
 from .filesystem import apfs_alias
-from .manifests import inspect_snapshot_for_repair, read_manifest, verify_snapshot
+from .manifests import CopyLedger, inspect_snapshot_for_repair, read_manifest, verify_snapshot
 from .models import (
     AbsentChair,
     ChairIdentity,
@@ -56,8 +56,14 @@ PRE_MATERIALIZATION_SENTINEL = "0" * 64
 class SnapshotFetcher(Protocol):
     """The one deliberately small seam for network fetches; tests provide a fake."""
 
-    def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
-        """Materialize exactly `paths` beneath `destination`, or raise."""
+    def fetch(
+        self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]
+    ) -> CopyLedger | None:
+        """Materialize exactly `paths` beneath `destination`, or raise.
+
+        A fetcher that hashed each file against the pinned manifest as it wrote
+        it returns that `CopyLedger`, and those files are not read again.
+        """
 
 
 class HuggingFaceClient(Protocol):
@@ -366,6 +372,24 @@ class ChairRegistry:
             return verify_snapshot(identity, self._resolve_local_path(identity), manifest)
         return self._ensure_huggingface(identity, manifest)
 
+    def verify_local_copy(
+        self, identity: ChairIdentity, copied: Mapping[str, str]
+    ) -> VerifiedSnapshot:
+        """Verify a local-repository chair a verifying copy has just placed.
+
+        `copied` is that copy's ledger digests; those files are checked against
+        the manifest without being read again, and every other check of `ensure`
+        still runs where the roster binds the chair.
+        """
+
+        self._require_current_identity(identity)
+        if identity.source != "local-repository":
+            raise LocalPathRefusal(identity.role, "a placed copy is only a local-repository chair")
+        manifest = self._manifest(identity)
+        return verify_snapshot(
+            identity, self._resolve_local_path(identity), manifest, copied=copied
+        )
+
     def manifest(self, identity: ChairIdentity) -> DigestManifest:
         """The configured identity's pinned digest manifest, checked against its pin."""
 
@@ -494,14 +518,15 @@ class ChairRegistry:
                 with _cache_write(identity.role, "the existing cache could not be carried over"):
                     _copy_existing_files(target, candidate, manifest)
             try:
-                self.fetcher.fetch(identity, candidate, missing)
+                ledger = self.fetcher.fetch(identity, candidate, missing)
             except ChairRefusal:
                 raise
             except Exception as error:
                 raise UnresolvedChairRefusal(
                     identity.role, f"pinned fetch failed: {error}"
                 ) from error
-            verified = verify_snapshot(identity, candidate, manifest)
+            copied = _fresh_copies(ledger, missing)
+            verified = verify_snapshot(identity, candidate, manifest, copied=copied)
             with _cache_write(identity.role, "the verified snapshot could not be promoted"):
                 _write_cache_descriptor(candidate, descriptor)
                 _promote(candidate, target)
@@ -510,6 +535,7 @@ class ChairRegistry:
                 identity=verified.identity,
                 root=target.resolve(),
                 manifest_digest=verified.manifest_digest,
+                verification=_copy_verification(ledger, copied, manifest),
             )
         except Exception:
             if candidate.exists():
@@ -581,6 +607,28 @@ class ChairRegistry:
                 f"under {digests_root}, need at least {required} bytes for its pinned "
                 "snapshot; increase container_disk_gb",
             )
+
+
+def _fresh_copies(ledger: CopyLedger | None, fetched: tuple[str, ...]) -> dict[str, str]:
+    """The ledger's digests for files this fetch wrote; carried-over files are re-hashed."""
+
+    if not isinstance(ledger, CopyLedger):
+        return {}
+    wanted = set(fetched)
+    return {path: digest for path, digest in ledger.digests.items() if path in wanted}
+
+
+def _copy_verification(
+    ledger: CopyLedger | None, copied: dict[str, str], manifest: DigestManifest
+) -> dict[str, object] | None:
+    if not isinstance(ledger, CopyLedger):
+        return None
+    return {
+        "bytes": "hashed while copying",
+        "hashed_at_copy": len(copied),
+        "rehashed": len(manifest.rows) - len(copied),
+        "io_workers": ledger.workers.to_record(),
+    }
 
 
 def digest_cache_descriptor(identity: ChairIdentity) -> dict[str, object]:

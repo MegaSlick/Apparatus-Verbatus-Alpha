@@ -1123,6 +1123,48 @@ def test_chair_cache_places_a_local_chair_s_verified_bundle_where_the_roster_bin
     ]
 
 
+def test_chair_cache_places_a_local_chair_through_a_verifying_copy_reading_it_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from common.chairs import manifests
+
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    rows = {row.path: row for row in manifests.build_manifest(snapshot).rows}
+
+    def verifying_fetch(self, identity, destination: Path, paths):  # type: ignore[no-untyped-def]
+        self.copies += 1
+        return manifests.copy_and_digest_files(
+            [(snapshot / p, destination / p, rows[p]) for p in paths], chair=identity.role
+        )
+
+    monkeypatch.setattr(bootstrap_main.StoreRoleFetcher, "fetch", verifying_fetch)
+    monkeypatch.setenv("VERBATUS_IO_WORKERS", "3")
+    digested: list[str] = []
+    real_digest = manifests.file_digest
+
+    def record_digest(path, chair, relative):  # type: ignore[no-untyped-def]
+        digested.append(relative)
+        return real_digest(path, chair, relative)
+
+    monkeypatch.setattr(manifests, "file_digest", record_digest)
+    receipt = bootstrap_main._build_cache(plan)
+
+    assert digested == []
+    assert receipt["chairs"] == [
+        {
+            "chair": "designator_surya",
+            "state": "local-placed",
+            "snapshot": str(snapshot),
+            "verification": {
+                "bytes": "hashed while copying",
+                "copied_files": 3,
+                "io_workers": {"workers": 3, "source": "VERBATUS_IO_WORKERS"},
+            },
+        }
+    ]
+    assert (placed / "surya_layout2" / "rfdetr_layout.pth").read_bytes() == b"weights\n"
+
+
 def test_chair_cache_replaces_a_placed_bundle_that_no_longer_verifies(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

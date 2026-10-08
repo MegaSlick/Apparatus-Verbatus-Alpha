@@ -32,11 +32,13 @@ from common.durability import atomic_create, atomic_replace
 from .errors import DigestMismatchRefusal
 from .filesystem import apfs_alias, apfs_key, read_limited_bytes
 from .manifests import (
+    CopyLedger,
     build_manifest,
+    copy_and_digest_files,
     read_manifest,
     verify_snapshot,
 )
-from .models import ChairIdentity, is_hf_revision, is_sha256
+from .models import ChairIdentity, DigestManifest, ManifestRow, is_hf_revision, is_sha256
 from .registry import CACHE_DESCRIPTOR, load_model_card_metadata
 
 STORE_SCHEMA = "verbatus-model-store.v2"
@@ -202,6 +204,10 @@ class StoreRoleFetcher:
         self.root = Path(store_root).resolve()
 
     def plan(self, identity: ChairIdentity) -> dict[str, Any]:
+        snapshot, _manifest = self._source(identity)
+        return {"snapshot": str(snapshot), "identity": identity.cache_descriptor()}
+
+    def _source(self, identity: ChairIdentity) -> tuple[Path, DigestManifest]:
         record = load_download_record(self.root)
         required = next((item for item in REQUIRED_ARTIFACTS if item.chair == identity.role), None)
         if required is None:
@@ -222,15 +228,33 @@ class StoreRoleFetcher:
                     identity.role, f"model-store {field} differs from the configured pin"
                 )
         manifest_path = _under(self.root, row["manifest"])
-        read_manifest(manifest_path, expected_digest=identity.digest_manifest, chair=identity.role)
+        manifest = read_manifest(
+            manifest_path, expected_digest=identity.digest_manifest, chair=identity.role
+        )
         snapshot = _under(self.root, row["snapshot"])
         if not snapshot.is_dir() or snapshot.is_symlink():
             raise DigestMismatchRefusal(identity.role, "model-store snapshot is not a directory")
-        return {"snapshot": str(snapshot), "identity": identity.cache_descriptor()}
+        return snapshot, manifest
 
-    def fetch(self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]) -> None:
-        source_root = Path(self.plan(identity)["snapshot"])
+    def fetch(
+        self, identity: ChairIdentity, destination: Path, paths: tuple[str, ...]
+    ) -> CopyLedger:
+        """Copy `paths` from the pinned store snapshot, hashing each file as it is written.
+
+        Each source is checked, in path order, before any byte is copied; then the
+        copies run in one pool and each refuses a size or digest that differs from
+        the pinned manifest. The returned ledger lets the caller skip re-reading them.
+        """
+
+        source_root, manifest = self._source(identity)
+        rows = {row.path: row for row in manifest.rows}
+        work: list[tuple[Path, Path, ManifestRow]] = []
         for relative in paths:
+            row = rows.get(relative)
+            if row is None:
+                raise DigestMismatchRefusal(
+                    identity.role, f"model-store source file {relative!r} is not in the manifest"
+                )
             source = source_root / relative
             try:
                 resolved = source.resolve(strict=True)
@@ -247,14 +271,8 @@ class StoreRoleFetcher:
                     identity.role,
                     f"model-store source file {relative!r} is not a regular in-snapshot file",
                 )
-            target = destination / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.copyfile(source, target)
-            except OSError as error:
-                raise DigestMismatchRefusal(
-                    identity.role, f"cannot copy model-store source file {relative!r}: {error}"
-                ) from error
+            work.append((source, destination / relative, row))
+        return copy_and_digest_files(work, chair=identity.role)
 
 
 def materialize_real_roster(

@@ -153,6 +153,9 @@ class VerifiedSnapshot:
     identity: ChairIdentity
     root: Path
     manifest_digest: str
+    #: How the bytes were checked when that differs from reading every file
+    #: now, for the receipt that records this verification; None otherwise.
+    verification: Mapping[str, object] | None = field(default=None, compare=False)
 
     def to_record(self) -> dict[str, object]:
         return {

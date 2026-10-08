@@ -107,7 +107,7 @@ from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 
 from common.chairs.config import parse_models_config
 from common.chairs.errors import ChairRefusal
-from common.chairs.manifests import verify_snapshot
+from common.chairs.manifests import CopyLedger, verify_snapshot
 from common.chairs.model_store import StoreRoleFetcher, pending_local_artifacts
 from common.chairs.models import ChairIdentity, DigestManifest, ModelsConfig, ServingReceipt
 from common.chairs.receipts import receipt_record
@@ -316,11 +316,14 @@ class RegistryChairCacheVerifier:
 
     def verify(self, identity: ChairIdentity) -> dict[str, object]:
         snapshot = self.registry.ensure(identity)
-        return {
+        receipt: dict[str, object] = {
             "chair": identity.role,
             "manifest_digest": snapshot.manifest_digest,
             "root": str(snapshot.root),
         }
+        if snapshot.verification is not None:
+            receipt["verification"] = dict(snapshot.verification)
+        return receipt
 
     def manifest(self, identity: ChairIdentity) -> DigestManifest:
         return self.registry.manifest(identity)
@@ -1098,7 +1101,8 @@ def _place_local_chair(
     that verifies against the roster's manifest is kept. Otherwise every file the
     manifest names is copied from the verified store snapshot into a fresh
     sibling, which takes the chair's place only once it verifies, so the path the
-    roster names holds a verified bundle or nothing.
+    roster names holds a verified bundle or nothing. The copy hashes each file as it
+    writes it, so neither check after it reads those bytes again.
     """
     config = registry.config
     if config.model_root is None or config.source_path is None or identity.path is None:
@@ -1129,13 +1133,21 @@ def _place_local_chair(
     staged.mkdir()
     try:
         manifest = registry.manifest(identity)
-        fetcher.fetch(identity, staged, tuple(row.path for row in manifest.rows))
-        verify_snapshot(identity, staged, manifest)
+        ledger = fetcher.fetch(identity, staged, tuple(row.path for row in manifest.rows))
+        copied = dict(ledger.digests) if isinstance(ledger, CopyLedger) else {}
+        verify_snapshot(identity, staged, manifest, copied=copied)
         os.replace(staged, target)
     finally:
         shutil.rmtree(staged, ignore_errors=True)
-    registry.ensure(identity)
-    return {"chair": identity.role, "state": "local-placed", "snapshot": source["snapshot"]}
+    registry.verify_local_copy(identity, copied)
+    receipt: dict[str, object] = {
+        "chair": identity.role,
+        "state": "local-placed",
+        "snapshot": source["snapshot"],
+    }
+    if isinstance(ledger, CopyLedger):
+        receipt["verification"] = {"bytes": "hashed while copying", **ledger.to_record()}
+    return receipt
 
 
 PREFLIGHT_DTYPE = "bfloat16"
