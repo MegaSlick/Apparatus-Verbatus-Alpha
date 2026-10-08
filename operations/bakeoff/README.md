@@ -147,3 +147,33 @@ How it scores:
   plan's section 9 are not computed here; the cache has what they need.
 - Nothing here has run on a GPU yet: the tests use a fake server, and DAI's detector is
   faked in the tests (it needs `ultralytics`, which only the pod has).
+
+## Vendor-native arms (`native/`)
+
+Beside the vLLM arms above, `native/` runs three witnesses through their vendors' own
+code, so a weak score cannot be blamed on our re-implementation. Each writes the same
+cache record under its own label; each has a run card in `cards/`.
+
+| Arm (label) | Vendor path | Client environment |
+|---|---|---|
+| `chandra-native` | datalab's `chandra-ocr` 0.2.0 package end to end (its retry loop, its markdown) | `native/venvs/chandra-native` |
+| `churro-native` | Stanford's release-time `run_churro_ocr.py` settings, its XML text extractor | `native/venvs/churro-native` |
+| `dots-mocr` | rednote-hilab's `dots_mocr` parser: PyMuPDF render, layout prompt, JSON reader | `native/venvs/dots-mocr` |
+
+The client runs in the arm's own small environment; the vLLM server runs from the
+project environment (`--vllm-cmd`, default `.venv/bin/python -m vllm.entrypoints.cli.main`).
+On the pod:
+
+```sh
+for arm in chandra_native churro_native dots_mocr; do
+  .venv/bin/python -m operations.bakeoff.native.$arm install --venv-dir /workspace/venvs/$arm
+  /workspace/venvs/$arm/bin/python -m operations.bakeoff.native.$arm check
+done
+/workspace/venvs/dots_mocr/bin/python -m operations.bakeoff.native.dots_mocr fetch --store-root $V/model-store
+/workspace/venvs/chandra_native/bin/python -m operations.bakeoff.native.chandra_native run \
+  --limit 2 --pages $V/bakeoff-pages --out $V/bakeoff/witness-cache --store-root $V/model-store
+```
+
+Every arm takes `run --pages --out [--label] [--limit] [--weights | --store-root]
+[--server-url | --vllm-cmd ...]`, resumes like `witness_run`, and exits 0 when every page
+is cached, 1 when a page errored, 2 when it refuses (wrong environment, no weights).

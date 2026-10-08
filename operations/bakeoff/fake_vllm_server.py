@@ -29,6 +29,13 @@ def answer(body: dict) -> str:
     joined = " ".join(texts)
     if joined.startswith("OCR this image"):
         return '<div data-bbox="10 10 990 990" data-label="Text"><p>Le dix mai</p></div>'
+    if "Please output the layout information" in joined:  # dots.mocr's layout prompt
+        return json.dumps(
+            [
+                {"bbox": [10, 10, 390, 40], "category": "Page-header", "text": "Folio 1"},
+                {"bbox": [10, 50, 390, 120], "category": "Text", "text": "Le dix mai"},
+            ]
+        )
     if "historical document" in joined:
         return (
             "<HistoricalDocument><Page><Body><Line>Le dix mai</Line></Body></Page>"
