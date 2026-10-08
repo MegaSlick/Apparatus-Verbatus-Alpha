@@ -1073,3 +1073,25 @@ def test_a_garbled_progress_line_falls_back_to_the_counters(pod, tmp_path):
     run_guard(env, "5")
     assert "pod delete testpod" in lines(calls)
     assert "no GPU, CPU or network work" in log_of(state)
+
+
+def test_a_slow_stage_is_backed_up_but_never_deleted(pod, tmp_path):
+    """A stage still making pages, only slowly, is a working pod: the ladder warns and
+    backs up, and the delete step holds and says why."""
+    env, calls, state = pod
+    local = tmp_path / "local" / "run-1"
+    local.mkdir(parents=True)
+    (local / "page.json").write_text("{}\n")
+    (state).mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    (state / "backup-testpod").write_text(f"{local}\n")
+    _progress_each_tick(env, tmp_path, state, "$c $((c - 7200)) slow page-rate 0.20 a minute")
+    run_until(
+        ["sh", str(GUARD), "5"],
+        env,
+        lambda: "not deleting" in log_of(state) and len(lines(tmp_path / "ticks")) >= 10,
+    )
+    assert lines(calls) == []
+    assert "and verified the copy" in log_of(state)
+    assert "not deleting: the run reports slow, not stalled: it is still working" in log_of(state)
+    assert _notices(tmp_path, "will not delete it because the run reports slow")

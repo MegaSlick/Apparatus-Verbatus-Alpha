@@ -20,7 +20,8 @@
 # CPU time alone. pod_run also writes progress-<pod id>, one line
 # "<epoch now> <epoch last ok> <ok|slow|stalled|bootstrapping> <check> <detail>"; while
 # that line is fresh it decides instead of the counters: ok is work, anything else is idle
-# time counted from the last ok. backup-<pod id> names the paths the ladder backs up,
+# time counted from the last ok, though only a stalled line, never a slow one, can reach the
+# delete. backup-<pod id> names the paths the ladder backs up,
 # one absolute path per line. alert-<pod id> holds the ladder's latest step. The guard
 # touches heartbeat-<pod id> on every tick, so a reader can tell a live guard from a
 # deadline file nobody watches; a released-<pod id> file (pod_run --no-hold writes the run
@@ -376,13 +377,16 @@ ladder() {
     alert backup "$backup"
   fi
   [ "$idle_for" -ge "$delete_after" ] || return 0
-  if [ "$ladder_delete" = on ] && { [ "$backup" = verified ] || [ "$backup" = nothing ]; }; then
+  if [ "$ladder_delete" = on ] && [ -n "$deletable" ] &&
+    { [ "$backup" = verified ] || [ "$backup" = nothing ]; }; then
     alert delete "$idle_for"
     shut_down "$idle_what for ${idle_for}s"
   fi
   [ -z "$held_noticed" ] || return 0
   held_noticed=yes
-  if [ "$ladder_delete" = on ]; then
+  if [ -z "$deletable" ]; then
+    why="the run reports $progress, not stalled: it is still working"
+  elif [ "$ladder_delete" = on ]; then
     why="its run tree backup failed"
   else
     why="deletion is off (ladder_delete)"
@@ -394,6 +398,9 @@ ladder() {
 
 no_work="no GPU, CPU or network work"
 idle_what=$no_work
+# Only a stalled run, or a pod the counters find idle with no fresh line, may be deleted:
+# a slow stage still makes pages, so it is warned about and backed up, never deleted.
+deletable=yes
 idle_for=0
 while :; do
   touch "$dir/heartbeat-$pod" 2>/dev/null
@@ -415,8 +422,10 @@ while :; do
   cpu=$?
   net_busy
   net=$?
+  deletable=yes
   if read_progress; then
     idle_what="the run reports $progress ($progress_what)"
+    case $progress in slow | bootstrapping) deletable="" ;; esac
     if [ "$progress" = ok ]; then idle_for=0; else idle_for=$progress_for; fi
   elif [ "$cpu" -eq 0 ] || [ "$net" -eq 0 ] || gpu_busy; then
     idle_what=$no_work

@@ -613,15 +613,17 @@ download (under 256 KB/s received), and no touch of the pod's keep-alive file. W
 is going, `pod_run`'s own verdict replaces those counters: a `progress-<pod id>` line
 written in the last five minutes (below) that says `ok` is work, even when the counters
 read idle, and one that says anything else is idle time counted from its last `ok`, even
-when the GPU is busy. A line that is older, garbled or missing leaves the counters to
-decide. As idle time grows the guard:
+when the GPU is busy. Only a `stalled` line can reach the delete step: a `slow` stage is
+still making pages, so it gets the warnings and the backup but is never deleted, and the
+guard says so instead (a `bootstrapping` line likewise). A line that is older, garbled or
+missing leaves the counters to decide, and they can reach the delete as before. As idle time grows the guard:
 
 | Idle for | Step |
 | --- | --- |
 | 15 min | one warning notice |
 | 30 min | an urgent notice (ntfy `Priority: urgent`), repeated every 10 min |
 | 1 h | copies the paths named in `backup-<pod id>` to `/workspace/private/runs-guard-backup/<name>-<epoch>/` and checks each copy with `diff -rq`; with no such file it logs "nothing to back up", and a listed path that is missing counts as a failed backup |
-| 2 h | deletes the pod, only with `ladder_delete = "on"` and only when the backup verified or there was nothing to back up; otherwise one more urgent notice says why it will not |
+| 2 h | deletes the pod, only with `ladder_delete = "on"`, only when the backup verified or there was nothing to back up, and never while the run's progress line says `slow` or `bootstrapping`; otherwise one more urgent notice says why it will not |
 
 Any work, or a touch of the keep-alive, starts the ladder over, with a "work resumed"
 notice if a warning had gone out. The latest step is in `alert-<pod id>` as one line,
