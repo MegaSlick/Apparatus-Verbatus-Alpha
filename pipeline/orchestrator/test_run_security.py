@@ -282,17 +282,36 @@ def _audit(chair: str, started_at: str, ready_at: str) -> bytes:
     ).encode()
 
 
-def test_serving_spans_are_this_invocations_launch_audits_and_nothing_else(tmp_path):
+def _stage_with_blobs(tmp_path: Path, blobs: dict[str, bytes], noted: list[str]):
+    from common.runtree.store import LAUNCH_AUDIT_NOTE_PREFIX
+
+    stage = tmp_path / "runs" / "r" / "4_perlector"
+    store = stage / "blobs" / "sha256"
+    logs = stage / "serving-logs"
+    store.mkdir(parents=True)
+    logs.mkdir()
+    (logs / "vllm-perlector-0.log").write_text("engine log\n")
+    for name, data in blobs.items():
+        (store / name).write_bytes(data)
+    for name in noted:
+        (logs / f"{LAUNCH_AUDIT_NOTE_PREFIX}{name}").write_bytes(b"")
+    return store
+
+
+def test_serving_spans_are_this_invocations_noted_launch_audits_and_nothing_else(tmp_path):
     orchestrator = load_stage("orchestrator")
     args = argparse.Namespace(run_root=tmp_path / "runs", run_id="r")
-    blobs = tmp_path / "runs" / "r" / "4_perlector" / "blobs" / "sha256"
-    blobs.mkdir(parents=True)
-    (blobs / "a").write_bytes(_audit("perlector", "2026-10-07T10:00:05Z", "2026-10-07T10:06:20Z"))
-    # An earlier pass's launch, a reply, a page render and a large blob are not spans.
-    (blobs / "b").write_bytes(_audit("perlector", "2026-10-06T10:00:00Z", "2026-10-06T10:05:00Z"))
-    (blobs / "c").write_bytes(b'{"schema": "chair-call-record.v1"}')
-    (blobs / "d").write_bytes(b"\x89PNG\r\n\x1a\n")
-    (blobs / "e").write_bytes(b"{" + b" " * (orchestrator._LAUNCH_AUDIT_MAX_BYTES + 1))
+    current, earlier, unnoted = "a" * 64, "b" * 64, "c" * 64
+    _stage_with_blobs(
+        tmp_path,
+        {
+            current: _audit("perlector", "2026-10-07T10:00:05Z", "2026-10-07T10:06:20Z"),
+            earlier: _audit("perlector", "2026-10-06T10:00:00Z", "2026-10-06T10:05:00Z"),
+            unnoted: _audit("perlector", "2026-10-07T11:00:00Z", "2026-10-07T11:05:00Z"),
+        },
+        # An earlier pass's launch is noted too; a note naming a missing blob is skipped.
+        [current, earlier, "d" * 64],
+    )
     spans = orchestrator._serving_spans(
         args, orchestrator.STAGE_PROGRAMS["perlector"], "2026-10-07T10:00:00Z"
     )
@@ -305,8 +324,46 @@ def test_serving_spans_are_this_invocations_launch_audits_and_nothing_else(tmp_p
             "ready_seconds": 375,
         }
     ]
-    # A stage with no blob store launched nothing.
+    # A stage with no serving logs launched nothing.
     assert orchestrator._serving_spans(args, "pipeline/5_recensor/run.py", "2026") == []
+
+
+def test_serving_spans_read_no_blob_but_the_noted_audits(tmp_path, monkeypatch):
+    """A stage store of thousands of page and call blobs costs nothing to look through."""
+    orchestrator = load_stage("orchestrator")
+    args = argparse.Namespace(run_root=tmp_path / "runs", run_id="r")
+    audit = "a" * 64
+    blobs = {f"{index:064x}": b'{"schema": "chair-call-record.v1"}' for index in range(1, 2000)}
+    blobs[audit] = _audit("perlector", "2026-10-07T10:00:05Z", "2026-10-07T10:06:20Z")
+    store = _stage_with_blobs(tmp_path, blobs, [audit])
+    touched: list[str] = []
+    read_bytes, listed = Path.read_bytes, Path.iterdir
+
+    def counted_read(self):
+        touched.append(self.name)
+        return read_bytes(self)
+
+    def counted_list(self):
+        assert self != store, "the blob store was listed"
+        return listed(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counted_read)
+    monkeypatch.setattr(Path, "iterdir", counted_list)
+    spans = orchestrator._serving_spans(
+        args, orchestrator.STAGE_PROGRAMS["perlector"], "2026-10-07T10:00:00Z"
+    )
+    assert [span["ready_seconds"] for span in spans] == [375]
+    assert touched == [audit]
+
+
+def test_a_stored_launch_audit_is_noted_beside_the_engine_logs(tmp_path):
+    from common.runtree.store import LAUNCH_AUDIT_NOTE_PREFIX, RunTree
+
+    tree = RunTree(tmp_path, "r")
+    tree.note_launch_audit("perlector", "e" * 64)
+    tree.note_launch_audit("perlector", "e" * 64)  # an identical note is reused
+    logs = tmp_path / "r" / tree.serving_log_path("perlector")
+    assert [path.name for path in logs.iterdir()] == [f"{LAUNCH_AUDIT_NOTE_PREFIX}{'e' * 64}"]
 
 
 def test_the_timing_journal_carries_serving_spans_and_stays_v4(tmp_path):

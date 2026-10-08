@@ -176,13 +176,28 @@ def test_a_sampler_thread_that_outlives_the_join_is_abandoned_not_published():
     assert result is None and "did not stop within" in reason
 
 
-def test_a_host_without_nvidia_smi_starts_no_sampler_and_says_why():
+def test_a_host_without_nvidia_smi_starts_no_sampler_and_says_why(monkeypatch):
+    """The default lookup asks PATH, and a host where it finds nothing is not read."""
+    looked_up = []
+
+    def which(name):
+        looked_up.append(name)
+        return None
+
+    monkeypatch.setattr(orchestrator.shutil, "which", which)
+    orchestrator._nvidia_smi_path.cache_clear()
     run, calls = _runner([_ok("1, 1\n")])
-    with orchestrator.GpuSampler(run=run, interval=0.001, nvidia_smi=None) as sampler:
-        time.sleep(0.01)
+    try:
+        with orchestrator.GpuSampler(run=run, interval=0.001) as sampler:
+            time.sleep(0.01)
+    finally:
+        # Forget this host's made-up answer, so no later test inherits it.
+        orchestrator._nvidia_smi_path.cache_clear()
     result, reason = sampler.result()
+    assert looked_up == ["nvidia-smi"]
     assert calls == [] and result is None and "not on PATH" in reason
-    assert not sampler._started
+    assert not sampler._started and not sampler._thread.is_alive()
+    assert "gpu-sampler" not in [thread.name for thread in threading.enumerate()]
 
 
 def test_the_binary_is_run_by_the_path_found_for_it():

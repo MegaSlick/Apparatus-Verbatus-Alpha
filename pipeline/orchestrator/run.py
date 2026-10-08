@@ -70,7 +70,12 @@ from common.page_review import held_by_recensor, held_share  # noqa: E402
 from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH  # noqa: E402
 from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH  # noqa: E402
 from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, alarm_line  # noqa: E402
-from common.runtree.store import BLOBS_DIR, RunTree  # noqa: E402
+from common.runtree.store import (  # noqa: E402
+    BLOBS_DIR,
+    LAUNCH_AUDIT_NOTE_PREFIX,
+    SERVING_LOGS_DIR,
+    RunTree,
+)
 from common.runtree.sync import RunTreeSync, RunTreeSyncError  # noqa: E402
 from common.stage import (  # noqa: E402
     DEFAULT_DECODING_CONFIG_PATH,
@@ -587,7 +592,7 @@ def _seconds_between(start: str, end: str) -> int | None:
     return round((last - first).total_seconds())
 
 
-# A launch audit is a few kilobytes; a blob far larger is a reply or a page render.
+# A launch audit is a few kilobytes; a blob far larger is not one.
 _LAUNCH_AUDIT_MAX_BYTES = 256 * 1024
 
 
@@ -596,22 +601,31 @@ def _serving_spans(
 ) -> list[dict[str, object]] | None:
     """Each chair the stage launched during this invocation, from its launch audits.
 
-    Read from the stage's blob store after the stage ended, best effort: a span is
-    for the watcher and the journal, never evidence, and a failure gives `None`.
+    The audits are found by the notes the stage leaves beside its engine logs
+    (`RunTree.note_launch_audit`), one per launch, so only those blobs are read and
+    never the stage's pages, calls or replies. Read after the stage ended, best
+    effort: a span is for the watcher and the journal, never evidence, and a failure
+    gives `None`.
     """
-    blobs = Path(args.run_root) / args.run_id / Path(program).parent.name / BLOBS_DIR
+    stage = Path(args.run_root) / args.run_id / Path(program).parent.name
+    logs = stage / SERVING_LOGS_DIR
     spans: list[dict[str, object]] = []
     try:
-        if not blobs.is_dir():
+        if not logs.is_dir():
             return spans
-        for path in sorted(blobs.iterdir()):
-            if path.stat().st_size > _LAUNCH_AUDIT_MAX_BYTES:
+        for note in sorted(logs.iterdir()):
+            digest = note.name.removeprefix(LAUNCH_AUDIT_NOTE_PREFIX)
+            if (
+                digest == note.name
+                or len(digest) != 64
+                or not all(c in "0123456789abcdef" for c in digest)
+            ):
                 continue
-            data = path.read_bytes()
-            if not data.startswith(b"{"):
+            path = stage / BLOBS_DIR / digest
+            if not path.is_file() or path.stat().st_size > _LAUNCH_AUDIT_MAX_BYTES:
                 continue
             try:
-                audit = json.loads(data)
+                audit = json.loads(path.read_bytes())
             except (UnicodeDecodeError, json.JSONDecodeError):
                 continue
             if not isinstance(audit, dict) or audit.get("schema") != SERVING_LAUNCH_AUDIT_SCHEMA:
@@ -634,7 +648,7 @@ def _serving_spans(
             )
     except (OSError, AttributeError, TypeError) as error:
         print(
-            f"run {args.run_id}: serving spans could not be read from {blobs}: {error}",
+            f"run {args.run_id}: serving spans could not be read from {logs}: {error}",
             file=sys.stderr,
             flush=True,
         )

@@ -1288,11 +1288,13 @@ def _prepare_all(state: _PagePass, pages: dict[int, str]) -> list[_Page]:
     preparation instead of following it. It starts only when a page is unread and
     the deadline admits its start and every unread page; the start is joined before this
     returns, so the first window finds it up, and a failure on either thread is
-    raised here.
+    raised here. A preparation that fails does not wait for the start.
     """
     run = state.run
     if state.live and state.chair_present and _starts_early(state, pages):
-        state.starting = live_calls.BackgroundStart(run)
+        # On the resident chair too, so `close` hands a still-starting chair to its
+        # thread rather than waiting for it or stopping it mid-start.
+        state.starting = run.service.starting = live_calls.BackgroundStart(run)
     try:
         prepared = [_prepare(state, ordinal, page_id) for ordinal, page_id in pages.items()]
         if state.live and state.chair_present:
@@ -1300,8 +1302,10 @@ def _prepare_all(state: _PagePass, pages: dict[int, str]) -> list[_Page]:
             if left:
                 _refuse_past_phase_deadline(state, left, "reading")
     except BaseException as raised:
+        # Not waited for: `ResidentChair.close` leaves a chair still starting to its
+        # thread, which stops it once its start returns.
         if state.starting is not None:
-            state.starting.join_quietly(raised)
+            state.starting.note_failure(raised)
         raise
     if state.starting is not None:
         state.starting.join()

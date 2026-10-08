@@ -10,6 +10,7 @@ The page path (`page_run.py`) reads its evidence through these helpers; nothing 
 publishes a reading.
 """
 
+import sys
 import threading
 import time
 from collections.abc import Mapping
@@ -64,13 +65,21 @@ class BackgroundStart:
     `start_chair` only loads and launches; it publishes nothing a page record names
     except the receipt, which every live record reads from `run.receipt_ref` after
     `join`. A failed start is raised by `join` on the main thread.
+
+    A pass that stops while the chair is still starting does not wait for it: `abandon`
+    hands the chair to this thread, which stops it as soon as its start returns. The
+    thread is not a daemon, so the process does not exit, leaving an engine running,
+    before that stop.
     """
 
     def __init__(self, run) -> None:
         self._run = run
         self._error: BaseException | None = None
+        self._lock = threading.Lock()
+        self._finished = False
+        self._abandoned = False
         self._began = time.monotonic()
-        self._thread = threading.Thread(target=self._start, name="chair-start", daemon=True)
+        self._thread = threading.Thread(target=self._start, name="chair-start", daemon=False)
         self._thread.start()
 
     def _start(self) -> None:
@@ -78,6 +87,19 @@ class BackgroundStart:
             start_chair(self._run)
         except BaseException as error:  # noqa: BLE001 -- raised again by `join`
             self._error = error
+        with self._lock:
+            self._finished = True
+            abandoned = self._abandoned
+        if abandoned:
+            try:
+                self._run.service.close()
+            except BaseException as error:  # noqa: BLE001 -- nobody is left to raise to
+                print(
+                    f"perlector: the chair started for a stopped pass did not stop cleanly: "
+                    f"{type(error).__name__}: {error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
 
     @property
     def done(self) -> bool:
@@ -93,12 +115,23 @@ class BackgroundStart:
         if error is not None:
             raise error
 
-    def join_quietly(self, raised: BaseException) -> None:
-        """Wait for the start while `raised` propagates, so the chair can be stopped;
-        a failed start is attached to `raised` rather than replacing it."""
-        self._thread.join()
-        error, self._error = self._error, None
+    def abandon(self) -> bool:
+        """Whether the chair was still starting, and is now this thread's to stop.
+
+        `False` once the start has returned: the caller owns the chair, as after `join`.
+        """
+        with self._lock:
+            if self._finished:
+                return False
+            self._abandoned = True
+            return True
+
+    def note_failure(self, raised: BaseException) -> None:
+        """Attach a start that already failed to `raised`, which propagates instead."""
+        with self._lock:
+            error = self._error if self._finished else None
         if error is not None:
+            self._error = None
             raised.add_note(f"the chair's start also failed: {type(error).__name__}: {error}")
 
 

@@ -146,7 +146,9 @@ crop-policy `mode` of `pipeline/2_designator/geometry_layer.py`, `yolo_obb`).
 Every stage runs unbuffered (`python -I -u`), and the orchestrator flushes each line
 it prints, so a transcript shows lines as they happen. Around each stage it prints
 one line when the stage starts and one when it ends, with its exit and duration and
-each chair it launched (launch and ready moments, from the stage's launch audits);
+each chair it launched (launch and ready moments, from the stage's launch audits,
+found by the empty `launch-audit-<digest>` note the stage leaves beside its engine
+logs, so no other blob is read);
 around a volume sync, one line when it starts and one with the files copied and its
 duration. The sync is printed, not journaled.
 
