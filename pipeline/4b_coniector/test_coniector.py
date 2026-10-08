@@ -1086,3 +1086,47 @@ def test_a_resumed_pass_with_every_call_sealed_starts_no_chair(live, tmp_path, m
     endpoint = FakeEndpoint(served_model_id="served-reconstructor")
     assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
     assert endpoint.requests == []
+
+
+def test_a_chair_started_for_calls_all_refused_for_capacity_stops_before_the_seal(
+    tmp_path, monkeypatch
+):
+    """Every unsealed call turns out over capacity, so no call waits for the background
+    start; the pass still waits for it and stops the chair before it seals."""
+    import time
+
+    import common.request_capacity as request_capacity
+    from common.stage import StageContext
+    from operations.serving.client import ChairClient
+    from operations.serving.fakes import FakeEndpoint
+
+    measured = request_capacity.reconstruction_request_capacity
+
+    def over_capacity(*args, **kwargs):
+        admitted = measured(*args, **kwargs)
+        raise request_capacity.RequestCapacityRefusal(
+            "over capacity in this test", capacity=admitted["capacity"]
+        )
+
+    enter = ChairClient.__enter__
+
+    def slow_enter(self):
+        time.sleep(0.5)
+        return enter(self)
+
+    endpoint = FakeEndpoint(served_model_id="served-reconstructor")
+    at_seal: list[tuple[bool, bool]] = []
+    seal = StageContext.seal_boundary
+
+    def recorded_seal(self):
+        process = endpoint._process
+        at_seal.append((process is not None, process is not None and process.poll() is not None))
+        return seal(self)
+
+    monkeypatch.setattr(request_capacity, "reconstruction_request_capacity", over_capacity)
+    monkeypatch.setattr(ChairClient, "__enter__", slow_enter)
+    monkeypatch.setattr(StageContext, "seal_boundary", recorded_seal)
+    root, options = _live_tree(tmp_path)
+    assert _run_live(tmp_path, root, options, endpoint) == EXIT_COMPLETE
+    assert endpoint.requests == []
+    assert at_seal == [(True, True)], "the chair was not started and stopped before the seal"

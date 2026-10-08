@@ -170,6 +170,13 @@ class _Chair:
             _refuse_unrecorded_replies(self.context)
             self.start()
 
+    def settle(self) -> None:
+        """Wait for a background start no call waited for, so `close` stops its chair
+        before the seal instead of leaving it to the start's thread."""
+        starting, self.starting = self.starting, None
+        if starting is not None:
+            starting.join()
+
     def close(self) -> None:
         """Stop the chair; one still starting is left to its start's thread, which
         stops it when the start returns, so a stopped pass does not wait for a load."""
@@ -573,6 +580,10 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             # The chair loads (or takes over the Perlector's) while the calls are drawn.
             chair.begin()
         in_order_window(calls.width(), calls.jobs(plan["calls"]))
+        if chair is not None:
+            # Every call may have been refused for capacity, leaving a start nothing
+            # waited for: its chair is stopped below, before the seal, not after it.
+            chair.settle()
     except ChairResponseRefusal as refusal:
         raise ContractError(f"{type(refusal).__name__}: {refusal}") from refusal
     finally:
