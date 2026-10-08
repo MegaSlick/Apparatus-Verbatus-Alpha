@@ -108,7 +108,11 @@ from typing import Callable, Mapping, MutableMapping, NoReturn, Sequence
 from common.chairs.config import parse_models_config
 from common.chairs.errors import ChairRefusal
 from common.chairs.manifests import CopyLedger, verify_snapshot
-from common.chairs.model_store import StoreRoleFetcher, pending_local_artifacts
+from common.chairs.model_store import (
+    StoreRoleFetcher,
+    artifacts_for_roles,
+    pending_local_artifacts,
+)
 from common.chairs.models import ChairIdentity, DigestManifest, ModelsConfig, ServingReceipt
 from common.chairs.receipts import receipt_record
 from common.chairs.registry import (
@@ -1068,19 +1072,30 @@ def _build_model_store(plan: Plan) -> ModelStoreBootstrapAction:
         plan.store_root,  # type: ignore[arg-type]
         HuggingFaceMaterializationFetcher.from_huggingface_hub(),
         _bundle_fetcher(),
+        roles=plan.preflight_roles,
         hashed_at_copy=_cached_roles(plan),
     )
 
 
+def _selected(plan: Plan, role: str) -> bool:
+    """Whether this pod's stage selection uses `role`; no selection means every chair."""
+
+    return plan.preflight_roles is None or role in plan.preflight_roles
+
+
 def _cached_roles(plan: Plan) -> tuple[str, ...]:
-    """The configured chairs CHAIR_CACHE and PREFLIGHT copy from the store into the
-    chair cache, each copy hashing the bytes against the roster's pinned manifest."""
+    """The configured, selected chairs CHAIR_CACHE and PREFLIGHT copy from the store
+    into the chair cache, each copy hashing the bytes against the pinned manifest."""
 
     if plan.repository is None or plan.models_config is None:
         return ()
     models = _checked_out_roster(plan)
     return tuple(
-        sorted(role for role, chair in models.chairs.items() if isinstance(chair, ChairIdentity))
+        sorted(
+            role
+            for role, chair in models.chairs.items()
+            if isinstance(chair, ChairIdentity) and _selected(plan, role)
+        )
     )
 
 
@@ -1092,7 +1107,9 @@ def _build_cache(plan: Plan) -> dict[str, object]:
     fetcher = StoreRoleFetcher(plan.store_root)  # type: ignore[arg-type]
     chairs: list[dict[str, object]] = []
     for role, identity in sorted(registry.config.chairs.items()):
-        if isinstance(identity, ChairIdentity) and identity.source == "huggingface":
+        if not _selected(plan, role):
+            chairs.append({"chair": role, "state": "not-selected"})
+        elif isinstance(identity, ChairIdentity) and identity.source == "huggingface":
             source = fetcher.plan(identity)
             chairs.append(
                 {"chair": role, "state": "source-planned", "snapshot": source["snapshot"]}
@@ -1595,12 +1612,14 @@ def _subprocess_environments(plan: Plan) -> frozenset[str]:
 
 
 def _store_environments(plan: Plan) -> frozenset[str]:
-    """The bundle fetcher's environment, when MODEL_STORE will fetch a local bundle."""
+    """The bundle fetcher's environment, when MODEL_STORE will fetch a local bundle
+    one of this pod's selected chairs needs."""
 
     if plan.store_root is None:
         return frozenset()
+    needed = set(artifacts_for_roles(plan.preflight_roles))
     try:
-        pending = pending_local_artifacts(plan.store_root)
+        pending = needed.intersection(pending_local_artifacts(plan.store_root))
     except ChairRefusal as error:
         raise BootstrapStepFailure(
             BootstrapStep.UV_ENVIRONMENT,
@@ -1655,8 +1674,9 @@ def _stage_environments(plan: Plan) -> frozenset[str]:
 
 
 def _local_bundles(plan: Plan) -> dict[Path, int]:
-    """Where CHAIR_CACHE copies each local-repository chair the roster configures,
-    and the bytes its pinned manifest names, so the container-disk check counts them."""
+    """Where CHAIR_CACHE copies each local-repository chair the roster configures and
+    this pod selects, and the bytes its pinned manifest names, so the container-disk
+    check counts them."""
 
     if plan.repository is None or plan.models_config is None:
         return {}
@@ -1668,10 +1688,11 @@ def _local_bundles(plan: Plan) -> dict[Path, int]:
     try:
         return {
             model_root / identity.path: sum(row.size for row in registry.manifest(identity).rows)
-            for identity in models.chairs.values()
+            for role, identity in models.chairs.items()
             if isinstance(identity, ChairIdentity)
             and identity.source == "local-repository"
             and identity.path is not None
+            and _selected(plan, role)
         }
     except ChairRefusal as error:
         raise BootstrapStepFailure(

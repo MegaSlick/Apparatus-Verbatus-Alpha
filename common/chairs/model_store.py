@@ -281,6 +281,7 @@ def materialize_real_roster(
     fetcher: MaterializationFetcher,
     bundle_fetcher: BundleFetcher,
     *,
+    roles: Iterable[str] | None = None,
     hashed_at_copy: Iterable[str] = (),
 ) -> dict[str, Any]:
     """Fetch each real pinned artifact once and publish its measured evidence.
@@ -293,6 +294,11 @@ def materialize_real_roster(
     ones are re-verified, so an interrupted promotion is closed by re-fetching
     the same pin; one final whole-store verification backs every receipt.
 
+    ``roles`` limits fetching and verification to the artifacts those chairs
+    need, for a pod that runs only some stages; None means every roster chair.
+    ``selection_complete`` then says whether this pod's artifacts are all
+    present, while ``real_roster_complete`` still describes the whole record.
+
     ``hashed_at_copy`` names the roles whose store bytes the caller will copy
     into a chair cache, hashing them against the same pinned manifest as it
     copies. The final verification checks those artifacts' structure only, and
@@ -303,7 +309,11 @@ def materialize_real_roster(
     root = Path(store_root).resolve()
     with _materialization_lock(root):
         return _materialize_real_roster_locked(
-            root, fetcher, bundle_fetcher, frozenset(hashed_at_copy)
+            root,
+            fetcher,
+            bundle_fetcher,
+            frozenset(hashed_at_copy),
+            None if roles is None else frozenset(roles),
         )
 
 
@@ -350,6 +360,7 @@ def _materialize_real_roster_locked(
     fetcher: MaterializationFetcher,
     bundle_fetcher: BundleFetcher,
     hashed_at_copy: frozenset[str],
+    roles: frozenset[str] | None,
 ) -> dict[str, Any]:
     record = _initial_materialization_record()
     active = root / "download_record.json"
@@ -366,7 +377,8 @@ def _materialize_real_roster_locked(
         write_download_record(record, root)
 
     completed: dict[str, dict[str, str | None]] = {}
-    requirements = _unique_requirements()
+    needed = set(artifacts_for_roles(roles))
+    requirements = [item for item in _unique_requirements() if item.artifact in needed]
     record_by_artifact = {item["artifact"]: item for item in record["artifacts"]}
     already_present = {
         item.artifact
@@ -405,16 +417,25 @@ def _materialize_real_roster_locked(
         if item.chair in hashed_at_copy and item.artifact not in fetched_now
     )
     at_copy = frozenset(item.artifact for item in REQUIRED_ARTIFACTS if item.chair in copy_roles)
-    inventory = verify_store(root, bytes_hashed_elsewhere=fetched_now | at_copy)
+    inventory = verify_store(
+        root, bytes_hashed_elsewhere=fetched_now | at_copy, artifacts=frozenset(needed)
+    )
     verified = {row["artifact"]: row for row in inventory["artifacts"]}
     for artifact in already_present:
         completed[artifact] = _materialization_receipt(verified[artifact])
-    present = {row["artifact"] for row in inventory["artifacts"] if row["state"] == "present"}
+    present = {
+        row["artifact"]
+        for row in inventory["artifacts"]
+        if row["state"] == "present" and row["artifact"] in needed
+    }
     copy_roles = [
         item.chair
         for item in REQUIRED_ARTIFACTS
         if item.chair in copy_roles and item.artifact in present
     ]
+    not_verified = sorted(
+        {row["artifact"] for row in inventory["artifacts"] if row["state"] == "present"} - needed
+    )
 
     return {
         "store": str(root),
@@ -425,12 +446,35 @@ def _materialize_real_roster_locked(
         # could have moved.
         "download_record_sha256": inventory["download_record_sha256"],
         "complete": inventory["complete"],
-        # Every roster artifact is fetched here, so the real roster is complete
-        # exactly when the store is.
-        "real_roster_complete": inventory["complete"],
+        # Every roster artifact is present and was checked by this call; a
+        # selection leaves the artifacts outside it unchecked.
+        "real_roster_complete": inventory["complete"] and not not_verified,
+        "selection": None if roles is None else sorted(roles),
+        "selection_complete": needed <= present,
         "unattributed_staging_entries": _unattributed_staging_entries(root),
-        "store_bytes": _store_bytes_receipt(present, fetched_now, at_copy, copy_roles),
+        "store_bytes": {
+            **_store_bytes_receipt(present, fetched_now, at_copy, copy_roles),
+            "not_verified": not_verified,
+        },
     }
+
+
+def artifacts_for_roles(roles: Iterable[str] | None) -> tuple[str, ...]:
+    """The store artifacts these roster chairs are filled from, in roster order.
+
+    None means every chair, so every artifact the roster requires.
+    """
+
+    wanted = None if roles is None else set(roles)
+    return tuple(
+        item.artifact
+        for item in _unique_requirements()
+        if wanted is None
+        or any(
+            chair.artifact == item.artifact and chair.chair in wanted
+            for chair in REQUIRED_ARTIFACTS
+        )
+    )
 
 
 def _store_bytes_receipt(
@@ -1211,7 +1255,10 @@ def derived_inventory(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def verify_store(
-    store_root: str | Path, *, bytes_hashed_elsewhere: Iterable[str] = ()
+    store_root: str | Path,
+    *,
+    bytes_hashed_elsewhere: Iterable[str] = (),
+    artifacts: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Verify every declared manifest against its existing bytes; never fetch.
 
@@ -1221,14 +1268,18 @@ def verify_store(
 
     `bytes_hashed_elsewhere` names artifacts whose bytes the caller has measured
     or will hash against the same pinned manifest; every check runs on them
-    except reading their bytes.
+    except reading their bytes. `artifacts`, when given, limits the snapshot
+    checks to those artifacts; the record itself is always checked whole.
     """
 
     root = Path(store_root).resolve()
     skip_bytes = frozenset(bytes_hashed_elsewhere)
+    only = None if artifacts is None else frozenset(artifacts)
     record = load_download_record(root)
     inventory = derived_inventory(record)
     for item in record["artifacts"]:
+        if only is not None and item["artifact"] not in only:
+            continue
         if item["state"] == "pending-fetch":
             prefix = "hf" if item["source"] == "huggingface" else "local"
             possible_evidence = (

@@ -107,7 +107,9 @@ class FakeActions:
         return self._step(BootstrapStep.TRANSFER, {"state": "nothing-to-transfer"})
 
     def materialize_model_store(self) -> dict[str, object]:
-        return self._step(BootstrapStep.MODEL_STORE, {"real_roster_complete": True})
+        return self._step(
+            BootstrapStep.MODEL_STORE, {"real_roster_complete": True, "selection_complete": True}
+        )
 
     def verify_chair_cache(self) -> dict[str, object]:
         return self._step(BootstrapStep.CHAIR_CACHE, {"chairs": []})
@@ -1049,6 +1051,7 @@ def test_chair_cache_receipt_says_sources_were_planned(monkeypatch: pytest.Monke
         models_config=Path("/repo/models.toml"),
         cache_root=Path("/volume/cache"),
         store_root=Path("/volume/store"),
+        preflight_roles=None,
     )
 
     assert bootstrap_main._build_cache(plan) == {
@@ -1100,7 +1103,10 @@ def _local_chair_setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from types import SimpleNamespace
 
     plan = SimpleNamespace(
-        models_config=models, cache_root=tmp_path / "cache", store_root=tmp_path / "store"
+        models_config=models,
+        cache_root=tmp_path / "cache",
+        store_root=tmp_path / "store",
+        preflight_roles=None,
     )
     return plan, config / "real-models" / "designator_surya", snapshot
 
@@ -2236,6 +2242,65 @@ def test_the_bundle_fetcher_s_environment_is_synced_while_the_store_lacks_a_bund
     (plan.store_root / "download_record.json").write_text("{}", encoding="utf-8")
     with pytest.raises(BootstrapStepFailure, match="cannot say what it still needs"):
         _subprocess_environments(plan)
+
+
+SMALL_CARD = ("attestator_1", "attestator_2", "attestator_3", SURYA_CHAIR, "secondary_proposer")
+BIG_CARD = ("perlector", "reconstructor")
+
+
+def test_each_half_of_a_two_card_split_prepares_only_the_chairs_its_stages_need(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The witness card never fetches or copies the Perlector's model, and the big
+    card never places Surya or syncs the bundle fetcher's environment."""
+    from .bootstrap_main import (
+        _build_model_store,
+        _bundle_fetcher,
+        _local_bundles,
+        _store_environments,
+        build_parser,
+        resolve_plan,
+    )
+
+    monkeypatch.setattr(
+        bootstrap_main, "pending_local_artifacts", lambda root: ("surya2-detection",)
+    )
+    ws, _identities = _serving_workspace(tmp_path, preflight_state="proven")
+    plan = resolve_plan(build_parser().parse_args(_argv(ws)), _environ(Clock()))
+    small = replace(plan, preflight_roles=SMALL_CARD)
+    big = replace(plan, preflight_roles=BIG_CARD)
+
+    assert _build_model_store(small).roles == SMALL_CARD
+    assert _build_model_store(small).hashed_at_copy == tuple(sorted(SMALL_CARD))
+    assert _build_model_store(big).roles == BIG_CARD
+    assert _build_model_store(big).hashed_at_copy == BIG_CARD
+    # The fixture roster binds every chair to a bundle in the checkout.
+    assert sorted(path.name for path in _local_bundles(small)) == sorted(SMALL_CARD)
+    assert sorted(path.name for path in _local_bundles(big)) == list(BIG_CARD)
+    assert _store_environments(small) == frozenset({_bundle_fetcher().environment})
+    assert _store_environments(big) == frozenset()
+    # A bare bootstrap, with no stage selection, prepares every chair.
+    assert _build_model_store(plan).roles is None
+    assert sorted(path.name for path in _local_bundles(plan)) == sorted(SMALL_CARD + BIG_CARD)
+    assert _store_environments(plan) == frozenset({_bundle_fetcher().environment})
+
+
+def test_chair_cache_places_a_local_chair_only_on_the_card_whose_stages_use_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    plan, placed, snapshot = _local_chair_setup(tmp_path, monkeypatch)
+    big = SimpleNamespace(**{**vars(plan), "preflight_roles": BIG_CARD})
+    small = SimpleNamespace(**{**vars(plan), "preflight_roles": SMALL_CARD})
+
+    assert bootstrap_main._build_cache(big)["chairs"] == [
+        {"chair": SURYA_CHAIR, "state": "not-selected"}
+    ]
+    assert not placed.exists()
+    assert bootstrap_main._build_cache(small)["chairs"] == [
+        {"chair": SURYA_CHAIR, "state": "local-placed", "snapshot": str(snapshot)}
+    ]
 
 
 def test_preflight_goes_green_through_the_registry_and_the_serving_seam(

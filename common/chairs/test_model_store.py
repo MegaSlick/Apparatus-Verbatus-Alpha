@@ -1417,6 +1417,68 @@ def test_artifacts_fetched_in_this_call_are_not_hashed_a_second_time(tmp_path, m
     assert "statement" not in receipt["store_bytes"]
 
 
+SMALL_CARD_ROLES = (
+    "attestator_1",
+    "attestator_2",
+    "attestator_3",
+    "designator_surya",
+    "secondary_proposer",
+)
+BIG_CARD_ROLES = ("perlector", "reconstructor")
+
+
+def test_each_half_of_a_split_fetches_and_verifies_only_its_own_artifacts(tmp_path, monkeypatch):
+    qwen = next(item for item in REQUIRED_ARTIFACTS if item.chair == "perlector")
+    fetcher = _FakeMaterializationFetcher()
+
+    small = materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher(), roles=SMALL_CARD_ROLES)
+
+    assert (qwen.repo, qwen.revision) not in fetcher.calls
+    assert small["selection_complete"] is True
+    assert small["real_roster_complete"] is False
+    assert "qwen3.8-27B" not in {row["artifact"] for row in small["artifacts"]}
+    states = {
+        item["artifact"]: item["state"] for item in load_download_record(tmp_path)["artifacts"]
+    }
+    assert states["qwen3.8-27B"] == "pending-fetch"
+
+    fetcher.calls.clear()
+    bundles = _FakeBundleFetcher()
+    hashed = _hashed_artifacts(monkeypatch)
+    big = materialize_real_roster(tmp_path, fetcher, bundles, roles=BIG_CARD_ROLES)
+
+    assert fetcher.calls == [(qwen.repo, qwen.revision)]
+    assert (bundles.checked, bundles.calls) == ([], [])
+    assert hashed == []
+    assert big["selection_complete"] is True
+    assert big["real_roster_complete"] is False
+    assert big["store_bytes"]["not_verified"] == sorted(
+        {item.artifact for item in REQUIRED_ARTIFACTS} - {"qwen3.8-27B"}
+    )
+
+    whole = materialize_real_roster(tmp_path, fetcher, _FakeBundleFetcher())
+    assert whole["selection"] is None
+    assert whole["real_roster_complete"] is True
+    assert whole["store_bytes"]["not_verified"] == []
+
+
+def test_a_selection_whose_artifact_is_absent_is_not_complete(tmp_path):
+    class _Unreachable(_FakeBundleFetcher):
+        def fetch(self, artifact: str, destination: Path) -> None:
+            raise OSError("model host unreachable")
+
+    with pytest.raises(OSError):
+        materialize_real_roster(
+            tmp_path, _FakeMaterializationFetcher(), _Unreachable(), roles=SMALL_CARD_ROLES
+        )
+    # The big card does not need the bundle, so its half is complete without it.
+    big = materialize_real_roster(
+        tmp_path, _FakeMaterializationFetcher(), _Unreachable(), roles=BIG_CARD_ROLES
+    )
+    assert big["selection_complete"] is True
+    assert big["complete"] is False
+
+
 def test_materializer_receipt_digest_names_the_record_whole_store_verification_checked(
     tmp_path, monkeypatch
 ):
