@@ -264,7 +264,13 @@ The re-read is also accounted against the page's evidence like any reading.
   pass with nothing left to send loads no model. A pass whose unread pages all turn
   out not to be sent (refused by the Exemplar, over capacity) has started a chair it
   does not use. The chair is stopped before the stage seal, so a failed shutdown is
-  never reported over a sealed stage.
+  never reported over a sealed stage, with one exception: when the orchestrator runs
+  the Coniector next (`--hand-off-to-coniector`) and the reconstructor's sealed row
+  shares this chair's service (`shares_service_with = "perlector"`), a chair that is
+  up is left serving after the seal, for the Coniector to take over and stop
+  (`operations/serving/README.md`, "A shared service"). A failed shutdown of it is
+  then reported by the Coniector, not here. A pass that fails before its seal stops
+  its chair as always.
 - `--perlector-concurrency` keeps up to that many calls in flight (ceiling and default:
   the served row's `max_num_seqs`); records are still written strictly in page order.
   An error finishes every page already sent before it stops the pass; an interrupt

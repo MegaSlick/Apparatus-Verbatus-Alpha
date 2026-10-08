@@ -18,6 +18,7 @@ from common.decoding import load_decoding_policy
 
 from .client import ChairClient, RetainBytes
 from .config import SubprocessProfile
+from .errors import ProcessLaunchError
 from .http import EndpointUnavailable, HttpResponse
 from .manager import ReceiptPublication, ServingManager
 from .surya_detector import SuryaRun, contract, declared_page_documents, surya_run
@@ -108,6 +109,10 @@ class FakeProcess:
         self.wait_calls = 0
         self.ignore_terminate = ignore_terminate
         self.ignore_kill = ignore_kill
+
+    @property
+    def start_marker(self) -> str | None:
+        return f"fake-start-{self.pid}"
 
     def poll(self) -> int | None:
         return self.exit_code
@@ -343,6 +348,7 @@ class FakeLauncher:
         self.calls: list[tuple[tuple[str, ...], Path]] = []
         self.inherited_fds: list[tuple[int, ...]] = []
         self.processes: list[FakeProcess] = []
+        self.attached: list[FakeProcess] = []
 
     def launch(
         self,
@@ -363,6 +369,27 @@ class FakeLauncher:
         )
         self.processes.append(process)
         self.endpoint.bind(process)
+        return process
+
+    def attach(self, pid: int, start_marker: str, log_path: Path) -> FakeProcess:
+        """The live process the shared endpoint is bound to, when it is the one named.
+
+        Another manager's launcher started it; both launchers share one endpoint,
+        as two stages on one pod share one card.
+        """
+
+        del log_path
+        process = getattr(self.endpoint, "process", None) or getattr(
+            self.endpoint, "_process", None
+        )
+        if (
+            process is None
+            or process.pid != pid
+            or process.start_marker != start_marker
+            or process.poll() is not None
+        ):
+            raise ProcessLaunchError(f"no live process {pid} with start marker {start_marker!r}")
+        self.attached.append(process)
         return process
 
 

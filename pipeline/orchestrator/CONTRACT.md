@@ -160,4 +160,11 @@ samples, every `sample_stride`th read; the card is read every 15 s, and not at a
 on a host with no `nvidia-smi` on PATH (`None` plus that reason). `serving_spans`
 lists each chair the invocation launched with its `started_at`, `ready_at` and
 `ready_seconds` (`None` when the audits could not be read); the serving manager
-records no stop moment, so the entry's `finished_at` bounds it.
+records no stop moment, so the entry's `finished_at` bounds it. A chair taken over
+from the stage before keeps its launch and ready moments and adds `adopted_at`, the
+moment this invocation took it over.
+
+When a selection runs the Coniector right after the Perlector, the Perlector is
+invoked with `--hand-off-to-coniector`, a scheduling hint that is not sealed: a
+Perlector whose chair the reconstructor's row shares leaves it serving for the
+Coniector to take over (`operations/serving/README.md`, "A shared service").

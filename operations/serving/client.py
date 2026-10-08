@@ -427,6 +427,33 @@ class ChairClient:
         self._handle = None
         self._exiting = False
 
+    def hand_off(self) -> bool:
+        """Leave the running service for the next stage's process instead of stopping it.
+
+        `True` when the manager handed it off (`ServingManager.hand_off`); this
+        client then holds nothing and its exit stops nothing. `False` leaves the
+        service with this client, to be stopped by its exit as usual.
+        """
+
+        if self._handle is None or self._exiting:
+            return False
+        self._prepared_chandra_dispatches.clear()
+        if not self._handle.hand_off():
+            return False
+        self._handle = None
+        return True
+
+    def reclaim_hand_off(self) -> Mapping[str, object] | None:
+        """Stop a service an earlier stage handed off that this client never took over.
+
+        For a stage that ends without starting its chair; see
+        `ServingManager.reclaim_hand_off`.
+        """
+
+        if self._handle is not None:
+            return None
+        return self._manager.reclaim_hand_off()
+
     def read(self, request: ChairRequest) -> ChairResponse:
         """Issue exactly one reading request. Never retries, never re-samples.
 

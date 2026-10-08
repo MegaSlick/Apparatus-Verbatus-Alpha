@@ -14,7 +14,7 @@ provider API, downloads a model or claims a GPU fit.
 |---|---|
 | `config.py` | Parses the serving catalogue (`config/serving_recipes*.toml`) into typed rows (`vllm`, `in-process`, `subprocess`, `fixture`, `unsupported`), checks proof digests, and freezes JSON values. |
 | `manager.py` | `ServingManager`: the lifecycle of one vLLM chair, its receipt, launch audit and evidence blobs. |
-| `process.py`, `residency.py` | The child process in its own group, and the pod-wide `flock` lease that keeps one chair resident. |
+| `process.py`, `residency.py` | The child process in its own group (or one handed over by another process), and the pod-wide `flock` lease that keeps one chair resident. |
 | `http.py` | The transport (whole-call deadline from `operations/http_deadline.py`), request bodies, and the OpenAI response parsers. |
 | `client.py` | `ChairClient`, the one client a stage reads a chair through, and `serving_mode_for`. |
 | `chat_request.py` | Request helpers the Perlector and Coniector share. |
@@ -50,8 +50,9 @@ recipe or a missing row fails in tests, not on a rented card.
 Before launch: exact package pins, the verified snapshot, the processor geometry
 the row claims (`patch_size`, `merge_size`), a hybrid Mamba/attention checkpoint
 with prefix caching on (refused, keyed by repository), an env-override file in
-the working directory (refused), the pod lease, and an endpoint that already
-answers (refused). The child is `sys.executable -m vllm.entrypoints.cli.main
+the working directory (refused), a service handed off by an earlier process
+(taken over or stopped; see "A shared service"), the pod lease, and an
+endpoint that already answers (refused). The child is `sys.executable -m vllm.entrypoints.cli.main
 serve` over the verified snapshot, with the row's flags, `--revision` pins for a
 Hugging Face chair, `--generation-config vllm` (so no sampling value is filled
 from a file), `--no-enable-log-requests` and `--enable-prompt-tokens-details`.
@@ -69,6 +70,58 @@ configuration digests) and `serving-evidence.v1` linking them. `stop()` releases
 the lease only once the process group is gone and the endpoint refuses
 connections; otherwise it keeps the lease and `recover()` retries the same
 cleanup.
+
+## A shared service
+
+The Perlector and the Coniector's reconstructor serve one checkpoint, so the
+reconstructor's row names `shares_service_with = "perlector"`. The catalogue
+then requires the two rows at a tier to have identical launch fields
+(`config.LAUNCH_FIELDS`: the argv, the readiness probe and the package pins,
+port and served model id included), and only such a pair may share an endpoint
+and a served model id.
+
+Each stage is its own program, so the service passes between two processes:
+
+1. The orchestrator tells the Perlector the Coniector runs next
+   (`--hand-off-to-coniector`). After its seal, a Perlector whose chair is up and
+   whose reconstructor row shares its service calls `ServingManager.hand_off`:
+   it writes a hand-off record beside the lease (`/tmp/verbatus-pod-gpu.hand-off.json`:
+   pid, the process's kernel start time, the launch log, the receipt, the launch
+   audit and its references, and the run it belongs to) and closes its lease
+   descriptor without unlocking. The vLLM process inherited the lease, so the
+   card stays leased while it lives, and the Perlector exits.
+2. The Coniector's `ServingManager.start` finds the record and, because its row
+   shares that chair's service, takes it over when every check passes: the same
+   run; the launch audit is the one its reference names; the same sealed serving
+   configuration; the two identities equal but for role and recipe; the same
+   tier; this row and the reconstructor's verified snapshot render the argv the
+   service was launched with (its digest); the same installed packages; the pid
+   is still the process the start time names; `/health` answers 200 and
+   `/v1/models` the exact served id. It then consumes the record and publishes a
+   receipt for the reconstructor that keeps the service's `started_at` and
+   endpoint, and a launch audit with `launch_purpose = "adopted"`, the original
+   readiness evidence, and an `adoption` block naming the Perlector's receipt,
+   audit and evidence, the purpose each side ran under, the moment and what
+   `/health` and `/v1/models` answered.
+3. Stopping a taken-over service signals its process group (it is not this
+   process's child, so its exit status is unknown), waits for the group to go
+   and the endpoint to refuse, and then proves the lease free by taking and
+   releasing it.
+
+Any refused check is recorded, never hidden: the start stops the handed-off
+service and starts its own, and that launch audit carries `adoption_refused`
+(why) and `displaced_service` (what was stopped). Any other start that finds a
+hand-off record stops that service first, and says so in `displaced_service`;
+an unreadable record is removed and named in `hand_off_discarded`. A Coniector
+that sends nothing stops a service left for it before its own seal
+(`ChairClient.reclaim_hand_off`). A run that stops between the two stages
+(a halt at the Perlector's checkpoint, a failed sync) leaves the service
+running, holding the card, until the next start on the pod stops it or the pod
+is shut down.
+
+The Perlector's seal is written while its chair is still serving, so a failed
+shutdown of that service is reported by the Coniector, or by the next start,
+not by the Perlector.
 
 ## Reading through `ChairClient`
 

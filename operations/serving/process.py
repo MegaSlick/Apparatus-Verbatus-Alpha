@@ -43,9 +43,16 @@ class ServerProcess(Protocol):
     def read_tail(self, maximum_bytes: int = 16_384) -> str:
         """Return only this launch's bounded diagnostic tail."""
 
+    @property
+    def start_marker(self) -> str | None:
+        """What tells this process apart from a later one given the same pid.
+
+        ``None`` where it cannot be read; such a process cannot be handed over.
+        """
+
 
 class ProcessLauncher(Protocol):
-    """The one process-creation effect the manager requires."""
+    """The process effects the manager requires: create one, or attach to one handed over."""
 
     def launch(
         self,
@@ -55,6 +62,12 @@ class ProcessLauncher(Protocol):
         inheritable_fds: tuple[int, ...] = (),
     ) -> ServerProcess:
         """Launch an owned process group with only declared inherited FDs."""
+
+    def attach(self, pid: int, start_marker: str, log_path: Path) -> ServerProcess:
+        """The process group another manager launched and handed over.
+
+        Refuses unless ``pid`` is still the very process ``start_marker`` names.
+        """
 
 
 @dataclass(slots=True)
@@ -67,10 +80,15 @@ class PopenServerProcess:
     # Once the leader is reaped and the group has no running member, the
     # kernel may hand this id to an unrelated group; nothing is signalled then.
     _group_gone: bool = False
+    _start_marker: str | None = None
 
     @property
     def pid(self) -> int:
         return self.process.pid
+
+    @property
+    def start_marker(self) -> str | None:
+        return self._start_marker
 
     def poll(self) -> int | None:
         exit_code = self.process.poll()
@@ -171,7 +189,90 @@ class SubprocessLauncher:
                 with suppress(OSError):
                     handle.close()
             raise ProcessLaunchError(f"could not launch vLLM argv: {error}") from error
-        return PopenServerProcess(process, log_path, handle)
+        return PopenServerProcess(
+            process, log_path, handle, _start_marker=process_start_marker(process.pid)
+        )
+
+    def attach(self, pid: int, start_marker: str, log_path: Path) -> ServerProcess:
+        if process_start_marker(pid) != start_marker:
+            raise ProcessLaunchError(
+                f"process {pid} is no longer the service that was handed over "
+                f"(start marker {start_marker!r})"
+            )
+        return AttachedServerProcess(pid, start_marker, log_path)
+
+
+@dataclass(slots=True)
+class AttachedServerProcess:
+    """A process group launched by another manager, possibly in an exited process.
+
+    It is not this process's child, so its exit status cannot be collected: once
+    it is gone, ``poll`` answers ``-1``. Every signal first checks that ``pid``
+    is still the process ``start_marker`` names, or that its group still has a
+    running member, so a reused pid is never signalled.
+    """
+
+    pid: int
+    _start_marker: str
+    log_path: Path
+
+    @property
+    def start_marker(self) -> str | None:
+        return self._start_marker
+
+    def poll(self) -> int | None:
+        return None if process_start_marker(self.pid) == self._start_marker else -1
+
+    def terminate(self) -> None:
+        self._signal_group(signal.SIGTERM)
+
+    def kill(self) -> None:
+        self._signal_group(signal.SIGKILL)
+
+    def wait(self, timeout_seconds: float) -> int:
+        deadline = time.monotonic() + timeout_seconds
+        while self.poll() is None or _group_has_running_member(self.pid):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"handed-over process group {self.pid} did not exit")
+            time.sleep(_GROUP_POLL_SECONDS)
+        return -1
+
+    def read_tail(self, maximum_bytes: int = 16_384) -> str:
+        try:
+            with self.log_path.open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, handle.tell() - maximum_bytes))
+                return handle.read().decode("utf-8", errors="replace")
+        except OSError as error:
+            return f"VLLM_LOG_UNREADABLE: could not read launch log {self.log_path}: {error}"
+
+    def _signal_group(self, signal_number: int) -> None:
+        # The leader may already be gone while its engine process still holds
+        # the card; the group id stays reserved while any member lives.
+        if self.poll() is not None and not _group_has_running_member(self.pid):
+            return
+        with suppress(ProcessLookupError):
+            os.killpg(self.pid, signal_number)
+
+
+def process_start_marker(pid: int) -> str | None:
+    """The kernel's start time of ``pid`` (``/proc/<pid>/stat`` field 22), or ``None``.
+
+    A pid can be reused once its process is reaped; the start time cannot, so
+    the pair names one process. A zombie, or a host without ``/proc``, gives
+    ``None``.
+    """
+
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    fields = stat.rsplit(")", 1)[-1].split()
+    # Fields after the parenthesised command name start at field 3 (state), so
+    # field 22 (starttime) is index 19.
+    if len(fields) < 20 or fields[0] in {"Z", "X"}:
+        return None
+    return fields[19]
 
 
 _GROUP_POLL_SECONDS: float = 0.02

@@ -1005,7 +1005,9 @@ def _main_on_a_real_submission(monkeypatch, tree, serving_mode: str):
         coniector,
         "_Chair",
         lambda *_a: SimpleNamespace(
-            identity=SimpleNamespace(role="reconstructor"), serving_mode=serving_mode
+            identity=SimpleNamespace(role="reconstructor"),
+            serving_mode=serving_mode,
+            reclaim=lambda: None,
         ),
     )
     monkeypatch.setattr(coniector, "_publish_plan", lambda *_a: published.append("plan"))

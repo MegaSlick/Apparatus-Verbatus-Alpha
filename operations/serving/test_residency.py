@@ -277,3 +277,44 @@ def test_acquire_reports_a_close_failure_inside_the_refusal_it_was_already_raisi
 
     assert "additionally its descriptor could not be closed" in str(refused.value)
     assert "simulated close failure during acquire cleanup" in str(refused.value)
+
+
+def test_a_relinquished_lease_stays_held_by_the_child_until_an_attached_stop() -> None:
+    """The hand-off path on a real process: the manager gives up its descriptor, the
+    child keeps the card leased, and a later process attaches by pid and start marker,
+    stops the group and finds the lease free."""
+    import sys
+    import tempfile
+
+    from .process import SubprocessLauncher, process_start_marker
+
+    if process_start_marker(os.getpid()) is None:
+        pytest.skip("no /proc on this host, so no process can be handed over")
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        lease = FileResidencyLease(root / "pod-gpu.lock")
+        held = lease.acquire(None)  # type: ignore[arg-type]
+        descriptor = held.inheritable_fd()
+        child = SubprocessLauncher().launch(
+            (sys.executable, "-c", "import time; time.sleep(60)"),
+            root / "child.log",
+            inheritable_fds=(descriptor,),
+        )
+        try:
+            marker = child.start_marker
+            assert marker is not None and marker == process_start_marker(child.pid)
+            held.relinquish()
+            with pytest.raises(ResidencyError):
+                lease.acquire(None)  # type: ignore[arg-type]
+
+            with pytest.raises(Exception, match="no longer the service"):
+                SubprocessLauncher().attach(child.pid, marker + "0", root / "child.log")
+            attached = SubprocessLauncher().attach(child.pid, marker, root / "child.log")
+            assert attached.poll() is None
+            attached.terminate()
+            assert attached.wait(5) == -1
+            assert attached.poll() == -1
+            lease.acquire(None).release()  # type: ignore[arg-type]
+        finally:
+            child.kill()
+            child.wait(5)

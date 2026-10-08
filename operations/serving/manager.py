@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import os
 import re
 import sys
 import time
@@ -30,6 +31,7 @@ from common.chairs.models import (
     VerifiedSnapshot,
     is_sha256,
 )
+from common.contracts.canonical import canonical_bytes
 from common.contracts.serving import SERVING_LAUNCH_AUDIT_SCHEMA
 from common.credentials import log_word_carries_credential, looks_like_credential_field
 
@@ -45,6 +47,7 @@ from .config import (
     frozen_json,
     model_and_tokenizer_pins,
     seal_json_object,
+    thawed_json,
 )
 from .errors import (
     EndpointOccupiedError,
@@ -90,6 +93,28 @@ _HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qw
 _PREFLIGHT_QUALIFICATION_PURPOSE: Final = object()
 MECHANICS_QUALIFICATION_PURPOSE: Final = object()
 _NORMAL_LAUNCH = "normal"
+# The launch purpose of a service this manager took over rather than started
+# (`ServingManager.start`, "A shared service" in the README).
+ADOPTED_LAUNCH: Final = "adopted"
+HAND_OFF_SCHEMA: Final = "serving-hand-off.v1"
+_HAND_OFF_FIELDS: Final = frozenset(
+    {
+        "schema",
+        "chair",
+        "service_scope",
+        "pid",
+        "start_marker",
+        "log_path",
+        "endpoint",
+        "receipt_reference",
+        "audit_reference",
+        "evidence_reference",
+        "launch_audit",
+    }
+)
+# What two identities serving one service may differ in: the role, and the
+# catalogue key the role looks its row up by.
+_ROLE_FIELDS: Final = frozenset({"role", "serving_recipe"})
 _PREFLIGHT_QUALIFICATION_LAUNCH = "preflight-qualification"
 _MECHANICS_QUALIFICATION_LAUNCH = "mechanics-qualification"
 _LOG_UNREADABLE: Final = "VLLM_LOG_UNREADABLE:"
@@ -179,6 +204,8 @@ class ServiceHandle:
     launch_audit: Mapping[str, object]
     audit_reference: Mapping[str, str]
     evidence_reference: Mapping[str, str]
+    # The launch log, named in a hand-off so the next manager can read its tail.
+    log_path: Path | None = None
     _fixture_requests_completed: int = field(default=0, init=False, repr=False)
     _last_fixture_request_sha256: str | None = field(default=None, init=False, repr=False)
     _last_fixture_response: OpenAIResult | None = field(default=None, init=False, repr=False)
@@ -272,6 +299,11 @@ class ServiceHandle:
 
         self._manager.stop(self)
 
+    def hand_off(self) -> bool:
+        """Leave this service running for the next stage's process; see `ServingManager.hand_off`."""
+
+        return self._manager.hand_off(self)
+
 
 class StageContextReceiptPublisher:
     """Publishes through ``StageContext``: receipt, launch audit and evidence manifest.
@@ -338,6 +370,8 @@ class ServingManager:
         monotonic: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
         shutdown_timeout_seconds: float = 10.0,
+        hand_off_path: str | Path | None = None,
+        service_scope: str | None = None,
         _launch_purpose: object | None = None,
     ) -> None:
         if command_prefix is None:
@@ -396,6 +430,15 @@ class ServingManager:
             MECHANICS_QUALIFICATION_PURPOSE: _MECHANICS_QUALIFICATION_LAUNCH,
         }.get(_launch_purpose, _NORMAL_LAUNCH)
         self._qualification_launch = self.launch_purpose != _NORMAL_LAUNCH
+        # Where a running service is handed to the next process, and which run
+        # may take it over; with either unset this manager neither hands a
+        # service off nor takes one over.
+        self.hand_off_path = Path(hand_off_path) if hand_off_path is not None else None
+        self.service_scope = service_scope
+        # True while the active service was taken over: its lease is held by the
+        # service's own process, so stopping it proves the lease free instead of
+        # releasing it.
+        self._adopted = False
         self._active: ServiceHandle | None = None
         self._residency_handle: ResidencyHandle | None = None
         self._unready_process: ServerProcess | None = None
@@ -426,10 +469,14 @@ class ServingManager:
 
         process: ServerProcess | None = None
         endpoint = ""
+        service_events: dict[str, object] = {}
         try:
             # The recipe check comes before any snapshot is verified.
             profile = self._launchable_profile(identity, tier)
             self._assert_runtime(profile)
+            adopted = self._take_over_or_clear(identity, profile, service_events)
+            if adopted is not None:
+                return adopted
             snapshot = self.registry.ensure(identity)
             assert_processor_geometry(snapshot, profile)
             endpoint = profile.endpoint
@@ -440,9 +487,10 @@ class ServingManager:
             argv = render_vllm_argv(
                 command_prefix=self.command_prefix, profile=profile, snapshot=snapshot
             )
+            log_path = self._next_log_path(identity)
             process = self.launcher.launch(
                 argv,
-                self._next_log_path(identity),
+                log_path,
                 inheritable_fds=(self._residency_fd(),),
             )
             started_at = _utc_stamp(self.now())
@@ -464,16 +512,19 @@ class ServingManager:
                 started_at=started_at,
             )
             receipt = self.registry.receipt(identity, details)
-            audit = self._launch_audit(
-                identity=identity,
-                profile=profile,
-                process=process,
-                argv=argv,
-                readiness=readiness,
-                snapshot=snapshot,
-                runtime_packages=observed_packages,
-                started_at=started_at,
-            )
+            audit = {
+                **self._launch_audit(
+                    identity=identity,
+                    profile=profile,
+                    process=process,
+                    argv=argv,
+                    readiness=readiness.to_record(),
+                    snapshot=snapshot,
+                    runtime_packages=observed_packages,
+                    started_at=started_at,
+                ),
+                **service_events,
+            }
             sealed_audit = frozen_json(audit)
             publication = self._publish(receipt, audit)
             handle = ServiceHandle(
@@ -486,6 +537,7 @@ class ServingManager:
                 sealed_audit,
                 publication.audit_reference,
                 publication.evidence_reference,
+                log_path=log_path,
             )
             self._active = handle
             return handle
@@ -519,6 +571,263 @@ class ServingManager:
                     f"start={type(error).__name__}: {error}; stop={cleanup_error}"
                 ) from error
             raise
+
+    def _take_over_or_clear(
+        self,
+        identity: ChairIdentity,
+        profile: ServingProfile,
+        events: dict[str, object],
+    ) -> ServiceHandle | None:
+        """Take over a handed-off service this row shares, or stop whatever was handed off.
+
+        A refused take-over, and a handed-off service stopped to make room, are
+        noted in `events`, which the launch audit of the start that follows carries.
+        """
+
+        try:
+            record = self._read_hand_off()
+        except _HandOffUnreadable as error:
+            self._remove_hand_off()
+            events["hand_off_discarded"] = str(error)
+            return None
+        if record is None:
+            return None
+        if profile.shares_service_with is not None:
+            try:
+                return self._adopt(identity, profile, record)
+            except _AdoptionRefused as refused:
+                events["adoption_refused"] = str(refused)
+        events["displaced_service"] = self._displace(record)
+        return None
+
+    def _adopt(
+        self, identity: ChairIdentity, profile: ServingProfile, record: Mapping[str, Any]
+    ) -> ServiceHandle:
+        """Take over the handed-off service, publishing a receipt and audit for `identity`.
+
+        Every check runs before anything is published, and any failure is an
+        `_AdoptionRefused` naming why; the caller then stops that service and
+        starts this row itself.
+        """
+
+        def refuse(reason: str) -> NoReturn:
+            raise _AdoptionRefused(reason)
+
+        if record["chair"] != profile.shares_service_with:
+            refuse(
+                f"the handed-off service is chair {record['chair']!r}'s, and this row shares "
+                f"{profile.shares_service_with!r}'s"
+            )
+        if self.service_scope is None or record["service_scope"] != self.service_scope:
+            refuse("the service was handed off by another run")
+        audit = record["launch_audit"]
+        if hashlib.sha256(canonical_bytes(audit)).hexdigest() != record["audit_reference"].get(
+            "sha256"
+        ):
+            refuse("the hand-off's launch audit is not the one its reference names")
+        if audit.get("configuration_inputs") != self.config_inputs.to_record():
+            refuse("the service was launched under other sealed serving configuration")
+        served_identity = audit.get("chair_identity")
+        if not isinstance(served_identity, Mapping) or _without_role(
+            served_identity
+        ) != _without_role(identity.to_record()):
+            refuse(
+                f"chair {record['chair']!r} serves another checkpoint than {identity.role!r} "
+                "is configured with"
+            )
+        launched = audit.get("profile")
+        if not isinstance(launched, Mapping) or launched.get("tier") != profile.tier:
+            refuse("the service was launched at another placement tier")
+        try:
+            snapshot = self.registry.ensure(identity)
+            assert_processor_geometry(snapshot, profile)
+            argv = render_vllm_argv(
+                command_prefix=self.command_prefix, profile=profile, snapshot=snapshot
+            )
+            observed_packages = self._assert_runtime(profile)
+        except (ChairRefusal, ServingError) as error:
+            refuse(f"this chair could not be checked against it: {error}")
+        command = audit.get("command")
+        if not isinstance(command, Mapping) or command.get("argv_sha256") != _argv_sha256(argv):
+            refuse(
+                "this row and snapshot render another vLLM command than the one the service "
+                "was launched with"
+            )
+        runtime = audit.get("runtime_packages")
+        if not isinstance(runtime, Mapping) or runtime.get("observed") != observed_packages:
+            refuse("the installed packages differ from those the service was launched under")
+        try:
+            process = self.launcher.attach(
+                record["pid"], record["start_marker"], Path(record["log_path"])
+            )
+        except ProcessLaunchError as error:
+            refuse(f"the handed-off process is gone: {error}")
+        endpoint = profile.endpoint
+        try:
+            health = self._get(health_url(endpoint), _READINESS_PROBE_TIMEOUT_SECONDS)
+            if health.status != 200:
+                refuse(f"/health answered HTTP {health.status}")
+            models = self._get(models_url(endpoint), _READINESS_PROBE_TIMEOUT_SECONDS)
+            model_ids = require_exact_model_id(models, profile.served_model_id)
+        except (EndpointUnavailable, ServingError) as error:
+            refuse(f"the handed-off service did not answer: {error}")
+        # Consumed before publishing, so no later start stops a service this
+        # manager now holds; from here a failure stops it before refusing.
+        self._remove_hand_off()
+        adopted_at = _utc_stamp(self.now())
+        try:
+            details = ServingDetails(
+                tokenizer_revision=identity.receipt_revision,
+                seed=profile.seed,
+                context_cap=profile.max_model_len,
+                pixel_cap=profile.max_pixels,
+                engine="vllm",
+                engine_version=observed_packages["vllm"],
+                dtype=profile.dtype,
+                adapter_identity=None,
+                endpoint=endpoint,
+                started_at=audit["started_at"],
+            )
+            receipt = self.registry.receipt(identity, details)
+            adopted_audit = {
+                **self._launch_audit(
+                    identity=identity,
+                    profile=profile,
+                    process=process,
+                    argv=argv,
+                    readiness=audit["readiness"],
+                    snapshot=snapshot,
+                    runtime_packages=observed_packages,
+                    started_at=audit["started_at"],
+                ),
+                "launch_purpose": ADOPTED_LAUNCH,
+                "adoption": {
+                    "from_chair": record["chair"],
+                    "receipt_reference": dict(record["receipt_reference"]),
+                    "audit_reference": dict(record["audit_reference"]),
+                    "evidence_reference": dict(record["evidence_reference"]),
+                    "launched_for": audit.get("launch_purpose"),
+                    "adopted_for": self.launch_purpose,
+                    "adopted_at": adopted_at,
+                    "health_status": health.status,
+                    "model_ids": list(model_ids),
+                },
+            }
+            publication = self._publish(receipt, adopted_audit)
+        except BaseException as error:
+            stop_failure = self._attempt_cleanup_adopted(process, endpoint, identity)
+            if stop_failure is not None:
+                raise stop_failure from error
+            if isinstance(error, Exception):
+                refuse(f"the take-over could not be recorded: {type(error).__name__}: {error}")
+            raise
+        handle = ServiceHandle(
+            self,
+            identity,
+            profile,
+            process,
+            receipt,
+            publication.receipt_reference,
+            frozen_json(adopted_audit),
+            publication.audit_reference,
+            publication.evidence_reference,
+            log_path=Path(record["log_path"]),
+        )
+        self._active = handle
+        self._adopted = True
+        return handle
+
+    def _displace(self, record: Mapping[str, Any]) -> Mapping[str, object]:
+        """Stop a handed-off service and consume its record; what was done, for the audit."""
+
+        noted = {"chair": record["chair"], "pid": record["pid"]}
+        try:
+            process = self.launcher.attach(
+                record["pid"], record["start_marker"], Path(record["log_path"])
+            )
+        except ProcessLaunchError:
+            self._remove_hand_off()
+            return {**noted, "outcome": "already-exited"}
+        self._stop_process(process)
+        self._assert_endpoint_absent(str(record["endpoint"]))
+        self._remove_hand_off()
+        return {**noted, "outcome": "stopped"}
+
+    def _attempt_cleanup_adopted(
+        self, process: ServerProcess, endpoint: str, identity: ChairIdentity
+    ) -> ServiceStopError | None:
+        """Stop a service taken over moments ago, before anything names it."""
+
+        try:
+            self._stop_process(process)
+            self._assert_endpoint_absent(endpoint)
+            self._prove_lease_free(identity)
+        except BaseException as error:
+            if isinstance(error, ServiceStopError):
+                return error
+            return ServiceStopError(
+                f"a taken-over service could not be stopped: {type(error).__name__}: {error}"
+            )
+        return None
+
+    def _prove_lease_free(self, identity: ChairIdentity) -> None:
+        """After a taken-over service stopped, show its lease went with it."""
+
+        try:
+            self.residency_lease.acquire(identity).release()
+        except ServingError as error:
+            raise ServiceStopError(
+                f"the taken-over service stopped, but the card's lease is still held: {error}"
+            ) from error
+
+    def _read_hand_off(self) -> Mapping[str, Any] | None:
+        """The hand-off record beside the lease, `None` when there is none."""
+
+        if self.hand_off_path is None:
+            return None
+        try:
+            descriptor = os.open(self.hand_off_path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            raise _HandOffUnreadable(f"the hand-off record could not be opened: {error}") from error
+        try:
+            with os.fdopen(descriptor, "rb") as stream:
+                record = json.loads(stream.read())
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise _HandOffUnreadable(f"the hand-off record could not be read: {error}") from error
+        if (
+            not isinstance(record, dict)
+            or set(record) != _HAND_OFF_FIELDS
+            or record["schema"] != HAND_OFF_SCHEMA
+            or type(record["pid"]) is not int
+            or record["pid"] <= 1
+            or not all(
+                isinstance(record[name], str) and record[name]
+                for name in ("chair", "service_scope", "start_marker", "log_path", "endpoint")
+            )
+            or not all(
+                isinstance(record[name], dict)
+                for name in (
+                    "receipt_reference",
+                    "audit_reference",
+                    "evidence_reference",
+                    "launch_audit",
+                )
+            )
+        ):
+            raise _HandOffUnreadable("the hand-off record is not its closed schema")
+        return record
+
+    def _remove_hand_off(self) -> None:
+        if self.hand_off_path is None:
+            return
+        try:
+            self.hand_off_path.unlink(missing_ok=True)
+        except OSError as error:
+            raise ServiceStopError(
+                f"the hand-off record {self.hand_off_path} could not be removed: {error}"
+            ) from error
 
     def _publish(self, receipt: ServingReceipt, audit: Mapping[str, object]) -> ReceiptPublication:
         publication_audit, _ = seal_json_object(audit, label="serving launch audit")
@@ -583,7 +892,10 @@ class ServingManager:
         try:
             self._stop_process(handle.process)
             self._assert_endpoint_absent(handle.endpoint)
-            self._release_residency()
+            if self._adopted:
+                self._prove_lease_free(handle.identity)
+            else:
+                self._release_residency()
         except BaseException as error:
             # Keep the handle and the lease, so a failed shutdown cannot lead to
             # a second resident GPU process; `stop()` may be called again.
@@ -594,6 +906,87 @@ class ServingManager:
             raise ServiceStopError(f"{type(error).__name__}: {error}") from error
         else:
             self._active = None
+            self._adopted = False
+
+    def hand_off(self, handle: ServiceHandle) -> bool:
+        """Leave this running service for the next stage's process to take over.
+
+        Writes the hand-off record beside the lease and gives up this manager's
+        lease descriptor without unlocking it: the service's own process
+        inherited the lease, so the card stays leased while it lives. The next
+        manager whose row shares this service takes it over
+        (`_take_over_or_clear`); any other start stops it first. Returns
+        `False`, with nothing changed, when the service cannot be handed over
+        (no hand-off path or run scope, an exited process, a process whose start
+        cannot be told apart from a later one, or a record already there); the
+        caller then stops it as usual.
+        """
+
+        self._require_active(handle)
+        process = handle.process
+        if (
+            self.hand_off_path is None
+            or self.service_scope is None
+            or self._adopted
+            or self._residency_handle is None
+            or handle.log_path is None
+            or process.poll() is not None
+            or process.start_marker is None
+        ):
+            return False
+        record = {
+            "schema": HAND_OFF_SCHEMA,
+            "chair": handle.identity.role,
+            "service_scope": self.service_scope,
+            "pid": process.pid,
+            "start_marker": process.start_marker,
+            "log_path": str(handle.log_path),
+            "endpoint": handle.endpoint,
+            "receipt_reference": dict(handle.receipt_reference),
+            "audit_reference": dict(handle.audit_reference),
+            "evidence_reference": dict(handle.evidence_reference),
+            "launch_audit": thawed_json(handle.launch_audit),
+        }
+        try:
+            descriptor = os.open(
+                self.hand_off_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
+            )
+        except OSError:
+            return False
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(canonical_bytes(record))
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError:
+            self._remove_hand_off()
+            return False
+        self._residency_handle.relinquish()
+        self._residency_handle = None
+        self._active = None
+        return True
+
+    def reclaim_hand_off(self) -> Mapping[str, object] | None:
+        """Stop a service handed off by an earlier process that nobody took over.
+
+        Returns what was found and done, or `None` when there was no hand-off.
+        An unverified stop raises `ServiceStopError`, and the service keeps the
+        card's lease.
+        """
+
+        if self._active is not None or self._residency_handle is not None:
+            raise ServiceStopError(
+                "this manager holds a service of its own; a handed-off one is reclaimed only "
+                "before a start"
+            )
+        try:
+            record = self._read_hand_off()
+        except _HandOffUnreadable as error:
+            self._remove_hand_off()
+            return {"discarded": str(error)}
+        if record is None:
+            return None
+        return self._displace(record)
 
     def recover(self) -> None:
         """Retry the cleanup a failed start or a failed stop left; never a launch path.
@@ -791,16 +1184,14 @@ class ServingManager:
         profile: ServingProfile,
         process: ServerProcess,
         argv: tuple[str, ...],
-        readiness: ReadinessEvidence,
+        readiness: Mapping[str, object],
         snapshot: VerifiedSnapshot,
         runtime_packages: Mapping[str, str],
         started_at: str,
     ) -> Mapping[str, object]:
         """Return operational evidence kept outside the receipt schema."""
 
-        argv_digest = hashlib.sha256(
-            json.dumps(list(argv), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
+        argv_digest = _argv_sha256(argv)
         pins = model_and_tokenizer_pins(snapshot.identity)
         # A local-repository chair has no commit; `revision_kind` says which pin
         # bound the launch instead of leaving nulls.
@@ -861,7 +1252,7 @@ class ServingManager:
                 },
                 "chair_identity": snapshot.identity.to_record(),
                 "manifest_digest": snapshot.manifest_digest,
-                "readiness": readiness.to_record(),
+                "readiness": dict(readiness),
             }
         )
 
@@ -1525,3 +1916,21 @@ def _active_chat_image_bytes(payload: Mapping[str, object], *, label: str) -> by
             f"{label} must contain exactly one active image_url content block and no ignored image_url fields"
         )
     return images[0]
+
+
+class _AdoptionRefused(Exception):
+    """Why a handed-off service was not taken over; the start goes on and records it."""
+
+
+class _HandOffUnreadable(Exception):
+    """A hand-off record that cannot be trusted to name a process."""
+
+
+def _argv_sha256(argv: tuple[str, ...]) -> str:
+    return hashlib.sha256(
+        json.dumps(list(argv), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _without_role(identity: Mapping[str, object]) -> dict[str, object]:
+    return {key: value for key, value in identity.items() if key not in _ROLE_FIELDS}

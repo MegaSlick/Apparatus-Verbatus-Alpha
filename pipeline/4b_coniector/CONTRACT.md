@@ -95,7 +95,15 @@ findings, not_made}`. Outcome `made` or `not-made`.
 ## Calls
 
 A live chair is started on the main thread when the first call that will be sent
-is drawn, so a pass whose every call is already sealed loads no model. Calls are
+is drawn, so a pass whose every call is already sealed loads no model. When the
+Perlector left its chair serving for this stage and the reconstructor's row shares
+that service, starting the chair takes the running service over instead of loading
+the model again; its receipt names the reconstructor and keeps the service's start
+moment, and its launch audit says `launch_purpose = "adopted"` and what it was
+taken over from. A take-over any check refuses stops that service and starts the
+chair as usual, the reason in the launch audit (`operations/serving/README.md`, "A
+shared service"). A pass that sends nothing stops a service left for it before its
+seal. Calls are
 sent through `common.in_order_window`: up to the serving row's `max_num_seqs` in
 flight at once on a live row, one at a time otherwise. Only the request itself
 leaves the main thread; each call's record and its reconstructions are published

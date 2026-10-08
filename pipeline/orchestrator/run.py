@@ -414,8 +414,12 @@ def _require_absolute_caller_paths(args: argparse.Namespace) -> None:
             )
 
 
-def invoke(program: str, args: argparse.Namespace) -> int:
-    """Run one stage as a program and return its exit code."""
+def invoke(program: str, args: argparse.Namespace, *, coniector_next: bool = False) -> int:
+    """Run one stage as a program and return its exit code.
+
+    `coniector_next` tells the Perlector the Coniector runs right after it in this
+    invocation, so it may leave a chair the two share running for it.
+    """
     require_coherent_ingress_options(args)
     _require_absolute_caller_paths(args)
     command = [
@@ -497,6 +501,8 @@ def invoke(program: str, args: argparse.Namespace) -> int:
             (("--perlector-concurrency", getattr(args, "perlector_concurrency", None)),),
             omit_unset=True,
         )
+        if coniector_next:
+            command.append("--hand-off-to-coniector")
 
     # Streams are inherited, not buffered: stage output is unbounded, and a
     # partial Door's private refusal report must reach the operator's terminal.
@@ -632,8 +638,12 @@ def _serving_spans(
                 continue
             launched = audit.get("started_at")
             ready = (audit.get("readiness") or {}).get("ready_at")
+            # A service taken over from the stage before keeps its launch moment; it is
+            # this invocation's from the moment it was taken over.
+            adopted_at = (audit.get("adoption") or {}).get("adopted_at")
+            moment = adopted_at if isinstance(adopted_at, str) else launched
             # Only this invocation's launches; an earlier pass's audits stay in the store.
-            if not isinstance(launched, str) or launched < started_at:
+            if not isinstance(moment, str) or moment < started_at:
                 continue
             spans.append(
                 {
@@ -641,6 +651,7 @@ def _serving_spans(
                     "launch_purpose": audit.get("launch_purpose"),
                     "started_at": launched,
                     "ready_at": ready,
+                    "adopted_at": adopted_at if isinstance(adopted_at, str) else None,
                     "ready_seconds": (
                         _seconds_between(launched, ready) if isinstance(ready, str) else None
                     ),
@@ -1153,7 +1164,9 @@ def _drive(
                 )
                 report_held_recensor(args, held)
                 return EXIT_HELD, False
-        result = invoke(STAGE_PROGRAMS[name], args)
+        result = invoke(
+            STAGE_PROGRAMS[name], args, coniector_next=name == "perlector" and CONIECTOR in names
+        )
         if getattr(args, "stage_sync", None) is not None:
             # Printed, not journaled: the stage's journal entry is already written,
             # and a sync line of its own would count as a stage entry to its readers.

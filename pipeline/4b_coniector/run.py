@@ -121,6 +121,7 @@ class _Chair:
         self.decoding_sha256 = decoding_sha256
         self.client_factory = client_factory
         self.client = None
+        self.started = False
         self.receipt_ref = None
         self.fixture_receipt_ref = None
 
@@ -134,6 +135,7 @@ class _Chair:
         ).for_identity(self.identity, self.context.args.placement_tier)
 
     def start(self) -> None:
+        self.started = True
         # Assigned before entering so `close` covers a failed start.
         self.client = self.client_factory(
             self.context,
@@ -150,6 +152,22 @@ class _Chair:
         if client is not None:
             client.__exit__()
 
+    def reclaim(self) -> None:
+        """Stop the Perlector's chair if it was left serving for this stage and never taken
+        over, because this pass sent nothing; a chair this pass started is already closed."""
+        if not (self.present and self.live) or self.started:
+            return
+        client = self.client_factory(
+            self.context,
+            self.identity,
+            self.context.args.placement_tier,
+            decoding_policy=self.decoding,
+            decoding_config_sha256=self.decoding_sha256,
+        )
+        reclaimed = client.reclaim_hand_off()
+        if reclaimed is not None:
+            print(f"coniector: stopped a chair left serving for it: {reclaimed}", file=sys.stderr)
+
     def maker(self, *, asked: bool) -> dict:
         """Who made a call's reconstructions: the chair, and the receipt of what served it."""
         receipt = None
@@ -162,6 +180,23 @@ class _Chair:
                 )
             receipt = self.fixture_receipt_ref
         return expected_maker(self.identity, receipt)
+
+
+def _reclaiming_chair(context, decoding, decoding_sha256, client_factory):
+    """The chair of a pass that asks nothing, for `reclaim` only.
+
+    A row that cannot be resolved live (no placement tier, a fixture catalogue) is
+    one the Perlector could not have shared a service with, so nothing is reclaimed.
+    """
+    try:
+        return _Chair(context, decoding, decoding_sha256, client_factory)
+    except (ContractError, serving_errors.ServingError):
+        return _NoChair()
+
+
+class _NoChair:
+    def reclaim(self) -> None:
+        return None
 
 
 def _publish_plan(context, plan: dict) -> bool:
@@ -478,9 +513,10 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     context.require_sealed_config("decoding", decoding_sha256)
     plan_entries, shown = diplomatic_entries(context, reading_acts(context))
     plan = plan_payload(policy, plan_entries)
+    factory = serving_factory or stage_chair_client
     chair = None
     if plan["calls"]:
-        chair = _Chair(context, decoding, decoding_sha256, serving_factory or stage_chair_client)
+        chair = _Chair(context, decoding, decoding_sha256, factory)
         refuse_unlive_real_reading(context, chair.identity, chair.serving_mode, stage="Coniector")
     replanned = _publish_plan(context, plan)
     try:
@@ -491,6 +527,9 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
     finally:
         if chair is not None:
             chair.close()
+    # Before the seal, like the close above: a chair the Perlector left serving for
+    # this stage is stopped here when nothing took it over.
+    (chair or _reclaiming_chair(context, decoding, decoding_sha256, factory)).reclaim()
     print(
         f"coniector: mode {policy.mode}, {len(plan['calls'])} call(s)",
         file=sys.stderr,

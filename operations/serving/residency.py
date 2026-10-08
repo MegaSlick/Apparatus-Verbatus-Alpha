@@ -27,6 +27,10 @@ from .errors import ResidencyError, ServiceStopError
 # two vLLM servers could share one GPU with no refusal. A caller wanting a different
 # boundary passes its own path to `FileResidencyLease` instead.
 POD_RESIDENCY_LOCK_PATH: Final = Path("/tmp/verbatus-pod-gpu.lock")
+# Beside the lease: the record a manager leaves when it hands its running
+# service to the next stage's process (`ServingManager.hand_off`). Like the
+# lease it is about the card, not a run tree.
+POD_HAND_OFF_PATH: Final = Path("/tmp/verbatus-pod-gpu.hand-off.json")
 
 
 class ResidencyHandle(Protocol):
@@ -42,6 +46,15 @@ class ResidencyHandle(Protocol):
 
     def release(self) -> None:
         """Release this exact lease."""
+
+    def relinquish(self) -> None:
+        """Close this manager's descriptor without unlocking.
+
+        The owned child inherited the same open-file description, so the lock
+        stays held for as long as that process lives. Used only when the
+        running service is handed to another process, which proves the lease
+        free once it has stopped the service.
+        """
 
 
 class ResidencyLease(Protocol):
@@ -92,6 +105,12 @@ class _FileResidencyHandle:
                 f"serving residency lease {self.path} was released but its descriptor "
                 f"could not be closed: {error}"
             ) from error
+
+    def relinquish(self) -> None:
+        handle, self._handle = self._handle, None
+        if handle is not None:
+            # No LOCK_UN: that would unlock the description the child shares.
+            _close_quietly(handle)
 
 
 class FileResidencyLease:
