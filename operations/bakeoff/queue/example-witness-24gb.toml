@@ -1,0 +1,53 @@
+# The three witness models on one 24-48 GB card, then a CPU arm beside them.
+# Launch: see "Queue runner" in operations/bakeoff/README.md. Paths are the pod's.
+schema = "bakeoff-queue.v1"
+name = "witness-24gb"
+pages = "/workspace/private/bakeoff-pages"
+out = "/workspace/private/bakeoff/witness-cache"
+sync_to = "/workspace/private/bakeoff/witness-cache-home"
+own_disk = false
+smoke_pages = 2
+behind_schedule_min = 30
+end_pod = "delete"
+# hard_stop_min = 240            # the lead's cap for the day; off unless set
+
+[[arms]]
+name = "chandra"
+time_box_min = 25
+cut = "never"
+gpu = true
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "chandra",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache",
+  "--store-root", "/workspace/private/model-store"]
+
+[[arms]]
+name = "dai"
+time_box_min = 30
+cut = "never"
+gpu = true
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "dai",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache",
+  "--store-root", "/workspace/private/model-store", "--detector-threads", "4"]
+
+[[arms]]
+name = "churro"
+time_box_min = 25
+cut = "behind-schedule"
+gpu = true
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "churro",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache",
+  "--store-root", "/workspace/private/model-store"]
+
+# A CPU arm runs beside the GPU arms. Placeholder: replace with a line arm's own venv and
+# module once it exists (operations/bakeoff/lines/<module>.py, the native arm CLI).
+[[arms]]
+name = "kraken-ppocrv6-blla"
+time_box_min = 40
+cut = "install-failed"
+gpu = false
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "install",
+  "--venv-dir", "/workspace/private/bakeoff/venvs/kraken-ppocrv6"]
+command = ["/workspace/private/bakeoff/venvs/kraken-ppocrv6/bin/python", "-m",
+  "operations.bakeoff.lines.kraken_ppocr", "run", "--pages", "/workspace/private/bakeoff-pages",
+  "--out", "/workspace/private/bakeoff/witness-cache", "--label", "kraken-ppocrv6-blla",
+  "--lines", "blla", "--device", "cpu", "--threads", "8"]

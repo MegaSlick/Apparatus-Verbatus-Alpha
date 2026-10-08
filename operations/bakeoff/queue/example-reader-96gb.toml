@@ -1,0 +1,31 @@
+# The reader with no witnesses on the 96 GB card: two plain-prompt models in turn.
+# Weights are local snapshots on the volume; repo and revision are recorded in each page.
+schema = "bakeoff-queue.v1"
+name = "reader-96gb"
+pages = "/workspace/private/bakeoff-pages"
+out = "/workspace/private/bakeoff/reader-cache"
+sync_to = "/workspace/private/bakeoff/reader-cache-home"
+own_disk = false
+smoke_pages = 2
+behind_schedule_min = 30
+end_pod = "delete"
+
+[[arms]]
+name = "qwen35-27b-blind"
+time_box_min = 45
+cut = "never"
+gpu = true
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-blind",
+  "--label", "qwen35-27b-blind", "--weights", "/workspace/private/model-store/hf/qwen3.5-27b",
+  "--repo", "<repo id>", "--revision", "<commit>",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
+
+[[arms]]
+name = "qwen35-9b-blind"
+time_box_min = 25
+cut = "overrun"
+gpu = true
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-blind",
+  "--label", "qwen35-9b-blind", "--weights", "/workspace/private/model-store/hf/qwen3.5-9b",
+  "--repo", "<repo id>", "--revision", "<commit>",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]

@@ -147,3 +147,42 @@ How it scores:
   plan's section 9 are not computed here; the cache has what they need.
 - Nothing here has run on a GPU yet: the tests use a fake server, and DAI's detector is
   faked in the tests (it needs `ultralytics`, which only the pod has).
+
+## Queue runner
+
+`queue_runner.py` runs one pod's whole day from a manifest (`queue/example-*.toml`,
+schema `bakeoff-queue.v1`) and ends the pod itself, so no laptop has to notice when a job
+ends. Arms run in order; each runs a smoke of `smoke_pages` pages (`--limit N` appended),
+then the full run. The next arm's `install` and `prepare` run on the CPU while this arm's
+command holds the card; a `gpu = false` arm runs beside the GPU arms. A failed arm is
+retried once at the end. Time boxes never kill work: an overrun is pinged once, and the
+`cut` rule only skips later arms (`overrun`, `behind-schedule`, `install-failed`;
+`never` always runs). `hard_stop_min`, off unless set, stops the arm in flight and ends
+the day early. `status.json` beside the cache is rewritten every 30 s; the queue's events
+join `events.jsonl`; each milestone pings the phone once.
+
+At the end it copies the cache to `sync_to` (`rsync -rt`), compares every file's sha256,
+writes `DONE.json` (digests and summary) to both, pings, and ends the pod: with a guard
+heartbeat younger than 5 min it moves the guard's deadline to now (the guard deletes, with
+its retries and stop fallback); otherwise it runs `operations/pod/pod_delete.sh`. With
+`own_disk = true` it refuses unless the copy verified; `end_pod = "none"` keeps the pod.
+SIGTERM stops the arm and exits 143 without ending the pod.
+
+On the pod (`validate` and `run --dry-run` first):
+
+```sh
+setsid nohup .venv/bin/python -m operations.bakeoff.queue_runner run \
+  --manifest operations/bakeoff/queue/example-witness-24gb.toml \
+  > /workspace/private/bakeoff/queue-witness-24gb.log 2>&1 < /dev/null &
+```
+
+On the Mac: `watch` prints a line per change and exits 0 at `DONE.json`, 1 on failure;
+`watch --ntfy --queue witness-24gb` follows the phone topic instead. `fetch` copies the
+cache home and checks every file against `DONE.json`:
+
+```sh
+.venv/bin/python -m operations.bakeoff.queue_runner watch --ssh "ssh -p <port> root@<ip>" \
+  --status /workspace/private/bakeoff/witness-cache/status.json
+.venv/bin/python -m operations.bakeoff.queue_runner fetch --ssh "ssh -p <port> root@<ip>" \
+  --remote /workspace/private/bakeoff/witness-cache --into private/bakeoff/witness-cache-<date>
+```
