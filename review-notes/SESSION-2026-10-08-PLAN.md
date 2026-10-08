@@ -65,3 +65,14 @@ CPU pod (decision 6), Surya on GPU (declined), decoding changes (lead's call).
 
 A short note for the lead (phone-length): what merged, what each saves on the
 2026-10-07 numbers, what the next live pod must check, and one recommended next step.
+
+## Lead decisions for this session (2026-10-08)
+
+- Merge as you go, grouped: one or two pull requests an hour at most, so CodeRabbit
+  keeps up.
+- Budgets (time and cost ceilings, the idle delete) are an option the lead turns on,
+  off by default: during testing the guard has deleted pods by mistake and is in the way.
+- Optimise for the two-card split: witnesses on the smallest, cheapest card that works;
+  the big model on a big card. Code scales up on its own to whatever card it lands on
+  (all cores, full GPU), and a full end-to-end on one card stays possible.
+- One public RecordGold record is authorised as the boot smoke image.
