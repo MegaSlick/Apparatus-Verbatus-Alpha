@@ -507,29 +507,33 @@ class BootstrapActions(Protocol):
 
 
 class BootstrapJournal:
-    """Durable bootstrap progress.  A crash leaves the current step incomplete."""
+    """Durable bootstrap progress.  A crash leaves the current step incomplete.
+
+    The journal sits on a network volume that outlives the pod, so a second pod
+    can be handed the same path.  Its completed steps -- the CUDA receipt above
+    all -- describe the first pod's GPU and disk, not the second's: resuming
+    them went red at once on 2026-10-08.  So, when ``pod_id`` is known, the
+    journal records it, and a journal written by any other pod (or by one that
+    did not record its id) is set aside under a pod-named sibling and a fresh
+    one started.  The same pod resumes exactly as before.
+    """
 
     def __init__(
-        self, path: str | Path, plan: BootstrapPlan, *, now: Callable[[], datetime] = utc_now
+        self,
+        path: str | Path,
+        plan: BootstrapPlan,
+        *,
+        now: Callable[[], datetime] = utc_now,
+        pod_id: str | None = None,
     ) -> None:
         self.path = Path(path)
         self.plan = plan
         self.now = now
+        self.pod_id = pod_id
 
     def load_or_create(self) -> dict[str, object]:
         if not self.path.exists():
-            record = {
-                "schema": BOOTSTRAP_SCHEMA,
-                "repository_commit": self.plan.repository_commit,
-                "lockfile": str(self.plan.lockfile),
-                "started_at": _stamp(self.now()),
-                "completed": [],
-                "receipts": {},
-                "status": "running",
-                "failure": None,
-            }
-            self._write(record)
-            return record
+            return self._create()
         try:
             raw = json.loads(self.path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -539,6 +543,14 @@ class BootstrapJournal:
                 "Preserve the broken journal for review, then start a new explicit bootstrap.",
             ) from error
         self._validate(raw)
+        if self.pod_id is not None and raw.get("pod_id") != self.pod_id:
+            aside = self._set_aside(raw.get("pod_id"))
+            print(
+                f"bootstrap journal {self.path} was written by pod {raw.get('pod_id')!r}, not "
+                f"this pod {self.pod_id!r}; kept as {aside} and starting a fresh journal",
+                file=sys.stderr,
+            )
+            return self._create()
         if raw["repository_commit"] != self.plan.repository_commit or raw["lockfile"] != str(
             self.plan.lockfile
         ):
@@ -548,6 +560,40 @@ class BootstrapJournal:
                 "Do not reuse this journal for another commit or lockfile; create a new run directory.",
             )
         return raw
+
+    def _create(self) -> dict[str, object]:
+        record = {
+            "schema": BOOTSTRAP_SCHEMA,
+            "repository_commit": self.plan.repository_commit,
+            "lockfile": str(self.plan.lockfile),
+            "started_at": _stamp(self.now()),
+            "completed": [],
+            "receipts": {},
+            "status": "running",
+            "failure": None,
+        }
+        if self.pod_id is not None:
+            record["pod_id"] = self.pod_id
+        self._write(record)
+        return record
+
+    def _set_aside(self, recorded: object) -> Path:
+        """Rename another pod's journal to a free sibling; never overwrite or delete it."""
+
+        label = recorded if isinstance(recorded, str) and recorded else "unrecorded"
+        stem, suffix = self.path.stem, self.path.suffix
+        for attempt in range(1, 1000):
+            extra = "" if attempt == 1 else f"-{attempt}"
+            aside = self.path.with_name(f"{stem}.pod-{label}{extra}{suffix}")
+            if aside.exists():
+                continue
+            self.path.rename(aside)
+            return aside
+        raise BootstrapStepFailure(
+            BootstrapStep.REPOSITORY,
+            f"no free name to set aside the other pod's journal {self.path}",
+            "Move the old journals aside by hand, then rerun.",
+        )
 
     def mark_complete(
         self, record: dict[str, object], step: BootstrapStep, receipt: dict[str, object]
@@ -600,7 +646,9 @@ class BootstrapJournal:
             "status",
             "failure",
         }
-        if set(raw) != required:
+        if not required <= set(raw) <= required | {"pod_id"} or not isinstance(
+            raw.get("pod_id", ""), str
+        ):
             raise BootstrapStepFailure(
                 BootstrapStep.REPOSITORY,
                 "bootstrap journal has missing or unknown fields",

@@ -5159,6 +5159,54 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
     assert actions.calls.count(BootstrapStep.PREFLIGHT) == 1
 
 
+def test_a_second_pod_sets_the_first_pods_journal_aside_and_same_pod_still_resumes(
+    tmp_path: Path,
+) -> None:
+    """2026-10-08: a replacement pod given the dead pod's journal went red at cuda-compat."""
+
+    class Actions(FakeBootstrapActions):
+        driver = "570.195.03"
+
+        def configure_cuda_compat(self) -> dict[str, object]:
+            return super().configure_cuda_compat() | {"driver": self.driver}
+
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("version = 1\n", encoding="utf-8")
+    path = tmp_path / "bootstrap-journal-run.json"
+    plan = BootstrapPlan("c" * 40, lockfile)
+
+    def run(pod_id: str | None, actions: Actions):
+        journal = BootstrapJournal(path, plan, now=lambda: START, pod_id=pod_id)
+        return Bootstrapper(journal, actions, environment={}).run()
+
+    first = Actions()
+    assert run("podA", first).green
+
+    # The same pod resumes: nothing paid runs again.
+    resumed = Actions()
+    assert run("podA", resumed).green
+    assert BootstrapStep.REPOSITORY not in resumed.calls
+
+    # Another pod with another driver starts fresh; the first journal is kept, not overwritten.
+    second = Actions()
+    second.driver = "580.95.05"
+    report = run("podB", second)
+    assert report.green
+    assert BootstrapStep.REPOSITORY in second.calls
+    assert report.receipts[BootstrapStep.CUDA_COMPAT.value]["driver"] == "580.95.05"
+    assert json.loads(path.read_text(encoding="utf-8"))["pod_id"] == "podB"
+    kept = tmp_path / "bootstrap-journal-run.pod-podA.json"
+    assert json.loads(kept.read_text(encoding="utf-8"))["pod_id"] == "podA"
+    assert json.loads(kept.read_text(encoding="utf-8"))["status"] == "green"
+
+    # A journal from before pods recorded their id is set aside too, under its own name.
+    legacy = json.loads(path.read_text(encoding="utf-8"))
+    del legacy["pod_id"]
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    assert run("podC", Actions()).green
+    assert (tmp_path / "bootstrap-journal-run.pod-unrecorded.json").exists()
+
+
 def test_cuda_resume_records_reinstallation_without_replacing_original_receipt(
     tmp_path: Path,
 ) -> None:

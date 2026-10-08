@@ -187,7 +187,13 @@ from .bootstrap import (
 from .chair_order import in_stage_need_order
 from .chair_prefill import ChairCachePrefill, PrefillChairs
 from .durable import atomic_write, canonical_json, exclusive_write
-from .models import POD_VOLUME_MOUNT_PATH, REQUESTED_GPU_COUNT, require_utc, utc_now
+from .models import (
+    POD_ID_ENVIRONMENT,
+    POD_VOLUME_MOUNT_PATH,
+    REQUESTED_GPU_COUNT,
+    require_utc,
+    utc_now,
+)
 from .preflight import (
     PlacementRefusal,
     PreflightRunner,
@@ -1970,8 +1976,12 @@ def run_bootstrap(
     now: Callable[[], datetime],
     actions_factory: Callable[[Plan], BootstrapActions],
     environment: MutableMapping[str, str] | None = None,
+    pod_id: str | None = None,
 ) -> BootstrapReport | BootstrapRefused:
     """Run the journaled steps and return the report, or the refusal that ended them.
+
+    ``pod_id`` names the pod this runs on; a journal another pod wrote is then set
+    aside rather than resumed (``BootstrapJournal``).
 
     A red step is a returned red report -- the caller decides its exit. An
     action factory that cannot be built, or a result that cannot be written
@@ -1983,6 +1993,7 @@ def run_bootstrap(
         plan.journal,  # type: ignore[arg-type]
         BootstrapPlan(plan.repository_commit, plan.lockfile),  # type: ignore[arg-type]
         now=now,
+        pod_id=pod_id,
     )
     try:
         actions = actions_factory(plan)
@@ -2024,6 +2035,11 @@ def main(
 ) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     environment = os.environ if environ is None else environ
+    # Read before `prepare` scrubs the environment. This process is the pod's own
+    # start command, so its environment is the container's.
+    pod_id = environment.get(POD_ID_ENVIRONMENT) or None
+    if pod_id is not None and not (pod_id.isascii() and pod_id.isalnum()):
+        pod_id = None
     try:
         plan, hard_deadline = prepare(raw_argv, environment, now=now)
     except PlanRefusal as refusal:
@@ -2053,7 +2069,13 @@ def main(
         )
         return 0
 
-    report = run_bootstrap(plan, now=now, actions_factory=actions_factory, environment=environment)
+    report = run_bootstrap(
+        plan,
+        now=now,
+        actions_factory=actions_factory,
+        environment=environment,
+        pod_id=pod_id,
+    )
     if isinstance(report, BootstrapRefused):
         return EXIT_REFUSED
     if not report.green:
