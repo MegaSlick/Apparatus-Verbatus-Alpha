@@ -14,6 +14,11 @@ rather than retyped wherever they are importable without a run context:
   own YOLO record detector run on the CPU (`operations.serving.detector`).
 - qwen-blind: any vLLM vision model with a plain verbatim prompt, greedy, thinking off,
   `max_tokens` 12,288: the reader with no witnesses.
+- qwen-vendor: the same reader as its vendor documents a page transcription: the Qwen
+  cookbook's plain-text OCR instruction around the project's verbatim rules, no system
+  prompt, the model card's non-thinking sampling preset, the checkpoint's own pixel
+  bounds, thinking off, and no reply cap (the context's remainder). `--repo` picks the
+  family preset (`VENDOR_PRESETS`).
 
 Sampling comes from `config/decoding.toml` (the sealed per-chair rows); answer bounds from
 `common.request_capacity.DECLARED_ANSWER_BOUND_TOKENS`.
@@ -45,6 +50,58 @@ QWEN_BLIND_PROMPT = (
 )
 QWEN_BLIND_MAX_TOKENS = 12_288
 
+# The Qwen3-VL OCR cookbook's plain-text instruction, then the project's verbatim rules.
+QWEN_VENDOR_PROMPT = (
+    "Please output only the text content from the image without any additional "
+    "descriptions or formatting.\n"
+    "- Keep the original spelling, accents, abbreviations, punctuation and capitalisation "
+    "exactly as written; do not modernise, expand or correct anything.\n"
+    "- Write one output line for each written line on the page, in reading order.\n"
+    "- Write [[?]] where the ink cannot be read."
+)
+_QWEN_COOKBOOK = (
+    "https://github.com/QwenLM/Qwen3-VL/blob/96588727e44c78b25ba03ea03b8e12f7e64fd0da/"
+    "cookbooks/ocr.ipynb"
+)
+# Each model card's "Instruct (or non-thinking) mode" row, and the pixel bounds of the
+# checkpoint's own preprocessor_config.json (size.shortest_edge / size.longest_edge).
+_NON_THINKING = {
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "repetition_penalty": 1.0,
+}
+VENDOR_PRESETS: dict[str, dict[str, Any]] = {
+    "Qwen/Qwen3.8-": {
+        "family": "qwen3.8",
+        "sampling": _NON_THINKING,
+        "min_pixels": 65_536,
+        "max_pixels": 16_777_216,
+        "prompt_source": _QWEN_COOKBOOK,
+        "card": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/"
+        "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/README.md",
+    },
+    "Qwen/Qwen3.5-": {
+        "family": "qwen3.5",
+        "sampling": _NON_THINKING,
+        "min_pixels": 65_536,
+        "max_pixels": 16_777_216,
+        "prompt_source": _QWEN_COOKBOOK,
+        "card": "https://huggingface.co/Qwen/Qwen3.5-27B/blob/"
+        "fc05daec18b0a78c049392ed2e771dde82bdf654/README.md",
+    },
+}
+
+
+def vendor_preset(repo: str | None) -> dict[str, Any]:
+    """The family preset for a repo id; a repo outside every family is refused."""
+    for prefix, preset in VENDOR_PRESETS.items():
+        if repo and repo.startswith(prefix):
+            return preset
+    raise SystemExit(f"qwen-vendor has no preset for {repo!r}; known: {sorted(VENDOR_PRESETS)}")
+
 
 @dataclass(frozen=True)
 class Arm:
@@ -60,6 +117,7 @@ ARMS: dict[str, Arm] = {
     "dai": Arm("dai", "attestator_2", "dai-recordgold-atr", "record", "generic-48gb"),
     "churro": Arm("churro", "attestator_3", "churro-3B", "page", "generic-48gb"),
     "qwen-blind": Arm("qwen-blind", "perlector", None, "page", "generic-80gb-plus"),
+    "qwen-vendor": Arm("qwen-vendor", "perlector", None, "page", "generic-80gb-plus"),
 }
 DETECTOR_ARTIFACT = "yolov26-record-detection"
 DETECTOR_CHAIR = "secondary_proposer"
@@ -88,6 +146,14 @@ def serving_row(chair: str, tier: str) -> dict[str, Any]:
         if row.get("chair") == chair and row.get("tier") == tier and row.get("kind") == "vllm":
             return row
     raise SystemExit(f"no vLLM serving row for chair {chair!r} at tier {tier!r}")
+
+
+def arm_row(arm: Arm, row: dict[str, Any], repo: str | None) -> dict[str, Any]:
+    """The serving row as this arm serves it: qwen-vendor takes its family's pixel bounds."""
+    if arm.name != "qwen-vendor":
+        return row
+    preset = vendor_preset(repo)
+    return {**row, "min_pixels": preset["min_pixels"], "max_pixels": preset["max_pixels"]}
 
 
 def resolve_weights(
@@ -195,7 +261,7 @@ def page_units(arm: Arm, page_png: bytes, records: list[dict[str, int]] | None =
         target = resize_to_fit_churro(width, height)
         image = convert_png_to_rgb(resize_png_lanczos(crop_png(page_png, whole), *target))
         return [{"unit": "page", "bounds": whole, "png": image}]
-    if arm.name == "qwen-blind":
+    if arm.name in ("qwen-blind", "qwen-vendor"):
         return [{"unit": "page", "bounds": whole, "png": convert_png_to_rgb(page_png)}]
     if arm.name == "dai":
         feeding = _feeding()
@@ -229,12 +295,16 @@ def _prompt(arm: Arm, prompt_text: str | None) -> dict[str, str]:
         return {"system": churro_document.churro_system_prompt("registry-v0.3.0")}
     if arm.name == "dai":
         return dict(_feeding().dai_prompt())
+    if arm.name == "qwen-vendor":
+        return {"user": prompt_text or QWEN_VENDOR_PROMPT}
     return {"user": prompt_text or QWEN_BLIND_PROMPT}
 
 
-def _sampling(arm: Arm) -> dict[str, Any]:
+def _sampling(arm: Arm, repo: str | None = None) -> dict[str, Any]:
     if arm.name == "qwen-blind":
         return {"temperature": 0.0, "top_p": 1.0, "top_k": 0, "seed": 0}
+    if arm.name == "qwen-vendor":
+        return {**vendor_preset(repo)["sampling"], "seed": 0}
     from common.decoding import chair_decoding, load_decoding_policy
 
     policy, _ = load_decoding_policy(ROOT / "config" / "decoding.toml")
@@ -267,12 +337,14 @@ def build_request(
     served_name: str,
     max_model_len: int,
     prompt_text: str | None = None,
+    repo: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """(the chat-completions body, the request record cached beside the answer).
 
     `max_tokens` is the vendor's declared bound when it surely fits beside the prompt
     (prompt text counted as one token per byte, an over-count); otherwise it is left
     out and vLLM answers up to the context's remainder -- the pipeline's own rule.
+    qwen-vendor always leaves it out: no reply cap. `repo` picks qwen-vendor's preset.
     """
     prompt = _prompt(arm, prompt_text)
     png = unit["png"]
@@ -283,16 +355,18 @@ def build_request(
     if "user" in prompt:
         user.append({"type": "text", "text": prompt["user"]})
     messages.append({"role": "user", "content": user})
-    body: dict[str, Any] = {"model": served_name, "messages": messages, **_sampling(arm)}
-    if arm.name in ("chandra", "qwen-blind"):
+    body: dict[str, Any] = {"model": served_name, "messages": messages, **_sampling(arm, repo)}
+    if arm.name in ("chandra", "qwen-blind", "qwen-vendor"):
         body["chat_template_kwargs"] = {"enable_thinking": False}
     if arm.name == "dai":
         body.update(_feeding().dai_wire_stop_token_ids())
     width, height = _size(png)
-    declared = _declared_max_tokens(arm)
     text_bytes = sum(len(t.encode("utf-8")) for t in prompt.values())
     estimate = image_tokens(row, width, height) + text_bytes + 128
-    if estimate + declared <= max_model_len:
+    declared = None if arm.name == "qwen-vendor" else _declared_max_tokens(arm)
+    if declared is None:
+        basis = "omitted: no reply cap, the context's remainder"
+    elif estimate + declared <= max_model_len:
         body["max_tokens"] = declared
         basis = "declared-bound"
     else:
@@ -311,6 +385,17 @@ def build_request(
         "image_sha256": hashlib.sha256(png).hexdigest(),
         "image_tokens_estimate": image_tokens(row, width, height),
     }
+    if arm.name == "qwen-vendor":
+        preset = vendor_preset(repo)
+        record["vendor_preset"] = {
+            "repo": repo,
+            "family": preset["family"],
+            "prompt": prompt["user"],
+            "prompt_source": preset["prompt_source"],
+            "sampling_source": preset["card"],
+            "min_pixels": row["min_pixels"],
+            "max_pixels": row["max_pixels"],
+        }
     return body, record
 
 

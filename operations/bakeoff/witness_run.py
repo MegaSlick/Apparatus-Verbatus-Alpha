@@ -175,6 +175,7 @@ class ModelJob:
         identity = A.chair_identity(self.arm.chair)
         self.repo = args.repo or identity["repo"]
         self.revision = args.revision or identity["revision"]
+        self.row = A.arm_row(self.arm, self.row, self.repo)
         self.prompt_text = args.prompt_file.read_text("utf-8") if args.prompt_file else None
         self.served_name = f"bakeoff-{self.label}"
         self.weights: Path | None = None
@@ -235,6 +236,7 @@ class ModelJob:
                     served_name=self.served_name,
                     max_model_len=self.max_model_len,
                     prompt_text=self.prompt_text,
+                    repo=self.repo,
                 )
                 for unit in A.page_units(self.arm, png, records)
             ]
