@@ -62,6 +62,26 @@ class HttpTransport(Protocol):
         """Make one bounded request or raise :class:`EndpointUnavailable`."""
 
 
+class StreamingHttpTransport(HttpTransport, Protocol):
+    """A transport that can also read a streamed reply as it arrives."""
+
+    def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        body: bytes,
+        timeout_seconds: float,
+        on_chunk: Callable[[bytes], bool],
+    ) -> HttpResponse:
+        """Make one bounded request, handing each received piece of a 200's body to
+        ``on_chunk`` as it arrives; when ``on_chunk`` returns true, stop reading and
+        close the connection (the engine then abandons the request). The response's
+        body is every byte received, up to and including that piece. A non-200's
+        body is read whole and never handed over. Raises :class:`EndpointUnavailable`
+        as ``request`` does."""
+
+
 # Every legitimate response here (health/models/chat-completions) is a small,
 # local, well-known shape.  A response past this bound is refused rather than
 # buffered whole into memory.
@@ -147,33 +167,73 @@ class UrllibHttpTransport:
                 with contextlib.closing(error):
                     return HttpResponse(int(error.code), _bounded_read(error, deadline))
 
-        try:
-            return call_within_deadline(
-                exchange,
-                budget_seconds=timeout_seconds,
-                label=f"{method} {url}",
-                cancel=cancel,
-            )
-        except EndpointUnavailable:
-            # This module's own refusal, already carrying its classification.
-            # `EndpointUnavailable` is an OSError, so without this it would fall
-            # into the transport clause below and be reclassified as something
-            # observed on the wire.
-            raise
-        except DeadlineExceeded as error:
-            # An overrun says nothing about whether a listener owns the port, so
-            # it can never release the sequential residency lease.
-            raise EndpointUnavailable(str(error)) from error
-        except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
-            # An `HTTPException` — a truncated chunked body — arrives while
-            # reading a response that already had a status line, so it is
-            # neither an OSError nor wrapped in a URLError.  Left out it escapes
-            # this transport's one-response-or-one-refusal contract, and the
-            # readiness poll aborts a start it should have retried.
-            raise EndpointUnavailable(
-                f"{method} {url}: {type(error).__name__}: {error}",
-                definitively_absent=_connection_refused(error),
-            ) from error
+        return _within_deadline(exchange, method, url, timeout_seconds, cancel)
+
+    def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        body: bytes,
+        timeout_seconds: float,
+        on_chunk: Callable[[bytes], bool],
+    ) -> HttpResponse:
+        headers = {"Accept": "text/event-stream", "Content-Type": "application/json"}
+        request = urllib.request.Request(url, data=body, headers=headers, method=method)
+        # One whole-call deadline, as for `request`: a stream that is stopped early
+        # closes its connection on leaving the `with`, which is what tells the
+        # engine to abandon the request.
+        deadline = time.monotonic() + timeout_seconds
+        opener, cancel = _build_opener()
+
+        def exchange() -> HttpResponse:
+            try:
+                with opener.open(request, timeout=timeout_seconds) as response:
+                    return HttpResponse(
+                        int(response.status), _bounded_read(response, deadline, on_chunk)
+                    )
+            except urllib.error.HTTPError as error:
+                with contextlib.closing(error):
+                    return HttpResponse(int(error.code), _bounded_read(error, deadline))
+
+        return _within_deadline(exchange, method, url, timeout_seconds, cancel)
+
+
+def _within_deadline(
+    exchange: Callable[[], HttpResponse],
+    method: str,
+    url: str,
+    timeout_seconds: float,
+    cancel: Callable[[], None],
+) -> HttpResponse:
+    """One exchange under the whole-call deadline, its failures classified as one."""
+    try:
+        return call_within_deadline(
+            exchange,
+            budget_seconds=timeout_seconds,
+            label=f"{method} {url}",
+            cancel=cancel,
+        )
+    except EndpointUnavailable:
+        # This module's own refusal, already carrying its classification.
+        # `EndpointUnavailable` is an OSError, so without this it would fall
+        # into the transport clause below and be reclassified as something
+        # observed on the wire.
+        raise
+    except DeadlineExceeded as error:
+        # An overrun says nothing about whether a listener owns the port, so
+        # it can never release the sequential residency lease.
+        raise EndpointUnavailable(str(error)) from error
+    except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
+        # An `HTTPException` — a truncated chunked body — arrives while
+        # reading a response that already had a status line, so it is
+        # neither an OSError nor wrapped in a URLError.  Left out it escapes
+        # this transport's one-response-or-one-refusal contract, and the
+        # readiness poll aborts a start it should have retried.
+        raise EndpointUnavailable(
+            f"{method} {url}: {type(error).__name__}: {error}",
+            definitively_absent=_connection_refused(error),
+        ) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,8 +307,13 @@ def request_body(
     seed: int,
     deterministic: bool,
     sampling: Mapping[str, int | float] | None = None,
+    stream: bool = False,
 ) -> bytes:
-    """Render one request without allowing callers to lie about its target model."""
+    """Render one request without allowing callers to lie about its target model.
+
+    ``stream`` asks the engine for server-sent events, with a final usage event
+    (``stream_options.include_usage``), so a reply can be watched as it arrives.
+    """
 
     value = dict(payload)
     supplied = value.pop("model", None)
@@ -256,12 +321,14 @@ def request_body(
         raise ServingConfigurationError(
             f"request named model {supplied!r}, not this service's exact id {model_id!r}"
         )
-    if "stream" in value:
+    if "stream" in value or "stream_options" in value:
         raise ServingConfigurationError(
             "stream is manager-owned; serving probes require a complete response"
         )
     value["model"] = model_id
-    value["stream"] = False
+    value["stream"] = stream
+    if stream:
+        value["stream_options"] = {"include_usage": True}
     if deterministic:
         for field, expected in (("temperature", 0), ("seed", seed)):
             supplied = value.get(field)
@@ -445,6 +512,182 @@ def parse_openai_reading(
             ),
         ),
         usage=_usage(payload),
+    )
+
+
+# A streamed reply (`request_body(stream=True)`) is server-sent events: each event
+# ends at a blank line and carries one `data:` line, a chat-completion chunk or,
+# last, `[DONE]`.
+_SSE_EVENT_END = b"\n\n"
+SSE_DONE = "[DONE]"
+
+
+def sse_events(buffer: bytes) -> tuple[list[bytes], bytes]:
+    """``(complete events, the bytes after the last one)`` of a streamed body so far."""
+    normalized = buffer.replace(b"\r\n", b"\n")
+    *events, rest = normalized.split(_SSE_EVENT_END)
+    return [event for event in events if event.strip()], rest
+
+
+def sse_data(event: bytes) -> str | None:
+    """An event's data, its `data:` lines joined, or ``None`` when it carries none.
+
+    Raises ``UnicodeDecodeError`` for an event that is not UTF-8.
+    """
+    data = [
+        line[5:].removeprefix(" ")
+        for line in event.decode("utf-8").split("\n")
+        if line.startswith("data:")
+    ]
+    return "\n".join(data) if data else None
+
+
+def stream_chunk_content(data: str) -> str:
+    """The content one chunk's data adds, read loosely for watching a reply as it
+    arrives; anything that is not a one-choice chunk with string content adds
+    nothing here, and is judged by :func:`parse_openai_stream_reading` afterwards."""
+    try:
+        payload = json.loads(data)
+    except (ValueError, RecursionError):
+        return ""
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        return ""
+    delta = choices[0].get("delta")
+    content = delta.get("content") if isinstance(delta, dict) else None
+    return content if isinstance(content, str) else ""
+
+
+def peek_stream_model(body: bytes) -> str | None:
+    """The ``model`` the first complete chunk of a streamed body names, or ``None``."""
+    events, _rest = sse_events(body)
+    for event in events:
+        try:
+            data = sse_data(event)
+            payload = json.loads(data) if data is not None and data != SSE_DONE else None
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            return None
+        if isinstance(payload, dict):
+            model = payload.get("model")
+            return model if isinstance(model, str) else None
+    return None
+
+
+def parse_openai_stream_reading(
+    response: HttpResponse, *, kind: str, expected_model_id: str, stopped: bool
+) -> OpenAIResult:
+    """Parse one streamed witness/reader reply, as :func:`parse_openai_reading` parses a
+    whole one.
+
+    The content is every chunk's ``delta.content`` in order, the finish reason the
+    one chunk that gives one, and the usage the last usage a chunk carries. Every
+    chunk must name the expected model and carry at most one choice. ``stopped``
+    says the client abandoned the stream itself (a repetition loop): the bytes after
+    the last complete event are then the part of an event the read stopped inside,
+    and there is no ``[DONE]``. A stream the client did not stop must end on
+    ``[DONE]`` with nothing after it, or it is not a reading.
+    """
+
+    if kind != "chat-completions":
+        raise ChairRequestRefusal(
+            "CHAIR_REQUEST_INVALID",
+            f"reading kind {kind!r} is not supported; vision chairs are chat-completions only",
+        )
+    if response.status != 200:
+        raise ChairResponseRefusal(
+            "CHAIR_RESPONSE_HTTP_ERROR", f"reading response returned HTTP {response.status}"
+        )
+    events, rest = sse_events(response.body)
+    outputs: list[str] = []
+    finish_reason: str | None = None
+    usage: Mapping[str, object] | None = None
+    chunks = 0
+    done = False
+    for event in events:
+        if done:
+            raise ChairResponseRefusal(
+                "CHAIR_RESPONSE_INVALID", "streamed reply has an event after [DONE]"
+            )
+        try:
+            data = sse_data(event)
+        except UnicodeDecodeError as error:
+            raise ChairResponseRefusal(
+                "CHAIR_RESPONSE_INVALID", f"streamed reply has an event that is not UTF-8: {error}"
+            ) from error
+        if data is None:
+            continue
+        if data == SSE_DONE:
+            done = True
+            continue
+        try:
+            payload = json.loads(data)
+        except (ValueError, RecursionError) as error:
+            raise ChairResponseRefusal(
+                "CHAIR_RESPONSE_INVALID", f"streamed reply has a chunk that is not JSON: {error}"
+            ) from error
+        if not isinstance(payload, dict):
+            raise ChairResponseRefusal(
+                "CHAIR_RESPONSE_INVALID", "streamed reply has a chunk that is not a JSON object"
+            )
+        if "error" in payload:
+            # vLLM reports a failure after the 200 as an error event in the stream.
+            raise ChairResponseRefusal(
+                "CHAIR_RESPONSE_INVALID", "streamed reply carries an engine error event"
+            )
+        if payload.get("model") != expected_model_id:
+            raise ChairResponseRefusal(
+                "CHAIR_RESPONSE_MODEL_MISMATCH",
+                f"streamed reply chunk model={payload.get('model')!r}, expected "
+                f"{expected_model_id!r}",
+            )
+        chunks += 1
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or len(choices) > 1:
+            raise ChairResponseRefusal(
+                "CHAIR_RESPONSE_CHOICES_NOT_ONE",
+                "streamed reply has a chunk with other than one choice",
+            )
+        if payload.get("usage") is not None:
+            usage = _usage(payload)
+        if not choices:
+            continue
+        choice = choices[0]
+        delta = choice.get("delta") if isinstance(choice, dict) else None
+        if not isinstance(delta, dict) or choice.get("index", 0) != 0:
+            raise ChairResponseRefusal(
+                "CHAIR_RESPONSE_CHOICES_NOT_ONE", "streamed reply chunk's choice is not one delta"
+            )
+        content = delta.get("content")
+        if content is not None and not isinstance(content, str):
+            raise ChairResponseRefusal(
+                "CHAIR_RESPONSE_CONTENT_MISSING", "streamed reply chunk's content is not a string"
+            )
+        outputs.append(content or "")
+        reason = _finish_reason(
+            choice, refuse=lambda detail: ChairResponseRefusal("CHAIR_RESPONSE_INVALID", detail)
+        )
+        if reason is not None:
+            if finish_reason is not None:
+                raise ChairResponseRefusal(
+                    "CHAIR_RESPONSE_INVALID", "streamed reply gives more than one finish reason"
+                )
+            finish_reason = reason
+    if not stopped and (not done or rest.strip()):
+        raise ChairResponseRefusal(
+            "CHAIR_RESPONSE_INVALID",
+            "streamed reply ended without [DONE], or with bytes after it, and the client did "
+            "not stop it",
+        )
+    if chunks == 0:
+        raise ChairResponseRefusal(
+            "CHAIR_RESPONSE_CONTENT_MISSING", "streamed reply carries no chunk at all"
+        )
+    return OpenAIResult(
+        model_id=expected_model_id,
+        outputs=("".join(outputs),),
+        response_sha256=hashlib.sha256(response.body).hexdigest(),
+        finish_reasons=(finish_reason,),
+        usage=usage,
     )
 
 
@@ -694,7 +937,9 @@ def _connection_refused(error: BaseException) -> bool:
     return getattr(reason, "errno", None) == errno.ECONNREFUSED
 
 
-def _bounded_read(response: Any, deadline: float) -> bytes:
+def _bounded_read(
+    response: Any, deadline: float, on_chunk: Callable[[bytes], bool] | None = None
+) -> bytes:
     """Read a body bounded in both size and time.
 
     ``deadline`` is the caller's whole-call monotonic deadline, set before the
@@ -714,6 +959,9 @@ def _bounded_read(response: Any, deadline: float) -> bytes:
     raising `IncompleteRead` the way ``read`` would for a `Content-Length`
     body; the `length` check below catches that case for an identity body
     (a chunked body still raises `IncompleteRead` and reaches the caller).
+
+    ``on_chunk``, for a streamed reply, is handed each piece as it arrives; when
+    it returns true the read stops there, and what was received is the body.
     """
 
     remaining = _MAX_RESPONSE_BYTES + 1
@@ -724,6 +972,8 @@ def _bounded_read(response: Any, deadline: float) -> bytes:
             break
         chunks.append(chunk)
         remaining -= len(chunk)
+        if on_chunk is not None and remaining > 0 and on_chunk(chunk):
+            return b"".join(chunks)
         if remaining > 0 and time.monotonic() >= deadline:
             raise EndpointUnavailable(
                 "response did not complete within the request's whole-call deadline"

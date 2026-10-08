@@ -195,6 +195,8 @@ class FakeEndpoint:
         # merely a count, so the check below can name the one blob that must
         # already be retained, not just how many blobs exist in total.
         self._last_served_reading_sha256: str | None = None
+        self._served_answer: ScriptedAnswer | None = None
+        self.streams_stopped = 0
 
     def script(self, *answers: ScriptedAnswer) -> None:
         self._answers.extend(answers)
@@ -207,10 +209,44 @@ class FakeEndpoint:
             self._process.poll() is None or self.sticky_after_stop
         )
 
+    def stream(
+        self,
+        method: str,
+        url: str,
+        *,
+        body: bytes,
+        timeout_seconds: float,
+        on_chunk: Callable[[bytes], bool],
+    ) -> HttpResponse:
+        """The next scripted reading, served as server-sent events, one per line of its
+        content, then its finish, its usage and `[DONE]`; stopped where `on_chunk` says.
+
+        A scripted `body` on a 200 is served as given, one event at a time; any other
+        status is one whole body, as vLLM refuses a streamed request it cannot take.
+        `streams_stopped` counts the replies the client stopped.
+        """
+        response = self.request(method, url, body=body, timeout_seconds=timeout_seconds)
+        if response.status != 200 or url.endswith(("/health", "/models")):
+            return response
+        answer = self._served_answer
+        if answer is not None and answer.body is None:
+            events = _stream_events(answer, self.served_model_id)
+        else:
+            events = [event + b"\n\n" for event in response.body.split(b"\n\n") if event]
+        received = b""
+        for event in events:
+            received += event
+            if on_chunk(event):
+                self.streams_stopped += 1
+                break
+        self._last_served_reading_sha256 = hashlib.sha256(received).hexdigest()
+        return HttpResponse(200, received)
+
     def request(
         self, method: str, url: str, *, body: bytes | None, timeout_seconds: float
     ) -> HttpResponse:
         del timeout_seconds
+        self._served_answer = None
         if not self._available():
             # Before launch and after a verified stop, no listener owns this
             # loopback port — the exact TCP fact `_assert_endpoint_unoccupied`
@@ -252,6 +288,7 @@ class FakeEndpoint:
                 )
         self.requests.append(decoded)
         answer = self._answers.pop(0)
+        self._served_answer = answer
         if answer.transport_failure is not None:
             raise EndpointUnavailable(answer.transport_failure)
         if answer.body is not None:
@@ -285,6 +322,26 @@ class FakeEndpoint:
             200,
             json.dumps({"model": model_id or self.served_model_id, "choices": [choice]}).encode(),
         )
+
+
+def _stream_events(answer: ScriptedAnswer, served_model_id: str) -> list[bytes]:
+    """One scripted answer as vLLM streams it: a chunk per line of its content, the
+    finish reason on the last, a usage chunk when scripted, then `[DONE]`."""
+
+    model = answer.model if answer.model is not None else served_model_id
+    content = answer.content or ""
+    pieces = content.splitlines(keepends=True) or [content]
+    events = []
+    for index, piece in enumerate(pieces):
+        choice: dict[str, object] = {"index": 0, "delta": {"content": piece}}
+        if index == len(pieces) - 1 and answer.finish_reason is not ABSENT:
+            choice["finish_reason"] = answer.finish_reason
+        events.append({"model": model, "choices": [choice]})
+    if answer.usage is not None:
+        events.append({"model": model, "choices": [], "usage": dict(answer.usage)})
+    return [b"data: " + json.dumps(event).encode() + b"\n\n" for event in events] + [
+        b"data: [DONE]\n\n"
+    ]
 
 
 # --------------------------- an engine's context refusals ---------------------------

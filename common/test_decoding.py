@@ -17,6 +17,7 @@ from common.decoding import (
     decoded_wire_decimals,
     engine_effective_sampling,
     load_decoding_policy,
+    perlector_loop_guard,
     perlector_page_generation,
     perlector_page_max_tokens,
     reconstructor_max_tokens,
@@ -140,14 +141,20 @@ def test_shipped_decoding_policy_declares_its_sections():
         "reconstructor_generation",
         "chandra_native_inference",
     }
-    assert policy["schema"] == "decoding.v8"
+    assert policy["schema"] == "decoding.v9"
     assert policy["perlector_generation"] == {
         "page_max_tokens": 12288,
-        "answer_headroom_bp": 20000,
-        "answer_floor_tokens": 4096,
+        "loop_line_repeats": 30,
+        "loop_block_repeats": 10,
+        "loop_block_max_lines": 8,
     }
     assert perlector_page_max_tokens(policy) == 12288
-    assert perlector_page_generation(policy) == policy["perlector_generation"]
+    assert perlector_page_generation(policy) == {"page_max_tokens": 12288}
+    assert perlector_loop_guard(policy) == {
+        "loop_line_repeats": 30,
+        "loop_block_repeats": 10,
+        "loop_block_max_lines": 8,
+    }
     assert policy["reconstructor_generation"] == {"answer_max_tokens": 8192}
     assert reconstructor_max_tokens(policy) == 8192
     assert policy["chandra_native_inference"] == recipe_record()
@@ -164,6 +171,7 @@ def test_shipped_decoding_policy_declares_its_sections():
         "decoding.v5",
         "decoding.v6",
         "decoding.v7",
+        "decoding.v8",
     ],
 )
 def test_legacy_decoding_schema_is_refused_by_name(tmp_path: Path, schema: str):
@@ -292,21 +300,27 @@ def test_a_missing_perlector_generation_section_is_refused(tmp_path: Path):
         load_decoding_policy(path)
 
 
-@pytest.mark.parametrize("bp", ["9999", "0"])
-def test_an_answer_headroom_below_the_reserve_is_refused(tmp_path: Path, bp: str):
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("loop_line_repeats", "1"), ("loop_block_repeats", "1"), ("loop_block_max_lines", "1")],
+)
+def test_a_repetition_loop_guard_that_would_stop_honest_replies_is_refused(
+    tmp_path: Path, field: str, value: str
+):
     source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
     path = tmp_path / "decoding.toml"
     path.write_text(
-        re.sub(r"^answer_headroom_bp = \d+$", f"answer_headroom_bp = {bp}", source, flags=re.M),
-        encoding="utf-8",
+        re.sub(rf"^{field} = \d+$", f"{field} = {value}", source, flags=re.M), encoding="utf-8"
     )
 
-    with pytest.raises(ContractError, match="answer_headroom_bp is below 10000|positive integer"):
+    with pytest.raises(ContractError, match="perlector_generation: a repetition loop|at least 2"):
         load_decoding_policy(path)
 
 
-@pytest.mark.parametrize("field", ["answer_headroom_bp", "answer_floor_tokens"])
-def test_a_perlector_generation_section_without_its_answer_bound_is_refused(
+@pytest.mark.parametrize(
+    "field", ["loop_line_repeats", "loop_block_repeats", "loop_block_max_lines"]
+)
+def test_a_perlector_generation_section_without_its_loop_guard_is_refused(
     tmp_path: Path, field: str
 ):
     source = DEFAULT_DECODING_CONFIG_PATH.read_text(encoding="utf-8")
