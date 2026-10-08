@@ -312,6 +312,9 @@ class SpendPolicy:
                     raise SpendRefusal(f"{label} must be positive")
         if not self.budget_on:
             return
+        # Narrowing, not a check: `__post_init__` raises `SpendRefusal` before this call
+        # on a policy whose budget is on and that is missing any of these, and a `raise`
+        # survives `-O`.
         assert self.soft_max_seconds is not None and self.hard_max_seconds is not None
         assert self.soft_max_cost_usd is not None and self.hard_max_cost_usd is not None
         assert self.hard_lifetime_seconds is not None

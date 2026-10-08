@@ -150,7 +150,7 @@ def test_with_the_budget_off_hours_need_no_hard_maximum(env, tmp_path):
     assert result.returncode == 0, result.stderr
     assert "first=$((start + 18000))" in result.stdout
     assert "runpodctl pod delete" in result.stdout
-    script = checkout_with_policy(tmp_path, 'pod_budget = "off"\n')
+    script = checkout_with_policy(tmp_path, 'pod_budget = "off"\nladder_delete = "off"\n')
     assert start({**env, "VERBATUS_HARD_MAX_SECONDS": "x"}, "2", script).returncode == 0
 
 
@@ -170,14 +170,28 @@ def test_the_start_command_refuses_an_unusable_budget_override(env, value):
 
 
 def test_the_budget_override_wins_over_the_policy(env, tmp_path):
-    script = checkout_with_policy(tmp_path, 'pod_budget = "on"\nhard_max_seconds = 10800\n')
+    script = checkout_with_policy(
+        tmp_path, 'pod_budget = "on"\nladder_delete = "off"\nhard_max_seconds = 10800\n'
+    )
     assert start(env, "off", script).returncode == 2
     assert start({**env, "VERBATUS_POD_BUDGET": "off"}, "off", script).returncode == 0
 
 
-@pytest.mark.parametrize(("line", "switch"), [('"on"', "on"), ('"off"', "off"), ('"On"', "off")])
+@pytest.mark.parametrize(("line", "switch"), [('"on"', "on"), ('"off"', "off")])
 def test_ladder_delete_in_the_policy_reaches_the_guard(env, tmp_path, line, switch):
     script = checkout_with_policy(tmp_path, f'pod_budget = "off"\nladder_delete = {line}\n')
     result = start(env, "off", script)
     assert result.returncode == 0, result.stderr
     assert f"POD_GUARD_DELETE={switch} sh /tmp/pod_guard.sh off)" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "lines",
+    ["", 'ladder_delete = "On"\n', "ladder_delete = on\n", 'ladder_delete = "on"\n' * 2],
+    ids=["missing", "misspelt", "unquoted", "duplicated"],
+)
+def test_the_start_command_refuses_when_ladder_delete_cannot_be_read(env, tmp_path, lines):
+    script = checkout_with_policy(tmp_path, f'pod_budget = "off"\n{lines}')
+    result = start(env, "off", script)
+    assert result.returncode == 2
+    assert "cannot read ladder_delete" in result.stderr and result.stdout == ""

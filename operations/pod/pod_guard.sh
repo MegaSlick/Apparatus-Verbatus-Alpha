@@ -272,7 +272,7 @@ alert() {
 
 # Copies each path named in backup-<pod id> beside the guard's directory, under
 # runs-guard-backup/<name>-<epoch>, and compares the copy with its source. Sets backup to
-# verified, nothing (no list, or nothing it names is there) or failed.
+# verified, nothing (no list) or failed (a copy failed, or a listed path is missing).
 back_up() {
   backup=nothing
   if [ ! -s "$backup_list" ]; then
@@ -285,8 +285,11 @@ back_up() {
   while IFS= read -r source || [ -n "$source" ]; do
     case $source in /*) ;; *) continue ;; esac
     n=$((n + 1))
+    # A listed path that is missing may be a run tree lost or misnamed, so it blocks the
+    # delete rather than counting as nothing to back up.
     if [ ! -e "$source" ]; then
-      say "backup: $source is not there; nothing to copy"
+      say "backup: $source is not there, so the backup failed"
+      backup=failed
       continue
     fi
     target="$root/$(basename "$source")-$stamp"

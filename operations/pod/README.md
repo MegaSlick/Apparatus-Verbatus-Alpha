@@ -582,7 +582,7 @@ time grows the guard:
 | --- | --- |
 | 15 min | one warning notice |
 | 30 min | an urgent notice (ntfy `Priority: urgent`), repeated every 10 min |
-| 1 h | copies the paths named in `backup-<pod id>` to `/workspace/private/runs-guard-backup/<name>-<epoch>/` and checks each copy with `diff -rq`; with no such file it logs "nothing to back up" |
+| 1 h | copies the paths named in `backup-<pod id>` to `/workspace/private/runs-guard-backup/<name>-<epoch>/` and checks each copy with `diff -rq`; with no such file it logs "nothing to back up", and a listed path that is missing counts as a failed backup |
 | 2 h | deletes the pod, only with `ladder_delete = "on"` and only when the backup verified or there was nothing to back up; otherwise one more urgent notice says why it will not |
 
 Any work, or a touch of the keep-alive, starts the ladder over, with a "work resumed"
@@ -634,7 +634,7 @@ then hands over to the image's `/start.sh`. It reads `pod_budget` from the check
   and the backstop is the fallback. The command refuses `off`, `<hours>` past the hard
   maximum, and refuses outright when the hard maximum cannot be read.
 
-It always refuses `<hours>` of zero, and a `pod_budget` it cannot read:
+It always refuses `<hours>` of zero, and a `pod_budget` or `ladder_delete` it cannot read:
 
 ```sh
 START=$(sh operations/pod/pod_start_command.sh <hours|off> <sha>) &&

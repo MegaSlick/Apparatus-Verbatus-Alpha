@@ -929,6 +929,26 @@ def test_a_backup_that_fails_blocks_the_delete(pod, tmp_path):
     assert "failed or does not match" in log_of(state)
 
 
+def test_a_listed_run_tree_that_is_missing_blocks_the_delete(pod, tmp_path):
+    """A run tree named for backup but not there may be lost or misnamed, not absent by
+    design, so the pod stays."""
+    env, calls, state = pod
+    state.mkdir()
+    (state / "ntfy_topic").write_text("guard-test-topic\n")
+    (state / "backup-testpod").write_text(f"{tmp_path / 'local' / 'run-1'}\n")
+    run_until(
+        ["sh", str(GUARD), "5"],
+        env,
+        lambda: (
+            "not deleting: its run tree backup failed" in log_of(state)
+            and len(lines(tmp_path / "ticks")) >= 10
+        ),
+    )
+    assert lines(calls) == []
+    assert "is not there, so the backup failed" in log_of(state)
+    assert _notices(tmp_path, "could not back up the run")
+
+
 def test_the_start_command_with_the_budget_off_arms_no_deadline_and_no_backstop(pod):
     """A deadline file from an earlier start of the pod is removed, so the only deadline is
     one written during this start (the lead's, or pod_run --no-hold's release)."""

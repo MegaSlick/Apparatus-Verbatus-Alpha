@@ -56,8 +56,6 @@ else
   budget=$(switch pod_budget)
   [ -n "$budget" ] || refuse "cannot read pod_budget in $policy: it must be one line, \"on\" or \"off\""
 fi
-ladder_delete=$(switch ladder_delete)
-[ "$ladder_delete" = on ] || ladder_delete=off
 
 if [ "$budget" = on ]; then
   [ "$hours" != off ] || refuse "the budget is on (pod_budget), so the pod needs <hours>; off is for a budget that is off"
@@ -77,6 +75,9 @@ if [ "$budget" = on ]; then
     refuse "$hours h is past the hard maximum of $hard_max seconds ($source)"
   fi
 fi
+
+ladder_delete=$(switch ladder_delete)
+[ -n "$ladder_delete" ] || refuse "cannot read ladder_delete in $policy: it must be one line, \"on\" or \"off\""
 
 created=$(date +%s)
 grace=${POD_BACKSTOP_GRACE:-3600}
