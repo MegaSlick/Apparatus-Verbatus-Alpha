@@ -15,12 +15,18 @@ from typing import Mapping
 
 import pytest
 
+from common import page_path
 from common.chairs.models import ChairIdentity, ServingDetails
 from common.chairs.receipts import build_receipt, receipt_record
 from common.contracts.canonical import canonical_bytes, digest_bytes
+from common.contracts.errors import ContractError
 from common.contracts.serving import (
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_STREAM_CALL_RECORD_FIELDS,
+    CHAIR_STREAM_CALL_RECORD_SCHEMA,
+    CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_FIELDS,
+    CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_SCHEMA,
     CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS,
     CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
     CHANDRA_NATIVE_CALL_RECORD_FIELDS,
@@ -34,10 +40,12 @@ from common.decoding import (
     chair_decoding,
     engine_effective_sampling,
     load_decoding_policy,
+    perlector_loop_guard,
     recorded_wire_decimals,
 )
 from common.sealed_config import table_seal
 
+from .assembly import SERVING_READER
 from .client import (
     ChairClient,
     ChairRequest,
@@ -68,6 +76,7 @@ from .fakes import (
     FakeRegistry,
     ScriptedAnswer,
 )
+from .http import request_body
 from .manager import ServingManager
 from .residency import FileResidencyLease
 
@@ -1585,3 +1594,167 @@ def test_serving_mode_mixed_kinds_name_the_posture_the_other_tiers_actually_hold
     with pytest.raises(ServingModeRefusal) as excinfo:
         serving_mode_for(_recipes(fixture_row, unsupported_row, live_row), chair, "tier-a")
     assert "other tiers are ['live', 'unsupported']" in excinfo.value.detail
+
+
+# --- the Perlector's streamed reading, stopped on a repetition loop ---
+
+GUARD = perlector_loop_guard(SHIPPED_POLICY)
+# Synthetic index rows: one surname for long runs, each row its own given name and folio.
+DENSE_ROWS = [
+    f"Tremblay, {name} f. {12 + index // 4}"
+    for index, name in enumerate(["Jean", "Marie", "Joseph", "Louise"] * 30)
+]
+
+
+def _streamed(tmp_path: Path, content: str):
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="perlector"))
+    with client:
+        endpoint.script(ScriptedAnswer(content=content, finish_reason="stop"))
+        response = client.read(_request(generation_sent={"max_tokens": 99}, loop_guard=GUARD))
+    record = json.loads((blob_store.root / response.call_record_ref["relative_path"]).read_bytes())
+    return response, record, endpoint, blob_store
+
+
+def _reread(blob_store: FakeBlobStore, response) -> dict[str, object]:
+    """The reply read again from the retained bytes, as a later stage reads it."""
+    return page_path.retained_reply(
+        lambda path: (blob_store.root / path).read_bytes(),
+        {
+            "raw_response_ref": dict(response.raw_response_ref),
+            "call_record_ref": dict(response.call_record_ref),
+            "served_model_id": response.served_model_id,
+        },
+        SERVING_READER,
+    )
+
+
+def test_a_dense_index_reply_streams_through_untouched(tmp_path: Path) -> None:
+    content = "\n".join(DENSE_ROWS) + "\n"
+    response, record, endpoint, blob_store = _streamed(tmp_path, content)
+    posted = endpoint.requests[0]
+    assert posted["stream"] is True and posted["stream_options"] == {"include_usage": True}
+    assert posted["max_tokens"] == 99
+    assert endpoint.streams_stopped == 0
+    assert (response.content, response.finish_reason, response.loop_stop) == (content, "stop", None)
+    assert response.raw_response.endswith(b"data: [DONE]\n\n")
+    assert set(record) == CHAIR_STREAM_CALL_RECORD_FIELDS
+    assert record["schema"] == CHAIR_STREAM_CALL_RECORD_SCHEMA
+    assert record["stream"] == {"schema": "chair-stream.v1", "loop_guard": GUARD, "stopped": None}
+    assert record["response_model"] == "served-alias"
+    assert record["response_sha256"] == digest_bytes(response.raw_response)
+    assert record["request_sha256"] == digest_bytes(
+        request_body(
+            {**{k: v for k, v in posted.items() if k not in {"model", "stream", "stream_options"}}},
+            model_id="served-alias",
+            seed=7,
+            deterministic=False,
+            stream=True,
+        )
+    )
+    assert _reread(blob_store, response) == {
+        "content": content,
+        "finish_reason": "stop",
+        "stop_reason": "stop",
+    }
+
+
+@pytest.mark.parametrize(
+    ("looped", "finding"),
+    [
+        (
+            ["Tremblay, Jean f. 12"] * 200,
+            {"kind": "line", "block_lines": 1, "repeats": 30, "line": 120 + 30},
+        ),
+        (
+            ["Roy, Pierre f. 40", "Roy, Marie f. 40", "Gagnon, Jean f. 41"] * 80,
+            {"kind": "block", "block_lines": 3, "repeats": 10, "line": 120 + 30},
+        ),
+    ],
+    ids=["exact-line", "three-line-block"],
+)
+def test_a_looping_reply_is_stopped_early_and_retained_as_received(
+    tmp_path: Path, looped: list[str], finding: dict[str, object]
+) -> None:
+    content = "\n".join(DENSE_ROWS + looped) + "\n"
+    response, record, endpoint, blob_store = _streamed(tmp_path, content)
+    assert endpoint.streams_stopped == 1
+    assert dict(response.loop_stop) == finding
+    # Stopped at the line that reached the threshold: nothing after it was read.
+    assert response.content == "\n".join((DENSE_ROWS + looped)[: finding["line"]]) + "\n"
+    assert response.finish_reason is None and response.parse_problem is None
+    assert b"[DONE]" not in response.raw_response
+    assert record["schema"] == CHAIR_STREAM_CALL_RECORD_SCHEMA
+    assert record["stream"]["stopped"] == finding
+    assert record["finish_reason"] is None
+    assert record["raw_response_ref"] == dict(response.raw_response_ref)
+    assert record["response_sha256"] == digest_bytes(response.raw_response)
+    assert (blob_store.root / response.raw_response_ref["relative_path"]).read_bytes() == (
+        response.raw_response
+    )
+    reread = _reread(blob_store, response)
+    assert reread == {
+        "content": response.content,
+        "finish_reason": None,
+        "stop_reason": "repetition-loop",
+    }
+
+
+@pytest.mark.parametrize(
+    ("content", "forged", "refusal"),
+    [
+        # A finished reply its record claims was stopped: the reply shows no loop.
+        (
+            "\n".join(DENSE_ROWS) + "\n",
+            {"kind": "line", "block_lines": 1, "repeats": 30, "line": 30},
+            "shows the repetition loop None",
+        ),
+        # A stopped reply its record claims ran to its end: it has no [DONE].
+        ("\n".join(DENSE_ROWS + ["same"] * 40) + "\n", None, "without \\[DONE\\]"),
+    ],
+)
+def test_a_call_record_that_misstates_the_loop_is_refused_on_reading_again(
+    tmp_path: Path, content: str, forged: dict[str, object] | None, refusal: str
+) -> None:
+    response, record, _endpoint, blob_store = _streamed(tmp_path, content)
+    record["stream"]["stopped"] = forged
+    with pytest.raises(ContractError, match=refusal):
+        page_path.retained_reply(
+            lambda path: (blob_store.root / path).read_bytes(),
+            {
+                "raw_response_ref": dict(response.raw_response_ref),
+                "call_record_ref": blob_store.retain(canonical_bytes(record)),
+                "served_model_id": response.served_model_id,
+            },
+            SERVING_READER,
+        )
+
+
+@pytest.mark.parametrize(
+    ("role", "guard"),
+    [
+        ("reconstructor", GUARD),
+        ("perlector", {**GUARD, "loop_line_repeats": 31}),
+    ],
+)
+def test_only_the_perlector_streams_and_only_under_its_sealed_guard(
+    tmp_path: Path, role: str, guard: dict[str, int]
+) -> None:
+    client, endpoint, _blob_store, _ = _built(tmp_path, chair=_identity(role=role))
+    with client:
+        with pytest.raises(ChairRequestRefusal, match="sealed repetition-loop guard"):
+            client.read(_request(loop_guard=guard))
+    assert endpoint.requests == []
+
+
+def test_a_streamed_transport_failure_is_recorded_under_the_stream_schema(tmp_path: Path) -> None:
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="perlector"))
+    with client:
+        endpoint.script(ScriptedAnswer(transport_failure="connection reset"))
+        with pytest.raises(ChairTransportFailure) as failure:
+            client.read(_request(loop_guard=GUARD))
+    record = json.loads(
+        (blob_store.root / failure.value.call_record_ref["relative_path"]).read_bytes()
+    )
+    assert set(record) == CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_FIELDS
+    assert record["schema"] == CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_SCHEMA
+    assert record["stream"] == {"schema": "chair-stream.v1", "loop_guard": GUARD, "stopped": None}

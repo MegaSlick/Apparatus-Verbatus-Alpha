@@ -576,13 +576,13 @@ PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS: Final = (
 # three-word label and five cites -- and each Surya line shown adds one cite of
 # its own, since lines are cited one by one, never by a range. All are
 # estimated at the carried rate. The
-# reserve decides admission: it is the estimate or the page cap, whichever is
-# smaller (`reserve_clamped` records when the cap won, as for a looping witness
-# whose text runs far past any real page). It also bounds the reply: the
-# `max_tokens` sent is the page cap, the context the prompt leaves, or the
-# reserve times the sealed headroom but never below the sealed floor, whichever
-# is smallest (`page_answer_max_tokens`), so a reply that runs away from its
-# page stops as a visible length cut-off long before the page cap.
+# reserve decides admission only: it is the estimate or the page cap, whichever
+# is smaller (`reserve_clamped` records when the cap won, as for a looping
+# witness whose text runs far past any real page). It never bounds the reply:
+# the `max_tokens` sent is the page cap or the context the prompt leaves,
+# whichever is smaller (`page_answer_max_tokens`), since a dense index page
+# legitimately answers far past any estimate of it. A reply that runs away is
+# stopped by the sealed repetition-loop guard instead (`common/repetition_loop.py`).
 PAGE_ANSWER_ENTRY_SKELETON: Final = (
     '{"n": 99, "kind": "other", "label": "baptism of a child", '
     '"cites": ["A99", "B99", "C99", "D100-D199", "S99"], "text": "", '
@@ -690,17 +690,10 @@ def page_answer_bound(
     return min(estimate, cap), estimate > cap
 
 
-def page_answer_max_tokens(reserve: int, *, room: int, generation: Mapping[str, int]) -> int:
-    """The `max_tokens` one page request sends.
-
-    The smallest of the sealed page cap, the context the prompt leaves (`room`),
-    and the reserve times `answer_headroom_bp` / 10,000 rounded up but at least
-    `answer_floor_tokens`.
-    """
-    headroom = _positive(generation["answer_headroom_bp"], "answer_headroom_bp")
-    floor = _positive(generation["answer_floor_tokens"], "answer_floor_tokens")
-    bound = max(floor, -(-_positive(reserve, "reserve") * headroom // 10_000))
-    return min(_positive(generation["page_max_tokens"], "page_max_tokens"), room, bound)
+def page_answer_max_tokens(*, room: int, generation: Mapping[str, int]) -> int:
+    """The `max_tokens` one page request sends: the sealed page cap or the context
+    the prompt leaves (`room`), whichever is smaller."""
+    return min(_positive(generation["page_max_tokens"], "page_max_tokens"), room)
 
 
 def page_request_capacity(
@@ -722,13 +715,12 @@ def page_request_capacity(
     text in its pieces (``page_prompt.prompt_parts``); ``template_digest`` its
     ``BUILDER_SHA256``; ``answer_measure`` the feed's own ``answer_measure``
     (``longest_witness_characters``, ``act_entries``, ``surya_lines``); ``generation`` the
-    sealed ``[perlector_generation]`` (``page_max_tokens``, ``answer_headroom_bp``,
-    ``answer_floor_tokens``).
+    sealed page cap (``common.decoding.perlector_page_generation``,
+    ``{"page_max_tokens"}``).
 
     Returns ``{"capacity": <request-capacity record>, "answer_reserve":
     {longest_witness_characters, act_entries, surya_lines, tokens,
-    reserve_clamped, page_max_tokens, answer_headroom_bp, answer_floor_tokens},
-    "max_tokens": page_answer_max_tokens(...)}``. The prompt charge is an upper
+    reserve_clamped, page_max_tokens}, "max_tokens": page_answer_max_tokens(...)}``. The prompt charge is an upper
     bound on its reported text, so the context it leaves is never overstated. Raises
     :class:`RequestCapacityRefusal` carrying the record when the row cannot
     hold image + prompt + reserve. Nothing is trimmed, split or downscaled to
@@ -753,14 +745,9 @@ def page_request_capacity(
     prompt_tokens, basis = perlector_page_prompt_bound(
         prompt_text, template_digest=template_digest, parts=prompt_parts
     )
-    if not isinstance(generation, Mapping) or set(generation) != {
-        "page_max_tokens",
-        "answer_headroom_bp",
-        "answer_floor_tokens",
-    }:
+    if not isinstance(generation, Mapping) or set(generation) != {"page_max_tokens"}:
         raise RequestCapacityRefusal(
-            "a page request's generation bounds are not exactly the sealed page cap, answer "
-            "headroom and answer floor"
+            "a page request's generation bound is not exactly the sealed page cap"
         )
     cap = _positive(generation["page_max_tokens"], "page_max_tokens")
     reserve, clamped = page_answer_bound(**answer_measure, page_max_tokens=cap)
@@ -770,8 +757,6 @@ def page_request_capacity(
         "tokens": reserve,
         "reserve_clamped": clamped,
         "page_max_tokens": cap,
-        "answer_headroom_bp": generation["answer_headroom_bp"],
-        "answer_floor_tokens": generation["answer_floor_tokens"],
     }
     if not record["fits"]:
         raise RequestCapacityRefusal(
@@ -784,7 +769,7 @@ def page_request_capacity(
     return {
         "capacity": record,
         "answer_reserve": answer_reserve,
-        "max_tokens": page_answer_max_tokens(reserve, room=room, generation=generation),
+        "max_tokens": page_answer_max_tokens(room=room, generation=generation),
     }
 
 

@@ -186,7 +186,9 @@ NOT_APPLICABLE: Final = "not-applicable"
 RULES: Final = ("a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
 
 PARSED: Final = "parsed"
-FAILED_PARSE_STATES: Final = frozenset({"cut-off", "call-failed", "refused-capacity", "not-run"})
+FAILED_PARSE_STATES: Final = frozenset(
+    {"cut-off", "repetition-loop", "call-failed", "refused-capacity", "not-run"}
+)
 PARSE_STATES: Final = FAILED_PARSE_STATES | {PARSED, "malformed"}
 # What an accounting's entries are: one reading's, or a first reading's and its re-ask's.
 ANSWER_BASIS_FIRST: Final = "attempt-1"

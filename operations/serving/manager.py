@@ -224,6 +224,21 @@ class ServiceHandle:
 
         return self._manager.request_reading(self, kind, body_bytes, timeout_seconds)
 
+    def stream_reading(
+        self,
+        kind: str,
+        body_bytes: bytes,
+        timeout_seconds: float,
+        on_chunk: Callable[[bytes], bool],
+    ) -> HttpResponse:
+        """POST one already-built streamed request, handing its reply to ``on_chunk``
+        as it arrives, and return the bytes received (``StreamingHttpTransport``).
+
+        The caller retains and parses the bytes.
+        """
+
+        return self._manager.stream_reading(self, kind, body_bytes, timeout_seconds, on_chunk)
+
     @property
     def fixture_requests_completed(self) -> int:
         """Successful requests whose embedded image bytes matched a local fixture.
@@ -947,6 +962,34 @@ class ServingManager:
         self._require_active(handle)
         self._assert_process_live(handle.process)
         return self._post(handle.endpoint, kind, body_bytes, timeout_seconds)
+
+    def stream_reading(
+        self,
+        handle: ServiceHandle,
+        kind: str,
+        body_bytes: bytes,
+        timeout_seconds: float,
+        on_chunk: Callable[[bytes], bool],
+    ) -> HttpResponse:
+        """POST a caller-built streamed request and return the unparsed bytes received.
+
+        A transport that cannot stream is refused before anything is sent.
+        """
+
+        self._require_active(handle)
+        self._assert_process_live(handle.process)
+        stream = getattr(self.http, "stream", None)
+        if not callable(stream):
+            raise ServingConfigurationError(
+                f"the serving transport {type(self.http).__name__} cannot stream a reply"
+            )
+        return stream(
+            "POST",
+            endpoint_for_probe(handle.endpoint, kind),
+            body=body_bytes,
+            timeout_seconds=timeout_seconds,
+            on_chunk=on_chunk,
+        )
 
     def stop(self, handle: ServiceHandle) -> None:
         """Stop one exact owned process and verify its endpoint no longer responds."""
