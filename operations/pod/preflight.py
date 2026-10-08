@@ -966,6 +966,7 @@ class PreflightReport:
                 "driver_version": self.profile.driver_version,
                 "compute_capability": self.profile.compute_capability,
                 "vram_gib": str(self.profile.vram_gib),
+                "gpu_count": self.profile.gpu_count,
                 "disk_gib": str(self.profile.disk_gib),
                 "dtype": self.profile.dtype,
                 "discovery_detail": self.profile.discovery_detail or None,
