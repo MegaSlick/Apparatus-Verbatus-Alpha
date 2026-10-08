@@ -1,9 +1,9 @@
 # Report for the lead: 2026-10-08 pod-efficiency session
 
-Short version: nine pull requests take the measured idle time out of a pod run and stop
-the guard deleting working pods. Eight are merged (#287-#294); the ninth, the card
-capacity plan (#295), is in review. Nothing has run on a pod yet; the next pod is the
-real test. No pod was started this session.
+Short version: nine pull requests (#287-#295), all merged, take the measured idle time
+out of a pod run, stop the guard deleting working pods, and scale each model's width to
+the card it lands on. Nothing has run on a pod yet; the next pod is the real test. No
+pod was started this session.
 
 ## What changed, and what it saves (estimates from the 2026-10-07 numbers)
 
@@ -17,7 +17,7 @@ real test. No pod was started this session.
 | #292 merged | Bootstrap copies the selected chairs into the cache while uv syncs; one copy pool across all chairs, largest file first; PREFLIGHT copies the next chair while the current one smokes, in stage order; cache repair moves files by rename; a stuck copy or prefetch fails its step with a named error instead of holding the pod | ~6 min of setup on a big-card pod plus the next chair's copy hidden behind each smoke (estimates; measure `prefill.seconds` on the next pod) |
 | #293 merged | DAI records go through the window one by one; DAI, Churro and reconstructor rows 4 -> 8 on 80 GB+; a Perlector reply is bounded by its page's reserve x headroom 2.0 (floor 4,096); re-asks sent as soon as a page's first reading is published | Attestatores batching several-fold on multi-record pages; each run-away reply ~3-5 min shorter; no idle gap before re-asks (estimates) |
 | #294 merged | The Coniector takes over the Perlector's running 27B (hand-off record, full identity checks, cold-start fallback); Coniector chair starts while calls are drawn; volume sync overlaps the next stage; reconstructor row back to 4 to match the live server | Most of the ~10 min per chunk of 27B reload; several minutes per stage boundary on FUSE hosts (estimates) |
-| #295 open | Capacity plan: PREFLIGHT measures the card and derives each chair's width (row as floor, cap 64, 4 GiB overhead guess); pod_run forwards `--capacity-plan`; ServingManager launches the row at the planned width and audits row + launched + plan digest; windows follow; smoke runs at the planned width; a shared Perlector/reconstructor pair is planned once | Witnesses 38-64 wide on 48-96 GB cards, the 27B 7 wide on 96 GB and 17 on 141 GB (derived, unmeasured) |
+| #295 merged | Capacity plan: PREFLIGHT measures the card and derives each chair's width (row as floor, cap 64, 4 GiB overhead guess); pod_run forwards `--capacity-plan`; ServingManager launches the row at the planned width and audits row + launched + plan digest; windows follow; smoke runs at the planned width; a shared Perlector/reconstructor pair is planned once | Witnesses 38-64 wide on 48-96 GB cards, the 27B 7 wide on 96 GB and 17 on 141 GB (derived, unmeasured) |
 
 The five review reports with file:line anchors are in `review-notes/2026-10-08-reviews/`.
 
@@ -41,17 +41,19 @@ The five review reports with file:line anchors are in `review-notes/2026-10-08-r
 4. Widths (#293): DAI, Churro and the reconstructor at 8 on 80 GB+. The Perlector stays at
    4 (8 full pages need ~32 GiB), Chandra stays at 4 (no KV figure), 24/48 GB rows
    unchanged pending one cheap-pod KV check.
-5. Shared 27B server (queued PR): the Perlector now seals while its server is still up,
+5. Shared 27B server (#294): the Perlector now seals while its server is still up,
    the Coniector's receipt says an "adopted" service served it, and the volume sync trails
    by one stage (a stage's files reach the volume by the end of the next stage). All three
    are honest receipts of what happened; recommended: accept. Witness overlap (F2a) is not
    built: every 80 GB+ witness row asks 0.88 of the card, so nothing pairs until fractions
    are measured.
-6. Card capacity plan (queued PR): widths derived from measured VRAM with the row as the
-   floor and a 4 GiB engine-overhead guess (unmeasured). Planned on 80 GB: DAI 64, Churro
-   54, Perlector 4; on 96 GB the Perlector 7; on 141 GB the Perlector 17. Recommended: one
-   cheap 24 GB PREFLIGHT run first to replace the 4 GiB guess with the vLLM KV-pool line,
-   and decide whether 64 is an acceptable ceiling.
+6. Card capacity plan (#295): widths derived from measured VRAM with the row as the
+   floor, a 4 GiB engine-overhead guess (unmeasured) and per-tier ceilings in
+   `config/pod_placement.toml` (`planned_batch_ceiling`: 24 GB 8, 48 GB 48, 80 GB+ 64).
+   Planned on 80 GB: DAI 64, Churro 54, Perlector 4; on 96 GB the Perlector 7; on 141 GB
+   the Perlector 17. Recommended: one cheap 24 GB PREFLIGHT run first to replace the
+   4 GiB guess with the vLLM KV-pool line; lower a tier's ceiling in that file if 64 is
+   too bold.
 7. One 120 GB pod running witnesses, Perlector and Coniector together still re-copies
    ~6 min of cache (#292 notes). Either ~160 GB disk (costs money) or keep witnesses off
    the big card (the two-card split; recommended).
