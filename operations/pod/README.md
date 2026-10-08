@@ -205,8 +205,20 @@ correct immediate close.
   chair without copying its weights, and copies each local-repository chair (Surya's
   bundle) from the volume store to where the roster binds it on container-local disk,
   verified against its manifest. For the Hugging Face chairs, PREFLIGHT and each stage
-  copy one role from the volume store to the container-local cache, verify the copy
-  against its pinned manifest, and evict other roles before the next fill.
+  copy a chair's pinned snapshot from the volume store to the container-local cache at
+  `cache_root/by-digest/<digest_manifest>`, verify the copy against its pinned manifest,
+  and evict the least recently used other digests when the next fill would not fit.
+  Chairs pinned to one manifest (the Perlector and the reconstructor) share one copy.
+  Each copy hashes the bytes as it writes them, across files in one pool sized from the
+  container's usable CPUs (or `VERBATUS_IO_WORKERS`), so a fresh copy is read once, not
+  copied and then re-read; the receipt records the worker count. Within one process a
+  verified, unchanged cache is not hashed again, so PREFLIGHT's smoke start reuses the
+  verification its cache check just made; each stage process still verifies from the bytes.
+  A pod given a stage selection (`pod_run`'s `preflight_roles`) prepares only the chairs
+  those stages use: MODEL_STORE fetches and checks only their artifacts, CHAIR_CACHE plans
+  and places only them (others read `not-selected`), and the disk and environment checks
+  count only them. So the small card of a two-card split never reads the Perlector's model
+  and the big card never places Surya. A bare `bootstrap_main` run prepares every chair.
   An adapter base remains available while its adapter is filled. The at-most-one same-pin
   re-fetch is not wired (04-8); a mismatch is red and names the chair.
 - **Transfer is optional.** No submission manifest on the volume is a vacuous success; a
@@ -1054,7 +1066,17 @@ evidence and the materialized model store on the network volume. A store on the 
 written before the roster gained an artifact (the record detector, for one) is upgraded
 at boot: materialization adds each new artifact to its record as `pending-fetch` and
 fetches it (Surya's bundle included), provided every artifact the store already names still matches the roster;
-any other record is refused (`common/chairs/README.md`).
+any other record is refused (`common/chairs/README.md`). MODEL_STORE's final verification
+checks every present artifact's structure (manifest pin, licence, required and carried
+files, file list, sizes, links) but reads the bytes only of artifacts no configured chair
+copies and that this boot did not fetch: an artifact fetched in the same call was measured
+as it was promoted, and a chair's copy into the cache hashes each byte against the same
+pinned manifest. Its receipt's `store_bytes` names which artifacts were hashed at boot,
+at fetch, and at copy, with the statement "bytes verified at copy, for roles ...".
+With a stage selection the receipt's `selection_complete` says whether the selected
+chairs' artifacts are present, which is what the step requires; `real_roster_complete` is
+true only when every roster artifact was present and checked by this boot, and
+`store_bytes.not_verified` names the present artifacts outside the selection.
 
 ### What the image must carry
 
@@ -1258,7 +1280,7 @@ these IDs.
 | 04-5 | Untested seams | **Open**: the success paths of `sync_uv_environment`, `pod_timer.main`/`load_timer_context`, `cli.main` end to end through real `module:callable` factories (tests monkeypatch them), and `UrllibRunPodTransport`. |
 | 04-6 | Every RunPod field name is documented, not observed | **Open** until the first live run on each route in use; `--record-fixture` captures its exchanges to rebuild the offline suite on observed shapes. |
 | 04-7 | The close billing window was anchored on `lastStartedAt`, not creation | **Anchor closed under v2**: `created_at` is the pod's `createdAt`. **Still open**: that RunPod bills nothing before `createdAt` is unobserved, and v1 still anchors on `lastStartedAt` until it is deleted. |
-| 04-8 | The at-most-one same-pin cache re-fetch does not ship | **Superseded.** A role cache is filled from its pinned volume store when needed; a mismatch is named and refused, with no automatic repair attempt. |
+| 04-8 | The at-most-one same-pin cache re-fetch does not ship | **Superseded.** A chair cache is filled from its pinned volume store when needed; a mismatch is named and refused, with no automatic repair attempt. |
 | 04-9 | Nothing proves billing buckets cover the declared window | **Window half closed under v2** when `metadata.query` is present: the declared window is the provider's resolved one, must cover the request, and an empty answer inside it reads `pending-reconciliation`. **Still open**: whether `metadata.query` appears on the `podId`-filtered route, and whether the buckets *fill* the window, wait on a live run; a coverage check written before that would guess, and a wrong guess turns every close red. |
 | 04-10 | The real serving stack could not be locked | **Closed**; see "The serving stack, re-planned and locked". |
 

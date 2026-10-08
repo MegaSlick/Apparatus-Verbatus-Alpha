@@ -8,6 +8,7 @@ them back; every assertion about behaviour belongs in the test that makes it.
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -389,3 +390,26 @@ def _files_under(root: Path, chair: str) -> dict[str, Path]:
         if not path.is_dir():
             found[relative] = path
     return found
+
+
+def wait_for_a_later_ctime(target: Path, probe_dir: Path, *, limit_seconds: float = 1.0) -> None:
+    """Wait until a file written now gets a later ctime than `target` has.
+
+    Some kernels advance file timestamps only every few milliseconds, so a
+    same-size rewrite within one tick would keep every stat field. The probe is
+    written in `probe_dir`, which must lie outside the snapshot under test.
+    """
+
+    before = target.stat().st_ctime_ns
+    probe = probe_dir / ".ctime-probe"
+    deadline = time.monotonic() + limit_seconds
+    try:
+        while True:
+            probe.write_bytes(b"probe\n")
+            if probe.stat().st_ctime_ns > before:
+                return
+            if time.monotonic() > deadline:
+                raise AssertionError(f"file timestamps did not advance within {limit_seconds}s")
+            time.sleep(0.001)
+    finally:
+        probe.unlink(missing_ok=True)
