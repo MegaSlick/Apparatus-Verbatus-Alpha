@@ -108,7 +108,8 @@ def resolve_weights(
     if store_root is not None and arm.artifact:
         candidates.append(store_root / "hf" / arm.artifact)
     for path in candidates:
-        if (path / "config.json").is_file():
+        # A transformers snapshot has config.json; the YOLO record detector is one model.pt.
+        if (path / "config.json").is_file() or (path / "model.pt").is_file():
             return path
     raise SystemExit(
         f"no weights for {arm.name}: pass --weights, or a --store-root/--cache-root holding "
