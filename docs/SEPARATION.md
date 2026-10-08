@@ -94,6 +94,7 @@ for a script to read.
 | `private/` | PRIVATE | |
 | `proof/` | PRODUCT | synthetic fixtures and their tests |
 | `pyproject.toml` | PRODUCT | |
+| `review-notes/` | HISTORY | session reviews, plans and lead reports |
 | `scriptorium/` | PRIVATE | |
 | `uv.lock` | PRODUCT | |
 | `workbench/` | PRIVATE | the harness's notes; stays in alpha |
