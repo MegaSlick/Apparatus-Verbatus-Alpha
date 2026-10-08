@@ -471,7 +471,7 @@ class ChairClient:
     def prepare_chandra_native(
         self, request: ChairRequest, *, attempt_ordinal: int
     ) -> ChandraNativeDispatch:
-        """Build one exact Chandra request before its durable intent is written."""
+        """Build one exact Chandra request before its intent record is made."""
 
         handle = self.handle
         if (

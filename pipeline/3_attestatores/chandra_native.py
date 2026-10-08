@@ -1,9 +1,13 @@
 """Chandra's pinned vendor retry loop, run against a served chair, and its evidence.
 
-Each physical request is preceded by a sealed intent and followed by a sealed
-terminal record, so a crash between them is visible and a resume never
-re-sends a request whose delivery is unknown. The loop's final attempt
-becomes the page's reading; every request it made is traced on the record.
+Each physical request has an intent record and a terminal record. A page is
+read in three steps so pages can be read side by side and still sealed in page
+order: `begin_page` reads what an earlier pass sealed, `read_page` runs the
+loop and builds its records without writing them, and `seal_page` writes them,
+intent before terminal, when the page's turn comes. An intent sealed without
+its terminal is delivery-unknown, and a resume never re-sends it. The loop's
+final attempt becomes the page's reading; every request it made is traced on
+the record.
 """
 
 from __future__ import annotations
@@ -59,7 +63,7 @@ from common.chandra_native_retry import (
 from common.chandra_native_retry import (
     validate_trace as validate_chandra_trace,
 )
-from common.contracts.canonical import is_sha256
+from common.contracts.canonical import canonical_bytes, digest_bytes, is_sha256
 from common.contracts.envelope import read_verified
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
 from common.contracts.identities import artifact_id, attempt_id
@@ -600,7 +604,31 @@ def trace_inputs(trace: dict[str, Any] | None) -> list[dict[str, str]]:
     ]
 
 
-def _publish_chandra_intent(
+_INTENT_KIND: Final = "chandra-native-attempt-intent"
+_TERMINAL_KIND: Final = "chandra-native-attempt"
+
+
+class _Unsealed(NamedTuple):
+    """One record the loop made, written only when its page's turn comes."""
+
+    fields: dict[str, Any]  # `context.publish` keyword arguments
+    reference: dict[str, str]  # what the published artifact's reference will name
+
+
+def _unsealed(context, **fields: Any) -> _Unsealed:
+    envelope = context.envelope(**fields)
+    return _Unsealed(
+        fields,
+        {
+            "relative_path": context.tree.artifact_path(
+                ATTESTATORES, fields["kind"], envelope["artifact_id"]
+            ),
+            "sha256": digest_bytes(canonical_bytes(envelope)),
+        },
+    )
+
+
+def _chandra_intent_record(
     context,
     *,
     subject_id: str,
@@ -610,7 +638,7 @@ def _publish_chandra_intent(
     native_attempt_ordinal: int,
     dispatch: Any,
     receipt_ref: Mapping[str, str],
-) -> tuple[dict[str, str], bool]:
+) -> _Unsealed:
     native_attempt = attempt_id(subject_id, "chandra-native-intent", native_attempt_ordinal)
     image_refs = [
         {
@@ -638,23 +666,18 @@ def _publish_chandra_intent(
             "enable_thinking": "local-vllm-template-compatibility-false",
         },
     }
-    published = context.publish(
-        kind="chandra-native-attempt-intent",
+    return _unsealed(
+        context,
+        kind=_INTENT_KIND,
         subject_id=subject_id,
         outcome="recorded",
         attempt=native_attempt,
         inputs=named_once(image_refs + [request_body_ref, dict(receipt_ref)]),
         payload=payload,
     )
-    return (
-        _chandra_native_artifact_ref(
-            context, "chandra-native-attempt-intent", subject_id, native_attempt_ordinal
-        ),
-        published.reused,
-    )
 
 
-def _publish_chandra_terminal(
+def _chandra_terminal_record(
     context,
     *,
     subject_id: str,
@@ -668,7 +691,7 @@ def _publish_chandra_terminal(
     error_code: str | None,
     error_detail: str | None,
     transport_response_ref: dict[str, str] | None,
-) -> tuple[dict[str, Any], dict[str, str]]:
+) -> _Unsealed:
     native_attempt = attempt_id(subject_id, "chandra-native-attempt", native_attempt_ordinal)
     payload = {
         "schema": CHANDRA_ATTEMPT_SCHEMA,
@@ -694,23 +717,38 @@ def _publish_chandra_terminal(
     ):
         if reference is not None:
             refs.append(reference)
-    _validate_chandra_terminal(
+    return _unsealed(
         context,
-        subject_id=subject_id,
-        native_attempt_ordinal=native_attempt_ordinal,
-        record={"payload": payload},
-    )
-    context.publish(
-        kind="chandra-native-attempt",
+        kind=_TERMINAL_KIND,
         subject_id=subject_id,
         outcome="recorded",
         attempt=native_attempt,
         inputs=named_once(refs),
         payload=payload,
     )
-    return payload, _chandra_native_artifact_ref(
-        context, "chandra-native-attempt", subject_id, native_attempt_ordinal
+
+
+def _publish_chandra_intent(context, record: _Unsealed) -> None:
+    published = context.publish(**record.fields)
+    if published.reused:
+        # An intent this page's resume did not find has no terminal: its request
+        # may have reached vLLM in another pass. An operator must decide.
+        refuse_chandra_orphan_intent()
+    if context.input_ref(record.reference["relative_path"]) != record.reference:
+        raise FatalAccounting(
+            "a sealed Chandra native intent differs from the one its request named"
+        )
+
+
+def _publish_chandra_terminal(context, record: _Unsealed) -> None:
+    payload = record.fields["payload"]
+    _validate_chandra_terminal(
+        context,
+        subject_id=record.fields["subject_id"],
+        native_attempt_ordinal=payload["native_attempt_ordinal"],
+        record={"payload": payload},
     )
+    context.publish(**record.fields)
 
 
 def _sealed_chandra_records(context, subject_id: str, kind: str, what: str):
@@ -945,8 +983,33 @@ def _read_chandra_native_result(
     )
 
 
-def serve_page(
+class ChandraPage(NamedTuple):
+    """One page's native loop: what was sealed before, and what this pass read."""
+
+    subject_id: str
+    resumed: Attempt | None  # the sealed loop already returned; nothing is sent
+    terminals: list[dict[str, Any]]  # sealed terminal records, then this pass's
+    unsealed: list[_Unsealed]  # this pass's intents and terminals, in loop order
+    returned: Attempt | None
+    application_refusal: ContractError | None
+    error: Exception | None
+
+
+def begin_page(
+    context, *, chair: str, page_subject_id: str, witness_attempt_ordinal: int
+) -> ChandraPage:
+    """Read what earlier passes sealed for this page. Runs where records are written."""
+
+    subject_id = _chandra_native_subject(page_subject_id, chair, witness_attempt_ordinal)
+    intent_records = _sealed_chandra_intents(context, subject_id)
+    terminal_records = _sealed_chandra_attempts(context, subject_id)
+    resumed = _resumed_chandra_native_attempt(context, subject_id, intent_records, terminal_records)
+    return ChandraPage(subject_id, resumed, terminal_records, [], None, None, None)
+
+
+def read_page(
     context,
+    page: ChandraPage,
     *,
     client: ChairClient,
     chair: str,
@@ -956,25 +1019,84 @@ def serve_page(
     witness_attempt_ordinal: int,
     request: Any,
     framing: str | None,
-    page_subject_id: str,
-) -> Attempt:
-    """Run or resume the pinned vendor loop and return only its final result."""
+) -> ChandraPage:
+    """Run the pinned vendor loop from where `page` stands; write no record.
 
-    subject_id = _chandra_native_subject(page_subject_id, chair, witness_attempt_ordinal)
-    intent_records = _sealed_chandra_intents(context, subject_id)
-    terminal_records = _sealed_chandra_attempts(context, subject_id)
-    resumed = _resumed_chandra_native_attempt(context, subject_id, intent_records, terminal_records)
-    if resumed is not None:
-        return resumed
+    Safe beside other pages' reads. An error is kept, not raised, so the
+    records made before it are still sealed in page order.
+    """
 
-    next_ordinal = len(terminal_records) + 1
-    if terminal_records and terminal_records[-1]["payload"].get("trigger") == "inference-error":
+    if page.resumed is not None:
+        return page
+    terminals = list(page.terminals)
+    unsealed: list[_Unsealed] = []
+    try:
+        returned, refusal = _run_chandra_loop(
+            context,
+            subject_id=page.subject_id,
+            terminals=terminals,
+            unsealed=unsealed,
+            client=client,
+            chair=chair,
+            resolved=resolved,
+            adapter=adapter,
+            page_ordinal=page_ordinal,
+            witness_attempt_ordinal=witness_attempt_ordinal,
+            request=request,
+            framing=framing,
+        )
+    except Exception as error:
+        return page._replace(terminals=terminals, unsealed=unsealed, error=error)
+    return page._replace(
+        terminals=terminals,
+        unsealed=unsealed,
+        returned=returned,
+        application_refusal=refusal,
+    )
+
+
+def seal_page(context, page: ChandraPage) -> Attempt:
+    """Write the page's records in loop order, then return its traced final attempt."""
+
+    if page.resumed is not None:
+        return page.resumed
+    for record in page.unsealed:
+        if record.fields["kind"] == _INTENT_KIND:
+            _publish_chandra_intent(context, record)
+        else:
+            _publish_chandra_terminal(context, record)
+    if page.error is not None:
+        raise page.error
+    if page.application_refusal is not None:
+        raise page.application_refusal
+    if page.returned is None:
+        raise FatalAccounting("the Chandra native retry loop ended without a returned attempt")
+    return _with_chandra_trace(context, page.subject_id, page.terminals, page.returned)
+
+
+def _run_chandra_loop(
+    context,
+    *,
+    subject_id: str,
+    terminals: list[dict[str, Any]],
+    unsealed: list[_Unsealed],
+    client: ChairClient,
+    chair: str,
+    resolved: ChairIdentity,
+    adapter: Any,
+    page_ordinal: int,
+    witness_attempt_ordinal: int,
+    request: Any,
+    framing: str | None,
+) -> tuple[Attempt, ContractError | None]:
+    next_ordinal = len(terminals) + 1
+    if terminals and terminals[-1]["payload"].get("trigger") == "inference-error":
         # A crash during the backoff cannot show how much elapsed, so the full
         # delay is repeated.
         _chandra_backoff(next_ordinal - 1)
     while next_ordinal <= CHANDRA_MAX_ATTEMPTS:
         dispatch = client.prepare_chandra_native(request, attempt_ordinal=next_ordinal)
-        intent_ref, reused_intent = _publish_chandra_intent(
+        intent = _chandra_intent_record(
             context,
             subject_id=subject_id,
             page_ordinal=page_ordinal,
@@ -984,22 +1106,28 @@ def serve_page(
             dispatch=dispatch,
             receipt_ref=client.handle.receipt_reference,
         )
-        if reused_intent:
-            # No terminal exists, so the request may have reached vLLM before a
-            # crash; reissuing could duplicate it. An operator must decide.
-            refuse_chandra_orphan_intent()
-
+        # Kept before the request leaves, so an error from here on seals the
+        # intent without a terminal, as delivery-unknown.
+        unsealed.append(intent)
         result = _read_chandra_native_result(
-            context, client, dispatch, intent_ref, page_ordinal, chair, resolved, adapter, framing
+            context,
+            client,
+            dispatch,
+            intent.reference,
+            page_ordinal,
+            chair,
+            resolved,
+            adapter,
+            framing,
         )
         trigger, returned_condition = _chandra_conditions(
             result.raw, result.inference_error, next_ordinal
         )
-        payload, _terminal_ref = _publish_chandra_terminal(
+        terminal = _chandra_terminal_record(
             context,
             subject_id=subject_id,
             native_attempt_ordinal=next_ordinal,
-            intent_ref=intent_ref,
+            intent_ref=intent.reference,
             request_sha256=dispatch.request_sha256,
             attempt=result.attempt,
             trigger=trigger,
@@ -1013,11 +1141,10 @@ def serve_page(
                 else None
             ),
         )
-        terminal_records.append({"payload": payload})
+        unsealed.append(terminal)
+        terminals.append({"payload": terminal.fields["payload"]})
         if trigger is None:
-            if result.application_refusal is not None:
-                raise result.application_refusal
-            return _with_chandra_trace(context, subject_id, terminal_records, result.attempt)
+            return result.attempt, result.application_refusal
         if trigger == "inference-error":
             _chandra_backoff(next_ordinal)
         next_ordinal += 1
