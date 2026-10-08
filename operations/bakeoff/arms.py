@@ -391,7 +391,7 @@ def build_request(
             "repo": repo,
             "family": preset["family"],
             "prompt": prompt["user"],
-            "prompt_source": preset["prompt_source"],
+            "prompt_source": preset["prompt_source"] if prompt_text is None else "--prompt-file",
             "sampling_source": preset["card"],
             "min_pixels": row["min_pixels"],
             "max_pixels": row["max_pixels"],

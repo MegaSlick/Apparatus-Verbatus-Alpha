@@ -74,8 +74,8 @@ markdown table rules); no arm-specific branch is needed.
 ## Resources
 
 bf16 weights 51.7 GiB: the 96 GB card (`generic-80gb-plus`; the 24 and 48 GB rows are
-`unsupported`). A full page at the vendor's 16.7 Mpx bound is up to about 16,400 image
-tokens, so pass `--max-num-batched-tokens 16384`. Seconds per page: not measured; an
+`unsupported`). A full page at the vendor's 16.7 Mpx bound is at most 16,384 image
+tokens (16,777,216 px / 32²), so pass `--max-num-batched-tokens 16384`. Seconds per page: not measured; an
 estimate of 1-3 minutes single-stream for 1,500-4,000 output tokens, much less amortised
 at 32 sequences.
 

@@ -61,8 +61,8 @@ Plain text, one line per written line; the generic branch of `score.normalise_ou
 
 ## Resources
 
-bf16 51.7 GiB: the 96 GB card (`generic-80gb-plus`). Up to about 16,400 image tokens per
-page at the vendor's bound; pass `--max-num-batched-tokens 16384`. Seconds per page: not
+bf16 51.7 GiB: the 96 GB card (`generic-80gb-plus`). At most 16,384 image tokens per
+page at the vendor's bound (16,777,216 px / 32²); pass `--max-num-batched-tokens 16384`. Seconds per page: not
 measured; same estimate as Qwen3.8-27B (same architecture and size).
 
 ## Known failure modes

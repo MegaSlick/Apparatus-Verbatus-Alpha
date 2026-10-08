@@ -111,3 +111,23 @@ def test_one_page_end_to_end(tmp_path):
     argv_sent = record["server"]["argv"]
     pixels = json.loads(argv_sent[argv_sent.index("--mm-processor-kwargs") + 1])
     assert pixels["max_pixels"] == 16_777_216
+
+
+def test_vendor_pixel_ceiling_fits_the_cards_batched_tokens():
+    # The cards pass --max-num-batched-tokens 16384: no page exceeds it at max_pixels.
+    arm = A.ARMS["qwen-vendor"]
+    row = A.arm_row(arm, A.serving_row(arm.chair, arm.default_tier), "Qwen/Qwen3.8-27B")
+    sizes = [(4096, 4096), (6000, 8000), (9000, 3000), (12_000, 16_000)]
+    assert max(A.image_tokens(row, w, h) for w, h in sizes) == 16_384
+
+
+def test_a_prompt_file_is_not_credited_to_the_cookbook():
+    arm = A.ARMS["qwen-vendor"]
+    row = A.arm_row(arm, A.serving_row(arm.chair, arm.default_tier), "Qwen/Qwen3.5-9B")
+    unit = A.page_units(arm, _png(400, 300))[0]
+    _, record = A.build_request(
+        arm, unit, row=row, served_name="m", max_model_len=65_536,
+        prompt_text="Transcribe.", repo="Qwen/Qwen3.5-9B",
+    )  # fmt: skip
+    assert record["vendor_preset"]["prompt"] == "Transcribe."
+    assert record["vendor_preset"]["prompt_source"] == "--prompt-file"
