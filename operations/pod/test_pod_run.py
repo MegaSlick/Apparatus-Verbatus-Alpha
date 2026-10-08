@@ -25,7 +25,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 import tomllib
 from argparse import Namespace
 from dataclasses import dataclass, field
@@ -1672,6 +1671,29 @@ def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
     assert "mv $G/deadline.new $G/deadline-pod123" in call[3]
 
 
+def test_the_final_report_records_each_page_stage_s_rate(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=PacedRunner(ticks=3, clock=clock),
+    )
+
+    assert code == EXIT_COMPLETE
+    report = _report(ws)
+    [rate] = report["stage_rates"]
+    assert rate["stage"] == "perlector"
+    assert (rate["pages_total"], rate["pages_per_minute"]) == (100, 0.5)
+    progress = json.loads(Path(report["progress_path"]).read_text(encoding="utf-8"))
+    assert progress["stage"] == "perlector" and progress["status"] == "ok"
+    assert progress["stage_rates"] == report["stage_rates"]
+
+
 SEALED_BUDGET = {
     "VERBATUS_SOFT_MAX_SECONDS": "7200",
     "VERBATUS_HARD_MAX_SECONDS": "10800",
@@ -3220,6 +3242,7 @@ def test_the_sibling_suffixes_launch_derives_are_the_ones_pod_run_actually_write
         plan.timing_journal_path.name.removeprefix(report.stem),
         plan.transcript_path.name.removeprefix(report.stem),
         plan.estimate_path.name.removeprefix(report.stem),
+        plan.progress_path.name.removeprefix(report.stem),
     }
 
     nested = json.dumps(["python", "-m", pod_run.__name__, "--report-path", str(report)])
@@ -3289,6 +3312,7 @@ def test_every_launch_bound_record_is_derived_from_the_sealed_start_command() ->
         f"pod-run-report-{token}-timings.json",
         f"pod-run-report-{token}-transcript.log",
         f"pod-run-report-{token}-estimate.json",
+        f"pod-run-report-{token}-progress.json",
     )
 
 
@@ -3702,6 +3726,7 @@ def test_a_launch_receipt_for_another_run_is_refused_rather_than_used(tmp_path: 
         f"pod-run-report-{token}-timings.json",
         f"pod-run-report-{token}-transcript.log",
         f"pod-run-report-{token}-estimate.json",
+        f"pod-run-report-{token}-progress.json",
     )
 
 
@@ -4226,20 +4251,21 @@ def _burn_cpu() -> None:
 
 def _stalling_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ticks: list[str]
-) -> tuple[list[float], list[list[str]]]:
+) -> tuple[list[float], list[list[str]], list[list[str]], dict]:
     """Drive one run whose orchestrator ticks once per five minutes doing what `ticks` says.
 
     On every tick an idle model server in the orchestrator's own process tree burns CPU
     and appends to its engine log in the run tree; "transcript" also adds stage output,
     and "artifact" also publishes a file in the run tree. Returns the minute of each
-    keep-alive touch and every notice argv.
+    keep-alive touch, the guard's progress line after each tick split into its fields,
+    every notice argv and the final run report.
     """
     ws = _prepared(tmp_path)
     clock = Clock()
     _first_process(tmp_path, monkeypatch, "pod123")
-    topic = ws.volume / pod_run.POD_GUARD_DIRECTORY / "ntfy_topic"
-    topic.parent.mkdir(parents=True, exist_ok=True)
-    topic.write_text("guard-topic-for-the-test\n", encoding="utf-8")
+    guard = ws.volume / pod_run.POD_GUARD_DIRECTORY
+    guard.mkdir(parents=True, exist_ok=True)
+    (guard / "ntfy_topic").write_text("guard-topic-for-the-test\n", encoding="utf-8")
     start = clock.now()
     touches: list[float] = []
     monkeypatch.setattr(
@@ -4250,6 +4276,7 @@ def _stalling_run(
     tree = ws.volume / pod_run.DEFAULT_RUNS_DIRECTORY / "first-real-run"
     engine_log = tree / "4_perlector" / pod_run.SERVING_LOGS_DIR / "vllm-perlector.log"
     notify = NotifyRecorder()
+    lines: list[list[str]] = []
 
     class Ticking(RecordedRunner):
         def __call__(self, argv, *, cwd, env, transcript, liveness, interval_seconds):  # type: ignore[no-untyped-def]
@@ -4263,14 +4290,13 @@ def _stalling_run(
                     with Path(transcript).open("a", encoding="utf-8") as out:
                         out.write(f"page {number} read\n")
                 elif tick == "artifact":
-                    artifact = tree / "4_perlector" / f"page-{number}.json"
-                    artifact.write_text("{}", encoding="utf-8")
-                    # Ahead of every earlier write, whatever the filesystem's clock grain.
-                    later = time.time_ns() + (number + 1) * 10**9
-                    os.utime(artifact, ns=(later, later))
+                    page = tree / "4_perlector" / f"page-{number}"
+                    page.mkdir(parents=True)
+                    (page / "record.json").write_text("{}", encoding="utf-8")
                 else:
                     assert tick == "idle"
                 liveness(os.getpid(), True)
+                lines.append((guard / "progress-pod123").read_text(encoding="ascii").split(" ", 4))
             return super().__call__(
                 argv,
                 cwd=cwd,
@@ -4290,38 +4316,52 @@ def _stalling_run(
         notify_runner=notify.factory,
     )
     assert code == EXIT_COMPLETE
-    stalls = [call for call in notify.calls if "shows no progress" in call[-1]]
-    return touches, stalls
+    return touches, lines, notify.calls, _report(ws)
 
 
 def test_a_progressing_run_holds_its_pod_on_every_tick(tmp_path, monkeypatch) -> None:
-    touches, stalls = _stalling_run(
+    touches, lines, notices, _ = _stalling_run(
         tmp_path, monkeypatch, ["transcript", "artifact", "transcript", "artifact", "transcript"]
     )
     assert touches == [5, 10, 15, 20, 25]
-    assert stalls == []
+    assert [line[2] for line in lines] == ["ok"] * 5
+    assert all(line[0] == line[1] for line in lines), "last ok is now on every ok tick"
+    assert notices == []
 
 
-def test_an_idle_server_burning_cpu_does_not_hold_the_pod_past_the_stall_window(
+def test_an_idle_server_burning_cpu_does_not_hold_the_pod_past_the_quiet_window(
     tmp_path, monkeypatch
 ) -> None:
-    assert pod_run.RUN_STALL_SECONDS == 15 * 60
-    touches, stalls = _stalling_run(tmp_path, monkeypatch, ["idle"] * 7)
+    assert pod_run.progress_watch.OUTPUT_QUIET_SECONDS == 15 * 60
+    touches, lines, notices, _ = _stalling_run(tmp_path, monkeypatch, ["idle"] * 7)
     # Only the first tick, which finds the run tree new, is progress: held through
-    # minute 15, released from minute 20 on, though the server burned CPU every tick.
+    # minute 15, stalled from minute 20 on, though the server burned CPU every tick.
     assert touches == [5, 10, 15]
-    [notice] = stalls
-    assert notice[-2] == "decision"
-    assert notice[-1].startswith("run on pod123 shows no progress since ")
-    assert notice[-1].endswith("since 2026-01-01 00:05 UTC; the idle guard now decides")
+    assert [line[2] for line in lines] == ["ok"] * 3 + ["stalled"] * 4
+    started = int(lines[0][0]) - 300
+    # The last ok stays at minute 15, so the guard's ladder runs from there.
+    assert {int(line[1]) - started for line in lines[3:]} == {15 * 60}
+    assert lines[-1][3] == "output"
+    assert lines[-1][4].startswith("no new output or record for 1800 s")
+    # The guard owns every notice about a stalled run; pod_run sends none.
+    assert notices == []
 
 
 def test_progress_after_a_stall_holds_the_pod_again(tmp_path, monkeypatch) -> None:
-    touches, stalls = _stalling_run(
+    touches, lines, _, _ = _stalling_run(
         tmp_path, monkeypatch, ["idle"] * 5 + ["artifact", "transcript"]
     )
     assert touches == [5, 10, 15, 30, 35]
-    assert len(stalls) == 1
+    assert [line[2] for line in lines] == ["ok"] * 3 + ["stalled"] * 2 + ["ok"] * 2
+
+
+def test_the_final_report_carries_the_progress_record(tmp_path, monkeypatch) -> None:
+    *_, report = _stalling_run(tmp_path, monkeypatch, ["idle"] * 5)
+    progress = json.loads(Path(report["progress_path"]).read_text(encoding="utf-8"))
+    assert progress["schema"] == "pod-run-progress.v1"
+    assert progress["status"] == "stalled" and progress["measure"] == "output"
+    assert report["progress"]["status"] == "stalled"
+    assert report["stage_rates"] == []
 
 
 def test_the_run_tree_mark_moves_on_stage_writes_and_not_on_engine_logs(tmp_path: Path) -> None:

@@ -455,6 +455,22 @@ stays on the volume. `held_to_hard_deadline` in the report says which way it wen
   the deadline. The run report's `deadline_watch` keeps every notice, every ignored
   deadline file value, and any failure to write or compute the estimate; a failed tick
   is also written to the estimate file.
+- `-progress.json` — whether the stage in progress keeps its pace, rewritten each liveness
+  tick (`progress_watch.py`, schema `pod-run-progress.v1`) from the same run-tree sample
+  as the estimate. A page-counted stage is `slow` when its pages over the last ten
+  minutes fall below half its expected rate, and `stalled` when no new page has come for
+  max(10 min, 3 expected page times), or, before its first page, for its engine's startup
+  timeout plus three page times (30 min when that is not known). The expected rate is a
+  planning value, not a measurement: the Perlector's `planned_seconds_per_page` over the
+  calls its engine serves at once (`max_num_seqs`), Surya's `seconds_per_page` over its
+  runner processes (`workers`); any other page stage is held to its own pace once it has
+  five pages and ten minutes. The stage is the one the transcript says started and has
+  not ended, or else the page stage the estimate counts. A stage not counted in pages is
+  `stalled` after 15 minutes (not yet measured against a real stage) with no new
+  transcript output and nothing written in its run tree outside the `serving-logs`
+  directories. The record keeps each check, any finding, the last moment the run was
+  `ok`, and `stage_rates`: each page stage's pages done and total, the seconds `pod_run`
+  watched it and its pages a minute, which the final report keeps too.
 
 These are best-effort, so a lost stopwatch never abandons or holds a completed run. The
 report audits them at close (`records_at_close`, `records_missing`); a missing transcript
@@ -605,14 +621,12 @@ notice if a warning had gone out. The latest step is in `alert-<pod id>` as one 
 `ladder_delete`, which the start command passes in. Nothing writes `backup-<pod id>` yet,
 so today the backup step finds nothing to back up.
 
-`pod_run` touches the keep-alive file on every liveness tick while the orchestrator shows
-progress: new output in its transcript, or anything written in its run tree outside the
-`serving-logs` directories. CPU time is not progress, because an idle model server in the
-run's process tree uses a little on every tick, and its engine log keeps growing too. A
-live run that shows no progress for 15 minutes (`RUN_STALL_SECONDS`, not yet measured
-against a real stage) stops touching it and sends one notice ("run on <pod> shows no
-progress since <time>; the idle guard now decides"); the ladder then climbs on the
-counters, and touching resumes if the run moves again. An unreadable CPU counter never
+`pod_run` touches the keep-alive file on every liveness tick on which its progress check
+(`-progress.json` above) says `ok`, and writes the check's verdict to
+`progress-<pod id>` as one line, `<epoch now> <epoch last ok> <ok|slow|stalled> <check>
+<detail>`. CPU time is not progress, because an idle model server in the run's process
+tree uses a little on every tick, and its engine log keeps growing too. `pod_run` sends no
+notice of its own about a slow or stalled run; the guard's ladder does. An unreadable CPU counter never
 deletes a pod. If it cannot be read from the start, or stays unreadable, the guard counts
 the pod as busy, keeps trying the read every minute, and sends one notice ("CPU idle
 detection unavailable on <pod>; held until its deadline <time>", or "counted as busy, and
@@ -891,6 +905,7 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
 cat $V/pod-run-report-$RUN.json          # state: bootstrapping, running, then the outcome
 cat $V/pod-run-report-$RUN-liveness.json # last_seen should keep moving while it runs
 cat $V/pod-run-report-$RUN-estimate.json # this stage finishes about ...; at_risk
+cat $V/pod-run-report-$RUN-progress.json # ok, slow or stalled, and why
 tail -f $V/pod-run-report-$RUN-transcript.log
 tail -f $V/pod-run-$RUN.out              # the bootstrap's own output as well
 tail -f $V/.pod_guard/guard.log
@@ -939,6 +954,7 @@ verbatus fetch-run --run-id <run id> --into <local root> \
   --evidence-key pod-run-report-<run id>-liveness.json \
   --evidence-key pod-run-report-<run id>-timings.json \
   --evidence-key pod-run-report-<run id>-estimate.json \
+  --evidence-key pod-run-report-<run id>-progress.json \
   --evidence-key bootstrap-report-<run id>.json \
   --evidence-key bootstrap-journal-<run id>.json \
   --evidence-key pod-run-<run id>.out \

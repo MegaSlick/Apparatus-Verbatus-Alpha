@@ -48,6 +48,7 @@ def run_report_paths(report: PurePosixPath) -> tuple[PurePosixPath, ...]:
         ),
         report.with_name(f"{report.stem}-transcript.log"),
         report.with_name(f"{report.stem}-estimate{report.suffix}"),
+        report.with_name(f"{report.stem}-progress{report.suffix}"),
     )
 
 
