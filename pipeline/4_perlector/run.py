@@ -83,12 +83,19 @@ class ResidentChair:
     reason. A `ServiceStopError` propagates: an unverified shutdown must be reported.
     """
 
-    __slots__ = ("client",)
+    __slots__ = ("client", "starting")
 
     def __init__(self) -> None:
         self.client: ChairClient | None = None
+        # A start running on a background thread (`live_calls.BackgroundStart`), if any.
+        self.starting = None
 
     def close(self) -> None:
+        """Stop the chair; a chair still starting is left to its start's thread, which
+        stops it when the start returns, so a stopped pass does not wait for a load."""
+        starting, self.starting = self.starting, None
+        if starting is not None and starting.abandon():
+            return
         client, self.client = self.client, None
         if client is not None:
             client.__exit__()

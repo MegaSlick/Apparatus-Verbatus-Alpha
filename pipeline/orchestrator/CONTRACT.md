@@ -140,3 +140,24 @@ byte-identity tests above require. Other contracts use a field named `mode` for 
 vocabularies, so the field name alone identifies no selection
 (the ingress record in `common/contracts/approval.py`, `parse_ingress_record`, and the
 crop-policy `mode` of `pipeline/2_designator/geometry_layer.py`, `yolo_obb`).
+
+## Transcript lines and the timing journal
+
+Every stage runs unbuffered (`python -I -u`), and the orchestrator flushes each line
+it prints, so a transcript shows lines as they happen. Around each stage it prints
+one line when the stage starts and one when it ends, with its exit and duration and
+each chair it launched (launch and ready moments, from the stage's launch audits,
+found by the empty `launch-audit-<digest>` note the stage leaves beside its engine
+logs, so no other blob is read);
+around a volume sync, one line when it starts and one with the files copied and its
+duration. The sync is printed, not journaled.
+
+The optional stage-timing journal (`--stage-timing-journal`, `stage-timing-journal.v4`)
+gets one line per stage invocation, written even when the stage fails. Its readers
+check only the schema and the run, so optional fields are added without a new
+version. `gpu_utilization` holds summary statistics over every read and at most 120
+samples, every `sample_stride`th read; the card is read every 15 s, and not at all
+on a host with no `nvidia-smi` on PATH (`None` plus that reason). `serving_spans`
+lists each chair the invocation launched with its `started_at`, `ready_at` and
+`ready_seconds` (`None` when the audits could not be read); the serving manager
+records no stop moment, so the entry's `finished_at` bounds it.

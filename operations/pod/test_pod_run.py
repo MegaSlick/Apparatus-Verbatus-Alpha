@@ -327,11 +327,15 @@ def test_a_complete_run_exits_zero_after_bootstrap_orchestrator_and_hold(
     assert actions.calls == list(BootstrapStep)
     [(command, cwd, env)] = runner.calls
     assert cwd == ws.repository
-    assert command[1:3] == ["-I", str(ws.repository / "pipeline" / "orchestrator" / "run.py")]
+    assert command[1:4] == [
+        "-I",
+        "-u",
+        str(ws.repository / "pipeline" / "orchestrator" / "run.py"),
+    ]
     stop = Path(command[command.index("--stop-record") + 1])
     assert stop.name == "stop.json" and stop.parent.name.startswith("pod-run-stop-")
     assert not stop.parent.exists()
-    assert command[3:] == [
+    assert command[4:] == [
         "--fixture",
         "synthetic-two-page-v0",
         "--run-id",
