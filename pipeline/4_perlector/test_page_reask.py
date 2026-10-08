@@ -810,3 +810,69 @@ def test_the_page_doubt_hold_counts_the_first_reading_and_its_re_ask_together(
     assert all(page_path.PAGE_DOUBT_SHARE_HIGH in r["payload"]["holds"] for r in readings), [
         r["payload"]["holds"] for r in readings
     ]
+
+
+# ========================= early re-asks and the reading deadline =========================
+
+
+def _early_reask_pass(monkeypatch, *, deadline_seconds: int | None):
+    """Drive the first readings' job source over two pages, page 1 planning a re-ask.
+
+    Every first reading and the re-ask would be sent; each planned call takes 100 s
+    and the chair is already up.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    deadline = (
+        None
+        if deadline_seconds is None
+        else datetime.now(timezone.utc) + timedelta(seconds=deadline_seconds)
+    )
+    state = SimpleNamespace(
+        live=True,
+        run=SimpleNamespace(args=SimpleNamespace(reading_deadline=deadline), page_max_tokens=1),
+    )
+    pages = [page_run._Page(page_id=f"p{n}", ordinal=n, page_record={}) for n in (1, 2)]
+
+    def finish(_state, page, _result):
+        if page.ordinal == 1:
+            page.reask = page_run._Request(page_run.REASK_READING, page_run.PAGE_REASK_PASS)
+
+    monkeypatch.setattr(page_run, "_sends", lambda *_args: True)
+    monkeypatch.setattr(page_run, "_joins_early", lambda *_args: True)
+    monkeypatch.setattr(page_run, "_startup_left", lambda _state: 0)
+    monkeypatch.setattr(page_run, "planned_seconds_per_page", lambda _cap: 100)
+    monkeypatch.setattr(page_run, "_finish", finish)
+    monkeypatch.setattr(
+        page_run, "_job", lambda _state, page, request, done: ((page.ordinal, request), done)
+    )
+    joined: set[str] = set()
+    source = page_run._first_and_early_reask_jobs(state, pages, joined)
+    drawn, finishes = [], []
+    # Width 2: both first readings are drawn, then page 1's reply finishes while page 2's
+    # call is still out, and the source is asked for more.
+    for _ in range(2):
+        (ordinal, request), done = next(source)
+        drawn.append((ordinal, request.ordinal))
+        finishes.append(done)
+    finishes[0](None)
+    drawn += [(ordinal, request.ordinal) for (ordinal, request), _done in source]
+    return drawn, joined
+
+
+def test_a_deadline_that_holds_only_the_first_readings_left_keeps_the_re_ask_for_its_phase(
+    monkeypatch,
+):
+    # Page 2's first reading is still out (100 s); the re-ask would need 100 s more.
+    drawn, joined = _early_reask_pass(monkeypatch, deadline_seconds=150)
+    assert drawn == [(1, 1), (2, 1)]
+    # Left for the re-ask window, which judges it against the deadline as before.
+    assert joined == set()
+
+
+def test_a_deadline_that_holds_the_re_ask_too_lets_it_join_the_first_readings(monkeypatch):
+    drawn, joined = _early_reask_pass(monkeypatch, deadline_seconds=250)
+    assert drawn == [(1, 1), (2, 1), (1, 2)]
+    assert joined == {"p1"}
+    drawn, joined = _early_reask_pass(monkeypatch, deadline_seconds=None)
+    assert joined == {"p1"}
