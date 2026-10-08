@@ -532,12 +532,7 @@ def invoke(program: str, args: argparse.Namespace, *, coniector_next: bool = Fal
         spans = _serving_spans(args, program, started_at)
         print(
             f"run {args.run_id}: {stage_name} ended, exit {exit_code}, after "
-            f"{ended - started:.0f}s"
-            + "".join(
-                f"; chair {span['chair']} launched {span['started_at']}, ready "
-                f"{span['ready_at']} ({span['ready_seconds']}s)"
-                for span in spans or ()
-            ),
+            f"{ended - started:.0f}s" + "".join(_span_words(span) for span in spans or ()),
             flush=True,
         )
         # The invocations a reader most wants timed are the ones that went wrong.
@@ -554,6 +549,19 @@ def invoke(program: str, args: argparse.Namespace, *, coniector_next: bool = Fal
     if completed.returncode not in (EXIT_COMPLETE, EXIT_HELD, EXIT_RUN_HALTED):
         raise ContractError(f"{program} exited {completed.returncode}")
     return completed.returncode
+
+
+def _span_words(span: dict[str, object]) -> str:
+    """One chair on a stage's end line: a model load, or a model taken over."""
+    if span.get("adopted_at"):
+        return (
+            f"; chair {span['chair']} adopted {span['adopted_at']} (no model load; the "
+            f"service was launched {span['started_at']})"
+        )
+    return (
+        f"; chair {span['chair']} launched {span['started_at']}, ready "
+        f"{span['ready_at']} ({span['ready_seconds']}s)"
+    )
 
 
 def _positive_int(value: str) -> int:

@@ -379,6 +379,10 @@ def test_a_service_taken_over_is_this_invocations_from_the_moment_it_was_taken(t
     assert span["adopted_at"] == "2026-10-07T11:00:01Z"
     assert span["started_at"] == "2026-10-07T10:00:05Z"
     assert orchestrator._serving_spans(args, program, "2026-10-07T12:00:00Z") == []
+    # The stage's end line says a model was taken over, where a load would be said.
+    assert "chair reconstructor adopted 2026-10-07T11:00:01Z (no model load" in (
+        orchestrator._span_words(span)
+    )
 
 
 def test_serving_spans_read_no_blob_but_the_noted_audits(tmp_path, monkeypatch):
