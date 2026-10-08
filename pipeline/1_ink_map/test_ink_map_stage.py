@@ -99,9 +99,11 @@ def _coverage(width: int, height: int):
 
 
 def test_early_map_and_late_reconciliation_import_one_measure():
+    import common.ink_map_measure
     import common.residual_ink
 
-    assert INK_MAP_RUN.ink_map_page is common.residual_ink.ink_map_page
+    assert INK_MAP_RUN.measure_pages is common.ink_map_measure.measure_pages
+    assert common.ink_map_measure.ink_map_page is common.residual_ink.ink_map_page
     assert RECENSOR_RUN.residual_ink is common.residual_ink.residual_ink
 
 
@@ -255,10 +257,12 @@ def test_the_ink_map_declares_the_decode_route_it_actually_takes():
     the decode-environment census report drift that is not there.
     """
     import common.imaging
+    import common.ink_map_measure
     from common.contracts.stages import RECENSOR
     from common.stage import _decode_environment
 
-    assert INK_MAP_RUN.grayscale_rows is common.imaging.grayscale_rows
+    assert INK_MAP_RUN.measure_pages is common.ink_map_measure.measure_pages
+    assert common.ink_map_measure.grayscale_rows is common.imaging.grayscale_rows
     assert RECENSOR_RUN.grayscale_rows is common.imaging.grayscale_rows
     ink_map = _decode_environment(INK_MAP)
     assert ink_map["decode_paths_used"] == _decode_environment(RECENSOR)["decode_paths_used"]

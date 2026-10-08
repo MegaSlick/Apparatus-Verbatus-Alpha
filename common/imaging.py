@@ -20,7 +20,9 @@ import hashlib
 import math
 import struct
 import sys
+import threading
 import zlib
+from collections import OrderedDict
 from collections.abc import Mapping
 from io import BytesIO
 from pathlib import Path
@@ -403,8 +405,8 @@ def _png_source_bit_depth(png_bytes: bytes) -> int | None:
     return png_bytes[24]
 
 
-def _transparency_to_decoded_range(image: Image.Image, source_bit_depth: int | None) -> None:
-    """Restate a tRNS record in the range the decoder just put the pixels in.
+def _transparency_to_decoded_range(mode: str, info: dict, source_bit_depth: int | None) -> None:
+    """Restate a tRNS record in `info` in the range the decoder just put the pixels in.
 
     PNG names a transparent sample in the file's own bit depth, but Pillow
     rescales the pixels while leaving `info["transparency"]` in that original
@@ -424,9 +426,9 @@ def _transparency_to_decoded_range(image: Image.Image, source_bit_depth: int | N
     """
     if source_bit_depth is None or source_bit_depth == _BIT_DEPTH:
         return
-    if image.mode not in {"L", "RGB"}:
+    if mode not in {"L", "RGB"}:
         return
-    record = image.info.get("transparency")
+    record = info.get("transparency")
     if record is None:
         return
     grouped = isinstance(record, tuple | list)
@@ -436,14 +438,14 @@ def _transparency_to_decoded_range(image: Image.Image, source_bit_depth: int | N
     source_maximum = (1 << source_bit_depth) - 1
     if any(not 0 <= sample <= source_maximum for sample in samples):
         raise ValueError(
-            f"a page decoded to mode {image.mode!r} carries a transparency record {record!r} "
+            f"a page decoded to mode {mode!r} carries a transparency record {record!r} "
             f"that its own {source_bit_depth}-bit source samples cannot name"
         )
     if source_bit_depth == 16:
         converted = tuple(sample >> 8 for sample in samples)
     else:
         converted = tuple(sample * 255 // source_maximum for sample in samples)
-    image.info["transparency"] = converted if grouped else converted[0]
+    info["transparency"] = converted if grouped else converted[0]
 
 
 def _transparency_chunk(crop: Image.Image, bit_depth: int) -> bytes:
@@ -700,16 +702,30 @@ def crop_png(png_bytes: bytes, bounds: Bounds) -> bytes:
     is content-addressed and its bytes may not depend on which zlib a wheel
     happened to bundle.
     """
-    x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
-    if w <= 0 or h <= 0:
-        raise ValueError(f"crop bounds {bounds} must have positive width and height")
+    _refuse_empty_crop(bounds)
     try:
-        width, height, rows = decode_grayscale_png(png_bytes)
-    except ValueError:
-        return _crop_decoded_page(png_bytes, x, y, w, h)
-    if x < 0 or y < 0 or x + w > width or y + h > height:
-        raise ValueError(f"crop bounds {bounds} fall outside a {width}x{height} page")
-    return encode_grayscale_png_deterministic(w, h, [row[x : x + w] for row in rows[y : y + h]])
+        page = decode_page(png_bytes)
+    except _DECODE_FAILURES as error:
+        raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
+    return crop_from_decoded(page, bounds)
+
+
+def _refuse_empty_crop(bounds: Bounds) -> None:
+    if bounds["w"] <= 0 or bounds["h"] <= 0:
+        raise ValueError(f"crop bounds {bounds} must have positive width and height")
+
+
+def crop_from_decoded(page: "DecodedPage", bounds: Bounds) -> bytes:
+    """`crop_png` over a page already decoded by `decode_page`: the same bytes."""
+    _refuse_empty_crop(bounds)
+    x, y, w, h = bounds["x"], bounds["y"], bounds["w"], bounds["h"]
+    if page.rows is not None:
+        if x < 0 or y < 0 or x + w > page.width or y + h > page.height:
+            raise ValueError(f"crop bounds {bounds} fall outside a {page.width}x{page.height} page")
+        return encode_grayscale_png_deterministic(
+            w, h, [row[x : x + w] for row in page.rows[y : y + h]]
+        )
+    return _crop_decoded_page(page, x, y, w, h)
 
 
 # Pillow 12.3.0 silently forces NEAREST for modes `1` and `P`, so both must be
@@ -809,18 +825,107 @@ def convert_png_to_rgb(png_bytes: bytes) -> bytes:
 
 
 def dimensions(png_bytes: bytes) -> tuple[int, int]:
-    """The dimensions of a sealed page, including RGB PNG renders from the door."""
+    """The dimensions of a sealed page, including RGB PNG renders from the door.
+
+    The page is fully decoded the first time its bytes are asked about, so an
+    undecodable page is refused here and not only when it is cut; the size of
+    bytes that decoded is remembered by their digest.
+    """
+    digest = _bytes_digest(png_bytes)
+    with _CACHE_LOCK:
+        size = _PAGE_SIZES.get(digest)
+    if size is not None:
+        return size
     try:
-        width, height, _ = decode_grayscale_png(png_bytes)
-        return width, height
+        page = decode_page(png_bytes)
+    except (*_DECODE_FAILURES, ValueError) as error:
+        raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
+    size = (page.width, page.height)
+    remember_dimensions(digest, size)
+    return size
+
+
+class DecodedPage(NamedTuple):
+    """A page's pixels decoded once, shared by every crop and size taken from them.
+
+    Exactly one of `rows` (this module's own grayscale codec) and `image`
+    (Pillow, loaded) is set. Both are shared and must not be modified.
+    """
+
+    width: int
+    height: int
+    rows: list[bytearray] | None
+    image: Image.Image | None
+    # The bit depth the PNG header declares, which a tRNS record is written in.
+    source_bit_depth: int | None
+
+
+# A page is cut, sized and re-derived many times by one stage, and a full decode
+# of a large page costs far more than the digest naming it. The few most recent
+# decodes are held by digest, so the same bytes always give the same pixels.
+_DECODED_PAGES_HELD: Final = 2
+_DECODED_PAGES: OrderedDict[str, DecodedPage] = OrderedDict()
+_PAGE_SIZES_HELD: Final = 4096
+_PAGE_SIZES: OrderedDict[str, tuple[int, int]] = OrderedDict()
+# The digest of the few byte strings most recently named, held with the bytes
+# themselves so an `id` cannot be reused while it is remembered.
+_RECENT_DIGESTS_HELD: Final = 4
+_RECENT_DIGESTS: list[tuple[bytes, str]] = []
+_CACHE_LOCK = threading.Lock()
+
+
+def remember_dimensions(digest: str, size: tuple[int, int]) -> None:
+    """Hold the size another process decoded bytes with this sha256 to, as `dimensions` would."""
+    with _CACHE_LOCK:
+        _PAGE_SIZES[digest] = size
+        _PAGE_SIZES.move_to_end(digest)
+        while len(_PAGE_SIZES) > _PAGE_SIZES_HELD:
+            _PAGE_SIZES.popitem(last=False)
+
+
+def page_sha256(data: bytes) -> str:
+    """The sha256 the decoded-page and size caches know `data` by."""
+    return _bytes_digest(data)
+
+
+def _bytes_digest(data: bytes) -> str:
+    with _CACHE_LOCK:
+        for held, digest in _RECENT_DIGESTS:
+            if held is data:
+                return digest
+    digest = hashlib.sha256(data).hexdigest()
+    with _CACHE_LOCK:
+        _RECENT_DIGESTS.insert(0, (data, digest))
+        del _RECENT_DIGESTS[_RECENT_DIGESTS_HELD:]
+    return digest
+
+
+def decode_page(png_bytes: bytes) -> DecodedPage:
+    """Decode a page through this module's own codec, or Pillow where it cannot.
+
+    Raises what the decoder raises (`ValueError`, or one of Pillow's decode
+    failures); a refusal is never remembered, so bytes that failed fail again.
+    """
+    digest = _bytes_digest(png_bytes)
+    with _CACHE_LOCK:
+        held = _DECODED_PAGES.get(digest)
+        if held is not None:
+            _DECODED_PAGES.move_to_end(digest)
+            return held
+    try:
+        width, height, rows = decode_grayscale_png(png_bytes)
+        page = DecodedPage(width, height, rows, None, None)
     except ValueError:
-        try:
-            with Image.open(BytesIO(png_bytes)) as image:
-                _refuse_past_pixel_bound(image.width, image.height)
-                image.load()
-                return image.width, image.height
-        except (*_DECODE_FAILURES, ValueError) as error:
-            raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
+        with Image.open(BytesIO(png_bytes)) as image:
+            _refuse_past_pixel_bound(image.width, image.height)
+            image.load()
+        page = DecodedPage(image.width, image.height, None, image, _png_source_bit_depth(png_bytes))
+    with _CACHE_LOCK:
+        _DECODED_PAGES[digest] = page
+        _DECODED_PAGES.move_to_end(digest)
+        while len(_DECODED_PAGES) > _DECODED_PAGES_HELD:
+            _DECODED_PAGES.popitem(last=False)
+    return page
 
 
 def grayscale_rows(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
@@ -833,16 +938,14 @@ def grayscale_rows(png_bytes: bytes) -> tuple[int, int, list[bytearray]]:
     clipped and an `I`/`F` page is refused by name, exactly as the crop path.
     """
     try:
-        return decode_grayscale_png(png_bytes)
-    except ValueError:
-        pass
-    try:
-        with Image.open(BytesIO(png_bytes)) as image:
-            _refuse_past_pixel_bound(image.width, image.height)
-            image.load()
-            grayscale = _grayscale_samples(image)
-            width, height = grayscale.width, grayscale.height
-            data = grayscale.tobytes()
+        page = decode_page(png_bytes)
+        if page.rows is not None:
+            # The decoded rows are shared with every other use of the page;
+            # the caller gets its own.
+            return page.width, page.height, [bytearray(row) for row in page.rows]
+        grayscale = _grayscale_samples(page.image)
+        width, height = grayscale.width, grayscale.height
+        data = grayscale.tobytes()
     except UnsettledReadingPolicy:
         raise  # not "not a decodable image": this is a policy refusal, not damage
     except (*_DECODE_FAILURES, ValueError) as error:
@@ -939,7 +1042,7 @@ def carries_only_image_chunks(png_bytes: bytes) -> bool:
     return False
 
 
-def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> bytes:
+def _crop_decoded_page(page: DecodedPage, x: int, y: int, w: int, h: int) -> bytes:
     """Crop a decoded page and encode a PNG-compatible, display-ready result.
 
     PNG cannot represent CMYK or several decoder-private modes.  The sealed crop
@@ -947,22 +1050,22 @@ def _crop_decoded_page(png_bytes: bytes, x: int, y: int, w: int, h: int) -> byte
     modes become RGBA; no transparent pixel is flattened against an invented
     background.  The original Exemplar blob remains untouched and traceable.
     """
+    image = page.image
+    # The shared page keeps its own `info`; the crop gets a copy whose tRNS
+    # record is restated in the depth the decoder put the pixels in.
+    info = dict(image.info)
+    _transparency_to_decoded_range(image.mode, info, page.source_bit_depth)
+    if x < 0 or y < 0 or x + w > image.width or y + h > image.height:
+        raise ValueError(
+            f"crop bounds {{'x': {x}, 'y': {y}, 'w': {w}, 'h': {h}}} fall outside a "
+            f"{image.width}x{image.height} page"
+        )
     try:
-        with Image.open(BytesIO(png_bytes)) as image:
-            _refuse_past_pixel_bound(image.width, image.height)
-            image.load()
-            # Before the cut: `crop()` copies `info`, and this is the only place
-            # that still has the source bytes to say what depth the record used.
-            _transparency_to_decoded_range(image, _png_source_bit_depth(png_bytes))
-            if x < 0 or y < 0 or x + w > image.width or y + h > image.height:
-                raise ValueError(
-                    f"crop bounds {{'x': {x}, 'y': {y}, 'w': {w}, 'h': {h}}} fall outside a "
-                    f"{image.width}x{image.height} page"
-                )
-            crop = image.crop((x, y, x + w, y + h))
-            if crop.mode not in PNG_CROP_MODES:
-                crop = _to_display_mode(crop)
-            return _encode_crop_deterministic(crop)
+        crop = image.crop((x, y, x + w, y + h))
+        crop.info = info
+        if crop.mode not in PNG_CROP_MODES:
+            crop = _to_display_mode(crop)
+        return _encode_crop_deterministic(crop)
     except _DECODE_FAILURES as error:
         raise ValueError(f"sealed page bytes are not a decodable image ({error})") from error
 
