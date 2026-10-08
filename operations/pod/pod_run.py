@@ -50,8 +50,8 @@ sealed, this process holds to the
 shared hard deadline exactly as ``bootstrap_main`` does, re-journaling a
 liveness line beside the run report.  That hold is paid idle time between a
 finished run and the deadline, because ``pod_timer`` reads any earlier exit as
-``completed-early``.  The pod guard deletes an idle pod after its idle window
-and nothing here touches its keep-alive, so the guard ends the hold early:
+``completed-early``.  Nothing here touches the pod guard's keep-alive, so its
+idle ladder, when switched to delete, ends the hold early:
 ``held_to_hard_deadline`` records the choice to hold, and the hold journal's
 last tick records when the hold actually ended.
 
@@ -94,7 +94,7 @@ only here.
 **``--no-hold`` is for a run started by hand, outside the pod timer.**  After
 the final report of any run past a green bootstrap, it returns instead of
 holding and moves this pod's guard deadline to now, so the guard deletes the
-pod within about a minute rather than after its idle window.  It first leaves
+pod within about a minute rather than leaving it to the idle ladder.  It first leaves
 the run id and outcome in ``released-<pod id>`` beside the deadline, which the
 guard's delete notice carries.  The pod id is the container's own, read from
 its first process when that is readable, and a shell exporting a different
@@ -1448,7 +1448,7 @@ def _require_live_guard_for_release(
             f"--no-hold needs this pod's id from its first process ({PID1_ENVIRON} names no "
             f"{POD_ID_ENVIRONMENT}), and a shell's own value is never trusted for it: without "
             "that id no guard armed for this pod, so there is nothing to release. Run without "
-            "--no-hold; the guard's idle deletion still applies",
+            "--no-hold; the guard's idle ladder still applies",
             report_path=report_path,
         )
     if not _is_pod_id(first_process_pod_id):
