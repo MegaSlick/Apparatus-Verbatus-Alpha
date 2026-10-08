@@ -29,11 +29,14 @@ PAGE_REQUEST_INPUTS = {
 
 
 class _Client:
-    def __init__(self, *, parse_problem=None, finish_reason="stop", chair="perlector") -> None:
+    def __init__(
+        self, *, parse_problem=None, finish_reason="stop", chair="perlector", loop_stop=None
+    ) -> None:
         self.identity = SimpleNamespace(role=chair)
         self.requests = []
         self.parse_problem = parse_problem
         self.finish_reason = finish_reason
+        self.loop_stop = loop_stop
 
     def read(self, request):
         self.requests.append(request)
@@ -47,6 +50,7 @@ class _Client:
             receipt_ref={"relative_path": "receipt", "sha256": "d" * 64},
             served_model_id="served",
             response_sha256="a" * 64,
+            **({"loop_stop": self.loop_stop} if request.loop_guard is not None else {}),
         )
 
 
@@ -81,6 +85,25 @@ def test_a_turn_carries_the_template_switch_its_chair_s_smoke_sends(chair):
     )
     (request,) = client.requests
     assert request.generation_sent.get("chat_template_kwargs") == chat_template_kwargs_for(chair)
+
+
+def test_a_guarded_page_request_carries_its_guard_and_a_stopped_reply_says_why():
+    guard = {"loop_line_repeats": 30, "loop_block_repeats": 10, "loop_block_max_lines": 8}
+    loop = {"kind": "line", "block_lines": 1, "repeats": 30, "line": 70}
+    client = _Client(finish_reason=None, loop_stop=loop)
+    answer = send_page_request(client, **PAGE_REQUEST_INPUTS, loop_guard=guard)
+    (request,) = client.requests
+    assert dict(request.loop_guard) == guard
+    # The guard rides beside the request, never inside what the caller sends.
+    assert digest_bytes(_request_bytes(request)) == PAGE_REQUEST_SHA256
+    assert answer["stop_reason"] == "repetition-loop"
+    assert answer["finish_reason"] is None
+    assert answer["loop_stop"] == loop
+    guarded = send_page_request(_Client(), **PAGE_REQUEST_INPUTS, loop_guard=guard)
+    assert (guarded["stop_reason"], guarded["loop_stop"]) == ("stop", None)
+    # An unguarded call answers exactly what it always did.
+    plain = send_page_request(_Client(), **PAGE_REQUEST_INPUTS)
+    assert plain["stop_reason"] == "stop" and "loop_stop" not in plain
 
 
 def test_a_text_only_turn_sends_its_string_content_thinking_off_and_no_image():

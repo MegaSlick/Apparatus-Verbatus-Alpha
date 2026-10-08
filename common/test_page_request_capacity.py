@@ -33,7 +33,7 @@ ROW = SimpleNamespace(
     merge_size=2,
 )
 MEASURE = {"longest_witness_characters": 12_000, "act_entries": 20, "surya_lines": 0}
-GENERATION = {"page_max_tokens": 12288, "answer_headroom_bp": 20000, "answer_floor_tokens": 4096}
+GENERATION = {"page_max_tokens": 12288}
 
 
 def _fixed(text):
@@ -162,41 +162,30 @@ def test_a_dense_page_is_sent_the_cap_or_the_context_left_whichever_is_smaller()
         "tokens": 6903,
         "reserve_clamped": False,
         "page_max_tokens": 12288,
-        "answer_headroom_bp": 20000,
-        "answer_floor_tokens": 4096,
     }
     roomy = SimpleNamespace(**{**vars(ROW), "max_model_len": 65536})
-    # Twice this dense page's reserve is past the page cap, so the cap binds.
     assert _admit(roomy)["max_tokens"] == 12288
 
 
 ROOMY = SimpleNamespace(**{**vars(ROW), "max_model_len": 65536})
 
 
-def test_a_page_is_sent_its_reserve_times_the_headroom_when_that_is_smallest():
-    measure = {"longest_witness_characters": 6_000, "act_entries": 6, "surya_lines": 0}
-    admitted = _admit(ROOMY, measure=measure)
-    reserve = admitted["answer_reserve"]["tokens"]
-    assert 4096 < 2 * reserve < 12288
-    # A reply that runs away from its page stops at twice its reserve, not the page cap.
-    assert admitted["max_tokens"] == 2 * reserve
-    # Rounded up, never down, so the bound is never below reserve x headroom.
-    odd = _admit(ROOMY, measure=measure, generation={**GENERATION, "answer_headroom_bp": 15001})
-    assert odd["max_tokens"] == -(-reserve * 15001 // 10_000)
-
-
-def test_a_page_whose_witnesses_read_little_is_sent_at_least_the_floor():
-    measure = {"longest_witness_characters": 300, "act_entries": 1, "surya_lines": 0}
-    admitted = _admit(ROOMY, measure=measure)
-    assert 2 * admitted["answer_reserve"]["tokens"] < 4096
-    assert admitted["max_tokens"] == 4096
-    # The floor never lifts the bound past the page cap or the context left.
-    assert (
-        _admit(ROOMY, measure=measure, generation={**GENERATION, "answer_floor_tokens": 20000})[
-            "max_tokens"
-        ]
-        == 12288
-    )
+@pytest.mark.parametrize(
+    "measure",
+    [
+        # A page whose witnesses read little: the reserve is small, the bound is not.
+        {"longest_witness_characters": 300, "act_entries": 1, "surya_lines": 0},
+        # A dense index page: 264 Surya lines, a reserve far below what its answer needs.
+        {"longest_witness_characters": 2_000, "act_entries": 3, "surya_lines": 264},
+    ],
+)
+def test_the_answer_is_never_bounded_by_its_reserve(measure):
+    for row in (ROW, ROOMY):
+        admitted = _admit(row, measure=measure)
+        record = admitted["capacity"]
+        room = record["max_model_len"] - record["image_prompt_tokens"] - record["prompt_tokens"]
+        assert admitted["answer_reserve"]["tokens"] < 4096
+        assert admitted["max_tokens"] == min(GENERATION["page_max_tokens"], room)
 
 
 def test_a_page_with_no_witness_text_is_sent_the_whole_cap():
@@ -204,9 +193,10 @@ def test_a_page_with_no_witness_text_is_sent_the_whole_cap():
     assert _admit(ROOMY, measure=measure)["max_tokens"] == 12288
 
 
-def test_generation_bounds_that_are_not_exactly_the_sealed_three_are_refused():
-    for generation in ({"page_max_tokens": 12288}, {**GENERATION, "extra": 1}):
-        with pytest.raises(RequestCapacityRefusal, match="generation bounds"):
+def test_a_generation_bound_that_is_not_exactly_the_sealed_page_cap_is_refused():
+    retired = {**GENERATION, "answer_headroom_bp": 20000, "answer_floor_tokens": 4096}
+    for generation in ({}, {**GENERATION, "extra": 1}, retired):
+        with pytest.raises(RequestCapacityRefusal, match="not exactly the sealed page cap"):
             _admit(ROOMY, generation=generation)
 
 

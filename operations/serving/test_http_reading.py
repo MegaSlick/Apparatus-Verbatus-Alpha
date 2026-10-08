@@ -29,6 +29,7 @@ from .http import (
     chat_image_bytes_all,
     parse_openai_answer,
     parse_openai_reading,
+    parse_openai_stream_reading,
     request_body,
 )
 from .test_manager import TIER, identity, manager_for, profile_row
@@ -554,3 +555,99 @@ def test_request_body_refuses_a_content_part_whose_get_disagrees_with_its_own_wi
 
     with pytest.raises(ServingConfigurationError, match="request for reader-api"):
         request_body(payload, model_id="reader-api", seed=0, deterministic=True)
+
+
+# --- a streamed reply (`request_body(stream=True)`), read as vLLM sends it ---
+
+
+def _sse(*events: object) -> bytes:
+    return b"".join(
+        b"data: " + (event if isinstance(event, bytes) else json.dumps(event).encode()) + b"\n\n"
+        for event in events
+    )
+
+
+def _chunk(content: str | None, finish: str | None = None, model: str = "served") -> dict:
+    delta = {} if content is None else {"content": content}
+    return {
+        "model": model,
+        "object": "chat.completion.chunk",
+        "choices": [{"index": 0, "delta": delta, "logprobs": None, "finish_reason": finish}],
+        "usage": None,
+    }
+
+
+USAGE = {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8}
+WHOLE = _sse(
+    {
+        "model": "served",
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}],
+    },
+    _chunk("Tremblay, Jean\n"),
+    _chunk("Tremblay, Marie\n"),
+    _chunk(None, "stop"),
+    {"model": "served", "choices": [], "usage": USAGE},
+    b"[DONE]",
+)
+
+
+def test_a_streamed_reply_is_its_deltas_in_order_with_the_engine_s_own_finish_and_usage():
+    result = parse_openai_stream_reading(
+        HttpResponse(200, WHOLE), kind="chat-completions", expected_model_id="served", stopped=False
+    )
+    assert result.outputs == ("Tremblay, Jean\nTremblay, Marie\n",)
+    assert result.finish_reasons == ("stop",)
+    assert dict(result.usage) == USAGE
+    # The same bytes with CRLF line ends read the same.
+    crlf = parse_openai_stream_reading(
+        HttpResponse(200, WHOLE.replace(b"\n", b"\r\n")),
+        kind="chat-completions",
+        expected_model_id="served",
+        stopped=False,
+    )
+    assert crlf.outputs == result.outputs
+
+
+def test_a_stream_the_client_stopped_reads_up_to_its_last_complete_event():
+    cut = _sse(_chunk("a\n"), _chunk("a\n")) + b'data: {"model": "ser'
+    result = parse_openai_stream_reading(
+        HttpResponse(200, cut), kind="chat-completions", expected_model_id="served", stopped=True
+    )
+    assert (result.outputs, result.finish_reasons, result.usage) == (("a\na\n",), (None,), None)
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        # Ended without [DONE], and the client did not stop it: not a reading.
+        (_sse(_chunk("a\n"), _chunk(None, "stop")), "CHAIR_RESPONSE_INVALID"),
+        (WHOLE + _sse(_chunk("late")), "CHAIR_RESPONSE_INVALID"),
+        (_sse({"error": {"message": "engine died"}}, b"[DONE]"), "CHAIR_RESPONSE_INVALID"),
+        (_sse(_chunk("a", model="other"), b"[DONE]"), "CHAIR_RESPONSE_MODEL_MISMATCH"),
+        (_sse(_chunk("a", "stop"), _chunk(None, "length"), b"[DONE]"), "CHAIR_RESPONSE_INVALID"),
+        (_sse(b"[DONE]"), "CHAIR_RESPONSE_CONTENT_MISSING"),
+    ],
+    ids=["no-done", "after-done", "error-event", "other-model", "two-finishes", "no-chunk"],
+)
+def test_a_streamed_reply_that_is_not_a_reading_is_refused_by_name(body, code):
+    with pytest.raises(ChairResponseRefusal) as refusal:
+        parse_openai_stream_reading(
+            HttpResponse(200, body),
+            kind="chat-completions",
+            expected_model_id="served",
+            stopped=False,
+        )
+    assert refusal.value.code == code
+
+
+def test_a_streamed_request_asks_for_events_and_usage_and_a_whole_one_is_unchanged():
+    payload = {"messages": [{"role": "user", "content": "read"}], "max_tokens": 9}
+    whole = request_body(payload, model_id="served", seed=7, deterministic=False)
+    streamed = request_body(payload, model_id="served", seed=7, deterministic=False, stream=True)
+    assert json.loads(whole)["stream"] is False and "stream_options" not in json.loads(whole)
+    assert json.loads(streamed)["stream"] is True
+    assert json.loads(streamed)["stream_options"] == {"include_usage": True}
+    with pytest.raises(ServingConfigurationError, match="manager-owned"):
+        request_body(
+            {**payload, "stream_options": {}}, model_id="served", seed=7, deterministic=False
+        )

@@ -392,3 +392,69 @@ def test_a_slow_but_finite_response_still_succeeds_inside_its_budget() -> None:
 
     assert response.status == 200
     assert response.body == body
+
+
+def test_a_stream_hands_each_piece_over_and_closes_the_connection_when_told_to_stop() -> None:
+    """The client stops reading where `on_chunk` says, keeps exactly what arrived, and the
+    server sees the connection go away (what makes vLLM abandon the request)."""
+
+    disconnected = threading.Event()
+
+    class Endless(_Handler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            try:
+                for index in range(10_000):
+                    self.wfile.write(f"data: {index}\n\n".encode())
+                    self.wfile.flush()
+                    time.sleep(0.002)
+            except (BrokenPipeError, ConnectionResetError):
+                disconnected.set()
+
+    pieces: list[bytes] = []
+
+    def on_chunk(piece: bytes) -> bool:
+        pieces.append(piece)
+        return b"data: 3\n\n" in b"".join(pieces)
+
+    transport = UrllibHttpTransport()
+    with _server(Endless) as base:
+        response = transport.stream(
+            "POST",
+            f"{base}/v1/chat/completions",
+            body=b"{}",
+            timeout_seconds=5.0,
+            on_chunk=on_chunk,
+        )
+        assert disconnected.wait(timeout=5.0)
+    assert response.status == 200
+    assert response.body == b"".join(pieces)
+    assert response.body.startswith(b"data: 0\n\n") and b"data: 3\n\n" in response.body
+    assert len(response.body) < 10_000
+
+
+def test_a_refused_stream_is_one_whole_body_never_handed_over() -> None:
+    class Refuses(_Handler):
+        def do_POST(self) -> None:  # noqa: N802
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(b'{"object":"error","message":"too long"}')
+
+    handed: list[bytes] = []
+    with _server(Refuses) as base:
+        response = UrllibHttpTransport().stream(
+            "POST",
+            f"{base}/v1/chat/completions",
+            body=b"{}",
+            timeout_seconds=2.0,
+            on_chunk=lambda piece: handed.append(piece) or False,
+        )
+    assert (response.status, response.body, handed) == (
+        400,
+        b'{"object":"error","message":"too long"}',
+        [],
+    )

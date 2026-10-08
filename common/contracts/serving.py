@@ -78,6 +78,22 @@ CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chair-transport-failure.v3"
 CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset(
     {"transport_problem"}
 )
+
+# A call whose reply was streamed so a repetition loop could stop it early (the
+# Perlector's page reading, `common/repetition_loop.py`). `raw_response_ref` names
+# the server-sent event bytes exactly as received, up to the stop; `stream` is
+# `{schema, loop_guard, stopped}`: the sealed guard the reply was watched under,
+# and the loop that stopped it, or null when the engine ended the stream itself.
+# Every other field is the plain call record's. Calls that are not streamed keep
+# the plain schemas above.
+CHAIR_STREAM_CALL_RECORD_SCHEMA: Final = "chair-stream-call-record.v1"
+CHAIR_STREAM_CALL_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozenset({"stream"})
+CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_SCHEMA: Final = "chair-stream-transport-failure.v1"
+CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_FIELDS: Final = CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS | (
+    frozenset({"stream"})
+)
+CHAIR_STREAM_SCHEMA: Final = "chair-stream.v1"
+CHAIR_STREAM_FIELDS: Final = frozenset({"schema", "loop_guard", "stopped"})
 # Call-record schemas written before every call carried its engine-effective
 # sampling, or its usage reconciliation. A reader refuses one by name rather
 # than as an unknown record.
@@ -110,6 +126,10 @@ CHAIR_TRANSPORT_PROBLEM_FIELDS: Final = frozenset(
 # off. Anything else is refused by name.
 ENGINE_STOP_COMPLETE: Final = frozenset({"stop"})
 ENGINE_STOP_CUT_OFF: Final = frozenset({"length"})
+# Not an engine word: the client abandoned a streamed reply on a repetition loop.
+# A reading records it as its `stop_reason`, with the engine's own `finish_reason`
+# (none, as a rule) beside it.
+READER_STOP_REPETITION_LOOP: Final = "repetition-loop"
 
 
 def reading_stop_reason(finish_reason: str | None) -> str | None:
