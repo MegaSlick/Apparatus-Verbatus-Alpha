@@ -59,6 +59,7 @@ from .assembly import (
     assemble_serving_smoke_reader,
 )
 from .client import ServingModeRefusal, serving_mode_for
+from .capacity import CapacityPlan, ChairCapacity
 from .config import (
     MAX_JSON_DEPTH,
     FixtureProfile,
@@ -683,6 +684,7 @@ def manager_for(
     probe_http_status: int | None = None,
     usage: Mapping[str, object] | None = None,
     launch_purpose: object | None = None,
+    capacity_plan: CapacityPlan | None = None,
 ):
     clock = Clock()
     http = FakeHttp(
@@ -724,6 +726,7 @@ def manager_for(
         monotonic=clock.monotonic,
         sleep=clock.sleep,
         residency_lease=residency_lease or FileResidencyLease(tmp_path / "pod-gpu.lock"),
+        capacity_plan=capacity_plan,
         _launch_purpose=launch_purpose,
     )
     return manager, clock, http, launcher, registry, publisher
@@ -5118,3 +5121,91 @@ def test_the_smoke_refuses_recordgold_chairs_without_a_verified_gold_text(
         )
     with pytest.raises(RecordGoldSmokeRefusal, match="recordgold-smoke-text-mismatch"):
         _recordgold_smoke(record, TEST_GOLD_TEXT + ".", page_sha256)
+
+
+def _reader_plan(
+    *, row_max_num_seqs: int = 1, max_num_seqs: int = 6, inputs: ServingConfigInputs | None = None
+) -> CapacityPlan:
+    return CapacityPlan(
+        vram_gib=Decimal("95.5"),
+        gpu_count=1,
+        compute_capability="12.0",
+        tier=TIER,
+        serving_config_inputs=inputs or ServingConfigInputs("1" * 64, "2" * 64),
+        chairs={
+            "reader": ChairCapacity(
+                recipe="reader-v1",
+                row_max_num_seqs=row_max_num_seqs,
+                max_num_seqs=max_num_seqs,
+                weights_gib=Decimal("10"),
+                kv_gib_per_seq=Decimal("1"),
+                memory_fraction=Decimal("0.85"),
+            )
+        },
+    )
+
+
+def test_without_a_plan_the_row_launches_as_written_and_the_audit_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair)
+    handle = manager.start(chair, TIER)
+    assert _value_after(launcher.calls[0][0], "--max-num-seqs") == "1"
+    assert handle.profile.max_num_seqs == 1
+    assert "capacity" not in handle.launch_audit
+    handle.stop()
+
+
+def test_a_plan_widens_the_launch_and_the_audit_records_row_derived_card_and_digest(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    plan = _reader_plan()
+    manager, _, _, launcher, _, _ = reader_manager(tmp_path, chair=chair, capacity_plan=plan)
+    handle = manager.start(chair, TIER)
+    argv = launcher.calls[0][0]
+    assert _value_after(argv, "--max-num-seqs") == "6"
+    # Nothing else in the launch moves.
+    assert _value_after(argv, "--max-num-batched-tokens") == "256"
+    assert _value_after(argv, "--gpu-memory-utilization") == "0.85"
+    assert _value_after(argv, "--max-model-len") == "2048"
+    assert handle.profile.max_num_seqs == 6
+    audit = handle.launch_audit
+    assert audit["capacity"] == {  # type: ignore[index]
+        "plan_sha256": plan.digest,
+        "card": {"vram_gib": "95.5", "gpu_count": 1, "compute_capability": "12.0"},
+        "row_max_num_seqs": 1,
+        "max_num_seqs": 6,
+    }
+    assert audit["profile"]["max_num_seqs"] == 6  # type: ignore[index]
+    # The fields the serving spans and the pod watcher read are still there.
+    for key in ("schema", "chair", "launch_purpose", "started_at", "readiness", "command"):
+        assert key in audit
+    expected_argv_digest = hashlib.sha256(
+        json.dumps(list(argv), ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert audit["command"]["argv_sha256"] == expected_argv_digest  # type: ignore[index]
+    handle.stop()
+
+
+def test_a_plan_derived_from_another_row_is_refused_before_launch(tmp_path: Path) -> None:
+    chair = identity("reader", "reader-v1")
+    manager, _, _, launcher, _, _ = reader_manager(
+        tmp_path, chair=chair, capacity_plan=_reader_plan(row_max_num_seqs=2)
+    )
+    with pytest.raises(ServingRecipeRefusal, match="max_num_seqs"):
+        manager.start(chair, TIER)
+    assert launcher.calls == []
+
+
+def test_a_plan_from_other_serving_configuration_is_refused_at_construction(
+    tmp_path: Path,
+) -> None:
+    chair = identity("reader", "reader-v1")
+    with pytest.raises(ServingConfigurationError, match="sealed"):
+        reader_manager(
+            tmp_path,
+            chair=chair,
+            capacity_plan=_reader_plan(inputs=ServingConfigInputs("3" * 64, "2" * 64)),
+        )

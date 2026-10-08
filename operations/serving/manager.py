@@ -33,6 +33,7 @@ from common.chairs.models import (
 from common.contracts.serving import SERVING_LAUNCH_AUDIT_SCHEMA
 from common.credentials import log_word_carries_credential, looks_like_credential_field
 
+from .capacity import CapacityPlan
 from .config import (
     FixtureProfile,
     InProcessProfile,
@@ -338,6 +339,7 @@ class ServingManager:
         monotonic: Callable[[], float] | None = None,
         sleep: Callable[[float], None] | None = None,
         shutdown_timeout_seconds: float = 10.0,
+        capacity_plan: CapacityPlan | None = None,
         _launch_purpose: object | None = None,
     ) -> None:
         if command_prefix is None:
@@ -376,8 +378,12 @@ class ServingManager:
             MECHANICS_QUALIFICATION_PURPOSE,
         ):
             raise ValueError("serving launch purpose is not a recognized qualification purpose")
+        if capacity_plan is not None:
+            capacity_plan.require_inputs(config_inputs)
         self.registry = registry
         self.recipes = recipes
+        # The measured card's plan, or None: then every row launches exactly as written.
+        self.capacity_plan = capacity_plan
         self.config_inputs = config_inputs
         self.launcher = launcher
         self.http = http
@@ -428,7 +434,13 @@ class ServingManager:
         endpoint = ""
         try:
             # The recipe check comes before any snapshot is verified.
-            profile = self._launchable_profile(identity, tier)
+            row = self._launchable_profile(identity, tier)
+            # Proof marks and digests are checked on the row; the plan only widens it.
+            profile = (
+                self.capacity_plan.launch_profile(row, identity.role)
+                if self.capacity_plan is not None
+                else row
+            )
             self._assert_runtime(profile)
             snapshot = self.registry.ensure(identity)
             assert_processor_geometry(snapshot, profile)
@@ -473,6 +485,7 @@ class ServingManager:
                 snapshot=snapshot,
                 runtime_packages=observed_packages,
                 started_at=started_at,
+                row=row,
             )
             sealed_audit = frozen_json(audit)
             publication = self._publish(receipt, audit)
@@ -795,8 +808,13 @@ class ServingManager:
         snapshot: VerifiedSnapshot,
         runtime_packages: Mapping[str, str],
         started_at: str,
+        row: ServingProfile | None = None,
     ) -> Mapping[str, object]:
-        """Return operational evidence kept outside the receipt schema."""
+        """Return operational evidence kept outside the receipt schema.
+
+        ``profile`` is the shape launched. Under a capacity plan, ``capacity``
+        records the row's width beside it, the card and the plan's digest.
+        """
 
         argv_digest = hashlib.sha256(
             json.dumps(list(argv), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -807,8 +825,17 @@ class ServingManager:
         model_revision, tokenizer_revision = (
             pins if pins is not None else (snapshot.identity.receipt_revision,) * 2
         )
+        capacity: dict[str, object] = {}
+        if self.capacity_plan is not None:
+            capacity["capacity"] = {
+                "plan_sha256": self.capacity_plan.digest,
+                "card": self.capacity_plan.card_record(),
+                "row_max_num_seqs": (row or profile).max_num_seqs,
+                "max_num_seqs": profile.max_num_seqs,
+            }
         return MappingProxyType(
             {
+                **capacity,
                 "schema": SERVING_LAUNCH_AUDIT_SCHEMA,
                 "chair": identity.role,
                 "producer": self.producer,
