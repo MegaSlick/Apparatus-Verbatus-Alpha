@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from common.chairs.models import ChairIdentity, ServingDetails
+from common.cpus import usable_cpus
 from common.stage import FIXTURE_DECLARATION
 
 from .config import SubprocessProfile, package_release
@@ -497,14 +498,6 @@ def environment_versions(
     return {key: str(value) for key, value in found.items()}
 
 
-def available_cpus() -> int:
-    """The CPUs this process may run on: the affinity mask where the OS keeps
-    one (a container's quota shows there), else the machine's count."""
-    if hasattr(os, "sched_getaffinity"):
-        return len(os.sched_getaffinity(0))
-    return os.cpu_count() or 1
-
-
 def page_slices(ordinals: Sequence[int], workers: int) -> list[tuple[int, list[int]]]:
     """The page ordinals, in order, cut into at most `workers` contiguous slices
     as even as they come (the first slices take the remainder), each with the
@@ -522,10 +515,13 @@ def page_slices(ordinals: Sequence[int], workers: int) -> list[tuple[int, list[i
 
 
 def runner_processes(profile: SubprocessProfile, pages: int, cpus: int) -> int:
-    """How many runner processes a run gets: the row's `workers`, never more than
-    the CPUs can give `threads` each, never more than there are pages, and one at
-    the least."""
-    return max(1, min(profile.workers, cpus // profile.threads, pages))
+    """How many runner processes a run gets: as many as the CPUs can give `threads`
+    each, never more than there are pages or than the row's `workers` ceiling
+    where it sets one, and one at the least."""
+    processes = min(cpus // profile.threads, pages)
+    if profile.workers is not None:
+        processes = min(processes, profile.workers)
+    return max(1, processes)
 
 
 def run_surya_subprocess(
@@ -553,7 +549,7 @@ def run_surya_subprocess(
     _require_pages(pages)
     versions = environment_versions(profile, runner=runner)
     ordinals = sorted(pages)
-    processes = runner_processes(profile, len(ordinals), available_cpus() if cpus is None else cpus)
+    processes = runner_processes(profile, len(ordinals), usable_cpus() if cpus is None else cpus)
     with tempfile.TemporaryDirectory(prefix="verbatus-surya-") as work:
         work_root = Path(work)
         started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

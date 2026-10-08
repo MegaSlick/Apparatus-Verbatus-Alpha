@@ -441,6 +441,8 @@ def _profile(**changes) -> SubprocessProfile:
 def _run(child, pages: dict[int, bytes], **kwargs) -> surya_detector.SuryaRun:
     kwargs.setdefault("manifest_rows", _pinned())
     kwargs.setdefault("profile", _profile())
+    # One CPU unless a test says otherwise, so no test depends on this host's.
+    kwargs.setdefault("cpus", 1)
     return run_surya_subprocess(
         kwargs.pop("profile"),
         Path("/bundle"),
@@ -453,15 +455,17 @@ def _run(child, pages: dict[int, bytes], **kwargs) -> surya_detector.SuryaRun:
 
 
 def _slices(child) -> list[tuple[int, list[str]]]:
-    """Each runner process the child saw: its first ordinal and the page files given."""
-    return [
+    """Each runner process the child saw: its first ordinal and the page files given,
+    in ordinal order. The runners start in their own threads, so the order the child
+    saw them in is not page order."""
+    return sorted(
         (
             int(argv[argv.index("--first-ordinal") + 1]),
             [Path(page).name for page in argv[argv.index("--output-dir") + 2 :]],
         )
         for argv, _env in child.calls
         if "--check" not in argv
-    ]
+    )
 
 
 def test_the_runner_runs_under_its_own_interpreter_with_nothing_inherited(environment, monkeypatch):
@@ -476,6 +480,7 @@ def test_the_runner_runs_under_its_own_interpreter_with_nothing_inherited(enviro
         _identity(),
         manifest_rows=_pinned(),
         runner=child,
+        cpus=1,
     )
     (check_argv, _), (run_argv, child_env) = child.calls
     interpreter = str(environment / "operations/serving/surya/.venv/bin/python")
@@ -566,6 +571,7 @@ def test_the_runner_s_timeout_grows_with_the_pages_it_reads(environment):
         _identity(),
         manifest_rows=_pinned(),
         runner=child,
+        cpus=1,
     )
     # The version check gets the startup allowance; the run adds 60 s a page.
     assert child.timeouts == [300, 300 + 3 * 60]
@@ -575,18 +581,21 @@ def test_the_runner_s_timeout_grows_with_the_pages_it_reads(environment):
 
 
 def test_the_workers_field_is_optional_and_a_positive_integer():
-    assert _profile().workers == 1
+    assert _profile().workers is None
     assert _profile(workers=6).workers == 6
     with pytest.raises(ServingConfigurationError, match="workers"):
         _catalogue(_row(workers=0))
 
 
-def test_the_real_rows_run_several_processes_within_the_cpus_they_have():
+def test_the_real_rows_run_as_many_processes_as_the_cpus_they_have_give():
     real = load_serving_recipes(ROOT / "config" / "serving_recipes_real.toml")
     for row in (p for p in real.profiles if p.chair == DESIGNATOR_SURYA_CHAIR):
-        assert (row.threads, row.workers) == (8, 6)
+        assert (row.threads, row.workers) == (8, None)
+        assert surya_detector.runner_processes(row, 47, 16) == 2
         assert surya_detector.runner_processes(row, 47, 32) == 4
-        assert surya_detector.runner_processes(row, 47, 64) == 6
+        assert surya_detector.runner_processes(row, 47, 64) == 8
+        assert surya_detector.runner_processes(row, 47, 128) == 16
+        assert surya_detector.runner_processes(row, 5, 128) == 5
 
 
 @pytest.mark.parametrize(
@@ -608,7 +617,17 @@ def test_runner_processes_are_bounded_by_workers_cpus_and_pages():
     assert surya_detector.runner_processes(profile, 47, 5) == 2
     assert surya_detector.runner_processes(profile, 47, 1) == 1
     assert surya_detector.runner_processes(profile, 3, 32) == 3
-    assert surya_detector.runner_processes(_profile(), 47, 32) == 1
+    assert surya_detector.runner_processes(_profile(threads=2), 47, 32) == 16
+
+
+def test_the_cpus_a_run_is_sized_by_honour_the_cgroup_quota(environment, monkeypatch):
+    """With no count given, the stage sizes its processes by `usable_cpus`, the
+    affinity mask capped by the cgroup quota, not by the host's whole count."""
+    monkeypatch.setattr(surya_detector, "usable_cpus", lambda: 4)
+    child = FakeChild()
+    pages = {ordinal: bytes([ordinal]) for ordinal in range(1, 8)}
+    _run(child, pages, profile=_profile(threads=2), cpus=None)
+    assert [first for first, _ in _slices(child)] == [1, 5]
 
 
 def test_several_processes_give_the_bytes_one_process_gives(environment):
