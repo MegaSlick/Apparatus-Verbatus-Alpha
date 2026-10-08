@@ -25,6 +25,7 @@ from common.stage import EXIT_HELD
 from operations.notify.client import NotifyOutcome
 
 from .finish_estimate import (
+    BUDGET_OFF,
     ESTIMATE_SCHEMA,
     NOTICE_ATTEMPTS,
     PAGE_RECORDS,
@@ -286,13 +287,28 @@ def test_under_the_pod_timer_the_deadline_cannot_be_extended_by_hand(tmp_path: P
     assert deadline.at == timer and not deadline.extendable
 
 
+def test_with_no_guard_deadline_and_no_bootstrap_deadline_the_pod_has_none(
+    tmp_path: Path,
+) -> None:
+    """A pod whose budget is off, started with no hours: until a deadline is written,
+    there is none, and a missing file is not an ignored value."""
+    guard, path = _guard(tmp_path)
+    deadline = PodDeadline(guard=guard, bootstrap=None, pod_timer=False)
+    assert deadline() is None
+    assert deadline.ignored == []
+
+    path.write_text(f"{VALID}\n", encoding="ascii")
+    later = deadline()
+    assert later is not None and later.at == datetime.fromtimestamp(VALID, UTC)
+
+
 # --- the deadline-at-risk notice -----------------------------------------------------
 
 
 class Ticks:
     """A run whose progress, clock and deadline the test moves by hand."""
 
-    def __init__(self, deadline: datetime) -> None:
+    def __init__(self, deadline: datetime | None) -> None:
         self.now = T0
         self.progress: StageProgress | None = StageProgress(PERLECTOR, done=10, total=100)
         self.deadline = deadline
@@ -317,7 +333,11 @@ class Ticks:
             budget=BUDGET,
             budget_problem=None,
             hourly_usd=Decimal("2.00"),
-            deadline=lambda: Deadline(self.deadline, "the pod guard's deadline", extendable=True),
+            deadline=lambda: (
+                None
+                if self.deadline is None
+                else Deadline(self.deadline, "the pod guard's deadline", extendable=True)
+            ),
             send=self.send if send else None,
             now=lambda: self.now,
         )
@@ -364,6 +384,24 @@ def test_the_notice_goes_once_for_each_deadline_it_crosses(tmp_path: Path) -> No
         "2026-10-03T15:00:00Z",
     ]
     assert all(notice["delivered"] for notice in record["notices"])
+
+
+def test_with_no_deadline_nothing_is_at_risk_and_no_notice_goes(tmp_path: Path) -> None:
+    run = Ticks(deadline=None)
+    path = tmp_path / "estimate.json"
+    watch = run.watch(path)
+
+    watch.tick()
+    for step in range(1, 8):
+        run.at(step * 10, 10 + step)  # a pace that would pass any near deadline
+        watch.tick()
+
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["estimate"]["finishes_at"] is not None
+    assert record["deadline"] is None
+    assert record["deadline_source"] == "no deadline"
+    assert record["at_risk"] is False
+    assert record["notices"] == [] and run.sent == []
 
 
 @pytest.mark.parametrize(
@@ -529,6 +567,24 @@ def test_a_missing_budget_or_price_is_named_not_guessed() -> None:
 
     assert "soft and hard max unknown (spend policy is unconfigured)" in message
     assert "cost unknown (no --hourly-usd)" in message
+    assert _unsafe_reason(message) is None
+
+
+def test_a_budget_switched_off_is_named_as_off_not_unknown() -> None:
+    message = deadline_at_risk_message(
+        run_id="run-1",
+        pod_id="pod123",
+        estimate=_estimate(),
+        deadline=Deadline(T0 + timedelta(hours=2), "the pod guard's deadline", extendable=True),
+        budget=None,
+        budget_problem=BUDGET_OFF,
+        hourly_usd=Decimal("2.00"),
+        now=T0 + timedelta(minutes=10),
+    )
+
+    assert "No soft or hard maximum: budget off (lead's choice)" in message
+    assert "not checked against the hard maximum: the budget is off" in message
+    assert "unknown" not in message
     assert _unsafe_reason(message) is None
 
 

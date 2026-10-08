@@ -45,8 +45,8 @@ from operations.operator.volume_s3 import VolumeSpec
 from pipeline.orchestrator import run as orchestrator
 from pipeline.orchestrator.run import STOP_RECORD_SCHEMA
 
+from . import bootstrap_main, pod_run
 from . import launch as launch_module
-from . import pod_run
 from .bootstrap import BootstrapStep
 from .models import run_report_paths
 from .pod_run import (
@@ -708,8 +708,18 @@ def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
     extra = {pod_run.POD_ID_ENVIRONMENT: "pod123"}
     later = int(clock.now().timestamp()) + 3600
     deadline_path = _armed(ws, tmp_path, monkeypatch, clock, later)
+    runner = RecordedRunner()
     if case == "no-deadline-file":
+        # No deadline, and the guard dies during the run: nothing would read a new one.
         deadline_path.unlink()
+        inner = runner
+        stale = clock.now().timestamp() - pod_run.GUARD_HEARTBEAT_STALE_SECONDS - 1
+
+        def guard_dies_mid_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+            os.utime(deadline_path.with_name("heartbeat-pod123"), (stale, stale))
+            return inner(*args, **kwargs)
+
+        runner = guard_dies_mid_run  # type: ignore[assignment]
     elif case == "garbage-deadline":
         deadline_path.write_text("abc\n", encoding="ascii")
     elif case == "unwritable":
@@ -729,7 +739,7 @@ def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
         now=clock.now,
         sleeper=clock.sleep,
         actions_factory=lambda plan: PreflightedActions(),
-        runner=RecordedRunner(),
+        runner=runner,
     )
 
     assert code == EXIT_COMPLETE
@@ -744,6 +754,76 @@ def test_no_hold_without_an_armed_guard_still_returns_and_says_so(
         assert release["detail"].startswith("deadline write failed")
     else:
         assert not deadline.exists()
+
+
+def test_no_hold_writes_the_release_deadline_for_a_guard_started_with_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the budget off a pod can start with no deadline; its live guard honours one
+    written later, so the release writes it, and the run needs no hard deadline either."""
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    deadline = _armed(ws, tmp_path, monkeypatch, clock, 0)
+    deadline.unlink()
+    environment = {
+        **_environ(clock, lifetime=4.0, extra={pod_run.POD_ID_ENVIRONMENT: "pod123"}),
+        bootstrap_main.HARD_DEADLINE_ENV: bootstrap_main.NO_HARD_DEADLINE,
+        "VERBATUS_POD_BUDGET": "off",
+    }
+
+    code = main(
+        _run_argv(ws, extra=("--no-hold",)),
+        environ=environment,
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=RecordedRunner(),
+    )
+
+    assert code == EXIT_COMPLETE
+    now = int(clock.now().timestamp())
+    assert deadline.read_text(encoding="ascii") == f"{now}\n"
+    report = _report(ws)
+    assert report["hard_deadline"] is None
+    assert report["guard_release"]["released"] is True
+    assert report["guard_release"]["guard_alive"] is True
+
+
+@pytest.mark.parametrize("sealed", [True, False], ids=["sealed-off", "checkout-off"])
+def test_a_budget_switched_off_is_reported_as_off_not_unknown(tmp_path: Path, sealed: bool) -> None:
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "spend.toml").write_bytes((ROOT / "config" / "spend.toml").read_bytes())
+    environment = {name: None for name in pod_run.POD_BUDGET_ENVIRONMENT.values()}
+    environment["VERBATUS_POD_BUDGET"] = "off" if sealed else None
+    plan = SimpleNamespace(repository=tmp_path)
+
+    budget, problem, source = pod_run._pod_budget(plan, environment)  # type: ignore[arg-type]
+
+    assert (budget, problem) == (None, "budget off (lead's choice)")
+    assert source.startswith("sealed into the pod") is sealed
+
+
+def test_a_run_that_may_hold_is_refused_when_there_is_no_hard_deadline(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+    environment = {
+        **_environ(clock, lifetime=4.0),
+        bootstrap_main.HARD_DEADLINE_ENV: bootstrap_main.NO_HARD_DEADLINE,
+    }
+
+    code = main(
+        _run_argv(ws),
+        environ=environment,
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=_never_called,
+        runner=runner,
+    )
+
+    assert code == EXIT_REFUSED
+    assert runner.calls == []
+    assert "--no-hold" in _report(ws)["reason"]
 
 
 def test_no_hold_leaves_the_guard_alone_after_a_red_bootstrap(

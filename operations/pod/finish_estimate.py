@@ -67,9 +67,9 @@ can be off several times over; a notice it raised would use up the one notice
 for that deadline. Five pages over ten minutes smooths that and still warns
 hours ahead on a multi-hour stage."""
 NOTICE_ATTEMPTS: Final = 3
+"""Sends tried for one crossing when the notification command reports it did not arrive."""
 BUDGET_OFF: Final = "budget off (lead's choice)"
 """Why a pod has no budget when the spend policy's ``pod_budget`` is off."""
-"""Sends tried for one crossing when the notification command reports it did not arrive."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -467,10 +467,12 @@ class PodDeadline:
     the pod and no file the lead edits moves it. Otherwise the guard's deadline
     does, and once one has been read it is never replaced by the bootstrap's;
     with none ever read, the bootstrap's hard deadline is the only one known.
+    With neither (a pod whose budget is off, started with no hours) the pod has
+    no deadline and this returns None.
     """
 
     def __init__(
-        self, *, guard: GuardDeadline | None, bootstrap: datetime, pod_timer: bool
+        self, *, guard: GuardDeadline | None, bootstrap: datetime | None, pod_timer: bool
     ) -> None:
         self._guard = guard
         self._bootstrap = bootstrap
@@ -480,13 +482,15 @@ class PodDeadline:
     def ignored(self) -> list[str]:
         return [] if self._guard is None else list(self._guard.ignored)
 
-    def __call__(self) -> Deadline:
+    def __call__(self) -> Deadline | None:
         guard = None if self._guard is None else self._guard.read()
-        if self._pod_timer:
+        if self._pod_timer and self._bootstrap is not None:
             if guard is not None and guard < self._bootstrap:
                 return Deadline(guard, "the pod guard's deadline, under the pod timer", False)
             return Deadline(self._bootstrap, "the pod timer's hard deadline", False)
         if guard is None:
+            if self._bootstrap is None:
+                return None
             return Deadline(
                 self._bootstrap,
                 "the bootstrap's hard deadline (no guard deadline read)",
@@ -558,7 +562,9 @@ def deadline_at_risk_message(
         else f"about ${_cents(_cost(extra, hourly_usd))} more at ${hourly_usd}/h"
         + ("" if hourly_source is None else f" ({hourly_source})")
     )
-    if budget is None:
+    if budget is None and budget_problem == BUDGET_OFF:
+        limits = f"No soft or hard maximum: {BUDGET_OFF}"
+    elif budget is None:
         why = budget_problem if budget_source is None else f"{budget_problem}; {budget_source}"
         limits = f"soft and hard max unknown ({why})"
     else:
@@ -594,9 +600,12 @@ def deadline_at_risk_message(
             )
 
         if budget is None or created_at is None:
-            unknown = (
-                "the budget is unknown" if budget is None else "this pod's creation time is unknown"
-            )
+            if budget is None:
+                unknown = (
+                    "the budget is off" if budget_problem == BUDGET_OFF else "the budget is unknown"
+                )
+            else:
+                unknown = "this pod's creation time is unknown"
             route = (
                 "To extend to the projected end (the lead only, over SSH; not checked "
                 f"against the hard maximum: {unknown}): {command(suggested)}"
@@ -638,8 +647,8 @@ class DeadlineWatch:
     """One estimate per tick, written beside the run report, and the notice it may raise.
 
     ``send`` is None when notifications are off; the notice is then recorded once
-    as not sent. ``deadline`` returns the deadline that ends the pod. A tick
-    never raises: a failure is said on stderr, written to the estimate file and
+    as not sent. ``deadline`` returns the deadline that ends the pod, or None when
+    there is none, and then nothing is at risk. A tick never raises: a failure is said on stderr, written to the estimate file and
     kept in ``summary``.
     """
 
@@ -653,7 +662,7 @@ class DeadlineWatch:
         budget: Budget | None,
         budget_problem: str | None,
         hourly_usd: Decimal | None,
-        deadline: Callable[[], Deadline],
+        deadline: Callable[[], Deadline | None],
         send: Callable[[str], NotifyOutcome] | None,
         now: Callable[[], datetime],
         hourly_source: str | None = None,
@@ -709,18 +718,20 @@ class DeadlineWatch:
             if estimate is None or estimate.finishes_at is None
             else estimate.finishes_at + timedelta(seconds=RESULTS_HOME_MARGIN_SECONDS)
         )
-        at_risk = projected is not None and projected > deadline.at
-        if at_risk and estimate is not None and deadline.at not in self._settled:
-            self._notify(now, estimate, deadline)
+        at_risk = False
+        if deadline is not None and projected is not None and projected > deadline.at:
+            at_risk = True
+            if estimate is not None and deadline.at not in self._settled:
+                self._notify(now, estimate, deadline)
         return {
             "schema": ESTIMATE_SCHEMA,
             "run_id": self._run_id,
             "estimate": None if estimate is None else estimate.to_record(),
             "results_home_margin_seconds": RESULTS_HOME_MARGIN_SECONDS,
             "projected_with_margin": None if projected is None else _stamp(projected),
-            "deadline": _stamp(deadline.at),
-            "deadline_source": deadline.source,
-            "deadline_extendable_by_hand": deadline.extendable,
+            "deadline": None if deadline is None else _stamp(deadline.at),
+            "deadline_source": "no deadline" if deadline is None else deadline.source,
+            "deadline_extendable_by_hand": deadline is None or deadline.extendable,
             "at_risk": at_risk,
             "budget": None if self._budget is None else self._budget.to_record(),
             "budget_problem": self._budget_problem,

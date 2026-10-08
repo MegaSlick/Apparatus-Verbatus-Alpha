@@ -36,6 +36,7 @@ from .bootstrap import (
 from .bootstrap_main import (
     HARD_DEADLINE_ENV,
     HOLD_SCHEMA,
+    NO_HARD_DEADLINE,
     REFUSAL_SCHEMA,
     PlanRefusal,
     PodPreflightReceiptPublisher,
@@ -180,6 +181,17 @@ def test_the_sealed_mount_path_passes_when_a_real_mount_sits_there(
     plan, _deadline = bootstrap_main.prepare(_hold_argv(ws), _environ(clock), now=clock.now)
 
     assert plan.hold_only is True
+
+
+def test_a_caller_that_will_not_hold_may_say_there_is_no_hard_deadline(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    clock = Clock()
+
+    _plan, deadline = bootstrap_main.prepare(
+        _argv(ws), {HARD_DEADLINE_ENV: NO_HARD_DEADLINE}, now=clock.now
+    )
+
+    assert deadline is None
 
 
 def _argv(ws: Workspace, *, commit: str = "a" * 40, extra: tuple[str, ...] = ()) -> list[str]:
@@ -431,6 +443,7 @@ def test_configuration_refusal_stops_before_environment_and_model_work(tmp_path:
         ("report-outside", "--report-path"),
         ("lockfile-stray", "is not the checked-out repository uv.lock"),
         ("deadline-missing", HARD_DEADLINE_ENV),
+        ("deadline-none", "is for a caller that will not hold"),
         ("credential-marker", "looks like a credential"),
         ("credential-opaque", "looks like a credential"),
         ("models-config-missing", "--models-config"),
@@ -453,6 +466,8 @@ def test_bootstrap_plan_refusals_name_the_bad_argument(
         argv[argv.index(str(ws.repository / "uv.lock"))] = str(tmp_path / "elsewhere" / "uv.lock")
     elif case == "deadline-missing":
         environment = {}
+    elif case == "deadline-none":
+        environment = {HARD_DEADLINE_ENV: NO_HARD_DEADLINE}
     elif case == "credential-marker":
         argv = _argv(ws, extra=("--transfer-prefix", "my-api-key-123"))
     elif case == "credential-opaque":

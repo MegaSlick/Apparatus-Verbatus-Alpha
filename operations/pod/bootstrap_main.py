@@ -70,6 +70,9 @@ bootstrap-and-hold path and the ``--hold-only`` drill hold until
 process's own exit approximately coincides with the pod-side timer closing the
 pod at the same instant regardless.  A missing or unparseable deadline is a
 startup refusal: holding with no bound cannot be tested and cannot be trusted.
+``VERBATUS_HARD_DEADLINE=none`` says there is no deadline, for a caller that will
+not hold (``pod_run --no-hold`` on a pod whose budget is off); this module, which
+always holds, refuses it.
 
 **A refusal leaves a durable reason, not just a stderr line nobody can read
 after the container is gone.**  Once ``--report-path`` has passed containment,
@@ -188,6 +191,8 @@ HARD_DEADLINE_ENV = "VERBATUS_HARD_DEADLINE"
 """The same environment spelling the RunPod pod-timer factory reads.  Naming it
 here does not make this file provider vocabulary -- the value is a Verbatus
 launch fact, not a RunPod one."""
+NO_HARD_DEADLINE = "none"
+"""The ``VERBATUS_HARD_DEADLINE`` value that says there is none."""
 
 HOLD_SCHEMA = "pod-bootstrap-hold.v1"
 BOOTSTRAP_RESULT_SCHEMA = "pod-bootstrap-result.v1"
@@ -936,10 +941,15 @@ def scrub_environment(
     }
 
 
-def _hard_deadline(environment: MutableMapping[str, str]) -> datetime:
+def _hard_deadline(environment: MutableMapping[str, str]) -> datetime | None:
     raw = environment.get(HARD_DEADLINE_ENV)
     if not raw:
-        raise PlanRefusal(f"{HARD_DEADLINE_ENV} is not set; holding needs a hard deadline")
+        raise PlanRefusal(
+            f"{HARD_DEADLINE_ENV} is not set; holding needs a hard deadline "
+            f"({NO_HARD_DEADLINE!r} for a caller that will not hold)"
+        )
+    if raw == NO_HARD_DEADLINE:
+        return None
     try:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError as error:
@@ -1765,7 +1775,7 @@ def prepare(
     environment: MutableMapping[str, str],
     *,
     now: Callable[[], datetime],
-) -> tuple[Plan, datetime]:
+) -> tuple[Plan, datetime | None]:
     """Everything before any action: argv, plan, write probe, scrub, hard deadline.
 
     Split out of ``main`` so ``pod_run`` runs the identical preparation over
@@ -1901,6 +1911,14 @@ def main(
     if plan.dry_run:
         print(json.dumps(plan.to_record(), sort_keys=True, indent=2))
         return 0
+
+    if hard_deadline is None:
+        refusal = PlanRefusal(
+            f"{HARD_DEADLINE_ENV}={NO_HARD_DEADLINE} is for a caller that will not hold; "
+            "bootstrap_main holds after the bootstrap, so it needs a hard deadline",
+            report_path=plan.report_path,
+        )
+        return refuse(refusal, plan=plan, now=now, label="bootstrap_main")
 
     if plan.hold_only:
         hold(
