@@ -7,9 +7,10 @@ currency = "USD"
 
 # Decimal strings, never TOML numbers: a float does not keep money exact.
 # $3.00 is the lead's hourly ceiling (2026-10-09): it admits the RTX PRO 6000 ($2.49/h on
-# 2026-10-08) beside a volume. Approved, not a target: do not be wasteful.
+# 2026-10-08) beside a volume. Approved, not a target: do not be wasteful. The estimate
+# ceiling stays at the budget's soft maximum cost below (it may not pass it).
 max_hourly_usd = "3.00"
-max_estimated_metered_cost_usd = "6.00"
+max_estimated_metered_cost_usd = "5.00"
 
 # Documented, unverified default -- check it against the RunPod balance before a
 # live run.  Nothing re-reads the balance once a pod is live.

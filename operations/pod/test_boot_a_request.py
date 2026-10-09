@@ -64,7 +64,7 @@ def test_the_committed_policy_renders_the_a5000_drill_under_the_ledger_ceilings(
     assert rendered.hard_lifetime_seconds == BOOT_A_HARD_LIFETIME_SECONDS == 900
     text = rendered.text
     for phrase in (
-        "max_hourly_usd` = $2.10",
+        "max_hourly_usd` = $3.00",
         "max_estimated_metered_cost_usd` = $5.00",
         "account_balance_floor_usd` = $50.00",
         "account_balance_alert_usd` = $75.00",
