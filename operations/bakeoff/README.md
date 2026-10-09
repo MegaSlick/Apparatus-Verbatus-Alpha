@@ -278,3 +278,39 @@ done
 Every arm takes `run --pages --out [--label] [--limit] [--weights | --store-root]
 [--server-url | --vllm-cmd ...]`, resumes like `witness_run`, and exits 0 when every page
 is cached, 1 when a page errored, 2 when it refuses (wrong environment, no weights).
+
+## CTC line arms (`lines/`)
+
+Line recognisers, each in its vendor's own environment (`lines/venvs/<name>/`, locked for
+linux x86_64 and macOS arm64), driven from the project environment by one module with the
+shared command line (`run`, `install`, `check`, `prepare`, `fetch`; `lines/harness.py`).
+Run cards: `cards/kraken-ppocrv6.md`, `cards/pylaia-belfort.md`, `cards/pylaia-popp.md`,
+`cards/party.md`, `cards/surya-recogniser.md`. Two shared line sources write crops to
+`<out>/_lines/<source>/<stem>/NNNN.png` with `<stem>.json` listing bounds and order:
+
+```sh
+# Surya lines: the repository's runner in its own environment, then the crops.
+uv sync --locked --project operations/serving/surya
+operations/serving/surya/.venv/bin/python operations/serving/surya/prefetch.py --out $V/surya-bundle  # once; or the store's local/surya2-detection
+eval "$(.venv/bin/python -m operations.bakeoff.lines.surya_lines command --pages $V/bakeoff-pages \
+  --lines-dir $V/bakeoff/surya-docs --weights $V/surya-bundle --threads 8)"
+.venv/bin/python -m operations.bakeoff.lines.surya_lines prepare --pages $V/bakeoff-pages \
+  --lines-dir $V/bakeoff/surya-docs --out $V/bakeoff/witness-cache
+# blla lines: kraken's segmenter in the kraken environment.
+.venv/bin/python -m operations.bakeoff.lines.kraken_ppocr install
+.venv/bin/python -m operations.bakeoff.lines.blla prepare --pages $V/bakeoff-pages --out $V/bakeoff/witness-cache
+```
+
+Then, for example:
+
+```sh
+.venv/bin/python -m operations.bakeoff.lines.pylaia install
+.venv/bin/python -m operations.bakeoff.lines.pylaia fetch --model belfort --store-root $V/model-store
+.venv/bin/python -m operations.bakeoff.lines.pylaia run --model belfort --lm --lines surya \
+  --lines-dir $V/bakeoff/surya-docs --pages $V/bakeoff-pages --out $V/bakeoff/witness-cache \
+  --store-root $V/model-store
+```
+
+Arms: `kraken-ppocrv6-{blla,surya}`, `pylaia-{belfort,popp}[-lm]-{blla,surya}`,
+`party-blla` (GPU, cut first), `surya-rec-surya` (a VLM in surya-ocr 0.22.1, not CTC).
+Measured cold installs here: kraken 279 s, PyLaia 204 s, Party 116 s (warm uv cache).
