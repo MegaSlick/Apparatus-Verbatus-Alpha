@@ -41,8 +41,10 @@ ls ~/bakeoff-pages | wc -l        # 73
 .venv/bin/python -m operations.bakeoff.queue_runner validate --manifest operations/bakeoff/queue/reader-96gb.toml
 ```
 
-Private lists for the scorer (never in git): write `private/bakeoff/hard-pages.txt` and
-`private/bakeoff/exclude.txt`, one page stem per line, from `handback/page-manifest.md`.
+Private list for the scorer (never in git): write `private/bakeoff/hard-pages.txt`, one
+page stem per line, from `handback/page-manifest.md`. Every page in the set is a real
+research page and is scored: hard pages count in every number and also get their own
+table, so each model's weak spots show. No page is excluded.
 
 ## 2. Card plan
 
@@ -243,7 +245,7 @@ private/bakeoff/
   reader-cache-<date>/<arm>/<stem>.json
   scores-<date>/scores.md, scores.jsonl, roster.md, roster.jsonl
   page-manifest.json, page-manifest.md       from handback/
-  hard-pages.txt, exclude.txt
+  hard-pages.txt
   comparison-<date>.md                       the one-page table (template in section 9)
 ```
 
@@ -252,7 +254,7 @@ private/bakeoff/
 ```sh
 .venv/bin/python -m operations.bakeoff.score --cache private/bakeoff/witness-cache-<date> \
   --gold "$HOME/Desktop/Bake-off set/Pages" --gold-glob '*/Prepped/*.txt' \
-  --hard-pages private/bakeoff/hard-pages.txt --exclude private/bakeoff/exclude.txt \
+  --hard-pages private/bakeoff/hard-pages.txt \
   --out private/bakeoff/scores-<date>
 .venv/bin/python -m operations.bakeoff.roster --cache private/bakeoff/witness-cache-<date> \
   --gold "$HOME/Desktop/Bake-off set/Pages" --gold-glob '*/Prepped/*.txt' \
@@ -279,5 +281,5 @@ Run the reader cache through `score` the same way (a second `--cache`). Every nu
 | qwen*-blind / qwen*-vendor | all (reference) | | | | | | reader |
 
 Verdict words: `roster` (earns a 4th-witness arm on a type, plan 4.5), `keep as reference`,
-`drop`, with the page type beside it. Test pages and hard pages are reported beside the
-table, never inside it.
+`drop`, with the page type beside it. Test pages are reported beside the table, never inside
+it; hard pages are inside every number and also listed on their own.

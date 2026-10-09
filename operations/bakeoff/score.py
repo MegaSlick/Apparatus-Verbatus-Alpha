@@ -26,8 +26,8 @@ the project environment (only the pod group pulls it in), and the matching rarel
 differs on rows this distinct.
 
 `--hard-pages` and `--exclude` take a text file with one page stem per line. Hard pages
-are reported in their own table and left out of the group medians; excluded pages are
-not scored at all. Writes `scores.jsonl` (one line per model and page) and `scores.md`.
+count in the group medians like every page and are also listed in their own table, so a
+model's weak spots show; excluded pages are not scored at all. Writes `scores.jsonl` (one line per model and page) and `scores.md`.
 
 While the gold files say STATUS "fool's gold" (an unchecked AI draft), every number is
 labelled "vs fool's gold (ballpark, not accuracy)".
@@ -450,19 +450,11 @@ class _Scores:
         page = self.gold[stem]
         return page_group(page) == group and (forms is None or page_form(page) in forms)
 
-    def got(self, model: str, group: str, hard: bool = False, forms=None) -> list[dict]:
-        return [
-            r
-            for r in self.rows
-            if r["model"] == model and r["hard"] == hard and self._in(r["page"], group, forms)
-        ]
+    def got(self, model: str, group: str, forms=None) -> list[dict]:
+        return [r for r in self.rows if r["model"] == model and self._in(r["page"], group, forms)]
 
     def gone(self, model: str, group: str, forms=None) -> list[str]:
-        return [
-            p
-            for p in self.missing.get(model, [])
-            if self._in(p, group, forms) and p not in self.hard
-        ]
+        return [p for p in self.missing.get(model, []) if self._in(p, group, forms)]
 
     def hard_in(self, group: str, forms=None) -> int:
         return sum(self._in(p, group, forms) for p in self.hard if p in self.gold)
@@ -546,18 +538,15 @@ def _per_model(s: _Scores, model: str, label: str) -> list[str]:
             health.append(f"| {title} | {_counts(got)} |")
             if record and only is None and g.name == "acts":
                 records.append(f"| {title} | {_record_cells(got)} |")
-    # Like the group rows: test pages never, hard pages counted apart, not in the median.
+    # Like the group rows: test pages never; hard pages count like every page.
     every = [r for r in s.rows if r["model"] == model and r["group"] != G.TEST]
-    easy = [r for r in every if not r["hard"]]
-    gone = [
-        p for p in s.missing.get(model, []) if page_group(s.gold[p]) != G.TEST and p not in s.hard
-    ]
+    gone = [p for p in s.missing.get(model, []) if page_group(s.gold[p]) != G.TEST]
     title = "all pages, for reference"
     scores.append(
-        f"| {title} | {len(easy)} | {len(every) - len(easy)} | "
-        f"{len(gone)} | {_metric(easy, 'cer')} | – | – |"
+        f"| {title} | {len(every)} | {sum(r['hard'] for r in every)} | "
+        f"{len(gone)} | {_metric(every, 'cer')} | – | – |"
     )
-    health.append(f"| {title} | {_counts(easy)} |")
+    health.append(f"| {title} | {_counts(every)} |")
     lines += scores + health + (records if len(records) > 3 else []) + [""]
     return lines
 
@@ -603,7 +592,7 @@ def _hard_pages(s: _Scores, label: str) -> list[str]:
     lines = [
         f"## Hard pages{label}",
         "",
-        "Left out of the group medians above.",
+        "Counted in the group medians above too; listed here to show each model's weak spots.",
         "",
         "| page | group | model | headline | CER |",
         "|---|---|---|---|---:|",

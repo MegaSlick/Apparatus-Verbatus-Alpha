@@ -237,10 +237,11 @@ to gold acts at CER <= 0.5), units unmatched, per-unit CER and whole-page fallba
 
 `scores.md` has a compact cross-model table per group (headline only), one section per
 model (one row per group it is scored on, then `all pages, for reference`, which
-leaves out test pages and counts hard pages apart; scores, health and record cells in
+leaves out test pages; scores, health and record cells in
 separate narrow tables so they read on a phone), the test
 pages with their expected behaviour, and the hard pages. `--hard-pages FILE` (one stem per
-line) moves pages out of the medians into their own table; `--exclude FILE` drops them.
+line) lists those pages in their own table as well; they still count in every median.
+`--exclude FILE` drops pages from scoring.
 
 `python -m operations.bakeoff.roster` takes the same arguments as `score`; `roster.md` gives, per group and candidate against `--baselines` (default
 `chandra,dai,churro`): rescue rate, phi correlation of wrong tokens with each baseline
