@@ -185,7 +185,7 @@ def test_groups_hard_pages_and_fair_report(tmp_path):
 
     md = (tmp_path / "scores.md").read_text()
     dai = md.split("## dai (arm dai)")[1].split("\n## ")[0]
-    assert "| acts | 2 | 1 | 0 | CER 0.000 | 0.000 | WER 0.000 |" in dai  # h001 counted hard
+    assert "| acts | 3 | 1 | 0 | CER 0.000 | 0.000 | WER 0.000 |" in dai  # h001 counted, and hard
     assert "index-list" not in dai and "all pages, for reference" in dai
     index = md.split("### index-list, handwritten pages (line recall, higher is better)")[1].split(
         "###"
@@ -203,10 +203,12 @@ def test_groups_hard_pages_and_fair_report(tmp_path):
     assert "## Hard pages" in md and "| h001 | acts | chandra | CER" in md
     assert "Excluded from scoring: 1 pages." in md
     acts = md.split("### acts, handwritten pages (CER, lower is better)")[1].split("###")[0]
-    assert "| chandra | 2 | 0.000 |" in acts  # the hard page's bad reading is left out
+    assert "| chandra | 3 | 0.000 |" in acts  # the hard page counts like every page
     chandra = md.split("## chandra (arm chandra-native)")[1].split("\n## ")[0]
-    # 8 pages beside the test page; h001 is hard, so counted apart and out of the median
-    assert "| all pages, for reference | 7 | 1 | 0 | CER 0.000 |" in chandra
+    # its bad reading of the hard page lifts the mean: hard pages are in every number
+    assert "| acts | 3 | 1 | 0 | CER 0.000 | 0.287 | WER 0.000 |" in chandra
+    # 8 pages beside the test page, h001 among them
+    assert "| all pages, for reference | 8 | 1 | 0 | CER 0.000 |" in chandra
 
 
 def test_surname_recall_and_false_lines():

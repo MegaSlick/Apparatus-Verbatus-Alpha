@@ -6,8 +6,8 @@
 Every model's plain text (`score.normalise_output`) and the gold reference are split into
 graphemic-v1 tokens (`score.tokens`) and aligned with RapidFuzz's unit-cost edit script,
 so each gold token is right or wrong (substituted or deleted) for each arm, and each
-inserted model token is an invention. Per page group (test pages and hard pages left
-out), for each candidate against the baselines:
+inserted model token is an invention. Per page group (test pages left out; hard
+pages count like every page), for each candidate against the baselines:
 
 - rescue rate: gold tokens every baseline gets wrong and the candidate gets right, over
   gold tokens every baseline gets wrong;
@@ -200,9 +200,9 @@ def _headline(cache, gold, model, pages, metric) -> float | None:
     return S.summarise(rows, metric) if rows else None
 
 
-def roster_group(group, baselines, cache, gold, readings, hard) -> list[dict[str, Any]]:
+def roster_group(group, baselines, cache, gold, readings) -> list[dict[str, Any]]:
     """The roster rows of one page group: a baselines row, then one per candidate."""
-    pages = sorted(p for p, g in gold.items() if S.page_group(g) == group.name and p not in hard)
+    pages = sorted(p for p, g in gold.items() if S.page_group(g) == group.name)
     if not pages:
         return []
     arms = {m: S.model_arm(cache[m]) for m in cache}
@@ -363,7 +363,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--baselines", default=DEFAULT_BASELINES)
     args = parser.parse_args(argv)
     baselines = [b for b in args.baselines.split(",") if b]
-    gold, cache, hard, _notes = S.load_inputs(args)
+    gold, cache, _hard, _notes = S.load_inputs(args)
     absent = [b for b in baselines if b not in cache]
     if absent:
         print(f"refused: no cached readings for the baselines {absent}")
@@ -372,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     results = []
     for group in G.GROUPS:
         if group.name != G.TEST:
-            results += roster_group(group, baselines, cache, gold, readings, hard)
+            results += roster_group(group, baselines, cache, gold, readings)
     args.out.mkdir(parents=True, exist_ok=True)
     with open(args.out / "roster.jsonl", "w", encoding="utf-8") as handle:
         for row in results:

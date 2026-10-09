@@ -140,6 +140,42 @@ cut = "never"
 gpu = false
 command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
 
+# kraken McCATMuS v1 (cards/kraken-mccatmus.md): CPU, no LM; same kraken environment.
+
+[[arms]]
+name = "kraken-mccatmus-surya"
+time_box_min = 30
+cut = "never"
+gpu = false
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "fetch", "--model", "mccatmus", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mccatmus", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+
+[[arms]]
+name = "kraken-mccatmus-blla"
+time_box_min = 30
+cut = "never"
+gpu = false
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mccatmus", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+
+# kraken Manu McFondue v4 (cards/kraken-mcfondue.md): CPU, no LM; same kraken environment.
+
+[[arms]]
+name = "kraken-mcfondue-surya"
+time_box_min = 30
+cut = "never"
+gpu = false
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "fetch", "--model", "mcfondue", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mcfondue", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+
+[[arms]]
+name = "kraken-mcfondue-blla"
+time_box_min = 30
+cut = "never"
+gpu = false
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mcfondue", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+
 # PyLaia belfort and popp (cards/pylaia-*.md): CPU; -lm- arms use the shipped 6-gram.
 
 [[arms]]

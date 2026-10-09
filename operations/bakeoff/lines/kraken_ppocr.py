@@ -1,27 +1,31 @@
-"""kraken with the PP-OCRv6 (medium) line recogniser: arms `kraken-ppocrv6-blla` and
-`kraken-ppocrv6-surya`. A CTC line model: it misreads letters but cannot invent them.
+"""kraken line recognisers: arms `kraken-<model>-<blla|surya>` for the models `ppocrv6`
+(PP-OCRv6 medium, the default), `mccatmus` (McCATMuS v1, 16th c. to present, mostly
+French) and `mcfondue` (Manu McFondue v4, French 17th-20th c.). CTC line models: they
+misread letters but cannot invent them.
 
     python -m operations.bakeoff.lines.kraken_ppocr install
-    python -m operations.bakeoff.lines.kraken_ppocr fetch --store-root STORE
-    python -m operations.bakeoff.lines.kraken_ppocr run --lines blla --pages DIR --out CACHE \
-        --store-root STORE
-    python -m operations.bakeoff.lines.kraken_ppocr run --lines surya --lines-dir SURYA \
-        --pages DIR --out CACHE --store-root STORE
+    python -m operations.bakeoff.lines.kraken_ppocr fetch [--model M] --store-root STORE
+    python -m operations.bakeoff.lines.kraken_ppocr run [--model M] --lines blla --pages DIR \
+        --out CACHE --store-root STORE
+    python -m operations.bakeoff.lines.kraken_ppocr run [--model M] --lines surya \
+        --lines-dir SURYA --pages DIR --out CACHE --store-root STORE
 
 `--lines blla` is kraken's own whole path, segmentation and recognition in one command,
-as the model card gives it (with ALTO out instead of text, so line order is kept):
+as the PP-OCRv6 model card gives it (with ALTO out instead of text, so line order is kept):
 
-    kraken -d cpu|cuda:0 -a -i <page> <raw>.xml segment -bl ocr -m medium.safetensors
+    kraken -d cpu|cuda:0 -a -i <page> <raw>.xml segment -bl ocr -m <model file>
 
 Each TextLine of the answer becomes one unit (its polygon's box, baseline and text).
 
 `--lines surya` recognises the cached Surya line crops in kraken's no-segmentation mode,
 the CLI's documented path for pre-cut line images (each image one bbox line):
 
-    kraken -d cpu|cuda:0 -i 0001.png 0001.txt -i 0002.png 0002.txt ... ocr -s -m medium.safetensors
+    kraken -d cpu|cuda:0 -i 0001.png 0001.txt -i 0002.png 0002.txt ... ocr -s -m <model file>
 
-Both decode with kraken's default greedy CTC decoder; there is no language model. The
+All decode with kraken's default greedy CTC decoder; there is no language model. The
 device is always named: kraken's default `auto` would take a visible GPU on a CPU run.
+McCATMuS and McFondue are kraken 4.x CoreML `.mlmodel` files, which kraken 7 reads with
+its `coreml` loader; McCATMuS writes NFD, and `harness.plain` turns every answer to NFC.
 """
 
 from __future__ import annotations
@@ -35,13 +39,41 @@ from typing import Any
 
 from operations.bakeoff.lines import blla, harness
 
-ZENODO_RECORD = "21788410"
-DOI = "10.5281/zenodo.21788410"
-MODEL_FILE = "medium.safetensors"
-MODEL_SHA256 = "15313b51ace64cbfa81f8f6ef25ad64f04e5a6fb7f7823e67b107527bc081ac9"
-MODEL_MD5 = "e3411a453ce3b9e9efae3f8631d85762"
-MODEL_SIZE = 63_779_644
-ARTIFACT = "kraken-ppocrv6-medium"
+# Each file pinned by its Zenodo record, Zenodo's MD5 and the SHA-256 measured here.
+MODELS = {
+    "ppocrv6": {
+        "record": "21788410",
+        "doi": "10.5281/zenodo.21788410",
+        "file": "medium.safetensors",
+        "sha256": "15313b51ace64cbfa81f8f6ef25ad64f04e5a6fb7f7823e67b107527bc081ac9",
+        "md5": "e3411a453ce3b9e9efae3f8631d85762",
+        "size": 63_779_644,
+        "artifact": "kraken-ppocrv6-medium",
+    },
+    "mccatmus": {
+        "record": "13788177",
+        "doi": "10.5281/zenodo.13788177",
+        "file": "McCATMuS_nfd_nofix_V1.mlmodel",
+        "sha256": "dfb911ba25fd11f93efc1b0c340957162981ecfdaac0ee1e26793d491f770244",
+        "md5": "e531463f631303c700750784b4f9ed63",
+        "size": 16_173_802,
+        "artifact": "kraken-mccatmus-v1",
+    },
+    "mcfondue": {
+        "record": "10886224",
+        "doi": "10.5281/zenodo.10886224",
+        "file": "ManuMcFondue.mlmodel",
+        "sha256": "96e32e782b6627aa57961a6ed5a84c522174630c6bc9f6ebc83eedce1f5e490e",
+        "md5": "c1c3c628f79f19a7a8116a9afd5c47d2",
+        "size": 16_377_369,
+        "artifact": "kraken-mcfondue-v4",
+    },
+}
+DEFAULT_MODEL = "ppocrv6"
+
+
+def model_of(args: argparse.Namespace) -> dict[str, Any]:
+    return MODELS[getattr(args, "model", None) or DEFAULT_MODEL]
 
 
 class KrakenRecogniser:
@@ -51,7 +83,8 @@ class KrakenRecogniser:
         import subprocess
 
         self.args = args
-        self.model = weights / MODEL_FILE
+        self.pinned = model_of(args)
+        self.model = weights / self.pinned["file"]
         self.kraken = args.venv_dir / "bin" / "kraken"
         self.runner = runner or subprocess.run
         self.raw_dir = args.out / args.label / "_raw"
@@ -67,8 +100,8 @@ class KrakenRecogniser:
 
     def settings(self) -> dict[str, Any]:
         return {
-            "model": MODEL_FILE,
-            "model_sha256": MODEL_SHA256,
+            "model": self.pinned["file"],
+            "model_sha256": self.pinned["sha256"],
             "decoder": "kraken greedy CTC (default), no language model",
             "padding": "kraken default (16 px left and right)",
             "device": self.args.device,
@@ -140,14 +173,15 @@ class KrakenRecogniser:
         return harness.iterate(prepared, one)
 
 
-def fetch(dest: Path, _args: argparse.Namespace) -> Path:
+def fetch(dest: Path, args: argparse.Namespace) -> Path:
     """The model file from its Zenodo record, checked against Zenodo's MD5 and our SHA-256."""
-    target = dest / MODEL_FILE
-    if target.is_file() and harness.sha256_file(target) == MODEL_SHA256:
+    pinned = model_of(args)
+    target = dest / pinned["file"]
+    if target.is_file() and harness.sha256_file(target) == pinned["sha256"]:
         return target
     dest.mkdir(parents=True, exist_ok=True)
-    url = f"https://zenodo.org/records/{ZENODO_RECORD}/files/{MODEL_FILE}?download=1"
-    return download_checked(url, target, MODEL_MD5, MODEL_SHA256)
+    url = f"https://zenodo.org/records/{pinned['record']}/files/{pinned['file']}?download=1"
+    return download_checked(url, target, pinned["md5"], pinned["sha256"])
 
 
 def download_checked(url: str, target: Path, md5: str, sha256: str) -> Path:
@@ -165,20 +199,36 @@ def download_checked(url: str, target: Path, md5: str, sha256: str) -> Path:
     return target
 
 
+def _add_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model", choices=sorted(MODELS), default=DEFAULT_MODEL)
+
+
+def _identity(args: argparse.Namespace) -> dict[str, str]:
+    pinned = model_of(args)
+    return {
+        "repo": f"https://doi.org/{pinned['doi']}",
+        "revision": f"{pinned['file']}@sha256:{pinned['sha256']}",
+        "artifact": pinned["artifact"],
+    }
+
+
 ARM = harness.Arm(
     module="operations.bakeoff.lines.kraken_ppocr",
-    repo=f"https://doi.org/{DOI}",
-    revision=f"{MODEL_FILE}@sha256:{MODEL_SHA256}",
-    artifact=ARTIFACT,
+    repo="https://doi.org/<per --model>",
+    revision="per --model",
+    artifact="kraken-<model>",
     recipe=harness.VENVS / "kraken",
     python="3.12",
     pins={"kraken": "7.1.1", "torch": "2.14.0"},
-    weight_files=(MODEL_FILE,),
+    weight_files=(),
     line_sources=("blla", "surya"),
-    arm_name=lambda args: f"kraken-ppocrv6-{args.lines}",
+    arm_name=lambda args: f"kraken-{args.model}-{args.lines}",
     recogniser=KrakenRecogniser,
+    add_arguments=_add_arguments,
     fetch=fetch,
     needs_lines=lambda args: args.lines == "surya",
+    identity=_identity,
+    weight_files_for=lambda args: (model_of(args)["file"],),
 )
 
 

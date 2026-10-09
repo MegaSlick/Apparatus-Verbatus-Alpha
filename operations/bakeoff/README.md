@@ -237,10 +237,11 @@ to gold acts at CER <= 0.5), units unmatched, per-unit CER and whole-page fallba
 
 `scores.md` has a compact cross-model table per group (headline only), one section per
 model (one row per group it is scored on, then `all pages, for reference`, which
-leaves out test pages and counts hard pages apart; scores, health and record cells in
+leaves out test pages; scores, health and record cells in
 separate narrow tables so they read on a phone), the test
 pages with their expected behaviour, and the hard pages. `--hard-pages FILE` (one stem per
-line) moves pages out of the medians into their own table; `--exclude FILE` drops them.
+line) lists those pages in their own table as well; they still count in every median.
+`--exclude FILE` drops pages from scoring.
 
 `python -m operations.bakeoff.roster` takes the same arguments as `score`; `roster.md` gives, per group and candidate against `--baselines` (default
 `chandra,dai,churro`): rescue rate, phi correlation of wrong tokens with each baseline
@@ -284,7 +285,8 @@ is cached, 1 when a page errored, 2 when it refuses (wrong environment, no weigh
 Line recognisers, each in its vendor's own environment (`lines/venvs/<name>/`, locked for
 linux x86_64 and macOS arm64), driven from the project environment by one module with the
 shared command line (`run`, `install`, `check`, `prepare`, `fetch`; `lines/harness.py`).
-Run cards: `cards/kraken-ppocrv6.md`, `cards/pylaia-belfort.md`, `cards/pylaia-popp.md`,
+Run cards: `cards/kraken-ppocrv6.md`, `cards/kraken-mccatmus.md`,
+`cards/kraken-mcfondue.md`, `cards/pylaia-belfort.md`, `cards/pylaia-popp.md`,
 `cards/party.md`, `cards/surya-recogniser.md`. Two shared line sources write crops to
 `<out>/_lines/<source>/<stem>/NNNN.png` with `<stem>.json` listing bounds and order:
 
@@ -311,6 +313,8 @@ Then, for example:
   --store-root $V/model-store
 ```
 
-Arms: `kraken-ppocrv6-{blla,surya}`, `pylaia-{belfort,popp}[-lm]-{blla,surya}`,
+Arms: `kraken-{ppocrv6,mccatmus,mcfondue}-{blla,surya}` (one module, `--model`, default
+`ppocrv6`; McCATMuS and McFondue are kraken 4.x CoreML files the same kraken 7.1.1 reads),
+`pylaia-{belfort,popp}[-lm]-{blla,surya}`,
 `party-blla` (GPU, cut first), `surya-rec-surya` (a VLM in surya-ocr 0.22.1, not CTC).
 Measured cold installs here: kraken 279 s, PyLaia 204 s, Party 116 s (warm uv cache).

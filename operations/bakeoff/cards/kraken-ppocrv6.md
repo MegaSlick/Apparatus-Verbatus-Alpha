@@ -87,7 +87,7 @@ Real register pages; the Mac (arm64) install; the GPU path. The Mac runs first:
 `python -m operations.bakeoff.lines.kraken_ppocr install && python -m operations.bakeoff.lines.kraken_ppocr check`
 
 ## Our arm
-- Module `operations.bakeoff.lines.kraken_ppocr`; arms `kraken-ppocrv6-blla`,
+- Module `operations.bakeoff.lines.kraken_ppocr` (`--model ppocrv6`, the default); arms `kraken-ppocrv6-blla`,
   `kraken-ppocrv6-surya`; labels default to the arm names.
 - `python -m operations.bakeoff.lines.kraken_ppocr fetch --store-root STORE` (Zenodo,
   MD5 and SHA-256 checked), then

@@ -6,8 +6,9 @@
 # Licence record (CONTRIBUTING.md):
 #   kraken==7.1.1   Apache-2.0 (code)   github.com/mittagessen/kraken
 # Its default segmentation model, blla.mlmodel, ships inside the kraken wheel.
-# The PP-OCRv6 weights (Zenodo 10.5281/zenodo.21788410, Apache-2.0) are fetched by
-# `kraken_ppocr.py fetch`, never stored in this tree.
+# The PP-OCRv6 weights (Zenodo 10.5281/zenodo.21788410, Apache-2.0), McCATMuS v1
+# (10.5281/zenodo.13788177, CC BY 4.0) and Manu McFondue v4 (10.5281/zenodo.10886224,
+# CC BY 4.0) are fetched by `kraken_ppocr.py fetch --model ...`, never stored in this tree.
 [project]
 name = "verbatus-bakeoff-kraken"
 version = "0.0.0"
