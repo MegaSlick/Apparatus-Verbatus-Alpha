@@ -107,6 +107,12 @@ stock in exactly one place (then `--datacenter <dc>` pins it).
 
 ### 2.1 Create it, guard armed, global volume attached
 
+**Superseded on 2026-10-09:** the API attaches no global volume (`operations/pod/RUNPOD.md`,
+"Attaching a global volume"). Create pods with `--disk-gb` and without the `--global-*`
+options, run queues with `--keep-pod` only, pull results home as arms finish, and copy them
+into a console-deployed pod with the global volume at the end. The steps below are kept for
+when RunPod's API honours `objectMounts`.
+
 **The project's pod tool is the route**: `operations/pod/create_pod.py` sends the v1
 GraphQL mutation (`podFindAndDeployOnDemand` with `objectMounts`), the only create that
 can attach a global volume; the connector, `runpodctl` and REST cannot. Each pod gets
