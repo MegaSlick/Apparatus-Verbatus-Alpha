@@ -26,6 +26,13 @@ The project lead does not write code. The lead decides:
 Everything else is engineering and the session decides it. Put the reason in the commit
 message or pull request, not in a TODO or a handoff.
 
+## RunPod
+
+Before any RunPod work (a pod, a volume, a price, stock, the API), read
+[operations/pod/RUNPOD.md](operations/pod/RUNPOD.md): the rules, which tool for what,
+where results go, and the traps already met. For a bake-off day, also
+`operations/bakeoff/RUNBOOK.md`.
+
 ## Data that never leaves
 
 Real register images, transcriptions and personal data stay on the lead's machines and
