@@ -18,7 +18,7 @@ transcriptions. Nothing here touches a run tree, a seal or a receipt.
 | Name | Model | Shown | Prompt and answer bound |
 |---|---|---|---|
 | `chandra` | datalab-to/chandra-ocr-2 | the whole page, the vendor's `scale_to_fit` | vendor `ocr_layout` prompt, thinking off, first attempt only (no retry loop); 12,384 tokens when it surely fits, else the context's remainder |
-| `dai` | Teklia RecordGold ATR (Qwen2.5-VL-7B) | each record crop from Teklia's own YOLO record detector (CPU), width at most 1,500 px | Teklia's `system.txt` and `query.txt`; 1,024 tokens per record; the record texts joined in page order (left column first on a spread, then top to bottom). A page with no record found is a valid, empty result |
+| `dai` | Teklia RecordGold ATR (Qwen2.5-VL-7B) | each record crop from Teklia's own YOLO record detector (CPU), width at most 1,500 px | Teklia's `system.txt` and `query.txt`; 1,024 tokens per record; the record texts joined in page order (left column first on a spread, then top to bottom). A page with no record found is a valid, empty result, unless `--record-fallback whole-page` shows DAI the whole page as one record (marked `whole-page` in the cache). `--detector-conf` and `--detector-imgsz` change what the detector is asked (defaults: the serving row's 0.25 and 1024); the `_records/` cache keeps each record's confidence and the settings that found it, and is rebuilt when they change |
 | `churro` | stanford-oval/churro-3B | the whole page within 2,500 px | vendor `registry-v0.3.0` system prompt; 25,000 tokens |
 | `qwen-blind` | any vLLM vision model (`--weights`) | the whole page | a plain verbatim prompt (spelling and abbreviations kept, `[[?]]` for unread ink, one line per written line), greedy, thinking off, 12,288 tokens: the reader with no witnesses |
 
@@ -116,9 +116,8 @@ cd ~/verbatus_alpha
   --out private/bakeoff/scores
 ```
 
-`scores.md` has one table per category (median and mean CER, median WER, line recall on
-index and list pages, empty, loops, errors, s/page), the five worst pages per model, and
-each model's throughput. While the gold files say `STATUS: fool's gold`, every heading
+`scores.md` scores each model on its own page groups (see "Fair scoring and the roster"
+below), lists the five worst pages per model, and each model's throughput. While the gold files say `STATUS: fool's gold`, every heading
 says **vs fool's gold (ballpark, not accuracy)**.
 
 How it scores:
@@ -143,7 +142,175 @@ How it scores:
   revision, a check that vLLM 0.30's registry serves it without remote code, and a
   normaliser branch for its JSON layout answer. The `qwen-blind` arm with
   `--prompt-file` and `--label` can serve it once those are settled.
-- The rescue rate, error correlation, act recall and the other Phase W metrics in the
-  plan's section 9 are not computed here; the cache has what they need.
+- Act recall and the other Phase W metrics beyond the roster's (`roster.py`) are not
+  computed here; the cache has what they need.
 - Nothing here has run on a GPU yet: the tests use a fake server, and DAI's detector is
   faked in the tests (it needs `ultralytics`, which only the pod has).
+
+## Queue runner
+
+`queue_runner.py` runs one pod's whole day from a manifest (`queue/example-*.toml`,
+schema `bakeoff-queue.v1`) and ends the pod itself, so no laptop has to notice when a job
+ends. Arms run in order; each runs a smoke of `smoke_pages` pages (`--limit N` appended),
+then the full run. The next arm's `install` and `prepare` run on the CPU while this arm's
+command holds the card; a `gpu = false` arm runs beside the GPU arms. A failed arm (one whose
+program cannot even start included) is retried once at the end, smoke first, then reported. Time boxes never kill work: an overrun is pinged once, and the
+`cut` rule only skips later arms (`overrun`, `behind-schedule`, `install-failed`;
+`never` always runs). `hard_stop_min`, off unless set, stops the arm in flight and ends
+the day early. `status.json` beside the cache is rewritten every 30 s; the queue's events
+join `events.jsonl`; each milestone pings the phone once.
+
+At the end it copies the cache to `sync_to` (`rsync -rt`), compares every file's sha256,
+writes `DONE.json` (digests and summary) to both, pings, and ends the pod: with a guard
+heartbeat younger than 5 min it moves the guard's deadline to now (the guard deletes, with
+its retries and stop fallback); otherwise it runs `operations/pod/pod_delete.sh`. With
+`own_disk = true` it refuses unless the copy verified; `end_pod = "none"` keeps the pod.
+SIGTERM stops the arm, pings and exits 143 without ending the pod. Arms never see
+`RUNPOD_API_KEY` or `NTFY_TOPIC`; `watch` warns once when the status has not changed (or
+cannot be read) for 10 min by the Mac's own clock.
+
+On the pod (`validate` and `run --dry-run` first):
+
+```sh
+setsid nohup .venv/bin/python -m operations.bakeoff.queue_runner run \
+  --manifest operations/bakeoff/queue/example-witness-24gb.toml \
+  > /workspace/private/bakeoff/queue-witness-24gb.log 2>&1 < /dev/null &
+```
+
+On the Mac: `watch` prints a line per change and exits 0 at `DONE.json`, 1 on failure;
+`watch --ntfy --queue witness-24gb` follows the phone topic instead. `fetch` copies the
+cache home and checks every file against `DONE.json`:
+
+```sh
+.venv/bin/python -m operations.bakeoff.queue_runner watch --ssh "ssh -p <port> root@<ip>" \
+  --status /workspace/private/bakeoff/witness-cache/status.json
+.venv/bin/python -m operations.bakeoff.queue_runner fetch --ssh "ssh -p <port> root@<ip>" \
+  --remote /workspace/private/bakeoff/witness-cache --into private/bakeoff/witness-cache-<date>
+```
+
+## The vendor reader arm (`qwen-vendor`)
+
+The same Qwen readers as `qwen-blind`, sent the way Qwen documents a page reading: the
+Qwen3-VL OCR cookbook's plain-text instruction around the project's verbatim rules, no
+system prompt, the model card's non-thinking sampling (temperature 0.7, top_p 0.8,
+top_k 20, presence_penalty 1.5), thinking off, the checkpoint's own pixel bounds
+(65,536 to 16,777,216 pixels, served through `--mm-processor-kwargs`), and no reply cap
+(`max_tokens` left out, so vLLM answers up to the context's remainder). `--repo` picks
+the family preset (`arms.VENDOR_PRESETS`; Qwen3.8 and Qwen3.5 today) and every request
+record carries it under `vendor_preset`. A page can reach about 16,400 image tokens, so
+pass `--max-num-batched-tokens 16384`:
+
+```sh
+.venv/bin/python -m operations.bakeoff.witness_run run --model qwen-vendor \
+  --label qwen35-27b-vendor --repo Qwen/Qwen3.5-27B --revision <commit> \
+  --weights <local snapshot> --max-num-batched-tokens 16384 \
+  --pages $V/bakeoff-pages --out $V/bakeoff/witness-cache
+```
+
+Run cards for every model are in `cards/` (index: `cards/README.md`).
+
+## Fair scoring and the roster
+
+A model is scored only where its design applies, by the metric that fits the page type,
+and never pooled across types. `groups.py` holds the table as data, edited by hand and
+checked by `validate()`:
+
+| Group | Gold categories | Headline | Also |
+|---|---|---|---|
+| `acts` | acts-18c, acts-19c, acts-20c | CER | WER |
+| `prose-other` | contract | CER | |
+| `tables` | ledger | line recall | CER |
+| `index-list` | index, list | line recall | surname recall, false-line rate |
+| `blank-like` | blank, near-blank, non-register | false-text rate | CER |
+| `test` | any page with `TEST PAGE: yes` | per page, for the lead | |
+
+`MODEL_GROUPS` says which groups each arm is scored on: `dai` on `acts` only (it reads
+records; empty on an index is no failure), `pylaia-popp-*` on `index-list`, `tables` and
+`acts`, every other arm on every group. An arm not in the table is scored everywhere and
+the report warns. False text: more than 20 characters of output, on pages with no gold
+text only. Surname recall: each gold row's first token among the model's tokens at
+distance <= 1. False-line rate: model lines matched to no gold row or heading. Pages are
+also split by FORM (handwritten, typed, printed form, mixed): one row per form under each
+group, and the cross-model tables compare handwritten pages, then typed ones apart. A
+record arm (`dai`, or `record-*`/`whole-page` units) also gets act recall (units matched
+to gold acts at CER <= 0.5), units unmatched, per-unit CER and whole-page fallbacks.
+
+`scores.md` has a compact cross-model table per group (headline only), one section per
+model (one row per group it is scored on, then `all pages, for reference`, which
+leaves out test pages and counts hard pages apart; scores, health and record cells in
+separate narrow tables so they read on a phone), the test
+pages with their expected behaviour, and the hard pages. `--hard-pages FILE` (one stem per
+line) moves pages out of the medians into their own table; `--exclude FILE` drops them.
+
+`python -m operations.bakeoff.roster` takes the same arguments as `score`; `roster.md` gives, per group and candidate against `--baselines` (default
+`chandra,dai,churro`): rescue rate, phi correlation of wrong tokens with each baseline
+(and the baselines' own), shared fabrication, insertion rate beside the leader's, union
+line recall on index-list, and the roster rule's suggestion with its inputs. On each group
+only the baselines scored there count as witnesses (DAI on `acts` only). The rule is
+a suggestion for the lead, never a decision.
+
+## Vendor-native arms (`native/`)
+
+Beside the vLLM arms above, `native/` runs three witnesses through their vendors' own
+code, so a weak score cannot be blamed on our re-implementation. Each writes the same
+cache record under its own label; each has a run card in `cards/`.
+
+| Arm (label) | Vendor path | Client environment |
+|---|---|---|
+| `chandra-native` | datalab's `chandra-ocr` 0.2.0 package end to end (its retry loop, its markdown) | `native/venvs/chandra-native` |
+| `churro-native` | Stanford's release-time `run_churro_ocr.py` settings, its XML text extractor | `native/venvs/churro-native` |
+| `dots-mocr` | rednote-hilab's `dots_mocr` parser: PyMuPDF render, layout prompt, JSON reader | `native/venvs/dots-mocr` |
+
+The client runs in the arm's own small environment; the vLLM server runs from the
+project environment (`--vllm-cmd`, default `.venv/bin/python -m vllm.entrypoints.cli.main`).
+On the pod:
+
+```sh
+for arm in chandra_native churro_native dots_mocr; do
+  .venv/bin/python -m operations.bakeoff.native.$arm install --venv-dir /workspace/venvs/$arm
+  /workspace/venvs/$arm/bin/python -m operations.bakeoff.native.$arm check
+done
+/workspace/venvs/dots_mocr/bin/python -m operations.bakeoff.native.dots_mocr fetch --store-root $V/model-store
+/workspace/venvs/chandra_native/bin/python -m operations.bakeoff.native.chandra_native run \
+  --limit 2 --pages $V/bakeoff-pages --out $V/bakeoff/witness-cache --store-root $V/model-store
+```
+
+Every arm takes `run --pages --out [--label] [--limit] [--weights | --store-root]
+[--server-url | --vllm-cmd ...]`, resumes like `witness_run`, and exits 0 when every page
+is cached, 1 when a page errored, 2 when it refuses (wrong environment, no weights).
+
+## CTC line arms (`lines/`)
+
+Line recognisers, each in its vendor's own environment (`lines/venvs/<name>/`, locked for
+linux x86_64 and macOS arm64), driven from the project environment by one module with the
+shared command line (`run`, `install`, `check`, `prepare`, `fetch`; `lines/harness.py`).
+Run cards: `cards/kraken-ppocrv6.md`, `cards/pylaia-belfort.md`, `cards/pylaia-popp.md`,
+`cards/party.md`, `cards/surya-recogniser.md`. Two shared line sources write crops to
+`<out>/_lines/<source>/<stem>/NNNN.png` with `<stem>.json` listing bounds and order:
+
+```sh
+# Surya lines: the repository's runner in its own environment, then the crops.
+uv sync --locked --project operations/serving/surya
+operations/serving/surya/.venv/bin/python operations/serving/surya/prefetch.py --out $V/surya-bundle  # once; or the store's local/surya2-detection
+eval "$(.venv/bin/python -m operations.bakeoff.lines.surya_lines command --pages $V/bakeoff-pages \
+  --lines-dir $V/bakeoff/surya-docs --weights $V/surya-bundle --threads 8)"
+.venv/bin/python -m operations.bakeoff.lines.surya_lines prepare --pages $V/bakeoff-pages \
+  --lines-dir $V/bakeoff/surya-docs --out $V/bakeoff/witness-cache
+# blla lines: kraken's segmenter in the kraken environment.
+.venv/bin/python -m operations.bakeoff.lines.kraken_ppocr install
+.venv/bin/python -m operations.bakeoff.lines.blla prepare --pages $V/bakeoff-pages --out $V/bakeoff/witness-cache
+```
+
+Then, for example:
+
+```sh
+.venv/bin/python -m operations.bakeoff.lines.pylaia install
+.venv/bin/python -m operations.bakeoff.lines.pylaia fetch --model belfort --store-root $V/model-store
+.venv/bin/python -m operations.bakeoff.lines.pylaia run --model belfort --lm --lines surya \
+  --lines-dir $V/bakeoff/surya-docs --pages $V/bakeoff-pages --out $V/bakeoff/witness-cache \
+  --store-root $V/model-store
+```
+
+Arms: `kraken-ppocrv6-{blla,surya}`, `pylaia-{belfort,popp}[-lm]-{blla,surya}`,
+`party-blla` (GPU, cut first), `surya-rec-surya` (a VLM in surya-ocr 0.22.1, not CTC).
+Measured cold installs here: kraken 279 s, PyLaia 204 s, Party 116 s (warm uv cache).

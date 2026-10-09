@@ -1,0 +1,38 @@
+# The dots-mocr arm's own environment: what rednote-hilab's `dots_mocr` package imports
+# on its vLLM path. The package itself is not built from here: its setup.py leaves out
+# `dots_mocr/model` (no __init__.py), so, as its README does with `pip install -e .`,
+# `install` checks out the pinned commit into the venv and puts it on the path. Its
+# requirements.txt (transformers 4.57.6, gradio, modelscope, accelerate) serves its demos
+# and its transformers path, which this arm does not use. The vLLM server runs from the
+# project environment. `uv.lock` pins every package; the pod syncs it with
+# `python -m operations.bakeoff.native.dots_mocr install --venv-dir DIR`.
+# cairosvg needs the system cairo library (`apt-get install -y libcairo2` on a bare image).
+#
+# Licence record (CONTRIBUTING.md):
+#   dots_mocr @ 23f3e56   MIT (code)          github.com/rednote-hilab/dots.mocr
+#   pymupdf 1.26.x        AGPL-3.0 (or Artifex commercial), run here, never distributed
+#   cairosvg              LGPL-3.0
+# The weights (dots-studio/dots.mocr, MIT plus the dots.mocr licence agreement) are
+# fetched at run setup, never stored here.
+[project]
+name = "verbatus-dots-mocr"
+version = "0.0.0"
+description = "dots.mocr through rednote-hilab's own parser, for the bake-off"
+requires-python = "==3.12.*"
+dependencies = [
+    "pymupdf==1.26.4",
+    "cairosvg==2.8.2",
+    "openai==2.2.0",
+    "requests==2.32.5",
+    "pydantic==2.12.3",
+    "numpy==2.3.4",
+    "tqdm==4.67.1",
+    "pillow==12.3.0",
+    "rapidfuzz==3.14.5",
+    "huggingface_hub==1.31.0",
+]
+
+[tool.uv]
+required-version = "==0.12.1"
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]

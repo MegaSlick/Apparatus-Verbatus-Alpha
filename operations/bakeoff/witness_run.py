@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import json
 import os
@@ -49,8 +50,22 @@ def now() -> str:
 def event(out: Path, name: str, **facts: Any) -> None:
     out.mkdir(parents=True, exist_ok=True)
     line = json.dumps({"t": now(), "event": name, **facts}, sort_keys=True)
-    with _events_lock, open(out / "events.jsonl", "a", encoding="utf-8") as handle:
-        handle.write(line + "\n")
+    # The queue runner and its arms (separate processes) share this file: one O_APPEND
+    # write per line, under an advisory lock where the file system offers one, so lines
+    # never interleave even on a network volume where appends alone are not atomic.
+    data = (line + "\n").encode("utf-8")
+    with _events_lock:
+        fd = os.open(out / "events.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except OSError:
+                pass
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view) :]
+        finally:
+            os.close(fd)
     print(line, flush=True)
 
 
@@ -175,6 +190,7 @@ class ModelJob:
         identity = A.chair_identity(self.arm.chair)
         self.repo = args.repo or identity["repo"]
         self.revision = args.revision or identity["revision"]
+        self.row = A.arm_row(self.arm, self.row, self.repo)
         self.prompt_text = args.prompt_file.read_text("utf-8") if args.prompt_file else None
         self.served_name = f"bakeoff-{self.label}"
         self.weights: Path | None = None
@@ -189,17 +205,37 @@ class ModelJob:
         )
         return self.weights
 
-    def _records(self, page: Path, png: bytes, detector: Any) -> list[dict[str, int]]:
+    def _records(self, page: Path, png: bytes, detector: Any) -> list[dict[str, Any]]:
+        """The detector's records for a page, cached with the settings that found them.
+
+        A cache written under other detector settings is not reused. With
+        `--record-fallback whole-page`, a page with no record becomes one whole-page
+        record, marked as such in the cache and in each unit's name.
+        """
         cache = self.dir / "_records" / f"{page.stem}.json"
+        settings = {
+            "conf": self.args.detector_conf,
+            "imgsz": self.args.detector_imgsz,
+            "fallback": self.args.record_fallback,
+        }
         if cache.is_file():
-            return json.loads(cache.read_text("utf-8"))["records"]
-        records = detector().records(png)
+            cached = json.loads(cache.read_text("utf-8"))
+            if cached.get("settings", {}) == settings:
+                return cached["records"]
+        found = detector()
+        records = found.records(png)
+        detected = len(records)
+        if not records and self.args.record_fallback == "whole-page":
+            records = [A.whole_page_record(*A._size(png))]
         cache.parent.mkdir(parents=True, exist_ok=True)
         write_json(
             cache,
             {
                 "page": page.stem,
                 "detector": A.chair_identity(A.DETECTOR_CHAIR),
+                "detector_settings": getattr(found, "settings", None),
+                "settings": settings,
+                "detected": detected,
                 "order": "left column first, then top to bottom",
                 "records": records,
             },
@@ -219,7 +255,14 @@ class ModelJob:
                     self.args.store_root,
                     self.args.cache_root,
                 )
-                detector_box.append(A.RecordDetector(weights, self.args.detector_threads))
+                detector_box.append(
+                    A.RecordDetector(
+                        weights,
+                        self.args.detector_threads,
+                        conf=self.args.detector_conf,
+                        imgsz=self.args.detector_imgsz,
+                    )
+                )
             return detector_box[0]
 
         for page in pages:
@@ -235,6 +278,7 @@ class ModelJob:
                     served_name=self.served_name,
                     max_model_len=self.max_model_len,
                     prompt_text=self.prompt_text,
+                    repo=self.repo,
                 )
                 for unit in A.page_units(self.arm, png, records)
             ]
@@ -327,6 +371,8 @@ class ModelJob:
             "finish_reason": "length"
             if "length" in finishes
             else (finishes[0] if finishes else "no-records"),
+            "record_units": [u["request"]["unit"] for u in units],
+            "whole_page_fallback": any(u["request"]["unit"] == "whole-page" for u in units),
             "loop": any(f for f, _ in loops),
             "loop_reasons": [r for f, r in loops if f],
             "seconds": round(sum(u["seconds"] for u in units), 3),
@@ -465,6 +511,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.add_argument("--cache-root", type=Path, help="the pod's chair cache")
         p.add_argument("--detector-weights", type=Path)
         p.add_argument("--detector-threads", type=int, default=1)
+        p.add_argument(
+            "--detector-conf", type=float, help="record detector confidence (default: the row's)"
+        )
+        p.add_argument(
+            "--detector-imgsz", type=int, help="record detector image size (default: the row's)"
+        )
+        p.add_argument(
+            "--record-fallback",
+            choices=["none", "whole-page"],
+            default="none",
+            help="a page with no record: skip it (none) or show DAI the whole page",
+        )
         p.add_argument("--tier", help="serving row tier (default per model)")
         p.add_argument("--max-model-len", type=int)
         p.add_argument("--max-num-seqs", type=int, default=32)

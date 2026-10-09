@@ -14,6 +14,11 @@ rather than retyped wherever they are importable without a run context:
   own YOLO record detector run on the CPU (`operations.serving.detector`).
 - qwen-blind: any vLLM vision model with a plain verbatim prompt, greedy, thinking off,
   `max_tokens` 12,288: the reader with no witnesses.
+- qwen-vendor: the same reader as its vendor documents a page transcription: the Qwen
+  cookbook's plain-text OCR instruction around the project's verbatim rules, no system
+  prompt, the model card's non-thinking sampling preset, the checkpoint's own pixel
+  bounds, thinking off, and no reply cap (the context's remainder). `--repo` picks the
+  family preset (`VENDOR_PRESETS`).
 
 Sampling comes from `config/decoding.toml` (the sealed per-chair rows); answer bounds from
 `common.request_capacity.DECLARED_ANSWER_BOUND_TOKENS`.
@@ -45,6 +50,58 @@ QWEN_BLIND_PROMPT = (
 )
 QWEN_BLIND_MAX_TOKENS = 12_288
 
+# The Qwen3-VL OCR cookbook's plain-text instruction, then the project's verbatim rules.
+QWEN_VENDOR_PROMPT = (
+    "Please output only the text content from the image without any additional "
+    "descriptions or formatting.\n"
+    "- Keep the original spelling, accents, abbreviations, punctuation and capitalisation "
+    "exactly as written; do not modernise, expand or correct anything.\n"
+    "- Write one output line for each written line on the page, in reading order.\n"
+    "- Write [[?]] where the ink cannot be read."
+)
+_QWEN_COOKBOOK = (
+    "https://github.com/QwenLM/Qwen3-VL/blob/96588727e44c78b25ba03ea03b8e12f7e64fd0da/"
+    "cookbooks/ocr.ipynb"
+)
+# Each model card's "Instruct (or non-thinking) mode" row, and the pixel bounds of the
+# checkpoint's own preprocessor_config.json (size.shortest_edge / size.longest_edge).
+_NON_THINKING = {
+    "temperature": 0.7,
+    "top_p": 0.8,
+    "top_k": 20,
+    "min_p": 0.0,
+    "presence_penalty": 1.5,
+    "repetition_penalty": 1.0,
+}
+VENDOR_PRESETS: dict[str, dict[str, Any]] = {
+    "Qwen/Qwen3.8-": {
+        "family": "qwen3.8",
+        "sampling": _NON_THINKING,
+        "min_pixels": 65_536,
+        "max_pixels": 16_777_216,
+        "prompt_source": _QWEN_COOKBOOK,
+        "card": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/"
+        "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/README.md",
+    },
+    "Qwen/Qwen3.5-": {
+        "family": "qwen3.5",
+        "sampling": _NON_THINKING,
+        "min_pixels": 65_536,
+        "max_pixels": 16_777_216,
+        "prompt_source": _QWEN_COOKBOOK,
+        "card": "https://huggingface.co/Qwen/Qwen3.5-27B/blob/"
+        "fc05daec18b0a78c049392ed2e771dde82bdf654/README.md",
+    },
+}
+
+
+def vendor_preset(repo: str | None) -> dict[str, Any]:
+    """The family preset for a repo id; a repo outside every family is refused."""
+    for prefix, preset in VENDOR_PRESETS.items():
+        if repo and repo.startswith(prefix):
+            return preset
+    raise SystemExit(f"qwen-vendor has no preset for {repo!r}; known: {sorted(VENDOR_PRESETS)}")
+
 
 @dataclass(frozen=True)
 class Arm:
@@ -60,6 +117,7 @@ ARMS: dict[str, Arm] = {
     "dai": Arm("dai", "attestator_2", "dai-recordgold-atr", "record", "generic-48gb"),
     "churro": Arm("churro", "attestator_3", "churro-3B", "page", "generic-48gb"),
     "qwen-blind": Arm("qwen-blind", "perlector", None, "page", "generic-80gb-plus"),
+    "qwen-vendor": Arm("qwen-vendor", "perlector", None, "page", "generic-80gb-plus"),
 }
 DETECTOR_ARTIFACT = "yolov26-record-detection"
 DETECTOR_CHAIR = "secondary_proposer"
@@ -88,6 +146,14 @@ def serving_row(chair: str, tier: str) -> dict[str, Any]:
         if row.get("chair") == chair and row.get("tier") == tier and row.get("kind") == "vllm":
             return row
     raise SystemExit(f"no vLLM serving row for chair {chair!r} at tier {tier!r}")
+
+
+def arm_row(arm: Arm, row: dict[str, Any], repo: str | None) -> dict[str, Any]:
+    """The serving row as this arm serves it: qwen-vendor takes its family's pixel bounds."""
+    if arm.name != "qwen-vendor":
+        return row
+    preset = vendor_preset(repo)
+    return {**row, "min_pixels": preset["min_pixels"], "max_pixels": preset["max_pixels"]}
 
 
 def resolve_weights(
@@ -178,8 +244,12 @@ def _size(png: bytes) -> tuple[int, int]:
     return dimensions(png)
 
 
-def page_units(arm: Arm, page_png: bytes, records: list[dict[str, int]] | None = None):
-    """The images this arm is shown for one page: one whole page, or each record crop."""
+def page_units(arm: Arm, page_png: bytes, records: list[dict[str, Any]] | None = None):
+    """The images this arm is shown for one page: one whole page, or each record crop.
+
+    A record arm with an empty record list gets no unit (a valid, empty page); a
+    whole-page fallback is a record whose bounds are the page (`whole_page_record`).
+    """
     from common.imaging import convert_png_to_rgb, crop_png, resize_png_lanczos
 
     width, height = _size(page_png)
@@ -195,17 +265,19 @@ def page_units(arm: Arm, page_png: bytes, records: list[dict[str, int]] | None =
         target = resize_to_fit_churro(width, height)
         image = convert_png_to_rgb(resize_png_lanczos(crop_png(page_png, whole), *target))
         return [{"unit": "page", "bounds": whole, "png": image}]
-    if arm.name == "qwen-blind":
+    if arm.name in ("qwen-blind", "qwen-vendor"):
         return [{"unit": "page", "bounds": whole, "png": convert_png_to_rgb(page_png)}]
     if arm.name == "dai":
         feeding = _feeding()
         units = []
-        for index, bounds in enumerate(records or []):
+        for index, record in enumerate(records or []):
+            bounds = {k: record[k] for k in ("x", "y", "w", "h")}
             crop = crop_png(page_png, bounds)
             target = feeding.dai_dimensions(bounds["w"], bounds["h"])
             if target != (bounds["w"], bounds["h"]):
                 crop = resize_png_lanczos(crop, *target)
-            units.append({"unit": f"record-{index}", "bounds": bounds, "png": crop})
+            name = "whole-page" if record.get("fallback") else f"record-{index}"
+            units.append({"unit": name, "bounds": bounds, "png": crop})
         return units
     raise SystemExit(f"unknown arm {arm.name!r}")
 
@@ -229,12 +301,16 @@ def _prompt(arm: Arm, prompt_text: str | None) -> dict[str, str]:
         return {"system": churro_document.churro_system_prompt("registry-v0.3.0")}
     if arm.name == "dai":
         return dict(_feeding().dai_prompt())
+    if arm.name == "qwen-vendor":
+        return {"user": prompt_text or QWEN_VENDOR_PROMPT}
     return {"user": prompt_text or QWEN_BLIND_PROMPT}
 
 
-def _sampling(arm: Arm) -> dict[str, Any]:
+def _sampling(arm: Arm, repo: str | None = None) -> dict[str, Any]:
     if arm.name == "qwen-blind":
         return {"temperature": 0.0, "top_p": 1.0, "top_k": 0, "seed": 0}
+    if arm.name == "qwen-vendor":
+        return {**vendor_preset(repo)["sampling"], "seed": 0}
     from common.decoding import chair_decoding, load_decoding_policy
 
     policy, _ = load_decoding_policy(ROOT / "config" / "decoding.toml")
@@ -267,12 +343,14 @@ def build_request(
     served_name: str,
     max_model_len: int,
     prompt_text: str | None = None,
+    repo: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """(the chat-completions body, the request record cached beside the answer).
 
     `max_tokens` is the vendor's declared bound when it surely fits beside the prompt
     (prompt text counted as one token per byte, an over-count); otherwise it is left
     out and vLLM answers up to the context's remainder -- the pipeline's own rule.
+    qwen-vendor always leaves it out: no reply cap. `repo` picks qwen-vendor's preset.
     """
     prompt = _prompt(arm, prompt_text)
     png = unit["png"]
@@ -283,16 +361,18 @@ def build_request(
     if "user" in prompt:
         user.append({"type": "text", "text": prompt["user"]})
     messages.append({"role": "user", "content": user})
-    body: dict[str, Any] = {"model": served_name, "messages": messages, **_sampling(arm)}
-    if arm.name in ("chandra", "qwen-blind"):
+    body: dict[str, Any] = {"model": served_name, "messages": messages, **_sampling(arm, repo)}
+    if arm.name in ("chandra", "qwen-blind", "qwen-vendor"):
         body["chat_template_kwargs"] = {"enable_thinking": False}
     if arm.name == "dai":
         body.update(_feeding().dai_wire_stop_token_ids())
     width, height = _size(png)
-    declared = _declared_max_tokens(arm)
     text_bytes = sum(len(t.encode("utf-8")) for t in prompt.values())
     estimate = image_tokens(row, width, height) + text_bytes + 128
-    if estimate + declared <= max_model_len:
+    declared = None if arm.name == "qwen-vendor" else _declared_max_tokens(arm)
+    if declared is None:
+        basis = "omitted: no reply cap, the context's remainder"
+    elif estimate + declared <= max_model_len:
         body["max_tokens"] = declared
         basis = "declared-bound"
     else:
@@ -311,6 +391,17 @@ def build_request(
         "image_sha256": hashlib.sha256(png).hexdigest(),
         "image_tokens_estimate": image_tokens(row, width, height),
     }
+    if arm.name == "qwen-vendor":
+        preset = vendor_preset(repo)
+        record["vendor_preset"] = {
+            "repo": repo,
+            "family": preset["family"],
+            "prompt": prompt["user"],
+            "prompt_source": preset["prompt_source"] if prompt_text is None else "--prompt-file",
+            "sampling_source": preset["card"],
+            "min_pixels": row["min_pixels"],
+            "max_pixels": row["max_pixels"],
+        }
     return body, record
 
 
@@ -318,9 +409,21 @@ def build_request(
 
 
 class RecordDetector:
-    """Teklia's YOLO OBB record detector, loaded the way the Designator loads it."""
+    """Teklia's YOLO OBB record detector, loaded the way the Designator loads it.
 
-    def __init__(self, weights_dir: Path, threads: int = 1) -> None:
+    `conf` and `imgsz` default to the serving row's values (Ultralytics' own defaults
+    for this checkpoint); a bake-off arm may lower the confidence or raise the image
+    size to see what the detector finds on pages unlike its training spreads.
+    """
+
+    def __init__(
+        self,
+        weights_dir: Path,
+        threads: int = 1,
+        *,
+        conf: float | None = None,
+        imgsz: int | None = None,
+    ) -> None:
         from operations.serving import detector as d
 
         path = weights_dir / d.RECORD_DETECTOR_WEIGHTS_FILE
@@ -330,28 +433,40 @@ class RecordDetector:
         with open(ROOT / "config" / "serving_recipes_real.toml", "rb") as handle:
             rows = tomllib.load(handle)["profiles"]
         self.profile = next(r for r in rows if r.get("chair") == DETECTOR_CHAIR)
+        self.settings = {
+            "imgsz": imgsz or self.profile["imgsz"],
+            "conf": conf if conf is not None else self.profile["conf_bp"] / 10_000,
+            "iou": self.profile["iou_bp"] / 10_000,
+            "max_det": self.profile["max_det"],
+        }
         import torch
 
         torch.set_num_threads(threads)
         self.model = d.offline_ultralytics()(str(path), task=self.profile["task"])
         self._to_rgb = d.convert_page_to_rgb
 
-    def records(self, page_png: bytes) -> list[dict[str, int]]:
-        p = self.profile
+    def records(self, page_png: bytes) -> list[dict[str, Any]]:
+        """Each record's box in reading order, with the detector's confidence."""
         result = self.model.predict(
             self._to_rgb(page_png),
-            imgsz=p["imgsz"],
-            conf=p["conf_bp"] / 10_000,
-            iou=p["iou_bp"] / 10_000,
-            max_det=p["max_det"],
             device="cpu",
             verbose=False,
+            **self.settings,
         )[0].obb
         width, height = _size(page_png)
-        return order_records(
-            [b for b in (obb_bounds(c, width, height) for c in result.xyxyxyxy.tolist()) if b],
-            width,
-        )
+        corners = result.xyxyxyxy.tolist()
+        scores = result.conf.tolist() if hasattr(result, "conf") else [None] * len(corners)
+        boxes = []
+        for shape, score in zip(corners, scores, strict=True):
+            bounds = obb_bounds(shape, width, height)
+            if bounds:
+                boxes.append({**bounds, "score": None if score is None else round(score, 4)})
+        return order_records(boxes, width)
+
+
+def whole_page_record(width: int, height: int) -> dict[str, Any]:
+    """The page itself as one record, for an act page where the detector found none."""
+    return {"x": 0, "y": 0, "w": width, "h": height, "score": None, "fallback": "whole-page"}
 
 
 def obb_bounds(corners: list, width: int, height: int) -> dict[str, int] | None:
@@ -365,7 +480,7 @@ def obb_bounds(corners: list, width: int, height: int) -> dict[str, int] | None:
     return {"x": x0, "y": y0, "w": w, "h": h} if w > 0 and h > 0 else None
 
 
-def order_records(boxes: list[dict[str, int]], page_width: int) -> list[dict[str, int]]:
+def order_records(boxes: list[dict[str, Any]], page_width: int) -> list[dict[str, Any]]:
     """Page reading order: left column before right on a spread, then top to bottom.
 
     A box is in the right column when it starts right of the middle and some other box

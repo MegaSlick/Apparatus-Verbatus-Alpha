@@ -28,6 +28,7 @@ scripts=".githooks/check-all.sh
 .githooks/pre-commit
 .githooks/pre-merge-commit
 operations/notify/notify.sh
+operations/pod/pod_delete.sh
 operations/pod/pod_guard.sh
 operations/pod/pod_start_command.sh
 operations/pod/session_end_pod_check.sh"
