@@ -178,8 +178,12 @@ def _size(png: bytes) -> tuple[int, int]:
     return dimensions(png)
 
 
-def page_units(arm: Arm, page_png: bytes, records: list[dict[str, int]] | None = None):
-    """The images this arm is shown for one page: one whole page, or each record crop."""
+def page_units(arm: Arm, page_png: bytes, records: list[dict[str, Any]] | None = None):
+    """The images this arm is shown for one page: one whole page, or each record crop.
+
+    A record arm with an empty record list gets no unit (a valid, empty page); a
+    whole-page fallback is a record whose bounds are the page (`whole_page_record`).
+    """
     from common.imaging import convert_png_to_rgb, crop_png, resize_png_lanczos
 
     width, height = _size(page_png)
@@ -200,12 +204,14 @@ def page_units(arm: Arm, page_png: bytes, records: list[dict[str, int]] | None =
     if arm.name == "dai":
         feeding = _feeding()
         units = []
-        for index, bounds in enumerate(records or []):
+        for index, record in enumerate(records or []):
+            bounds = {k: record[k] for k in ("x", "y", "w", "h")}
             crop = crop_png(page_png, bounds)
             target = feeding.dai_dimensions(bounds["w"], bounds["h"])
             if target != (bounds["w"], bounds["h"]):
                 crop = resize_png_lanczos(crop, *target)
-            units.append({"unit": f"record-{index}", "bounds": bounds, "png": crop})
+            name = "whole-page" if record.get("fallback") else f"record-{index}"
+            units.append({"unit": name, "bounds": bounds, "png": crop})
         return units
     raise SystemExit(f"unknown arm {arm.name!r}")
 
@@ -318,9 +324,21 @@ def build_request(
 
 
 class RecordDetector:
-    """Teklia's YOLO OBB record detector, loaded the way the Designator loads it."""
+    """Teklia's YOLO OBB record detector, loaded the way the Designator loads it.
 
-    def __init__(self, weights_dir: Path, threads: int = 1) -> None:
+    `conf` and `imgsz` default to the serving row's values (Ultralytics' own defaults
+    for this checkpoint); a bake-off arm may lower the confidence or raise the image
+    size to see what the detector finds on pages unlike its training spreads.
+    """
+
+    def __init__(
+        self,
+        weights_dir: Path,
+        threads: int = 1,
+        *,
+        conf: float | None = None,
+        imgsz: int | None = None,
+    ) -> None:
         from operations.serving import detector as d
 
         path = weights_dir / d.RECORD_DETECTOR_WEIGHTS_FILE
@@ -330,28 +348,40 @@ class RecordDetector:
         with open(ROOT / "config" / "serving_recipes_real.toml", "rb") as handle:
             rows = tomllib.load(handle)["profiles"]
         self.profile = next(r for r in rows if r.get("chair") == DETECTOR_CHAIR)
+        self.settings = {
+            "imgsz": imgsz or self.profile["imgsz"],
+            "conf": conf if conf is not None else self.profile["conf_bp"] / 10_000,
+            "iou": self.profile["iou_bp"] / 10_000,
+            "max_det": self.profile["max_det"],
+        }
         import torch
 
         torch.set_num_threads(threads)
         self.model = d.offline_ultralytics()(str(path), task=self.profile["task"])
         self._to_rgb = d.convert_page_to_rgb
 
-    def records(self, page_png: bytes) -> list[dict[str, int]]:
-        p = self.profile
+    def records(self, page_png: bytes) -> list[dict[str, Any]]:
+        """Each record's box in reading order, with the detector's confidence."""
         result = self.model.predict(
             self._to_rgb(page_png),
-            imgsz=p["imgsz"],
-            conf=p["conf_bp"] / 10_000,
-            iou=p["iou_bp"] / 10_000,
-            max_det=p["max_det"],
             device="cpu",
             verbose=False,
+            **self.settings,
         )[0].obb
         width, height = _size(page_png)
-        return order_records(
-            [b for b in (obb_bounds(c, width, height) for c in result.xyxyxyxy.tolist()) if b],
-            width,
-        )
+        corners = result.xyxyxyxy.tolist()
+        scores = result.conf.tolist() if hasattr(result, "conf") else [None] * len(corners)
+        boxes = []
+        for shape, score in zip(corners, scores, strict=True):
+            bounds = obb_bounds(shape, width, height)
+            if bounds:
+                boxes.append({**bounds, "score": None if score is None else round(score, 4)})
+        return order_records(boxes, width)
+
+
+def whole_page_record(width: int, height: int) -> dict[str, Any]:
+    """The page itself as one record, for an act page where the detector found none."""
+    return {"x": 0, "y": 0, "w": width, "h": height, "score": None, "fallback": "whole-page"}
 
 
 def obb_bounds(corners: list, width: int, height: int) -> dict[str, int] | None:
@@ -365,7 +395,7 @@ def obb_bounds(corners: list, width: int, height: int) -> dict[str, int] | None:
     return {"x": x0, "y": y0, "w": w, "h": h} if w > 0 and h > 0 else None
 
 
-def order_records(boxes: list[dict[str, int]], page_width: int) -> list[dict[str, int]]:
+def order_records(boxes: list[dict[str, Any]], page_width: int) -> list[dict[str, Any]]:
     """Page reading order: left column before right on a spread, then top to bottom.
 
     A box is in the right column when it starts right of the middle and some other box
