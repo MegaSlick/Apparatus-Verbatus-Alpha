@@ -5,8 +5,9 @@
 #   runpodctl pod create ... --docker-args "$START"
 # The && keeps a refusal (exit 2, nothing printed) from creating an unguarded pod.
 #
-# The guard keeps its records on the network volume, which must be mounted at
-# /workspace/private: the one mount path the bootstrap and the data gate accept.
+# The guard keeps its records on the volume at /workspace/private (a network volume or
+# the pod's own disk): the one mount path the bootstrap and the data gate accept. A
+# global volume (object storage) never holds them; it is mounted elsewhere, for results.
 #
 # The command fetches pod_guard.sh from this public repository at commit <sha>, trying
 # for a few minutes, and runs it. Then it hands over to the image's own /start.sh, or

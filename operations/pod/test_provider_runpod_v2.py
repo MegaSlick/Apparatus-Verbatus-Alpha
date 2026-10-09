@@ -16,6 +16,7 @@ from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     BillingState,
     CloseState,
+    GlobalVolumeMount,
     PendingCreateIntent,
     PodCreateRequest,
     Presence,
@@ -1208,3 +1209,16 @@ def test_restart_recovery_binds_and_closes_a_v2_pod_that_carries_no_contract(
     assert ("DELETE", "/pods/pod-1", None) in world.calls
     assert not any(path == "/pods/unrelated" for _, path, _ in world.calls)
     assert not any(method == "POST" for method, _, _ in world.calls)
+
+
+def test_v2_refuses_a_global_volume_by_name_before_any_post(on_demand_settled: None) -> None:
+    """v2's mounts carry only persistent and network; the refusal names the v1 route."""
+
+    transport = ScriptedTransport([json_response(page([]))])
+    wanted = request(global_volume=GlobalVolumeMount("global-1", "/workspace/global"))
+
+    with pytest.raises(ProviderFailure, match="global volume") as refusal:
+        provider(transport).create(wanted)
+
+    assert 'route="v1"' in str(refusal.value)
+    assert [method for method, _, _ in transport.calls] == ["GET"]
