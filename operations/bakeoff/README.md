@@ -116,9 +116,8 @@ cd ~/verbatus_alpha
   --out private/bakeoff/scores
 ```
 
-`scores.md` has one table per category (median and mean CER, median WER, line recall on
-index and list pages, empty, loops, errors, s/page), the five worst pages per model, and
-each model's throughput. While the gold files say `STATUS: fool's gold`, every heading
+`scores.md` scores each model on its own page groups (see "Fair scoring and the roster"
+below), lists the five worst pages per model, and each model's throughput. While the gold files say `STATUS: fool's gold`, every heading
 says **vs fool's gold (ballpark, not accuracy)**.
 
 How it scores:
@@ -143,8 +142,8 @@ How it scores:
   revision, a check that vLLM 0.30's registry serves it without remote code, and a
   normaliser branch for its JSON layout answer. The `qwen-blind` arm with
   `--prompt-file` and `--label` can serve it once those are settled.
-- The rescue rate, error correlation, act recall and the other Phase W metrics in the
-  plan's section 9 are not computed here; the cache has what they need.
+- Act recall and the other Phase W metrics beyond the roster's (`roster.py`) are not
+  computed here; the cache has what they need.
 - Nothing here has run on a GPU yet: the tests use a fake server, and DAI's detector is
   faked in the tests (it needs `ultralytics`, which only the pod has).
 
@@ -209,3 +208,43 @@ pass `--max-num-batched-tokens 16384`:
 ```
 
 Run cards for every model are in `cards/` (index: `cards/README.md`).
+
+## Fair scoring and the roster
+
+A model is scored only where its design applies, by the metric that fits the page type,
+and never pooled across types. `groups.py` holds the table as data, edited by hand and
+checked by `validate()`:
+
+| Group | Gold categories | Headline | Also |
+|---|---|---|---|
+| `acts` | acts-18c, acts-19c, acts-20c | CER | WER |
+| `prose-other` | contract | CER | |
+| `tables` | ledger | line recall | CER |
+| `index-list` | index, list | line recall | surname recall, false-line rate |
+| `blank-like` | blank, near-blank, non-register | false-text rate | CER |
+| `test` | any page with `TEST PAGE: yes` | per page, for the lead | |
+
+`MODEL_GROUPS` says which groups each arm is scored on: `dai` on `acts` only (it reads
+records; empty on an index is no failure), `pylaia-popp-*` on `index-list`, `tables` and
+`acts`, every other arm on every group. An arm not in the table is scored everywhere and
+the report warns. False text: more than 20 characters of output, on pages with no gold
+text only. Surname recall: each gold row's first token among the model's tokens at
+distance <= 1. False-line rate: model lines matched to no gold row or heading. Pages are
+also split by FORM (handwritten, typed, printed form, mixed): one row per form under each
+group, and the cross-model tables compare handwritten pages, then typed ones apart. A
+record arm (`dai`, or `record-*`/`whole-page` units) also gets act recall (units matched
+to gold acts at CER <= 0.5), units unmatched, per-unit CER and whole-page fallbacks.
+
+`scores.md` has a compact cross-model table per group (headline only), one section per
+model (one row per group it is scored on, then `all pages, for reference`, which
+leaves out test pages and counts hard pages apart; scores, health and record cells in
+separate narrow tables so they read on a phone), the test
+pages with their expected behaviour, and the hard pages. `--hard-pages FILE` (one stem per
+line) moves pages out of the medians into their own table; `--exclude FILE` drops them.
+
+`python -m operations.bakeoff.roster` takes the same arguments as `score`; `roster.md` gives, per group and candidate against `--baselines` (default
+`chandra,dai,churro`): rescue rate, phi correlation of wrong tokens with each baseline
+(and the baselines' own), shared fabrication, insertion rate beside the leader's, union
+line recall on index-list, and the roster rule's suggestion with its inputs. On each group
+only the baselines scored there count as witnesses (DAI on `acts` only). The rule is
+a suggestion for the lead, never a decision.
