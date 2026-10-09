@@ -89,10 +89,15 @@ class Arm:
     needs_lines: Callable[[argparse.Namespace], bool] = lambda args: True
     # Arms whose repo, revision and artifact depend on an option (PyLaia's --model).
     identity: Callable[[argparse.Namespace], dict[str, str]] | None = None
+    # Arms whose weight files depend on an option (kraken's --model).
+    weight_files_for: Callable[[argparse.Namespace], tuple[str, ...]] | None = None
 
     def resolved(self, args: argparse.Namespace) -> dict[str, str]:
         fixed = {"repo": self.repo, "revision": self.revision, "artifact": self.artifact}
         return {**fixed, **(self.identity(args) if self.identity else {})}
+
+    def files(self, args: argparse.Namespace) -> tuple[str, ...]:
+        return self.weight_files_for(args) if self.weight_files_for else self.weight_files
 
     def default_venv(self) -> Path:
         return self.recipe / ".venv"
@@ -228,11 +233,11 @@ def resolve_weights(arm: Arm, args: argparse.Namespace) -> Path:
     if not candidates and args.store_root:
         candidates.append(args.store_root / "hf" / arm.resolved(args)["artifact"])
     for path in candidates:
-        if all((path / name).is_file() for name in arm.weight_files):
+        if all((path / name).is_file() for name in arm.files(args)):
             return path
     raise Refusal(
         f"no weights for {arm.module}: pass --weights or --store-root holding "
-        f"{list(arm.weight_files)} (looked in {[str(c) for c in candidates] or 'nothing'})"
+        f"{list(arm.files(args))} (looked in {[str(c) for c in candidates] or 'nothing'})"
     )
 
 

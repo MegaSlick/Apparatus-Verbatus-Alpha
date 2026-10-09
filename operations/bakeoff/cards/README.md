@@ -13,6 +13,8 @@ and what is untested. Settings and model names only.
 | `churro.md` | Churro-3B (written by the native-arms work) |
 | `dots-mocr.md` | dots.mocr (written by the native-arms work) |
 | `kraken-ppocrv6.md` | kraken PP-OCRv6 line recogniser (written by the native-arms work) |
+| `kraken-mccatmus.md` | kraken McCATMuS v1, multilingual 16th c.-present; arms `kraken-mccatmus-{blla,surya}` |
+| `kraken-mcfondue.md` | kraken Manu McFondue v4, French 17th-20th c.; arms `kraken-mcfondue-{blla,surya}` |
 | `pylaia-belfort.md` | PyLaia, Belfort model (written by the native-arms work) |
 | `pylaia-popp.md` | PyLaia, POPP model (written by the native-arms work) |
 | `party.md` | Party line recogniser (written by the native-arms work) |

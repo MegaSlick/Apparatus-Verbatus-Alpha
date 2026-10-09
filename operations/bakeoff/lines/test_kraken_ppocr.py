@@ -1,8 +1,11 @@
-"""The kraken PP-OCRv6 arms end to end against a stand-in kraken command (no torch)."""
+"""The kraken arms end to end against a stand-in kraken command (no torch)."""
 
 import json
+import unicodedata
 from functools import partial
 from pathlib import Path
+
+import pytest
 
 from operations.bakeoff.lines import harness, kraken_ppocr
 from operations.bakeoff.lines.conftest import (
@@ -13,6 +16,8 @@ from operations.bakeoff.lines.conftest import (
     fake_venv,
     weights_dir,
 )
+
+PPOCR = kraken_ppocr.MODELS["ppocrv6"]
 
 
 def _kraken_lines(argv):
@@ -39,7 +44,7 @@ def _argv(pages, out, store, venv, *extra):
 
 def test_surya_lines_arm_writes_records_and_resumes(pages, surya_dir, tmp_path):
     out, store = tmp_path / "cache", tmp_path / "store"
-    weights_dir(store, kraken_ppocr.ARTIFACT, [kraken_ppocr.MODEL_FILE])
+    weights_dir(store, PPOCR["artifact"], [PPOCR["file"]])
     venv = fake_venv(tmp_path, "kraken")
     runner = FakeRunner(_kraken_lines)
     factory = partial(kraken_ppocr.KrakenRecogniser, runner=runner)
@@ -49,7 +54,7 @@ def test_surya_lines_arm_writes_records_and_resumes(pages, surya_dir, tmp_path):
     assert set(record) == RECORD_KEYS
     assert record["arm"] == "kraken-ppocrv6-surya" and record["error"] is None
     assert record["text"] == "ligne 0001\nligne 0002\nligne 0003"
-    assert record["revision"].endswith(kraken_ppocr.MODEL_SHA256)
+    assert record["revision"].endswith(PPOCR["sha256"])
     first = record["units"][0]
     assert (
         first["request"]["bbox"] == list(LINE_BOXES[1]) and first["raw_response"] == "ligne 0001\n"
@@ -75,7 +80,7 @@ def test_surya_lines_arm_writes_records_and_resumes(pages, surya_dir, tmp_path):
 
 def test_blla_arm_is_kraken_native_and_normalises_alto(pages, tmp_path):
     out, store = tmp_path / "cache", tmp_path / "store"
-    weights_dir(store, kraken_ppocr.ARTIFACT, [kraken_ppocr.MODEL_FILE])
+    weights_dir(store, PPOCR["artifact"], [PPOCR["file"]])
     venv = fake_venv(tmp_path, "kraken")
     runner = FakeRunner(_kraken_page)
     factory = partial(kraken_ppocr.KrakenRecogniser, runner=runner)
@@ -95,7 +100,7 @@ def test_blla_arm_is_kraken_native_and_normalises_alto(pages, tmp_path):
 
 def test_a_failed_page_is_recorded_and_retried(pages, surya_dir, tmp_path):
     out, store = tmp_path / "cache", tmp_path / "store"
-    weights_dir(store, kraken_ppocr.ARTIFACT, [kraken_ppocr.MODEL_FILE])
+    weights_dir(store, PPOCR["artifact"], [PPOCR["file"]])
     venv = fake_venv(tmp_path, "kraken")
     failing = FakeRunner(lambda argv: (1, ""))
     argv = _argv(
@@ -121,7 +126,7 @@ def test_refusals(pages, surya_dir, tmp_path, capsys):
         pages, out, store, tmp_path / "nowhere", "--lines", "surya", "--lines-dir", str(surya_dir)
     )
     assert kraken_ppocr.main(argv) == 2  # no weights
-    weights_dir(store, kraken_ppocr.ARTIFACT, [kraken_ppocr.MODEL_FILE])
+    weights_dir(store, PPOCR["artifact"], [PPOCR["file"]])
     assert kraken_ppocr.main(argv) == 2  # no environment
     assert "install" in capsys.readouterr().err
     no_lines = _argv(pages, out, store, fake_venv(tmp_path, "kraken"), "--lines", "surya")
@@ -149,3 +154,32 @@ def test_check_compares_installed_versions_with_the_pins(tmp_path, capsys):
 
 def test_plain_lines_are_nfc_with_whitespace_collapsed():
     assert harness.plain("été  \n\n  a \t b ") == "été\na b"
+
+
+@pytest.mark.parametrize("model", ["mccatmus", "mcfondue"])
+def test_the_french_mlmodel_arms_pin_their_own_file_and_write_nfc(
+    model, pages, surya_dir, tmp_path
+):
+    pinned = kraken_ppocr.MODELS[model]
+    out, store = tmp_path / "cache", tmp_path / "store"
+    weights_dir(store, pinned["artifact"], [pinned["file"]])
+
+    def nfd_lines(argv):
+        for i, flag in enumerate(argv):
+            if flag == "-i":
+                Path(argv[i + 2]).write_text(
+                    unicodedata.normalize("NFD", "fait à Paris\n"), "utf-8"
+                )
+        return 0, ""
+
+    runner = FakeRunner(nfd_lines)
+    argv = _argv(pages, out, store, fake_venv(tmp_path, "kraken"), "--model", model,
+                 "--lines", "surya", "--lines-dir", str(surya_dir), "--limit", "1")  # fmt: skip
+    factory = partial(kraken_ppocr.KrakenRecogniser, runner=runner)
+    assert kraken_ppocr.main(argv, recogniser=factory) == 0
+    record = json.loads((out / f"kraken-{model}-surya" / "p000.json").read_text())
+    assert record["arm"] == f"kraken-{model}-surya"
+    assert record["repo"] == f"https://doi.org/{pinned['doi']}"
+    assert record["revision"] == f"{pinned['file']}@sha256:{pinned['sha256']}"
+    assert runner.calls[0][-1].endswith(f"{pinned['artifact']}/{pinned['file']}")
+    assert record["text"].split("\n")[0] == unicodedata.normalize("NFC", "fait à Paris")

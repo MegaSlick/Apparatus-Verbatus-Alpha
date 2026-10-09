@@ -69,7 +69,7 @@ skipped if the day runs over.
 | 6 | dots-mocr | 24 GB ok | 25 | 6.1 GB | install-failed | no measurement; estimate 5-10 s/page |
 | 7 | surya-rec-surya | 24 GB ok | 20 | 3-4 GB | behind-schedule | Datalab: 5 pages/s on a 5090; a VLM, not CTC |
 | 8 | party-blla | 24 GB ok (est. < 8 GB) | 30 | not measured | overrun (cut first) | 98 s/page on 4 CPUs; GPU unmeasured |
-| CPU, beside 1-8 | surya-lines, blla-lines, kraken-ppocrv6-{surya,blla}, pylaia-{belfort,popp}[-lm]-{surya,blla} | none | 10, 90, 30+30, 8 x 15 | 0 | never | kraken 2-3 s/line, blla 95-110 s/page, PyLaia ~10 s/page on 4 CPUs; installs kraken 279 s, PyLaia 204 s, Party 4-5 min cold |
+| CPU, beside 1-8 | surya-lines, blla-lines, kraken-{ppocrv6,mccatmus,mcfondue}-{surya,blla}, pylaia-{belfort,popp}[-lm]-{surya,blla} | none | 10, 90, 3 x (30+30), 8 x 15 | 0 | never | kraken 2-3 s/line, blla 95-110 s/page, PyLaia ~10 s/page on 4 CPUs; installs kraken 279 s, PyLaia 204 s, Party 4-5 min cold |
 
 GPU time boxes sum to about 3 h; the CPU arms run beside them and finish inside that (the
 blla segmentation, 73 pages at about 100 s each on a few cores, is the long one: give it
@@ -275,6 +275,8 @@ Run the reader cache through `score` the same way (a second `--cache`). Every nu
 | churro / churro-native | | | | | | | |
 | dots-mocr | | | | | | | |
 | kraken-ppocrv6-blla / -surya | | | | | | | |
+| kraken-mccatmus-blla / -surya | | | | | | | |
+| kraken-mcfondue-blla / -surya | | | | | | | |
 | pylaia-belfort-* / pylaia-popp-* | | | | | | | |
 | party-blla | | | | | | | |
 | surya-rec-surya | | | | | | | |
