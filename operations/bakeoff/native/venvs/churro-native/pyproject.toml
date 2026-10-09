@@ -1,0 +1,26 @@
+# The churro-native arm's own environment. Stanford's release-time runner is a script
+# repository (pixi, LiteLLM, Docker), not a package; the arm reproduces its settings and
+# carries its text extractor, which needs lxml. The vLLM server runs from the project
+# environment. `uv.lock` pins every package; the pod syncs it with
+# `python -m operations.bakeoff.native.churro_native install --venv-dir DIR`.
+#
+# Licence record (CONTRIBUTING.md):
+#   lxml 6.1.3   BSD-3-Clause   github.com/lxml/lxml
+# The extractor carried in churro_native.py is Apache-2.0 (github.com/stanford-oval/Churro).
+# The weights (stanford-oval/churro-3B, Qwen research licence) are fetched at run setup.
+[project]
+name = "verbatus-churro-native"
+version = "0.0.0"
+description = "Churro-3B with Stanford's release-time runner settings, for the bake-off"
+requires-python = "==3.12.*"
+dependencies = [
+    "lxml==6.1.3",
+    "pillow==12.3.0",
+    "rapidfuzz==3.14.5",
+    "huggingface_hub==1.31.0",
+]
+
+[tool.uv]
+required-version = "==0.12.1"
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]

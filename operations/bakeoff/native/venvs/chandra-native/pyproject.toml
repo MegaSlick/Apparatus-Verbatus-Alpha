@@ -1,0 +1,25 @@
+# The chandra-native arm's own environment: datalab's `chandra-ocr` package at the
+# commit that matches the pinned weights, as its client. The vLLM server it asks runs
+# from the project environment. `uv.lock` pins every package; the pod syncs it with
+# `python -m operations.bakeoff.native.chandra_native install --venv-dir DIR`.
+#
+# Licence record (CONTRIBUTING.md):
+#   chandra-ocr 0.2.0 @ d4f7467   Apache-2.0 (code)   github.com/datalab-to/chandra
+# The weights (datalab-to/chandra-ocr-2) are fetched at run setup, never stored here.
+[project]
+name = "verbatus-chandra-native"
+version = "0.0.0"
+description = "Chandra OCR 2 through datalab's own chandra package, for the bake-off"
+requires-python = "==3.12.*"
+dependencies = [
+    "chandra-ocr @ git+https://github.com/datalab-to/chandra@d4f7467435aa4137d9539f000ddf0b7ced3eb43f",
+    # What the arm itself imports beside the package (the bake-off runner and scorer).
+    "pillow==12.3.0",
+    "rapidfuzz==3.14.5",
+    "huggingface_hub==1.31.0",
+]
+
+[tool.uv]
+required-version = "==0.12.1"
+package = false
+environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
