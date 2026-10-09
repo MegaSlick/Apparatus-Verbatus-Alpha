@@ -8,7 +8,8 @@
 #
 # `card_profile` rows are prebuilt profiles for the cards actually rented. An
 # unknown card falls back to computed placement from the generic tiers. The
-# hourly_usd figures are RunPod Secure on-demand prices checked 2026-08-05; the
+# hourly_usd figures are RunPod Secure on-demand prices checked 2026-08-05 (A40 and
+# RTX PRO 6000 re-read 2026-10-08: $0.59 and $2.49); the
 # gpu_type_id strings come from RunPod's documentation, so confirm the exact
 # accepted string in the console before a live launch. Nothing here chooses a
 # card: that is the project lead's call.
@@ -112,7 +113,7 @@ note = "spec 04 default — Ada silicon unlocks the FP8 lever Ampere never will"
 name = "RTX PRO 6000 Blackwell"
 gpu_type_id = "NVIDIA RTX PRO 6000 Blackwell Server Edition"
 vram_gib = 96
-hourly_usd = "1.99"
+hourly_usd = "2.49"
 tier = "generic-80gb-plus"
 note = "spec 04 scale tier — the biggest single-model serving profile"
 
@@ -120,7 +121,7 @@ note = "spec 04 scale tier — the biggest single-model serving profile"
 name = "A40"
 gpu_type_id = "NVIDIA A40"
 vram_gib = 48
-hourly_usd = "0.44"
+hourly_usd = "0.59"
 tier = "generic-48gb"
 note = "spec 04 fallback where budget rules the day; Ampere, so no fp8"
 
