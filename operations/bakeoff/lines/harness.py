@@ -405,6 +405,14 @@ def main(arm: Arm, argv: list[str] | None = None, recogniser: Any = None) -> int
         return 2
 
 
+def thread_env(threads: int) -> dict[str, str]:
+    """Caps a vendor command's math libraries at the arm's thread share. Without it torch
+    sizes its pool from the host's cores (128 on a RunPod host), not the pod's quota."""
+
+    n = str(max(1, int(threads)))
+    return {name: n for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS")}
+
+
 def subprocess_page(
     argv: list[str], log: Path, runner: Any, env: dict[str, str] | None = None
 ) -> tuple[subprocess.CompletedProcess, float]:
