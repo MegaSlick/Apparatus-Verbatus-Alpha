@@ -7,10 +7,13 @@ notes, never here.
 
 ## Rules that never move
 
-- **The lead approves every paid thing**: every pod, every card switch, every new paid run.
+- **The lead sets a session's permissions at its start, and only the lead changes them.**
+  A session the lead opens with "we are doing live pods" may start pods inside the
+  approved limits without asking again; any other session asks before anything paid.
   A standing approval covers everything inside it, whether given in the session ("up to
-  $15 today") or written by the lead into a runbook's decisions table for that day. No
-  spend at all unless the session was told to spend.
+  $15 today") or written by the lead into a runbook's decisions table for that day.
+- **Hourly ceiling $3.00** (`config/spend.toml`, lead 2026-10-09): approved, not a target.
+  Do not be wasteful: cheapest card that fits, no idle cards, smoke on two pages first.
 - **Every pod starts with its guard armed**: the container start command comes from
   `sh operations/pod/pod_start_command.sh <hours|off> <sha>`. Never create a pod without it.
 - **Shutdown is verified, never assumed**: `runpodctl pod list --all` empty, `pod get <id>`
