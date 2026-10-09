@@ -52,8 +52,8 @@ T0 = datetime(2026, 10, 3, 9, 0, tzinfo=UTC)
 SHIPPED_BUDGET = Budget(
     soft_max_seconds=7_200,
     hard_max_seconds=10_800,
-    soft_max_cost_usd=Decimal("5.00"),
-    hard_max_cost_usd=Decimal("7.00"),
+    soft_max_cost_usd=Decimal("6.00"),
+    hard_max_cost_usd=Decimal("9.00"),
 )
 # An explicit budget for the notice tests, independent of the shipped file.
 BUDGET = Budget(

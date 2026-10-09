@@ -7,10 +7,13 @@ notes, never here.
 
 ## Rules that never move
 
-- **The lead approves every paid thing**: every pod, every card switch, every new paid run.
+- **The lead sets a session's permissions at its start, and only the lead changes them.**
+  A session the lead opens with "we are doing live pods" may start pods inside the
+  approved limits without asking again; any other session asks before anything paid.
   A standing approval covers everything inside it, whether given in the session ("up to
-  $15 today") or written by the lead into a runbook's decisions table for that day. No
-  spend at all unless the session was told to spend.
+  $15 today") or written by the lead into a runbook's decisions table for that day.
+- **Hourly ceiling $3.00** (`config/spend.toml`, lead 2026-10-09): approved, not a target.
+  Do not be wasteful: cheapest card that fits, no idle cards, smoke on two pages first.
 - **Every pod starts with its guard armed**: the container start command comes from
   `sh operations/pod/pod_start_command.sh <hours|off> <sha>`. Never create a pod without it.
 - **Shutdown is verified, never assumed**: `runpodctl pod list --all` empty, `pod get <id>`
@@ -51,7 +54,9 @@ to v1; runpod/runpod-plugins-official#56): avoid it.
   mixes host CUDA versions, and a container on an older host never starts but bills.
 - Prices seen 2026-10-08 evening, Secure on-demand: A40 $0.59/h, RTX 3090 $0.50/h (community
   stock mostly), RTX 4090 $0.89/h, RTX PRO 4500 $0.72/h, RTX PRO 6000 $2.49/h. Read again
-  before renting; the console's deploy page shows the live price and vCPU.
+  before renting; the console's deploy page shows the live price and vCPU. Do not copy
+  prices into `config/pod_placement.toml`: its digest is sealed into run trees and serving
+  qualification records, so an edit there breaks the acceptance tests.
 - Images: `runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404` (CUDA 13.0; Blackwell cards need
   it for FlashInfer). `cu1281` images fail vLLM on Blackwell.
 

@@ -1753,7 +1753,7 @@ def test_a_run_that_will_outlast_its_guard_deadline_sends_one_notice(
     assert code == EXIT_COMPLETE
     [call] = notify.calls
     assert call[2] == "decision" and "deadline at risk" in call[3]
-    assert "soft max 2 h / $5.00" in call[3] and "deadline-pod123" in call[3]
+    assert "soft max 2 h / $6.00" in call[3] and "deadline-pod123" in call[3]
     report = _report(ws)
     estimate = json.loads(Path(report["estimate_path"]).read_text(encoding="utf-8"))
     assert estimate["deadline_source"] == "the pod guard's deadline"
@@ -1809,7 +1809,7 @@ SHIPPED_SPEND_SHA256 = hashlib.sha256(SHIPPED_SPEND_BUDGET_ON).hexdigest()
         ),
         (
             {},
-            "soft max 2 h / $5.00, hard max 3 h / $7.00",
+            "soft max 2 h / $6.00, hard max 3 h / $9.00",
             f"the checked-out config/spend.toml (SHA-256 {SHIPPED_SPEND_SHA256})",
         ),
         (

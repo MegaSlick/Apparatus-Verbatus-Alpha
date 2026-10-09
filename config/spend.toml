@@ -6,10 +6,11 @@ state = "configured"
 currency = "USD"
 
 # Decimal strings, never TOML numbers: a float does not keep money exact.
-# $2.10 admits the RTX PRO 6000 ($1.99) beside a volume of up to $0.11/h; two hours at
-# that price stays under the $5.00 estimate ceiling.
-max_hourly_usd = "2.10"
-max_estimated_metered_cost_usd = "5.00"
+# $3.00 is the lead's hourly ceiling (2026-10-09): it admits the RTX PRO 6000 ($2.49/h on
+# 2026-10-08) beside a volume. Approved, not a target: do not be wasteful. Two hours at
+# the ceiling is $6.00, the estimate ceiling and the budget's soft maximum cost below.
+max_hourly_usd = "3.00"
+max_estimated_metered_cost_usd = "6.00"
 
 # Documented, unverified default -- check it against the RunPod balance before a
 # live run.  Nothing re-reads the balance once a pod is live.
@@ -37,6 +38,6 @@ ladder_delete = "off"
 # maximum, so hard_lifetime_seconds and max_estimated_metered_cost_usd may not pass it.
 # From the soft to the hard maximum is an extension only the lead makes.
 soft_max_seconds = 7200
-soft_max_cost_usd = "5.00"
+soft_max_cost_usd = "6.00"
 hard_max_seconds = 10800
-hard_max_cost_usd = "7.00"
+hard_max_cost_usd = "9.00"
