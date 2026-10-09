@@ -1,5 +1,5 @@
 # Pod W: every witness arm on one 24-48 GB card (A40 or RTX 3090), the CPU line arms
-# beside them. Launch: RUNBOOK.md section 4. Paths are the pod's. Time boxes are planning
+# beside them. Launch: RUNBOOK.md section 2. Paths are the pod's. Time boxes are planning
 # figures only; the cut rule says what is skipped if the day overruns (plan 4.3).
 # The volume may start empty: each arm's `prepare` fetches and verifies what its command
 # reads (`operations/bakeoff/weights.py`), and its command runs offline.
@@ -9,8 +9,12 @@ schema = "bakeoff-queue.v1"
 name = "witness-24gb"
 pages = "/workspace/private/bakeoff-pages"
 out = "/workspace/private/bakeoff/witness-cache"
-sync_to = "/workspace/private/bakeoff/witness-cache-home"
+sync_to = "/workspace/private/bakeoff/witness-cache-home"   # the network-volume route
 own_disk = false
+# Global-volume route (RUNBOOK 2.1): the pod's own disk at /workspace/private and the
+# global volume at /workspace/global. Same manifest; the command line moves the copy:
+#   queue_runner run --manifest ... --sync-to /workspace/global/bakeoff/witness-cache-home --own-disk
+# (`--own-disk`: the pod is kept, not deleted, unless the copy verified.)
 smoke_pages = 2
 behind_schedule_min = 30
 end_pod = "delete"

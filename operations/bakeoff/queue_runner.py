@@ -44,7 +44,7 @@ import tomllib
 import urllib.error
 import urllib.request
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -315,6 +315,28 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
     )
 
 
+def override_manifest(manifest: Manifest, sync_to: str | None, own_disk: bool) -> Manifest:
+    """One manifest for both storage routes: the command line names where the copy goes.
+
+    `--sync-to` must be absolute and separate from `out`, as in the manifest;
+    `--own-disk` only ever adds the refusal, never removes it. The same two
+    flags go on every command that reads the manifest, so `end-pod` sees the
+    copy `run` made.
+    """
+    if sync_to is not None:
+        path = Path(sync_to)
+        if not path.is_absolute():
+            raise ManifestError("--sync-to must be an absolute path")
+        if path == manifest.out or path in manifest.out.parents or manifest.out in path.parents:
+            raise ManifestError(
+                "--sync-to and out must be separate folders, neither inside the other"
+            )
+        manifest = replace(manifest, sync_to=path)
+    if own_disk:
+        manifest = replace(manifest, own_disk=True)
+    return manifest
+
+
 def load_manifest(path: Path) -> Manifest:
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -492,12 +514,26 @@ def tree_digests(root: Path) -> dict[str, str]:
     return found
 
 
+# rsync forms in the order tried: times kept (a network volume), then contents only,
+# written in place with no temporary file to rename (a global volume is object storage:
+# no permission bits, no atomic rename, times may be refused).
+_RSYNC_FORMS = (("rsync -rt", ["-rt"]), ("rsync -r --inplace", ["-r", "--inplace"]))
+
+
 def copy_tree(source: Path, target: Path, run: Callable[..., Any] = subprocess.run) -> str:
-    """Copy source into target, keeping times but not owners (FUSE volumes refuse chown)."""
+    """Copy source into target by whichever form the target accepts; the digests prove it.
+
+    Owners are never copied (FUSE volumes refuse chown). When every rsync form fails,
+    or there is no rsync, a plain Python copy writes each file directly.
+    """
     target.mkdir(parents=True, exist_ok=True)
     if shutil.which("rsync"):
-        run(["rsync", "-rt", f"{source}/", f"{target}/"], check=True)
-        return "rsync -rt"
+        for method, flags in _RSYNC_FORMS:
+            try:
+                run(["rsync", *flags, f"{source}/", f"{target}/"], check=True)
+            except (subprocess.CalledProcessError, OSError):
+                continue
+            return method
     for path in sorted(source.rglob("*")):
         destination = target / path.relative_to(source)
         if path.is_dir():
@@ -506,8 +542,19 @@ def copy_tree(source: Path, target: Path, run: Callable[..., Any] = subprocess.r
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, destination)
             stat = path.stat()
-            os.utime(destination, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            try:
+                os.utime(destination, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            except OSError:
+                pass  # object storage keeps no times; the sha256 compare is the proof
     return "python copy"
+
+
+def write_json_anywhere(path: Path, value: Any) -> None:
+    """write_json's atomic write, or a direct write where the folder refuses a rename."""
+    try:
+        write_json(path, value)
+    except OSError:
+        path.write_text(json.dumps(value, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
 def compare_digests(expected: dict[str, str], root: Path) -> list[str]:
@@ -1279,7 +1326,7 @@ class Queue:
         for folder in (self.m.out, self.m.sync_to):
             try:
                 folder.mkdir(parents=True, exist_ok=True)
-                write_json(folder / "DONE.json", done)
+                write_json_anywhere(folder / "DONE.json", done)
             except OSError as error:
                 self._error(f"DONE.json not written to {folder}: {error}")
         self._event("queue-sync", verified=verified, files=len(digests), mismatched=mismatched)
@@ -1629,7 +1676,10 @@ def _dry_run(manifest: Manifest) -> int:
                 print(f"   {what}: {shlex.join(argv)}")
         print(f"   smoke: {shlex.join([*arm.command, '--limit', str(manifest.smoke_pages)])}")
         print(f"   run:   {shlex.join(arm.command)}")
-    print(f"then copy {manifest.out} -> {manifest.sync_to}, verify, end pod: {manifest.end_pod}")
+    disk = " (own disk: the pod is kept unless the copy verifies)" if manifest.own_disk else ""
+    print(
+        f"then copy {manifest.out} -> {manifest.sync_to}, verify, end pod: {manifest.end_pod}{disk}"
+    )
     return 0
 
 
@@ -1639,6 +1689,15 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     for name in ("run", "status", "end-pod", "validate"):
         p = sub.add_parser(name)
         p.add_argument("--manifest", type=Path, required=True)
+        p.add_argument(
+            "--sync-to",
+            help="copy the cache here instead of the manifest's sync_to (a global volume's mount)",
+        )
+        p.add_argument(
+            "--own-disk",
+            action="store_true",
+            help="the cache is on the pod's own disk: refuse to end the pod unless the copy verified",
+        )
         if name == "run":
             p.add_argument("--smoke-only", action="store_true")
             p.add_argument("--dry-run", action="store_true")
@@ -1665,7 +1724,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "fetch":
         return fetch(args.ssh, args.remote, args.into)
     try:
-        manifest = load_manifest(args.manifest)
+        manifest = override_manifest(load_manifest(args.manifest), args.sync_to, args.own_disk)
     except ManifestError as failure:
         print(f"manifest refused: {failure}", file=sys.stderr)
         return 2

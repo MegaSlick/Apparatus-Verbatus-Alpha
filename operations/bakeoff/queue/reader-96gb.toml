@@ -1,14 +1,18 @@
 # Pod R: the three readers on the 96 GB card, blind arms already run on 2026-10-08, so
 # the vendor arms come first; the blind 9B and 27B rows are here to resume or repeat.
-# Launch: RUNBOOK.md section 6. Paths are the pod's. Commits are the cards' pins. The
+# Launch: RUNBOOK.md section 4. Paths are the pod's. Commits are the cards' pins. The
 # volume may start empty: each arm's `prepare` fetches and verifies its snapshot
 # (`operations/bakeoff/weights.py`; arms sharing one fetch it once), offline after.
 schema = "bakeoff-queue.v1"
 name = "reader-96gb"
 pages = "/workspace/private/bakeoff-pages"
 out = "/workspace/private/bakeoff/reader-cache"
-sync_to = "/workspace/private/bakeoff/reader-cache-home"
+sync_to = "/workspace/private/bakeoff/reader-cache-home"   # the network-volume route
 own_disk = false
+# Global-volume route (RUNBOOK 2.1): the pod's own disk at /workspace/private and the
+# global volume at /workspace/global. Same manifest; the command line moves the copy:
+#   queue_runner run --manifest ... --sync-to /workspace/global/bakeoff/reader-cache-home --own-disk
+# (`--own-disk`: the pod is kept, not deleted, unless the copy verified.)
 smoke_pages = 2
 behind_schedule_min = 30
 end_pod = "delete"
