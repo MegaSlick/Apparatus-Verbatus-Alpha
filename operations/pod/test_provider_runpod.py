@@ -43,6 +43,7 @@ from .provider_runpod import (
     BALANCE_QUERY,
     POD_CREATE_MUTATION,
     RUNPOD_GRAPHQL_ROOT,
+    USER_AGENT,
     GraphQLBalanceObserver,
     HttpResponse,
     RunPodProvider,
@@ -1391,6 +1392,7 @@ def test_the_graphql_transport_places_the_key_in_the_documented_query_and_no_hea
             seen["path"] = self.path
             seen["authorization"] = self.headers.get("Authorization")
             seen["content_type"] = self.headers.get("Content-Type")
+            seen["user_agent"] = self.headers.get("User-Agent")
             seen["body"] = json.loads(self.rfile.read(length))
             payload = balance_body(clientBalance=41.25, currentSpendPerHr=0.77)
             self.send_response(200)
@@ -1419,6 +1421,7 @@ def test_the_graphql_transport_places_the_key_in_the_documented_query_and_no_hea
     assert seen["path"] == "/graphql?" + "=".join(("api_key", transport.capability))
     assert seen["authorization"] is None
     assert seen["content_type"] == "application/json"
+    assert seen["user_agent"] == USER_AGENT  # urllib's default is refused by Cloudflare
     assert seen["body"] == {"query": BALANCE_QUERY}
     assert observed.available_usd == Decimal("41.25")
     assert "currentSpendPerHr=0.77" in observed.source
