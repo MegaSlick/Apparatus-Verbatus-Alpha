@@ -91,10 +91,11 @@ reviews:
     # Off by default; this repository wants the simplification pass offered.
     simplify:
       enabled: true
+    # Both would commit from GitHub's side, where the local hooks never run.
     autofix:
-      enabled: true
+      enabled: false
     fix_ci:
-      enabled: true
+      enabled: false
 
   path_instructions:
     - path: "**"
