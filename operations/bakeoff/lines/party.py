@@ -48,6 +48,15 @@ BASE_MODELS = {
     "timm/swin_base_patch4_window7_224.ms_in22k_ft_in1k": "a6a1eb2321b4f556fa0fa243fb777d47679f13c9",
     "mittagessen/bytellama-43m-cc": "05e49f536fbb393a7127055f883d34606bba7712",
 }
+# Each base model's `model.safetensors` LFS SHA-256 at that commit.
+BASE_SHA256 = {
+    "timm/swin_base_patch4_window7_224.ms_in22k_ft_in1k": (
+        "c5d8c5ec47726ea2f4fd2b60954972ffe9d765f2c166812ffc2b1d61eef02cb8"
+    ),
+    "mittagessen/bytellama-43m-cc": (
+        "bd91c42f9b3f05d374a5cbc2bb8e4025278937d4b91cb060dea64d09e87972f0"
+    ),
+}
 HUB_CACHE = "hf-cache"
 
 
@@ -139,7 +148,11 @@ def fetch(dest: Path, _args: argparse.Namespace) -> Path:
     cache = dest / HUB_CACHE
     for repo, commit in BASE_MODELS.items():
         patterns = ["config.json", "model.safetensors"]
-        snapshot_download(repo, revision=commit, cache_dir=cache, allow_patterns=patterns)
+        snapshot = snapshot_download(
+            repo, revision=commit, cache_dir=cache, allow_patterns=patterns
+        )
+        if harness.sha256_file(Path(snapshot) / "model.safetensors") != BASE_SHA256[repo]:
+            raise harness.Refusal(f"{repo}@{commit} model.safetensors is not the pinned one")
         refs = cache / f"models--{repo.replace('/', '--')}" / "refs"
         refs.mkdir(parents=True, exist_ok=True)
         (refs / "main").write_text(commit)

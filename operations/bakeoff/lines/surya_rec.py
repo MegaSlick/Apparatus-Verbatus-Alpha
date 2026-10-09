@@ -20,8 +20,14 @@ the model under the name `datalab-to/surya-ocr-2` (`--server-url`, e.g. vLLM on 
 Greedy decoding, one request per block, the block's token budget Surya's own.
 
     python -m operations.bakeoff.lines.surya_rec run --pages DIR --out CACHE \
-        --store-root STORE [--server-url http://127.0.0.1:8000/v1] \
+        --store-root STORE [--server-url http://127.0.0.1:8000/v1 | --serve] \
         [--mode blocks --lines-dir SURYA]
+
+`--serve` is the pod's GPU path: the arm starts vLLM itself on the Hub checkpoint
+(`datalab-to/surya-ocr-2` at `HF_REVISION`, `<store>/hf/surya-ocr-2`, fetched by
+`fetch --serve`) under the name Surya asks for, with the witness runner's own server
+launcher, sends the pages through Surya's vLLM backend, and stops the server when the
+pages are done or the run fails, so the card is held for this run only.
 """
 
 from __future__ import annotations
@@ -41,6 +47,18 @@ GGUF_FILES = {
     "surya-2-mmproj.gguf": "98c0563673b1657ff6d021d1e5f04af06cbf61bb40c63ac613e8bb71b42fb2c0",
 }
 SERVED_NAME = "datalab-to/surya-ocr-2"
+# The Hub checkpoint vLLM serves (`Qwen3_5ForConditionalGeneration`, registered in the
+# locked vLLM 0.30.0): pinned commit and the weight file's LFS SHA-256.
+HF_REPO = "datalab-to/surya-ocr-2"
+HF_REVISION = "3b3d4cdf88d6928b0acdc75181b13206ea67c4a3"
+HF_ARTIFACT = "surya-ocr-2"
+HF_WEIGHTS = {
+    "model.safetensors": "5755f82a997dd0b111964fa8b31cc2daef7aeb7a706bbd17d73d6a93ef3f723e"
+}
+# The Hub snapshot's files vLLM reads; the README's sample images are left out.
+HF_PATTERNS = ["*.json", "*.jinja", "model.safetensors", "LICENSE", "README.md"]
+# Surya's full-page answer bound is 12,288 tokens; a page image adds a few thousand.
+SERVE_MAX_MODEL_LEN = 32768
 # Surya 0.22.1's own prompts (surya/inference/prompts.py), named here for the record;
 # the worker sends whatever Surya sends.
 PROMPTS = {
@@ -127,9 +145,13 @@ class SuryaRecogniser:
 
         if args.mode == "blocks" and args.lines_dir is None:
             raise harness.Refusal("--mode blocks needs --lines-dir (the Surya runner's documents)")
-        if not args.server_url and not all((weights / n).is_file() for n in GGUF_FILES):
-            raise harness.Refusal(f"no GGUF files in {weights}; run fetch, or pass --server-url")
+        if args.serve and args.server_url:
+            raise harness.Refusal("--serve starts its own server; leave out --server-url")
+        if not args.serve and not args.server_url:
+            if not all((weights / n).is_file() for n in GGUF_FILES):
+                raise harness.Refusal(f"no GGUF files in {weights}; run fetch, or pass --serve")
         self.args = args
+        self.server_url = args.server_url
         self.weights = weights
         self.runner = runner or subprocess.run
         self.raw_dir = args.out / args.label / "_raw"
@@ -160,16 +182,48 @@ class SuryaRecogniser:
         return {
             "mode": self.args.mode,
             "parallel": PARALLEL,
-            "server_url": self.args.server_url,
+            "server_url": self.server_url,
             "gguf_model": str(self.weights / "surya-2.gguf"),
             "gguf_mmproj": str(self.weights / "surya-2-mmproj.gguf"),
             "pages": pages,
         }
 
     def read(self, prepared: list[Any]):
-        from operations.bakeoff.lines import harness
 
         self.raw_dir.mkdir(parents=True, exist_ok=True)
+        server = self.serve() if self.args.serve else None
+        try:
+            yield from self._read(prepared)
+        finally:
+            if server is not None:
+                from operations.bakeoff import witness_run as W
+
+                server.stop()
+                W.event(self.args.out, "server-stopped", model=self.args.label)
+
+    def serve(self) -> Any:
+        """vLLM on the card with this arm's checkpoint, ready, through witness_run's own
+        launcher; refused (exit 2) when it does not come up."""
+        from operations.bakeoff import witness_run as W
+        from operations.bakeoff.lines import harness
+
+        argv = serve_argv(self.weights, self.args.port, self.args.gpu_memory_utilization)
+        prefix = self.args.vllm_cmd or [sys.executable, "-m", "vllm.entrypoints.cli.main"]
+        W.event(self.args.out, "server-start", model=self.args.label, argv=[*prefix, *argv])
+        server = W.Server(prefix, argv, self.args.port, self.raw_dir.parent / "server.log")
+        try:
+            server.wait_ready(self.args.startup_timeout)
+        except RuntimeError as failure:
+            server.stop()
+            W.event(self.args.out, "server-failed", model=self.args.label)
+            raise harness.Refusal(f"vLLM did not come up ({failure}); see server.log") from failure
+        W.event(self.args.out, "server-ready", model=self.args.label)
+        self.server_url = server.url + "/v1"
+        return server
+
+    def _read(self, prepared: list[Any]):
+        from operations.bakeoff.lines import harness
+
         job_path, result_path = self.raw_dir / "job.json", self.raw_dir / "result.json"
         job = self.job(prepared)
         job_path.write_text(json.dumps(job), "utf-8")
@@ -224,11 +278,32 @@ class SuryaRecogniser:
             yield item, harness.PageResult(units, argv)
 
 
-def fetch(dest: Path, _args: argparse.Namespace) -> Path:
-    from huggingface_hub import hf_hub_download
+def serve_argv(weights: Path, port: int, gpu_memory_utilization: float) -> list[str]:
+    """`vllm serve` for the checkpoint: the name Surya's vLLM backend asks for, bf16, the
+    checkpoint's own image processing, sampling left to Surya's requests (greedy)."""
+    return [
+        "serve", str(weights), "--tokenizer", str(weights),
+        "--host", "127.0.0.1", "--port", str(port),
+        "--served-model-name", SERVED_NAME,
+        "--dtype", "bfloat16", "--seed", "0",
+        "--max-model-len", str(SERVE_MAX_MODEL_LEN),
+        "--gpu-memory-utilization", f"{gpu_memory_utilization:.2f}",
+        "--generation-config", "vllm",
+        "--no-enable-log-requests", "--no-trust-remote-code",
+    ]  # fmt: skip
+
+
+def fetch(dest: Path, args: argparse.Namespace) -> Path:
+    from huggingface_hub import hf_hub_download, snapshot_download
 
     from operations.bakeoff.lines import harness
 
+    if getattr(args, "serve", False):
+        snapshot_download(HF_REPO, revision=HF_REVISION, local_dir=dest, allow_patterns=HF_PATTERNS)
+        for name, digest in HF_WEIGHTS.items():
+            if harness.sha256_file(dest / name) != digest:
+                raise harness.Refusal(f"{dest / name} does not match the pinned SHA-256")
+        return dest
     for name, digest in GGUF_FILES.items():
         path = Path(hf_hub_download(GGUF_REPO, name, revision=GGUF_REVISION, local_dir=dest))
         if harness.sha256_file(path) != digest:
@@ -245,6 +320,19 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         default="page",
         help="page: Surya's default full-page OCR; blocks: OCR of the cached layout blocks",
     )
+    parser.add_argument(
+        "--serve", action="store_true", help="start vLLM on the card for this run (the pod)"
+    )
+    parser.add_argument("--port", type=int, default=8191)
+    parser.add_argument("--vllm-cmd", nargs="+", help="command prefix before 'serve'")
+    parser.add_argument("--startup-timeout", type=float, default=1200)
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.92)
+
+
+def _identity(args: argparse.Namespace) -> dict[str, str]:
+    if getattr(args, "serve", False):
+        return {"repo": HF_REPO, "revision": HF_REVISION, "artifact": HF_ARTIFACT}
+    return {"repo": GGUF_REPO, "revision": GGUF_REVISION, "artifact": "surya-ocr-2-gguf"}
 
 
 def arm() -> Any:
@@ -267,6 +355,10 @@ def arm() -> Any:
         add_arguments=_add_arguments,
         fetch=fetch,
         needs_lines=lambda args: False,
+        identity=_identity,
+        weight_files_for=lambda args: (
+            ("config.json", *HF_WEIGHTS) if getattr(args, "serve", False) else ()
+        ),
     )
 
 

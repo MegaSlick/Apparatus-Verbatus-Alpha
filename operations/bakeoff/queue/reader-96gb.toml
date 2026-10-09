@@ -1,6 +1,8 @@
 # Pod R: the three readers on the 96 GB card, blind arms already run on 2026-10-08, so
 # the vendor arms come first; the blind 9B and 27B rows are here to resume or repeat.
-# Launch: RUNBOOK.md section 6. Paths are the pod's. Commits are the cards' pins.
+# Launch: RUNBOOK.md section 6. Paths are the pod's. Commits are the cards' pins. The
+# volume may start empty: each arm's `prepare` fetches and verifies its snapshot
+# (`operations/bakeoff/weights.py`; arms sharing one fetch it once), offline after.
 schema = "bakeoff-queue.v1"
 name = "reader-96gb"
 pages = "/workspace/private/bakeoff-pages"
@@ -12,12 +14,14 @@ behind_schedule_min = 30
 end_pod = "delete"
 # hard_stop_min = 180            # the lead's cap for the day; off unless set
 
-# The incumbent, on the volume's model store (chair cache layout from the pipeline).
+# The incumbent, fetched into the model store by the project's own store code. Its box
+# includes that first fetch (55.6 GB, downloaded, copied into staging and hashed).
 [[arms]]
 name = "qwen38-27b-vendor"
-time_box_min = 35
+time_box_min = 55
 cut = "never"
 gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27B"]
 command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
   "--label", "qwen38-27b-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.8-27B",
   "--repo", "Qwen/Qwen3.8-27B", "--revision", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
@@ -29,6 +33,7 @@ name = "qwen35-27b-vendor"
 time_box_min = 40
 cut = "never"
 gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.5-27b"]
 command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
   "--label", "qwen35-27b-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.5-27b",
   "--repo", "Qwen/Qwen3.5-27B", "--revision", "fc05daec18b0a78c049392ed2e771dde82bdf654",
@@ -40,6 +45,7 @@ name = "qwen35-9b-vendor"
 time_box_min = 20
 cut = "behind-schedule"
 gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.5-9b"]
 command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
   "--label", "qwen35-9b-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.5-9b",
   "--repo", "Qwen/Qwen3.5-9B", "--revision", "c202236235762e1c871ad0ccb60c8ee5ba337b9a",
@@ -52,6 +58,7 @@ name = "qwen35-27b-blind"
 time_box_min = 30
 cut = "overrun"
 gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.5-27b"]
 command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-blind",
   "--label", "qwen35-27b-blind", "--weights", "/workspace/private/model-store/hf/qwen3.5-27b",
   "--repo", "Qwen/Qwen3.5-27B", "--revision", "fc05daec18b0a78c049392ed2e771dde82bdf654",
@@ -62,6 +69,7 @@ name = "qwen35-9b-blind"
 time_box_min = 20
 cut = "overrun"
 gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.5-9b"]
 command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-blind",
   "--label", "qwen35-9b-blind", "--weights", "/workspace/private/model-store/hf/qwen3.5-9b",
   "--repo", "Qwen/Qwen3.5-9B", "--revision", "c202236235762e1c871ad0ccb60c8ee5ba337b9a",

@@ -1,7 +1,7 @@
 """Line crops from kraken's blla baseline segmenter, shared by every `-blla` arm.
 
     python -m operations.bakeoff.lines.blla prepare --pages DIR --out CACHE \
-        [--venv-dir DIR] [--device cpu|cuda]
+        [--venv-dir DIR] [--device cpu|cuda] [--threads N]
 
 For each page, kraken's own command in kraken's environment (`venvs/kraken`):
 
@@ -146,8 +146,13 @@ def device_argv(device: str) -> list[str]:
     return ["-d", "cuda:0" if device == "cuda" else device]
 
 
-def segment_argv(kraken: Path, page: Path, xml: Path, device: str) -> list[str]:
-    argv = [str(kraken), *device_argv(device), "-a", "-i", str(page.resolve()), str(xml.resolve())]
+def segment_argv(
+    kraken: Path, page: Path, xml: Path, device: str, threads: int | None = None
+) -> list[str]:
+    """kraken's own segment command; `threads` is kraken's `--threads`, else its default."""
+    argv = [str(kraken), *device_argv(device)]
+    argv += ["--threads", str(threads)] if threads else []
+    argv += ["-a", "-i", str(page.resolve()), str(xml.resolve())]
     return [*argv, "segment", "-bl"]
 
 
@@ -174,6 +179,7 @@ def prepare(
     venv_dir: Path = DEFAULT_VENV,
     device: str = "cpu",
     runner: Any = subprocess.run,
+    threads: int | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Segment each page that has no ALTO yet, then cut its crops; returns the indexes."""
     from operations.bakeoff.witness_run import OFFLINE_ENV, event
@@ -185,7 +191,7 @@ def prepare(
     event(out, "prepare-start", model=f"_lines/{SOURCE}")
     for page in pages:
         xml = folder / f"{page.stem}.xml"
-        argv = segment_argv(kraken, page, xml, device)
+        argv = segment_argv(kraken, page, xml, device, threads)
         seconds = None
         if not xml.is_file():
             started = time.monotonic()
@@ -225,13 +231,14 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--venv-dir", type=Path, default=DEFAULT_VENV)
     p.add_argument("--device", default="cpu")
     p.add_argument("--limit", type=int)
+    p.add_argument("--threads", type=int, help="kraken's --threads (its default when absent)")
     args = parser.parse_args(argv)
     if not (args.venv_dir / "bin" / "kraken").is_file():
         print(f"refused: no kraken at {args.venv_dir}; run kraken_ppocr install", file=sys.stderr)
         return 2
     pages = list_pages(args.pages)[: args.limit or None]
     try:
-        indexes = prepare(pages, args.out, args.venv_dir, args.device)
+        indexes = prepare(pages, args.out, args.venv_dir, args.device, threads=args.threads)
     except RuntimeError as failure:
         print(f"failed: {failure}", file=sys.stderr)
         return 1

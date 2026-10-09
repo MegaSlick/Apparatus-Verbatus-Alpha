@@ -14,8 +14,10 @@ On the Mac:
     python -m operations.bakeoff.queue_runner fetch --ssh "ssh -p PORT root@IP" --remote DIR --into DIR
 
 The pod runs the whole queue and ends itself, so no laptop has to notice when a job
-ends. Each arm runs a smoke of `smoke_pages` pages first, then the full run; the next
-arm's install and preparation run on the CPU while this arm's command holds the card.
+ends. Each arm runs a smoke of `smoke_pages` pages first, then the full run. One arm at a
+time holds the card (the GPU lane, in manifest order); `gpu = false` arms run beside it,
+as many at once as `cpu_threads` allows; an arm named in another's `after` must finish
+first. The next arm's install and preparation run while the current arm's command runs.
 `status.json` beside the cache is rewritten every 30 s and at every change, the queue's
 events join the arms' `events.jsonl`, and the lead's phone hears of each milestone once.
 At the end the cache is copied to `sync_to`, every file's sha256 is compared, `DONE.json`
@@ -41,7 +43,7 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -65,6 +67,11 @@ HEARTBEAT_FRESH_SECONDS = 300
 STATUS_EVERY_SECONDS = 30
 STALE_SECONDS = 600
 TERM_GRACE_SECONDS = 120
+# CPUs left to the GPU lane's own processes (server, client, DAI's detector) when the
+# CPU arms' thread budget is "auto".
+GPU_LANE_CPUS = 2
+# The pod sizes `validate` and `run --dry-run` estimate the day for.
+ESTIMATE_CPUS = (8, 16, 32)
 # Files the queue keeps rewriting after the copy; they are copied but not digested.
 LIVE_FILES = frozenset({"status.json", "status.tmp", "events.jsonl", "DONE.json", "DONE.tmp"})
 DONE_TITLE = "Session complete"
@@ -80,9 +87,21 @@ _MANIFEST_KEYS = {
     "behind_schedule_min",
     "end_pod",
     "hard_stop_min",
+    "cpu_threads",
     "arms",
 }
-_ARM_KEYS = {"name", "time_box_min", "cut", "gpu", "install", "prepare", "command"}
+_ARM_KEYS = {
+    "name",
+    "time_box_min",
+    "cut",
+    "gpu",
+    "install",
+    "prepare",
+    "command",
+    "after",
+    "threads",
+    "writes",
+}
 
 
 class ManifestError(ValueError):
@@ -105,6 +124,13 @@ class ArmSpec:
     command: tuple[str, ...]
     install: tuple[str, ...] | None = None
     prepare: tuple[str, ...] | None = None
+    after: tuple[str, ...] = ()  # arms that must finish ok before this one starts
+    threads: int = 1  # a CPU arm's share of `cpu_threads`
+    writes: str = ""  # folder under `out` with one <stem>.json per page; default the name
+
+    @property
+    def records(self) -> str:
+        return self.writes or self.name
 
 
 @dataclass(frozen=True)
@@ -119,6 +145,7 @@ class Manifest:
     end_pod: str
     hard_stop_min: float | None
     arms: tuple[ArmSpec, ...]
+    cpu_threads: int | str | None = None  # None: one CPU arm at a time
 
     @property
     def planned_min(self) -> float:
@@ -141,6 +168,12 @@ def _number(value: Any, where: str) -> float:
     return float(value)
 
 
+def _whole(value: Any, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ManifestError(f"{where} must be a whole number of at least 1")
+    return value
+
+
 def _flag_value(argv: tuple[str, ...], flag: str) -> str | None:
     for index, item in enumerate(argv):
         if item == flag and index + 1 < len(argv):
@@ -156,7 +189,7 @@ def _runs_witness(argv: tuple[str, ...]) -> bool:
     )
 
 
-def _parse_arm(raw: Any, index: int, out: Path, pages: Path) -> ArmSpec:
+def _parse_arm(raw: Any, index: int, out: Path, pages: Path, earlier: list[str]) -> ArmSpec:
     where = f"arms[{index}]"
     if not isinstance(raw, dict):
         raise ManifestError(f"{where} must be a table")
@@ -197,6 +230,22 @@ def _parse_arm(raw: Any, index: int, out: Path, pages: Path) -> ArmSpec:
             )
     if cut == "install-failed" and raw.get("install") is None:
         raise ManifestError(f"{where}: cut = install-failed needs an install command")
+    from operations.bakeoff import weights
+
+    unknown_weights = [n for n in weights.names_in(raw.get("prepare")) if n not in weights.known()]
+    if unknown_weights:
+        raise ManifestError(f"{where}: prepare fetches unknown weights {unknown_weights}")
+    after = raw.get("after", [])
+    if not isinstance(after, list) or not all(isinstance(a, str) for a in after):
+        raise ManifestError(f"{where}: after must be a list of arm names")
+    unknown = [a for a in after if a not in earlier]
+    if unknown:
+        raise ManifestError(f"{where}: after names {unknown}, which are not earlier arms")
+    named_threads = _flag_value(command, "--threads")
+    threads = raw.get("threads", int(named_threads) if (named_threads or "").isdigit() else 1)
+    writes = raw.get("writes", "")
+    if not isinstance(writes, str) or writes.startswith("/") or ".." in Path(writes).parts:
+        raise ManifestError(f"{where}: writes must be a folder inside out")
     return ArmSpec(
         name=name,
         time_box_min=_number(raw.get("time_box_min"), f"{where}: time_box_min"),
@@ -205,6 +254,9 @@ def _parse_arm(raw: Any, index: int, out: Path, pages: Path) -> ArmSpec:
         command=command,
         install=_argv(raw.get("install"), f"{where}: install", False),
         prepare=_argv(raw.get("prepare"), f"{where}: prepare", False),
+        after=tuple(after),
+        threads=_whole(threads, f"{where}: threads"),
+        writes=writes,
     )
 
 
@@ -239,10 +291,15 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
     raw_arms = data.get("arms")
     if not isinstance(raw_arms, list) or not raw_arms:
         raise ManifestError("arms must be a non-empty list of [[arms]] tables")
-    arms = tuple(_parse_arm(raw, i, paths["out"], paths["pages"]) for i, raw in enumerate(raw_arms))
+    arms: list[ArmSpec] = []
+    for i, raw in enumerate(raw_arms):
+        arms.append(_parse_arm(raw, i, paths["out"], paths["pages"], [a.name for a in arms]))
     names = [arm.name for arm in arms]
     if len(set(names)) != len(names):
         raise ManifestError("two arms share a name (each is a cache folder)")
+    cpu_threads = data.get("cpu_threads")
+    if cpu_threads is not None and cpu_threads != "auto":
+        cpu_threads = _whole(cpu_threads, 'cpu_threads (a number or "auto")')
     return Manifest(
         name=name,
         pages=paths["pages"],
@@ -253,7 +310,8 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
         behind_schedule_min=_number(data.get("behind_schedule_min", 30), "behind_schedule_min"),
         end_pod=end_pod,
         hard_stop_min=None if hard is None else _number(hard, "hard_stop_min"),
-        arms=arms,
+        arms=tuple(arms),
+        cpu_threads=cpu_threads,
     )
 
 
@@ -272,6 +330,139 @@ def skip_reason(arm: ArmSpec, behind_min: float, behind_schedule_min: float) -> 
     if arm.cut == "behind-schedule" and behind_min > behind_schedule_min:
         return f"queue {behind_min:.0f} min behind, past {behind_schedule_min:g} min"
     return None
+
+
+# --- lanes --------------------------------------------------------------------------
+
+
+def available_cpus() -> int:
+    """The CPUs this process may use: its affinity, capped by a container's CPU quota
+    (a pod's container sees every CPU of its host but is limited by its cgroup)."""
+    try:
+        count = len(os.sched_getaffinity(0))
+    except AttributeError:
+        count = os.cpu_count() or 1
+    quotas = (
+        ("/sys/fs/cgroup/cpu.max", None),
+        ("/sys/fs/cgroup/cpu/cpu.cfs_quota_us", "/sys/fs/cgroup/cpu/cpu.cfs_period_us"),
+    )
+    for quota_file, period_file in quotas:
+        try:
+            fields = Path(quota_file).read_text(encoding="ascii").split()
+            if period_file is not None:
+                fields.append(Path(period_file).read_text(encoding="ascii").strip())
+            quota, period = float(fields[0]), float(fields[1])
+        except (OSError, ValueError, IndexError):
+            continue
+        if quota > 0 and period > 0:
+            count = min(count, max(1, int(quota // period)))
+    return count
+
+
+def cpu_budget(setting: int | str | None, cpus: int) -> int | None:
+    """Threads the CPU arms may use at once; None means one CPU arm at a time."""
+    if setting == "auto":
+        return max(1, cpus - GPU_LANE_CPUS)
+    return setting if isinstance(setting, int) else None
+
+
+def _fits(share: int, running: list[int], budget: int | None) -> bool:
+    """A CPU arm fits beside the running ones, and always when none runs."""
+    if not running:
+        return True
+    return budget is not None and sum(running) + share <= budget
+
+
+def pick(
+    arms: tuple[ArmSpec, ...],
+    ready: list[int],
+    gpu_free: bool,
+    running: list[int],
+    budget: int | None,
+) -> list[int]:
+    """Which ready arms start now: the first ready GPU arm when the card is free, and the
+    ready CPU arms in manifest order while each fits the budget. A CPU arm that does not
+    fit holds back the ones after it, so a large arm is never starved by small ones."""
+    chosen, shares, cpu_held = [], list(running), False
+    for index in ready:
+        arm = arms[index]
+        if arm.gpu:
+            if gpu_free:
+                chosen.append(index)
+                gpu_free = False
+        elif not cpu_held and _fits(arm.threads, shares, budget):
+            chosen.append(index)
+            shares.append(arm.threads)
+        else:
+            cpu_held = True
+    return chosen
+
+
+def plan(manifest: Manifest, budget: int | None) -> dict[str, float]:
+    """The day as the time boxes say it goes, every arm ok, under the same rules the
+    queue starts arms by: when the GPU lane and the CPU arms each end, and how long the
+    card waits on a dependency."""
+    arms = manifest.arms
+    pending = list(range(len(arms)))
+    running: dict[int, float] = {}  # index -> end minute
+    ended: set[str] = set()
+    now = gpu_end = cpu_end = gpu_wait = 0.0
+    while pending or running:
+        ready = [i for i in pending if all(a in ended for a in arms[i].after)]
+        gpu_free = not any(arms[i].gpu for i in running)
+        shares = [arms[i].threads for i in running if not arms[i].gpu]
+        for index in pick(arms, ready, gpu_free, shares, budget):
+            pending.remove(index)
+            running[index] = now + arms[index].time_box_min
+        if gpu_free and not any(arms[i].gpu for i in running) and any(arms[i].gpu for i in pending):
+            waiting_until = min(running.values(), default=now)
+            gpu_wait += waiting_until - now
+        if not running:
+            break
+        now = min(running.values())
+        for index in [i for i, end in running.items() if end <= now]:
+            del running[index]
+            ended.add(arms[index].name)
+            if arms[index].gpu:
+                gpu_end = max(gpu_end, now)
+            else:
+                cpu_end = max(cpu_end, now)
+    return {"gpu_end": gpu_end, "cpu_end": cpu_end, "gpu_wait": gpu_wait, "end": now}
+
+
+def download_line(manifest: Manifest) -> str:
+    """What the arms' preparations download onto an empty volume, each name once."""
+    from operations.bakeoff import weights
+
+    names = sorted({n for arm in manifest.arms for n in weights.names_in(arm.prepare)})
+    if not names:
+        return "downloads onto an empty volume: none"
+    sizes = {name: weights.size_of(name) for name in names}
+    largest = max(sizes, key=sizes.__getitem__)
+    return (
+        f"downloads onto an empty volume: {sum(sizes.values()) / 1e9:.1f} GB in {len(names)}"
+        f" snapshots (largest {largest}, {sizes[largest] / 1e9:.1f} GB)"
+    )
+
+
+def estimate_lines(manifest: Manifest, here: int | None = None) -> list[str]:
+    """One line per pod size: when the GPU lane and the CPU arms end by the time boxes."""
+    gpu_box = manifest.planned_min
+    cpu_box = sum(arm.time_box_min for arm in manifest.arms if not arm.gpu)
+    lines = [f"time boxes: GPU arms {gpu_box:g} min, CPU arms {cpu_box:g} min one after another"]
+    sizes = [(f"{cpus} vCPU", cpus) for cpus in ESTIMATE_CPUS]
+    if here is not None:
+        sizes.insert(0, (f"here, {here} CPUs", here))
+    for label, cpus in sizes:
+        budget = cpu_budget(manifest.cpu_threads, cpus)
+        day = plan(manifest, budget)
+        threads = "one CPU arm at a time" if budget is None else f"{budget} CPU threads"
+        lines.append(
+            f"  {label} ({threads}): GPU lane ends {day['gpu_end']:.0f} min"
+            f" (waits {day['gpu_wait']:.0f}), CPU arms end {day['cpu_end']:.0f} min,"
+            f" day {day['end'] / 60:.1f} h"
+        )
+    return lines
 
 
 # --- small helpers ------------------------------------------------------------------
@@ -418,8 +609,20 @@ class Queue:
         self.retry: list[ArmSpec] = []
         self.end_action: str | None = None
         self.ready: dict[int, Future] = {}
-        self.ready_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ready")
-        self.cpu_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cpu-arm")
+        # Installs and preparations run one at a time per lane (several CPU arms share an
+        # environment), so a CPU arm's long install never keeps the card waiting.
+        self.ready_pools = {
+            lane: ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"ready-{lane}")
+            for lane in ("gpu", "cpu")
+        }
+        self.gpu_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-arm")
+        self.cpu_pool = ThreadPoolExecutor(
+            max_workers=max(1, len(manifest.arms)), thread_name_prefix="cpu-arm"
+        )
+        self.started: set[int] = set()
+        # Each arm's last outcome: ok, smoke-ok, failed, skipped, deferred, hard-stopped.
+        self.outcome: dict[str, str] = {}
+        self.budget: int | None = None
         self.hard_stopped = False
         self.terminated = False
         self._ok_cache: dict[Path, tuple[int, bool]] = {}
@@ -468,7 +671,16 @@ class Queue:
         return (now - self.started_at) / 60 - planned
 
     def _lane(self) -> dict[str, Any] | None:
-        return self.lanes.get("gpu") or self.lanes.get("cpu")
+        if "gpu" in self.lanes:
+            return self.lanes["gpu"]
+        return next((lane for key, lane in self.lanes.items() if key.startswith("cpu:")), None)
+
+    def _counted(self, lane: dict[str, Any]) -> tuple[list[float], int]:
+        """The lane's arm's pages cached ok, of the smoke's pages or of all, and how many."""
+        counted = (
+            self.page_list[: self.m.smoke_pages] if lane["phase"] == "smoke" else self.page_list
+        )
+        return self._ok_pages(lane.get("records", lane["arm"]), counted), len(counted)
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -476,10 +688,8 @@ class Queue:
             done = total = 0
             last = eta = eta_min = None
             if lane is not None:
-                smoke = lane["phase"] == "smoke"
-                counted = self.page_list[: self.m.smoke_pages] if smoke else self.page_list
-                times = self._ok_pages(lane["arm"], counted)
-                done, total = len(times), len(counted)
+                times, total = self._counted(lane)
+                done = len(times)
                 last = iso(times[-1]) if times else None
                 recent = [t for t in times if t >= lane["wall0"]]
                 if len(recent) >= 2:
@@ -488,7 +698,20 @@ class Queue:
                     )
                     left = max(0, total - done) * per_page
                     eta, eta_min = iso(time.time() + left), round(left / 60, 1)
-            cpu = self.lanes.get("cpu")
+            cpu_arms = []
+            for key, entry in self.lanes.items():
+                if key.startswith("cpu:"):
+                    ok, of = self._counted(entry)
+                    cpu_arms.append(
+                        {
+                            "arm": entry["arm"],
+                            "phase": entry["phase"],
+                            "pages_done": len(ok),
+                            "pages_total": of,
+                            "started": iso(entry["t0"]),
+                        }
+                    )
+            beside = [c["arm"] for c in cpu_arms if lane is None or c["arm"] != lane["arm"]]
             return {
                 "schema": STATUS_SCHEMA,
                 "queue": self.m.name,
@@ -510,7 +733,9 @@ class Queue:
                 "skipped": list(self.skipped),
                 "finished_arms": list(self.finished),
                 "retry": [arm.name for arm in self.retry],
-                "cpu_arm": cpu["arm"] if cpu and lane is not cpu else None,
+                "cpu_arm": beside[0] if beside else None,
+                "cpu_arms": cpu_arms,
+                "cpu_threads": self.budget,
                 "end_action": self.end_action,
                 "pings": list(self.sent),
                 "updated": iso(self.clock()),
@@ -558,6 +783,16 @@ class Queue:
 
     # processes --------------------------------------------------------------------
 
+    def _arm_env(self, phase: str) -> dict[str, str]:
+        """The arm's environment without the queue's secrets. Its commands run offline;
+        its install and preparation fetch environments and weights, so they never are."""
+        env = {k: v for k, v in self.env.items() if k not in ARM_ENV_DROPPED}
+        if phase in ("install", "prepare"):
+            for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+                env.pop(name, None)
+            return env
+        return {**env, **OFFLINE_ENV}
+
     def _spawn(self, arm: ArmSpec, phase: str, argv: list[str]) -> subprocess.Popen:
         if self.terminated:
             raise Terminated()
@@ -567,10 +802,7 @@ class Queue:
             process = subprocess.Popen(
                 argv,
                 cwd=self.root,
-                env={
-                    **{k: v for k, v in self.env.items() if k not in ARM_ENV_DROPPED},
-                    **OFFLINE_ENV,
-                },
+                env=self._arm_env(phase),
                 stdout=log,
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
@@ -602,7 +834,7 @@ class Queue:
         process = self._spawn(arm, phase, argv)
         with self.lock:
             self.lanes[lane]["phase"] = phase
-        self._ready(index + 1)
+        self._ready_next(index)
         self.write_status()
         while process.poll() is None:
             self._check_overrun(arm, lane)
@@ -656,10 +888,25 @@ class Queue:
         """Start the arm's install and preparation on the CPU, once."""
         if index >= len(self.m.arms):
             return None
+        arm = self.m.arms[index]
         with self.lock:
             if index not in self.ready:
-                self.ready[index] = self.ready_pool.submit(self._prepare_arm, self.m.arms[index])
+                if arm.install is None and arm.prepare is None:
+                    self.ready[index] = Future()
+                    self.ready[index].set_result(True)
+                else:
+                    pool = self.ready_pools["gpu" if arm.gpu else "cpu"]
+                    self.ready[index] = pool.submit(self._prepare_arm, arm)
             return self.ready[index]
+
+    def _ready_next(self, index: int) -> None:
+        """Prepare the next arm of the same lane that has not started."""
+        arm = self.m.arms[index]
+        for later in range(index + 1, len(self.m.arms)):
+            if self.m.arms[later].gpu == arm.gpu and later not in self.started:
+                if self.m.arms[later].name not in self.outcome:
+                    self._ready(later)
+                return
 
     def _prepare_arm(self, arm: ArmSpec) -> bool:
         """Install then prepare; False only when the install failed."""
@@ -671,10 +918,47 @@ class Queue:
                 self._error(f"{arm.name}: prepare exit {code}")
         return True
 
+    # dependencies -------------------------------------------------------------------
+
+    def _blocker(self, arm: ArmSpec, final: bool) -> tuple[str, str | None]:
+        """What the arm's `after` says: ready, wait, defer (to the end, behind a
+        dependency's retry) or skip, with the reason. `final`: no retry is still to come."""
+        words = {
+            "failed": "failed" if final else "failed (retried at the end)",
+            "deferred": "never ran",
+            "skipped": "was skipped",
+            "hard-stopped": "was hard-stopped",
+            "smoke-failed": "failed its smoke",
+        }
+        found = []
+        for name in arm.after:
+            state = self.outcome.get(name)
+            if state in ("ok", "smoke-ok"):
+                continue
+            if state is None:
+                found.append(("wait", None))
+            elif state in ("failed", "deferred") and not final:
+                found.append(("defer", f"needs {name}, which {words[state]}"))
+            else:
+                found.append(("skip", f"needs {name}, which {words.get(state, state)}"))
+        for verdict in ("skip", "defer", "wait"):
+            for kind, reason in found:
+                if kind == verdict:
+                    return kind, reason
+        return "ready", None
+
+    def _defer(self, arm: ArmSpec, reason: str) -> None:
+        """The arm waits for its dependency's retry at the end; it is not an error."""
+        with self.lock:
+            self.outcome[arm.name] = "deferred"
+            self.retry.append(arm)
+        self._event("queue-arm-deferred", arm=arm.name, reason=reason)
+        self.write_status()
+
     # arms -------------------------------------------------------------------------
 
-    def _pages_ok(self, label: str, pages: list[Path]) -> bool:
-        return all(cached_ok(self.m.out / label / f"{p.stem}.json") for p in pages)
+    def _pages_ok(self, arm: ArmSpec, pages: list[Path]) -> bool:
+        return all(cached_ok(self.m.out / arm.records / f"{p.stem}.json") for p in pages)
 
     def _end_lane(self, lane: str) -> None:
         with self.lock:
@@ -685,9 +969,10 @@ class Queue:
         self.write_status()
 
     def _record(self, arm: ArmSpec, status: str, t0: float) -> None:
-        pages = len(self._ok_pages(arm.name))
+        pages = len(self._ok_pages(arm.records))
         minutes = (time.monotonic() - t0) / 60
         with self.lock:
+            self.outcome[arm.name] = status
             self.finished.append(
                 {
                     "label": arm.name,
@@ -714,10 +999,12 @@ class Queue:
         later = "reported at the end" if self.smoke_only else "retried at the end"
         self.ping(f"error:{arm.name}", "decision", f"{arm.name} {what}; {later}")
         with self.lock:
+            self.outcome[arm.name] = "failed"
             self.retry.append(arm)
 
     def skip(self, arm: ArmSpec, reason: str) -> None:
         with self.lock:
+            self.outcome[arm.name] = "skipped"
             self.skipped.append({"arm": arm.name, "reason": reason})
             pending = self.ready.get(self.m.arms.index(arm))
         if pending is not None:
@@ -730,6 +1017,7 @@ class Queue:
         with self.lock:
             self.lanes[lane] = {
                 "arm": arm.name,
+                "records": arm.records,
                 "index": index,
                 "phase": "install" if arm.install else "prepare",
                 "t0": self.clock(),
@@ -765,7 +1053,7 @@ class Queue:
         if self.hard_stopped:
             self._record(arm, "hard-stopped", t0)
             return
-        if code != 0 or not self._pages_ok(arm.name, smoke_pages):
+        if code != 0 or not self._pages_ok(arm, smoke_pages):
             self._arm_error(arm, f"smoke failed (exit {code})")
             return
         if self.smoke_only:
@@ -774,7 +1062,7 @@ class Queue:
         code = self._run_watched(index, arm, lane, "run", list(arm.command))
         if self.hard_stopped:
             self._record(arm, "hard-stopped", t0)
-        elif code != 0 or not self._pages_ok(arm.name, self.page_list):
+        elif code != 0 or not self._pages_ok(arm, self.page_list):
             self._arm_error(arm, f"run incomplete (exit {code})")
         else:
             self._record(arm, "ok", t0)
@@ -782,9 +1070,11 @@ class Queue:
     def _retry_arm(self, arm: ArmSpec) -> None:
         t0 = time.monotonic()
         index = self.m.arms.index(arm)
+        never_ran = self.outcome.get(arm.name) == "deferred"
         with self.lock:
             self.lanes["gpu"] = {
                 "arm": arm.name,
+                "records": arm.records,
                 "index": index,
                 "phase": "retry",
                 "t0": self.clock(),
@@ -792,19 +1082,25 @@ class Queue:
                 "retry": True,
             }
         try:
-            if arm.install is not None and self._run_plain(arm, "retry", list(arm.install)) != 0:
+            if never_ran:
+                # Its first attempt: install and prepare as any arm does (once).
+                ready = self._ready(index)
+                if ready is None or not ready.result():
+                    self._record(arm, "failed", t0)
+                    return
+            elif arm.install is not None and self._run_plain(arm, "retry", list(arm.install)):
                 self._record(arm, "failed", t0)
                 return
             # The smoke again first (cached pages are skipped, so a passed smoke costs nothing).
             smoke = [*arm.command, "--limit", str(self.m.smoke_pages)]
             code = self._run_watched(index, arm, "gpu", "retry", smoke)
-            if code == 0 and self._pages_ok(arm.name, self.page_list[: self.m.smoke_pages]):
+            if code == 0 and self._pages_ok(arm, self.page_list[: self.m.smoke_pages]):
                 code = self._run_watched(index, arm, "gpu", "retry", list(arm.command))
             elif code == 0:
                 code = -1
             if self.hard_stopped:
                 self._record(arm, "hard-stopped", t0)
-            elif code == 0 and self._pages_ok(arm.name, self.page_list):
+            elif code == 0 and self._pages_ok(arm, self.page_list):
                 self._record(arm, "ok", t0)
             else:
                 self._record(arm, "failed", t0)
@@ -840,14 +1136,18 @@ class Queue:
         self._ticker_thread.start()
         try:
             self._run_arms()
-            if self.smoke_only:
-                for arm in list(self.retry):
+            for arm in sorted(self.retry, key=self.m.arms.index):
+                state, reason = self._blocker(arm, final=True)
+                if state != "ready":
+                    self.skip(arm, reason or "a dependency did not finish")
+                elif self.smoke_only:
                     self._record(arm, "smoke-failed", time.monotonic())
-            else:
-                for arm in list(self.retry):
-                    if self.hard_stopped or self.hard_stop_passed():
+                elif self.hard_stopped or self.hard_stop_passed():
+                    if self.outcome.get(arm.name) == "deferred":
+                        self.skip(arm, "hard stop reached")
+                    else:
                         self._record(arm, "hard-stopped", time.monotonic())
-                        continue
+                else:
                     self._retry_arm(arm)
             with self.lock:
                 self.retry.clear()
@@ -856,28 +1156,66 @@ class Queue:
             return self.terminate()
         finally:
             self._stop_ticker.set()
-            self.ready_pool.shutdown(wait=False, cancel_futures=True)
-            self.cpu_pool.shutdown(wait=False, cancel_futures=True)
+            for pool in (*self.ready_pools.values(), self.gpu_pool, self.cpu_pool):
+                pool.shutdown(wait=False, cancel_futures=True)
 
     def _run_arms(self) -> None:
-        cpu_job: Future | None = None
-        self._ready(0)
-        for index, arm in enumerate(self.m.arms):
-            if self.hard_stopped or self.hard_stop_passed():
-                self.skip(arm, "hard stop reached")
-                continue
+        """Start arms as the GPU lane, the CPU budget and their dependencies allow, until
+        every arm has run, been skipped or been deferred to the end; returns only when no
+        arm is running."""
+        self.budget = cpu_budget(self.m.cpu_threads, available_cpus())
+        self._event("queue-lanes", cpu_threads=self.budget, cpus=available_cpus())
+        pending = list(range(len(self.m.arms)))
+        running: dict[Future, int] = {}
+        while True:
+            for future in [f for f in running if f.done()]:
+                running.pop(future)
+                future.result()
+            while pending and self._start_ready(pending, running):
+                pass
+            if not running:
+                if pending:  # nothing runs and nothing can start: never loop forever
+                    for index in list(pending):
+                        self.skip(self.m.arms[index], "could not start (no lane free)")
+                return
+            wait(list(running), timeout=self.poll_seconds, return_when=FIRST_COMPLETED)
+
+    def _start_ready(self, pending: list[int], running: dict[Future, int]) -> bool:
+        """Settle what can be settled now; True when an arm left `pending` (a skip frees
+        its lane, so the caller asks again)."""
+        before = len(pending)
+        stop = self.hard_stopped or self.hard_stop_passed()
+        ready = []
+        for index in list(pending):
+            arm = self.m.arms[index]
+            state, reason = self._blocker(arm, final=self.smoke_only)
+            if stop or state in ("skip", "defer"):
+                pending.remove(index)
+                if stop:
+                    self.skip(arm, "hard stop reached")
+                elif state == "skip":
+                    self.skip(arm, reason or "a dependency did not finish")
+                else:
+                    self._defer(arm, reason or "a dependency failed")
+            elif state == "ready":
+                ready.append(index)
+        busy = [running[f] for f in running]
+        gpu_free = not any(self.m.arms[i].gpu for i in busy)
+        shares = [self.m.arms[i].threads for i in busy if not self.m.arms[i].gpu]
+        for index in pick(self.m.arms, ready, gpu_free, shares, self.budget):
+            arm = self.m.arms[index]
+            pending.remove(index)
             reason = skip_reason(arm, self.behind_min(), self.m.behind_schedule_min)
             if reason:
                 self.skip(arm, reason)
                 continue
+            self.started.add(index)
             if arm.gpu:
-                self.run_arm(index, arm, "gpu")
-                continue
-            if cpu_job is not None:
-                cpu_job.result()
-            cpu_job = self.cpu_pool.submit(self.run_arm, index, arm, "cpu")
-        if cpu_job is not None:
-            cpu_job.result()
+                running[self.gpu_pool.submit(self.run_arm, index, arm, "gpu")] = index
+            else:
+                lane = f"cpu:{arm.name}"
+                running[self.cpu_pool.submit(self.run_arm, index, arm, lane)] = index
+        return len(pending) < before
 
     def terminate(self) -> int:
         self.terminated = True
@@ -914,8 +1252,8 @@ class Queue:
         self._stop_ticker.set()
         if self._ticker_thread is not None:
             self._ticker_thread.join()
-        self.ready_pool.shutdown(wait=True, cancel_futures=True)
-        self.cpu_pool.shutdown(wait=True, cancel_futures=True)
+        for pool in (*self.ready_pools.values(), self.gpu_pool, self.cpu_pool):
+            pool.shutdown(wait=True, cancel_futures=True)
         method, mismatched = None, []
         try:
             method = copy_tree(self.m.out, self.m.sync_to)
@@ -1067,6 +1405,13 @@ def status_line(status: dict[str, Any]) -> str:
         f"behind {behind:+.0f} min",
         f"errors {len(errors)}" + (f" (last: {errors[-1]})" if errors else ""),
     ]
+    beside = [
+        f"{c.get('arm')} {c.get('pages_done')}/{c.get('pages_total')}"
+        for c in status.get("cpu_arms") or []
+        if c.get("arm") != status.get("arm")
+    ]
+    if beside:
+        parts.append("cpu: " + "; ".join(beside))
     return ", ".join(parts)
 
 
@@ -1270,9 +1615,15 @@ def _scp(options, host, source, into: Path, run, say) -> bool:
 
 def _dry_run(manifest: Manifest) -> int:
     print(f"queue {manifest.name}: {len(manifest.arms)} arms, plan {manifest.planned_min:g} min")
+    for line in estimate_lines(manifest, available_cpus()):
+        print(line)
+    print(download_line(manifest))
     for index, arm in enumerate(manifest.arms):
-        lane = "gpu" if arm.gpu else "cpu (beside the gpu arm)"
-        print(f"{index + 1}. {arm.name}: {arm.time_box_min:g} min, cut {arm.cut}, {lane}")
+        lane = "gpu" if arm.gpu else f"cpu, {arm.threads} threads"
+        after = f", after {', '.join(arm.after)}" if arm.after else ""
+        print(f"{index + 1}. {arm.name}: {arm.time_box_min:g} min, cut {arm.cut}, {lane}{after}")
+        if arm.writes:
+            print(f"   pages counted in: {manifest.out / arm.writes}")
         for what, argv in (("install", arm.install), ("prepare", arm.prepare)):
             if argv:
                 print(f"   {what}: {shlex.join(argv)}")
@@ -1322,6 +1673,9 @@ def main(argv: list[str] | None = None) -> int:
         found = "found" if manifest.pages.is_dir() else "not found here"
         print(f"ok: {manifest.name}, {len(manifest.arms)} arms, plan {manifest.planned_min:g} min")
         print(f"pages folder {manifest.pages}: {found}")
+        for line in estimate_lines(manifest):
+            print(line)
+        print(download_line(manifest))
         return 0
     if args.command == "status":
         path = manifest.out / "status.json"

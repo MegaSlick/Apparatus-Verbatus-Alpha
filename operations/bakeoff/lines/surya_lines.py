@@ -1,12 +1,18 @@
 """Line crops from the repository's cached Surya detections, shared by every `-surya` arm.
 
+    python -m operations.bakeoff.lines.surya_lines run --pages DIR --lines-dir DIR --out CACHE \
+        (--store-root STORE | --weights BUNDLE) [--threads 8]
     python -m operations.bakeoff.lines.surya_lines command --pages DIR --lines-dir DIR \
         --weights BUNDLE [--threads 8]
     python -m operations.bakeoff.lines.surya_lines prepare --pages DIR --lines-dir DIR --out CACHE
 
-`command` writes `<lines-dir>/pages.json` and prints the exact command that runs the
-repository's Surya runner (`operations/serving/surya/runner.py`, in its own environment)
-over the pages; `prepare` reads the page documents it wrote and cuts the line crops.
+`run` takes Surya's weight bundle from the model store (`<store>/local/surya2-detection`,
+put there by `python -m operations.bakeoff.weights fetch surya2-detection`) or from
+`--weights`, checked file by file against the pinned manifest
+(`config/manifests/surya2-detection.json`), runs the repository's Surya runner
+(`operations/serving/surya/runner.py`, in its own environment, CPU) over the pages that
+have no document yet, then cuts the line crops. `command` writes `<lines-dir>/pages.json` and prints the runner's command for a
+run by hand; `prepare` reads the page documents it wrote and cuts the line crops.
 
 Matching a page document to a page: the runner numbers documents by input order
 (`page-<n>.json` is the n-th page it was given). When `<lines-dir>/pages.json` exists
@@ -27,8 +33,10 @@ row order.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shlex
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -39,6 +47,8 @@ SOURCE = "surya"
 PAGES_SCHEMA = "bakeoff-surya-pages.v1"
 ROOT = Path(__file__).resolve().parents[3]
 SURYA_ENV = ROOT / "operations" / "serving" / "surya"
+BUNDLE_MANIFEST = ROOT / "config" / "manifests" / "surya2-detection.json"
+STORE_BUNDLE = Path("local") / "surya2-detection"
 BLOCK_SHARE = 0.5
 
 
@@ -140,7 +150,10 @@ def prepare(pages: list[Path], lines_dir: Path, out: Path) -> dict[str, dict[str
     return indexes
 
 
-def runner_command(pages: list[Path], lines_dir: Path, weights: Path, threads: int) -> list[str]:
+def runner_command(
+    pages: list[Path], lines_dir: Path, weights: Path, threads: int, first_ordinal: int = 1
+) -> list[str]:
+    ordinal = ["--first-ordinal", str(first_ordinal)] if first_ordinal != 1 else []
     return [
         str(SURYA_ENV / ".venv" / "bin" / "python"),
         str(SURYA_ENV / "runner.py"),
@@ -150,8 +163,83 @@ def runner_command(pages: list[Path], lines_dir: Path, weights: Path, threads: i
         str(threads),
         "--output-dir",
         str(lines_dir),
+        *ordinal,
         *(str(p) for p in pages),
     ]
+
+
+# --- the weight bundle and the runner ---------------------------------------------------
+
+
+def bundle_problems(folder: Path) -> list[str]:
+    """The pinned manifest's files missing from the folder or different there; [] when it
+    is the pinned bundle."""
+    problems = []
+    for row in json.loads(BUNDLE_MANIFEST.read_text("utf-8")):
+        path = folder / row["path"]
+        if not path.is_file() or path.stat().st_size != row["size"]:
+            problems.append(row["path"])
+            continue
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            while chunk := handle.read(1 << 20):
+                digest.update(chunk)
+        if digest.hexdigest() != row["sha256"]:
+            problems.append(row["path"])
+    return problems
+
+
+def find_bundle(store_root: Path | None, weights: Path | None) -> Path | None:
+    """The first of the store's copy and `weights` that is the pinned bundle."""
+    candidates = [store_root / STORE_BUNDLE] if store_root else []
+    candidates += [weights] if weights else []
+    for folder in candidates:
+        if folder.is_dir() and not bundle_problems(folder):
+            return folder
+    return None
+
+
+def first_missing(pages: list[Path], lines_dir: Path) -> int | None:
+    """The ordinal of the first page with no runner document, after checking that the
+    folder's pages.json lists these pages in this order; None when every page has one."""
+    index = lines_dir / "pages.json"
+    stems = [p.stem for p in pages]
+    if index.is_file():
+        listed = json.loads(index.read_text("utf-8")).get("pages", [])
+        common = min(len(listed), len(stems))
+        if listed[:common] != stems[:common]:
+            raise LinesRefusal(
+                f"{index} lists other pages, or the same pages in another order; its "
+                "documents belong to that list. Move the folder aside and run again"
+            )
+        if len(listed) >= len(stems):
+            stems = listed
+    lines_dir.mkdir(parents=True, exist_ok=True)
+    from operations.bakeoff.witness_run import write_json
+
+    write_json(index, {"schema": PAGES_SCHEMA, "pages": stems})
+    for ordinal in range(1, len(pages) + 1):
+        try:  # the runner writes in place, so a run stopped mid-write leaves half a file
+            json.loads((lines_dir / f"page-{ordinal}.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            return ordinal
+    return None
+
+
+def detect(
+    pages: list[Path], lines_dir: Path, bundle: Path, threads: int, runner=subprocess.run
+) -> None:
+    """Run the Surya runner over the pages from the first one without a document."""
+    first = first_missing(pages, lines_dir)
+    if first is None:
+        return
+    python = SURYA_ENV / ".venv" / "bin" / "python"
+    if not python.is_file():
+        raise LinesRefusal(f"no Surya environment at {python}; run `surya_rec install` first")
+    argv = runner_command(pages[first - 1 :], lines_dir, bundle, threads, first)
+    print(f"surya runner: pages {first}-{len(pages)}", flush=True)
+    if runner(argv, check=False).returncode != 0:
+        raise LinesRefusal(f"the Surya runner failed from page {first}; its output is above")
 
 
 def write_pages_index(pages: list[Path], lines_dir: Path) -> None:
@@ -166,22 +254,35 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
+    r = sub.add_parser("run", help="run the Surya runner where needed, then cut the crops")
+    r.add_argument("--store-root", type=Path, help="a model store holding the bundle")
+    r.add_argument("--weights", type=Path, help="else a bundle folder")
+    r.add_argument("--out", type=Path, required=True)
+    r.add_argument("--threads", type=int, default=8)
     c = sub.add_parser("command", help="write pages.json and print the Surya runner command")
     c.add_argument("--weights", type=Path, required=True, help="the locked Surya bundle")
     c.add_argument("--threads", type=int, default=8)
     p = sub.add_parser("prepare", help="cut line crops from the cached Surya documents")
     p.add_argument("--out", type=Path, required=True)
-    for each in (c, p):
+    for each in (c, p, r):
         each.add_argument("--pages", type=Path, required=True)
         each.add_argument("--lines-dir", type=Path, required=True)
         each.add_argument("--limit", type=int)
     args = parser.parse_args(argv)
-    pages = list_pages(args.pages)[: args.limit or None]
-    if args.command == "command":
-        write_pages_index(pages, args.lines_dir)
-        print(shlex.join(runner_command(pages, args.lines_dir, args.weights, args.threads)))
-        return 0
     try:
+        pages = list_pages(args.pages)[: args.limit or None]
+        if args.command == "command":
+            write_pages_index(pages, args.lines_dir)
+            print(shlex.join(runner_command(pages, args.lines_dir, args.weights, args.threads)))
+            return 0
+        if args.command == "run":
+            bundle = find_bundle(args.store_root, args.weights)
+            if bundle is None:
+                raise LinesRefusal(
+                    "no pinned Surya bundle in the store or --weights; run "
+                    "`python -m operations.bakeoff.weights fetch surya2-detection`"
+                )
+            detect(pages, args.lines_dir, bundle, args.threads)
         indexes = prepare(pages, args.lines_dir, args.out)
     except LinesRefusal as refusal:
         print(f"refused: {refusal}", file=sys.stderr)

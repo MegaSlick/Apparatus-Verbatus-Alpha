@@ -1,106 +1,112 @@
 # Bake-off runbook: one day, two pods, every arm, no idle card
 
-For a Mac session with no memory of the preparation. Read `README.md` in this folder
-first (the tool), then `operations/pod/README.md` "The hand route" (how a pod is started
-with its guard armed). The lead approves every pod and every paid run; this file starts
-nothing. Page names are private: every example here says `p001.tif`.
+For a session with no memory of the preparation. Do the steps in order. Each step says
+what to run, what you should see, and what to do if you see something else. When a step
+has no "if" line for what you see, stop and tell the lead what you saw; do not improvise
+on a paid pod.
 
-## 0. The day in one screen
+Background, read once: `README.md` in this folder (the tool) and `operations/pod/README.md`
+"The hand route" (why every pod starts with its guard armed). Page names are private:
+never put one in git, a PR, a commit message or a public comment.
 
-| Step | Where | Time | Cost |
-|---|---|---|---|
-| 1. Merge the bake-off pull requests, pull `main`, `uv sync --frozen` | Mac | 20 min | 0 |
-| 2. Copy the prepped pages and the two manifests to the volume | Mac → pod | 10 min | 0 |
-| 3. Start the small pod (A40 48 GB or RTX 3090 24 GB), guard armed, queue launched | pod W | 5 min | starts billing |
-| 4. The witness queue runs itself (table in section 2); the Mac runs `watch` | pod W | ~4–5 h | ~$2.50 |
-| 5. Once the witness smoke runs are clean, start the big pod (RTX PRO 6000 96 GB) with the reader queue | pod R | ~2 h | ~$4 |
-| 6. Each pod syncs its cache, verifies digests, pings, deletes itself | pods | — | billing stops |
-| 7. `fetch` both caches home, confirm both pods are gone in the RunPod listing | Mac | 15 min | 0 |
-| 8. Score and build the roster tables | Mac | 10 min | 0 |
+## 0. Decisions the lead has already made (2026-10-08) — do not ask again
 
-Whole day: about $7 of pod time plus the volume. Nothing on the Mac has to notice the
-end of a job: the queue runner does, and it pings the phone at each milestone.
+| Question | Answer |
+|---|---|
+| Small card (pod W) | A40 48 GB; if none is free, RTX 3090 24 GB. Either with at least 16 vCPU (the CPU line arms need them; see 2.0). |
+| Big card (pod R) | RTX PRO 6000 96 GB. |
+| Where | Any Secure datacenter that has the cards in stock on the day. No region is fixed. A fresh network volume is made there (step 2.0); the old EU-RO-1 volume is gone. |
+| Models | Every arm downloads its own weights on boot at pinned versions (the queue's `prepare` steps). Nothing has to be on the volume beforehand. |
+| Spend | Standing approval up to **$15** for the whole day, both pods, one retry included. |
+| When pod R starts | As soon as pod W's smoke runs pass (step 4.3), without waiting for pod W to finish. |
+| Paid runs | All approved: DAI arm twice more, `qwen-vendor` per reader, the CPU line arms beside the GPU. |
+| Pages | All 73 are real research pages and are all scored. None is a test page, none is excluded. Hard pages count in every number and also get their own table. |
+| Models | Try every reasonable candidate. HunyuanOCR is dropped (licence excludes the EU/UK). dots.mocr and the Surya recogniser run for the bench. |
 
-## 1. Before renting (free, on the Mac)
+**Ask the lead only when:** the day would pass $15; none of the cards in this runbook is
+free anywhere; something would delete data or a volume; or a step here says "stop".
+
+## 1. On the Mac, before renting anything (free)
+
+### 1.1 Code and tests
 
 ```sh
 cd ~/verbatus_alpha
-git switch main && git pull
+git switch main && git pull --ff-only
+git rev-parse HEAD                # this 40-character commit is <sha> for the rest of the day
 uv sync --frozen --group test --group audit
 .venv/bin/python -m pytest -q -p xdist -n 4 operations/bakeoff
 sh .githooks/check-static.sh
 ```
 
-Then gather the pages flat, as the README says (73 prepped TIFs), and check the two
-manifests against the paths you will use:
+Expect: pytest ends with `passed` and no `failed`; the static check ends `All checks
+passed!`. If anything fails: stop; do not rent with failing code.
+
+### 1.2 Pages, lists, manifests
 
 ```sh
-mkdir -p ~/bakeoff-pages && cp "$HOME/Desktop/Bake-off set/Pages"/*/Prepped/*.tif ~/bakeoff-pages/
-ls ~/bakeoff-pages | wc -l        # 73
+ls ~/bakeoff-pages | wc -l                    # 73
+wc -l < private/bakeoff/hard-pages.txt        # 16
 .venv/bin/python -m operations.bakeoff.queue_runner validate --manifest operations/bakeoff/queue/witness-24gb.toml
 .venv/bin/python -m operations.bakeoff.queue_runner validate --manifest operations/bakeoff/queue/reader-96gb.toml
 ```
 
-Private list for the scorer (never in git): write `private/bakeoff/hard-pages.txt`, one
-page stem per line, from `handback/page-manifest.md`. Every page in the set is a real
-research page and is scored: hard pages count in every number and also get their own
-table, so each model's weak spots show. No page is excluded.
+Expect: 73, 16, and two lines starting `ok:`. If `~/bakeoff-pages` is missing or short:
+`mkdir -p ~/bakeoff-pages && cp "$HOME/Desktop/Bake-off set/Pages"/*/Prepped/*.tif ~/bakeoff-pages/`
+(73 TIFs, about 250 MB). If `hard-pages.txt` is missing: it lists the page stems under
+"Hard pages" in `private/bakeoff/page-manifest.md`, one per line.
 
-## 2. Card plan
+### 1.3 RunPod tools and the account
 
-Prices are RunPod Secure on-demand as seen 2026-10-08 (`config/pod_placement.toml`;
-confirm in the console before renting): A40 48 GB $0.44/h, RTX 3090 24 GB about $0.50/h,
-RTX PRO 6000 96 GB $1.99/h. The RTX 4000 Ada (20 GB) is below the project's 22 GiB floor.
+```sh
+runpodctl version                 # 2.x; v1.x has no `pod` command: brew install runpod/runpodctl/runpodctl
+runpodctl pod list --all          # []  (nothing running before we start)
+ls private/ntfy.conf              # the phone topic file exists
+```
 
-**Pod W (witnesses), A40 or RTX 3090.** Every arm below fits 24 GB except where the VRAM
-column says A40. Time boxes are planning figures from the 2026-10-08 measurements (A40:
-Chandra 371 s and Churro 584 s wall for 73 pages at concurrency 64, DAI 75 s; server
-starts 1–5 min; bootstrap 3 min with weights on the volume) plus the run cards' estimates
-for the new arms. The runner never kills an arm on a clock; the cut rule says what is
-skipped if the day runs over.
+If `pod list` shows a pod: stop and tell the lead (an unknown pod is billing).
 
-| order | arm | card | box (min) | VRAM | cut | basis |
-|---|---|---|---|---|---|---|
-| 1 | chandra | 24 GB ok | 15 | 10.6 GB weights | never | 371 s wall on the A40, 2026-10-08 |
-| 2 | dai, dai-conf10, dai-whole | 24 GB ok | 10 + 10 + 15 | 15.5 GB weights | never | 75 s wall, 2026-10-08; detector on CPU |
-| 3 | churro | 24 GB ok | 15 | 7.5 GB | never | 584 s wall, 2026-10-08 |
-| 4 | chandra-native | 24 GB ok | 25 | 10.6 GB | never | our chandra plus the package's retry loop |
-| 5 | churro-native | 24 GB ok | 20 | 7.5 GB | never | our churro, shorter context |
-| 6 | dots-mocr | 24 GB ok | 25 | 6.1 GB | install-failed | no measurement; estimate 5-10 s/page |
-| 7 | surya-rec-surya | 24 GB ok | 20 | 3-4 GB | behind-schedule | Datalab: 5 pages/s on a 5090; a VLM, not CTC |
-| 8 | party-blla | 24 GB ok (est. < 8 GB) | 30 | not measured | overrun (cut first) | 98 s/page on 4 CPUs; GPU unmeasured |
-| CPU, beside 1-8 | surya-lines, blla-lines, kraken-{ppocrv6,mccatmus,mcfondue}-{surya,blla}, pylaia-{belfort,popp}[-lm]-{surya,blla} | none | 10, 90, 3 x (30+30), 8 x 15 | 0 | never | kraken 2-3 s/line, blla 95-110 s/page, PyLaia ~10 s/page on 4 CPUs; installs kraken 279 s, PyLaia 204 s, Party 4-5 min cold |
+## 2. Pod W (witnesses)
 
-GPU time boxes sum to about 3 h; the CPU arms run beside them and finish inside that (the
-blla segmentation, 73 pages at about 100 s each on a few cores, is the long one: give it
-8 threads). Expect 3.5-4.5 h for pod W. Everything fits 24 GB, so the choice between the
-A40 and the 3090 is price and stock, not memory.
+### 2.0 Pick the datacenter and make the volume
 
-**Pod R (readers), RTX PRO 6000, last.** The three blind arms ran on 2026-10-08; tomorrow
-adds the vendor arm per reader (`qwen-vendor`, see `cards/qwen3.*.md`). Bootstrap is
-12 min when the 27B must be fetched, 3 min when it is on the volume; the 27B read 73
-pages in 183–584 s on 2026-10-08.
+Read the stock with the RunPod connector (free): `get-gpu-type` with availability, product
+POD, cloud SECURE, for `NVIDIA A40`, `NVIDIA GeForce RTX 3090` and
+`NVIDIA RTX PRO 6000 Blackwell Server Edition`. Each answer lists datacenters with stock.
 
-| order | arm | box (min) | basis |
-|---|---|---|---|
-| 1 | qwen38-27b-vendor | 35 | the 27B read 73 pages in 183-584 s blind; the vendor preset samples at temperature 0.7 and may write longer |
-| 2 | qwen35-27b-vendor | 40 | same size; a cold load from the volume adds 2-5 min |
-| 3 | qwen35-9b-vendor | 20 | about a third of the 27B's time |
-| 4-5 | qwen35-27b-blind, qwen35-9b-blind | 30 + 20 | only if the 2026-10-08 caches are not copied up; `cut = "overrun"` |
+1. Prefer a datacenter that has the PRO 6000 **and** the A40; else the PRO 6000 and the
+   3090. Call it `<dc>`. Both pods then share one volume.
+2. If no datacenter has both: put pod W where its card is and pod R where the PRO 6000
+   is, each with its own volume (`<dc W>`, `<dc R>`). The reader arms do not use the
+   witness results, so nothing has to move between volumes; the pages are copied to each.
+3. If none of the cards is in stock anywhere: stop and tell the lead.
 
-About 2 h including the 12-minute bootstrap when the Qwen3.5 snapshots must be fetched.
+Create the volume with the connector's `create-network-volume`: name
+`verbatus-bakeoff-<date>`, datacenter `<dc>`, size **300 GB** when both pods
+share it, or 100 GB for a pod-W-only volume and 220 GB for a pod-R-only volume (the
+witness arms download 43.7 GB of weights, the readers 130.5 GB; the rest is room for the
+store's staging copy, pages and results; `queue_runner validate` prints each manifest's
+download total). Write its id down as `<volume id>`. It bills for storage until deleted;
+after the day's results are home, ask the lead whether to keep it.
 
-**Cut rules (plan 4.3):** Party is cut first (`cut = "overrun"`), the Surya recogniser at
-the behind-schedule mark (`cut = "behind-schedule"`, 30 min behind the cumulative boxes),
-dots.mocr only if its install fails (`cut = "install-failed"`); the three baselines and the
-CTC line arms are never cut. The lead may set `hard_stop_min` in a manifest for the day;
-off, nothing stops the queue but its own end.
+### 2.1 Create it, guard armed
 
-## 3. Start pod W with its guard armed
+**Use the RunPod connector's create-pod tool (MCP)**, the route proven on 2026-10-07 and
+10-08. First print the guard's start command on the Mac:
 
-Exactly as `operations/pod/README.md` "Create the pod with its guard armed", with the
-witness card and the volume's datacenter. `<sha>` is the 40-character commit on `main`
-after the merges. The session never runs a bare `runpodctl pod create`.
+```sh
+sh operations/pod/pod_start_command.sh off <sha>
+```
+
+Then call create-pod with: name `verbatus-bakeoff-w`, image
+`runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404`, GPU type `NVIDIA A40` (or the 3090
+picked in 2.0), 1 GPU, `minVcpuCountPerGpu` 16, cloud SECURE, datacenter `<dc>`, network
+volume `<volume id>` mounted at `/workspace/private`, container disk 100 GB, port
+`22/tcp`, `startSsh` true, and the printed text as the container start command (`args`).
+Never create a pod without that start command: it arms the guard.
+
+Backup route, if the connector is unavailable: `runpodctl` 2.x on the Mac (the API key
+goes in by hand, never on a command line):
 
 ```sh
 read -rs RUNPOD_API_KEY; export RUNPOD_API_KEY
@@ -110,146 +116,200 @@ runpodctl pod create \
   --image runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404 \
   --gpu-id "NVIDIA A40" --gpu-count 1 \
   --cloud-type SECURE \
-  --data-center-ids EU-RO-1 \
-  --network-volume-id kl8yg2jn8g \
+  --data-center-ids <dc> \
+  --network-volume-id <volume id> \
   --volume-mount-path /workspace/private \
   --container-disk-in-gb 100 \
   --ports "22/tcp" \
-  --docker-args "$START"
-runpodctl pod get <pod id>          # SSH port and IP
+  --docker-args "$START" \
+  --wait
 ```
 
-Use `--gpu-id "NVIDIA GeForce RTX 3090"` for the 3090. `off` means no deadline: the
-queue runner ends the pod; the guard's idle ladder (warn 15 min, urgent 30, back up 1 h,
-delete at 2 h only with `ladder_delete = "on"`) stays as the backstop.
+Expect: JSON for the new pod with its `id`. Write the id down as `<pod W id>`.
 
-On the pod, over the direct SSH port (`ssh -p <port> root@<ip>`):
+- If the create is refused for lack of capacity (stock moves by the minute): try the
+  other small card in the same datacenter; if neither fits, read the stock again and go
+  back to 2.0 (an empty volume in the wrong datacenter can simply be deleted, it holds
+  nothing yet). If nothing is free anywhere: stop and tell the lead.
+- The runpodctl route cannot ask for a minimum vCPU count; after creating, check the pod
+  has at least 16 vCPU (`runpodctl pod get`), else delete it and use the connector.
+- If `pod_start_command.sh` prints nothing and exits 2: nothing was created; read its
+  message, fix, retry.
+
+`off` means no deadline: the queue runner ends the pod itself; the guard's idle ladder
+(warn at 15 min idle, urgent at 30) stays as the backstop.
+
+### 2.2 Get the SSH address
 
 ```sh
-findmnt /workspace/private && tail -2 /workspace/private/.pod_guard/guard.log   # "armed for pod ..."
+runpodctl pod get <pod W id>
+```
+
+Find the public IP and the port mapped to 22; they are `<ip>` and `<port>` below. Use the
+direct form `ssh -p <port> root@<ip>`; the `ssh.runpod.io` proxy cannot run commands or
+`scp`.
+
+### 2.3 Set up the pod
+
+```sh
+ssh -p <port> root@<ip>
+# then, on the pod:
+findmnt /workspace/private && tail -2 /workspace/private/.pod_guard/guard.log
+```
+
+Expect: the mount, and a guard line containing `armed for pod`. **If there is no "armed
+for pod" line: stop.** Delete the pod (`runpodctl pod delete <pod W id>`), confirm with
+`runpodctl pod list --all` that it is gone, and tell the lead.
+
+Still on the pod:
+
+```sh
 git clone https://github.com/MegaSlick/Apparatus-Verbatus-Alpha /opt/verbatus
 cd /opt/verbatus && git checkout --detach <sha>
 bash operations/pod/prepare_runtime.sh
 UV_CACHE_DIR=/tmp/verbatus-uv-cache uv sync --frozen --group pod
 mkdir -p /workspace/private/bakeoff
+read -rs NTFY_TOPIC; export NTFY_TOPIC     # paste the topic from the Mac's private/ntfy.conf
 ```
 
-Stop here if there is no "armed for pod" line: delete the pod, confirm it is gone, find
-out why before renting again.
-
-Copy the pages and manifests up (from the Mac; the pages go to the volume, never to git):
+From a second terminal on the Mac, copy the pages and the manifest up (they go to the
+volume, never to git):
 
 ```sh
 scp -P <port> -r ~/bakeoff-pages root@<ip>:/workspace/private/bakeoff-pages
 scp -P <port> operations/bakeoff/queue/witness-24gb.toml root@<ip>:/workspace/private/bakeoff/
 ```
 
-The ntfy topic goes to the pod's environment over SSH stdin, never on a command line
-(`read -rs NTFY_TOPIC; export NTFY_TOPIC` inside the SSH shell, pasted from
-`private/ntfy.conf`); the queue runner reads it from the environment. The guard reads its
-own copy from `/workspace/private/.pod_guard/ntfy_topic`.
+### 2.4 Check, then launch the queue detached
 
-## 4. Smoke, then launch the queue detached
-
-Every arm runs two pages first inside the queue (`smoke_pages = 2`); a failed smoke stops
-that arm, not the queue. Check the queue once by hand before leaving it alone:
+On the pod, in `/opt/verbatus`, in the shell that has `NTFY_TOPIC`:
 
 ```sh
-cd /opt/verbatus
+ls /workspace/private/bakeoff-pages | wc -l      # 73
 .venv/bin/python -m operations.bakeoff.queue_runner validate --manifest /workspace/private/bakeoff/witness-24gb.toml
 .venv/bin/python -m operations.bakeoff.queue_runner run --dry-run --manifest /workspace/private/bakeoff/witness-24gb.toml
 setsid nohup .venv/bin/python -m operations.bakeoff.queue_runner run \
   --manifest /workspace/private/bakeoff/witness-24gb.toml \
   > /workspace/private/bakeoff/queue-witness-24gb.log 2>&1 < /dev/null &
-tail -f /workspace/private/bakeoff/witness-cache/events.jsonl    # until the first arm's smoke is done, then leave
 ```
 
-## 5. What the Mac session does while the pod runs
-
-Three things and nothing else on the pod:
-
-1. Start the queue (section 4).
-2. Run `watch` and read its lines; it exits when `DONE.json` appears:
-
-   ```sh
-   .venv/bin/python -m operations.bakeoff.queue_runner watch --ssh "ssh -p <port> root@<ip>" \
-     --status /workspace/private/bakeoff/witness-cache/status.json
-   ```
-
-   Or follow the phone topic: `watch --ntfy --queue witness-24gb`.
-3. Nothing else. No `pgrep`, no `nvidia-smi` loops, no second launch. The queue overlaps
-   the next arm's install and preparation with the current arm, retries a failed arm once
-   at the end, syncs, verifies, pings and deletes the pod.
-
-Failure rules:
-
-- **An arm errors:** the runner retries it once at the end of the queue, then reports it
-  in `status.json` (`finished_arms`, `errors`) and the final ping. Fix at home; rerun that
-  arm alone on the next pod (`witness_run run` resumes: cached pages are skipped).
-- **No status update for 10 minutes** (`watch` prints a stale warning): inspect once over
-  SSH (`tail /workspace/private/bakeoff/queue-witness-24gb.log`, `cat .../status.json`),
-  then let the guard ladder decide. Do not restart things from the Mac.
-- **The pod is gone but `DONE.json` is missing:** the guard's ladder or a crash ended it;
-  the cache on the volume is whatever was synced per arm. `fetch` reports what verifies.
-- **The queue ends with `state: failed`** (own-disk refusal or a sync mismatch): the pod is
-  left up on purpose; fetch, then delete the pod by hand and confirm.
-
-## 6. Pod R: the readers, last
-
-Start when pod W's queue is past its smoke runs and running clean (the lead's call, see
-`handback/open-questions.md` question 2). Same create line with
-`--gpu-id "NVIDIA RTX PRO 6000 Blackwell Server Edition"`, `--container-disk-in-gb 120`
-and, if no PRO 6000 is in EU-RO-1, a pod with its own disk (`mounts.persistent`) and
-`own_disk = true` in the manifest, which makes the runner refuse to delete until the copy
-home verified. The HF token goes over SSH stdin (`read -rs HF_TOKEN; export HF_TOKEN`) for
-the fetch of the two Qwen3.5 snapshots, then `HF_HUB_OFFLINE=1` for the runs.
+Then follow the events until the first arm's smoke is done, and leave the pod alone:
 
 ```sh
-scp -P <port> operations/bakeoff/queue/reader-96gb.toml root@<ip>:/workspace/private/bakeoff/
-# on the pod, after the clone and sync as in section 3:
-# The 27B is on the volume at model-store/hf/qwen3.8-27B (the pipeline's store). The two
-# Qwen3.5 snapshots are new: fetch them once at the cards' pinned commits, then go offline.
-.venv/bin/python -c "from huggingface_hub import snapshot_download as s; \
-  s('Qwen/Qwen3.5-27B', revision='fc05daec18b0a78c049392ed2e771dde82bdf654', local_dir='/workspace/private/model-store/hf/qwen3.5-27b'); \
-  s('Qwen/Qwen3.5-9B', revision='c202236235762e1c871ad0ccb60c8ee5ba337b9a', local_dir='/workspace/private/model-store/hf/qwen3.5-9b')"
-export HF_HUB_OFFLINE=1 VLLM_NO_USAGE_STATS=1 DO_NOT_TRACK=1
+tail -f /workspace/private/bakeoff/witness-cache/events.jsonl
+```
+
+Every arm first reads two pages (its smoke run). A failed smoke stops that arm only, not
+the queue.
+
+## 3. While pod W runs: watch, nothing else
+
+On the Mac:
+
+```sh
+.venv/bin/python -m operations.bakeoff.queue_runner watch --ssh "ssh -p <port> root@<ip>" \
+  --status /workspace/private/bakeoff/witness-cache/status.json
+```
+
+(or `watch --ntfy --queue witness-24gb` to follow the phone pings instead). It prints a line
+per change and exits 0 when the queue writes `DONE.json`, 1 on failure.
+
+Do nothing else on the pod: no `pgrep`, no `nvidia-smi` loops, no second launch. The
+queue overlaps installs with the running arm, retries a failed arm once at the end,
+copies and verifies the cache, pings and deletes the pod.
+
+| You see | Do |
+|---|---|
+| An arm errors or its smoke fails | Nothing now. It is retried once at the end and reported in `status.json` (`errors`, `finished_arms`). Fix at home; rerun that arm alone on a later pod (cached pages are skipped). |
+| `watch` warns the status is 10 minutes old | Look once over SSH: `tail /workspace/private/bakeoff/queue-witness-24gb.log` and `cat /workspace/private/bakeoff/witness-cache/status.json`. If the queue is still running an arm, leave it. If the process is gone, tell the lead. Do not restart things from the Mac. |
+| The queue ends `state: failed` | The pod is left up on purpose. Do step 6 (fetch), then delete the pod by hand and confirm it is gone. |
+| The pod is gone but there is no `DONE.json` | The guard or a crash ended it. The per-arm caches on the volume are what was synced; step 6 `fetch` reports what verifies. |
+| The day's spend nears $15 | Tell the lead before it passes. |
+
+## 4. Pod R (readers)
+
+### 4.1 When to start it
+
+Start pod R when pod W's smoke runs have passed: in pod W's `events.jsonl`, `chandra`,
+`dai` and `churro` each have a `queue-command-start` event with `"phase": "run"` (smoke
+passed, full run started), and there is no `queue-arm-error` for them. The lead has
+approved the overlap; do not wait for pod W to finish.
+
+### 4.2 Create and set up
+
+Same as 2.1–2.3 with these changes: name `verbatus-bakeoff-r`, GPU type
+`NVIDIA RTX PRO 6000 Blackwell Server Edition`, container disk 120 GB, no vCPU minimum
+needed (the reader queue has no CPU arms), datacenter and volume from step 2.0 (the
+shared `<dc>` and `<volume id>`, or `<dc R>` and its own volume). Call its id
+`<pod R id>`. Copy `reader-96gb.toml` up instead of the witness manifest, and the pages
+too if pod R has its own volume.
+
+The queue downloads the three Qwen snapshots itself at the cards' pinned commits in its
+`prepare` steps, so pod R needs internet during those and no token (the repos are not
+gated). Do **not** export `HF_HUB_OFFLINE=1` in the shell that starts a queue: the queue
+makes each arm's command offline by itself. On the pod, in `/opt/verbatus`, in the shell
+that has `NTFY_TOPIC`:
+
+```sh
+.venv/bin/python -m operations.bakeoff.queue_runner validate --manifest /workspace/private/bakeoff/reader-96gb.toml
+.venv/bin/python -m operations.bakeoff.queue_runner run --dry-run --manifest /workspace/private/bakeoff/reader-96gb.toml
 setsid nohup .venv/bin/python -m operations.bakeoff.queue_runner run \
   --manifest /workspace/private/bakeoff/reader-96gb.toml \
   > /workspace/private/bakeoff/queue-reader-96gb.log 2>&1 < /dev/null &
 ```
 
-Then `watch` as in section 5 with `--status /workspace/private/bakeoff/reader-cache/status.json`.
+Then `watch` as in step 3 with `--status /workspace/private/bakeoff/reader-cache/status.json`
+(and `--queue reader-96gb` for the phone route). The same table applies.
 
-## 7. What comes home, and where
+## 5. The plan for each pod
+
+Prices are RunPod Secure on-demand as seen 2026-10-08 (`config/pod_placement.toml`).
+
+**Pod W.** GPU arms in order: chandra, dai, dai-conf10, dai-whole, churro, chandra-native,
+churro-native, dots-mocr, surya-rec-surya, party-blla. CPU arms (the line sources, then
+kraken, PyLaia) run beside them. `queue_runner run --dry-run` prints each arm's box and
+lane. Cut rules if the day runs long: Party is cut first (`overrun`), the Surya recogniser
+at 30 minutes behind schedule (`behind-schedule`), dots.mocr only if its install fails;
+the baselines and the CTC line arms are never cut. Nothing is killed on a clock.
+
+**Pod R.** qwen38-27b-vendor, qwen35-27b-vendor, qwen35-9b-vendor, then the two blind
+arms only if their 2026-10-08 caches are not already in the reader cache (`cut =
+"overrun"`; on a fresh volume they run again if time allows). About 2.8 hours including
+the downloads.
+
+Expected spend at the 2026-10-08 evening prices (A40 $0.59/h, RTX 3090 $0.50/h, PRO 6000
+$2.49/h; read them again on the day): pod W 3.6 h with 32 vCPU or 7.2 h with 16
+(`run --dry-run` prints the estimate for the pod it runs on), about $2–4.50; pod R about
+2.8 h, about $7; about $9–12 in all plus the volume, inside the $15 approval. If the
+dry run on pod W shows a day long enough to pass $15, stop and tell the lead before
+launching.
+
+## 6. Bring the results home and confirm both pods are gone
 
 ```sh
-.venv/bin/python -m operations.bakeoff.queue_runner fetch --ssh "ssh -p <port> root@<ip>" \
+.venv/bin/python -m operations.bakeoff.queue_runner fetch --ssh "ssh -p <port W> root@<ip W>" \
   --remote /workspace/private/bakeoff/witness-cache --into private/bakeoff/witness-cache-$(date +%F)
-.venv/bin/python -m operations.bakeoff.queue_runner fetch --ssh "ssh -p <port> root@<ip>" \
+.venv/bin/python -m operations.bakeoff.queue_runner fetch --ssh "ssh -p <port R> root@<ip R>" \
   --remote /workspace/private/bakeoff/reader-cache --into private/bakeoff/reader-cache-$(date +%F)
 ```
 
-If the pod is already gone (it ended itself), the verified copy is on the volume under
-`<out>-home/`; fetch it with the S3 path (`verbatus fetch-run`-style keys) or a cheap CPU
-pod, and verify against its `DONE.json`.
+`fetch` checks every file against the pod's `DONE.json`. If a pod has already deleted
+itself, its verified copy is on the volume under `witness-cache-home/` or
+`reader-cache-home/`: tell the lead, who decides between a cheap CPU pod on the volume to
+copy it home or the S3 route in `operations/pod/README.md`.
 
-Confirm each pod is really gone: `runpodctl pod list --all` shows nothing, `runpodctl pod
-get <pod id>` fails, and the RunPod console's billing has stopped. A shutdown is verified,
-never assumed.
+Then confirm, never assume:
 
-Layout on the Mac:
-
-```
-private/bakeoff/
-  witness-cache-<date>/<arm>/<stem>.json     every arm's raw cache (+ _records/, _lines/)
-  reader-cache-<date>/<arm>/<stem>.json
-  scores-<date>/scores.md, scores.jsonl, roster.md, roster.jsonl
-  page-manifest.json, page-manifest.md       from handback/
-  hard-pages.txt
-  comparison-<date>.md                       the one-page table (template in section 9)
+```sh
+runpodctl pod list --all          # []
+runpodctl pod get <pod W id>      # an error: not found
+runpodctl pod get <pod R id>      # an error: not found
 ```
 
-## 8. Scoring at home
+and check that billing has stopped in the RunPod console. If a pod is still listed:
+`runpodctl pod delete <id>`, then list again.
+
+## 7. Score at home
 
 ```sh
 .venv/bin/python -m operations.bakeoff.score --cache private/bakeoff/witness-cache-<date> \
@@ -262,10 +322,22 @@ private/bakeoff/
   --out private/bakeoff/scores-<date>
 ```
 
-Run the reader cache through `score` the same way (a second `--cache`). Every number is
-"vs fool's gold (ballpark, not accuracy)" until the lead's gold exists.
+Run the reader cache through `score` the same way, with its own `--out`. Every number is
+"vs fool's gold (ballpark, not accuracy)" until the lead's checked gold exists.
 
-## 9. The one-page comparison the session fills in
+Layout on the Mac:
+
+```
+private/bakeoff/
+  witness-cache-<date>/<arm>/<stem>.json     every arm's raw cache (+ _records/, _lines/)
+  reader-cache-<date>/<arm>/<stem>.json
+  scores-<date>/scores.md, scores.jsonl, roster.md, roster.jsonl
+  page-manifest.json, page-manifest.md
+  hard-pages.txt
+  comparison-<date>.md                       the one-page table below
+```
+
+## 8. The one-page comparison the session fills in
 
 | arm | group scored | headline (group metric) | rescue rate | corr. with Chandra / DAI / Churro | s/page | VRAM | verdict |
 |---|---|---|---|---|---|---|---|
@@ -283,5 +355,8 @@ Run the reader cache through `score` the same way (a second `--cache`). Every nu
 | qwen*-blind / qwen*-vendor | all (reference) | | | | | | reader |
 
 Verdict words: `roster` (earns a 4th-witness arm on a type, plan 4.5), `keep as reference`,
-`drop`, with the page type beside it. Test pages are reported beside the table, never inside
-it; hard pages are inside every number and also listed on their own.
+`drop`, with the page type beside it. Hard pages are inside every number and also listed
+on their own, so each model's weak spots show.
+
+Report to the lead in plain words, phone-sized: which models did well on which page types,
+which failed and how, what it cost, and that both pods are confirmed gone.
