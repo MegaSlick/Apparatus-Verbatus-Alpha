@@ -23,12 +23,12 @@ unreadable ink and `[[reading]]` for doubt; they become gaps and uncertain spans
 ## How it works
 
 ```
-page images → Exemplar → Ink map → Designator → Attestatores → Perlector → Recensor → Archetypus → Armarium
-              sealed     where the   lines and    witness        reads each  checks     established  export
-              source     ink lies    records      models         page        coverage   reading
-                                                                    │                                   ▲
-                                                                    └──────────► Coniector ─────────────┘
-                                                                                 labelled reconstruction
+page images → Triage → Exemplar → Ink map → Designator → Attestatores → Perlector → Recensor → Archetypus → Armarium
+              optional sealed     where the   lines and    witness        reads each  checks     established  export
+              cropping source     ink lies    records      models         page        coverage   reading
+                                                                             │                                   ▲
+                                                                             └──────────► Coniector ─────────────┘
+                                                                                          labelled reconstruction
 ```
 
 [ARCHITECTURE.md](ARCHITECTURE.md) explains each stage and why it is shaped that way;
@@ -99,6 +99,8 @@ a searchable SQLite database, JSONL, and the items held for human review
 | `operations/` | operator tools, image intake, GPU pod and serving, notifications, review |
 | `proof/` | small synthetic fixtures that are safe to publish |
 | `gold/` | tooling for building human-checked reference samples |
+| `pagekit/` | page preparation for triage: turns scans upright, splits spreads, straightens and crops pages, and checks crops |
+| `docs/` | the separation inventory, the rules for AI contributors, and design notes |
 | `.githooks/` | git hooks and the check scripts CI runs |
 | `private/`, `scriptorium/` | local only; gitignored except their READMEs |
 

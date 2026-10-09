@@ -27,16 +27,16 @@ are binding.
 ## Setting up
 
 Follow *Getting started* in [README.md](README.md). The hooks refuse a commit on `main`
-and scan what you commit for credentials, private paths and oversized payloads. Before
-you push, run the tests near your change and the fast checks:
+and scan what you commit, and again what you push, for credentials, private paths and
+oversized payloads. Before you push, run the tests near your change and the fast checks:
 
 ```sh
 .venv/bin/python -m pytest -p xdist -n 2 <paths>
 sh .githooks/check-static.sh
 ```
 
-CI runs the full suite (`sh .githooks/check-all.sh`) on every pull request; it takes an
-hour or more, so locally run only what your change touches.
+CI runs the full suite (`sh .githooks/check-all.sh`) on every pull request; it takes
+about 20 minutes, so locally run only what your change touches.
 
 ## Making a change
 
@@ -44,9 +44,10 @@ hour or more, so locally run only what your change touches.
 2. Keep the change focused.
 3. Open a pull request. CI must pass, and every review comment is either fixed or
    answered with a reason.
-4. A change to README, PRINCIPLES, ARCHITECTURE, GLOSSARY, CONTRIBUTING, AGENTS or
-   CLAUDE, or to what AI sessions are allowed to do (`.claude/`), needs the project
-   lead's approval.
+4. A change to README, PRINCIPLES, ARCHITECTURE, GLOSSARY, CONTRIBUTING, AGENTS,
+   CLAUDE, GOVERNANCE, SECURITY, CODE_OF_CONDUCT or `docs/AI_CONTRIBUTORS.md`, to
+   anything under `.github/`, or to what AI sessions are allowed to do (`.claude/`),
+   needs the project lead's approval.
 
 ## How rules are written
 

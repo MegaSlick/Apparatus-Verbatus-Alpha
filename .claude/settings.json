@@ -26,7 +26,10 @@
       "Bash(*git*clone*4lex4*)",
       "Bash(*git*fetch*scantailor*)",
       "Bash(*git*fetch*ScanTailor*)",
-      "Bash(*git*fetch*4lex4*)"
+      "Bash(*git*fetch*4lex4*)",
+      "mcp__github__push_files",
+      "mcp__github__create_or_update_file",
+      "mcp__github__delete_file"
     ],
     "ask": [
       "Bash(runpodctl create*)",

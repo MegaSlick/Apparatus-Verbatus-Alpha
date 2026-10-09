@@ -28,6 +28,7 @@ page; only one establishes the text.
 
 ```mermaid
 flowchart LR
+    T["Triage<br/><i>optional: split, crop, deskew</i>"] -.-> A
     A["Exemplar<br/><i>sealed source</i>"] --> I["Ink map<br/><i>where the ink lies</i>"]
     I --> B["Designator<br/><i>lines and records</i>"]
     B --> C["Attestatores<br/><i>witnesses report</i>"]
@@ -52,6 +53,12 @@ run stops.
 role; which model fills which role is configuration, not architecture.
 
 ## The stages
+
+**Triage** — optional work before the door, and not a stage of a run: deciding how each
+photographed frame is split into pages, cropped, deskewed and converted, and which
+frames are captures of the same leaf. Its tools (`operations/triage/`, with pagekit
+preparing the pages) write decision documents that the door applies; it never chooses
+among captures. Its contract is `pipeline/0_triage/CONTRACT.md`.
 
 **Exemplar** — the sealed source. In manuscript practice the exemplar is the original
 you copy *from*; here it is the immutable scanned page, hashed and accounted for.

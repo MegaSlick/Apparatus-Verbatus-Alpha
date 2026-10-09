@@ -241,6 +241,19 @@ def test_forced_add_of_safe_text_from_private_area_is_still_blocked(repo):
     assert "[private-path]" in result.stderr
 
 
+@pytest.mark.parametrize("area", ["private", "scriptorium", "workbench"])
+def test_each_local_only_area_admits_only_its_readme(repo, area):
+    write(repo, f"{area}/README.md", "what this folder is for\n")
+    stage(repo, f"{area}/README.md")
+    assert run_scan(repo, "--staged").returncode == 0
+
+    write(repo, f"{area}/notes.txt", "ordinary local material\n")
+    stage(repo, f"{area}/notes.txt")
+    result = run_scan(repo, "--staged")
+    assert result.returncode == 1
+    assert "[private-path]" in result.stderr
+
+
 def test_text_size_boundary_is_exact(repo):
     write(repo, "boundary.txt", b"a" * ONE_MIB)
     stage(repo, "boundary.txt")

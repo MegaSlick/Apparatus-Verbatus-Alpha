@@ -20,9 +20,9 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # Catches a hung leg. Runner speed varies about twofold, so the cap sits well above
-    # the slow case.
-    timeout-minutes: 150
+    # Catches a hung leg. A leg takes about 20 minutes and runner speed varies about
+    # twofold, so the cap sits well above the slow case.
+    timeout-minutes: 60
     strategy:
       matrix:
         # The oldest and newest supported versions; 3.13 lies between them and is

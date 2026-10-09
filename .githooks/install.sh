@@ -18,7 +18,7 @@ fi
 # git does not run pre-commit for a merge, so pre-merge-commit carries the same
 # checks there. A hook that cannot be made executable fails the install.
 if ! chmod +x .githooks/pre-commit .githooks/pre-merge-commit \
-           .githooks/commit-msg \
+           .githooks/commit-msg .githooks/pre-push \
            .githooks/check-all.sh .githooks/check-fast.sh \
            .githooks/check-static.sh .githooks/check-documents.sh \
            .githooks/install.sh; then
@@ -33,6 +33,7 @@ echo "Hooks installed for this clone."
 echo ""
 echo "  On every commit: no commits on main, and no credentials, undeclared"
 echo "  binaries or oversized files in what you stage or in the message."
+echo "  On every push: the same scan over the commits you send."
 echo ""
 echo "  Quick checks:  sh .githooks/check-fast.sh"
 echo "  Full suite:    sh .githooks/check-all.sh   (CI runs this on every pull request)"

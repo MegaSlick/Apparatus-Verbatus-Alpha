@@ -55,6 +55,11 @@ chairs:
 **door** — the intake step before the Exemplar: it checks and seals what was submitted,
 and records anything it refuses.
 
+**triage** — optional work before the door: how each photographed frame is split into
+pages, cropped, deskewed and converted, and which frames are captures of the same leaf.
+It is not a stage and never runs in a run; its decisions reach the door as documents
+(`pipeline/0_triage/CONTRACT.md`), and it never picks among captures.
+
 **canary** — a private page whose reading is already known, added to a real run as a
 control from a separate folder and manifest. The door gives canary pages the ordinals
 after the real pages and seals their ledger as `canary-ledger`. A canary page is never

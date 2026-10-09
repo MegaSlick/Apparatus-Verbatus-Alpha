@@ -44,6 +44,7 @@ check what it uploads.
 
 - Work on a branch, never on `main`. Stage only the files you changed; never skip the
   commit hooks, which catch credentials before they leave the machine.
+- A fresh clone runs no hooks until `sh .githooks/install.sh` has run in it.
 - Push and open pull requests freely for the session's goal. Merge your own pull request
   when it is up to date with `main`, CI is green on that head and review threads are
   resolved; report the number and head commit.
