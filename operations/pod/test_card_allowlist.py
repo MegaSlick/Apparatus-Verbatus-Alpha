@@ -189,7 +189,7 @@ def test_a_reviewed_card_above_the_ceiling_is_refused_by_its_reviewed_price(
     """Listed is not enough: the row's own price must fit the policy.
 
     The fake quotes $0.10/h for this card, so only the reviewed row price
-    ($1.99/h) can trip the ceiling: this pins that the gate checks the row
+    ($2.49/h) can trip the ceiling: this pins that the gate checks the row
     price, not only the quote.
     """
 
@@ -199,7 +199,7 @@ def test_a_reviewed_card_above_the_ceiling_is_refused_by_its_reviewed_price(
 
     assert result.state is LaunchState.REFUSED_CARD
     assert "'RTX PRO 6000 Blackwell'" in result.detail
-    assert "$1.99/h" in result.detail and "$0.40" in result.detail
+    assert "$2.49/h" in result.detail and "$0.40" in result.detail
     assert provider.calls == []
 
 

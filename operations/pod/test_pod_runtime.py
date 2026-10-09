@@ -7212,8 +7212,8 @@ def test_the_shipped_spend_policy_carries_the_reviewed_ceilings() -> None:
     policy = _shipped_spend_policy()
 
     assert policy.configured
-    assert policy.max_hourly_usd == Decimal("2.10")
-    assert policy.max_estimated_metered_cost_usd == Decimal("5.00")
+    assert policy.max_hourly_usd == Decimal("3.00")
+    assert policy.max_estimated_metered_cost_usd == Decimal("6.00")
     assert policy.account_balance_floor_usd == Decimal("50.00")
     assert policy.account_balance_alert_usd == Decimal("75.00")
     assert policy.hard_lifetime_seconds == 7200
