@@ -7230,12 +7230,12 @@ def test_the_shipped_spend_policy_carries_the_reviewed_ceilings() -> None:
 @pytest.mark.parametrize(
     ("gpu_type_id", "volume_hourly_usd", "admitted"),
     [
-        ("NVIDIA RTX A5000", "0.51", True),
-        ("NVIDIA A40", "0.51", True),
-        ("NVIDIA RTX 6000 Ada Generation", "0.51", True),
-        # The dearest reviewed card ($2.49), at exactly the $3.00 ceiling and one cent past it.
-        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "0.51", True),
-        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "0.52", False),
+        ("NVIDIA RTX A5000", "1.01", True),
+        ("NVIDIA A40", "1.01", True),
+        ("NVIDIA RTX 6000 Ada Generation", "1.01", True),
+        # The dearest reviewed card ($1.99), at exactly the $3.00 ceiling and one cent past it.
+        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "1.01", True),
+        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", "1.02", False),
     ],
 )
 def test_the_shipped_spend_policy_admits_every_reviewed_card_and_refuses_a_cent_past_its_ceiling(
@@ -7243,7 +7243,7 @@ def test_the_shipped_spend_policy_admits_every_reviewed_card_and_refuses_a_cent_
 ) -> None:
     """Every card the reviewed table prices is admitted, for the whole hard lifetime,
     beside the largest volume rate spend.toml says its hourly ceiling allows for
-    ($0.51/h); a cent more is refused. No reviewed card is priced above the ceiling."""
+    ($1.01/h); a cent more is refused. No reviewed card is priced above the ceiling."""
     from .spend import assess_spend
 
     now = datetime(2026, 10, 1, tzinfo=timezone.utc)
