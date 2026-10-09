@@ -977,3 +977,85 @@ def test_pod_delete_reports_when_nothing_works(delete_env):
 def test_pod_delete_refuses_a_bad_pod_id(delete_env):
     env, calls, _, _ = delete_env
     assert _delete(env, "pod;rm").returncode == 2 and not calls.exists()
+
+
+# --- the global volume route: copy to object storage, one manifest for both ----------
+
+
+def _tree(root: Path) -> None:
+    (root / "a").mkdir(parents=True)
+    (root / "a" / "p000.json").write_text('{"error": null}')
+    (root / "top.txt").write_text("x")
+
+
+def test_copy_falls_back_to_in_place_rsync_when_times_are_refused(tmp_path):
+    """An object-storage mount refuses rsync's times and renames; the next form copies."""
+    source, target = tmp_path / "src", tmp_path / "dst"
+    _tree(source)
+    tried = []
+
+    def run(argv, check):
+        tried.append(argv[1:3])
+        if argv[1] == "-rt":
+            raise subprocess.CalledProcessError(23, argv)
+        return subprocess.run(argv, check=check)
+
+    assert Q.copy_tree(source, target, run) == "rsync -r --inplace"
+    assert tried == [["-rt", f"{source}/"], ["-r", "--inplace"]]
+    assert Q.compare_digests(Q.tree_digests(source), target) == []
+
+
+def test_copy_falls_back_to_python_when_every_rsync_form_fails(tmp_path):
+    source, target = tmp_path / "src", tmp_path / "dst"
+    _tree(source)
+
+    def run(argv, check):
+        raise subprocess.CalledProcessError(23, argv)
+
+    assert Q.copy_tree(source, target, run) == "python copy"
+    assert Q.compare_digests(Q.tree_digests(source), target) == []
+
+
+def test_done_json_is_written_directly_where_a_rename_is_refused(tmp_path, monkeypatch):
+    def no_rename(src, dst):
+        raise OSError("rename not supported")
+
+    monkeypatch.setattr(Q.os, "replace", no_rename)
+    Q.write_json_anywhere(tmp_path / "DONE.json", {"verified": True})
+    assert json.loads((tmp_path / "DONE.json").read_text())["verified"] is True
+
+
+def test_the_command_line_moves_the_copy_to_the_global_mount(bench):
+    manifest = _manifest(bench, [_cpu_arm(bench, "a")])
+
+    moved = Q.override_manifest(manifest, "/workspace/global/bakeoff/home", True)
+
+    assert moved.sync_to == Path("/workspace/global/bakeoff/home") and moved.own_disk is True
+    assert Q.override_manifest(manifest, None, False) == manifest
+    with pytest.raises(Q.ManifestError, match="absolute"):
+        Q.override_manifest(manifest, "relative/home", False)
+    with pytest.raises(Q.ManifestError, match="separate"):
+        Q.override_manifest(manifest, str(bench["out"] / "inside"), False)
+
+
+@pytest.mark.parametrize("name", ["witness-24gb.toml", "reader-96gb.toml"])
+def test_the_bakeoff_manifests_validate_on_the_global_route(name, capsys):
+    argv = [
+        "--manifest",
+        str(EXAMPLES / name),
+        "--sync-to",
+        "/workspace/global/bakeoff/home",
+        "--own-disk",
+    ]
+    assert Q.main(["validate", *argv]) == 0
+    assert Q.main(["run", *argv, "--dry-run"]) == 0
+    printed = capsys.readouterr().out
+    assert "-> /workspace/global/bakeoff/home" in printed and "own disk" in printed
+
+
+def test_keep_pod_makes_the_run_end_with_the_pod_kept(bench, capsys):
+    manifest = _manifest(bench, [_cpu_arm(bench, "a")])
+    assert Q.override_manifest(manifest, None, False, keep_pod=True).end_pod == "none"
+    argv = ["--manifest", str(EXAMPLES / "witness-24gb.toml"), "--keep-pod", "--own-disk"]
+    assert Q.main(["run", *argv, "--dry-run"]) == 0
+    assert "end pod: none" in capsys.readouterr().out

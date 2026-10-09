@@ -326,6 +326,45 @@ def container_disk_gb_for_tier(tier: str | None) -> int:
 
 
 @dataclass(frozen=True, slots=True)
+class GlobalVolumeMount:
+    """A RunPod global volume (object storage) attached at creation, for results only.
+
+    Object storage has no permission bits, no atomic rename and no locking, so
+    the guard's records, the model store, caches and anything written often
+    stay on the disk at `POD_VOLUME_MOUNT_PATH`; the global volume holds only a
+    run's final copy. Its mount path is therefore a separate absolute path,
+    neither the pod's volume mount nor inside or above it. The id is the one
+    the RunPod console's Storage page shows; no API lists global volumes.
+    """
+
+    volume_id: str
+    mount_path: str
+
+    def __post_init__(self) -> None:
+        for label, value in (("volume_id", self.volume_id), ("mount_path", self.mount_path)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"global volume {label} must be a non-blank string")
+        if self.volume_id.strip().startswith("<"):
+            raise ValueError("global volume_id is an unsupplied placeholder")
+        mount = PurePosixPath(self.mount_path)
+        if not mount.is_absolute() or str(mount) != self.mount_path or mount == mount.parent:
+            raise ValueError(
+                "global volume mount_path must be a plain absolute path below the root"
+            )
+        private = PurePosixPath(POD_VOLUME_MOUNT_PATH)
+        if mount == private or private in mount.parents or mount in private.parents:
+            raise ValueError(
+                f"global volume mount_path must be separate from {POD_VOLUME_MOUNT_PATH}: "
+                "object storage cannot hold the guard's records, the model store or caches"
+            )
+
+    def as_object_mount(self) -> dict[str, str]:
+        """The one `PodObjectMountInput` RunPod's GraphQL create takes."""
+
+        return {"objectStoreId": self.volume_id, "mountPath": self.mount_path}
+
+
+@dataclass(frozen=True, slots=True)
 class PodCreateRequest:
     """The complete requested pod shape, before a provider sees it.
 
@@ -333,7 +372,8 @@ class PodCreateRequest:
     is a silent-loss path.  A volume is supplied at creation time; there is no
     later attach operation in this runtime.  ``container_disk_gb`` is stated
     rather than left to the provider's default, because the bootstrap's own
-    downloads land on that disk.
+    downloads land on that disk.  ``global_volume`` adds a global volume beside
+    the network volume, for results only (`GlobalVolumeMount`).
     """
 
     name: str
@@ -349,8 +389,11 @@ class PodCreateRequest:
     metadata: Mapping[str, str] = field(default_factory=dict)
     interruptible: bool = False
     recovery_only: bool = False
+    global_volume: GlobalVolumeMount | None = None
 
     def __post_init__(self) -> None:
+        if self.global_volume is not None and not isinstance(self.global_volume, GlobalVolumeMount):
+            raise ValueError("global_volume must be a GlobalVolumeMount when supplied")
         for label, value in (
             ("name", self.name),
             ("gpu_type", self.gpu_type),
@@ -448,6 +491,8 @@ def _digestable(value: object) -> object:
         return {str(key): _digestable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_digestable(item) for item in value]
+    if isinstance(value, GlobalVolumeMount):
+        return {"volume_id": value.volume_id, "mount_path": value.mount_path}
     raise ValueError(
         f"pod request field of type {type(value).__name__} has no reviewed digest form"
     )
@@ -1024,6 +1069,8 @@ class PodRecord:
     An adapter that can identify a pod but cannot prove its effective shape
     returns the record anyway, so the pod can be bound to its lease and closed,
     and names the reason here for the close record to carry."""
+    global_volume: GlobalVolumeMount | None = None
+    """The global volume the provider reports attached, when the record carries mounts."""
 
     def __post_init__(self) -> None:
         for label, value in (
