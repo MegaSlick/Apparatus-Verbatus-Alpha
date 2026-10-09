@@ -926,6 +926,21 @@ fields (`args` for the start command, `mounts.network` for the volume, `startSsh
   `--no-hold` the guard deletes it, and every result, within a minute of the run ending
   (lost that way once, 2026-10-07).
 
+### A global volume for the results (any datacenter)
+
+A RunPod **global volume** is object storage that any datacenter can mount, so a pod can
+go where its card has stock and still leave its results behind. Only the GraphQL create
+(`podFindAndDeployOnDemand`, `objectMounts`) can attach one; `runpodctl`, the connector
+and both REST routes cannot, and no API lists them (the id is on the console's Storage
+page, in the lead's private note). Object storage has no permission bits, no atomic
+rename and no locking, so **it holds only a run's final copy**: the guard's records, the
+model store, caches, the clone and the venv stay on the pod's own disk at
+`/workspace/private` (`--disk-gb`, deleted with the pod), which passes the same mount
+check a network volume does. `operations/pod/create_pod.py` is the hand route's create
+for this; `operations/bakeoff/RUNBOOK.md` step 2.1 is the worked example, with a
+two-minute smoke on the cheapest card first. The managed route takes the same volume as
+`global_volume` in its request file and sends it on REST v1 only (`provider_runpod`).
+
 ### On the pod, over SSH
 
 ```sh

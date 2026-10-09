@@ -22,7 +22,13 @@ from .arming import ControllerArmer
 from .fixture import FixtureRecorder
 from .launch import LaunchResult, LaunchState, PodRuntime, phraseless
 from .lease import LeaseStore
-from .models import PodCreateRequest, container_disk_gb_for_tier, require_utc, utc_now
+from .models import (
+    GlobalVolumeMount,
+    PodCreateRequest,
+    container_disk_gb_for_tier,
+    require_utc,
+    utc_now,
+)
 from .notify_bridge import Notifier, shell_notifier, silent
 from .preflight import PlacementRefusal, load_placement_table
 from .provider import PodProvider
@@ -704,6 +710,7 @@ def _request(path: Path) -> PodCreateRequest:
         "container_disk_gb",
         "template",
         "metadata",
+        "global_volume",
     }
     unknown = sorted(set(raw) - allowed)
     if unknown:
@@ -721,6 +728,13 @@ def _request(path: Path) -> PodCreateRequest:
         isinstance(key, str) and isinstance(value, str) for key, value in metadata.items()
     ):
         raise ValueError("metadata must map strings to strings")
+    # Never a default: a global volume is named in the request, id and mount
+    # path together, so a request file reads the same as the pod it buys.
+    global_volume = raw.get("global_volume")
+    if global_volume is not None:
+        if not isinstance(global_volume, dict) or set(global_volume) != {"volume_id", "mount_path"}:
+            raise ValueError("global_volume must be an object with volume_id and mount_path")
+        global_volume = GlobalVolumeMount(global_volume["volume_id"], global_volume["mount_path"])
     return PodCreateRequest(
         name=raw.get("name"),
         gpu_type=raw.get("gpu_type"),
@@ -733,6 +747,7 @@ def _request(path: Path) -> PodCreateRequest:
         container_disk_gb=container_disk_gb,
         template=raw.get("template"),
         metadata=metadata,
+        global_volume=global_volume,
     )
 
 

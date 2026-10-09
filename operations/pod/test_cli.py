@@ -134,3 +134,36 @@ def test_a_missing_armer_factory_refuses_in_this_surface_s_own_record(
     assert "--controller-armer-factory" in printed["detail"]
     assert "no paid action occurred" in printed["detail"]
     assert not (tmp_path / "leases").exists()
+
+
+def test_a_request_file_names_its_global_volume_in_full_or_not_at_all(tmp_path: Path) -> None:
+    from .conftest import timer_start_command
+    from .models import GlobalVolumeMount
+
+    token = "a" * 32
+    fields = {
+        "name": "safe-pod",
+        "gpu_type": "NVIDIA RTX 6000 Ada Generation",
+        "image": "registry.example/verbatus@sha256:" + "a" * 64,
+        "volume_id": "volume-1",
+        "volume_mount_path": "/workspace/private",
+        "docker_start_cmd": list(
+            timer_start_command(f"/workspace/private/pod-runtime-report-{token}.json")
+        ),
+        "hard_deadline": "2026-08-08T13:00:00Z",
+        "repository_commit": "b" * 40,
+        "metadata": {
+            "VERBATUS_LAUNCH_TOKEN": token,
+            "VERBATUS_BILLING_CUTOFF_MARGIN_SECONDS": "3600",
+        },
+        "global_volume": {"volume_id": "global-1", "mount_path": "/workspace/global"},
+    }
+    path = tmp_path / "request.json"
+    path.write_text(json.dumps(fields))
+
+    assert cli._request(path).global_volume == GlobalVolumeMount("global-1", "/workspace/global")
+
+    fields["global_volume"] = {"volume_id": "global-1"}
+    path.write_text(json.dumps(fields))
+    with pytest.raises(ValueError, match="volume_id and mount_path"):
+        cli._request(path)

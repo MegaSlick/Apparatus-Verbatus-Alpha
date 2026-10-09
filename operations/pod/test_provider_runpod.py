@@ -32,6 +32,7 @@ from .models import (
     BILLING_CUTOFF_MARGIN_ENV,
     AccountBalanceObservation,
     BillingState,
+    GlobalVolumeMount,
     PendingCreateIntent,
     PodCreateRequest,
     Presence,
@@ -40,6 +41,7 @@ from .models import (
 from .provider_runpod import (
     _MAX_RESPONSE_BYTES,
     BALANCE_QUERY,
+    POD_CREATE_MUTATION,
     RUNPOD_GRAPHQL_ROOT,
     GraphQLBalanceObserver,
     HttpResponse,
@@ -2187,3 +2189,115 @@ def test_a_fresh_pod_with_no_start_instant_anchors_billing_before_the_post() -> 
 
     assert record.runtime_contract is not None
     assert record.created_at == requested
+
+
+# -- the global volume (object storage) ------------------------------------------------
+
+
+def graphql_created(**overrides: object) -> dict[str, object]:
+    pod: dict[str, object] = {
+        "id": "pod-1",
+        "name": "safe-pod",
+        "desiredStatus": "RUNNING",
+        "costPerHr": 0.77,
+        "imageName": "registry.example/verbatus@sha256:" + "a" * 64,
+        "volumeInGb": 0,
+        "volumeMountPath": "/workspace/private",
+        "vcpuCount": 16,
+        "machine": {"gpuTypeId": "NVIDIA RTX 6000 Ada Generation"},
+        "objectStores": [{"objectStoreId": "global-1", "mountPath": "/workspace/global"}],
+    }
+    pod.update(overrides)
+    return {"data": {"podFindAndDeployOnDemand": pod}}
+
+
+GLOBAL = GlobalVolumeMount("global-1", "/workspace/global")
+
+
+def test_a_global_volume_create_goes_through_graphql_with_object_mounts() -> None:
+    rest = ScriptedTransport([json_response([]), json_response(pod_payload())])
+    graphql = ScriptedTransport([json_response(graphql_created())])
+    adapter = RunPodProvider(
+        rest,
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        now=lambda: NOW,
+        graphql_transport=graphql,
+    )
+
+    record = adapter.create(request(global_volume=GLOBAL))
+
+    assert [(method, path) for method, path, _ in rest.calls] == [
+        ("GET", "/pods?includeMachine=true&includeNetworkVolume=true"),
+        ("GET", "/pods/pod-1?includeMachine=true&includeNetworkVolume=true"),
+    ]
+    (call,) = graphql.calls
+    assert call[:2] == ("POST", "/graphql")
+    body = call[2]
+    assert body is not None and body["query"] == POD_CREATE_MUTATION
+    sent = body["variables"]["input"]  # type: ignore[index]
+    assert sent["objectMounts"] == [{"objectStoreId": "global-1", "mountPath": "/workspace/global"}]
+    assert sent["networkVolumeId"] == "volume-1"
+    assert sent["volumeMountPath"] == "/workspace/private"
+    assert sent["gpuTypeId"] == "NVIDIA RTX 6000 Ada Generation"
+    assert sent["cloudType"] == "SECURE" and sent["startSsh"] is False and "ports" not in sent
+    assert {"key": "VERBATUS_RUNPOD_ROUTE", "value": "v1"} in sent["env"]
+    assert record.pod_id == "pod-1"
+    assert record.global_volume == GLOBAL
+    assert record.runtime_contract is not None and record.contract_refusal is None
+
+
+def test_a_pod_reporting_another_global_volume_is_bound_without_a_contract() -> None:
+    rest = ScriptedTransport([json_response([]), json_response(pod_payload())])
+    other = graphql_created(objectStores=[{"objectStoreId": "global-2", "mountPath": "/mnt/x"}])
+    adapter = RunPodProvider(
+        rest,
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        now=lambda: NOW,
+        graphql_transport=ScriptedTransport([json_response(other)]),
+    )
+
+    record = adapter.create(request(global_volume=GLOBAL))
+
+    assert record.pod_id == "pod-1" and record.runtime_contract is None
+    assert record.contract_refusal is not None and "global-2" in record.contract_refusal
+    assert record.global_volume == GlobalVolumeMount("global-2", "/mnt/x")
+
+
+def test_a_global_volume_create_with_no_graphql_transport_refuses_before_any_post() -> None:
+    rest = ScriptedTransport([json_response([])])
+
+    with pytest.raises(ProviderFailure, match="GraphQL transport"):
+        provider(rest).create(request(global_volume=GLOBAL))
+
+    assert [method for method, _, _ in rest.calls] == ["GET"]
+
+
+def test_a_graphql_error_creates_nothing_and_is_named() -> None:
+    rest = ScriptedTransport([json_response([])])
+    answer = {"errors": [{"message": "objectStoreId not found"}], "data": None}
+    adapter = RunPodProvider(
+        rest,
+        pod_price=lambda gpu: Decimal("0.77"),
+        volume_price=lambda volume: Decimal("0.05"),
+        now=lambda: NOW,
+        graphql_transport=ScriptedTransport([json_response(answer)]),
+    )
+
+    with pytest.raises(ProviderFailure, match="objectStoreId not found"):
+        adapter.create(request(global_volume=GLOBAL))
+
+    assert len(rest.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "mount", ["/workspace/private", "/workspace/private/results", "/workspace", "/", "relative"]
+)
+def test_a_global_volume_cannot_sit_where_the_guard_and_caches_live(mount: str) -> None:
+    with pytest.raises(ValueError):
+        GlobalVolumeMount("global-1", mount)
+
+
+def test_the_global_volume_is_part_of_the_reviewed_digest() -> None:
+    assert request().reviewed_digest() != request(global_volume=GLOBAL).reviewed_digest()

@@ -68,6 +68,7 @@ import contextlib
 import http.client
 import json
 import os
+import shlex
 import threading
 import time
 import urllib.error
@@ -95,6 +96,7 @@ from .models import (
     BillingState,
     CostCapture,
     CostLine,
+    GlobalVolumeMount,
     PodCreateRequest,
     PodEstimate,
     PodRecord,
@@ -156,12 +158,53 @@ RUNPOD_GRAPHQL_ROOT = "https://api.runpod.io"
 GRAPHQL_PATH = "/graphql"
 """Where the account balance lives. REST v1 and v2 both lack it (module docstring)."""
 
+ACCOUNT_KEY_ENVIRONMENT = "RUNPOD_API_KEY"
+"""The shell variable the hand route keeps the account key in (never a file or a
+command line); `runpodctl` and `pod_delete.sh` read the same one."""
+
+
+def graphql_transport_from_environment(
+    environ: Mapping[str, str] | None = None,
+) -> "UrllibRunPodTransport | None":
+    """A GraphQL transport over the account key in the shell, or ``None`` without one."""
+
+    key = (os.environ if environ is None else environ).get(ACCOUNT_KEY_ENVIRONMENT, "")
+    if not key.strip():
+        return None
+    return UrllibRunPodTransport(key, root=RUNPOD_GRAPHQL_ROOT, credential_placement="query")
+
+
 BALANCE_QUERY = "query { myself { clientBalance currentSpendPerHr } }"
 """Exactly the two fields the spend gate needs; nothing else is requested, so a
 response carrying anything credential-shaped is refused rather than trusted."""
 
 BALANCE_CURRENCY = "US dollars per the vendor's billing documentation"
 """Observed from the pages the module docstring names, never from the query."""
+
+POD_CREATE_MUTATION = (
+    "mutation Create($input: PodFindAndDeployOnDemandInput!) {"
+    " podFindAndDeployOnDemand(input: $input) {"
+    " id name desiredStatus costPerHr imageName volumeInGb volumeMountPath vcpuCount"
+    " machine { gpuTypeId } objectStores { objectStoreId mountPath } } }"
+)
+"""The one create that can attach a **global volume** (RunPod's object storage).
+
+Validated against the live schema on 2026-10-08 without creating anything:
+`PodFindAndDeployOnDemandInput.objectMounts: [PodObjectMountInput!]`, whose
+two fields are `objectStoreId: ID!` and `mountPath: String!`, and the pod
+reports them back as `objectStores { objectStoreId mountPath }`. REST v1,
+REST v2 (`mounts` has only `persistent` and `network`), runpodctl 2.14 and the
+connector have no such field. No API lists global volumes: the id comes from
+the console's Storage page. GraphQL validates the whole document before it
+runs, so a selection the schema does not know fails without creating a pod.
+"""
+
+GLOBAL_VOLUME_V2_REFUSAL = (
+    "RunPod REST v2 cannot attach a global volume: CreatePodRequest.mounts carries only "
+    "persistent and network mounts. Launch through REST v1 "
+    '(live_runpod_provider(..., route="v1")), whose create sends objectMounts through '
+    "the GraphQL podFindAndDeployOnDemand mutation; no create request was issued"
+)
 
 _CREDENTIAL_PLACEMENTS = frozenset({"header", "query"})
 
@@ -535,6 +578,7 @@ class _RunPodAdapter:
         now: Callable[[], datetime] = utc_now,
         balance_notify: Callable[[Decimal, Decimal | None], notify_hooks.NotifyOutcome]
         | None = None,
+        graphql_transport: HttpTransport | None = None,
     ) -> None:
         if isinstance(transport, UrllibRunPodTransport) and transport.root != self.ROOT:
             raise ValueError(
@@ -545,15 +589,20 @@ class _RunPodAdapter:
         self.transport = transport
         self.pod_price = pod_price
         self.volume_price = volume_price
-        if balance_observer is None and isinstance(transport, UrllibRunPodTransport):
+        if graphql_transport is None and isinstance(transport, UrllibRunPodTransport):
+            # The key stays inside `sibling`; a fake REST transport gets no
+            # GraphQL sibling, so a test injects one or sees the named refusal.
+            graphql_transport = transport.sibling(
+                root=RUNPOD_GRAPHQL_ROOT, credential_placement="query"
+            )
+        self.graphql_transport = graphql_transport
+        if balance_observer is None and graphql_transport is not None:
             # Built only for a live credential, so a fake transport keeps the
-            # "not configured" refusal and the key stays inside `sibling`. Phone
-            # pings are opt-in: only `balance_notify` or `set_balance_notify`
-            # (reached from `cli.py --notify`) wire one.
+            # "not configured" refusal. Phone pings are opt-in: only
+            # `balance_notify` or `set_balance_notify` (reached from
+            # `cli.py --notify`) wire one.
             balance_observer = GraphQLBalanceObserver(
-                transport.sibling(root=RUNPOD_GRAPHQL_ROOT, credential_placement="query"),
-                now=now,
-                notify=balance_notify,
+                graphql_transport, now=now, notify=balance_notify
             )
         self.balance_observer = balance_observer
         self.balance_timeout_seconds = balance_timeout_seconds
@@ -574,6 +623,8 @@ class _RunPodAdapter:
         """
 
         self.transport = RecordingTransport(self.transport, recorder)
+        if self.graphql_transport is not None:
+            self.graphql_transport = RecordingTransport(self.graphql_transport, recorder)
         observer = self.balance_observer
         if isinstance(observer, GraphQLBalanceObserver):
             observer.transport = RecordingTransport(observer.transport, recorder)
@@ -928,12 +979,65 @@ class RunPodProvider(_RunPodAdapter):
         existing = self._existing_launch(request)
         if existing is not None:
             return existing
+        if request.global_volume is not None:
+            return self._create_with_global_volume(request)
         response = self.transport.request("POST", "/pods", _create_payload(request, self.ROUTE))
         if response.status not in {200, 201}:
             raise ProviderFailure(
                 f"RunPod create returned HTTP {response.status}: {_body_summary(response.body)}"
             )
         return self._created_record(_object(response.body, "RunPod create"), request)
+
+    def _create_with_global_volume(self, request: PodCreateRequest) -> PodRecord:
+        """Create through GraphQL, the one route that takes `objectMounts`.
+
+        The pod is then read back over REST v1 like an adopted one, so the
+        record and its runtime contract come from the same fields every other
+        v1 record uses; the global volume is checked from the mutation's own
+        answer. A pod whose read-back fails is still bound by its id, with the
+        reason, so it is closed rather than left billing.
+        """
+
+        graphql = self.graphql_transport
+        if graphql is None:
+            raise ProviderFailure(
+                "RunPod global volume attach needs the GraphQL transport, and this adapter has "
+                "none (a fake REST transport gets no sibling); no create request was issued"
+            )
+        variables = {"input": graphql_create_input(request, self.ROUTE)}
+        response = graphql.request(
+            "POST", GRAPHQL_PATH, {"query": POD_CREATE_MUTATION, "variables": variables}
+        )
+        if response.status != 200:
+            raise ProviderFailure(
+                f"RunPod GraphQL create returned HTTP {response.status}: "
+                f"{_body_summary(response.body)}"
+            )
+        pod = created_pod_from_graphql(response.body)
+        pod_id = _text(pod.get("id"), "RunPod created pod id")
+        read = self.transport.request("GET", f"/pods/{_path_id(pod_id)}{self._INCLUDE_QUERY}")
+        payload: Mapping[str, object]
+        if read.status == 200:
+            payload = _object(read.body, "RunPod create read-back")
+        else:
+            payload = {"id": pod_id, self._STATE_FIELD: pod.get("desiredStatus")}
+        record = self._created_record(payload, request)
+        try:
+            observed = global_volume_of(pod)
+        except ProviderFailure as error:
+            observed, problem = None, str(error)
+        else:
+            problem = None
+            if observed != request.global_volume:
+                problem = (
+                    f"RunPod pod {pod_id} reports global volume {observed.as_object_mount()}, "
+                    f"not the requested {request.global_volume.as_object_mount()}"  # type: ignore[union-attr]
+                )
+        if problem is not None and record.contract_refusal is None:
+            return replace(
+                record, global_volume=observed, runtime_contract=None, contract_refusal=problem
+            )
+        return replace(record, global_volume=observed)
 
     def terminate(self, pod_id: str) -> None:
         """Terminate, never stop: a stopped pod bills volume disk at double rate.
@@ -1159,6 +1263,127 @@ def _create_payload(request: PodCreateRequest, route: str = "v1") -> dict[str, o
     return payload
 
 
+def graphql_create_input(request: PodCreateRequest, route: str = "v1") -> dict[str, object]:
+    """The seam's request as a `PodFindAndDeployOnDemandInput`, global volume included.
+
+    The same fields as `_create_payload` under GraphQL's names: one
+    `gpuTypeId`, `dockerArgs` as one shell line (the REST routes take an
+    argv), `env` as key/value pairs, and `objectMounts` for the global volume.
+    `interruptible` has no GraphQL field: this mutation only places on-demand
+    pods (`podRentInterruptable` is the spot one). No SSH and no ports, like
+    the REST creates. Documented and schema-validated, not yet observed.
+    """
+
+    assert request.global_volume is not None
+    payload = pod_create_input(
+        name=request.name,
+        image=request.image,
+        gpu_type=request.gpu_type,
+        container_disk_gb=request.container_disk_gb,
+        docker_args=shlex.join(request.docker_start_cmd),
+        env=_pod_environment(request, route),
+        network_volume_id=request.volume_id,
+        volume_mount_path=request.volume_mount_path,
+        global_volume=request.global_volume,
+        ports=None,
+        start_ssh=False,
+    )
+    if request.template is not None:
+        payload["templateId"] = request.template
+    return payload
+
+
+def pod_create_input(
+    *,
+    name: str,
+    image: str,
+    gpu_type: str,
+    container_disk_gb: int,
+    docker_args: str,
+    env: Mapping[str, str] | None = None,
+    network_volume_id: str | None = None,
+    persistent_disk_gb: int | None = None,
+    volume_mount_path: str | None = None,
+    global_volume: GlobalVolumeMount | None = None,
+    ports: str | None = "22/tcp",
+    start_ssh: bool = True,
+    min_vcpu_count: int | None = None,
+    data_center_id: str | None = None,
+) -> dict[str, object]:
+    """A `PodFindAndDeployOnDemandInput`, shared by the seam and the hand route.
+
+    `volumeInGb` with `volumeMountPath` is the pod's own persistent disk
+    (deleted with the pod); `networkVolumeId` with the same mount path is a
+    network volume instead, and one of the two is required so the guard has a
+    disk. `objectMounts` carries the global volume. Only the fields given are
+    sent, so the account's defaults apply to the rest.
+    """
+
+    if (network_volume_id is None) == (persistent_disk_gb is None):
+        raise ValueError("exactly one of a network volume and a persistent disk size is required")
+    if not volume_mount_path:
+        raise ValueError("the volume mount path is required")
+    payload: dict[str, object] = {
+        "name": name,
+        "cloudType": "SECURE",
+        "gpuTypeId": gpu_type,
+        "gpuCount": REQUESTED_GPU_COUNT,
+        "imageName": image,
+        "containerDiskInGb": container_disk_gb,
+        "volumeMountPath": volume_mount_path,
+        "dockerArgs": docker_args,
+        "startSsh": start_ssh,
+        "supportPublicIp": True,
+    }
+    if network_volume_id is not None:
+        payload["networkVolumeId"] = network_volume_id
+    else:
+        payload["volumeInGb"] = persistent_disk_gb
+    if global_volume is not None:
+        payload["objectMounts"] = [global_volume.as_object_mount()]
+    if ports:
+        payload["ports"] = ports
+    if env:
+        payload["env"] = [{"key": key, "value": value} for key, value in env.items()]
+    if min_vcpu_count is not None:
+        payload["minVcpuCount"] = min_vcpu_count
+    if data_center_id is not None:
+        payload["dataCenterId"] = data_center_id
+    return payload
+
+
+def created_pod_from_graphql(body: bytes) -> dict[str, object]:
+    """The pod object `podFindAndDeployOnDemand` answered with, refused on any doubt."""
+
+    payload = _object(body, "RunPod GraphQL create")
+    errors = payload.get("errors")
+    if errors:
+        raise ProviderFailure(f"RunPod GraphQL create answered with errors: {_first_error(errors)}")
+    data = payload.get("data")
+    pod = data.get("podFindAndDeployOnDemand") if isinstance(data, Mapping) else None
+    if not isinstance(pod, dict):
+        raise ProviderFailure(
+            "RunPod GraphQL create response is missing data.podFindAndDeployOnDemand"
+        )
+    return pod
+
+
+def global_volume_of(pod: Mapping[str, object]) -> GlobalVolumeMount:
+    """The one global volume a pod reports under `objectStores`."""
+
+    pod_id = pod.get("id")
+    stores = pod.get("objectStores")
+    if not isinstance(stores, list) or len(stores) != 1 or not isinstance(stores[0], Mapping):
+        raise ProviderFailure(
+            f"RunPod pod {pod_id} reports no single global volume in objectStores; "
+            "global volumes attach only at creation"
+        )
+    return GlobalVolumeMount(
+        _text(stores[0].get("objectStoreId"), f"RunPod pod {pod_id} objectStores[0].objectStoreId"),
+        _text(stores[0].get("mountPath"), f"RunPod pod {pod_id} objectStores[0].mountPath"),
+    )
+
+
 class RunPodV2Provider(_RunPodAdapter):
     """RunPod REST v2 implementation of the seven provider verbs.
 
@@ -1194,6 +1419,8 @@ class RunPodV2Provider(_RunPodAdapter):
         existing = self._existing_launch(request)
         if existing is not None:
             return existing
+        if request.global_volume is not None:
+            raise ProviderFailure(GLOBAL_VOLUME_V2_REFUSAL)
         if V2_ON_DEMAND_BASIS is None:
             raise ProviderFailure(V2_ON_DEMAND_REFUSAL + "; no create request was issued")
         response = self.transport.request("POST", "/pods", _v2_create_payload(request, self.ROUTE))

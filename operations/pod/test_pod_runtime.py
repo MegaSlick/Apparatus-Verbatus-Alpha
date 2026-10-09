@@ -76,6 +76,7 @@ from .models import (
     CloseState,
     CostCapture,
     CostLine,
+    GlobalVolumeMount,
     LeaseFormatError,
     PendingCreateIntent,
     PodCreateRequest,
@@ -781,6 +782,7 @@ def test_every_field_of_a_pod_request_is_inside_its_reviewed_digest() -> None:
         "metadata": {**dict(reviewed.metadata), "VERBATUS_EXTRA": "1"},
         "interruptible": True,
         "recovery_only": True,
+        "global_volume": GlobalVolumeMount("global-1", "/workspace/global"),
     }
     assert set(alternatives) == {entry.name for entry in fields(reviewed)}, (
         "a request field has no alternative here, so this check does not cover it"
