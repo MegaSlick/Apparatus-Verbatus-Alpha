@@ -151,12 +151,33 @@ How it scores:
 
 `queue_runner.py` runs one pod's whole day from a manifest (`queue/example-*.toml`,
 schema `bakeoff-queue.v1`) and ends the pod itself, so no laptop has to notice when a job
-ends. Arms run in order; each runs a smoke of `smoke_pages` pages (`--limit N` appended),
-then the full run. The next arm's `install` and `prepare` run on the CPU while this arm's
-command holds the card; a `gpu = false` arm runs beside the GPU arms. A failed arm (one whose
-program cannot even start included) is retried once at the end, smoke first, then reported. Time boxes never kill work: an overrun is pinged once, and the
-`cut` rule only skips later arms (`overrun`, `behind-schedule`, `install-failed`;
-`never` always runs). `hard_stop_min`, off unless set, stops the arm in flight and ends
+ends. Each arm runs a smoke of `smoke_pages` pages (`--limit N` appended), then the full
+run. A failed arm (one whose program cannot even start included) is retried once at the
+end, smoke first, then reported. Time boxes never kill work: an overrun is pinged once,
+and the `cut` rule only skips later arms (`overrun`, `behind-schedule`, `install-failed`;
+`never` always runs).
+
+Lanes. One arm at a time holds the card: the GPU arms run in manifest order. The
+`gpu = false` arms run beside them, several at once: each takes its command's
+`--threads` (or the arm's `threads`) from the manifest's `cpu_threads`, a number or
+`"auto"` (the pod's CPUs, as its container quota allows, less 2 for the GPU lane's own
+processes). Without `cpu_threads` one CPU arm runs at a time. CPU arms start in manifest
+order: one that does not fit waits for room and holds back the CPU arms after it (an arm
+larger than the whole budget runs alone). An arm's `install` and `prepare` run one at a
+time across all lanes (several arms share an environment), and the next arm's run while
+an arm's command does; they may use the network, while every arm's command runs offline
+(`HF_HUB_OFFLINE=1`).
+
+Dependencies. `after = ["surya-lines"]` names earlier arms that must finish ok first; a
+GPU arm waiting on one lets the next GPU arm take the card. When a dependency fails, its
+dependants wait for its retry at the end and run only if it then succeeds; when it is
+skipped (or fails for good), they are skipped with the reason (`needs X, which failed`).
+An arm's pages are counted in `<out>/<name>/`, or in `<out>/<writes>/` for an arm whose
+output is elsewhere (the line sources write `_lines/surya` and `_lines/blla`).
+
+`validate` and `run --dry-run` print when the GPU lane and the CPU arms would end by the
+time boxes at 8, 16 and 32 vCPU (and, for the dry run, on this machine), so a pod with too
+few CPUs shows before it is rented. `hard_stop_min`, off unless set, stops the arm in flight and ends
 the day early. `status.json` beside the cache is rewritten every 30 s; the queue's events
 join `events.jsonl`; each milestone pings the phone once.
 
@@ -165,9 +186,11 @@ writes `DONE.json` (digests and summary) to both, pings, and ends the pod: with 
 heartbeat younger than 5 min it moves the guard's deadline to now (the guard deletes, with
 its retries and stop fallback); otherwise it runs `operations/pod/pod_delete.sh`. With
 `own_disk = true` it refuses unless the copy verified; `end_pod = "none"` keeps the pod.
-SIGTERM stops the arm, pings and exits 143 without ending the pod. Arms never see
+SIGTERM stops every arm, pings and exits 143 without ending the pod. Arms never see
 `RUNPOD_API_KEY` or `NTFY_TOPIC`; `watch` warns once when the status has not changed (or
-cannot be read) for 10 min by the Mac's own clock.
+cannot be read) for 10 min by the Mac's own clock. `status.json` names the GPU lane's arm
+(or a CPU arm when the card is idle) and lists every running CPU arm with its pages under
+`cpu_arms`; `watch` prints them after the GPU arm.
 
 On the pod (`validate` and `run --dry-run` first):
 
@@ -291,17 +314,27 @@ Run cards: `cards/kraken-ppocrv6.md`, `cards/kraken-mccatmus.md`,
 `<out>/_lines/<source>/<stem>/NNNN.png` with `<stem>.json` listing bounds and order:
 
 ```sh
-# Surya lines: the repository's runner in its own environment, then the crops.
-uv sync --locked --project operations/serving/surya
-operations/serving/surya/.venv/bin/python operations/serving/surya/prefetch.py --out $V/surya-bundle  # once; or the store's local/surya2-detection
-eval "$(.venv/bin/python -m operations.bakeoff.lines.surya_lines command --pages $V/bakeoff-pages \
-  --lines-dir $V/bakeoff/surya-docs --weights $V/surya-bundle --threads 8)"
-.venv/bin/python -m operations.bakeoff.lines.surya_lines prepare --pages $V/bakeoff-pages \
-  --lines-dir $V/bakeoff/surya-docs --out $V/bakeoff/witness-cache
+# Surya lines: the repository's runner in its own environment (CPU), then the crops.
+# `bundle` takes the model store's verified copy (local/surya2-detection) or fetches the
+# pinned bundle into --bundle-dir (Datalab's host and the Hub; no token); both are
+# checked against config/manifests/surya2-detection.json. The queue's surya-lines arm
+# runs these three steps.
+.venv/bin/python -m operations.bakeoff.lines.surya_rec install       # the Surya environment
+.venv/bin/python -m operations.bakeoff.lines.surya_lines bundle --store-root $V/model-store \
+  --bundle-dir $V/bakeoff/surya-bundle
+.venv/bin/python -m operations.bakeoff.lines.surya_lines run --pages $V/bakeoff-pages \
+  --lines-dir $V/bakeoff/surya-docs --out $V/bakeoff/witness-cache \
+  --store-root $V/model-store --bundle-dir $V/bakeoff/surya-bundle --threads 8
 # blla lines: kraken's segmenter in the kraken environment.
 .venv/bin/python -m operations.bakeoff.lines.kraken_ppocr install
-.venv/bin/python -m operations.bakeoff.lines.blla prepare --pages $V/bakeoff-pages --out $V/bakeoff/witness-cache
+.venv/bin/python -m operations.bakeoff.lines.blla prepare --pages $V/bakeoff-pages \
+  --out $V/bakeoff/witness-cache --threads 4
 ```
+
+`surya_lines run` runs the runner only from the first page without a readable document
+(`--first-ordinal`), so a smoke's pages are not read twice and a stopped run resumes; a
+`pages.json` that lists other pages, or these in another order, is refused.
+`surya_lines command` still prints the runner's command for a run by hand.
 
 Then, for example:
 

@@ -1,6 +1,8 @@
 """The Surya line source: matching documents to pages, reading order, crop geometry."""
 
 import json
+import subprocess
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -88,3 +90,65 @@ def test_a_document_of_another_size_is_refused(pages, surya_dir, tmp_path):
     (surya_dir / "page-1.json").write_text(json.dumps(document))
     with pytest.raises(surya_lines.LinesRefusal, match="stale"):
         surya_lines.prepare(sorted(pages.iterdir()), surya_dir, tmp_path / "cache")
+
+
+def _pin(folder, tmp_path):
+    """A one-file bundle and the manifest that pins it."""
+    folder.mkdir(parents=True)
+    (folder / "weights.bin").write_bytes(b"weights")
+    manifest = tmp_path / "pin.json"
+    digest = surya_lines.hashlib.sha256(b"weights").hexdigest()
+    manifest.write_text(json.dumps([{"path": "weights.bin", "sha256": digest, "size": 7}]))
+    return manifest
+
+
+def test_the_bundle_is_the_stores_copy_else_fetched_and_always_checked(tmp_path, monkeypatch):
+    store, own = tmp_path / "store", tmp_path / "own"
+    monkeypatch.setattr(
+        surya_lines, "BUNDLE_MANIFEST", _pin(store / "local" / "surya2-detection", tmp_path)
+    )
+    assert surya_lines.ensure_bundle(store, own) == store / "local" / "surya2-detection"
+
+    (store / "local" / "surya2-detection" / "weights.bin").write_bytes(b"changed")
+    calls = []
+
+    def prefetch(argv, check):
+        calls.append(argv)
+        out = Path(argv[argv.index("--out") + 1])
+        out.mkdir()
+        (out / "weights.bin").write_bytes(b"weights")
+        return subprocess.CompletedProcess(argv, 0)
+
+    assert surya_lines.ensure_bundle(store, own, runner=prefetch) == own
+    assert calls[0][1].endswith("prefetch.py")
+    (own / "weights.bin").write_bytes(b"other")
+    with pytest.raises(surya_lines.LinesRefusal, match="move it aside"):
+        surya_lines.ensure_bundle(store, own, runner=prefetch)
+
+
+def test_run_detects_only_the_pages_without_a_document_then_cuts(
+    pages, surya_dir, tmp_path, monkeypatch
+):
+    env = tmp_path / "surya-env"
+    (env / ".venv" / "bin").mkdir(parents=True)
+    (env / ".venv" / "bin" / "python").write_text("")
+    monkeypatch.setattr(surya_lines, "SURYA_ENV", env)
+    second = (surya_dir / "page-2.json").read_bytes()
+    (surya_dir / "page-2.json").write_text('{"cut off mid-wri')  # a run stopped mid-write
+    calls = []
+
+    def runner(argv, check):
+        calls.append(argv)
+        (surya_dir / "page-2.json").write_bytes(second)
+        return subprocess.CompletedProcess(argv, 0)
+
+    page_list = sorted(pages.iterdir())
+    surya_lines.detect(page_list, surya_dir, tmp_path / "bundle", 8, runner)
+    assert calls[0][-3:] == ["--first-ordinal", "2", str(page_list[1])]
+    surya_lines.detect(page_list, surya_dir, tmp_path / "bundle", 8, runner)
+    assert len(calls) == 1  # every page has its document
+    assert surya_lines.prepare(page_list, surya_dir, tmp_path / "cache")["p001"]["lines"]
+
+    (surya_dir / "pages.json").write_text(json.dumps({"schema": "x", "pages": ["p001", "p000"]}))
+    with pytest.raises(surya_lines.LinesRefusal, match="another order"):
+        surya_lines.detect(page_list, surya_dir, tmp_path / "bundle", 8, runner)

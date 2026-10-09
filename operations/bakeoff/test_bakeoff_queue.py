@@ -30,17 +30,25 @@ p = argparse.ArgumentParser()
 p.add_argument("--pages"); p.add_argument("--out"); p.add_argument("--label")
 p.add_argument("--limit", type=int); p.add_argument("--sleep", type=float, default=0)
 p.add_argument("--fail", action="store_true"); p.add_argument("--fail-once")
-p.add_argument("--pid-file")
+p.add_argument("--pid-file"); p.add_argument("--folder")
+p.add_argument("--meet", nargs=2, help="write the first file, then wait for the second")
 a = p.parse_args()
 if a.pid_file:
     Path(a.pid_file).write_text(str(os.getpid()))
+if a.meet:
+    Path(a.meet[0]).write_text("here")
+    deadline = time.monotonic() + 20
+    while not Path(a.meet[1]).exists():
+        if time.monotonic() > deadline:
+            sys.exit(6)
+        time.sleep(0.05)
 time.sleep(a.sleep)
 if a.fail:
     sys.exit(3)
 if a.fail_once and not Path(a.fail_once).exists():
     Path(a.fail_once).write_text("failed once")
     sys.exit(4)
-folder = Path(a.out) / a.label
+folder = Path(a.out) / (a.folder or a.label)
 folder.mkdir(parents=True, exist_ok=True)
 for page in sorted(Path(a.pages).glob("*.tif"))[: a.limit or None]:
     record = {
@@ -349,6 +357,117 @@ def test_the_copy_waits_for_a_skipped_arms_preparation(bench):
     ] == ["late"]
 
 
+def _ends(events, name):
+    """Event positions (the file's own order) of an arm's command starts and its end."""
+    starts = [i for i, e in enumerate(events) if e["event"] == "queue-command-start"
+              and e["arm"] == name and e["phase"] in ("smoke", "run", "retry")]  # fmt: skip
+    end = next(
+        i for i, e in enumerate(events) if e["event"] == "queue-arm-end" and e["arm"] == name
+    )
+    return starts, end
+
+
+def test_cpu_arms_run_at_once_dependants_wait_and_the_copy_waits_for_every_lane(bench):
+    """Two CPU arms that can only finish together (each waits for the other's marker), a
+    dependant that writes its pages elsewhere, a GPU arm beside them, then the copy."""
+    tmp = bench["tmp"]
+    meet = [tmp / "left-here", tmp / "right-here"]
+    arms = [
+        _cpu_arm(bench, "gpu-a"),
+        _cpu_arm(bench, "left", "--meet", *map(str, meet), gpu=False, threads=2),
+        _cpu_arm(bench, "right", "--meet", *map(str, meet[::-1]), gpu=False, threads=2),
+        _cpu_arm(
+            bench,
+            "child",
+            "--folder",
+            "_lines/child",
+            gpu=False,
+            after=["left"],
+            writes="_lines/child",
+            threads=2,
+        ),  # fmt: skip
+    ]
+    queue = Recording(
+        _manifest(bench, arms, end_pod="none", cpu_threads=4),
+        notifier=FakeNotifier(),
+        environ=bench["env"],
+        poll_seconds=0.05,
+    )
+    assert queue.run() == 0
+    status = json.loads((bench["out"] / "status.json").read_text())
+    assert {a["label"]: a["status"] for a in status["finished_arms"]} == dict.fromkeys(
+        ("gpu-a", "left", "right", "child"), "ok"
+    )
+    assert next(a for a in status["finished_arms"] if a["label"] == "child")["pages"] == 3
+    events = _events(bench["out"])
+    child_starts, _ = _ends(events, "child")
+    _, left_end = _ends(events, "left")
+    assert min(child_starts) > left_end
+    # Two CPU arms at once show in the status beside the GPU arm.
+    assert any(len(s["cpu_arms"]) == 2 for s in queue.seen)
+    sync = next(i for i, e in enumerate(events) if e["event"] == "queue-sync")
+    assert sync > max(_ends(events, name)[1] for name in ("gpu-a", "left", "right", "child"))
+    done = json.loads((bench["out"] / "DONE.json").read_text())
+    assert "_lines/child/p002.json" in done["digests"] and done["verified"]
+
+
+def test_a_failed_or_skipped_dependency_skips_its_dependants_with_the_reason(bench):
+    fail = [sys.executable, "-c", "raise SystemExit(5)"]
+    arms = [
+        _cpu_arm(bench, "broken", "--fail", gpu=False),
+        _cpu_arm(bench, "flaky", "--fail-once", str(bench["tmp"] / "flaky-once"), gpu=False),
+        _cpu_arm(bench, "no-install", cut="install-failed", install=fail),
+        _cpu_arm(bench, "needs-broken", gpu=False, after=["broken"]),
+        _cpu_arm(bench, "needs-flaky", after=["flaky"]),
+        _cpu_arm(bench, "needs-skipped", gpu=False, after=["no-install"]),
+    ]
+    queue = Q.Queue(
+        _manifest(bench, arms, end_pod="none", cpu_threads=4),
+        notifier=FakeNotifier(),
+        environ=bench["env"],
+        poll_seconds=0.05,
+    )
+    assert queue.run() == 0
+    status = json.loads((bench["out"] / "status.json").read_text())
+    assert {a["label"]: a["status"] for a in status["finished_arms"]} == {
+        "broken": "failed",
+        "flaky": "ok",
+        "needs-flaky": "ok",  # deferred behind flaky's retry, then run
+    }
+    assert {s["arm"]: s["reason"] for s in status["skipped"]} == {
+        "no-install": "install failed",
+        "needs-skipped": "needs no-install, which was skipped",
+        "needs-broken": "needs broken, which failed",
+    }
+    events = _events(bench["out"])
+    assert not any(e.get("arm") == "needs-broken" and e["event"] == "queue-command-start"
+                   for e in events)  # fmt: skip
+
+
+def test_pick_keeps_order_within_the_budget_and_never_holds_the_card():
+    def arm(name, gpu=False, threads=4):
+        return Q.ArmSpec(name, 10, "never", gpu, ("x",), threads=threads)
+
+    arms = (arm("big", threads=8), arm("a"), arm("b"), arm("card", gpu=True), arm("c"))
+    assert Q.pick(arms, [0, 1, 2, 3, 4], True, [], 14) == [0, 1, 3]  # b waits; c behind it
+    assert Q.pick(arms, [1, 2, 3], False, [8], 14) == [1]
+    assert Q.pick(arms, [0, 1], True, [], None) == [0]  # no budget: one CPU arm at a time
+    assert Q.pick(arms, [0], True, [], 4) == [0]  # larger than the budget, alone
+    assert Q.cpu_budget("auto", 16) == 14 and Q.cpu_budget(None, 64) is None
+
+
+def test_the_plan_puts_cpu_arms_beside_the_card(bench):
+    arms = [
+        {**_cpu_arm(bench, "g1"), "time_box_min": 30},
+        {**_cpu_arm(bench, "lines"), "gpu": False, "time_box_min": 60, "threads": 4},
+        {**_cpu_arm(bench, "other"), "gpu": False, "time_box_min": 60, "threads": 4},
+        {**_cpu_arm(bench, "reader"), "time_box_min": 10, "after": ["lines"]},
+    ]
+    manifest = _manifest(bench, arms, cpu_threads="auto")
+    assert Q.plan(manifest, 8) == {"gpu_end": 70, "cpu_end": 60, "gpu_wait": 30, "end": 70}
+    assert Q.plan(manifest, None)["cpu_end"] == 120
+
+
 def test_pages_done_counts_only_the_queue_pages_without_errors(bench):
     queue = Q.Queue(_manifest(bench, [_cpu_arm(bench, "a")]), environ=bench["env"])
     queue.page_list = sorted(bench["pages"].glob("*.tif"))
@@ -565,6 +684,9 @@ def _gone(pid: int) -> bool:
             "run-all",
         ),
         ({"sync_to": "OUT/home"}, "neither inside the other"),
+        ({"after": ["later"]}, "not earlier arms"),
+        ({"writes": "../elsewhere"}, "folder inside out"),
+        ({"threads": 0}, "whole number"),
     ],
 )
 def test_manifest_refusals(bench, change, message):

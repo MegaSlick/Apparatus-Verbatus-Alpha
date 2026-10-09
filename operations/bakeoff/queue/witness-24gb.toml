@@ -1,6 +1,8 @@
 # Pod W: every witness arm on one 24-48 GB card (A40 or RTX 3090), the CPU line arms
 # beside them. Launch: RUNBOOK.md section 4. Paths are the pod's. Time boxes are planning
 # figures only; the cut rule says what is skipped if the day overruns (plan 4.3).
+# `validate` and `run --dry-run` print when the GPU lane and the CPU arms end at 8, 16
+# and 32 vCPU; the CPU arms are the long part unless the pod has many CPUs.
 schema = "bakeoff-queue.v1"
 name = "witness-24gb"
 pages = "/workspace/private/bakeoff-pages"
@@ -11,6 +13,7 @@ smoke_pages = 2
 behind_schedule_min = 30
 end_pod = "delete"
 # hard_stop_min = 300            # the lead's cap for the day; off unless set
+cpu_threads = "auto"             # the pod's CPUs less 2 for the GPU lane, shared by CPU arms
 
 # --- the three baselines as on 2026-10-08 (our vLLM adapters) ---------------------
 
@@ -90,7 +93,8 @@ command = ["/workspace/private/bakeoff/venvs/churro-native/bin/python", "-m",
   "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache",
   "--store-root", "/workspace/private/model-store", "--label", "churro-native"]
 
-# dots.mocr: skipped only if its install fails (plan 4.3). Weights: `dots_mocr fetch`.
+# dots.mocr: skipped only if its install fails (plan 4.3). Its weights are fetched as
+# its preparation (nothing is fetched when they are on the volume).
 [[arms]]
 name = "dots-mocr"
 time_box_min = 25
@@ -98,146 +102,189 @@ cut = "install-failed"
 gpu = true
 install = [".venv/bin/python", "-m", "operations.bakeoff.native.dots_mocr", "install",
   "--venv-dir", "/workspace/private/bakeoff/venvs/dots-mocr"]
+prepare = ["/workspace/private/bakeoff/venvs/dots-mocr/bin/python", "-m",
+  "operations.bakeoff.native.dots_mocr", "fetch", "--store-root", "/workspace/private/model-store"]
 command = ["/workspace/private/bakeoff/venvs/dots-mocr/bin/python", "-m",
   "operations.bakeoff.native.dots_mocr", "run",
   "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache",
   "--store-root", "/workspace/private/model-store", "--label", "dots-mocr"]
 
 # --- CTC line arms (cards/kraken-ppocrv6.md, pylaia-*.md, party.md, surya-recogniser.md)
-# Line sources first: the Surya runner's documents are made in section 3 of the runbook
-# (CPU, before the queue starts); blla segmentation runs here as a CPU arm beside Chandra.
+# CPU arms, beside the GPU arms above; `cpu_threads` (top) says how many run at once. Each
+# arm's `--threads` is its share. Every arm carries its own install and fetch (both do
+# nothing when already done), so an arm never depends on another arm's preparation.
+# Time boxes are the cards' 4-vCPU measurements for 73 pages at about 30 lines a page.
 
+# The two shared line sources come first; the arms that read their crops wait for them.
+# surya-lines: the repository's Surya runner (its own environment, CPU, 35-66 s a page at
+# 8 threads) over every page, then the crops. Its weights: the model store's verified
+# bundle, else /workspace/private/bakeoff/surya-bundle, fetched there if absent.
 [[arms]]
 name = "surya-lines"
-time_box_min = 10
+time_box_min = 70
 cut = "never"
 gpu = false
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_lines", "prepare", "--pages", "/workspace/private/bakeoff-pages", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--out", "/workspace/private/bakeoff/witness-cache"]
+writes = "_lines/surya"
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_rec", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_lines", "bundle", "--store-root", "/workspace/private/model-store", "--bundle-dir", "/workspace/private/bakeoff/surya-bundle"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_lines", "run", "--pages", "/workspace/private/bakeoff-pages", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--bundle-dir", "/workspace/private/bakeoff/surya-bundle", "--threads", "8"]
 
+# blla-lines: kraken's segmenter, about 80 s a page on 4 vCPU (half of it a one-thread filter).
 [[arms]]
 name = "blla-lines"
-time_box_min = 90
+time_box_min = 100
 cut = "never"
 gpu = false
+writes = "_lines/blla"
 install = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "install"]
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.blla", "prepare", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--threads", "8"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.blla", "prepare", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--threads", "4"]
 
-# kraken PP-OCRv6 (cards/kraken-ppocrv6.md): CPU, no LM.
+# kraken (cards/kraken-*.md): CPU, no LM. A -blla arm is kraken's own one-command path
+# (segment -bl ocr), so it segments again: about 80 s a page plus 2-3 s a line. A -surya
+# arm recognises the cached Surya crops (about 1.5 min a page).
 
 [[arms]]
-name = "kraken-ppocrv6-surya"
-time_box_min = 30
+name = "kraken-ppocrv6-blla"
+time_box_min = 190
 cut = "never"
 gpu = false
 install = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "install"]
 prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "fetch", "--store-root", "/workspace/private/model-store"]
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
 
 [[arms]]
-name = "kraken-ppocrv6-blla"
-time_box_min = 30
-cut = "never"
-gpu = false
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
-
-# kraken McCATMuS v1 (cards/kraken-mccatmus.md): CPU, no LM; same kraken environment.
-
-[[arms]]
-name = "kraken-mccatmus-surya"
-time_box_min = 30
+name = "kraken-mccatmus-blla"
+time_box_min = 190
 cut = "never"
 gpu = false
 install = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "install"]
 prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "fetch", "--model", "mccatmus", "--store-root", "/workspace/private/model-store"]
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mccatmus", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mccatmus", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
 
 [[arms]]
-name = "kraken-mccatmus-blla"
-time_box_min = 30
-cut = "never"
-gpu = false
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mccatmus", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
-
-# kraken Manu McFondue v4 (cards/kraken-mcfondue.md): CPU, no LM; same kraken environment.
-
-[[arms]]
-name = "kraken-mcfondue-surya"
-time_box_min = 30
+name = "kraken-mcfondue-blla"
+time_box_min = 190
 cut = "never"
 gpu = false
 install = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "install"]
 prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "fetch", "--model", "mcfondue", "--store-root", "/workspace/private/model-store"]
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mcfondue", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mcfondue", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
 
 [[arms]]
-name = "kraken-mcfondue-blla"
-time_box_min = 30
+name = "kraken-ppocrv6-surya"
+time_box_min = 100
 cut = "never"
 gpu = false
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mcfondue", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
-
-# PyLaia belfort and popp (cards/pylaia-*.md): CPU; -lm- arms use the shipped 6-gram.
+after = ["surya-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "fetch", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
 
 [[arms]]
-name = "pylaia-belfort-surya"
-time_box_min = 15
+name = "kraken-mccatmus-surya"
+time_box_min = 100
 cut = "never"
 gpu = false
-install = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "install"]
-prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "belfort", "--store-root", "/workspace/private/model-store"]
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "belfort", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+after = ["surya-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "fetch", "--model", "mccatmus", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mccatmus", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
+
+[[arms]]
+name = "kraken-mcfondue-surya"
+time_box_min = 100
+cut = "never"
+gpu = false
+after = ["surya-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "fetch", "--model", "mcfondue", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.kraken_ppocr", "run", "--model", "mcfondue", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
+
+# PyLaia belfort and popp (cards/pylaia-*.md): CPU, 10-20 s a page; -lm- arms use the
+# shipped 6-gram (its decode not measured: five more minutes in the box).
 
 [[arms]]
 name = "pylaia-belfort-blla"
-time_box_min = 15
+time_box_min = 20
 cut = "never"
 gpu = false
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "belfort", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
-
-[[arms]]
-name = "pylaia-belfort-lm-surya"
-time_box_min = 15
-cut = "never"
-gpu = false
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "belfort", "--lm", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+after = ["blla-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "belfort", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "belfort", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
 
 [[arms]]
 name = "pylaia-belfort-lm-blla"
-time_box_min = 15
+time_box_min = 25
 cut = "never"
 gpu = false
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "belfort", "--lm", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
-
-[[arms]]
-name = "pylaia-popp-surya"
-time_box_min = 15
-cut = "never"
-gpu = false
-prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "popp", "--store-root", "/workspace/private/model-store"]
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "popp", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+after = ["blla-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "belfort", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "belfort", "--lm", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
 
 [[arms]]
 name = "pylaia-popp-blla"
-time_box_min = 15
+time_box_min = 20
 cut = "never"
 gpu = false
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "popp", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
-
-[[arms]]
-name = "pylaia-popp-lm-surya"
-time_box_min = 15
-cut = "never"
-gpu = false
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "popp", "--lm", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+after = ["blla-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "popp", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "popp", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
 
 [[arms]]
 name = "pylaia-popp-lm-blla"
-time_box_min = 15
+time_box_min = 25
 cut = "never"
 gpu = false
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "popp", "--lm", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "8"]
+after = ["blla-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "popp", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "popp", "--lm", "--lines", "blla", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
 
-# Surya recogniser (cards/surya-recogniser.md): a 650M VLM, GPU, cut at the behind-schedule mark.
+[[arms]]
+name = "pylaia-belfort-surya"
+time_box_min = 20
+cut = "never"
+gpu = false
+after = ["surya-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "belfort", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "belfort", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
+
+[[arms]]
+name = "pylaia-belfort-lm-surya"
+time_box_min = 25
+cut = "never"
+gpu = false
+after = ["surya-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "belfort", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "belfort", "--lm", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
+
+[[arms]]
+name = "pylaia-popp-surya"
+time_box_min = 20
+cut = "never"
+gpu = false
+after = ["surya-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "popp", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "popp", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
+
+[[arms]]
+name = "pylaia-popp-lm-surya"
+time_box_min = 25
+cut = "never"
+gpu = false
+after = ["surya-lines"]
+install = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "install"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "popp", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "popp", "--lm", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
+
+# Surya recogniser (cards/surya-recogniser.md): a 650M VLM, GPU, cut at the behind-schedule
+# mark. Page mode (the default) reads no cached detections, so it needs no line arm.
 
 [[arms]]
 name = "surya-rec-surya"
@@ -248,13 +295,14 @@ install = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_rec", "inst
 prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_rec", "fetch", "--store-root", "/workspace/private/model-store"]
 command = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_rec", "run", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--device", "cuda"]
 
-# Party v2 (cards/party.md): GPU, highest install risk, cut first.
+# Party v2 (cards/party.md): GPU, highest install risk, cut first; reads the blla crops.
 
 [[arms]]
 name = "party-blla"
 time_box_min = 30
 cut = "overrun"
 gpu = true
+after = ["blla-lines"]
 install = [".venv/bin/python", "-m", "operations.bakeoff.lines.party", "install"]
 prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.party", "fetch", "--store-root", "/workspace/private/model-store"]
 command = [".venv/bin/python", "-m", "operations.bakeoff.lines.party", "run", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--device", "cuda"]
