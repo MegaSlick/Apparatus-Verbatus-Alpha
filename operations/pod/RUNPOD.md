@@ -54,7 +54,9 @@ to v1; runpod/runpod-plugins-official#56): avoid it.
   mixes host CUDA versions, and a container on an older host never starts but bills.
 - Prices seen 2026-10-08 evening, Secure on-demand: A40 $0.59/h, RTX 3090 $0.50/h (community
   stock mostly), RTX 4090 $0.89/h, RTX PRO 4500 $0.72/h, RTX PRO 6000 $2.49/h. Read again
-  before renting; the console's deploy page shows the live price and vCPU.
+  before renting; the console's deploy page shows the live price and vCPU. Do not copy
+  prices into `config/pod_placement.toml`: its digest is sealed into run trees and serving
+  qualification records, so an edit there breaks the acceptance tests.
 - Images: `runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404` (CUDA 13.0; Blackwell cards need
   it for FlashInfer). `cu1281` images fail vLLM on Blackwell.
 
