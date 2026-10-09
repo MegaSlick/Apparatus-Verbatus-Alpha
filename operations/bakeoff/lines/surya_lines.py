@@ -1,20 +1,17 @@
 """Line crops from the repository's cached Surya detections, shared by every `-surya` arm.
 
-    python -m operations.bakeoff.lines.surya_lines bundle --store-root STORE --bundle-dir DIR
     python -m operations.bakeoff.lines.surya_lines run --pages DIR --lines-dir DIR --out CACHE \
-        --store-root STORE --bundle-dir DIR [--threads 8]
+        (--store-root STORE | --weights BUNDLE) [--threads 8]
     python -m operations.bakeoff.lines.surya_lines command --pages DIR --lines-dir DIR \
         --weights BUNDLE [--threads 8]
     python -m operations.bakeoff.lines.surya_lines prepare --pages DIR --lines-dir DIR --out CACHE
 
-`bundle` finds Surya's weight bundle, checked file by file against the pinned manifest
-(`config/manifests/surya2-detection.json`): the model store's verified copy
-(`<store>/local/surya2-detection`) first, else `--bundle-dir`; with neither, it fetches the
-bundle into `--bundle-dir` with the repository's `prefetch.py` (network; no token) and
-checks it the same way. It never writes into the model store. `run` does the rest in one
-step: it runs the repository's Surya runner (`operations/serving/surya/runner.py`, in
-its own environment, CPU) over the pages that have no document yet, then cuts the line
-crops. `command` writes `<lines-dir>/pages.json` and prints the runner's command for a
+`run` takes Surya's weight bundle from the model store (`<store>/local/surya2-detection`,
+put there by `python -m operations.bakeoff.weights fetch surya2-detection`) or from
+`--weights`, checked file by file against the pinned manifest
+(`config/manifests/surya2-detection.json`), runs the repository's Surya runner
+(`operations/serving/surya/runner.py`, in its own environment, CPU) over the pages that
+have no document yet, then cuts the line crops. `command` writes `<lines-dir>/pages.json` and prints the runner's command for a
 run by hand; `prepare` reads the page documents it wrote and cuts the line crops.
 
 Matching a page document to a page: the runner numbers documents by input order
@@ -192,35 +189,14 @@ def bundle_problems(folder: Path) -> list[str]:
     return problems
 
 
-def find_bundle(store_root: Path | None, bundle_dir: Path | None) -> Path | None:
-    """The first of the store's copy and `bundle_dir` that is the pinned bundle."""
+def find_bundle(store_root: Path | None, weights: Path | None) -> Path | None:
+    """The first of the store's copy and `weights` that is the pinned bundle."""
     candidates = [store_root / STORE_BUNDLE] if store_root else []
-    candidates += [bundle_dir] if bundle_dir else []
+    candidates += [weights] if weights else []
     for folder in candidates:
         if folder.is_dir() and not bundle_problems(folder):
             return folder
     return None
-
-
-def ensure_bundle(store_root: Path | None, bundle_dir: Path, runner=subprocess.run) -> Path:
-    """The pinned bundle, fetched into `bundle_dir` when neither place holds it."""
-    found = find_bundle(store_root, bundle_dir)
-    if found is not None:
-        return found
-    if bundle_dir.exists():
-        raise LinesRefusal(
-            f"{bundle_dir} exists but is not the pinned bundle "
-            f"(differs: {bundle_problems(bundle_dir)[:5]}); move it aside and fetch again"
-        )
-    bundle_dir.parent.mkdir(parents=True, exist_ok=True)
-    python = SURYA_ENV / ".venv" / "bin" / "python"
-    argv = [str(python), str(SURYA_ENV / "prefetch.py"), "--out", str(bundle_dir)]
-    if runner(argv, check=False).returncode != 0:
-        raise LinesRefusal(f"prefetch.py could not fetch the bundle into {bundle_dir}")
-    problems = bundle_problems(bundle_dir)
-    if problems:
-        raise LinesRefusal(f"the fetched bundle in {bundle_dir} differs from the pin: {problems}")
-    return bundle_dir
 
 
 def first_missing(pages: list[Path], lines_dir: Path) -> int | None:
@@ -278,11 +254,9 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    b = sub.add_parser("bundle", help="find, or fetch, Surya's pinned weight bundle")
     r = sub.add_parser("run", help="run the Surya runner where needed, then cut the crops")
-    for each in (b, r):
-        each.add_argument("--store-root", type=Path, help="a model store holding the bundle")
-        each.add_argument("--bundle-dir", type=Path, required=True, help="else this folder")
+    r.add_argument("--store-root", type=Path, help="a model store holding the bundle")
+    r.add_argument("--weights", type=Path, help="else a bundle folder")
     r.add_argument("--out", type=Path, required=True)
     r.add_argument("--threads", type=int, default=8)
     c = sub.add_parser("command", help="write pages.json and print the Surya runner command")
@@ -296,19 +270,17 @@ def main(argv: list[str] | None = None) -> int:
         each.add_argument("--limit", type=int)
     args = parser.parse_args(argv)
     try:
-        if args.command == "bundle":
-            print(ensure_bundle(args.store_root, args.bundle_dir))
-            return 0
         pages = list_pages(args.pages)[: args.limit or None]
         if args.command == "command":
             write_pages_index(pages, args.lines_dir)
             print(shlex.join(runner_command(pages, args.lines_dir, args.weights, args.threads)))
             return 0
         if args.command == "run":
-            bundle = find_bundle(args.store_root, args.bundle_dir)
+            bundle = find_bundle(args.store_root, args.weights)
             if bundle is None:
                 raise LinesRefusal(
-                    "no pinned Surya bundle in the store or --bundle-dir; run bundle"
+                    "no pinned Surya bundle in the store or --weights; run "
+                    "`python -m operations.bakeoff.weights fetch surya2-detection`"
                 )
             detect(pages, args.lines_dir, bundle, args.threads)
         indexes = prepare(pages, args.lines_dir, args.out)

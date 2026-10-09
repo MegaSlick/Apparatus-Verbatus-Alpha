@@ -177,7 +177,25 @@ output is elsewhere (the line sources write `_lines/surya` and `_lines/blla`).
 
 `validate` and `run --dry-run` print when the GPU lane and the CPU arms would end by the
 time boxes at 8, 16 and 32 vCPU (and, for the dry run, on this machine), so a pod with too
-few CPUs shows before it is rented. `hard_stop_min`, off unless set, stops the arm in flight and ends
+few CPUs shows before it is rented, and what the arms download onto an empty volume.
+
+Weights. A queue may start on an empty volume: each arm's `prepare` is
+`python -m operations.bakeoff.weights fetch --store-root STORE NAME ...`, naming what its
+command reads, and the command then runs offline. Roster artifacts (`chandra-ocr-2`,
+`dai-recordgold-atr`, `churro-3B`, `yolov26-record-detection`, `qwen3.8-27B`,
+`surya2-detection`) go through the project's model store
+(`materialize_real_roster`, under its store-wide lock) into `<store>/hf/<artifact>` and
+are refused unless the store's manifest digest is the one `config/models-real.toml` pins;
+a present artifact is hashed again, not downloaded. The bake-off's own snapshots
+(`qwen3.5-27b`, `qwen3.5-9b`, `DotsMOCR`) are pinned file by file in `weight_pins.json`
+(commit, sizes, Hub digests) and go to `<store>/hf/<name>`, where witness_run and the
+native arms look; a `<name>.verified.json` beside each saves re-hashing an unchanged
+snapshot. Line-arm weights (`kraken-*`, `pylaia-*`, `party-v2`, `surya-ocr-2`) use their
+module's own checked fetch. Preparations run one at a time per lane, so arms sharing a
+snapshot fetch it once. No repository is gated; no token is needed.
+`python -m operations.bakeoff.weights sizes NAME ...` prints what a name downloads. The
+older `witness_run fetch` and the native arms' `fetch` write into `<store>/hf/` outside
+the store's record; on a store, use `weights fetch` instead. `hard_stop_min`, off unless set, stops the arm in flight and ends
 the day early. `status.json` beside the cache is rewritten every 30 s; the queue's events
 join `events.jsonl`; each milestone pings the phone once.
 

@@ -2,7 +2,6 @@
 
 import json
 import subprocess
-from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -102,28 +101,13 @@ def _pin(folder, tmp_path):
     return manifest
 
 
-def test_the_bundle_is_the_stores_copy_else_fetched_and_always_checked(tmp_path, monkeypatch):
+def test_the_bundle_is_the_stores_copy_and_always_checked(tmp_path, monkeypatch):
     store, own = tmp_path / "store", tmp_path / "own"
-    monkeypatch.setattr(
-        surya_lines, "BUNDLE_MANIFEST", _pin(store / "local" / "surya2-detection", tmp_path)
-    )
-    assert surya_lines.ensure_bundle(store, own) == store / "local" / "surya2-detection"
-
-    (store / "local" / "surya2-detection" / "weights.bin").write_bytes(b"changed")
-    calls = []
-
-    def prefetch(argv, check):
-        calls.append(argv)
-        out = Path(argv[argv.index("--out") + 1])
-        out.mkdir()
-        (out / "weights.bin").write_bytes(b"weights")
-        return subprocess.CompletedProcess(argv, 0)
-
-    assert surya_lines.ensure_bundle(store, own, runner=prefetch) == own
-    assert calls[0][1].endswith("prefetch.py")
-    (own / "weights.bin").write_bytes(b"other")
-    with pytest.raises(surya_lines.LinesRefusal, match="move it aside"):
-        surya_lines.ensure_bundle(store, own, runner=prefetch)
+    bundle = store / "local" / "surya2-detection"
+    monkeypatch.setattr(surya_lines, "BUNDLE_MANIFEST", _pin(bundle, tmp_path))
+    assert surya_lines.find_bundle(store, own) == bundle
+    (bundle / "weights.bin").write_bytes(b"changed")
+    assert surya_lines.find_bundle(store, own) is None
 
 
 def test_run_detects_only_the_pages_without_a_document_then_cuts(

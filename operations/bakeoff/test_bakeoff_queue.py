@@ -687,6 +687,10 @@ def _gone(pid: int) -> bool:
         ({"after": ["later"]}, "not earlier arms"),
         ({"writes": "../elsewhere"}, "folder inside out"),
         ({"threads": 0}, "whole number"),
+        (
+            {"prepare": ["python", "-m", "operations.bakeoff.weights", "fetch", "no-such-model"]},
+            "unknown weights",
+        ),
     ],
 )
 def test_manifest_refusals(bench, change, message):

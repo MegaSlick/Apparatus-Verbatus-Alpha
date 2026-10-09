@@ -230,6 +230,11 @@ def _parse_arm(raw: Any, index: int, out: Path, pages: Path, earlier: list[str])
             )
     if cut == "install-failed" and raw.get("install") is None:
         raise ManifestError(f"{where}: cut = install-failed needs an install command")
+    from operations.bakeoff import weights
+
+    unknown_weights = [n for n in weights.names_in(raw.get("prepare")) if n not in weights.known()]
+    if unknown_weights:
+        raise ManifestError(f"{where}: prepare fetches unknown weights {unknown_weights}")
     after = raw.get("after", [])
     if not isinstance(after, list) or not all(isinstance(a, str) for a in after):
         raise ManifestError(f"{where}: after must be a list of arm names")
@@ -423,6 +428,21 @@ def plan(manifest: Manifest, budget: int | None) -> dict[str, float]:
             else:
                 cpu_end = max(cpu_end, now)
     return {"gpu_end": gpu_end, "cpu_end": cpu_end, "gpu_wait": gpu_wait, "end": now}
+
+
+def download_line(manifest: Manifest) -> str:
+    """What the arms' preparations download onto an empty volume, each name once."""
+    from operations.bakeoff import weights
+
+    names = sorted({n for arm in manifest.arms for n in weights.names_in(arm.prepare)})
+    if not names:
+        return "downloads onto an empty volume: none"
+    sizes = {name: weights.size_of(name) for name in names}
+    largest = max(sizes, key=sizes.__getitem__)
+    return (
+        f"downloads onto an empty volume: {sum(sizes.values()) / 1e9:.1f} GB in {len(names)}"
+        f" snapshots (largest {largest}, {sizes[largest] / 1e9:.1f} GB)"
+    )
 
 
 def estimate_lines(manifest: Manifest, here: int | None = None) -> list[str]:
@@ -1597,6 +1617,7 @@ def _dry_run(manifest: Manifest) -> int:
     print(f"queue {manifest.name}: {len(manifest.arms)} arms, plan {manifest.planned_min:g} min")
     for line in estimate_lines(manifest, available_cpus()):
         print(line)
+    print(download_line(manifest))
     for index, arm in enumerate(manifest.arms):
         lane = "gpu" if arm.gpu else f"cpu, {arm.threads} threads"
         after = f", after {', '.join(arm.after)}" if arm.after else ""
@@ -1654,6 +1675,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"pages folder {manifest.pages}: {found}")
         for line in estimate_lines(manifest):
             print(line)
+        print(download_line(manifest))
         return 0
     if args.command == "status":
         path = manifest.out / "status.json"
