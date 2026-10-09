@@ -37,6 +37,28 @@
       "Bash(runpodctl pod resume*)",
       "Bash(*python -m operations.pod.cli* create*)",
       "Bash(*python -m operations.pod.cli* adopt*)"
+    ],
+    "allow": [
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(sh .githooks/check-static.sh)",
+      "Bash(sh .githooks/check-all.sh)",
+      "Bash(.venv/bin/ruff check *)",
+      "Bash(git fetch *)",
+      "Bash(.venv/bin/python -m operations.bakeoff.queue_runner validate *)",
+      "Bash(runpodctl version)",
+      "Bash(runpodctl pod list *)",
+      "Bash(runpodctl pod get *)",
+      "Bash(runpodctl get pod *)",
+      "Bash(runpodctl network-volume list*)",
+      "Bash(runpodctl network-volume get *)",
+      "mcp__ccd_session_mgmt__get_usage",
+      "mcp__ccd_session_mgmt__search_session_transcripts",
+      "mcp__ccd_session_mgmt__list_sessions",
+      "mcp__ccd_session_mgmt__list_events",
+      "mcp__ccd_pr__get_status",
+      "mcp__ccd_session__mark_chapter",
+      "mcp__ccd_settings__get_settings",
+      "mcp__ccd_connectors__session_connectors_status"
     ]
   },
   "hooks": {
