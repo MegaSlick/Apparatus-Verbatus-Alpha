@@ -201,6 +201,9 @@ def graphql_transport_from_environment(
     return UrllibRunPodTransport(key, root=RUNPOD_GRAPHQL_ROOT, credential_placement="query")
 
 
+USER_AGENT = "verbatus-pod/1.0"
+"""Sent on every RunPod call: Cloudflare refuses urllib's default with error 1010."""
+
 BALANCE_QUERY = "query { myself { clientBalance currentSpendPerHr } }"
 """Exactly the two fields the spend gate needs; nothing else is requested, so a
 response carrying anything credential-shaped is refused rather than trusted."""
@@ -353,6 +356,8 @@ class UrllibRunPodTransport:
         url = f"{self.root}{path}"
         headers = {
             "Accept": "application/json",
+            # RunPod's Cloudflare refuses urllib's default agent (error 1010, HTTP 403).
+            "User-Agent": USER_AGENT,
             **({"Content-Type": "application/json"} if encoded is not None else {}),
         }
         if self.credential_placement == "query":
