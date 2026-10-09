@@ -349,5 +349,6 @@ Then, for example:
 Arms: `kraken-{ppocrv6,mccatmus,mcfondue}-{blla,surya}` (one module, `--model`, default
 `ppocrv6`; McCATMuS and McFondue are kraken 4.x CoreML files the same kraken 7.1.1 reads),
 `pylaia-{belfort,popp}[-lm]-{blla,surya}`,
-`party-blla` (GPU, cut first), `surya-rec-surya` (a VLM in surya-ocr 0.22.1, not CTC).
+`party-blla` (GPU, cut first), `surya-rec-surya` (a VLM in surya-ocr 0.22.1, not CTC; on
+the pod `--serve` starts vLLM on its Hub checkpoint for the run and stops it after).
 Measured cold installs here: kraken 279 s, PyLaia 204 s, Party 116 s (warm uv cache).

@@ -283,8 +283,11 @@ install = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "install
 prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "fetch", "--model", "popp", "--store-root", "/workspace/private/model-store"]
 command = [".venv/bin/python", "-m", "operations.bakeoff.lines.pylaia", "run", "--model", "popp", "--lm", "--lines", "surya", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--threads", "4"]
 
-# Surya recogniser (cards/surya-recogniser.md): a 650M VLM, GPU, cut at the behind-schedule
-# mark. Page mode (the default) reads no cached detections, so it needs no line arm.
+# Surya recogniser (cards/surya-recogniser.md): a 650M VLM on the card through vLLM. The
+# command starts its own vLLM server on the checkpoint, reads every page through Surya's
+# vLLM backend, and stops the server, so the card is held for this arm only. Page mode
+# (the default) reads no cached detections, so it needs no line arm. Cut at the
+# behind-schedule mark.
 
 [[arms]]
 name = "surya-rec-surya"
@@ -292,8 +295,8 @@ time_box_min = 20
 cut = "behind-schedule"
 gpu = true
 install = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_rec", "install"]
-prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_rec", "fetch", "--store-root", "/workspace/private/model-store"]
-command = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_rec", "run", "--lines-dir", "/workspace/private/bakeoff/surya-docs", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store", "--device", "cuda"]
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_rec", "fetch", "--serve", "--store-root", "/workspace/private/model-store"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.lines.surya_rec", "run", "--serve", "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/witness-cache", "--store-root", "/workspace/private/model-store"]
 
 # Party v2 (cards/party.md): GPU, highest install risk, cut first; reads the blla crops.
 

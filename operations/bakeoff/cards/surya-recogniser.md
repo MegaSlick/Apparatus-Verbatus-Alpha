@@ -40,11 +40,18 @@ not belong with the CTC lines
 - The repository's Surya environment: `python -m operations.bakeoff.lines.surya_rec install`
   runs `uv sync --frozen --project operations/serving/surya` (the committed lock). 8 s
   here with torch already in uv's cache; a few minutes cold.
-- The CPU backend needs llama.cpp's `llama-server` on PATH (Mac: `brew install llama.cpp`);
-  not in any lock. The GPU backend needs a running OpenAI-compatible server serving the
-  model as `datalab-to/surya-ocr-2` with a `/health` route (vLLM has one). Surya's own
-  vLLM backend starts a Docker image, which a RunPod pod cannot do, so the arm attaches to
-  a server instead (`--server-url`).
+- The pod runs the GPU backend: `--serve` starts vLLM from the project environment (the
+  locked vLLM 0.30.0, whose registry has `Qwen3_5ForConditionalGeneration`, the same
+  architecture the bake-off already serves for Chandra) on the Hub checkpoint at the
+  pinned commit, served as `datalab-to/surya-ocr-2`, with the witness runner's own
+  launcher (`witness_run.Server`: start, `/v1/models` health check, stop). Surya's own
+  vLLM backend starts a Docker image, which a RunPod pod cannot do, so the arm starts the
+  server itself and hands Surya its URL; the server stops when the pages are done.
+  `fetch --serve --store-root STORE` puts the checkpoint in `STORE/hf/surya-ocr-2` (no
+  token; about 1.4 GB) and checks `model.safetensors` against its SHA-256.
+- The CPU backend (a Mac) needs llama.cpp's `llama-server` on PATH
+  (`brew install llama.cpp`); not in any lock. `--server-url` attaches to any running
+  OpenAI-compatible server serving the model under that name.
 
 ## Native inference path
 - `surya/recognition/__init__.py`@0.22.1 `RecognitionPredictor.__call__` and
@@ -82,7 +89,10 @@ Plain lines: block and break tags end a line, table cells are spaced
 ## Resources
 - The plan's 15-minute estimate: the plan is not in this repository; its basis not found.
   Datalab's figure is 5 pages/s on an RTX 5090 (vLLM, full page).
-- GPU: a 650M VLM, about 3-4 GB of weights in bf16; fits any card beside another model.
+- GPU: a 650M VLM, about 3-4 GB of weights in bf16 (1.4 GB file); fits any card. The
+  arm asks vLLM for 0.92 of the card and a 32,768-token context. Not measured; page mode
+  sends one page at a time, a few seconds a page on an A40 by estimate, so the 20-minute
+  box includes the server's start.
 - CPU (llama.cpp, GGUF): not measured; a 650M VLM writing about 1,000 tokens a page at a
   few tens of tokens a second a slot: estimate 0.5-2 min a page on a pod CPU, faster on a
   Mac with Metal.
@@ -96,7 +106,9 @@ block mode truncation (above); trained on modern documents and 91 languages, not
 no vLLM adapter exists in this repository for Surya's OCR model
 
 ## Untested here
-The real model on either backend. Tested here: the worker under the real Surya 0.22.1
+The real model on either backend, and vLLM 0.30.0 actually loading this checkpoint (the
+architecture is registered; a 650M Qwen3.5 has not been served here). Tested here: the
+`--serve` start, health check and stop against the fake vLLM server. Tested here: the worker under the real Surya 0.22.1
 environment against a stand-in OpenAI server (both modes, the runner-shaped layout
 accepted by `LayoutResult`). The Mac runs first:
 `python -m operations.bakeoff.lines.surya_rec install && python -m operations.bakeoff.lines.surya_rec check && which llama-server`
@@ -105,8 +117,13 @@ accepted by `LayoutResult`). The Mac runs first:
 - Module `operations.bakeoff.lines.surya_rec`; arm `surya-rec-surya` (`--mode page`, the
   default; reads no cached detections) and `surya-rec-surya-blocks` (`--mode blocks`, the
   cached layout blocks; its own cache folder, so the two modes never mix on resume).
-- `python -m operations.bakeoff.lines.surya_rec fetch --store-root STORE` (the GGUF pair),
-  then `python -m operations.bakeoff.lines.surya_rec run --pages DIR --out CACHE --store-root STORE [--server-url http://127.0.0.1:8000/v1] [--mode blocks --lines-dir SURYA_DOCS]`
+- On the pod (the queue's `surya-rec-surya`): `python -m operations.bakeoff.lines.surya_rec
+  fetch --serve --store-root STORE`, then `python -m operations.bakeoff.lines.surya_rec run
+  --serve --pages DIR --out CACHE --store-root STORE` (vLLM on port 8191, started and
+  stopped by the run; its log in `CACHE/surya-rec-surya/server.log`).
+- On a Mac: `fetch --store-root STORE` (the GGUF pair), then `run --pages DIR --out CACHE
+  --store-root STORE [--server-url http://127.0.0.1:8000/v1] [--mode blocks --lines-dir
+  SURYA_DOCS]`.
 
 ## Sources
 - surya-ocr 0.22.1 wheel from PyPI (files above); `surya/settings.py`

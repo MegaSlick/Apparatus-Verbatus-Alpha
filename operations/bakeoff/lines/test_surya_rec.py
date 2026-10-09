@@ -86,3 +86,45 @@ def test_page_mode_reads_no_documents(pages, tmp_path):
             "--venv-dir", str(fake_venv(tmp_path))]  # fmt: skip
     assert surya_rec.main(argv, recogniser=partial(surya_rec.SuryaRecogniser, runner=runner)) == 0
     assert json.loads((out / "surya-rec-surya" / "p000.json").read_text())["error"] is None
+
+
+def test_serve_starts_vllm_for_the_run_and_stops_it(pages, tmp_path):
+    """--serve: the arm's own server (the fake vLLM) is up while the worker runs, the job
+    points Surya at it, and it is gone afterwards."""
+    import sys
+    import urllib.request
+
+    from operations.bakeoff.test_bakeoff_runner import FAKE, _free_port
+
+    store, out, port = tmp_path / "store", tmp_path / "c", _free_port()
+    weights_dir(store, "surya-ocr-2", ["config.json", "model.safetensors"])
+    seen = []
+
+    def worker(argv):
+        job = json.loads(Path(argv[argv.index("--job") + 1]).read_text())
+        with urllib.request.urlopen(job["server_url"] + "/models", timeout=5) as response:
+            seen.append((job["server_url"], json.loads(response.read())["data"][0]["id"]))
+        return _worker(argv)
+
+    argv = ["run", "--serve", "--port", str(port), "--vllm-cmd", sys.executable, str(FAKE),
+            "--startup-timeout", "60", "--pages", str(pages), "--out", str(out),
+            "--store-root", str(store), "--venv-dir", str(fake_venv(tmp_path))]  # fmt: skip
+    runner = FakeRunner(worker)
+    assert surya_rec.main(argv, recogniser=partial(surya_rec.SuryaRecogniser, runner=runner)) == 0
+    assert seen == [(f"http://127.0.0.1:{port}/v1", surya_rec.SERVED_NAME)]
+    record = json.loads((out / "surya-rec-surya" / "p000.json").read_text())
+    assert record["revision"] == surya_rec.HF_REVISION and record["error"] is None
+    events = [json.loads(line)["event"] for line in (out / "events.jsonl").read_text().splitlines()]
+    assert events.index("server-ready") < events.index("server-stopped")
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/models", timeout=2)
+        raise AssertionError("the server is still up")
+    except OSError:
+        pass
+
+
+def test_serve_argv_names_what_surya_asks_for(tmp_path):
+    argv = surya_rec.serve_argv(tmp_path, 8191, 0.9)
+    assert argv[:2] == ["serve", str(tmp_path)]
+    assert argv[argv.index("--served-model-name") + 1] == "datalab-to/surya-ocr-2"
+    assert "--no-trust-remote-code" in argv
