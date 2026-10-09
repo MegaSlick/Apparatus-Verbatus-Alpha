@@ -3624,6 +3624,7 @@ dependencies = [
 
 [package.dev-dependencies]
 audit = [
+    { name = "packaging" },
     { name = "pip-audit" },
 ]
 pod = [
@@ -3653,7 +3654,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-audit = [{ name = "pip-audit", specifier = "==2.10.1" }]
+audit = [
+    { name = "packaging", specifier = "==26.2" },
+    { name = "pip-audit", specifier = "==2.10.1" },
+]
 pod = [
     { name = "qwen-vl-utils", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==0.0.14" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "==2.13.0" },

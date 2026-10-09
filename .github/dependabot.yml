@@ -15,6 +15,18 @@ updates:
         patterns: ["vllm", "transformers", "torch", "ultralytics", "qwen-vl-utils"]
       python-minor-and-patch:
         update-types: ["minor", "patch"]
+  # The Surya serving image's own locked environment.
+  - package-ecosystem: "uv"
+    directory: "/operations/serving/surya"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+  # pagekit's own manifest, for the repository it splits into.
+  - package-ecosystem: "pip"
+    directory: "/pagekit"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

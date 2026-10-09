@@ -11,7 +11,9 @@ dependencies = [
     # at the Exemplar boundary and by downstream crop operations.
     "Pillow==12.3.0",
     # Pillow plugin backed by libheif for iPhone-native HEIC/HEIF sources. The
-    # door and downstream crop reader both register it explicitly.
+    # door and downstream crop reader both register it explicitly. Licence: its own
+    # code is BSD-3-Clause, but its binary wheels are GPLv2 because they bundle x265
+    # (the bundled libheif and libde265 are LGPLv3).
     "pillow-heif==1.5.0",
     # PDFium binding used to rasterise complete PDF pages once at the submit door.
     "pypdfium2==5.12.1",
@@ -51,8 +53,10 @@ test = [
     "shellcheck-py==0.11.0.1",
 ]
 # The dependency-audit gate invokes this exact pinned tool.  An unavailable
-# advisory service is a failed gate, never an implied clean audit.
-audit = ["pip-audit==2.10.1"]
+# advisory service is a failed gate, never an implied clean audit. packaging is
+# imported by .githooks/serving_audit.py, so it is pinned here rather than left to
+# whatever pip-audit happens to pull in.
+audit = ["pip-audit==2.10.1", "packaging==26.2"]
 # The model-serving stack, installed only on a GPU pod (the pod bootstrap syncs this
 # group); the Linux/x86_64 markers keep any other machine from resolving torch or a
 # CUDA wheel. The versions match the `required_packages` rows in
