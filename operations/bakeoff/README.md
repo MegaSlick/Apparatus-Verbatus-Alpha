@@ -188,3 +188,24 @@ cache home and checks every file against `DONE.json`:
 .venv/bin/python -m operations.bakeoff.queue_runner fetch --ssh "ssh -p <port> root@<ip>" \
   --remote /workspace/private/bakeoff/witness-cache --into private/bakeoff/witness-cache-<date>
 ```
+
+## The vendor reader arm (`qwen-vendor`)
+
+The same Qwen readers as `qwen-blind`, sent the way Qwen documents a page reading: the
+Qwen3-VL OCR cookbook's plain-text instruction around the project's verbatim rules, no
+system prompt, the model card's non-thinking sampling (temperature 0.7, top_p 0.8,
+top_k 20, presence_penalty 1.5), thinking off, the checkpoint's own pixel bounds
+(65,536 to 16,777,216 pixels, served through `--mm-processor-kwargs`), and no reply cap
+(`max_tokens` left out, so vLLM answers up to the context's remainder). `--repo` picks
+the family preset (`arms.VENDOR_PRESETS`; Qwen3.8 and Qwen3.5 today) and every request
+record carries it under `vendor_preset`. A page can reach about 16,400 image tokens, so
+pass `--max-num-batched-tokens 16384`:
+
+```sh
+.venv/bin/python -m operations.bakeoff.witness_run run --model qwen-vendor \
+  --label qwen35-27b-vendor --repo Qwen/Qwen3.5-27B --revision <commit> \
+  --weights <local snapshot> --max-num-batched-tokens 16384 \
+  --pages $V/bakeoff-pages --out $V/bakeoff/witness-cache
+```
+
+Run cards for every model are in `cards/` (index: `cards/README.md`).
