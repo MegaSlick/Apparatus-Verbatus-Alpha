@@ -30,7 +30,8 @@ FIXTURE_MAX_BYTES = 25 * 1_048_576
 FIXTURE_TOTAL_MAX_BYTES = 100 * 1_048_576
 MANIFEST_PATH = "proof/fixtures.toml"
 FIXTURE_ROOT = "proof/fixtures/"
-PRIVATE_README = "private/README.md"
+LOCAL_AREAS = ("private/", "scriptorium/", "workbench/")
+LOCAL_READMES = {"private/README.md", "scriptorium/README.md", "workbench/README.md"}
 
 MEDIA = {
     "image/jpeg": ((".jpg", ".jpeg"), (b"\xff\xd8\xff",)),
@@ -652,9 +653,9 @@ def scan_tree(entries: dict[str, Blob], context: str) -> list[Issue]:
         )
 
     for path, entry in entries.items():
-        if path.startswith("private/") and path != PRIVATE_README:
+        if path.startswith(LOCAL_AREAS) and path not in LOCAL_READMES:
             # `git add -f` bypasses .gitignore; local material never enters history,
-            # whether or not it resembles a secret.
+            # whether or not it resembles a secret. Each area keeps only its README.
             issues.append(
                 Issue(path, "private-path", "local private material may not enter Git", context)
             )

@@ -477,6 +477,101 @@ def test_merge_path_runs_the_same_precommit_boundary(tmp_path):
     assert "commit on main" in blocked.stderr
 
 
+def make_push_repo(path):
+    """A repo with one clean commit and an empty bare remote. Its commits are made
+    before the hooks are installed, as a commit made elsewhere or with hooks off is."""
+    repo = init_repo(path)
+    commit_file(repo, "base.txt", "base\n")
+    remote = path.parent / "remote.git"
+    git(path.parent, "init", "-q", "--bare", str(remote))
+    git(repo, "remote", "add", "origin", str(remote))
+    return repo
+
+
+def push_with_hooks(repo):
+    install_integration_hooks(repo)
+    copy_hooks(repo, "pre-push")
+    return git(repo, "push", "-q", "origin", "work/example", check=False)
+
+
+@pytest.mark.full
+def test_pre_push_allows_a_clean_new_branch_and_a_clean_update(tmp_path):
+    repo = make_push_repo(tmp_path / "repo")
+    first = push_with_hooks(repo)
+    assert first.returncode == 0, first.stdout + first.stderr
+    commit_file(repo, "more.txt", "more\n")
+    second = git(repo, "push", "-q", "origin", "work/example", check=False)
+    assert second.returncode == 0, second.stdout + second.stderr
+
+
+@pytest.mark.full
+@pytest.mark.parametrize("area", ["scriptorium", "workbench"])
+def test_pre_push_refuses_a_new_branch_carrying_a_local_only_path(tmp_path, area):
+    repo = make_push_repo(tmp_path / "repo")
+    (repo / area).mkdir()
+    commit_file(repo, f"{area}/x", "local page notes\n")
+    result = push_with_hooks(repo)
+    assert result.returncode != 0
+    assert "[private-path]" in result.stderr
+    assert "failed its ingress check" in result.stderr
+    remote = tmp_path / "remote.git"
+    assert git(remote, "branch", "--list").stdout.strip() == ""
+
+
+@pytest.mark.full
+def test_pre_push_scans_the_commits_an_update_adds(tmp_path):
+    repo = make_push_repo(tmp_path / "repo")
+    assert push_with_hooks(repo).returncode == 0
+    # Committed with hooks off, as the pre-commit check would refuse it.
+    git(repo, "config", "--unset", "core.hooksPath")
+    (repo / "workbench").mkdir()
+    commit_file(repo, "workbench/x", "local notes\n")
+    git(repo, "rm", "-q", "workbench/x")
+    git(repo, "commit", "-qm", "remove it again")
+    git(repo, "config", "core.hooksPath", ".githooks")
+    result = git(repo, "push", "-q", "origin", "work/example", check=False)
+    assert result.returncode != 0
+    assert "[private-path]" in result.stderr
+
+
+@pytest.mark.full
+def test_pre_push_scans_a_new_branch_from_where_it_left_main(tmp_path):
+    repo = make_push_repo(tmp_path / "repo")
+    install_integration_hooks(repo)
+    copy_hooks(repo, "pre-push")
+    assert git(repo, "push", "-q", "origin", "work/example:main", check=False).returncode == 0
+    git(repo, "fetch", "-q", "origin")
+    git(repo, "switch", "-qc", "work/clean")
+    commit_file(repo, "clean.txt", "clean\n")
+    clean = git(repo, "push", "-q", "origin", "work/clean", check=False)
+    assert clean.returncode == 0, clean.stdout + clean.stderr
+
+    git(repo, "switch", "-qc", "work/leak", "origin/main")
+    git(repo, "config", "--unset", "core.hooksPath")
+    (repo / "scriptorium").mkdir()
+    commit_file(repo, "scriptorium/x", "local page notes\n")
+    git(repo, "config", "core.hooksPath", ".githooks")
+    blocked = git(repo, "push", "-q", "origin", "work/leak", check=False)
+    assert blocked.returncode != 0
+    assert "[private-path]" in blocked.stderr
+
+
+def test_pre_push_refuses_when_the_ingress_check_is_missing_or_cannot_run(tmp_path):
+    repo = make_precommit_repo(tmp_path / "repo")
+    copy_hooks(repo, "pre-push")
+    commit_file(repo, "base.txt", "base\n")
+    head = git(repo, "rev-parse", "HEAD").stdout.strip()
+    line = f"refs/heads/work/example {head} refs/heads/work/example {'0' * 40}\n"
+    stub_ingress(repo, ref_fields=2)
+    result = run_hook(repo, "pre-push", stdin=line)
+    assert result.returncode == 1
+    assert "could not be checked" in result.stderr
+    (repo / ".githooks" / "check_ingress.py").unlink()
+    result = run_hook(repo, "pre-push", stdin=line)
+    assert result.returncode == 1
+    assert "is missing" in result.stderr
+
+
 def stub_ingress(repo, *, message=0, ref_fields=0, staged=0):
     """A check_ingress.py that exits with the given status for each mode it is run in."""
     (repo / ".githooks" / "check_ingress.py").write_text(

@@ -44,12 +44,13 @@ for a script to read.
 | `.githooks/install.sh` | PRODUCT | stop creating the `workbench/` folders |
 | `.githooks/pre-commit` | PRODUCT | |
 | `.githooks/pre-merge-commit` | PRODUCT | |
+| `.githooks/pre-push` | PRODUCT | |
 | `.githooks/serving_audit.py` | PRODUCT | GPU serving inventory audit |
 | `.githooks/test_ci_workflow.py` | PRODUCT | |
 | `.githooks/test_hooks.py` | PRODUCT | |
 | `.githooks/test_ingress.py` | PRODUCT | |
 | `.githooks/test_serving_audit.py` | PRODUCT | |
-| `.github/` | PRODUCT | CI, Dependabot, pull request template |
+| `.github/` | PRODUCT | CI, Dependabot, pull request template, code owners |
 | `.gitignore` | PRODUCT | drop the harness lines |
 | `.python-version` | PRODUCT | the interpreter uv picks on a Mac; one CI tests |
 | `.graphifyignore` | HARNESS | |
@@ -113,5 +114,6 @@ These product files mention the harness, and are trimmed when beta is copied:
 `.gitignore` (`.claude/`, `workbench/`, `graphify-out/`), `pyproject.toml` (test collection
 settings naming `.claude/` and `workbench`), `config/data_handling_policy.json` (a
 ledger under `workbench/standing/`), `.githooks/install.sh` (the `workbench/` folders),
-`.githooks/check-static.sh` (the session-end hook), `CONTRIBUTING.md`, `README.md` and
+`.githooks/check-static.sh` (the session-end hook), `.githooks/check_ingress.py`
+(`workbench/` among the local-only areas), `CONTRIBUTING.md`, `README.md` and
 `PRINCIPLES.md` (mentions of `AGENTS.md` or AI sessions).

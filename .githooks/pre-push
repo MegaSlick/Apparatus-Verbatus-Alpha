@@ -1,0 +1,87 @@
+#!/bin/sh
+# Refuses a push whose new commits carry a credential, an oversized payload or a path
+# from the local-only areas, the same scan ingress.yml runs after the push lands.
+
+ingress="$(dirname "$0")/check_ingress.py"
+if [ ! -f "$ingress" ]; then
+  echo "" >&2
+  echo "  BLOCKED: $ingress is missing." >&2
+  echo "  What you push cannot be checked, so this push is refused." >&2
+  echo "" >&2
+  exit 1
+fi
+python=$(sh "$(dirname "$0")/find-python.sh") || exit 1
+remote=$1
+
+refuse() {
+  status=$1
+  echo "" >&2
+  if [ "$status" -eq 1 ]; then
+    echo "  BLOCKED: what this push sends failed its ingress check (see above)." >&2
+    echo "  Nothing has left this machine. Remove the offending commit or file from" >&2
+    echo "  the branch's history before pushing again." >&2
+  else
+    echo "  BLOCKED: what this push sends could not be checked" >&2
+    echo "  (the ingress check exited ${status}, meaning it could not run)." >&2
+    echo "  Nothing is claimed about the commits either way; the push is refused" >&2
+    echo "  because unknown is not the same as clean." >&2
+  fi
+  echo "" >&2
+  exit 1
+}
+
+all_zeros() {
+  case $1 in
+    *[!0]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+# Git writes one line per ref being pushed.
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ -n "$local_sha" ] || continue
+  # A delete sends no commits.
+  if all_zeros "$local_sha"; then
+    continue
+  fi
+
+  printf '%s\0%s\0' "$local_ref" "$remote_ref" |
+    "$python" "$ingress" --ref-fields
+  status=$?
+  [ "$status" -eq 0 ] || refuse "$status"
+
+  # Only the commits the remote lacks. An update starts from the remote's tip; a new
+  # branch starts where it left the remote's main line, which CI has already scanned.
+  # With neither known, the full history.
+  range=$local_sha
+  if ! all_zeros "$remote_sha" &&
+     git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
+    range="$remote_sha..$local_sha"
+  else
+    for tip in "refs/remotes/$remote/HEAD" "refs/remotes/$remote/main"; do
+      if git rev-parse -q --verify "$tip^{commit}" >/dev/null 2>&1 &&
+         base=$(git merge-base "$tip" "$local_sha" 2>/dev/null); then
+        range="$base..$local_sha"
+        break
+      fi
+    done
+  fi
+  # A push that adds no commit, such as a branch at a commit the remote has, has
+  # nothing to scan; the scanner refuses an empty range.
+  new_commit=$(git rev-list -n 1 "$range") || refuse 2
+  if [ -n "$new_commit" ]; then
+    "$python" "$ingress" --history "$range" </dev/null
+    status=$?
+    [ "$status" -eq 0 ] || refuse "$status"
+  fi
+
+  case $local_ref in
+    refs/tags/*)
+      "$python" "$ingress" --ref-object "$local_sha" </dev/null
+      status=$?
+      [ "$status" -eq 0 ] || refuse "$status"
+      ;;
+  esac
+done
+
+exit 0
