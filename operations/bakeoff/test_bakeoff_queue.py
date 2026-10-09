@@ -1051,3 +1051,11 @@ def test_the_bakeoff_manifests_validate_on_the_global_route(name, capsys):
     assert Q.main(["run", *argv, "--dry-run"]) == 0
     printed = capsys.readouterr().out
     assert "-> /workspace/global/bakeoff/home" in printed and "own disk" in printed
+
+
+def test_keep_pod_makes_the_run_end_with_the_pod_kept(bench, capsys):
+    manifest = _manifest(bench, [_cpu_arm(bench, "a")])
+    assert Q.override_manifest(manifest, None, False, keep_pod=True).end_pod == "none"
+    argv = ["--manifest", str(EXAMPLES / "witness-24gb.toml"), "--keep-pod", "--own-disk"]
+    assert Q.main(["run", *argv, "--dry-run"]) == 0
+    assert "end pod: none" in capsys.readouterr().out

@@ -11,8 +11,9 @@ sync_to = "/workspace/private/bakeoff/reader-cache-home"   # the network-volume 
 own_disk = false
 # Global-volume route (RUNBOOK 2.1): the pod's own disk at /workspace/private and the
 # global volume at /workspace/global. Same manifest; the command line moves the copy:
-#   queue_runner run --manifest ... --sync-to /workspace/global/bakeoff/reader-cache-home --own-disk
-# (`--own-disk`: the pod is kept, not deleted, unless the copy verified.)
+#   queue_runner run --manifest ... --sync-to /workspace/global/bakeoff/reader-cache-home --own-disk --keep-pod
+# (`--own-disk`: the pod is kept unless the copy verified; `--keep-pod`: kept anyway, so the
+# session fetches from the pod's disk and deletes the pod itself.)
 smoke_pages = 2
 behind_schedule_min = 30
 end_pod = "delete"

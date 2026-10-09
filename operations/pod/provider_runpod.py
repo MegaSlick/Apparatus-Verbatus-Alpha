@@ -68,6 +68,7 @@ import contextlib
 import http.client
 import json
 import os
+import re
 import shlex
 import threading
 import time
@@ -77,7 +78,8 @@ import urllib.request
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
-from typing import Callable, Final, Mapping, Protocol
+from pathlib import Path
+from typing import Callable, Final, Mapping, Protocol, Sequence
 
 from common.credentials import looks_like_credential_field
 
@@ -159,17 +161,42 @@ GRAPHQL_PATH = "/graphql"
 """Where the account balance lives. REST v1 and v2 both lack it (module docstring)."""
 
 ACCOUNT_KEY_ENVIRONMENT = "RUNPOD_API_KEY"
-"""The shell variable the hand route keeps the account key in (never a file or a
-command line); `runpodctl` and `pod_delete.sh` read the same one."""
+"""The shell variable the hand route keeps the account key in (never a command line);
+`runpodctl` and `pod_delete.sh` read the same one."""
+
+RUNPODCTL_CONFIG = Path("~/.runpod/config.toml")
+"""Where `runpodctl config --apiKey` keeps the key, outside the repository. A session
+with no terminal to type the variable into reads the key from here instead."""
+
+_APIKEY_LINE = re.compile(r"^\s*apikey\s*=\s*[\"']?([^\"'\s]+)[\"']?\s*$", re.IGNORECASE)
+
+
+def account_key(
+    environ: Mapping[str, str] | None = None, config: Path = RUNPODCTL_CONFIG
+) -> str | None:
+    """The account key from the shell, else from runpodctl's config; never printed."""
+
+    key = (os.environ if environ is None else environ).get(ACCOUNT_KEY_ENVIRONMENT, "")
+    if key.strip():
+        return key.strip()
+    try:
+        lines = config.expanduser().read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        found = _APIKEY_LINE.match(line)
+        if found:
+            return found.group(1)
+    return None
 
 
 def graphql_transport_from_environment(
-    environ: Mapping[str, str] | None = None,
+    environ: Mapping[str, str] | None = None, config: Path = RUNPODCTL_CONFIG
 ) -> "UrllibRunPodTransport | None":
-    """A GraphQL transport over the account key in the shell, or ``None`` without one."""
+    """A GraphQL transport over the account key, or ``None`` when there is none."""
 
-    key = (os.environ if environ is None else environ).get(ACCOUNT_KEY_ENVIRONMENT, "")
-    if not key.strip():
+    key = account_key(environ, config)
+    if key is None:
         return None
     return UrllibRunPodTransport(key, root=RUNPOD_GRAPHQL_ROOT, credential_placement="query")
 
@@ -1309,6 +1336,7 @@ def pod_create_input(
     start_ssh: bool = True,
     min_vcpu_count: int | None = None,
     data_center_id: str | None = None,
+    allowed_cuda_versions: Sequence[str] | None = None,
 ) -> dict[str, object]:
     """A `PodFindAndDeployOnDemandInput`, shared by the seam and the hand route.
 
@@ -1316,7 +1344,9 @@ def pod_create_input(
     (deleted with the pod); `networkVolumeId` with the same mount path is a
     network volume instead, and one of the two is required so the guard has a
     disk. `objectMounts` carries the global volume. Only the fields given are
-    sent, so the account's defaults apply to the rest.
+    sent, so the account's defaults apply to the rest. `minVcpuCount`,
+    `dataCenterId`, `allowedCudaVersions`, `supportPublicIp` and `startSsh` were
+    schema-validated on 2026-10-08 beside `objectMounts`.
     """
 
     if (network_volume_id is None) == (persistent_disk_gb is None):
@@ -1349,6 +1379,10 @@ def pod_create_input(
         payload["minVcpuCount"] = min_vcpu_count
     if data_center_id is not None:
         payload["dataCenterId"] = data_center_id
+    if allowed_cuda_versions:
+        # The host's driver must serve the image's CUDA: a cu1300 image on a 12.8 host
+        # fails every vLLM chair (observed 2026-10-06).
+        payload["allowedCudaVersions"] = list(allowed_cuda_versions)
     return payload
 
 

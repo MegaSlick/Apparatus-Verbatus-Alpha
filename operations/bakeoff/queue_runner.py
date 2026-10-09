@@ -315,13 +315,16 @@ def parse_manifest(data: dict[str, Any]) -> Manifest:
     )
 
 
-def override_manifest(manifest: Manifest, sync_to: str | None, own_disk: bool) -> Manifest:
+def override_manifest(
+    manifest: Manifest, sync_to: str | None, own_disk: bool, keep_pod: bool = False
+) -> Manifest:
     """One manifest for both storage routes: the command line names where the copy goes.
 
     `--sync-to` must be absolute and separate from `out`, as in the manifest;
-    `--own-disk` only ever adds the refusal, never removes it. The same two
-    flags go on every command that reads the manifest, so `end-pod` sees the
-    copy `run` made.
+    `--own-disk` only ever adds the refusal, never removes it; `--keep-pod` is
+    `end_pod = "none"` for this run, so the session fetches from the pod's own
+    disk and deletes the pod itself. The same flags go on every command that
+    reads the manifest, so `end-pod` sees the copy `run` made.
     """
     if sync_to is not None:
         path = Path(sync_to)
@@ -334,6 +337,8 @@ def override_manifest(manifest: Manifest, sync_to: str | None, own_disk: bool) -
         manifest = replace(manifest, sync_to=path)
     if own_disk:
         manifest = replace(manifest, own_disk=True)
+    if keep_pod:
+        manifest = replace(manifest, end_pod="none")
     return manifest
 
 
@@ -1698,6 +1703,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
             action="store_true",
             help="the cache is on the pod's own disk: refuse to end the pod unless the copy verified",
         )
+        p.add_argument(
+            "--keep-pod",
+            action="store_true",
+            help="end_pod = none for this run: the pod is kept for a fetch and deleted by hand",
+        )
         if name == "run":
             p.add_argument("--smoke-only", action="store_true")
             p.add_argument("--dry-run", action="store_true")
@@ -1724,7 +1734,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "fetch":
         return fetch(args.ssh, args.remote, args.into)
     try:
-        manifest = override_manifest(load_manifest(args.manifest), args.sync_to, args.own_disk)
+        manifest = override_manifest(
+            load_manifest(args.manifest), args.sync_to, args.own_disk, args.keep_pod
+        )
     except ManifestError as failure:
         print(f"manifest refused: {failure}", file=sys.stderr)
         return 2

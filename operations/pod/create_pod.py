@@ -9,11 +9,12 @@ balance observer uses, then the pod's answer checked against what was asked.
     START=$(sh operations/pod/pod_start_command.sh off <sha>) &&
     .venv/bin/python -m operations.pod.create_pod --name verbatus-bakeoff-w \\
       --gpu "NVIDIA A40" --image runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404 \\
-      --container-disk-gb 100 --disk-gb 150 --min-vcpu 16 \\
+      --container-disk-gb 100 --disk-gb 100 --min-vcpu 16 --cuda 13.0 \\
       --global-volume <id> --global-mount /workspace/global --start-command "$START"
 
 The account key is read from the shell variable `runpodctl` uses
-(`provider_runpod.ACCOUNT_KEY_ENVIRONMENT`), never a command line. Nothing is a
+(`provider_runpod.ACCOUNT_KEY_ENVIRONMENT`), else from runpodctl's own config
+file (`provider_runpod.RUNPODCTL_CONFIG`); never a command line, never printed. Nothing is a
 default: the global volume, its mount and the disk are named every time. The
 pod's own disk (`--disk-gb`, deleted with the pod) or a network volume
 (`--network-volume`) sits at /workspace/private, where the guard keeps its
@@ -66,6 +67,13 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--start-command", required=True, help="pod_start_command.sh's output")
     parser.add_argument("--min-vcpu", type=int, help="refuse a machine with fewer vCPUs")
     parser.add_argument("--datacenter", help="one datacenter id; omitted, any with stock")
+    parser.add_argument(
+        "--cuda",
+        action="append",
+        default=[],
+        metavar="VERSION",
+        help="a host CUDA version the image needs, e.g. 13.0; repeat or comma-separate for more",
+    )
     parser.add_argument("--ports", default="22/tcp")
     parser.add_argument("--dry-run", action="store_true", help="print the input; create nothing")
     return parser.parse_args(argv)
@@ -102,7 +110,17 @@ def build_input(args: argparse.Namespace) -> dict[str, object]:
         ports=args.ports or None,
         min_vcpu_count=args.min_vcpu,
         data_center_id=args.datacenter,
+        allowed_cuda_versions=cuda_versions(args.cuda),
     )
+
+
+def cuda_versions(given: Sequence[str]) -> list[str]:
+    """`--cuda 13.0 --cuda 12.9` or `--cuda 13.0,12.9`, as one list; a blank is refused."""
+
+    versions = [part.strip() for item in given for part in item.split(",")]
+    if any(not part for part in versions):
+        raise ValueError("--cuda takes versions like 13.0, not a blank")
+    return versions
 
 
 def create(transport: HttpTransport, variables: dict[str, object]) -> dict[str, object]:

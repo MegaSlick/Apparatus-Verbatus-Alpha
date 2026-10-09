@@ -204,8 +204,9 @@ writes `DONE.json` (digests and summary) to both, pings, and ends the pod: with 
 heartbeat younger than 5 min it moves the guard's deadline to now (the guard deletes, with
 its retries and stop fallback); otherwise it runs `operations/pod/pod_delete.sh`. With
 `own_disk = true` it refuses unless the copy verified; `end_pod = "none"` keeps the pod.
-`run --sync-to PATH --own-disk` (and the same two options on `validate`, `status` and
-`end-pod`) move the copy and add the refusal from the command line, so one manifest serves
+`run --sync-to PATH --own-disk --keep-pod` (and the same options on `validate`, `status`
+and `end-pod`) move the copy, add the refusal and keep the pod (`end_pod = "none"` for
+that run) from the command line, so one manifest serves
 a network volume and the global-volume route (`RUNBOOK.md` 2.1), where the cache sits on
 the pod's own disk and the copy goes to object storage: there `rsync -rt` may be refused
 (no times, no rename), so the copy falls back to `rsync -r --inplace`, then to a plain

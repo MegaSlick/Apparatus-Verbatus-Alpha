@@ -104,7 +104,7 @@ def test_a_half_named_or_unsafe_request_creates_nothing(
 
 
 def test_without_the_key_nothing_is_sent(monkeypatch, capsys) -> None:
-    monkeypatch.delenv(ACCOUNT_KEY_ENVIRONMENT, raising=False)
+    monkeypatch.setattr(create_pod, "graphql_transport_from_environment", lambda: None)
 
     assert create_pod.main(ARGV) == 2
 
@@ -138,3 +138,25 @@ def test_a_graphql_error_means_no_pod(capsys) -> None:
     assert create_pod.main(ARGV, transport=transport) == 2
 
     assert "no longer any instances" in capsys.readouterr().err
+
+
+def test_cuda_versions_become_the_allowed_list(capsys) -> None:
+    assert create_pod.main([*ARGV, "--cuda", "13.0", "--cuda", "12.9,12.8", "--dry-run"]) == 0
+
+    assert json.loads(capsys.readouterr().out)["allowedCudaVersions"] == ["13.0", "12.9", "12.8"]
+    assert create_pod.main([*ARGV, "--cuda", " ", "--dry-run"]) == 2
+
+
+def test_the_key_falls_back_to_runpodctl_s_config_and_is_never_printed(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from .provider_runpod import account_key
+
+    monkeypatch.delenv(ACCOUNT_KEY_ENVIRONMENT, raising=False)
+    config = tmp_path / "config.toml"
+    config.write_text('[default]\napikey = "not-a-key-just-a-test-value"\n')
+
+    assert account_key({}, config) == "not-a-key-just-a-test-value"
+    assert account_key({ACCOUNT_KEY_ENVIRONMENT: "fromshell"}, config) == "fromshell"
+    assert account_key({}, tmp_path / "missing.toml") is None
+    assert "not-a-key" not in capsys.readouterr().out

@@ -797,7 +797,7 @@ what the code needs, not what to rent.
 
 **What the run needs.** The 27B Perlector needs the `generic-80gb-plus` tier in
 `config/pod_placement.toml`; its one reviewed card is `NVIDIA RTX PRO 6000 Blackwell
-Server Edition` (96 GB, $1.99/h on the sheet). Container disk at least 120 GB on that card
+Server Edition` (96 GB; the price is read on the day, `operations/pod/RUNPOD.md`). Container disk at least 120 GB on that card
 (`models.BIG_CARD_CONTAINER_DISK_GB`) and 100 GB on a smaller one
 (`models.DEFAULT_CONTAINER_DISK_GB`). The network volume mounted at exactly
 `/workspace/private`. A card serves its chairs one at a time, and the work is split across
@@ -939,7 +939,8 @@ model store, caches, the clone and the venv stay on the pod's own disk at
 check a network volume does. `operations/pod/create_pod.py` is the hand route's create
 for this; `operations/bakeoff/RUNBOOK.md` step 2.1 is the worked example, with a
 two-minute smoke on the cheapest card first. The managed route takes the same volume as
-`global_volume` in its request file and sends it on REST v1 only (`provider_runpod`).
+`global_volume` in its request file; its v1 adapter then creates through the same v1
+GraphQL mutation (`provider_runpod`), and v2 refuses by name.
 
 ### On the pod, over SSH
 
