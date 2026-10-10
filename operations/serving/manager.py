@@ -37,6 +37,7 @@ from common.credentials import log_word_carries_credential, looks_like_credentia
 
 from .capacity import CapacityPlan, planned_ceiling
 from .config import (
+    QUANTIZATION_CHECKPOINT_DECLARATIONS,
     FixtureProfile,
     InProcessProfile,
     ServingConfigInputs,
@@ -86,7 +87,12 @@ from .residency import ResidencyHandle, ResidencyLease
 # it off. A row for one of these with it on is refused at launch. Keyed by
 # repository, not role, since tests reuse role names for fixture chairs.
 _HYBRID_ATTENTION_REPOSITORIES = frozenset(
-    {"datalab-to/chandra-ocr-2", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-27B-FP8"}
+    {
+        "datalab-to/chandra-ocr-2",
+        "Qwen/Qwen3.8-27B",
+        "Qwen/Qwen3.8-27B-FP8",
+        "nvidia/Qwen3.8-27B-NVFP4",
+    }
 )
 
 # Two launch-purpose tokens admit an `unproven` row; every other check still
@@ -1656,8 +1662,10 @@ def assert_quantization(snapshot: VerifiedSnapshot, profile: ServingProfile) -> 
     vLLM refuses a checkpoint quantized another way, but given an unquantized
     checkpoint it would quantize the weights itself at load: a different model
     served under the row's name. So a row that names a method needs the
-    snapshot's ``config.json`` to carry ``quantization_config.quant_method``
-    equal to it. A row that names none is not checked, as before.
+    snapshot's ``config.json`` ``quantization_config`` to declare it: the
+    ``quant_method`` (and, for a ModelOpt method, the ``quant_algo``) that
+    ``QUANTIZATION_CHECKPOINT_DECLARATIONS`` lists for the row's value. A row
+    that names none is not checked, as before.
     """
 
     declared = getattr(profile, "quantization", None)
@@ -1676,20 +1684,32 @@ def assert_quantization(snapshot: VerifiedSnapshot, profile: ServingProfile) -> 
     text = document.get("text_config") if isinstance(document, dict) else None
     if isinstance(text, dict):
         sections.append(text)
-    observed = next(
+    quantization_config = next(
         (
-            section["quantization_config"].get("quant_method")
+            section["quantization_config"]
             for section in sections
             if isinstance(section.get("quantization_config"), dict)
         ),
-        None,
+        {},
     )
-    if observed != declared:
+    observed = quantization_config.get("quant_method")
+    expected_method, expected_algo = QUANTIZATION_CHECKPOINT_DECLARATIONS[declared]
+    observed_algo = quantization_config.get("quant_algo")
+    if expected_algo is not None and isinstance(observed_algo, str):
+        observed_algo = observed_algo.upper()  # vLLM upper-cases it before matching
+    if observed != expected_method or (
+        expected_algo is not None and observed_algo != expected_algo
+    ):
+        algo = f", quant_algo={observed_algo!r}" if expected_algo is not None else ""
+        wanted = f"quant_method={expected_method!r}" + (
+            f", quant_algo={expected_algo!r}" if expected_algo is not None else ""
+        )
         raise ServingConfigurationError(
             f"chair {profile.chair!r} serving row (recipe={profile.recipe!r}, "
             f"tier={profile.tier!r}) declares quantization={declared!r}, but config.json at "
-            f"the pinned revision declares quant_method={observed!r}; vLLM would quantize "
-            "an unquantized checkpoint itself, serving weights nobody pinned"
+            f"the pinned revision declares quant_method={observed!r}{algo}, not {wanted}; "
+            "vLLM would quantize an unquantized checkpoint itself, serving weights nobody "
+            "pinned, or read a differently quantized one another way"
         )
 
 
