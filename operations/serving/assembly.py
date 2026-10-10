@@ -10,6 +10,7 @@ from typing import Any, Final, Mapping, Protocol
 from common.chairs.models import ChairIdentity
 from common.contracts.errors import ContractError
 from common.contracts.stages import stage_directory
+from common.replay import replay_of
 from common.sealed_config import parse_sealed_toml
 from common.stage import DEFAULT_POD_PLACEMENT_CONFIG_PATH, DEFAULT_SERVING_RECIPES_CONFIG_PATH
 from operations.pod.preflight import (
@@ -222,8 +223,22 @@ def stage_chair_client(
     pod's one card, so every stage and run id contends for it on container-local disk,
     and so does the record of a service handed from one stage's process to the next.
     ``decoding_policy`` is the policy the stage already loaded and sealed; the client
-    sends its chair's row of it."""
+    sends its chair's row of it.
 
+    A replay run (`common.replay`) gets a client over its source run's recorded
+    replies instead, and so never starts or reaches a model."""
+
+    if replay_of(context.run) is not None:
+        from .replay import replay_chair_client
+
+        return replay_chair_client(
+            context,
+            identity,
+            tier,
+            profile=launch_row(context, identity, tier),
+            decoding_policy=decoding_policy,
+            decoding_config_sha256=decoding_config_sha256,
+        )
     recipes, config_inputs, placement = _bound_serving(context, context.args.serving_recipes_config)
     manager = ServingManager(
         registry=context.registry,

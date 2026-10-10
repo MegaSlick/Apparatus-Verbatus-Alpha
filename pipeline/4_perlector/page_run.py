@@ -71,6 +71,7 @@ from common import (
     page_path,
     page_reask,
     page_reread,
+    replay,
 )
 from common.chairs.models import AbsentChair, ChairIdentity
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal
@@ -210,6 +211,8 @@ class _Request:
     reask: dict[str, Any] | None = None
     # An operator re-read's `operator_reread` record; `None` on any other reading.
     reread: dict[str, Any] | None = None
+    # A replay's re-ask that its source run never sent: recorded as not asked.
+    not_replayed: bool = False
     # What the reading names beyond the feed and the page: a re-ask's trigger
     # records, or an operator re-read's decisions and the readings it supersedes.
     inputs: list[dict[str, str]] = field(default_factory=list)
@@ -271,6 +274,8 @@ class _PagePass:
     row: Any = None
     # The chair's start on a background thread while pages are prepared, if begun.
     starting: Any = None
+    # The source run a replay answers from (`common.replay`); `None` on any other run.
+    replay: Any = None
 
     @property
     def context(self):
@@ -388,7 +393,37 @@ def _prepare(state: _PagePass, ordinal: int, page_id: str) -> _Page:
             row, run.chair.serving_recipe, feed, request.text, run.page_generation
         ),
     )
+    _require_recorded(state, page, request)
     return page
+
+
+def _recorded(state: _PagePass, page: _Page, request: _Request) -> dict[str, Any] | None:
+    """The source's answered reading of exactly this request, on a replay; else `None`."""
+    recorded = state.replay.reading(page.page_id, request.ordinal)
+    if (
+        recorded is None
+        or recorded.get("engine_call") is None
+        or recorded.get("request_digest")
+        != page_path.request_digest(request.text, request.image_sha256s)
+    ):
+        return None
+    return recorded
+
+
+def _require_recorded(state: _PagePass, page: _Page, request: _Request) -> None:
+    """On a replay, refuse a reading its source run never sent in exactly these bytes.
+
+    A page whose reading cannot be answered could not be read at all, so the
+    replay stops rather than record every such page unread.
+    """
+    if state.replay is None or not _sends(state, page, request):
+        return
+    if _recorded(state, page, request) is None:
+        raise ContractError(
+            f"page {page.ordinal}'s reading request is not one run {state.replay.run_id} "
+            "sent and got an answer to, so no recorded reply can answer it; the code being "
+            "replayed asks the Perlector something new. Read the page in a live run"
+        )
 
 
 def _admit(state: _PagePass, request: _Request, measure: Callable[[Any], dict[str, Any]]) -> None:
@@ -402,8 +437,15 @@ def _admit(state: _PagePass, request: _Request, measure: Callable[[Any], dict[st
 
 
 def _sends(state: _PagePass, page: _Page, request: _Request) -> bool:
-    """Whether this pass sends the request: live, asked, not refused, not already read."""
-    return state.live and not page.not_run and request.adopted is None and request.refusal is None
+    """Whether this pass sends the request: live, asked, not refused, not already read,
+    and, on a replay, recorded."""
+    return (
+        state.live
+        and not page.not_run
+        and request.adopted is None
+        and request.refusal is None
+        and not request.not_replayed
+    )
 
 
 def _serving_row(state: _PagePass):
@@ -659,6 +701,7 @@ def _prepare_reread(
             row, run.chair.serving_recipe, page.feed, request.text, run.page_generation
         ),
     )
+    _require_recorded(state, page, request)
     return request
 
 
@@ -732,6 +775,9 @@ def _prepare_reask(
             row, run.chair.serving_recipe, page.feed, shown, request.text, run.page_generation
         ),
     )
+    # A replay's re-ask the source never sent cannot be answered: it is recorded not asked.
+    if state.replay is not None and _sends(state, page, request):
+        request.not_replayed = _recorded(state, page, request) is None
     return request
 
 
@@ -793,7 +839,7 @@ def _reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[s
 def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -> dict[str, Any]:
     run, context = state.run, state.context
     not_run = page.not_run if page_path.is_whole_page_reading(request.ordinal) else []
-    attempted = not not_run and request.refusal is None
+    attempted = not not_run and request.refusal is None and not request.not_replayed
     engine_call = capacity = failure = answer = None
     repairs: list[dict[str, Any]] = []
     finish_reason = stop_reason = None
@@ -805,6 +851,8 @@ def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -
     receipt_ref = None
     if not_run:
         parse_state, problems = NOT_RUN, [dict(problem) for problem in not_run]
+    elif request.not_replayed:
+        parse_state, problems = NOT_RUN, [replay.not_replayed_problem(context.run)]
     elif request.refusal is not None:
         parse_state = REFUSED_CAPACITY
         capacity = {
@@ -1424,6 +1472,9 @@ def read_the_pages(run) -> None:
         reask_budget=page_reask.reask_budget(context.recovery_policy),
         sealed=_sealed_pages(context),
     )
+    if run.serving_mode == "live" and replay.replay_of(context.run) is not None:
+        # A replay's live chair answers from its source run, which says what it recorded.
+        state.replay = replay.open_source(context.run)
     prepared = _prepare_all(state, pages)
     print(f"perlector: reading {len(pages)} pages whole", file=sys.stderr)
     joined: set[str] = set()
