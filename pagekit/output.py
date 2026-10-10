@@ -5,8 +5,7 @@ Each page is made from its original source through its geometry chain in one
 resampling (pagekit.geometry.render), filled outside the paper with the page's own
 paper colour, and written losslessly: TIFF with deflate compression by default, or PNG.
 Greyscale stays greyscale and colour stays colour, and a page keeps the source's
-resolution unless shrinking is set. With the plan's tone view, the grey tone view of
-spec 0006 is also written beside each page as lossless TIFF. Every file, images, manifest and project, is
+resolution unless shrinking is set. With the plan's tone view, the grey tone view is also written beside each page as lossless TIFF. Every file, images, manifest and project, is
 first written in full as a temporary file beside its target; only then are they all
 moved into place, and if any move fails the earlier ones are put back. A failure at any
 point leaves the output folder and the project file as they were. Outputs of pages that

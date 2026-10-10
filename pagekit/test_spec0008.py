@@ -1,4 +1,4 @@
-"""Spec 0008: split-first defaults (cropping off unless asked) and the stage cache.
+"""Split-first defaults (cropping off unless asked) and the stage cache.
 Synthetic pages only; no real register material."""
 
 from __future__ import annotations

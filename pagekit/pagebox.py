@@ -1,6 +1,6 @@
-"""Page box: where the paper is inside the frame (spec 0004, finding 0015).
+"""Page box: where the paper is inside the frame.
 
-`detect_page_box(image, dpi)` returns spec 0002's answer shape. The value is
+`detect_page_box(image, dpi)` returns the detector answer shape. The value is
 [left, top, right, bottom] of the paper in the page's own pixel grid, right and bottom
 not included. It works on a reduced working copy and writes no file.
 
@@ -38,7 +38,7 @@ Page-frame detection after F. Shafait, J. van Beusekom, D. Keysers and T. M. Bre
 "Document cleanup using page frame detection", International Journal on Document
 Analysis and Recognition, 2008, and K.-C. Fan, Y.-K. Wang and T.-R. Lay,
 "Marginal noise removal of document images", Pattern Recognition, 2002; the scanline
-walk itself is general knowledge (finding 0015).
+walk itself is general knowledge.
 """
 
 from __future__ import annotations
@@ -265,7 +265,7 @@ def _side_edge(
 
     Leaving a pale backdrop, the level must fall by `delta` within `step` lines of the
     last backdrop line: paper that brightens slowly toward one side drifts rather than
-    steps, and is never cut (brief 0022, B2)."""
+    steps, and is never cut."""
     count = len(stats)
     kinds = []
     for dark_share, pale_share, paperlike, _ in stats:
@@ -399,7 +399,7 @@ def _keep_ink_in_strips(
     the image, so a slow shadow or a uniform backdrop adds nothing, and the edge of a
     pale label on the backdrop adds no halo). Components above speck size that are not
     long straight lines (the rim of the paper) are ink. Writing under a gutter shadow
-    is found this way (brief 0022, B2)."""
+    is found this way."""
     work = common.working_copy(page, v["content_working_dpi"])
     width, height = page.grey.size
     margin = work.px(1.0)

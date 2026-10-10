@@ -1,4 +1,4 @@
-"""Orientation detector (spec 0003) on synthetic pages drawn here; no real register
+"""Orientation detector on synthetic pages drawn here; no real register
 material."""
 
 from __future__ import annotations
@@ -253,7 +253,7 @@ def test_textured_dark_border_is_trimmed_before_scoring(quarter_turns):
     assert result["flags"] == []
 
 
-# --- Dense old cursive (follow-up to brief 0021: every real page was flagged) ----------
+# --- Dense old cursive: real pages are not all flagged ----------
 
 
 @pytest.mark.parametrize("quarter_turns", [0, 1, 2, 3])
@@ -293,7 +293,7 @@ def test_ascender_cue_decides_when_the_baseline_cue_is_silent():
     assert detect_orientation(turned(image, 2))["value"] == 2
 
 
-# --- Small printed type (follow-up to brief 0028: confident wrong half turns) ----------
+# --- Small printed type: no confident wrong half turns ----------
 
 
 def _right_or_flagged(result: dict, expected: int) -> bool:
@@ -368,7 +368,7 @@ def test_up_down_vote_that_changes_sign_with_the_core_band_is_flagged(quarter_tu
     assert result["confidence"] < 0.2
 
 
-# --- Figures only (follow-up to brief 0030: tables of figures turned silently) ---------
+# --- Figures only: tables are not turned silently ----------
 
 
 @pytest.mark.parametrize("style", ["mono", "plain", "round"])
@@ -424,7 +424,7 @@ def test_sign_guard_trips_at_one_standard_error_of_dissent(dissent, flagged):
     assert disagree is flagged
 
 
-# --- Account pages: words beside columns of figures (follow-up to brief 0034) -----------
+# --- Account pages: words beside columns of figures ----------
 
 
 @pytest.mark.parametrize(
@@ -478,7 +478,7 @@ def test_block_turned_a_quarter_as_large_as_the_text_leaves_the_direction_open(q
     assert "vote against the median" in result["evidence"]
 
 
-# --- Handwritten account pages (follow-up to brief 0036) --------------------------------
+# --- Handwritten account pages ----------
 
 
 def _score_or_none(result: dict):

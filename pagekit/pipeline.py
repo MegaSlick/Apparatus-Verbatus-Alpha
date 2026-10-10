@@ -1,4 +1,4 @@
-"""The detectors of specs 0003 and 0004, connected to the preparation core (spec 0005).
+"""The detectors, connected to the preparation core.
 
 `DETECTORS` maps each detected step to a `pagekit.prepare.Detector` that adapts one
 detector's plain answer (value, confidence, evidence, flags) to the core's interface
@@ -31,7 +31,7 @@ code recomputes every value it decided, and nothing else. Each one can also comp
 value set by hand with what it finds; only a confident answer (no flags) that differs
 by more than the step's `compare_*` setting is reported.
 
-The grey tone view of spec 0006 is reached only through `make_tone_view`, the hook
+The grey tone view is reached only through `make_tone_view`, the hook
 `prepare --tone-view` calls, which uses `pagekit/tone.py`'s `tone` and `tiff_bytes`.
 """
 
@@ -108,8 +108,8 @@ def _page_copy(context: StepContext) -> tuple[Image.Image, list[tuple[float, flo
     factor it is reduced by. Made from the original source, kept for the other steps of
     the same page.
 
-    The page's own area is its side of the cut (with the overlap), as spec 0004 means
-    it, or None for a page with no cut. It is not the turned outline of the frame: the
+    The page's own area is its side of the cut (with the overlap),
+    or None for a page with no cut. It is not the turned outline of the frame: the
     corners a rotation brings into the levelled grid lie outside the scan and are
     filled with the paper colour, and marking them as outside the page would make the
     page-box detector read them as shadows along every side."""
@@ -370,7 +370,7 @@ DETECTORS: dict[str, Detector] = {
 }
 
 
-# --- The grey tone view (spec 0006) --------------------------------------------------
+# --- The grey tone view --------------------------------------------------
 
 
 def tone_view_available() -> bool:
@@ -386,7 +386,7 @@ def make_tone_view(
     """THE TONE-VIEW HOOK: the grey tone view of a prepared page, its record, and its
     file bytes.
 
-    It calls `tone(image)` in `pagekit/tone.py` (spec 0006), with the page's resolution
+    It calls `tone(image)` in `pagekit/tone.py`, with the page's resolution
     set on the image so the view's millimetre settings hold, and makes the file with
     tone.py's own deterministic writer, `tiff_bytes`.
     """

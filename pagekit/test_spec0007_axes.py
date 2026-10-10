@@ -1,6 +1,5 @@
-"""Spec 0007 with a tag and unequal resolutions: every axis lands where it should
-(brief 0039). Each test here fails under one of the reviewer's mutations named in its
-docstring. Synthetic pages only."""
+"""An orientation tag with unequal resolutions: every axis lands where it should.
+Each test here fails under the mutation named in its docstring. Synthetic pages only."""
 
 from __future__ import annotations
 

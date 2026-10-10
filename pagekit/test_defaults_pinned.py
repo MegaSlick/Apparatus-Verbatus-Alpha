@@ -1,11 +1,10 @@
 """Two pins, synthetic pages only.
 
 1. With `--crop content`, no orientation tag, no grey choice and no padding, prepare
-   gives the same pages and manifest values as the code before spec 0007 did (pinned in
-   testdata/defaults_before_0007.json, made by that code at commit 2d10a14), apart
-   from fields that only record the new choices: cropping as before is still there.
-2. The default since spec 0008 (cropping off, each page its whole levelled side of the
-   cut) is pinned in testdata/defaults_0008.json, made by the code of spec 0008.
+   gives the pages and manifest values pinned in testdata/defaults_before_0007.json,
+   apart from fields that only record those options.
+2. The current default (cropping off, each page its whole levelled side of the
+   cut) is pinned in testdata/defaults_0008.json.
 
 The pin holds on every platform. The sources are written here as uncompressed TIFF,
 byte for byte the same wherever the test runs, so their sha256 is pinned. The prepared

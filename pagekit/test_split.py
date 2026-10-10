@@ -1,4 +1,4 @@
-"""Page count and split detector (spec 0003) on synthetic frames drawn here; no real
+"""Page count and split detector on synthetic frames drawn here; no real
 register material."""
 
 from __future__ import annotations
@@ -81,8 +81,8 @@ def test_spread_with_soft_shadow_is_cut_in_the_valley():
 
 def test_spread_with_no_fold_is_cut_in_the_gap():
     """Two pages and a cut in the gap. The paper here runs unbroken across the gap (no
-    line, shadow, tone step or edge), so the answer is also flagged for review, as the
-    host decided after brief 0045: an empty band alone may be the middle of one sheet."""
+    line, shadow, tone step or edge), so the answer is also flagged for review: an empty band
+    alone may be the middle of one sheet."""
     result = _check(spread(gutter=(920, 1080)))
     cut = _two_pages(result, "gap")
     assert result["value"]["part"] is None
@@ -274,7 +274,7 @@ def test_bad_turns_are_refused():
         detect_split(page(), turns=4)
 
 
-# --- Review findings (brief 0021) -------------------------------------------------------
+# --- Ruled lines and proportions ------------------------------------------------
 
 
 def _ruled_page() -> Image.Image:
@@ -590,7 +590,7 @@ def test_ragged_backdrop_edge_and_gutter_wedge_are_not_writing_across_the_cut():
     assert result["flags"] == []
 
 
-# --- Split hardening over many kinds of spread (brief 0042, S1) --------------------------
+# --- Split hardening over many kinds of spread --------------------------
 
 CUT_TOLERANCE_MM = 3.0
 
@@ -658,7 +658,7 @@ def test_single_page_on_a_wide_frame_is_never_cut_silently():
     assert all(outcome != "wrong" for outcome, _ in outcomes), outcomes
 
 
-# --- Writing across the cut: overlap and overhang (brief 0042, S2) -----------------------
+# --- Writing across the cut: overlap and overhang -----------------------
 
 
 def _stroke_case(reach_mm: float, both_sides: bool = False):
@@ -747,7 +747,7 @@ def test_faint_gutter_shadow_inside_the_gap_places_a_gap_cut_at_600_dpi():
     assert all(outcome != "wrong" for outcome, _ in outcomes), outcomes
 
 
-# --- Follow-up to brief 0042: P1 two pages made one, P2 slanted strokes lost ------------
+# --- Two pages made one; slanted strokes across the cut --------------------------------
 
 
 @pytest.mark.parametrize("dpi", [150, 300])
@@ -793,7 +793,7 @@ def test_overlap_comes_from_the_core_settings_when_not_given():
     assert f"more than the {core:g} mm overlap" in result["flags"][0]
 
 
-# --- One sheet with an empty middle (follow-up to brief 0045) ---------------------------
+# --- One sheet with an empty middle -------------------------------------------------
 
 EMPTY_BAND = "two pages decided from an empty band alone"
 

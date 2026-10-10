@@ -1,4 +1,4 @@
-"""Skew detector (spec 0004) on synthetic pages drawn here; no real register material."""
+"""Skew detector on synthetic pages drawn here; no real register material."""
 
 from __future__ import annotations
 
@@ -179,7 +179,7 @@ def test_bad_resolution_is_refused():
         detect_skew(level_page(), None)
 
 
-# --- Review fixes (brief 0022) ------------------------------------------------------
+# --- Noise, disagreeing estimates and long tilted lines -----------------------------
 
 
 @pytest.mark.parametrize("kind", ["specks", "grain"])
@@ -250,7 +250,7 @@ def test_ends_of_an_inked_block_do_not_make_noise_peak_at_zero():
     assert found["ratio"] < settings["skew_score_margin"]
 
 
-# --- Real-register follow-up -----------------------------------------------------
+# --- Agreeing and opposing estimates ----------------------------------------------
 
 
 def test_estimates_that_agree_in_sign_and_roughly_in_size_level_the_page():

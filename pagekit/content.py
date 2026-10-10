@@ -1,11 +1,11 @@
-"""Content box and blank pages (spec 0004, findings 0016, 0018, 0019, 0021, 0023).
+"""Content box and blank pages.
 
-`detect_content_box(image, dpi, page_box)` returns spec 0002's answer shape. The value
+`detect_content_box(image, dpi, page_box)` returns the detector answer shape. The value
 is [left, top, right, bottom] of everything to keep, in the page's own pixel grid, right
 and bottom not included, or None for a blank page: None means blank, and the evidence
 says why. It works on a reduced working copy and writes no file.
 
-1. Uneven light (finding 0023): inside the page box, a slow brightness gradient (gutter
+1. Uneven light: inside the page box, a slow brightness gradient (gutter
    shadow, staining) is flattened before anything is called ink.
 2. Ink is measured from the median of the local, flattened paper, at levels set from
    the page's own paper noise. A mark that reaches the dark level is ink whatever its
@@ -15,12 +15,10 @@ says why. It works on a reduced working copy and writes no file.
    widen the box; those the size of a mark are flagged. Dark main writing does not
    raise the bar for a faint note beside it, and very faint strokes outside the box are
    flagged on every page.
-3. Blank first (finding 0021, with entry 0014 of the clean-room log): a page with less
-   ink above speck size than the blank amount is blank. A blank page that still has
+3. Blank first: a page with less ink above speck size than the blank amount is blank. A blank page that still has
    some ink above speck size is flagged, and a blank page with faint structure below
    even the lenient level gets a low confidence.
-4. From ink, not text lines (finding 0016): specks below the speck size are dropped;
-   the solid part of dark material at the page edge (shadow, backdrop, book edge, a
+4. From ink, not text lines: specks below the speck size are dropped; the solid part of dark material at the page edge (shadow, backdrop, book edge, a
    stain), as an opening by the border-seed square finds it (Vincent 1993), is taken
    out, but writing joined to it is not; ink inside that dark part is measured against
    the dark part's own level, counted as discarded and flagged. Components touching the
@@ -31,15 +29,15 @@ says why. It works on a reduced working copy and writes no file.
    notes, signatures and crosses.
 8. A page that looks like noise (far more runs of dark pixels than writing makes) is
    not labelled further: the whole page box is kept, with a flag.
-5. Ruled lines (finding 0018) are kept, but a rule alone extends the box past the
+5. Ruled lines are kept, but a rule alone extends the box past the
    writing by at most the rule overhang setting.
-6. Scanning targets (finding 0019): solid rectangular patches of like size in a grid,
+6. Scanning targets: solid rectangular patches of like size in a grid,
    or a straight bar with evenly spaced ticks. On a colour page, a grid with strongly
    coloured patches, and any ruler, is excluded and reported with its box. On a
    greyscale page there is no colour cue, so a suspected target is flagged and kept.
 7. Check against the crop check: the ink above speck size inside the page box but
    outside the content box is reported, in source pixels and as a share, and flagged at
-   spec 0001's discarded-ink thresholds (pagekit/thresholds.toml).
+   the discarded-ink thresholds (pagekit/thresholds.toml).
 """
 
 from __future__ import annotations
@@ -176,7 +174,7 @@ def detect_content_box(
 def _review_flags(
     found: dict, work: common.Work, area: Box, size, to_source: float, v
 ) -> list[str]:
-    """Flags for ink that is kept on weak evidence or left out (brief 0022)."""
+    """Flags for ink that is kept on weak evidence or left out."""
 
     def source(box: Box) -> list[int]:
         return work.to_source(
@@ -324,7 +322,7 @@ def measure(work: common.Work, area: Box, v: dict[str, Any]) -> dict:
     # which would turn a wide shadow into paper with a dark rim): the solid part (an
     # opening by the border-seed square) of dark areas at the edge. Only that solid part
     # is taken out, so writing joined to a shadow or stain is not lost with it; ink inside
-    # it is measured against the dark area's own level and reported (brief 0022, B3).
+    # it is measured against the dark area's own level and reported.
     histogram = grey.histogram(mask)
     split = otsu_threshold(histogram)
     dark, light = common.class_means(histogram, split)
@@ -481,7 +479,7 @@ def measure(work: common.Work, area: Box, v: dict[str, Any]) -> dict:
     counted = ImageChops.lighter(ImageChops.subtract(counted, rule_map), under)
     # Marks touching the paper edge left out as debris, large enough to be a mark
     # (a small cross), are reported, since at a low resolution they can be too few
-    # pixels for the crop check's thresholds (brief 0022, B4).
+    # pixels for the crop check's thresholds.
     edge_marks = [
         p
         for p in debris
@@ -693,10 +691,10 @@ def _outside(marks: Image.Image, box: Box | None) -> int:
 
 
 def _discarded_text(found: dict, box: Box | None, to_source: float, flags: list[str]) -> str:
-    """Ink above speck size inside the page box but outside the content box (spec 0001).
+    """Ink above speck size inside the page box but outside the content box.
 
-    Ruled lines cut at the rule overhang are reported apart and not flagged: spec 0004
-    cuts them there on purpose."""
+    Ruled lines cut at the rule overhang are reported apart and not flagged: the
+    detector cuts them there on purpose."""
     total = common.count(found["counted"])
     outside = _outside(found["counted"], box)
     pixels = round(outside * to_source)

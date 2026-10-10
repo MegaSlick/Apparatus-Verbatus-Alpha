@@ -1,4 +1,4 @@
-# Settings of the orientation detector and the page-count-and-split detector (spec 0003).
+# Settings of the orientation detector and the page-count-and-split detector.
 # Every value here is a starting guess. None has been calibrated on real pages, so each
 # carries status = "UNMEASURED" until it is measured and its status changed to "MEASURED".
 # Pixel values marked "working px" are measured on the detector's reduced working copy.
@@ -35,21 +35,21 @@ meaning = "Mean thickness in working px at or below which a long mark that is no
 # - pagekit's own synthetic pages (test_orient.py): looped-letter pages, dense cursive
 #   pages and spreads with show-through and gutters, drawn small printed type (serif and
 #   sans, 150 and 300 dpi) and printed spreads, dot grids, symmetric writing;
-# - an independent reviewer's synthetic set (brief 0028 follow-up): pen hands from
+# - an independent reviewer's synthetic set: pen hands from
 #   1.2 to 8 mm x-height at 150 to 600 dpi, rendered serif, sans and italic type from
 #   7 to 14 pt at 150 to 600 dpi, two-column print, printed and handwritten spreads,
 #   sparse pages, a form, ledgers and margin notes turned a quarter;
-# - pagekit's own figure-only pages (brief 0030 follow-up): lining figures drawn in
+# - pagekit's own figure-only pages: lining figures drawn in
 #   three styles (monospaced with footed 1, proportional, rounder), five columns,
 #   right-aligned and ragged, line spacing 1.2, 1.6 and 2.4 figure heights, 150 and
 #   300 dpi, all four turns (all flagged, none decided);
-# - pagekit's own account pages (brief 0034 follow-up): a column of drawn words beside
+# - pagekit's own account pages: a column of drawn words beside
 #   three columns of right-aligned figures, three figure styles with serif or sans
 #   words, spacing 1.3, 1.6 and 2.0, words left or between the amounts, 150 and 300
 #   dpi, all four turns; and pages with margin notes turned a quarter, 200 to 560 px
 #   wide (the tile-dissent level sits between the widest notes decided, 35%, and the
 #   blocks that must stay open, 41% and above);
-# - pagekit's own handwritten account pages (brief 0036 follow-up): handwritten words
+# - pagekit's own handwritten account pages: handwritten words
 #   across a quarter to a half of the width beside four or six columns of handwritten
 #   figures, some with tails below the line, some joined into one mark per amount,
 #   line spacing 0.6 to 2.4, 150 and 300 dpi, all four turns; and pages of writing over
@@ -261,7 +261,7 @@ meaning = "Share of the light class surviving that erosion below which the light
 
 # --- Page count and split -----------------------------------------------------------------
 # Checked on (not measured on a labelled collection): pagekit's own synthetic spreads
-# (pagekit/_split_testspreads.py, brief 0042): plain folds, deep and one-sided gutter
+# (pagekit/_split_testspreads.py): plain folds, deep and one-sided gutter
 # shadows, unequal page widths, spreads off-centre and turned up to 4.5 degrees in the
 # frame, one page blank or nearly blank, two paper tones, writing, a table, a signature
 # and a slip across the gutter, page-edge stacks and dark boards, microfilm borders,

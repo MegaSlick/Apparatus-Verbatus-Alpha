@@ -1,4 +1,4 @@
-"""Volume-wide checks: a page unlike the rest of its batch (spec 0005, finding 0011).
+"""Volume-wide checks: a page unlike the rest of its batch.
 
 Within one batch most pages have a similar skew, a similar content size and similar
 margins; a page far from the rest is often a detection error. Once every page has its

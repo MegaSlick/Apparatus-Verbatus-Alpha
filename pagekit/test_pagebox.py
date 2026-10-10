@@ -1,4 +1,4 @@
-"""Page-box detector (spec 0004) on synthetic frames drawn here; no real register material."""
+"""Page-box detector on synthetic frames drawn here; no real register material."""
 
 from __future__ import annotations
 
@@ -132,7 +132,7 @@ def test_unsupported_image_mode_is_refused():
         detect_page_box(Image.new("I;16", (100, 100)), (DPI, DPI))
 
 
-# --- Review fixes (brief 0022) ------------------------------------------------------
+# --- Uneven light and shadows over writing ----------------------------------------
 
 
 def lit_page(low: int, high: int) -> Image.Image:
@@ -162,14 +162,14 @@ def lit_page(low: int, high: int) -> Image.Image:
 
 @pytest.mark.parametrize(("low", "high"), [(185, 225), (180, 250)])
 def test_paper_brightening_across_the_page_is_not_cut_as_pale_backdrop(low, high):
-    # B2: the bright side used to be cut 33 mm (55 mm) in, through the writing.
+    # The bright side must not be cut in, through the writing.
     image = lit_page(low, high)
     answer = detect_page_box(image, (DPI, DPI))
     assert answer["value"] == [0, 0, image.width, image.height]
 
 
 def test_gutter_shadow_over_writing_is_not_cut_off_silently():
-    # B2: a 40 mm shadow over writing moved the left edge 15 mm into the writing.
+    # A 40 mm shadow over writing must not move the left edge into the writing.
     frame = Image.new("L", (paper().width + 2 * AT[0], paper().height + 2 * AT[1]), 25)
     shade = (
         Image.linear_gradient("L")
@@ -277,7 +277,7 @@ def test_unwalked_side_much_paler_than_the_paper_is_flagged():
     assert "no backdrop there" not in answer["evidence"].split("left")[1].split(";")[0]
 
 
-# --- Real-register follow-up: page-edge stacks -----------------------------------
+# --- Page-edge stacks -----------------------------------------------------------
 
 
 @pytest.mark.parametrize("board_mm", [0.0, 8.0])
@@ -300,7 +300,7 @@ def test_stack_of_page_edges_gives_the_top_sheets_edge(lines, board_mm):
 
 def test_dashed_board_edge_beside_the_sheet_is_not_writing():
     # A board edge or loose page edge 2 mm outside the sheet, broken into dashes and
-    # seen over part of the side, used to read as ink and pull the edge out.
+    # seen over part of the side, is not ink and does not pull the edge out.
     frame = on_backdrop(25)
     draw = ImageDraw.Draw(frame)
     # A grey band of book edge in shadow beside the sheet, with a dark dashed line in it.

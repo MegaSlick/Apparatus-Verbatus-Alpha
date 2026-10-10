@@ -1,5 +1,4 @@
-"""`measure`: compare a prepared batch with a hand-checked answer file (spec 0005,
-finding 0035).
+"""`measure`: compare a prepared batch with a hand-checked answer file.
 
 The answer file, schema `pagekit-gold.v1`, gives for each source it checks, all but the
 source optional:

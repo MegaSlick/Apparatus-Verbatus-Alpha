@@ -1,4 +1,4 @@
-"""The stage cache (spec 0008): what each step did, as images a person can open.
+"""The stage cache: what each step did, as images a person can open.
 
 Every step's image is kept as a small PNG preview. With the stage_cache_full setting
 (`--cache-full`), the source as opened and each page's side and levelled page are also
@@ -18,7 +18,7 @@ that produced it; a re-run whose keys are unchanged writes nothing, and only ent
 whose keys changed are rewritten. `index.json` lists the entries. Full-resolution
 images are lossless TIFF (pagekit._tiff); previews are small PNGs. Cache images are
 for looking only: no prepared page is ever made from one (each is made from the
-original source, spec 0002), so the cache may be deleted at any time; the next run
+original source), so the cache may be deleted at any time; the next run
 rebuilds it.
 """
 

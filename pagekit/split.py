@@ -1,7 +1,7 @@
-"""Page count and split: one page or two in the upright frame, and where to cut (spec 0003).
+"""Page count and split: one page or two in the upright frame, and where to cut.
 
 The detector works on a reduced working copy of the source image, turned upright by the
-orientation answer, and writes no file. It returns the answer shape of spec 0002:
+orientation answer, and writes no file. It returns the detector answer shape:
 exactly ``value``, ``confidence``, ``evidence`` and ``flags``. The value is a dict:
 
 - ``pages``: 1 or 2;
@@ -13,8 +13,8 @@ exactly ``value``, ``confidence``, ``evidence`` and ``flags``. The value is a di
   "line": [[x, y], [x, y]] or None}``; otherwise None. The strip is reported, not cut.
 
 The page count is decided from evidence; the frame's proportions are only a prior that
-lowers the confidence when it disagrees, and that sends a gap-only answer to review
-(finding 0003). When cues disagree, or a cue is present but weak, the answer is one
+lowers the confidence when it disagrees, and that sends a gap-only answer to review.
+When cues disagree, or a cue is present but weak, the answer is one
 page with a flag.
 
 Methods:
@@ -34,7 +34,7 @@ Methods:
   preferring a gap that balances the ink on its two sides and, among those, the widest
   (after T. M. Breuel, "Two geometric algorithms for layout analysis", Document
   Analysis Systems, 2002). The cut is fitted through the gap's middle measured in
-  horizontal bands over the content height, so it may lean (finding 0006).
+  horizontal bands over the content height, so it may lean.
 
 Limits: a long vertical rule near the middle of a single page looks like a fold; a
 single page laid out in two balanced columns looks like a spread when its proportions
@@ -111,7 +111,7 @@ class _Gap:
 
 
 def _core_overlap_mm() -> float:
-    """The preparation core's overlap past a cut, from its settings file (spec 0002)."""
+    """The preparation core's overlap past a cut, from its settings file."""
     with (Path(__file__).with_name("thresholds_prepare.toml")).open("rb") as handle:
         return float(tomllib.load(handle)["overlap_mm"]["value"])
 

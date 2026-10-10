@@ -6,7 +6,7 @@ same convention, which the tests pin.
 
 The chain for one page has these parts, applied in this order:
 
-0. **orientation tag** (only when a source's tag is applied, spec 0007): the transform
+0. **orientation tag** (only when a source's tag is applied): the transform
    the file's orientation tag names, exact (no resampling), giving the tagged frame. The
    eight values of the Exif orientation tag are: 1 as stored; 2 mirrored left to right,
    (x, y) to (W - x, y); 3 a half turn, (W - x, H - y); 4 mirrored top to bottom,
@@ -26,7 +26,7 @@ The chain for one page has these parts, applied in this order:
    top-left corner.
 5. **scale**: multiplied by sx and sy, each at most 1, which are the output size over
    the margin box size.
-6. **padding** (only when set, spec 0007): the page moved right and down by the left
+6. **padding** (only when set): the page moved right and down by the left
    and top padding, on a canvas larger by the padding on each side, filled with the
    paper colour; the scale is unchanged.
 
@@ -60,7 +60,7 @@ CONVENTION = (
 )
 _TRANSPOSE = {1: Image.Transpose.ROTATE_270, 2: Image.Transpose.ROTATE_180}
 _TRANSPOSE[3] = Image.Transpose.ROTATE_90
-# The orientation tag's transforms (spec 0007), as Pillow transposes and in words.
+# The orientation tag's transforms, as Pillow transposes and in words.
 TAG_TRANSPOSE = {
     2: Image.Transpose.FLIP_LEFT_RIGHT,
     3: Image.Transpose.ROTATE_180,
@@ -331,7 +331,7 @@ class Chain:
     crop_box: tuple[int, int, int, int]  # in the levelled grid
     scale: tuple[float, float]
     output_size: tuple[int, int]
-    tag: int = 1  # the orientation tag applied first (spec 0007); 1 is none
+    tag: int = 1  # the orientation tag applied first; 1 is none
     padding: tuple[int, int, int, int] = (0, 0, 0, 0)  # left, top, right, bottom, pixels
 
     @property

@@ -1,4 +1,4 @@
-# Settings for the skew, page-box and content-box detectors (spec 0004).
+# Settings for the skew, page-box and content-box detectors.
 # Every value here is a starting guess. None has been calibrated on real pages, so each
 # carries status = "UNMEASURED" and is reported as unmeasured until it is measured and
 # its status changed to "MEASURED". Lengths are in millimetres on the paper, so they

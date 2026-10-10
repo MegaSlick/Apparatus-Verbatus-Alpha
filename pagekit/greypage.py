@@ -1,9 +1,9 @@
-"""A grey main page (spec 0007): the plain conversion, its exactness, and the check for
+"""A grey main page: the plain conversion, its exactness, and the check for
 colour that a grey page would remove.
 
 - **Conversion.** The grey page is the source-mode page, made through the same chain,
   converted pixel by pixel: no flattening, no tone curve, no sharpening (the tone view
-  of spec 0006 stays a separate view). When every decoded pixel of the source has
+  stays a separate view). When every decoded pixel of the source has
   equal channels, the grey page takes the common channel, which keeps every intensity,
   and the conversion is exact. Otherwise a named rule decides: `luminance` (Pillow's
   grey conversion, the ITU-R BT.601 weights 0.299, 0.587, 0.114), or one channel

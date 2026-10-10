@@ -44,7 +44,7 @@ _SOURCE_KEYS = {
 }
 _RESOLUTION_KEYS = {"value", "origin", "file_value"}
 _PAGE_KEYS = {"page", "output", "steps"}
-# Keys added by spec 0007; a project written before it does not hold them.
+# Keys a project may leave out.
 _SOURCE_OPTIONAL = frozenset({"orientation_tag"})
 _TAG_KEYS = {"found", "trusted", "trust_origin", "applied", "transform"}
 _TAG_OPTIONAL = frozenset({"applied_by", "grid"})
@@ -135,7 +135,7 @@ def load_settings(overrides: dict[str, Any] | None = None) -> dict[str, dict[str
     return settings
 
 
-# Settings of spec 0005 that must be more than zero.
+# Settings that must be more than zero.
 _POSITIVE = (
     "detector_working_dpi",
     "unknown_dpi_assumed",

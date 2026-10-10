@@ -24,7 +24,7 @@ MARK = (600.0, 750.0)  # in the source; upright (250, 600) after one quarter tur
 
 @pytest.fixture(autouse=True)
 def _neutral_detectors(monkeypatch):
-    """These tests pin the core of spec 0002 with its neutral defaults, through the
+    """These tests pin the preparation core with its neutral defaults, through the
     command as well; the connected detectors are tested in test_pipeline.py."""
     monkeypatch.setattr("pagekit.pipeline.DETECTORS", {})
 
@@ -507,7 +507,7 @@ def test_a_detector_is_called_once_its_answer_stored_and_reused(tmp_path):
     def broken(context):
         return {"value": 0.5, "confidence": 2, "evidence": "Too sure.", "flags": []}
 
-    # A refused answer fails that page alone (spec 0005): neutral default and a flag.
+    # A refused answer fails that page alone: neutral default and a flag.
     page = plan([source], tmp_path / "other", detectors={"skew": Detector("bad/1", broken)})
     (refused,) = page.pages
     assert refused.steps["skew"]["value"] == 0.0 and refused.steps["skew"]["confidence"] == 0
@@ -525,7 +525,7 @@ def test_continuing_needs_every_source_the_project_holds(tmp_path):
     assert [page.output_name for page in plan(None, out).pages] == ["a_p1.tif", "b_p1.tif"]
 
 
-# Review fixes (brief 0019)
+# Hand-set values across a moved cut or a dropped page
 
 
 def _spread_with_page_two_skew(tmp_path: Path, cut_x: int, name="overrides.json") -> Path:

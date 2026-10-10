@@ -16,7 +16,7 @@ detector finds. Pass them to `plan` by step name; `pagekit.pipeline.DETECTORS` c
 the detectors of specs 0003 and 0004.
 
 A detector that raises an error, or gives an answer pagekit refuses, fails for that page
-alone (spec 0005): the step takes its neutral default with confidence 0 and a flag naming
+alone: the step takes its neutral default with confidence 0 and a flag naming
 the step and the error, and the batch carries on. A value set by hand is never detected
 again, but when its detector can compare, it runs, and a confident answer far from the
 hand-set value is reported in the evidence the manifest and review sheet show (never in
@@ -437,7 +437,7 @@ CROP_WORDS = {
 
 def _crop_off_detector(step: str, real: Detector, values: dict[str, Any]) -> Detector:
     """A box step with cropping off: the page box is the whole levelled side and the
-    content box the page box, so nothing of the side is cut away (spec 0008). With the
+    content box the page box, so nothing of the side is cut away. With the
     crop_detectors_when_off setting, the real detector still runs and its answer is
     reported in the evidence, never applied."""
     report = bool(values["crop_detectors_when_off"])
@@ -537,7 +537,7 @@ class PagePlan:
     output_dpi: tuple[float, float] | None
     resolution: dict[str, Any]
     tag: dict[str, Any] = field(default_factory=dict)  # the orientation tag's record
-    mode: dict[str, Any] = field(default_factory=dict)  # the output mode (spec 0007)
+    mode: dict[str, Any] = field(default_factory=dict)  # the output mode
     density: dict[str, Any] | None = None  # a nominal density set by hand, if any
     # The usable resolution (x, y) of the upright frame and the levelled page, before
     # any shrinking, in the axes the tag and the turns give; None when there is none.
@@ -558,8 +558,8 @@ class Plan:
     stale: list[dict[str, Any]]
     stale_outputs: list[str]  # outputs of pages that no longer exist, left in place
     batch: dict[str, Any] = field(default_factory=dict)  # the volume-wide checks
-    tone_view: bool = False  # also write the grey tone view of spec 0006 beside each page
-    cache_dir: Path | None = None  # the stage cache (spec 0008), or None when off
+    tone_view: bool = False  # also write the grey tone view beside each page
+    cache_dir: Path | None = None  # the stage cache, or None when off
     # Source files that cannot be used: name, path, sha256 (None if unreadable), reason.
     skipped: list[dict[str, Any]] = field(default_factory=list)
 
@@ -1305,7 +1305,7 @@ def _nominal_density(source, number, nominal, accepted) -> dict[str, Any]:
 
 
 def _padding(settings, upright_dpi, scale) -> tuple[tuple[int, int, int, int], list[dict]]:
-    """The padding on each side in output pixels, and any flag (spec 0007): padding_px
+    """The padding on each side in output pixels, and any flag: padding_px
     as it is, or padding_mm converted per axis with the output resolution."""
     if settings["padding_px"] > 0:
         side = int(settings["padding_px"])
@@ -1451,7 +1451,7 @@ def plan(
     it exists, so a re-run never loses a correction. With `dry`, no detector runs and
     the plan holds only the list of stale steps and why. Once every page has its values,
     the volume-wide checks (pagekit.volume) compare each page with the rest of the batch.
-    With `tone_view`, the grey tone view of spec 0006 is written beside each page.
+    With `tone_view`, the grey tone view is written beside each page.
     `source_dpi` is the resolution given to every source that carries none, stored as
     an override.
     """

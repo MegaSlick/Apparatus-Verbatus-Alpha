@@ -1,7 +1,7 @@
-"""Orientation: how many quarter turns clockwise make a page upright (spec 0003).
+"""Orientation: how many quarter turns clockwise make a page upright.
 
 The detector works on a reduced working copy of the source image and writes no file.
-It returns the answer shape of spec 0002: exactly ``value`` (0, 1, 2 or 3 quarter turns
+It returns the detector answer shape: exactly ``value`` (0, 1, 2 or 3 quarter turns
 clockwise), ``confidence`` (0 to 1), ``evidence`` (one plain sentence) and ``flags``
 (plain reasons to review; empty when none). When it is not sure it answers 0 turns
 and says why in a flag; it never guesses silently.
@@ -28,9 +28,8 @@ Method, in two steps:
    Caprari, "Algorithm for text page up/down orientation determination", Pattern
    Recognition Letters 21(4):311-317, 2000.
 
-A blank or nearly blank page (finding 0021, with the correction in clean-room log
-entry 0014) answers 0 turns with confidence 0 and a flag. A frame that looks like light
-writing on a dark ground (finding 0013) is flagged as possibly negative and its
+A blank or nearly blank page answers 0 turns with confidence 0 and a flag. A frame that looks like light
+writing on a dark ground is flagged as possibly negative and its
 orientation is not decided.
 
 Limits: the up-down cues are small asymmetries (about 0.1 on old French cursive) and

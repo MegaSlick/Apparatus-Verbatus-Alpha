@@ -1,4 +1,4 @@
-"""The three detectors of spec 0004 together: settings, answers and side effects."""
+"""The skew, page-box and content-box detectors together: settings, answers and side effects."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Spec 0007: the orientation tag, a grey main page, padding apart from the margin, and
+"""The orientation tag, a grey main page, padding apart from the margin, and
 the nominal density. Synthetic pages only; no real register material."""
 
 from __future__ import annotations
@@ -579,7 +579,7 @@ def test_the_crop_check_and_the_tone_view_see_the_grid_prepare_starts_from(tmp_p
     assert list(view.size) == size
 
 
-# --- Brief 0039 B2: the colour check measures the written page only -------------------
+# --- The colour check measures the written page only -------------------
 
 
 def _grey_flags(page: dict) -> list[str]:

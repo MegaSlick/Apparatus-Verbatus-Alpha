@@ -1,4 +1,4 @@
-"""Shared helpers for the skew, page-box and content-box detectors (spec 0004).
+"""Shared helpers for the skew, page-box and content-box detectors.
 
 Nothing here writes a file. Every image here is a reduced working copy made with
 Pillow's area-averaging reduction; binary maps hold 255 for the marked class and 0
@@ -80,7 +80,7 @@ def unmeasured_note(thresholds: dict[str, dict[str, Any]], names: tuple[str, ...
 
 
 def answer(value: Any, confidence: float, evidence: str, flags: list[str]) -> dict:
-    """A detector's answer in spec 0002's shape: exactly value, confidence, evidence, flags."""
+    """A detector answer: exactly value, confidence, evidence, flags."""
     if isinstance(confidence, bool) or not isinstance(confidence, int | float):
         raise TypeError("confidence must be a number")
     if not 0.0 <= confidence <= 1.0 or math.isnan(confidence):
@@ -255,14 +255,14 @@ def threshold_map(
 
 
 def flatten(grey: Image.Image, smoothing_px: int) -> Image.Image:
-    """Divide out a slow brightness gradient (finding 0023).
+    """Divide out a slow brightness gradient.
 
     The paper background is estimated on a copy reduced to cells a quarter of the
     smoothing size: a closing (brightest, then darkest, over the smoothing size) removes
     the writing, a blur softens it, and it is enlarged back. The result is the page minus
     that background, shifted so bare paper sits at 255; ink keeps its darkness relative
     to the paper around it. Flat-field correction by background estimation is the
-    general technique of finding 0023; the grey-level closing used to estimate the
+    general technique; the grey-level closing used to estimate the
     background is general image-processing knowledge.
     """
     width, height = grey.size
@@ -335,7 +335,7 @@ def closing(marks: Image.Image, rx: int, ry: int) -> Image.Image:
 
 
 def long_lines(ink: Image.Image, length_px: int, fatten_px: int, thickest_px: float) -> Image.Image:
-    """Ink pixels on long straight horizontal or vertical lines: ruled lines (finding 0018).
+    """Ink pixels on long straight horizontal or vertical lines: ruled lines.
 
     Ink is thickened across the run direction by `fatten_px` so that a slightly tilted
     rule still makes one unbroken run, and an opening with a line element `length_px`
@@ -370,7 +370,7 @@ def long_lines(ink: Image.Image, length_px: int, fatten_px: int, thickest_px: fl
 
 
 def rule_shaped(part: Component, length_px: int, thickest_px: float, tilt_deg: float) -> bool:
-    """Long, thin and nearly straight: a ruled line by its shape (findings 0010, 0018).
+    """Long, thin and nearly straight: a ruled line by its shape.
 
     Long: at least `length_px` along its longer side. Thin: its mean thickness (pixels
     per unit of length) at most `thickest_px`. Nearly straight: its shorter side no more

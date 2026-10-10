@@ -43,7 +43,7 @@ value = "tiff"
 status = "UNMEASURED"
 meaning = "The lossless image format of prepared pages: tiff with deflate compression (the default), or png. No lossy format is offered."
 
-# --- Connecting the detectors (spec 0005) -------------------------------------------
+# --- Connecting the detectors -------------------------------------------
 
 [detector_working_dpi]
 value = 150
@@ -70,7 +70,7 @@ value = 5.0
 status = "UNMEASURED"
 meaning = "How far, in millimetres, any side of a confident detected page or content box may lie from one set by hand before the difference is reported in the evidence."
 
-# --- Volume-wide checks (finding 0011) ----------------------------------------------
+# --- Volume-wide checks ----------------------------------------------
 
 [volume_min_pages]
 value = 8
@@ -104,7 +104,7 @@ value = 320
 status = "UNMEASURED"
 meaning = "Long side, in pixels, of the preview of each original embedded in review.html; each prepared page's preview is half that. Previews are never full size."
 
-# --- Measuring against a hand-checked answer file (finding 0035) --------------------
+# --- Measuring against a hand-checked answer file --------------------
 
 [measure_skew_tolerance_deg]
 value = 0.3
@@ -121,7 +121,7 @@ value = 3.0
 status = "UNMEASURED"
 meaning = "A detected content box whose every side lies within this many millimetres of the hand-checked box counts as right in `measure`."
 
-# --- Spec 0007: the orientation tag, a grey main page, padding --------------------
+# --- The orientation tag, a grey main page, padding --------------------
 
 [trust_orientation_tag]
 value = 1
@@ -168,7 +168,7 @@ value = 0
 status = "UNMEASURED"
 meaning = "The same padding in output pixels; use this or padding_mm, not both. 0 adds none."
 
-# --- Spec 0008: split-first defaults and the stage cache --------------------------
+# --- Split-first defaults and the stage cache --------------------------
 
 [crop]
 value = "none"

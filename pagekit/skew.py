@@ -1,17 +1,17 @@
-"""Skew: the small angle that levels a page's lines of writing (spec 0004).
+"""Skew: the small angle that levels a page's lines of writing.
 
-`detect_skew(image, dpi)` returns spec 0002's answer shape: the value is the angle in
+`detect_skew(image, dpi)` returns the detector answer shape: the value is the angle in
 degrees by which the page is turned counterclockwise to level its lines (positive is
 counterclockwise; 0 means no rotation). It works on a reduced working copy, writes no
 file, and flags rather than guesses.
 
-1. Only writing is measured (finding 0010). Inside the page's area the copy is split
+1. Only writing is measured. Inside the page's area the copy is split
    into ink and paper (Otsu 1979). Wide dark bands and large blobs are found by an
    opening with an element much longer than any word and thicker than any stroke;
    every component holding a survivor is removed whole (reconstruction, Vincent 1993).
-   Ruled lines are removed as long straight runs (finding 0018) and, when tilted past
+   Ruled lines are removed as long straight runs and, when tilted past
    that test, by their shape: long, thin components.
-2. Projection profiles (finding 0009): for each candidate angle the writing is sheared
+2. Projection profiles: for each candidate angle the writing is sheared
    so that lines at that angle become level, and summed along rows; the score is the
    energy of the differences between row sums about a stroke's width apart, which peaks
    when lines and gaps line up with the rows. A coarse search over the range on the
@@ -19,13 +19,13 @@ file, and flags rather than guesses.
    of linear oblique structures and skew scan in digitized documents", Proc.
    International Conference on Pattern Recognition, 1986; H. S. Baird, "The skew angle
    of printed documents", Proc. SPSE Symposium on Hybrid Imaging Systems, 1987.)
-3. A second, independent estimate as a cross-check, as finding 0009 recommends (citing
+3. A second, independent estimate as a cross-check (after
    D. S. Le, G. R. Thoma and H. Wechsler, "Automated page orientation and skew angle
    detection for binary document images", Pattern Recognition, 1994): each line is
    smeared into one band by a horizontal closing, a least-squares line is fitted to each
    band's pixels, and the length-weighted median of the bands' angles is taken. The
    smeared-band fit itself is general knowledge.
-4. Trust (finding 0012): the best score must stand clearly above the median score
+4. Trust: the best score must stand clearly above the median score
    across the range; the top and bottom of the inked area are faded so their edges do
    not make every page, noise included, peak at 0 degrees. Too little writing, a page
    that looks like noise, a best angle at the edge of the widened range, estimates that
@@ -220,7 +220,7 @@ def _too_little(evidence: str, flags: list[str]) -> dict:
 
 
 def writing_map(work: common.Work, v: dict[str, Any]) -> tuple[Image.Image | None, str]:
-    """The ink that is writing: bands, blobs and rules removed (finding 0010).
+    """The ink that is writing: bands, blobs and rules removed.
 
     Returns None when the page shows no ink at all or looks like noise (with the
     reason in place of the description), and otherwise a plain description of what
@@ -284,7 +284,7 @@ def _score(ink: Image.Image, angle: float, lag: int) -> float:
 
     The shear moves each column up or down by a whole number of rows (nearest
     neighbour), so no ink is blurred or lost and no angle is favoured by interpolation;
-    finding 0009 allows a shear in place of a rotation. A lag of about a stroke's width,
+    a shear stands in for a rotation at these small angles. A lag of about a stroke's width,
     rather than one row, keeps a one-row slit, such as a removed rule leaves, from
     outscoring the gaps between lines.
 

@@ -1,5 +1,5 @@
 """The prepare pipeline, the volume-wide checks, the review sheet and `measure`
-(spec 0005), on synthetic pages drawn here; no real register material."""
+on synthetic pages drawn here; no real register material."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ NAMES = ("a_upright", "b_sideways", "c_upside_down", "d_spread", "e_tilted", "f_
 
 
 def _batch(folder: Path) -> Path:
-    """The synthetic batch of spec 0005: upright (in colour), sideways, upside down, a
+    """The synthetic batch: upright (in colour), sideways, upside down, a
     spread with a fold, tilted, and blank."""
     folder.mkdir(parents=True)
     grey = pages.page(seed=1)

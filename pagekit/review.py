@@ -1,4 +1,4 @@
-"""The review sheet, `review.html` (spec 0005).
+"""The review sheet, `review.html`.
 
 One self-contained HTML file beside the manifest: no scripts, no links to anything
 outside it and no external fonts, so it opens offline in any browser on a laptop or a

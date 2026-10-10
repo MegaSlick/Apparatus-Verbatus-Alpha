@@ -1,4 +1,4 @@
-# Settings of the grey tone view (spec 0006). Every value is a starting guess, none has
+# Settings of the grey tone view. Every value is a starting guess, none has
 # been calibrated on real pages, so each carries status = "UNMEASURED" and the record
 # says settings_measured = false until every one is measured and changed to "MEASURED".
 

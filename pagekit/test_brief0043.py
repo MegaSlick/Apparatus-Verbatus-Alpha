@@ -1,4 +1,4 @@
-"""Brief 0043: tag trust re-runs what it changes, measure skips steps not applied, the
+"""Tag trust re-runs what it changes, measure skips steps not applied, the
 colour check on coloured paper, the correction command, the stage cache, and the tag
 detection's version guard. Synthetic pages only."""
 

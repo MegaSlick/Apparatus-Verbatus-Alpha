@@ -1,4 +1,4 @@
-"""Content-box detector (spec 0004) on synthetic pages drawn here; no real register material."""
+"""Content-box detector on synthetic pages drawn here; no real register material."""
 
 from __future__ import annotations
 
@@ -240,7 +240,7 @@ def test_discarded_ink_is_reported_and_flagged_at_the_crop_check_thresholds():
     # Writing that runs off the paper edge is debris here, so it is discarded and shown.
     ImageDraw.Draw(image).rectangle((0, mm(100), mm(15), mm(100) + 4), fill=30)
     answer = detect_content_box(synth.noisy(image), (DPI, DPI))
-    # Edge debris is not counted as discarded writing (real-register follow-up, S4),
+    # Edge debris is not counted as discarded writing,
     # but a piece the size of a mark is still reported.
     assert "edge debris" in answer["evidence"]
     assert any("touching the paper edge" in flag for flag in answer["flags"])
@@ -263,7 +263,7 @@ def test_bad_page_box_is_refused():
         detect_content_box(text_page(), (DPI, DPI), page_box=[10, 10, 5, 50])
 
 
-# --- Review fixes (brief 0022) ------------------------------------------------------
+# --- Faint ink, stains and edge debris ------------------------------------------
 
 
 def faint_page(dpi: int, paper: int, main: int | None, note: int, signature: int):
@@ -307,7 +307,7 @@ def faint_page(dpi: int, paper: int, main: int | None, note: int, signature: int
 
 
 def test_faint_note_and_signature_beside_dark_writing_are_kept():
-    # B1: with dark main text, Otsu splits halfway to the paper and used to drop both.
+    # With dark main text, Otsu splits halfway to the paper; both faint marks are kept.
     image, boxes = faint_page(300, 228, 35, 150, 140)
     answer = detect_content_box(synth.noisy(image), (300, 300))
     for box in boxes:
@@ -315,7 +315,7 @@ def test_faint_note_and_signature_beside_dark_writing_are_kept():
 
 
 def test_page_written_only_in_faint_ink_is_not_blank_and_is_flagged():
-    # B1: paper 210 and ink 180 used to come back blank at 0.9 with no flag.
+    # Paper 210 and ink 180 is not a confident blank page.
     image, boxes = faint_page(150, 210, 180, 180, 180)
     answer = detect_content_box(synth.noisy(image, sigma=3), (150, 150))
     assert answer["value"] is not None
@@ -325,7 +325,7 @@ def test_page_written_only_in_faint_ink_is_not_blank_and_is_flagged():
 
 
 def test_blank_page_with_low_contrast_structure_gets_low_confidence():
-    # B1: very faint marks, below even the lenient level, leave the page blank but doubtful.
+    # Very faint marks, below even the lenient level, leave the page blank but doubtful.
     image = Image.new("L", text_page().size, synth.PAPER)
     synth.writing(
         ImageDraw.Draw(image),
@@ -340,8 +340,8 @@ def test_blank_page_with_low_contrast_structure_gets_low_confidence():
 
 
 def test_writing_inside_a_dark_area_at_the_border_is_kept_or_reported():
-    # B3: a dark stain touching the border with writing running into it used to be
-    # removed whole, writing and all, and never reported.
+    # A dark stain touching the border with writing running into it must not be
+    # removed whole, writing and all, without a report.
     image = text_page().copy()
     stain = Image.new("L", image.size, 255)
     ImageDraw.Draw(stain).rectangle((0, 0, mm(40), image.height), fill=110)
@@ -356,7 +356,7 @@ def test_writing_inside_a_dark_area_at_the_border_is_kept_or_reported():
 
 
 def test_small_mark_touching_the_paper_edge_is_flagged():
-    # B4: a 3.5 mm cross about 0.5 mm from the edge is debris, but must not vanish silently.
+    # A 3.5 mm cross about 0.5 mm from the edge is debris, but must not vanish silently.
     image = text_page().copy()
     half = 3.5 / 2
     synth.cross(ImageDraw.Draw(image), mm(0.5 + half), mm(100), DPI)
@@ -435,7 +435,7 @@ def test_foxed_blank_page_is_blank():
 
 
 def test_very_faint_writing_outside_the_box_is_flagged():
-    # A 0.4 mm pen at contrast 15 beside ordinary writing used to vanish at 0.9.
+    # A 0.4 mm pen at contrast 15 beside ordinary writing is flagged, not lost.
     image = text_page().copy()
     note = Image.new("L", image.size, synth.PAPER)
     synth.writing(
@@ -457,7 +457,7 @@ def test_tape_near_the_edge_is_described_as_tape():
     assert flags and not any("touching" in flag for flag in flags)
 
 
-# --- Real-register follow-up: edge lines are not discarded writing ---------------
+# --- Edge lines are not discarded writing ----------------------------------------
 
 
 def test_thin_shadows_along_the_paper_edges_are_not_discarded_writing():

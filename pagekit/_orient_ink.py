@@ -1,4 +1,4 @@
-"""Shared ground for the orientation and split detectors (spec 0003).
+"""Shared ground for the orientation and split detectors.
 
 Settings, the answer shape, reduced working copies, the ink map, masking of long
 straight marks and connected components. Everything here works on a reduced working
@@ -175,7 +175,7 @@ def runs_of(flags: list[bool]) -> list[tuple[int, int]]:
 
 def looks_negative(grey: Image.Image, levels: Levels, value: dict[str, Any]) -> tuple[bool, float]:
     """Light writing on a dark ground: the dark class is most of the frame, and the light
-    class does not survive an erosion wider than a stroke (finding 0013). A page on a
+    class does not survive an erosion wider than a stroke. A page on a
     dark backdrop keeps a broad light area and is not taken for a negative.
     Returns the decision and the surviving share of the light class."""
     if levels.dark_share < value["negative_dark_share"] or levels.contrast <= 0:
