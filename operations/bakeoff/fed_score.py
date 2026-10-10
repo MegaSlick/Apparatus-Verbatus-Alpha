@@ -22,34 +22,47 @@ Per page group (`score.page_group`; act pages split by FORM) and for the hard pa
 - answer health: parsed / malformed and why, errors, finish reasons, loop stops,
   completion tokens;
 - scepticism, per witness (named by its bake-off arm, else its label), on the pages whose
-  answer parsed:
-  - only-X-right, followed: the gold word is right in X alone; share the reader has right;
-  - only-X-wrong, resisted: X alone is wrong; share the reader still has right;
+  answer parsed, among the witnesses that read the page (a failed or empty witness is
+  counted apart as absent):
+  - only-X-right, followed: the gold word is right in X alone; share the reader has right
+    (agreement with X, not proof the reader relied on it);
+  - only-X-wrong, resisted: X alone wrote a wrong word; share the reader still has right
+    (X leaving the word out is counted apart);
   - copy of a wrong X: of the words X got wrong with a word of its own, share where the
-    reader wrote X's same wrong word; and the share of the reader's own errors that are
-    some witness's error;
+    reader wrote X's same wrong word (each written word stands in for one gold word at
+    most); and the share of the reader's own errors that are some witness's error;
   - all witnesses wrong, recovered; all right, damaged (the reader changed a word every
     witness had right);
-  - beats the vote: words the reader has right where most witnesses that read the page
-    were wrong, minus words it has wrong where most were right;
+  - beats the vote: words the reader has right where the plurality of the witnesses that
+    read was wrong, minus words it has wrong where it was right; ties that include the
+    right word reported apart (`vote`, shared with `mutations.vote_check`);
+  - 95% intervals from resampling pages (`BOOTSTRAP_REPS`), since words on one page are
+    not independent;
+- failure-inclusive: a run page with gold and no answer counts as a failed, empty reading;
 - with `--compare`: the same scorecard for a second answer set (a swap, a variant, or a
-  repeat of the same arm for the noise floor), side by side, and invariance: per page
-  the CER between the two readings' texts, pages read identically, and gold words whose
-  right/wrong flipped.
+  repeat of the same arm for the noise floor), side by side; the paired pages (both
+  parsed) with each rate's per-page difference and its interval; and invariance: per
+  page the CER between the two readings' texts, pages read identically, and gold words
+  whose right/wrong flipped.
 - planted errors: a `fed_arm` cache made with `--mutations` carries each page's
   `witness-mutation.v1` sidecar (`operations/bakeoff/mutations.py`); for every planted
   site the reader either resisted (its word is right), copied (it wrote the planted
   word) or went wrong another way, counted per scenario, per number of witnesses that
-  carried the error (k = 1, 2, 3), per chair for k = 1, and per word class.
+  carried the error (k = 1, 2, 3), per chair for k = 1, and per word class. A site is
+  judged only against the reference it was planted on (digest and word checked).
 
-Every heading says "vs fool's gold (ballpark, not accuracy)" while any gold page's
-STATUS says fool's gold; only lead-checked gold drops the label.
+Every heading says "vs fool's gold (ballpark, not accuracy)" while any scored gold page's
+STATUS says fool's gold; only an explicit checked status (`gold (<who> <date>)` or
+`lead-checked`) on every scored page, in both compared sets, drops the label.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import random
+import re
 import statistics
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -173,13 +186,44 @@ def load_answers(path: Path, tree: F.RunTree) -> dict[str, Answer]:
 # --- per page -----------------------------------------------------------------------
 
 
+def _pair_gap(reference: list[str], gap: list[str]) -> list[int | None]:
+    """One-to-one, order-preserving pairing of a gap's wrong gold words with the words
+    written there: least total character distance, an unpaired word costing 1, so as many
+    words pair as the shorter side allows. Returns, per gold word, its gap index or None."""
+    m, n = len(reference), len(gap)
+    cost = [[0.0] * (n + 1) for _ in range(m + 1)]
+    for i in range(1, m + 1):
+        cost[i][0] = float(i)
+    for j in range(1, n + 1):
+        cost[0][j] = float(j)
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            pair = cost[i - 1][j - 1] + Levenshtein.normalized_distance(
+                reference[i - 1], gap[j - 1]
+            )
+            cost[i][j] = min(pair, cost[i - 1][j] + 1, cost[i][j - 1] + 1)
+    out: list[int | None] = [None] * m
+    i, j = m, n
+    while i and j:
+        pair = cost[i - 1][j - 1] + Levenshtein.normalized_distance(reference[i - 1], gap[j - 1])
+        if cost[i][j] == pair:
+            out[i - 1] = j - 1
+            i, j = i - 1, j - 1
+        elif cost[i][j] == cost[i - 1][j] + 1:
+            i -= 1
+        else:
+            j -= 1
+    return out
+
+
 def aligned(reference: tuple[str, ...], hypothesis: tuple[str, ...]):
     """(right per gold token, the word written in a wrong one's place or None, inserted).
 
     Right and wrong come from the unit-cost edit script, as `roster.align` scores them.
-    A wrong gold word's replacement is the hypothesis word, among those between the
-    matched words around it, closest to it by characters (None when the gap is empty):
-    the script alone breaks ties arbitrarily, and a copy is judged on this word.
+    The wrong gold words between two matched words share the hypothesis words written
+    between them (the gap); each written word stands in for at most one gold word, paired
+    in order by least character distance (`_pair_gap`), so `Jean Paul` read as `Jeanne`
+    gives `Jeanne` for `Jean` and nothing for `Paul`. A copy is judged on this word.
     """
     ops = Levenshtein.editops(reference, hypothesis, processor=None)
     wrong = {op.src_pos for op in ops if op.tag in ("replace", "delete")}
@@ -191,6 +235,7 @@ def aligned(reference: tuple[str, ...], hypothesis: tuple[str, ...]):
         for k in range(block.src_end - block.src_start)
     ]
     form: list[str | None] = [None] * len(reference)
+    gaps: dict[tuple[int, int], list[int]] = defaultdict(list)
     before = -1  # index into pairs of the last match left of i
     for i in range(len(reference)):
         while before + 1 < len(pairs) and pairs[before + 1][0] < i:
@@ -202,10 +247,47 @@ def aligned(reference: tuple[str, ...], hypothesis: tuple[str, ...]):
         while after < len(pairs) and pairs[after][0] <= i:
             after += 1
         hi = pairs[after][1] if after < len(pairs) else len(hypothesis)
-        gap = hypothesis[lo:hi]
+        gaps[(lo, hi)].append(i)
+    for (lo, hi), members in gaps.items():
+        gap = list(hypothesis[lo:hi])
         if gap:
-            form[i] = min(gap, key=lambda w: Levenshtein.normalized_distance(reference[i], w))
+            for i, j in zip(members, _pair_gap([reference[i] for i in members], gap), strict=True):
+                if j is not None:
+                    form[i] = gap[j]
     return [i not in wrong for i in range(len(reference))], form, inserted
+
+
+ABSENT = "<absent>"  # a voter that wrote nothing in a gold word's place
+
+
+def ballot(word: str, right: bool, form: str | None) -> str:
+    """What one witness votes for a gold word: the word, its own wrong word, or absent."""
+    if right:
+        return word
+    if form is None:
+        return ABSENT
+    return form if form != word else f"{form}<misplaced>"
+
+
+def vote(ballots: list[str], word: str) -> str | None:
+    """The plurality of the ballots against the gold word: `right` when the word wins
+    alone, `tie` when it shares the top count, `wrong` when it is not among the leaders
+    (a tie among wrong words is wrong), None with no voters. The one voting rule of the
+    scorecard ("beats the vote") and of `mutations.vote_check` ("voting must lose")."""
+    if not ballots:
+        return None
+    counts = Counter(ballots)
+    best = max(counts.values())
+    leaders = [b for b, c in counts.items() if c == best]
+    if word not in leaders:
+        return "wrong"
+    return "right" if len(leaders) == 1 else "tie"
+
+
+def reference_digest(tokens: tuple[str, ...]) -> str:
+    """The scored reference's identity: a planted site's word index means nothing against
+    another reference (`mutations` records it, `planted_copies` checks it)."""
+    return hashlib.sha256("\x1f".join(tokens).encode("utf-8")).hexdigest()
 
 
 def group_key(gold) -> str:
@@ -242,6 +324,8 @@ def score_page(answer: Answer, gold, hard: bool) -> dict[str, Any]:
         row.update(S.line_recall(gold.row_lines(), lines, gold.heading_lines()))
         row["surname_recall"] = S.surname_recall(gold.row_lines(), text)
     right, form, inserted = aligned(ref_tokens, S.tokens(text))
+    row["ref_words"] = ref_tokens
+    row["ref_digest"] = reference_digest(ref_tokens)
     row["inserted"] = inserted
     row["reader_right"] = right
     row["reader_form"] = form
@@ -253,59 +337,94 @@ def score_page(answer: Answer, gold, hard: bool) -> dict[str, Any]:
     return row
 
 
+def page_counts(row: dict[str, Any]) -> Counter:
+    """The follow, copy and vote counts over one page's gold tokens.
+
+    Only witnesses that read the page take part: a witness with no reading (failed,
+    empty) is counted under `absent:<name>` per gold word and is never "the only one
+    wrong" or "the only one right". Among readers, a lone wrong witness that wrote a
+    word of its own in the place is `only-wrong` (the reader resisted it or not); one
+    that wrote nothing there is `only-omitted`. "Followed" means the reader has the word
+    right where only that witness had it right: agreement, not proof of reliance.
+    """
+    c: Counter = Counter()
+    wit = row["witnesses"]
+    readers = [n for n in wit if wit[n]["read"]]
+    absent = [n for n in wit if not wit[n]["read"]]
+    words = row.get("ref_words")
+    for i, r in enumerate(row["reader_right"]):
+        right = {n: wit[n]["right"][i] for n in readers}
+        k = sum(right.values())
+        c["tokens"] += 1
+        c["reader-right"] += r
+        for name in absent:
+            c[f"absent:{name}"] += 1
+        if not right:
+            c["no-reader"] += 1
+        elif k == len(right):
+            c["all-right"] += 1
+            c["all-right,damaged"] += not r
+        elif k == 0:
+            c["all-wrong"] += 1
+            c["all-wrong,recovered"] += r
+        if len(right) >= 2 and k == 1:
+            (name,) = [n for n, v in right.items() if v]
+            c[f"only-right:{name}"] += 1
+            c[f"only-right:{name},followed"] += r
+        if len(right) >= 2 and k == len(right) - 1:
+            (name,) = [n for n, v in right.items() if not v]
+            kind = "only-wrong" if wit[name]["form"][i] is not None else "only-omitted"
+            c[f"{kind}:{name}"] += 1
+            c[f"{kind}:{name},resisted"] += r
+        if right and words is not None:
+            outcome = vote(
+                [ballot(words[i], right[n], wit[n]["form"][i]) for n in readers], words[i]
+            )
+            c[f"vote-{outcome}"] += 1
+            c["vote-beaten"] += outcome == "wrong" and r
+            c["vote-lost"] += outcome == "right" and not r
+            c["vote-tie,reader-right"] += outcome == "tie" and r
+        mine = row["reader_form"][i]
+        copied_any = False
+        for name in readers:
+            theirs = wit[name]["form"][i]
+            if not right[name] and theirs is not None:
+                c[f"wrong-form:{name}"] += 1
+                if not r and mine == theirs:
+                    c[f"wrong-form:{name},copied"] += 1
+                    copied_any = True
+        if not r:
+            c["reader-wrong"] += 1
+            c["reader-wrong,a-witness-error"] += copied_any
+    return c
+
+
 def scepticism(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """The follow, copy and vote counts over the gold tokens of these pages."""
+    """The follow, copy and vote counts over the gold tokens of these pages, summed from
+    each page's `page_counts` (kept per page for the bootstrap)."""
     c: Counter = Counter()
     names: list[str] = []
+    pages = []
     for row in rows:
-        wit = row["witnesses"]
-        for name in wit:
+        for name in row["witnesses"]:
             if name not in names:
                 names.append(name)
-        voters = [n for n in wit if wit[n]["read"]]
-        for i, r in enumerate(row["reader_right"]):
-            right = {n: wit[n]["right"][i] for n in wit}
-            k = sum(right.values())
-            c["tokens"] += 1
-            c["reader-right"] += r
-            if k == len(right) and right:
-                c["all-right"] += 1
-                c["all-right,damaged"] += not r
-            if k == 0:
-                c["all-wrong"] += 1
-                c["all-wrong,recovered"] += r
-            if k == 1:
-                (name,) = [n for n, v in right.items() if v]
-                c[f"only-right:{name}"] += 1
-                c[f"only-right:{name},followed"] += r
-            if len(right) >= 2 and k == len(right) - 1:
-                (name,) = [n for n, v in right.items() if not v]
-                c[f"only-wrong:{name}"] += 1
-                c[f"only-wrong:{name},resisted"] += r
-            if voters:
-                majority = sum(right[n] for n in voters) * 2 > len(voters)
-                c["vote-beaten"] += (not majority) and r
-                c["vote-lost"] += majority and not r
-            mine = row["reader_form"][i]
-            copied_any = False
-            for name in wit:
-                theirs = wit[name]["form"][i]
-                if not right[name] and theirs is not None:
-                    c[f"wrong-form:{name}"] += 1
-                    if not r and mine == theirs:
-                        c[f"wrong-form:{name},copied"] += 1
-                        copied_any = True
-            if not r:
-                c["reader-wrong"] += 1
-                c["reader-wrong,a-witness-error"] += copied_any
-    return {"counts": c, "witnesses": names}
+        counts = row.get("counts")
+        if counts is None:
+            counts = page_counts(row)
+        pages.append(counts)
+        c.update(counts)
+    return {"counts": c, "witnesses": names, "pages": pages}
 
 
 def planted_copies(rows: list[dict[str, Any]], answers: dict[str, Answer]) -> dict[str, Any]:
     """Per planted site: resisted (reader right), copied (the reader wrote the planted
     word) or other-wrong; grouped by scenario, by k, by chair (k = 1) and by class.
-    A site whose reference index lies past this gold's words is `misaligned` (the
-    sidecar was planted against another reference) and not judged."""
+    Sites are bound to the scored reference: a sidecar whose `reference_sha256` differs
+    from this gold's (`reference_digest`) has every site `misaligned`, and so has a site
+    with no index, an index past the gold's words, or a `ref_word` that is not the gold's
+    word at that index (planted against another reference); misaligned sites are not
+    judged."""
     c: Counter = Counter()
     for row in rows:
         answer = answers[row["page"]]
@@ -313,9 +432,17 @@ def planted_copies(rows: list[dict[str, Any]], answers: dict[str, Answer]) -> di
         if not sidecar or not row["parsed"]:
             continue
         scenario = sidecar.get("scenario", "?")
+        digest = sidecar.get("reference_sha256")
+        stale = digest is not None and digest != row.get("ref_digest")
+        words = row.get("ref_words")
         for site in sidecar.get("planted") or []:
             i = site.get("ref_index")
-            if i is None or i >= len(row["reader_right"]):
+            if (
+                stale
+                or i is None
+                or i >= len(row["reader_right"])
+                or (words is not None and site.get("ref_word") != words[i])
+            ):
                 c["misaligned"] += 1
                 continue
             planted = " ".join(S.tokens(site["planted"]))
@@ -356,6 +483,8 @@ def summarise(rows: list[dict[str, Any]], answers: dict[str, Answer]) -> dict[st
     return {
         "pages": len(rows),
         "parsed": len(parsed),
+        "failed": len(rows) - len(parsed),
+        "cer_all_pages": cer_all,
         "cer_median_parsed": statistics.median(cer_parsed) if cer_parsed else None,
         "cer_mean_parsed": statistics.fmean(cer_parsed) if cer_parsed else None,
         "cer_median_all": statistics.median(cer_all) if cer_all else None,
@@ -399,8 +528,25 @@ GROUP_ORDER = (
 )  # fmt: skip
 
 
-def scorecard(answers: dict[str, Answer], gold: dict, hard: set[str]) -> dict[str, Any]:
+def missing_answer(stem: str) -> Answer:
+    """A gold page the answer set has no answer for: a failure, read as empty."""
+    return Answer(stem, "missing", ["no-answer"], [], None, None, False, None, None, "no-answer")
+
+
+def scorecard(
+    answers: dict[str, Answer], gold: dict, hard: set[str], expected: set[str] | None = None
+) -> dict[str, Any]:
+    """The card over every gold page that has an answer and, failure-inclusive, every
+    `expected` page (default: none) that has none: it counts as an unparsed, empty
+    answer (CER 1 in the "all" medians, an error in answer health), so an arm cannot
+    look better by failing its hardest pages."""
+    unanswered = sorted(s for s in gold if s not in answers)
+    missing = [s for s in unanswered if s in (expected or set())]
+    answers = {**answers, **{s: missing_answer(s) for s in missing}}
     rows = [score_page(a, gold[s], s in hard) for s, a in sorted(answers.items()) if s in gold]
+    for row in rows:
+        if row["parsed"]:
+            row["counts"] = page_counts(row)
     by_group: dict[str, list] = defaultdict(list)
     for row in rows:
         by_group[row["group"]].append(row)
@@ -416,7 +562,8 @@ def scorecard(answers: dict[str, Answer], gold: dict, hard: set[str]) -> dict[st
         if any(r["group"].startswith("acts") for r in hard_rows)
         else None,
         "all": summarise(every, answers),
-        "missing": sorted(s for s in gold if s not in answers),
+        "missing": unanswered,
+        "answers": answers,
     }
 
 
@@ -450,6 +597,73 @@ def invariance(a: dict[str, Answer], b: dict[str, Answer], card_a, card_b) -> di
     }
 
 
+# --- page-level uncertainty ---------------------------------------------------------
+
+BOOTSTRAP_REPS = 1000  # resamples of pages; words on one page are not independent
+BOOTSTRAP_SEED = 0
+
+
+def _draws(n: int, reps: int = BOOTSTRAP_REPS, seed: int = BOOTSTRAP_SEED) -> list[list[int]]:
+    rng = random.Random(seed)
+    return [rng.choices(range(n), k=n) for _ in range(reps)]
+
+
+def _interval(values: list[float]) -> tuple[float, float] | None:
+    values = sorted(v for v in values if v is not None)
+    if len(values) < 20:
+        return None
+    return values[int(0.025 * len(values))], values[int(0.975 * len(values)) - 1]
+
+
+def boot_ratio(pages: list[Counter], num: str, den: str) -> tuple[float, float] | None:
+    """A 95% percentile interval for sum(num)/sum(den), resampling whole pages."""
+    if len(pages) < 2 or not sum(p[den] for p in pages):
+        return None
+    out = []
+    for draw in _draws(len(pages)):
+        d = sum(pages[i][den] for i in draw)
+        out.append(sum(pages[i][num] for i in draw) / d if d else None)
+    return _interval(out)
+
+
+def boot_median(values: list[float]) -> tuple[float, float] | None:
+    if len(values) < 2:
+        return None
+    return _interval([statistics.median(values[i] for i in draw) for draw in _draws(len(values))])
+
+
+def boot_paired(
+    a: list[Counter], b: list[Counter], num: str, den: str
+) -> tuple[float | None, tuple[float, float] | None]:
+    """The paired difference B - A of sum(num)/sum(den) over the same pages, and its
+    95% interval resampling pages (both answer sets take the same draw)."""
+
+    def rate(pages, draw):
+        d = sum(pages[i][den] for i in draw)
+        return sum(pages[i][num] for i in draw) / d if d else None
+
+    every = list(range(len(a)))
+    ra, rb = rate(a, every), rate(b, every)
+    if ra is None or rb is None:
+        return None, None
+    diffs = []
+    for draw in _draws(len(a)) if len(a) >= 2 else []:
+        x, y = rate(a, draw), rate(b, draw)
+        diffs.append(None if x is None or y is None else y - x)
+    return rb - ra, _interval(diffs)
+
+
+def _ci(interval: tuple[float, float] | None, digits: int = 2) -> str:
+    return "" if interval is None else f"; {interval[0]:.{digits}f}–{interval[1]:.{digits}f}"
+
+
+def _share_ci(pages: list[Counter], num: str, den: str) -> str:
+    n, d = sum(p[num] for p in pages), sum(p[den] for p in pages)
+    if not d:
+        return "–"
+    return f"{n} / {d} ({n / d:.2f}{_ci(boot_ratio(pages, num, den))})"
+
+
 # --- report -------------------------------------------------------------------------
 
 
@@ -476,13 +690,17 @@ def report(card: dict[str, Any], title: str, label: str) -> list[str]:
     out += [
         "### Reading",
         "",
+        "CER median (all) counts every failed or missing answer as an empty reading; the "
+        "range after it is a 95% interval from resampling pages.",
+        "",
         "| group | pages | parsed | CER median (parsed) | CER mean (parsed) | CER median (all) |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for name, s in _blocks(card):
         out.append(
             f"| {name} | {s['pages']} | {s['parsed']} | {_f(s['cer_median_parsed'])} | "
-            f"{_f(s['cer_mean_parsed'])} | {_f(s['cer_median_all'])} |"
+            f"{_f(s['cer_mean_parsed'])} | {_f(s['cer_median_all'])}"
+            f"{_ci(boot_median(s['cer_all_pages']), 3)} |"
         )
     out += [
         "",
@@ -519,30 +737,42 @@ def report(card: dict[str, Any], title: str, label: str) -> list[str]:
         "",
         "### Scepticism (gold words on pages whose answer parsed; witnesses as shown)",
         "",
+        "Only witnesses that read the page take part; a failed or empty witness is counted "
+        'apart (absent), never as the only one wrong. "Only it wrong" needs the witness '
+        "to have written a wrong word there (a word left out is counted apart). "
+        '"Followed" means the reader has the word right where only that witness had it: '
+        "agreement, not proof of reliance. The vote is a plurality of the witnesses that "
+        "read; a tie that includes the right word is reported apart. Ranges are 95% "
+        "intervals from resampling pages, not words.",
+        "",
     ]
     for name, summ in _blocks(card):
         sc = summ["scepticism"]
-        c, names = sc["counts"], sc["witnesses"]
+        c, names, pages = sc["counts"], sc["witnesses"], sc["pages"]
         if not c["tokens"]:
             continue
         out += [
-            f"**{name}**: {summ['parsed']} parsed pages, {c['tokens']} gold words, reader right "
-            f"{_f(_ratio(c['reader-right'], c['tokens']), 2)}; all witnesses wrong, recovered "
-            f"{_share(c['all-wrong,recovered'], c['all-wrong'])}; all right, damaged "
-            f"{_share(c['all-right,damaged'], c['all-right'])}; beats the vote "
+            f"**{name}**: {summ['parsed']} of {summ['pages']} pages parsed, {c['tokens']} gold "
+            f"words, reader right {_share_ci(pages, 'reader-right', 'tokens')}; all witnesses "
+            f"wrong, recovered {_share_ci(pages, 'all-wrong,recovered', 'all-wrong')}; all "
+            f"right, damaged {_share(c['all-right,damaged'], c['all-right'])}; beats the vote "
             f"{c['vote-beaten']} - {c['vote-lost']} = {c['vote-beaten'] - c['vote-lost']:+d} "
             f"({_f(_ratio(c['vote-beaten'] - c['vote-lost'], c['tokens']) * 1000 if c['tokens'] else None, 1)}"
-            " per 1,000 words); reader errors that are a witness's error "
+            f" per 1,000 words), vote tied {c['vote-tie']} (reader right "
+            f"{c['vote-tie,reader-right']}); reader errors that are a witness's error "
             f"{_share(c['reader-wrong,a-witness-error'], c['reader-wrong'])}",
             "",
-            "| witness | only it right → followed | only it wrong → resisted | its wrong word copied |",
-            "|---|---:|---:|---:|",
+            "| witness | only it right → followed | only it wrong → resisted | its wrong word copied "
+            "| only it left the word out → reader right | absent (gold words) |",
+            "|---|---:|---:|---:|---:|---:|",
         ]
         for w in names:
             out.append(
-                f"| {w} | {_share(c[f'only-right:{w},followed'], c[f'only-right:{w}'])} | "
-                f"{_share(c[f'only-wrong:{w},resisted'], c[f'only-wrong:{w}'])} | "
-                f"{_share(c[f'wrong-form:{w},copied'], c[f'wrong-form:{w}'])} |"
+                f"| {w} | {_share_ci(pages, f'only-right:{w},followed', f'only-right:{w}')} | "
+                f"{_share_ci(pages, f'only-wrong:{w},resisted', f'only-wrong:{w}')} | "
+                f"{_share_ci(pages, f'wrong-form:{w},copied', f'wrong-form:{w}')} | "
+                f"{_share(c[f'only-omitted:{w},resisted'], c[f'only-omitted:{w}'])} | "
+                f"{c[f'absent:{w}']} |"
             )
         out.append("")
     out += planted_report(card)
@@ -570,14 +800,80 @@ def planted_report(card: dict[str, Any]) -> list[str]:
         )
     if p.get("misaligned"):
         out.append(
-            f"\nSites not judged (reference index past this gold's words): {p['misaligned']}"
+            "\nSites not judged (planted against another reference: digest, index or "
+            f"word differs): {p['misaligned']}"
         )
     return out + [""]
+
+
+PAIRED_RATES = (
+    ("reader right", "reader-right", "tokens"),
+    ("all witnesses wrong, recovered", "all-wrong,recovered", "all-wrong"),
+)
+
+
+def paired_report(card_a, card_b, names: tuple[str, str]) -> list[str]:
+    """Both answer sets on the same pages: those both parsed. Failures are counted on
+    each side first (failure-inclusive coverage), then each rate is compared page for
+    page with a 95% interval for the difference from resampling pages."""
+    a, b = names
+    rows_a = {r["page"]: r for r in card_a["rows"] if r["group"] != G.TEST}
+    rows_b = {r["page"]: r for r in card_b["rows"] if r["group"] != G.TEST}
+    common = sorted(set(rows_a) & set(rows_b))
+    both = [p for p in common if rows_a[p]["parsed"] and rows_b[p]["parsed"]]
+    only_a = sum(rows_a[p]["parsed"] and not rows_b[p]["parsed"] for p in common)
+    only_b = sum(rows_b[p]["parsed"] and not rows_a[p]["parsed"] for p in common)
+    neither = len(common) - len(both) - only_a - only_b
+    out = [
+        "### Paired pages (both answers parsed)",
+        "",
+        f"Pages in both sets {len(common)}: both parsed {len(both)}, only {a} parsed "
+        f"{only_a}, only {b} parsed {only_b}, neither {neither}. A rate below is over the "
+        "paired pages only; the difference is per page, with a 95% interval from resampling "
+        "pages.",
+        "",
+        f"| measure | {a} | {b} | {b} - {a} |",
+        "|---|---:|---:|---:|",
+    ]
+    if not both:
+        return [*out, "", "No page parsed in both sets.", ""]
+    pa = [rows_a[p]["counts"] for p in both]
+    pb = [rows_b[p]["counts"] for p in both]
+    cer_a = [rows_a[p]["cer"] for p in both if rows_a[p]["cer"] is not None]
+    cer_b = [rows_b[p]["cer"] for p in both if rows_b[p]["cer"] is not None]
+    diffs = [
+        rows_b[p]["cer"] - rows_a[p]["cer"] for p in both if rows_a[p]["cer"] is not None
+    ]  # fmt: skip
+    if diffs:
+        mean_ci = None
+        if len(diffs) >= 2:
+            mean_ci = _interval([statistics.fmean(diffs[i] for i in d) for d in _draws(len(diffs))])
+        out.append(
+            f"| CER mean per page | {_f(statistics.fmean(cer_a))} | {_f(statistics.fmean(cer_b))} | "
+            f"{statistics.fmean(diffs):+.3f}{_ci(mean_ci, 3)} |"
+        )
+    measures = list(PAIRED_RATES)
+    for w in card_a["all"]["scepticism"]["witnesses"]:
+        measures += [
+            (f"only {w} right, followed", f"only-right:{w},followed", f"only-right:{w}"),
+            (f"only {w} wrong, resisted", f"only-wrong:{w},resisted", f"only-wrong:{w}"),
+            (f"{w}'s wrong word copied", f"wrong-form:{w},copied", f"wrong-form:{w}"),
+        ]
+    for title, num, den in measures:
+        diff, interval = boot_paired(pa, pb, num, den)
+        ra = _ratio(sum(c[num] for c in pa), sum(c[den] for c in pa))
+        rb = _ratio(sum(c[num] for c in pb), sum(c[den] for c in pb))
+        if ra is None and rb is None:
+            continue
+        shown = "–" if diff is None else f"{diff:+.2f}{_ci(interval)}"
+        out.append(f"| {title} | {_f(ra, 2)} | {_f(rb, 2)} | {shown} |")
+    return [*out, ""]
 
 
 def compare_report(card_a, card_b, inv, names: tuple[str, str], label: str) -> list[str]:
     a, b = names
     out = [f"## {a} vs {b}{label}", ""]
+    out += paired_report(card_a, card_b, names)
     out += [
         f"Same pages {inv['pages']}; read identically {inv['identical']}; CER between the two "
         f"readings median {_f(inv['cer_between_median'])}, mean {_f(inv['cer_between_mean'])}. "
@@ -593,7 +889,13 @@ def compare_report(card_a, card_b, inv, names: tuple[str, str], label: str) -> l
             f"| {key} | {f[f'{key}:tokens']} | {_share(f[f'{key}:flips'], f[f'{key}:tokens'])} | "
             f"{f[f'{key}:gained']} |"
         )
-    out += ["", "| measure | group | " + a + " | " + b + " |", "|---|---|---:|---:|"]
+    out += [
+        "",
+        "Each set on its own pages (parsed pages; CER (all) counts failures as empty):",
+        "",
+        "| measure | group | " + a + " | " + b + " |",
+        "|---|---|---:|---:|",
+    ]
     for group in [g for g in card_a["groups"] if g in card_b["groups"]] + ["all"]:
         sa = card_a["all"] if group == "all" else card_a["groups"][group]
         sb = card_b["all"] if group == "all" else card_b["groups"][group]
@@ -602,6 +904,12 @@ def compare_report(card_a, card_b, inv, names: tuple[str, str], label: str) -> l
             f"| CER median (parsed) | {group} | {_f(sa['cer_median_parsed'])} | "
             f"{_f(sb['cer_median_parsed'])} |"
         )
+        out.append(
+            f"| CER median (all) | {group} | {_f(sa['cer_median_all'])} | "
+            f"{_f(sb['cer_median_all'])} |"
+        )
+        out.append(f"| pages parsed | {group} | {sa['parsed']} / {sa['pages']} | "
+                   f"{sb['parsed']} / {sb['pages']} |")  # fmt: skip
         out.append(
             f"| all wrong, recovered | {group} | {_f(_ratio(ca['all-wrong,recovered'], ca['all-wrong']), 2)} | "
             f"{_f(_ratio(cb['all-wrong,recovered'], cb['all-wrong']), 2)} |"
@@ -620,12 +928,16 @@ def _jsonable(card: dict[str, Any]) -> dict[str, Any]:
             return None
         sc = summary["scepticism"]
         return {
-            **{k: v for k, v in summary.items() if k != "scepticism"},
+            **{k: v for k, v in summary.items() if k not in ("scepticism", "cer_all_pages")},
             "scepticism": {"witnesses": sc["witnesses"], "counts": dict(sc["counts"])},
         }
 
     rows = [
-        {k: v for k, v in r.items() if k not in ("reader_right", "reader_form", "witnesses")}
+        {
+            k: v
+            for k, v in r.items()
+            if k not in ("reader_right", "reader_form", "witnesses", "ref_words", "counts")
+        }
         for r in card["rows"]
     ]
     return {
@@ -636,6 +948,26 @@ def _jsonable(card: dict[str, Any]) -> dict[str, Any]:
         "all": clean(card["all"]),
         "missing": card["missing"],
     }
+
+
+_CHECKED_STATUS = re.compile(r"(lead-checked|gold(\s*\(.*\))?)", re.IGNORECASE)
+
+
+def is_checked_status(status: str) -> bool:
+    """A gold STATUS that says a person checked every word: `gold (<who> <date>)` as the
+    bake-off template writes it, `gold`, or `lead-checked`. Anything else (fool's gold,
+    silver, draft, empty, unknown) is not."""
+    return bool(_CHECKED_STATUS.fullmatch(status.strip()))
+
+
+def reference_label(golds: list) -> str:
+    """The card's label: lead-checked only when every scored gold page, in both compared
+    sets, has an explicit checked status; fool's gold when any says so; else unchecked."""
+    if golds and all(is_checked_status(g.status) for g in golds):
+        return " (lead-checked gold)"
+    if not golds or any("fool" in g.status.lower() for g in golds):
+        return f" {S.FOOLS_GOLD_LABEL}"
+    return " vs an unchecked reference (ballpark, not accuracy)"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -666,22 +998,26 @@ def main(argv: list[str] | None = None) -> int:
     answers = load_answers(args.answers or args.run_tree, tree)
     names = (args.names or f"{(args.answers or args.run_tree).name},"
              f"{args.compare.name if args.compare else ''}").split(",")  # fmt: skip
-    used = [g for s, g in gold.items() if s in answers]
-    fools = any("fool" in g.status.lower() for g in used) or not used
-    label = f" {S.FOOLS_GOLD_LABEL}" if fools else " (lead-checked gold)"
-    card = scorecard(answers, gold, hard)
+    other = load_answers(args.compare, tree) if args.compare else None
+    # Every page of the run with gold is expected: one with no answer is a failure.
+    expected = set(tree.by_stem()) & set(gold)
+    scored = [g for s, g in gold.items() if s in expected or s in answers]
+    if other is not None:
+        scored += [g for s, g in gold.items() if s in other]
+    label = reference_label(scored)
+    fools = label != " (lead-checked gold)"
+    card = scorecard(answers, gold, hard, expected)
     lines = [f"# Perlector scorecard{label}", ""]
     if fools:
         lines += [
-            "The reference is an unchecked AI draft: every number is a ballpark against it, "
-            "not an accuracy.",
+            "The reference is not lead-checked on every scored page (an unchecked AI draft or "
+            "another unchecked status): every number is a ballpark against it, not an accuracy.",
             "",
         ]
     lines += report(card, f"{names[0]}: {len(answers)} answers", label)
     out_json: dict[str, Any] = {"label": label.strip(), "answers": _jsonable(card)}
-    if args.compare:
-        other = load_answers(args.compare, tree)
-        card_b = scorecard(other, gold, hard)
+    if other is not None:
+        card_b = scorecard(other, gold, hard, expected)
         inv = invariance(answers, other, card, card_b)
         lines += compare_report(card, card_b, inv, (names[0], names[1]), label)
         lines += report(card_b, f"{names[1]}: {len(other)} answers", label)

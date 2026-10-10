@@ -52,6 +52,7 @@ from operations.bakeoff import fed_arm as F
 from operations.bakeoff import mutations as M
 from operations.bakeoff import score as S
 from operations.bakeoff import witness_run as W
+from operations.bakeoff.fed_score import is_checked_status
 from operations.bakeoff.gold import load_gold_dir, marked_words, scored_text
 
 SCHEMA = "perlector-training-example.v1"
@@ -310,7 +311,8 @@ def mark_weight(ref: M.Reference) -> float:
     """The weight of the doubt-mark syntax (`[[`, `|other`, `]]`, `[[?]]`): where the ink
     is unread or uncertain is the reference's judgement, so it weighs as a checked word on
     a lead-checked reference and as a draft word otherwise."""
-    return WEIGHTS["checked"] if ref.status_label == "lead-checked" else WEIGHTS["draft"]
+    checked = is_checked_status(ref.status_label or "")
+    return WEIGHTS["checked"] if checked else WEIGHTS["draft"]
 
 
 def _text_weights(text: str, ref: M.Reference, entry: int) -> list[float | None]:

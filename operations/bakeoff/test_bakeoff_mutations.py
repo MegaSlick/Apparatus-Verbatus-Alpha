@@ -232,11 +232,53 @@ def test_vote_check_counts_wrong_majorities(tmp_path):
         check["by_class"]["name"]["vote_wrong"] == 1
         and check["by_class"]["date"]["vote_wrong"] == 1
     )
-    # A 1-1 tie between two readers goes to the first shown, whose word is right here.
+    # A 1-1 tie between two readers that includes the right word is reported apart.
     tie = json.loads(json.dumps(feed))
     tie["witnesses"][1]["outcome"], tie["witnesses"][1]["units"] = "genuinely-empty", []
     tie["witnesses"][2]["units"][0]["text"] = TEXT.replace("Richer", "Richet")
-    assert M.vote_check([(ref, tie)])["vote_wrong"] == 0
+    check = M.vote_check([(ref, tie)])
+    assert check["vote_wrong"] == 0 and check["vote_tied"] == 1
+
+
+def test_vote_check_and_the_scorecard_share_one_vote(tmp_path):
+    # C7: gold "mai", witnesses mai / mars / juin. vote_check called the vote right (tie
+    # to the first shown) while the scorecard credited a reader of "mai" with beating
+    # it. Both now call it a tie, reported apart.
+    feed = _three(_tree(tmp_path).pages[1].feed, second="Le dix mars")
+    feed["witnesses"][0]["units"] = feed["witnesses"][0]["units"][:1]
+    feed["witnesses"][0]["units"][0]["text"] = "Le dix mai"
+    feed["witnesses"][2]["units"][0]["text"] = "Le dix juin"
+    ref = _ref("Le dix mai", feed)
+    check = M.vote_check([(ref, feed)])
+    assert (check["vote_wrong"], check["vote_tied"]) == (0, 1)  # "mai"; "dix" is a clear win
+    assert C.vote(["mai", "mars", "juin"], "mai") == "tie"
+    assert C.vote(["mars", "mars", "mai"], "mai") == "wrong"
+    assert C.vote(["mars", "juin"], "mai") == "wrong"  # a tie among wrong words is wrong
+    assert C.vote(["mai", "mai", "juin"], "mai") == "right" and C.vote([], "mai") is None
+    row = {"reader_right": [True], "reader_form": [None], "ref_words": ("mai",),
+           "witnesses": {n: {"right": [n == "chandra"], "form": [None if n == "chandra" else f],
+                             "read": True} for n, f in (("chandra", None), ("dai", "mars"),
+                                                         ("churro", "juin"))}}  # fmt: skip
+    c = C.page_counts(row)
+    assert (c["vote-beaten"], c["vote-tie"], c["vote-tie,reader-right"]) == (0, 1, 1)
+
+
+def test_name_swap_and_normalised_record_one_site_per_position(tmp_path):
+    # C7: name-swap recorded each swapped position once per witness (two positions over
+    # three witnesses became six sites, each k=3); plant-3 records one site per position.
+    feed = _three(_tree(tmp_path).pages[1].feed)
+    ref = _ref(feed=feed)
+    swap = M.mutate(feed, ref, "name-swap", seed=0)
+    assert len(swap.planted) == 2 and len({s["ref_index"] for s in swap.planted}) == 2
+    for site in swap.planted:
+        assert site["k"] == 3 and sorted(site["witnesses"]) == [
+            "attestator_1", "attestator_2", "attestator_3",
+        ]  # fmt: skip
+        assert len(site["letters"]) == len(site["unit_ids"]) == 3
+    norm = M.mutate(feed, ref, "normalised")
+    indices = [s["ref_index"] for s in norm.planted]
+    assert len(indices) == len(set(indices)) == 2 and all(s["k"] == 3 for s in norm.planted)
+    assert swap.reference_sha256 == C.reference_digest(ref.tokens())
 
 
 def test_cli_writes_records_and_the_scorer_counts_copies(tmp_path):
@@ -353,3 +395,23 @@ def test_reference_keeps_doubt_marks_and_tracks_doubt_by_position(tmp_path):
     assert M.donor_acts({"p009": donor}, "p001") == [
         "Le dix mai mil huit cent Richer Lalonde fils de Pierre"
     ]
+
+
+def test_planted_sites_are_bound_to_the_scored_reference():
+    # C7: any in-range index was judged, so a revised gold scored another word.
+    rows = [{"page": "p001", "parsed": True, "reader_right": [True, True, False],
+             "reader_form": [None, None, "mars"], "ref_words": ("le", "dix", "mai"),
+             "ref_digest": C.reference_digest(("le", "dix", "mai"))}]  # fmt: skip
+    site = {"ref_index": 2, "ref_word": "mai", "planted": "mars", "cls": "date", "k": 1,
+            "witnesses": ["attestator_1"]}  # fmt: skip
+
+    def judge(sidecar):
+        answer = C.Answer("p001", "parsed", [], [], None, "stop", False, 1, None, None, [], sidecar)
+        return C.planted_copies(rows, {"p001": answer})
+
+    good = {"scenario": "plant-1", "reference_sha256": rows[0]["ref_digest"], "planted": [site]}
+    assert judge(good)["all,copied"] == 1 and "misaligned" not in judge(good)
+    moved = {**good, "planted": [{**site, "ref_index": 1}]}  # the word at 1 is "dix"
+    assert judge(moved) == {"misaligned": 1}
+    stale = {**good, "reference_sha256": C.reference_digest(("le", "dix", "juin"))}
+    assert judge(stale) == {"misaligned": 1}
