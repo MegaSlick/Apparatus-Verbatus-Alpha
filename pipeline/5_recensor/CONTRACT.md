@@ -65,6 +65,32 @@ every code of this stage (`under-witnessed`, `unresolved-witness`, `residual-ink
 each named in `reason`. An operator review decision can change that outcome
 ("Operator review decisions" below).
 
+## Review flags
+
+A code the sealed page-accounting policy names in `[flags] codes`
+(`config/page_accounting.toml`, `common/page_accounting.py`) is a review flag: the
+finding is measured and recorded exactly as a hold is, but it holds nothing. The row's
+`flag_codes` are the page accounting's `flags`; this stage's own `residual-ink` is a
+flag when the policy names it. A unit's review carries both lists apart: `hold_codes`
+decide the outcome, `flag_codes` are named in `reason` as "flagged for review, not
+held", and `review_priority` (`common.page_review.REVIEW_PRIORITY`: 1 look first, text
+or ink may be missing; 2 structure doubt; 3 thin evidence) places the unit in the
+review queue by the lowest tier of any code it carries, hold or flag, `null` with
+none. A page said to hold no act is confirmed when rules (d), (e), (f) and (i) each
+pass or are `flag`: the flagged finding is recorded on every unit of the page and
+reaches the flagged export. The Armarium carries every held or flagged reading with
+its text in the flagged layer (`pipeline/7_armarium/CONTRACT.md`); the established
+export is unchanged by a flag.
+
+After the receipt the stage rebuilds `run-health/recensor-review-summary.json`
+(`recensor-review-summary.v1`), a report for a person and nothing a later stage reads:
+`held_pages`, `flagged_pages` (a flag and no hold) and `clean_pages`; `held_units` and
+`flagged_units`; `by_code`, each code's pages and units counted apart, since a
+page-level finding reaches every unit of its page, with whether it acted `as` a hold,
+a flag or both; `by_page_type`, pages held, flagged and clean under the type the page
+reading names (`page_type` on the reading or its answer, else `untyped`); and `queue`,
+every held or flagged unit in review priority, then page order.
+
 ## A page that holds no act
 
 A `page-blank` row (`page-blank-unconfirmed`) and an entry of a page whose entries are
@@ -102,7 +128,8 @@ plus the `attempt_ordinal` every review carries; that module also holds the link
 fields below and is how the Archetypus and the Armarium read both records):
 
 ```
-{act_key, unit_class, kind, page_ordinal, reason, hold_codes, coverage,
+{act_key, unit_class, kind, page_ordinal, reason, hold_codes, flag_codes,
+ review_priority: 1 | 2 | 3 | null, coverage,
  page_reading_ref, page_accounting_ref, act_region_ref | null, perlectio_ref | null,
  page_coverage: {checked_pages, flagged_pages, unmeasurable_pages, ink | null},
  continuation: {continues_from_previous_page, continues_to_next_page},

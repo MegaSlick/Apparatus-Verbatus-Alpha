@@ -392,10 +392,12 @@ def test_an_unplaced_entry_is_counted_and_held_by_the_recomputed_accounting(revi
         "record-not-read",
         "truncation-not-classified",
         "unaccounted-witness-unit",
-        "unread-ink",
         "unread-line",
     ]
+    # The ink threshold is a review flag under the committed `[flags]`: recorded, not held.
+    assert unplaced["flag_codes"] == ["unread-ink"]
     assert {act["disposition"] for act in acts[:2]} == {"read"}
+    assert {tuple(act["flag_codes"]) for act in acts[:2]} == {()}
 
 
 def test_a_page_read_without_its_image_holds_every_entry_no_autopsia(tmp_path):
@@ -464,6 +466,7 @@ def test_a_page_whose_answer_was_not_read_is_one_held_page_unread_row(
         "perlectio_ref": None,
         "accounting_ref": pages[2]["accounting_ref"],
         "hold_codes": sorted({*reply_codes, "page-unread", *page_holds}),
+        "flag_codes": [],
         "continues_from_previous_page": None,
         "continues_to_next_page": None,
         "reading_attempt": None,

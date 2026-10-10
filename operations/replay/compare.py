@@ -128,21 +128,36 @@ def holds(tree: RunTree) -> dict[str, Any]:
     ]
     pages = {review["page_ordinal"] for review in reviews}
     held = {review["page_ordinal"] for review in reviews if review["hold_codes"]}
+    # Review flags (`flag_codes`, a review of this code or later): recorded, not held.
+    flagged = {review["page_ordinal"] for review in reviews if review.get("flag_codes")} - held
     units: Counter = Counter()
+    flag_units: Counter = Counter()
     reach: dict[str, set[int]] = defaultdict(set)
+    flag_reach: dict[str, set[int]] = defaultdict(set)
     for review in reviews:
         for code in review["hold_codes"]:
             units[code] += 1
             reach[code].add(review["page_ordinal"])
+        for code in review.get("flag_codes", ()):
+            flag_units[code] += 1
+            flag_reach[code].add(review["page_ordinal"])
     return {
         "pages": len(pages),
         "units": len(reviews),
         "held_units": sum(1 for review in reviews if review["hold_codes"]),
         "held_pages": len(held),
-        "clean_pages": sorted(pages - held),
+        "flagged_pages": sorted(flagged),
+        "flagged_units": sum(
+            1 for review in reviews if review.get("flag_codes") and not review["hold_codes"]
+        ),
+        "clean_pages": sorted(pages - held - flagged),
         "page_unread_pages": len(reach.get("page-unread", ())),
         "codes": {
             code: {"units": count, "pages": len(reach[code])} for code, count in units.most_common()
+        },
+        "flags": {
+            code: {"units": count, "pages": len(flag_reach[code])}
+            for code, count in flag_units.most_common()
         },
     }
 
@@ -174,7 +189,8 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"{name} {result[name]}: {summary['held_pages']} of {summary['pages']} pages held, "
             f"{summary['page_unread_pages']} unread, {summary['held_units']} of "
-            f"{summary['units']} units held, clean pages {summary['clean_pages']}"
+            f"{summary['units']} units held, {len(summary['flagged_pages'])} pages flagged only, "
+            f"clean pages {summary['clean_pages']}"
         )
     return 0
 

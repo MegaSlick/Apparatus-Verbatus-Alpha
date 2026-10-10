@@ -2091,6 +2091,7 @@ READING_ACT_FIELDS: Final = frozenset(
         "perlectio_ref",
         "accounting_ref",
         "hold_codes",
+        "flag_codes",
         "continues_from_previous_page",
         "continues_to_next_page",
         "reading_attempt",
@@ -2419,6 +2420,7 @@ def _refused_page_row(
         "perlectio_ref": None,
         "accounting_ref": None,
         "hold_codes": [],
+        "flag_codes": [],
         "continues_from_previous_page": None,
         "continues_to_next_page": None,
         "reading_attempt": None,
@@ -2539,7 +2541,8 @@ def _verify_page_reading(
     )
     trigger_ref = index.ref(first_accounting)
     by_reading = {page_edges.FIRST_READING: (payload, reading_ref)}
-    accounting_ref, page_holds, act_plans, reask_ref = trigger_ref, trigger["holds"], plans, None
+    accounting_ref, act_plans, reask_ref = trigger_ref, plans, None
+    page_holds, page_flags = trigger["holds"], trigger["flags"]
     if named:
         second, reask_ref, reask_plans = _verify_reask(
             context,
@@ -2571,7 +2574,8 @@ def _verify_page_reading(
             f"{what}'s re-ask accounting does not restate its first reading's entries exactly",
         )
         act_plans = page_path.reask_act_plans(combined, plans, reask_plans, what)
-        accounting_ref, page_holds = index.ref(last), combined["holds"]
+        accounting_ref = index.ref(last)
+        page_holds, page_flags = combined["holds"], combined["flags"]
         by_reading[page_edges.REASK_READING] = (second, reask_ref)
     superseded: list[dict[str, str]] = []
     if rereads:
@@ -2587,7 +2591,7 @@ def _verify_page_reading(
             counted=act_plans,
             measure=measure,
         )
-        payload, reading_ref, act_plans, last, page_holds, superseded = current
+        payload, reading_ref, act_plans, last, page_holds, page_flags, superseded = current
         codes = _problem_codes(payload.get("problems"), f"{what}'s current page reading")
         accounting_ref, reask_ref, named = index.ref(last), None, None
         by_reading = {payload["attempt_ordinal"]: (payload, reading_ref)}
@@ -2615,7 +2619,9 @@ def _verify_page_reading(
             and not _current_on_page(index, page_path.PERLECTIO_KIND, page_id, old),
             f"{what} has no act entry to count, yet the Perlector published act records for it",
         )
-        return row, [_page_row(context, ordinal, page_id, payload, codes, page_holds, refs)]
+        return row, [
+            _page_row(context, ordinal, page_id, payload, codes, page_holds, page_flags, refs)
+        ]
     acts = _verify_entries(
         context,
         index,
@@ -2627,6 +2633,7 @@ def _verify_page_reading(
         page_holds,
         feed,
         witnesses,
+        page_flags=page_flags,
         superseded=old,
     )
     return row, acts
@@ -2753,7 +2760,15 @@ def _verify_rereads(
             plans=plans,
             attempt=attempt,
         )
-        current = (payload, reference, plans, accounting, measured["holds"], list(supersedes))
+        current = (
+            payload,
+            reference,
+            plans,
+            accounting,
+            measured["holds"],
+            measured["flags"],
+            list(supersedes),
+        )
         supersedes.append(reference)
     _require(current is not None, f"{what} has no operator re-read to stand on")
     return current
@@ -3384,6 +3399,7 @@ def _page_row(
     payload: Mapping[str, Any],
     problem_codes: list[str],
     page_holds: list[str],
+    page_flags: list[str],
     refs: dict[str, dict[str, str]],
 ) -> dict[str, Any]:
     """The one row that stands for a page with no act entry, over the page rectangle."""
@@ -3405,6 +3421,7 @@ def _page_row(
         "perlectio_ref": None,
         "accounting_ref": refs["accounting_ref"],
         "hold_codes": sorted(codes | set(page_holds)),
+        "flag_codes": sorted(set(page_flags)),
         "continues_from_previous_page": None,
         "continues_to_next_page": None,
         "reading_attempt": None,
@@ -3431,6 +3448,7 @@ def _verify_entries(
     feed: Mapping[str, Any],
     witnesses: list[dict[str, Any]],
     *,
+    page_flags: list[str] = (),
     superseded: set[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Each entry the page's last accounting counts, proven against its act-region and Perlectio.
@@ -3589,6 +3607,8 @@ def _verify_entries(
                 "perlectio_ref": index.ref(perlectio),
                 "accounting_ref": refs["accounting_ref"],
                 "hold_codes": hold_codes,
+                # The page's review flags: measured, recorded, holding nothing.
+                "flag_codes": sorted(set(page_flags)),
                 "continues_from_previous_page": act["continues_from_previous_page"],
                 "continues_to_next_page": act["continues_to_next_page"],
                 "reading_attempt": plan["reading_attempt"],
