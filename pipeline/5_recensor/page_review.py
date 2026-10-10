@@ -916,11 +916,18 @@ def plan_reviews(
     flag_codes = page_accounting.require_page_accounting_policy(
         context, context.page_accounting_config_path
     ).flag_codes
+    # A page's accounting and references are the same for each of its units,
+    # so each is read and digested once per pass.
+    accountings: dict[str, tuple[Any, dict[str, Any]]] = {}
+    refs = _ArtifactRefs(context)
     planned = []
     for act in acts:
         records = testimonia.get(act["page_id"], [])
-        accounting = _accounting(context, act)
-        _require_accounted_testimonia(context, act, accounting, records)
+        known = accountings.get(act["page_id"])
+        if known is None or known[0] != act["accounting_ref"]:
+            known = accountings[act["page_id"]] = (act["accounting_ref"], _accounting(context, act))
+        accounting = known[1]
+        _require_accounted_testimonia(refs, act, accounting, records)
         confirmed = None
         if PAGE_BLANK_HOLD in act["hold_codes"] or NO_ACT_ON_PAGE_HOLD in act["hold_codes"]:
             confirmed = confirmation(
@@ -947,7 +954,7 @@ def plan_reviews(
             recoveries_used=page_reasks(pages[act["page_ordinal"]]),
             flag_codes=flag_codes,
         )
-        exemplar_page = context.artifact_ref(
+        exemplar_page = refs.artifact_ref(
             EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", act["page_id"])
         )
         inputs = [
@@ -961,7 +968,7 @@ def plan_reviews(
             )
             if reference is not None
         ] + [
-            context.artifact_ref(ATTESTATORES, PAGE_TESTIMONIUM_KIND, record["artifact_id"])
+            refs.artifact_ref(ATTESTATORES, PAGE_TESTIMONIUM_KIND, record["artifact_id"])
             for record in records
         ]
         planned.append((act, outcome, payload, inputs))
@@ -1045,6 +1052,20 @@ def review_pages(
         )
         held += outcome == HELD
     return held
+
+
+class _ArtifactRefs:
+    """A context's `artifact_ref`, digested once per artifact for one pass."""
+
+    def __init__(self, context) -> None:
+        self._context = context
+        self._refs: dict[tuple[str, str, str], dict[str, str]] = {}
+
+    def artifact_ref(self, stage: str, kind: str, identity: str) -> dict[str, str]:
+        key = (stage, kind, identity)
+        if key not in self._refs:
+            self._refs[key] = self._context.artifact_ref(stage, kind, identity)
+        return dict(self._refs[key])
 
 
 def _require_accounted_testimonia(
