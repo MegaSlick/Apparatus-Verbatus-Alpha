@@ -4596,3 +4596,75 @@ def test_a_capacity_plan_for_another_tier_is_refused(tmp_path: Path) -> None:
     assert exit_code == EXIT_REFUSED
     assert runner.calls == []
     assert "generic-80gb-plus" in report["reason"]
+
+
+@pytest.mark.parametrize(
+    ("selection", "expected"),
+    [
+        ((), ["--from", "door", "--to", "coniector"]),
+        (("--models", "big"), ["--from", "perlector", "--to", "coniector"]),
+        (("--from", "perlector", "--to", "armarium"), ["--from", "perlector", "--to", "coniector"]),
+        (("--models", "small"), ["--from", "door", "--to", "attestatores"]),
+    ],
+)
+def test_stop_after_coniector_ends_the_card_work_and_returns(
+    tmp_path: Path, monkeypatch, selection: tuple[str, ...], expected: list[str]
+) -> None:
+    ws = _prepared(tmp_path)
+    monkeypatch.setattr(pod_run, "verify_predecessor_seal", lambda tree, stage: None)
+    clock = Clock()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=("--stop-after-coniector", *selection)),
+        environ=_environ(clock, lifetime=4.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    assert code == pod_run.EXIT_SELECTION_COMPLETE
+    assert clock.seconds == 0  # no hold: the card is released at once
+    command = runner.calls[0][0]
+    start = command.index("--from")
+    assert command[start : start + 4] == expected
+    report = _report(ws)
+    assert report["state"] == "selection-complete" and report["held_to_hard_deadline"] is False
+    assert report["plan"]["stop_after_coniector"] is True
+    assert report["plan"]["selection"]["stages"][-1] == expected[-1]
+
+
+def test_stop_after_coniector_refuses_a_selection_that_starts_after_it(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    actions = PreflightedActions()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws, extra=("--stop-after-coniector", "--from", "recensor", "--to", "armarium")),
+        environ=_environ(clock),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: actions,
+        runner=runner,
+    )
+    assert code == EXIT_REFUSED
+    assert "runs nothing" in _report(ws)["reason"]
+    assert actions.calls == [] and runner.calls == []
+
+
+def test_without_stop_after_coniector_the_full_run_is_unchanged(tmp_path: Path) -> None:
+    ws = _prepared(tmp_path)
+    clock = Clock()
+    runner = RecordedRunner()
+    code = main(
+        _run_argv(ws),
+        environ=_environ(clock, lifetime=1.0),
+        now=clock.now,
+        sleeper=clock.sleep,
+        actions_factory=lambda plan: PreflightedActions(),
+        runner=runner,
+    )
+    assert code == EXIT_COMPLETE
+    assert "--from" not in runner.calls[0][0] and "--stage" not in runner.calls[0][0]
+    report = _report(ws)
+    assert report["plan"]["stop_after_coniector"] is False
+    assert report["plan"]["selection"]["stages"][-1] == "armarium"
