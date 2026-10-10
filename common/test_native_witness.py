@@ -2007,8 +2007,8 @@ def test_an_operation_with_no_re_derivation_is_refused_rather_than_trusted():
 
 
 def test_the_capture_validator_admits_one_parser_per_vendor_grammar():
-    """Chandra's HTML, Churro's XML, DAI's plain text -- and nothing unnamed."""
-    assert NATIVE_CAPTURE_PARSERS == frozenset({"html", "xml", "text"})
+    """Chandra's HTML, Churro's XML, DAI's plain text, dots.mocr's layout JSON -- nothing unnamed."""
+    assert NATIVE_CAPTURE_PARSERS == frozenset({"html", "xml", "text", "layout-json"})
 
 
 @pytest.mark.parametrize("parser", ["html", "text", "xml"])

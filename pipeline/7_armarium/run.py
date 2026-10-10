@@ -144,6 +144,7 @@ from common.stage import (  # noqa: E402
     unaddressed_chairs,
     validate_serving_provenance,
 )
+from common.witness_routing import routed_chairs
 from operations.serving.assembly import SERVING_READER  # noqa: E402
 
 DESCRIPTION = "Armarium: where the output is written, and where the totals must reconcile."
@@ -1650,6 +1651,12 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
                 "act_text_status": act_text_status,
                 "continuation_flags": continuation_flags,
                 "page_witness_chairs": sorted(declared_page_witness_chairs(context)),
+                # Only on a run that routes a witness, so any other export is unchanged.
+                **(
+                    {"routed_page_witness_chairs": sorted(routed_chairs(context))}
+                    if routed_chairs(context)
+                    else {}
+                ),
                 **({} if review_basis is None else {"review_decisions": review_basis}),
                 **({} if systemic_basis is None else {"systemic_review": systemic_basis}),
             },

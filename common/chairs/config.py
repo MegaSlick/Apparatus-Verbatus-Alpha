@@ -23,7 +23,19 @@ from .models import (
     is_witness_role,
 )
 
-_TOP_LEVEL = {"witness_floor", "chairs", "adapter_recipes", "witness_framings", "model_root"}
+_TOP_LEVEL = {
+    "witness_floor",
+    "chairs",
+    "adapter_recipes",
+    "witness_framings",
+    "witness_routing",
+    "model_root",
+}
+#: The page-routing rules a witness chair may be seated under
+#: (`common/witness_routing.py` derives each page's decision). `index-and-table.v1`:
+#: the chair reads a page when Surya's layout tags a `Table` block on it or the
+#: record detector found no record on it, and no other page.
+WITNESS_ROUTING_RULES = frozenset({"index-and-table.v1"})
 _CONFIGURED_COMMON = {
     "state",
     "source",
@@ -70,6 +82,7 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
 
     adapter_recipes = _parse_adapter_recipes(raw.get("adapter_recipes", {}))
     witness_framings = _parse_witness_framings(raw.get("witness_framings", {}))
+    witness_routing = _parse_witness_routing(raw.get("witness_routing", {}))
     raw_chairs = raw.get("chairs")
     if not isinstance(raw_chairs, dict) or not raw_chairs:
         raise ConfigurationRefusal("models.toml", "chairs must be a non-empty table")
@@ -106,11 +119,42 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
                 f"{role!r} is not a witness chair and has no adapter to be framed",
             )
 
+    for role in witness_routing:
+        chair = chairs.get(role)
+        if not isinstance(chair, ChairIdentity) or chair.witness_adapter is None:
+            raise ConfigurationRefusal(
+                "witness_routing",
+                f"{role!r} names no configured witness chair; only a configured witness can "
+                "be seated on some pages and not others",
+            )
+    if witness_routing:
+        unrouted = [
+            role
+            for role in chairs
+            if is_witness_role(role)
+            and isinstance(chairs[role], ChairIdentity)
+            and role not in witness_routing
+        ]
+        if not unrouted:
+            raise ConfigurationRefusal(
+                "witness_routing",
+                "routes every configured witness chair, so a page no rule routes would have "
+                "no witness at all; leave at least one witness reading every page",
+            )
+        for needed in ("designator_surya", "secondary_proposer"):
+            if not isinstance(chairs.get(needed), ChairIdentity):
+                raise ConfigurationRefusal(
+                    "witness_routing",
+                    f"routes a witness by Surya's Table blocks and the record detector's count, "
+                    f"but the {needed!r} chair that measures one of them is not configured",
+                )
+
     return ModelsConfig(
         witness_floor=witness_floor,
         chairs=chairs,
         adapter_recipes=adapter_recipes,
         witness_framings=witness_framings,
+        witness_routing=witness_routing,
         model_root=model_root,
         source_path=Path(source_path) if source_path is not None else None,
     )
@@ -232,6 +276,27 @@ def _parse_witness_framings(value: Any) -> dict[str, str]:
     parsed: dict[str, str] = {}
     for name, framing in value.items():
         parsed[_role(name)] = _text("witness_framings", str(name), framing)
+    return parsed
+
+
+def _parse_witness_routing(value: Any) -> dict[str, str]:
+    """Which witness chairs read only the pages a rule routes to them, by role.
+
+    Absent or empty, every configured witness reads every sealed page, as
+    before; nothing about such a run changes.
+    """
+
+    if not isinstance(value, dict):
+        raise ConfigurationRefusal("models.toml", "witness_routing must be a table of strings")
+    parsed: dict[str, str] = {}
+    for name, rule in value.items():
+        text = _text("witness_routing", str(name), rule)
+        if text not in WITNESS_ROUTING_RULES:
+            raise ConfigurationRefusal(
+                "witness_routing",
+                f"{name!r} names rule {text!r}; the rules are {sorted(WITNESS_ROUTING_RULES)}",
+            )
+        parsed[_role(name)] = text
     return parsed
 
 

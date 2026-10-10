@@ -123,6 +123,24 @@ raw_label = "Text"
 position = 0
 confidence_bp = 9500
 
+[[surya_block]]
+scenario = "dots-table"
+page_ordinal = 2
+polygon = [[20, 20], [180, 20], [180, 80], [20, 80]]
+label = "Table"
+raw_label = "Table"
+position = 1
+confidence_bp = 9400
+
+[[surya_block]]
+scenario = "dots-cut-off"
+page_ordinal = 2
+polygon = [[20, 20], [180, 20], [180, 80], [20, 80]]
+label = "Table"
+raw_label = "Table"
+position = 1
+confidence_bp = 9400
+
 [[testimony]]
 page_ordinal = 1
 chair = "attestator_1"
@@ -190,6 +208,27 @@ chair = "attestator_3"
 raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
 transport_stop_reason = "length"
 
+[[dots_page_response]]
+scenario = "dots-table"
+page_ordinal = 2
+chair = "attestator_4"
+raw_json = "[{\"bbox\": [20, 20, 176, 78], \"category\": \"Table\", \"text\": \"<table><tr><td>SYNTHETIC ACT TWO</td><td>delta epsilon zeta eta</td></tr></table>\"}]"
+transport_stop_reason = "stop"
+
+[[dots_page_response]]
+scenario = "dots-no-record"
+page_ordinal = 2
+chair = "attestator_4"
+raw_json = "[{\"bbox\": [20, 20, 176, 78], \"category\": \"Text\", \"text\": \"SYNTHETIC ACT TWO delta epsilon zeta eta\"}]"
+transport_stop_reason = "stop"
+
+[[dots_page_response]]
+scenario = "dots-cut-off"
+page_ordinal = 2
+chair = "attestator_4"
+raw_json = "[{\"bbox\": [20, 20, 176, 78], \"category\": \"Table\", \"text\": \"<table><tr><td>SYN"
+transport_stop_reason = "length"
+
 [[detector_record]]
 page_ordinal = 1
 corners = [[25, 25], [175, 25], [175, 95], [25, 95]]
@@ -225,6 +264,18 @@ score_bp = 9500
 
 [[detector_record]]
 scenario = "page-no-act"
+page_ordinal = 1
+corners = [[25, 125], [175, 125], [175, 215], [25, 215]]
+score_bp = 9499
+
+[[detector_record]]
+scenario = "dots-no-record"
+page_ordinal = 1
+corners = [[25, 25], [175, 25], [175, 95], [25, 95]]
+score_bp = 9500
+
+[[detector_record]]
+scenario = "dots-no-record"
 page_ordinal = 1
 corners = [[25, 125], [175, 125], [175, 215], [25, 215]]
 score_bp = 9499
@@ -411,6 +462,18 @@ name = "malformed-witness"
 # malformed-capabilities: Churro's page 1 response declares a capability record that is not an object.
 [[scenario]]
 name = "malformed-capabilities"
+
+# dots-table: Surya tags page 2 a Table, so a roster that routes dots.mocr to index and table pages seats it there; it reads the page's one row.
+[[scenario]]
+name = "dots-table"
+
+# dots-no-record: The record detector finds nothing on page 2, so a routed dots.mocr reads it; DAI has nothing to read there.
+[[scenario]]
+name = "dots-no-record"
+
+# dots-cut-off: page 2 tagged a Table, and dots.mocr's answer cut at its bound: broken JSON, retained and never salvaged.
+[[scenario]]
+name = "dots-cut-off"
 
 # The fake Perlector's answer to a whole-page reading, one per scenario and page.
 # `answer` is the reply text exactly.
@@ -642,6 +705,36 @@ answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"
 
 [[page_answer]]
 scenario = "ink-free-page-unwitnessed"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "dots-table"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "dots-table"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\",\"D1\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "dots-no-record"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "dots-no-record"
+page_ordinal = 2
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"C1\",\"L1\",\"L2\",\"L3\",\"D1\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "dots-cut-off"
+page_ordinal = 1
+answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a1\",\"cites\":[\"A1\",\"B1\",\"C1\"],\"text\":\"SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]\",\"continues_from_previous_page\":false,\"continues_to_next_page\":false},{\"n\":2,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A2\",\"B2\",\"C2\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":false,\"continues_to_next_page\":true}],\"set_aside\":[]}"
+
+[[page_answer]]
+scenario = "dots-cut-off"
 page_ordinal = 2
 answer = "{\"acts\":[{\"n\":1,\"kind\":\"act\",\"label\":\"synthetic act a2\",\"cites\":[\"A1\",\"B1\",\"C1\",\"L1\",\"L2\",\"L3\"],\"text\":\"SYNTHETIC ACT TWO delta epsilon zeta eta\",\"continues_from_previous_page\":true,\"continues_to_next_page\":false}],\"set_aside\":[]}"
 

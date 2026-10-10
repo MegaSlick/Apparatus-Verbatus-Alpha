@@ -83,7 +83,12 @@ checks each act against.
 
 **Attestatores** — the witnesses. Every witness reads every sealed page: a whole-page
 reader reads the page image, and a record reader reads the crops of the records its
-detector found on the page. Each produces one **Testimonium** per page:
+detector found on the page. The one exception is a witness the roster *routes*
+(`[witness_routing]`): it reads only the pages its rule sends it, decided from the
+Designator's evidence before any witness reads, and on any other page it is no part
+of the page's roster. dots.mocr, a layout reader that reads index lists and tables
+row by row, can be seated this way on pages Surya tags a table or the record detector
+finds no record on; no committed roster seats it. Each produces one **Testimonium** per page:
 **unverified, of uncertain and unequal quality, and never final.** Always retained;
 never authoritative. Each witness sits in a chair, with model and revision pinned in the
 model roster; the Testimonium carries the resolved identity that produced it.

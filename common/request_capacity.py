@@ -955,6 +955,11 @@ MEASURED_RECORD_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 # * Churro, 25,000: `DEFAULT_OCR_MAX_TOKENS` in the vendor's own `src/churro_ocr/providers/specs.py:77` at
 #   v0.3.0 (`stanford-oval/Churro` 4abb173); the paper (arXiv:2509.19768,
 #   section B.2) says only "chosen to allow generation of all gold outputs".
+# * dots.mocr (`attestator_4`, seated only on the pages a routing rule names),
+#   16,384: the `max_completion_tokens` of the vendor's own command line
+#   (`dots_mocr/parser.py` at `rednote-hilab/dots.mocr` 23f3e56). Its prompt has
+#   no measured token count yet (`MEASURED_PROMPT_TOKENS`), so a served request
+#   for it is refused by name until one is measured with its tokenizer.
 #
 # The Perlector is a stock base model with no vendor bound;
 # `operations/serving/chat_request.py` sends none.
@@ -963,6 +968,7 @@ DECLARED_ANSWER_BOUND_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
         "attestator_1": 12_384,
         "attestator_2": 1_024,
         "attestator_3": 25_000,
+        "attestator_4": 16_384,
     }
 )
 

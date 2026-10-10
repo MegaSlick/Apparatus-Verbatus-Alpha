@@ -7,8 +7,8 @@ different roster or accept a page Testimonium another would refuse. Nothing here
 trusts an upstream stage's check: every record is validated where it is read.
 
 This module is the name stages import these from, the roster reader
-(`declared_page_witness_chairs`) and its check (`require_page_roster`)
-included, which live beside the page feed in `common.page_path`.
+(`declared_page_witness_chairs`), one page's roster under witness routing
+(`page_witness_chairs`) and its check (`require_page_roster`) included, which live beside the page feed in `common.page_path`.
 `common.stage` alone reads them from `common.page_path`, since this module
 reads `common.stage`.
 """
@@ -51,6 +51,7 @@ from common.page_path import (
     refs_by_path,
 )
 from common.page_path import declared_page_witness_chairs as declared_page_witness_chairs
+from common.page_path import page_witness_chairs as page_witness_chairs
 from common.page_path import require_page_roster as require_page_roster
 from common.page_witness_units import reads_detector_records
 from common.runtree.store import RunTree

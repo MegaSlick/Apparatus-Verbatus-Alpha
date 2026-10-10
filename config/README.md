@@ -28,6 +28,22 @@ The knobs. One question per file, each answerable without reading code.
 | `triage_modes.toml` | the three triage modes (`manual`, `semi`, `auto`) and their review thresholds |
 | `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's whole-page output cap and repetition-loop guard, and the reconstructor's answer cap; and Chandra's native recipe |
 
+A roster may seat a witness on some pages only with a `[witness_routing]` table
+(`attestator_4 = "index-and-table.v1"`: dots.mocr on pages Surya tags a table or the
+record detector finds no record on; `pipeline/3_attestatores/CONTRACT.md`, "Witness
+routing"). Neither committed roster has one, so routing is off and no run changes. To
+seat dots.mocr on the real roster, all of these are needed together: a fetched,
+verified `dots-studio/dots.mocr` at `e539fbb52280393adc081b289ec597430a0f9031` with its
+digest manifest and an `[chairs.attestator_4]` row (`witness_adapter =
+"dots-mocr.v1"`, `witness_scope = "page"`) plus the `[witness_routing]` line in
+`models-real.toml`; an `attestator_4` row at every tier in `serving_recipes_real.toml`
+(vLLM with `trust_remote_code`, room for 16,384 answer tokens); a
+`[chair_decoding.attestator_4]` row in `decoding.toml` (temperature 0.1, top_p 1.0,
+the vendor command line's); and the prompt's token count measured with the pinned
+tokenizer in `common/request_capacity.py`. Until the last exists a served dots.mocr
+request is refused by name. The root `conftest.py` (`dots_models_config`) builds the fixture
+version of this roster for the tests.
+
 Beside the rosters:
 
 - `manifests/` — one digest manifest per configured chair: the sorted

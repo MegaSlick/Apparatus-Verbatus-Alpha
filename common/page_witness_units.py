@@ -23,6 +23,11 @@ merely states:
 * The synthetic fixture's Chandra page, joined from its declared act
   placeholders with no native capture: one unit per placeholder, read only
   when the caller says the run is synthetic (`fixture_placeholders`).
+* dots.mocr (`dots-mocr.v1`): one unit per layout cell of its answer that has
+  text under its text view (`common/dots_layout.py`), in the model's order,
+  labelled with the cell's category, its box the cell's box mapped to
+  sealed-page pixels (`dots_layout.cell_page_bounds`) or none where it places
+  nothing on the page. A `Picture` cell and a cell with no text are not units.
 * DAI (`dai.v1`): one unit per record its own detector found
   (`unit_captures`), box = that record's bounds, text = DAI's response for it
   decoded exactly, and checked against the span the record states. Two
@@ -48,6 +53,7 @@ import math
 import re
 from typing import Any, Callable, Final
 
+from common import dots_layout
 from common.chairs.models import ChairIdentity
 from common.chandra_layout import (
     block_page_bounds,
@@ -73,9 +79,15 @@ READ_OUTCOME: Final = "read"
 CHANDRA: Final = "chandra.v1"
 CHURRO: Final = "churro.v1"
 DAI: Final = "dai.v1"
+DOTS: Final = dots_layout.ADAPTER
 # How finely each adapter's own units cut a page: a layout block or detector
 # record is about one act; a line is a fraction of one.
-UNIT_KINDS: Final = {CHANDRA: "layout-block", DAI: "detector-record", CHURRO: "line"}
+UNIT_KINDS: Final = {
+    CHANDRA: "layout-block",
+    DAI: "detector-record",
+    CHURRO: "line",
+    DOTS: "layout-block",
+}
 DETECTOR_RECORD_UNIT: Final = "detector-record"
 # The label of the unit holding a witness's text outside its own units.
 OUTSIDE_UNITS_LABEL: Final = "outside units"
@@ -345,6 +357,40 @@ def _churro_reading(payload: dict[str, Any], read_bytes: Callable[[str], bytes])
     }
 
 
+def _dots_reading(
+    payload: dict[str, Any], page_size: tuple[int, int], read_bytes: Callable[[str], bytes]
+) -> dict[str, Any]:
+    capture, raw = _native_capture_bytes(payload, DOTS, read_bytes)
+    layout = dots_layout.parse_layout(raw)
+    if layout["state"] != "parsed" or capture["parse"].get("state") != "parsed":
+        raise SchemaRefusal(
+            "a dots.mocr page Testimonium read as `read` retains a response its layout grammar "
+            f"does not parse ({layout['state']})"
+        )
+    if capture["parse"]["text"] != layout["text"]:
+        raise SchemaRefusal(
+            "a dots.mocr page capture's parsed text differs from its retained raw response"
+        )
+    units = []
+    for cell in layout["cells"]:
+        if not cell["text"]:
+            continue
+        box = dots_layout.cell_page_bounds(cell["bbox"], page_size)
+        units.append(
+            witness_unit(
+                len(units) + 1,
+                None if box is None else checked_box(box, page_size, "a dots.mocr cell box"),
+                cell["category"],
+                cell["text"],
+            )
+        )
+    return {
+        "units": units,
+        "findings": layout["findings"],
+        "answer_health": _answer_health(payload, [capture]),
+    }
+
+
 def _dai_reading(
     payload: dict[str, Any], page_size: tuple[int, int], read_bytes: Callable[[str], bytes]
 ) -> dict[str, Any]:
@@ -470,6 +516,8 @@ def witness_reading(
         return _churro_reading(payload, read_bytes)
     if adapter == DAI:
         return _dai_reading(payload, page_size, read_bytes)
+    if adapter == DOTS:
+        return _dots_reading(payload, page_size, read_bytes)
     raise SchemaRefusal(
         f"witness adapter {adapter!r} has no page-unit reader; its page cannot be shown in its "
         f"own units (the readers are {sorted(UNIT_KINDS)})"

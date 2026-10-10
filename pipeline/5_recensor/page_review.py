@@ -94,6 +94,7 @@ from common.page_testimonia import (
     current_page_testimonia,
     declared_page_witness_chairs,
     is_detector_blank_testimony,
+    page_witness_chairs,
     require_page_roster,
 )
 from common.recensor_receipt import build_recensor_reading_receipt
@@ -159,12 +160,13 @@ def page_testimonia(context, chairs: set[str]) -> dict[str, list[dict[str, Any]]
     """Each page's latest, fully validated `page-testimonium` per chair, by page id.
 
     A page no witness testified to is absent. A page some chair testified to
-    must carry every configured page witness and no other, as the Perlector
-    required when it read the page.
+    must carry every page witness of its own roster and no other, as the
+    Perlector required when it read the page: `chairs`, the sealed roster, less
+    a routed chair the page is not routed to (`page_witness_chairs`).
     """
     current = current_page_testimonia(context)
     for page_id, records in current.items():
-        require_page_roster(page_id, records, chairs)
+        require_page_roster(page_id, records, page_witness_chairs(context, page_id, chairs))
     return current
 
 
@@ -902,7 +904,11 @@ def plan_reviews(
             )
         outcome, payload = review_of(
             act,
-            coverage=page_witness_coverage(records, floor, chairs),
+            # Over the page's own roster: a routed witness counts toward the floor
+            # on the pages routed to it, and is no part of any other page's count.
+            coverage=page_witness_coverage(
+                records, floor, page_witness_chairs(context, act["page_id"], chairs)
+            ),
             page_coverage=page_coverage_of(act["page_ordinal"], findings),
             assessment=_assessment(context, act),
             confirmed=confirmed,

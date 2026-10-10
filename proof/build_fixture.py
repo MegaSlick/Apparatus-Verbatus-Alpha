@@ -337,6 +337,13 @@ def _unbroken(pages: dict[int, Any] | None = None) -> dict[int, Any]:
 # break. `page-flags-disagree`: page 1's last act says it runs on and page 2's
 # first says it does not. `page-runs-past-end`: nothing runs across the break,
 # but page 2's act says it runs on past the run's last page.
+def _citing(answer: dict, *, add: tuple[str, ...] = (), drop: tuple[str, ...] = ()) -> dict:
+    """`answer` with its one entry citing `add` too and none of `drop`."""
+    (entry,) = answer["acts"]
+    cites = [cite for cite in entry["cites"] if cite not in drop] + list(add)
+    return {**answer, "acts": [{**entry, "cites": cites}]}
+
+
 def _citing_no_churro_unit(answer: dict) -> dict:
     """`answer` with every Churro (`C`) id dropped from its citations."""
     return {
@@ -398,6 +405,12 @@ PAGE_ANSWER_VARIANTS = {
     "malformed-capabilities": ("happy", {1: _citing_no_churro_unit}),
     "ink-free-page": ("happy", {}),
     "ink-free-page-unwitnessed": ("happy", {}),
+    # dots.mocr, seated on index and table pages only, reads page 2 when it is
+    # one (DOTS_PAGE_RESPONSES); a run that seats no such chair reads these
+    # scenarios as `happy` reads, except as the detector's records say.
+    "dots-table": ("happy", {2: lambda answer: _citing(answer, add=("D1",))}),
+    "dots-no-record": ("happy", {2: lambda answer: _citing(answer, add=("D1",), drop=("B1",))}),
+    "dots-cut-off": ("happy", {}),
 }
 
 
@@ -599,6 +612,49 @@ CHURRO_PAGE_RESPONSES = tuple(
 )
 
 
+# dots.mocr (attestator_4 in a roster that seats it; config/models.toml does
+# not) answers page 2 in its own grammar: JSON layout cells, boxes in the
+# 196x252 image its processor makes of the 200x260 page, mapping back onto
+# a2's continuation at (20, 20)-(180, 81). Read only by a roster that routes it
+# there; the cut-off answer is broken JSON at the token bound.
+DOTS_CHAIR = "attestator_4"
+_DOTS_BBOX = [20, 20, 176, 78]
+DOTS_PAGE_RESPONSES = (
+    {
+        "scenario": "dots-table",
+        "page_ordinal": 2,
+        "chair": DOTS_CHAIR,
+        "raw_json": json.dumps(
+            [
+                {
+                    "bbox": _DOTS_BBOX,
+                    "category": "Table",
+                    "text": "<table><tr><td>SYNTHETIC ACT TWO</td>"
+                    "<td>delta epsilon zeta eta</td></tr></table>",
+                }
+            ]
+        ),
+        "transport_stop_reason": "stop",
+    },
+    {
+        "scenario": "dots-no-record",
+        "page_ordinal": 2,
+        "chair": DOTS_CHAIR,
+        "raw_json": json.dumps(
+            [{"bbox": _DOTS_BBOX, "category": "Text", "text": TESTIMONY["a2"]["attestator_1"]}]
+        ),
+        "transport_stop_reason": "stop",
+    },
+    {
+        "scenario": "dots-cut-off",
+        "page_ordinal": 2,
+        "chair": DOTS_CHAIR,
+        "raw_json": '[{"bbox": [20, 20, 176, 78], "category": "Table", "text": "<table><tr><td>SYN',
+        "transport_stop_reason": "length",
+    },
+)
+
+
 def chandra_page_testimony(page_ordinal: int) -> dict[str, Any]:
     """Chandra's declared answer to one page: its acts' text, one placeholder per act.
 
@@ -730,6 +786,21 @@ SCENARIOS = (
         "malformed-capabilities",
         "Churro's page 1 response declares a capability record that is not an object.",
     ),
+    (
+        "dots-table",
+        "Surya tags page 2 a Table, so a roster that routes dots.mocr to index and table "
+        "pages seats it there; it reads the page's one row.",
+    ),
+    (
+        "dots-no-record",
+        "The record detector finds nothing on page 2, so a routed dots.mocr reads it; DAI "
+        "has nothing to read there.",
+    ),
+    (
+        "dots-cut-off",
+        "page 2 tagged a Table, and dots.mocr's answer cut at its bound: broken JSON, "
+        "retained and never salvaged.",
+    ),
 )
 
 
@@ -780,13 +851,34 @@ SURYA_BLOCKS = tuple(
 )
 
 
+# Page 2 tagged a table: one `Table` block over a2's continuation, after its `Text`
+# block, in the scenarios that route dots.mocr to page 2 by Surya's tag. Kept apart
+# from SURYA_BLOCKS, which every scenario reads.
+_PAGE_TWO_TEXT_BLOCK = next(row for row in SURYA_BLOCKS if row["page_ordinal"] == 2)
+SCENARIO_SURYA_BLOCKS = tuple(
+    {
+        "scenario": scenario,
+        **_PAGE_TWO_TEXT_BLOCK,
+        "label": "Table",
+        "raw_label": "Table",
+        "position": 1,
+        "confidence_bp": 9400,
+    }
+    for scenario in ("dots-table", "dots-cut-off")
+)
+
+
 # What DAI's own project's record detector finds on the synthetic pages: one
 # record over each act's ink, inset from the act's bounds, in the order the acts
 # sit down the page. Page 3 carries no ink, so the detector finds nothing there.
 # Two scenarios declare records of their own, which replace these: `page-other`
 # finds no record over a1, and `page-no-act` none on page 2 (`_SCENARIO_RECORDS`).
 DETECTOR_RECORD_INSET_PX = 5
-_SCENARIO_RECORDS = {"page-other": {1: ("a2",), 2: ("a2",)}, "page-no-act": {1: ("a1", "a2")}}
+_SCENARIO_RECORDS = {
+    "page-other": {1: ("a2",), 2: ("a2",)},
+    "page-no-act": {1: ("a1", "a2")},
+    "dots-no-record": {1: ("a1", "a2")},
+}
 _SCENARIO_RECORDS |= {
     variant: _SCENARIO_RECORDS[base]
     for variant, (base, _pages) in PAGE_ANSWER_VARIANTS.items()
@@ -1036,7 +1128,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         lines += ["", "[[surya_line]]"]
         lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
 
-    for row in SURYA_BLOCKS:
+    for row in SURYA_BLOCKS + SCENARIO_SURYA_BLOCKS:
         lines += ["", "[[surya_block]]"]
         lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
 
@@ -1064,6 +1156,17 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"page_ordinal = {row['page_ordinal']}",
             f"chair = {toml_string(row['chair'])}",
             f"raw_xml = {toml_string(row['raw_xml'])}",
+            f"transport_stop_reason = {toml_string(row['transport_stop_reason'])}",
+        ]
+
+    for row in DOTS_PAGE_RESPONSES:
+        lines += [
+            "",
+            "[[dots_page_response]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            f"chair = {toml_string(row['chair'])}",
+            f"raw_json = {toml_string(row['raw_json'])}",
             f"transport_stop_reason = {toml_string(row['transport_stop_reason'])}",
         ]
 

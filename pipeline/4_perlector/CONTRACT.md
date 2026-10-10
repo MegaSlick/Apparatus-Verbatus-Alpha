@@ -17,8 +17,11 @@ repository's `bounds` `{x, y, w, h}` in sealed-page pixels.
 ## Inputs
 
 - Every sealed Exemplar page; a page the Exemplar refused still gets a `page-reading`.
-- Each page's current page Testimonium per chair of the sealed roster's page
-  witnesses. A roster chair missing beside others that testified refuses the pass.
+- Each page's current page Testimonium per chair of the page's roster: the sealed
+  roster's page witnesses, less a routed witness its rule does not route to the page
+  (Attestatores CONTRACT, "Witness routing"), so an act page's feed is the one it was
+  without the routed chair. A roster chair missing beside others that testified
+  refuses the pass.
   A page no witness testified to is not refused: it is fed with no witness row and
   held `no-witness-testimony`. Each witness's units are re-derived from the bytes its
   Testimonium retains, never taken from fields the record merely states.

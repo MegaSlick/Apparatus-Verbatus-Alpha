@@ -45,9 +45,18 @@ record's crop for a record reader, or an act's reading region.
 reads the page image, a record reader reads the crops of the records its detector found
 on the page. Its report is evidence, not an answer.
 
+**witness routing** — seating a witness on some pages only. A models roster's
+`[witness_routing]` names the chair and its rule; the one rule, `index-and-table.v1`,
+sends dots.mocr a page when Surya tags a `Table` block on it or the record detector
+finds no record on it. The decision is read from the Designator's records before any
+witness reads the page, sealed per page and summarised in
+`run-health/witness-routing.json`. On a page not routed to it the chair is not part of
+the page's roster at all. No committed roster routes anything.
+
 **witness floor** — how many configured witnesses must have read a page, without
 truncation, for a unit on it to be accepted. Set as `witness_floor` in the model roster
-and checked by the Recensor; a page below it is held `under-witnessed`.
+and checked by the Recensor; a page below it is held `under-witnessed`. It counts the
+page's own roster: a routed witness counts on the pages routed to it and nowhere else.
 
 **chair** — a named role in the pipeline that one model fills. The binding lives in a
 model roster under `config/`: `models.toml` holds small local stand-ins and

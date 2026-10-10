@@ -683,6 +683,46 @@ def test_the_configured_count_is_the_sealed_page_roster_not_the_chairs_that_test
     )
 
 
+def test_a_routed_witness_counts_toward_the_floor_on_its_own_pages_only():
+    """dots.mocr seated by `[witness_routing]` on a page: four chairs, floor still 3.
+
+    The page's roster is the floor's denominator (`page_witness_chairs`): a
+    routed page counts the routed chair like any witness, so it fills a seat
+    DAI leaves empty; an unrouted page counts the three as it always did.
+    """
+    routed = {"chandra", "dai", "churro", "dots"}
+    # DAI not run (its detector found nothing and stated no cap): dots fills its seat.
+    filled = _coverage(
+        _testimonium("chandra", truncated=False),
+        _testimonium("dai", "not-run"),
+        _testimonium("churro", truncated=False),
+        _testimonium("dots", truncated=False),
+        floor=3,
+        chairs=routed,
+    )
+    assert (filled["configured"], filled["under_witnessed"]) == (4, False)
+    # dots.mocr cut off as well: two readings of four is under the floor.
+    short = _coverage(
+        _testimonium("chandra", truncated=False),
+        _testimonium("dai", "not-run"),
+        _testimonium("churro", truncated=False),
+        _testimonium("dots", "failed"),
+        floor=3,
+        chairs=routed,
+    )
+    assert (short["configured"], short["under_witnessed"]) == (4, True)
+    assert short["shortfalls"]["failed"] == 1
+    # An unrouted page's roster leaves dots out: three of three, as before.
+    act_page = _coverage(
+        _testimonium("chandra", truncated=False),
+        _testimonium("dai", truncated=False),
+        _testimonium("churro", truncated=False),
+        floor=3,
+        chairs={"chandra", "dai", "churro"},
+    )
+    assert (act_page["configured"], act_page["under_witnessed"]) == (3, False)
+
+
 def test_blankness_is_measured_from_the_retained_text_not_the_health_report():
     assert page_review.retained_text_blank(_testimonium("a", text=" \n\t")) is True
     assert page_review.retained_text_blank(_testimonium("a", text="ink", blank=True)) is False

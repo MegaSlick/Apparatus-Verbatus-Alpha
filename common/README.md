@@ -72,6 +72,8 @@ when a second user needs it.
 | `native_witness.py` | the closed waist derived from a witness's raw response: what it was shown and the page boxes it reported |
 | `chandra_layout.py` | Chandra's own prompt and a reader for its layout answer |
 | `churro_document.py` | Churro's own request framing and a reader for its answer |
+| `dots_layout.py` | dots.mocr's own prompt, a reader for its layout-cell answer, its text view and how its boxes map back to the page |
+| `witness_routing.py` | which pages a routed witness reads (dots.mocr on index and table pages), decided from the Designator's evidence, and each page's roster under it |
 | `alignment.py` | loss-accounted comparison views of witness text |
 | `page_witness_units.py` | each witness's page broken into its own units, re-derived from retained bytes |
 | `page_testimonia.py` | the page-witness roster and each page's current, validated Testimonia, as every consumer reads them |
