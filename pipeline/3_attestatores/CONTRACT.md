@@ -475,3 +475,10 @@ manifest after a seal holds until `RunTree.write_manifest("attestatores")`
 re-derives it from the immutable attempts. Over a folder whose attempts are
 gone, that step discards the last record that they existed; read the manifest
 first.
+
+## Not built
+
+- Witnesses do not use the Perlector's streamed loop detector. A witness reply is read
+  to its end and scanned afterwards for repetition; it is not abandoned at the first
+  looping line as the Perlector's is (`common/repetition_loop.py`, the guard in
+  `config/decoding.toml`).
