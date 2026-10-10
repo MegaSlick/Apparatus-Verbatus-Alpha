@@ -369,6 +369,10 @@ It shows, in order:
   Each act carries its Perlector reading, its witnesses, and every crop's file and digest.
 - **Review queue** — only after an export, since the queue is part of the bundle.
 
+Not built: `review` does not show review flags yet. A finding the sealed policy
+flags rather than holds (`pipeline/5_recensor/CONTRACT.md`, "Review flags") appears
+only in the Recensor's review summary and the Armarium's flagged export.
+
 Every image named is re-read and re-digested as the view is built; moved bytes, or a
 record that changes mid-build, are refused by name. Opening a run changes nothing.
 

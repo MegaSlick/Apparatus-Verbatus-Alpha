@@ -6,9 +6,10 @@ Surya lines `L1..` and blocks `S1..` -- plus the ids it set aside with a reason.
 This module takes that answer, the feed and the page's sealed witnesses and
 detections as plain data and says, rule by rule, whether every witness unit,
 every detected line, every detector record, every witness's text and the
-page's ink are accounted for. It reads no file, calls no model and chooses nothing among the
-witnesses. A hold only asks a human to look; a measurement that cannot be
-taken holds; any hold holds the page's acts for review.
+page's ink are accounted for. It reads no page file (the sealed policy is the one
+configuration it loads), calls no model and chooses nothing among the witnesses. A
+hold only asks a human to look; a measurement that cannot be taken holds; any hold
+holds the page's acts for review.
 
 `placement_boxes`, `expand_cites`, `validate_answer` and `duplicate_regions`
 are the one reading of an answer's ids and regions that both this check and
@@ -221,11 +222,13 @@ DEFAULT_FLAG_CODES: Final = frozenset(
 # or a one-line burial (on the 2026-10-09 run the units read differently were 1
 # to 15 characters). Starting value; to be measured on the proof run.
 DEFAULT_SHORT_UNIT_CHARACTERS: Final = 15
-# Only a page-level finding may be a flag. `duplicate-region` and
-# `reading-incomplete` are also entry holds (`page_path.entry_plans`), which no
+# Only a page-level finding may be a flag. `duplicate-region`, `reading-incomplete`
+# and `reading-unplaced` are also entry holds (`page_path.entry_plans`), which no
 # flag lifts, so naming one would flag the page and still hold its entries: refused
 # rather than half-applied.
-FLAGGABLE_CODES: Final = (HOLD_CODES - {DUPLICATE_REGION, READING_INCOMPLETE}) | {RESIDUAL_INK}
+FLAGGABLE_CODES: Final = (HOLD_CODES - {DUPLICATE_REGION, READING_INCOMPLETE, READING_UNPLACED}) | {
+    RESIDUAL_INK
+}
 
 PASS: Final = "pass"
 HOLD: Final = "hold"
@@ -1701,7 +1704,7 @@ def page_accounting(
     reask: Mapping[str, Any] | None = None,
     attempt: int = FIRST_READING,
 ) -> dict[str, Any]:
-    """The `page-accounting.v2` payload for one page reading, or for a reading and its re-ask.
+    """The `page-accounting.v3` payload for one page reading, or for a reading and its re-ask.
 
     `attempt` is the ordinal of the whole-page reading accounted: 1 for a first
     reading (`answer_basis` "attempt-1"), or an operator re-read's, 3 or more
@@ -2180,7 +2183,8 @@ def _detection_rule(
     recorded: a detector record that merged two entries the Perlector read apart.
     A detector that found no record at all below its cap on a page whose
     reading establishes acts disagrees with the whole reading:
-    `no-detector-record-on-act-page`, held, naming the act entries. Its
+    `no-detector-record-on-act-page`, naming the act entries. It holds unless the
+    sealed `[flags]` table names it, which the committed policy does. Its
     record reader's page testimony there is that the page holds nothing.
 
     Without the detector's records for the page, or when the detector reached

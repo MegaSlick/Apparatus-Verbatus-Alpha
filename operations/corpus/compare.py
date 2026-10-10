@@ -28,7 +28,7 @@ integers, so intersection and union areas are integers and every comparison is a
 exact `Fraction`, never a float — nothing here is a canonical artifact until the
 final record is built, and that record stores areas, not the ratio, because
 `common.contracts.canonical` refuses floats outright. The assignment itself is
-an exact maximum-weight bipartite matching (`_best_assignment`, Kuhn-Munkres /
+an exact maximum-weight bipartite matching (`_max_weight_assignment`, Kuhn-Munkres /
 Hungarian algorithm, `O(size**3)` over `Fraction` weights, never a float) —
 polynomial in the number of eligible acts, so it is exact for every page size
 this corpus actually has, not only a small one; `MAX_ACTS_PER_PAGE` is a sanity
