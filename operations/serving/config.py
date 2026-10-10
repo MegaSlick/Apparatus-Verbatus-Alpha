@@ -171,7 +171,23 @@ _OPTIONAL_PROFILE_FIELDS = {
 # with no quantization config it would quantize the bf16 weights itself at load,
 # a different model under the same repository pin. `manager.assert_quantization`
 # therefore requires the verified snapshot to declare the same method.
-QUANTIZATION_VALUES = frozenset({"fp8"})
+#
+# Each value maps to what the checkpoint's own `config.json`
+# `quantization_config` must say: its `quant_method` and, where vLLM picks the
+# method from it, its `quant_algo`. vLLM's name is not always the checkpoint's:
+# a ModelOpt checkpoint says `quant_method: "modelopt"` and vLLM 0.30.0 turns
+# `quant_algo: "MIXED_PRECISION"` into its `modelopt_mixed` method (per-layer
+# FP8 / NVFP4, `ModelOptMixedPrecisionConfig.override_quantization_method` in
+# `vllm/model_executor/layers/quantization/modelopt.py`); `--quantization
+# modelopt_mixed` on such a checkpoint is accepted, on any other refused
+# (`vllm/config/model.py::_verify_quantization`).
+QUANTIZATION_CHECKPOINT_DECLARATIONS: Mapping[str, tuple[str, str | None]] = MappingProxyType(
+    {
+        "fp8": ("fp8", None),
+        "modelopt_mixed": ("modelopt", "MIXED_PRECISION"),
+    }
+)
+QUANTIZATION_VALUES = frozenset(QUANTIZATION_CHECKPOINT_DECLARATIONS)
 # `--kv-cache-dtype`: `fp8` is vLLM's e4m3 KV cache on CUDA.
 KV_CACHE_DTYPE_VALUES = frozenset({"fp8"})
 # `--speculative-config`: only the checkpoint's own multi-token-prediction head.

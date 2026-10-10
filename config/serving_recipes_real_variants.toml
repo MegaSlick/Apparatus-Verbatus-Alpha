@@ -19,7 +19,7 @@
 # (`quantization`, `kv_cache_dtype`, `speculative_config`);
 # operations/serving/test_serving_variants.py holds them to that, so a
 # comparison measures the option and nothing else. Its repository pin is a
-# separate thing: these rows serve `Qwen/Qwen3.8-27B-FP8` at
+# separate thing: the `-fp8` rows serve `Qwen/Qwen3.8-27B-FP8` at
 # 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a (operations/bakeoff/weight_pins.json
 # `qwen3.8-27b-fp8`, every file by SHA-256; the canonical manifest a chair pin would
 # carry digests to 9825ce119c9693172e04dd2a1f2437884503ceab9bf55606141e6662c9fe301e),
@@ -194,6 +194,105 @@ trust_remote_code = false
 generation_config = "vllm"
 preflight_state = "unproven"
 startup_timeout_seconds = 600  # UNMEASURED: the bf16 row's allowance
+poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value, as the bf16 row
+readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+
+# --- NVIDIA's mixed NVFP4/FP8 build (Blackwell only) ---------------------------------
+#
+# The `-nvfp4` rows serve `nvidia/Qwen3.8-27B-NVFP4` at
+# 482ca0f3832238542f8f5295dde86b5f22711d80 (operations/bakeoff/weight_pins.json
+# `qwen3.8-27b-nvfp4`, all 19 files by SHA-256; canonical manifest digest
+# 7e6b9db8a572b49f32864b250ae90b1690d7559fa3492ce4484f2b31146ebe3f). Same model,
+# fewer bits: ModelOpt "MIXED_PRECISION" (its config.json `quantization_config`):
+# the 64 layers' MLP projections and `lm_head` are NVFP4 (4-bit float weights
+# and activations, scale per 16 values), the full-attention q/k/v/o and the
+# DeltaNet `in_proj_qkv`, `in_proj_z`, `out_proj` are FP8 (per-tensor, static
+# activation scales); the vision tower, word table, DeltaNet `in_proj_a`/
+# `in_proj_b` gates and state parameters, every norm and the MTP head (`mtp*`
+# excluded) stay bf16. Calibrated on 2,048 text samples (its card). 21,945,291,730
+# bytes = 20.4 GiB, against 28.8 GiB (FP8) and 51.7 GiB (bf16).
+#
+# vLLM 0.30.0 serves it as `modelopt_mixed` (the name its config's
+# `quant_method: "modelopt"` + `quant_algo: "MIXED_PRECISION"` resolve to); it
+# maps the checkpoint's layer names onto the Qwen3.5/3.8 model's fused
+# `in_proj_qkvz`, `in_proj_ba`, `qkv_proj`, `gate_up_proj` and `lm_head`, and
+# runs NVFP4 W4A4 on CUTLASS/FlashInfer kernels that need a Blackwell card
+# (sm100 or sm120: the RTX PRO 6000 is sm120). Not on Ampere/Ada as W4A4.
+#
+# Not byte-identical to the bf16 pin in three small files: `tokenizer_config.json`
+# (no embedded chat template, pad token `<|im_end|>`; the chat template file,
+# tokenizer.json, vocab and merges are identical), `generation_config.json` (same
+# values; the rows use `generation_config = "vllm"` anyway) and a new
+# `processor_config.json` whose image processor matches preprocessor_config.json
+# apart from naming the non-"Fast" class. The bake-off sends `min_pixels` /
+# `max_pixels` itself; each page's prompt token count against the bf16 cache shows
+# whether the image geometry carried over. KV cache stays bf16 (the card's
+# example adds an fp8 KV cache; that would be a second change).
+
+# NVIDIA's mixed NVFP4/FP8 weights, otherwise the bf16 row.
+[[profiles]]
+kind = "vllm"
+recipe = "unproven-real-perlector-nvfp4"
+chair = "perlector"
+tier = "generic-80gb-plus"
+host = "127.0.0.1"
+port = 8106
+served_model_id = "perlector-qwen3.8-27b-nvfp4"
+dtype = "bfloat16"
+seed = 0
+required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
+quantization = "modelopt_mixed"
+max_model_len = 65536
+max_num_seqs = 4
+weights_gib = "20.4"
+kv_gib_per_seq = "4"
+max_num_batched_tokens = 8192
+gpu_memory_utilization = "0.88"
+min_pixels = 65536
+max_pixels = 5299200
+patch_size = 16
+merge_size = 2
+enable_prefix_caching = false  # hybrid attention, as the bf16 row
+enforce_eager = false
+trust_remote_code = false
+generation_config = "vllm"
+preflight_state = "unproven"
+startup_timeout_seconds = 600  # UNMEASURED: the bf16 row's allowance; fewer bytes to load
+poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value, as the bf16 row
+readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+
+# NVFP4/FP8 weights plus the model's own bf16 MTP head drafting 3 tokens.
+[[profiles]]
+kind = "vllm"
+recipe = "unproven-real-perlector-nvfp4-mtp3"
+chair = "perlector"
+tier = "generic-80gb-plus"
+host = "127.0.0.1"
+port = 8106
+served_model_id = "perlector-qwen3.8-27b-nvfp4-mtp3"
+dtype = "bfloat16"
+seed = 0
+required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
+quantization = "modelopt_mixed"
+speculative_config = { method = "mtp", num_speculative_tokens = 3 }
+max_model_len = 65536
+max_num_seqs = 4
+weights_gib = "20.4"
+kv_gib_per_seq = "4.25"  # 17 full-attention layers: the 16 of the model and the MTP head's
+max_num_batched_tokens = 8192
+gpu_memory_utilization = "0.88"
+min_pixels = 65536
+max_pixels = 5299200
+patch_size = 16
+merge_size = 2
+enable_prefix_caching = false  # hybrid attention, as the bf16 row
+enforce_eager = false
+trust_remote_code = false
+generation_config = "vllm"
+preflight_state = "unproven"
+startup_timeout_seconds = 900  # UNMEASURED: the drafter adds its own load and graph capture
 poll_interval_seconds = 2
 request_timeout_seconds = 1800  # UNMEASURED planning value, as the bf16 row
 readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }

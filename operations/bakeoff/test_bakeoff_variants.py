@@ -19,6 +19,17 @@ from operations.bakeoff import weights as W
 ROOT = Path(__file__).resolve().parents[2]
 FP8 = "qwen3.8-27b-fp8"
 FP8_MANIFEST_DIGEST = "9825ce119c9693172e04dd2a1f2437884503ceab9bf55606141e6662c9fe301e"
+NVFP4 = "qwen3.8-27b-nvfp4"
+NVFP4_MANIFEST_DIGEST = "7e6b9db8a572b49f32864b250ae90b1690d7559fa3492ce4484f2b31146ebe3f"
+# What the bf16, FP8 and NVFP4 builds share byte for byte: what turns a page into a prompt.
+PROMPT_FILES = (
+    "tokenizer.json",
+    "vocab.json",
+    "merges.txt",
+    "chat_template.jinja",
+    "preprocessor_config.json",
+    "video_preprocessor_config.json",
+)
 BF16_MANIFEST = ROOT / "config" / "manifests" / "qwen3.8-27B.json"
 
 
@@ -50,8 +61,42 @@ def test_a_variant_row_is_found_by_name_and_launched_with_its_options():
         A.serving_row("perlector", "generic-80gb-plus", "no-such-recipe")
 
 
-def test_the_vendor_preset_covers_the_fp8_repository():
+def test_the_vendor_preset_covers_the_fp8_and_nvfp4_repositories():
     assert A.vendor_preset("Qwen/Qwen3.8-27B-FP8")["family"] == "qwen3.8"
+    nvidia = A.vendor_preset("nvidia/Qwen3.8-27B-NVFP4")
+    assert nvidia is A.vendor_preset("Qwen/Qwen3.8-27B")
+    with pytest.raises(SystemExit, match="no preset"):
+        A.vendor_preset("nvidia/Qwen3.5-27B-NVFP4")
+
+
+def test_an_nvfp4_variant_is_launched_as_vllms_modelopt_mixed():
+    row = A.serving_row("perlector", "generic-80gb-plus", "unproven-real-perlector-nvfp4-mtp3")
+    argv = A.server_argv(
+        row, Path("/w"), port=8190, served_name="x", gpu_memory_utilization=0.92, max_num_seqs=32
+    )
+    assert argv[-4:] == [
+        "--quantization",
+        "modelopt_mixed",
+        "--speculative-config",
+        '{"method":"mtp","num_speculative_tokens":3}',
+    ]
+
+
+def test_the_launcher_refuses_a_snapshot_that_does_not_declare_the_rows_quantization(tmp_path):
+    row = A.serving_row("perlector", "generic-80gb-plus", "unproven-real-perlector-nvfp4")
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {"quantization_config": {"quant_method": "modelopt", "quant_algo": "MIXED_PRECISION"}}
+        )
+    )
+    A.assert_row_quantization(row, tmp_path)
+    (tmp_path / "config.json").write_text(
+        json.dumps({"architectures": ["Qwen3_5ForConditionalGeneration"]})
+    )
+    with pytest.raises(SystemExit, match="quant_method=None"):
+        A.assert_row_quantization(row, tmp_path)
+    # The bf16 run row names no quantization and is not checked.
+    A.assert_row_quantization(A.serving_row("perlector", "generic-80gb-plus"), tmp_path / "absent")
 
 
 # --- the FP8 checkpoint's pins ----------------------------------------------------------
@@ -79,17 +124,51 @@ def test_the_fp8_build_reads_prompts_and_images_exactly_as_the_bf16_one():
     # the prompt, the image's token cost and the sampling rows carry over unchanged.
     fp8 = {path: entry["sha256"] for path, entry in W.pins()[FP8]["files"].items()}
     bf16 = {row["path"]: row["sha256"] for row in json.loads(BF16_MANIFEST.read_text())}
-    for name in (
-        "tokenizer.json",
-        "tokenizer_config.json",
-        "vocab.json",
-        "merges.txt",
-        "chat_template.jinja",
-        "preprocessor_config.json",
-        "video_preprocessor_config.json",
-        "generation_config.json",
-    ):
+    for name in (*PROMPT_FILES, "tokenizer_config.json", "generation_config.json"):
         assert fp8[name] == bf16[name], name
+
+
+# --- the NVFP4 checkpoint's pins --------------------------------------------------------
+
+
+def test_the_nvfp4_pin_names_every_file_by_sha256_and_gives_the_manifest_a_chair_would_seal():
+    pin = W.pins()[NVFP4]
+    assert pin["repo"] == "nvidia/Qwen3.8-27B-NVFP4"
+    assert pin["revision"] == "482ca0f3832238542f8f5295dde86b5f22711d80"
+    assert len(pin["files"]) == 19 and W.size_of(NVFP4) == 21_945_291_730
+    assert all(len(entry["sha256"]) == 64 for entry in pin["files"].values())
+    assert NVFP4 in W.known()
+    manifest = DigestManifest(
+        rows=tuple(
+            ManifestRow(path=path, sha256=entry["sha256"], size=entry["size"])
+            for path, entry in sorted(pin["files"].items())
+        )
+    )
+    assert manifest_digest(manifest) == NVFP4_MANIFEST_DIGEST
+
+
+def test_the_nvfp4_build_differs_from_bf16_only_where_the_design_note_says():
+    # The prompt files are the bf16 ones byte for byte. Besides the weights and their
+    # index and config, it differs in tokenizer_config.json (no embedded chat template, pad
+    # token <|im_end|>), generation_config.json (same values, newer writer) and the README,
+    # and adds processor_config.json, hf_quant_config.json and .quant_summary.txt.
+    nvfp4 = {path: entry["sha256"] for path, entry in W.pins()[NVFP4]["files"].items()}
+    bf16 = {row["path"]: row["sha256"] for row in json.loads(BF16_MANIFEST.read_text())}
+    for name in PROMPT_FILES:
+        assert nvfp4[name] == bf16[name], name
+    small = {p for p in nvfp4 if not p.endswith(".safetensors")}
+    assert {p for p in small if p in bf16 and nvfp4[p] != bf16[p]} == {
+        "README.md",
+        "config.json",
+        "model.safetensors.index.json",
+        "tokenizer_config.json",
+        "generation_config.json",
+    }
+    assert small - set(bf16) == {
+        "processor_config.json",
+        "hf_quant_config.json",
+        ".quant_summary.txt",
+    }
 
 
 # --- the output-token restriction -------------------------------------------------------
