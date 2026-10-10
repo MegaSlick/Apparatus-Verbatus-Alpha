@@ -1,4 +1,4 @@
-"""The page answer grammar: one JSON object, read deterministically, never repaired.
+"""The page answer grammar: one JSON object, read deterministically, repaired in one way only.
 
     parse_state, answer, problems = parse_page_answer(raw_text)
 
@@ -17,13 +17,16 @@ The grammar:
 * each act: `n` an integer, `1..k` contiguous in the order given; `kind`
   `"act"` or `"other"`; `label` absent, `null`, or a non-blank string of at
   most 80 characters; `cites` a list of strings; `text` a string; both
-  continuation flags present as booleans, and `true` only at an edge --
-  `continues_from_previous_page` on the first entry of kind `"act"`,
-  `continues_to_next_page` on the last (`common.page_edges.edge_acts`), whatever
-  `"other"` entries come before, between or after them; an `"other"` entry may
-  carry one only as the answer's first or last entry, which joins nothing and
-  the Recensor notes;
+  continuation flags present as booleans;
 * each set-aside entry: `id` and `reason`, both strings.
+
+A continuation flag set on an entry that is not at its page's edge is grammar,
+not a malformed answer: it is a statement about one entry, so it never costs the
+page its other entries. Only the first `act` entry may continue from the page
+before and only the last onto the page after (`common.page_edges.edge_acts`), so
+a flag elsewhere is on no page break and joins nothing; the Recensor holds such
+an `act` entry `continuation-off-page-edge` and notes one on an `"other"` entry
+(`pipeline/5_recensor/CONTRACT.md`). `stray_continuation_flags` names them.
 
 Whether an id exists, whether a range is well formed and the set-aside rules
 are checked against the page feed by the shared page-accounting validator, not
@@ -50,6 +53,17 @@ the grammar itself nests four deep. So is a lone
 surrogate (a `\\ud800`-style escape with no partner) in any key or string
 value: it is no Unicode character, so the answer could not be encoded as the
 UTF-8 every record is written in (`lone-surrogate`).
+
+## The one repair
+
+A reply that is not JSON only because some object keys of the grammar are
+written bare (`{\nacts: [` for `{"acts": [`) is read after quoting those keys,
+and nothing else (`parse_page_answer_repaired`). A key is quoted only when it is
+one of the grammar's own field names, stands outside every string right after
+`{` or `,` and is followed by `:`; the repaired text must then be one JSON value
+with no other problem, or the reply stays `not-json` as it came. The repair is
+returned beside the answer, so the reading records it, and the reply's bytes are
+never changed: the raw response blob stays as the engine sent it.
 """
 
 from __future__ import annotations
@@ -72,6 +86,7 @@ _ACT_REQUIRED: Final = frozenset(
     {"n", "kind", "cites", "text", "continues_from_previous_page", "continues_to_next_page"}
 )
 _ACT_FIELDS: Final = _ACT_REQUIRED | {"label"}
+_CONTINUATION_FLAGS: Final = ("continues_from_previous_page", "continues_to_next_page")
 _SET_ASIDE_FIELDS: Final = frozenset({"id", "reason"})
 _JSON_WHITESPACE: Final = " \t\n\r"
 _FENCE_MARK: Final = "```"
@@ -200,9 +215,7 @@ def _shown(value: Any) -> str:
     return "a list" if isinstance(value, list) else "an object"
 
 
-def _act_problems(
-    index: int, act: Any, count: int, edges: tuple[Any, Any] | None
-) -> list[dict[str, str]]:
+def _act_problems(index: int, act: Any) -> list[dict[str, str]]:
     where = f"acts[{index}]"
     if not isinstance(act, dict):
         return [_problem("act-not-object", f"{where} is not an object")]
@@ -239,25 +252,34 @@ def _act_problems(
         problems.append(_problem("cites-invalid", f"{where}.cites is not a list of strings"))
     if "text" in act and not isinstance(act["text"], str):
         problems.append(_problem("text-invalid", f"{where}.text is not a string"))
-    first, last = edges or (None, None)
-    is_act = act.get("kind") == "act"
-    for flag, edge, position, side in (
-        ("continues_from_previous_page", first, 0, "first"),
-        ("continues_to_next_page", last, count - 1, "last"),
-    ):
-        if flag not in act:
-            continue
-        if not isinstance(act[flag], bool):
+    for flag in _CONTINUATION_FLAGS:
+        if flag in act and not isinstance(act[flag], bool):
             problems.append(_problem("flag-invalid", f"{where}.{flag} is not true or false"))
-        elif act[flag] and not (act is edge if is_act else index == position):
-            problems.append(
-                _problem(
-                    "continuation-not-at-edge",
-                    f"{where}.{flag} is true on an entry that is neither the page's {side} act "
-                    f"nor its {side} entry",
-                )
-            )
     return problems
+
+
+def stray_continuation_flags(acts: list[Any]) -> dict[int, list[str]]:
+    """`{index: [flag, ...]}` for each entry whose continuation flag is set off its page's edge.
+
+    `continues_from_previous_page` belongs on the first `act` entry and
+    `continues_to_next_page` on the last (`common.page_edges.edge_acts`); an
+    `"other"` entry may carry one as the answer's first or last entry. Anything
+    else is on no page break. It is named, never an answer problem.
+    """
+    entries = [act for act in acts if isinstance(act, dict)]
+    first, last = edge_acts(entries) or (None, None)
+    found: dict[int, list[str]] = {}
+    for index, act in enumerate(acts):
+        if not isinstance(act, dict):
+            continue
+        is_act = act.get("kind") == "act"
+        for flag, edge, position in (
+            ("continues_from_previous_page", first, 0),
+            ("continues_to_next_page", last, len(acts) - 1),
+        ):
+            if act.get(flag) is True and not (act is edge if is_act else index == position):
+                found.setdefault(index, []).append(flag)
+    return found
 
 
 def _set_aside_problems(index: int, entry: Any) -> list[dict[str, str]]:
@@ -285,9 +307,8 @@ def grammar_problems(answer: Any) -> list[dict[str, str]]:
     if not isinstance(acts, list):
         problems.append(_problem("acts-not-list", "acts is not a list"))
     else:
-        edges = edge_acts([act for act in acts if isinstance(act, dict)])
         for index, act in enumerate(acts):
-            problems.extend(_act_problems(index, act, len(acts), edges))
+            problems.extend(_act_problems(index, act))
     if not isinstance(set_aside, list):
         problems.append(_problem("set-aside-not-list", "set_aside is not a list"))
     else:
@@ -314,10 +335,97 @@ def decode_json_reply(raw: Any) -> tuple[Any, list[dict[str, str]]]:
 
 
 def parse_page_answer(raw_text: str) -> tuple[str, dict[str, Any] | None, list[dict[str, str]]]:
-    """`(parse_state, answer | None, problems)` for one page reading's reply text."""
+    """`(parse_state, answer | None, problems)` for one page reading's reply text, unrepaired."""
     value, problems = decode_json_reply(raw_text)
+    return _graded(value, problems)
+
+
+def _graded(
+    value: Any, problems: list[dict[str, str]]
+) -> tuple[str, dict[str, Any] | None, list[dict[str, str]]]:
     if not problems:
         problems = grammar_problems(value)
     if problems:
         return MALFORMED, None, problems
     return PARSED, value, []
+
+
+# --- the one repair: bare grammar keys ------------------------------------------
+
+UNQUOTED_KEYS_QUOTED: Final = "unquoted-keys-quoted"
+_GRAMMAR_KEYS: Final = _TOP_FIELDS | _ACT_FIELDS | _SET_ASIDE_FIELDS
+_KEY_CHARACTERS: Final = frozenset("abcdefghijklmnopqrstuvwxyz_")
+
+
+def quote_bare_keys(text: str) -> tuple[str, list[str]]:
+    """`text` with each bare grammar key quoted, and the keys quoted in order.
+
+    A key is quoted only outside every string, right after `{` or `,` (JSON
+    whitespace between), when it is one of the grammar's field names and is
+    followed (after whitespace) by `:`. Nothing else is touched.
+    """
+    out: list[str] = []
+    quoted: list[str] = []
+    in_string = escaped = False
+    expecting_key = False
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if in_string:
+            out.append(character)
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            index += 1
+            continue
+        if expecting_key and character in _KEY_CHARACTERS:
+            end = index
+            while end < len(text) and text[end] in _KEY_CHARACTERS:
+                end += 1
+            after = end
+            while after < len(text) and text[after] in _JSON_WHITESPACE:
+                after += 1
+            word = text[index:end]
+            if word in _GRAMMAR_KEYS and after < len(text) and text[after] == ":":
+                out.append(f'"{word}"')
+                quoted.append(word)
+                index = end
+                expecting_key = False
+                continue
+        if character == '"':
+            in_string = True
+        if character not in _JSON_WHITESPACE:
+            expecting_key = character in "{,"
+        out.append(character)
+        index += 1
+    return "".join(out), quoted
+
+
+def parse_page_answer_repaired(
+    raw_text: str,
+) -> tuple[str, dict[str, Any] | None, list[dict[str, str]], list[dict[str, Any]]]:
+    """`(parse_state, answer | None, problems, repairs)`: `parse_page_answer`, with the one repair.
+
+    `repairs` is empty unless the reply was `not-json` and quoting its bare
+    grammar keys (`quote_bare_keys`) made it one JSON value with no other
+    decode problem; then it holds one `{"code": "unquoted-keys-quoted", "keys",
+    "detail"}` and the answer is graded from the repaired text. Otherwise the
+    reply's own result is returned unchanged.
+    """
+    value, problems = decode_json_reply(raw_text)
+    if [problem["code"] for problem in problems] == ["not-json"]:
+        repaired, keys = quote_bare_keys(raw_text)
+        if keys:
+            repaired_value, repaired_problems = _decode(repaired)
+            if not repaired_problems:
+                repair = {
+                    "code": UNQUOTED_KEYS_QUOTED,
+                    "keys": len(keys),
+                    "detail": f"{len(keys)} bare grammar key(s) quoted before parsing "
+                    f"({', '.join(sorted(set(keys)))}); the reply's bytes are kept as sent",
+                }
+                return (*_graded(repaired_value, []), [repair])
+    return (*_graded(value, problems), [])
