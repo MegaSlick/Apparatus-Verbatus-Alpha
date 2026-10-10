@@ -247,3 +247,34 @@ def test_donor_acts_never_come_from_held_out_pages_or_sibling_halves(tmp_path):
     for example in examples:
         prompt = example["messages"][0]["content"][1]["text"]
         assert "Heldout" not in prompt and "Sibling" not in prompt
+
+
+def test_targets_keep_unread_ink_and_uncertain_readings(tmp_path):
+    # C7 P1: the assistant target was the scoring text, so `[[?]]` vanished and
+    # `[[juin|juillet]]` became a plain `juin`. The target now keeps the doubt grammar;
+    # the readings inside carry the unresolved weight (0) and the mark syntax a draft's.
+    pages = ((TEXT, TEXT), ("Le onze juin", "Le onze juin"), ("Le douze mai", "Le douze mai"))
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=pages))
+    texts = {**TEXTS, "p002": "Le onze [[?]] [[juin|juillet]]", "p003": "[[?]]"}
+    refs = _refs(tree, texts)
+    answer = E.build_answer(refs["p002"], tree.pages[2].feed, [])
+    assert answer["acts"][0]["text"] == "Le onze [[?]] [[juin|juillet]]"
+    j = json.dumps(answer, ensure_ascii=False)
+    state, parsed, problems = parse_page_answer(j)
+    assert state == "parsed", problems
+    # The reading scores exactly as the reference's scored words.
+    from operations.bakeoff import score as S
+
+    assert (
+        S.tokens(S.normalise_output("perlector", F.reading_text(parsed))) == refs["p002"].tokens()
+    )
+    weights = {j[s:e]: w for s, e, w in E.loss_spans(j, answer, refs["p002"], E.CITES_WEIGHT)}
+    assert weights["juin"] == 0.0 and weights["onze"] == 0.7
+    assert weights["[[?]]"] == weights["[["] == weights["|juillet]]"] == E.WEIGHTS["draft"]
+    # A gap-only act is still an act in the target.
+    gap = E.build_answer(refs["p003"], tree.pages[3].feed, [])
+    assert [e["text"] for e in gap["acts"]] == ["[[?]]"]
+    # A lead-checked reference weighs the mark syntax fully.
+    refs["p002"].status_label = "lead-checked"
+    weights = {j[s:e]: w for s, e, w in E.loss_spans(j, answer, refs["p002"], 1.0)}
+    assert weights["[[?]]"] == 1.0

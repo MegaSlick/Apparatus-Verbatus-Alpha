@@ -52,7 +52,7 @@ from operations.bakeoff import fed_arm as F
 from operations.bakeoff import mutations as M
 from operations.bakeoff import score as S
 from operations.bakeoff import witness_run as W
-from operations.bakeoff.gold import load_gold_dir
+from operations.bakeoff.gold import load_gold_dir, marked_words, scored_text
 
 SCHEMA = "perlector-training-example.v1"
 REFERENCE_SCHEMA = "training-reference.v1"
@@ -101,7 +101,10 @@ def reference_from_json(record: dict[str, Any]) -> M.Reference:
         words = e.get("words")
         if words is None:
             default = "checked" if ref.status_label == "lead-checked" else "draft"
-            words = [{"text": t, "status": default} for t in S.tokens(e["text"])]
+            words = [
+                {"text": t, "status": "unresolved" if doubtful else default}
+                for t, doubtful in M.reference_words(e["text"])
+            ]
         for w in words:
             status = w.get("status", "draft")
             if status not in WEIGHTS:
@@ -169,7 +172,7 @@ def build_answer(
         )
     own_cites = any(e.get("cites") is not None for e in ref.entries)
     if not own_cites and entries:
-        entry_keys = [set(_keys(e["text"])) for e in entries]
+        entry_keys = [set(_keys(scored_text(e["text"]))) for e in entries]
         best_for: dict[str, tuple[float, int]] = {}
         for row in M.present(feed):
             for unit in row["units"]:
@@ -230,9 +233,38 @@ def _json_offset(text: str, k: int) -> int:
     return len(json.dumps(text[:k], ensure_ascii=False)) - 1
 
 
+def mark_weight(ref: M.Reference) -> float:
+    """The weight of the doubt-mark syntax (`[[`, `|other`, `]]`, `[[?]]`): where the ink
+    is unread or uncertain is the reference's judgement, so it weighs as a checked word on
+    a lead-checked reference and as a draft word otherwise."""
+    return WEIGHTS["checked"] if ref.status_label == "lead-checked" else WEIGHTS["draft"]
+
+
+def _text_weights(text: str, ref: M.Reference, entry: int) -> list[float | None]:
+    """A weight per character of an entry's text: each scored word by its reference
+    status, the doubt-mark syntax by `mark_weight`, whitespace None (scaffold)."""
+    words = marked_words(text)
+    keys = [" ".join(S.tokens(w.text)) for w in words]
+    ref_idx = ref.entry_words(entry)
+    ref_keys = [ref.words[i].text for i in ref_idx]
+    status = ["draft"] * len(words)
+    ops = Levenshtein.editops(ref_keys, keys, processor=None)
+    for block in ops.as_opcodes():
+        if block.tag == "equal":
+            for k in range(block.src_end - block.src_start):
+                status[block.dest_start + k] = ref.words[ref_idx[block.src_start + k]].status
+    syntax = mark_weight(ref)
+    weights: list[float | None] = [None if ch.isspace() else syntax for ch in text]
+    for word, st in zip(words, status, strict=True):
+        for i in word.chars:
+            weights[i] = WEIGHTS[st]
+    return weights
+
+
 def loss_spans(answer_json: str, answer: dict[str, Any], ref: M.Reference, cites_weight: float):
-    """[start, end, weight] over the assistant text: words by reference status, cites by
-    `cites_weight`, everything else (the scaffold) 1.0. Spans tile the whole string."""
+    """[start, end, weight] over the assistant text: words by reference status, doubt
+    marks by `mark_weight`, cites by `cites_weight`, everything else (the scaffold) 1.0.
+    Spans tile the whole string."""
     special: list[tuple[int, int, float]] = []
     cursor = 0
     for n, e in enumerate(answer["acts"]):
@@ -244,22 +276,20 @@ def loss_spans(answer_json: str, answer: dict[str, Any], ref: M.Reference, cites
         at = answer_json.index(text_json, cursor)
         value = at + len('"text": ')
         cursor = at + len(text_json)
-        raw = [(m.group(), m.start(), m.end()) for m in _WORD.finditer(e["text"])]
-        raw_keys = [" ".join(S.tokens(w)) for w, _, _ in raw]
-        ref_idx = ref.entry_words(n)
-        ref_keys = [ref.words[i].text for i in ref_idx]
-        status = ["draft"] * len(raw)
-        ops = Levenshtein.editops(ref_keys, raw_keys, processor=None)
-        for block in ops.as_opcodes():
-            if block.tag == "equal":
-                for k in range(block.src_end - block.src_start):
-                    status[block.dest_start + k] = ref.words[ref_idx[block.src_start + k]].status
-        for (_, start, end), st in zip(raw, status, strict=True):
+        weights = _text_weights(e["text"], ref, n)
+        k = 0
+        while k < len(weights):
+            if weights[k] is None:
+                k += 1
+                continue
+            start = k
+            while k < len(weights) and weights[k] == weights[start]:
+                k += 1
             special.append(
                 (
                     value + _json_offset(e["text"], start),
-                    value + _json_offset(e["text"], end),
-                    WEIGHTS[st],
+                    value + _json_offset(e["text"], k),
+                    weights[start],
                 )
             )
     special.sort()

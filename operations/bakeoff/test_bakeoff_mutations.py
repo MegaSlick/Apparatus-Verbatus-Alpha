@@ -326,3 +326,30 @@ def test_planted_copies_judges_each_site():
         == {}
     )
     assert Path(FAKE).is_file()
+
+
+def test_reference_keeps_doubt_marks_and_tracks_doubt_by_position(tmp_path):
+    # C7 P1/P2: the entry text is the diplomatic target (marks kept); a gap-only act is
+    # still an entry; the certain first "Marie" stays certain and the doubtful second one
+    # is the unresolved word, so agreement can never make it plantable.
+    ref = _ref("Le [[?]] [[juin|juillet]] mil huit")
+    assert ref.entries[0]["text"] == "Le [[?]] [[juin|juillet]] mil huit"
+    assert [(w.text, w.status) for w in ref.words] == [
+        ("Le", "draft"), ("juin", "unresolved"), ("mil", "draft"), ("huit", "draft"),
+    ]  # fmt: skip
+    gaps = _ref("[[?]] [[?]]")
+    assert [e["text"] for e in gaps.entries] == ["[[?]] [[?]]"] and gaps.words == []
+    text = "Marie épouse [[Marie|Maria]]"
+    feed = _three(_tree(tmp_path).pages[1].feed, second="Marie épouse Marie")
+    feed["witnesses"][0]["units"][0]["text"] = "Marie épouse Marie"
+    feed["witnesses"][2]["units"][0]["text"] = "Marie épouse Marie"
+    ref = _ref(text, feed)
+    assert [w.status for w in ref.words] == ["agreed", "agreed", "unresolved"]
+    for turn in range(3):
+        m = M.mutate(feed, ref, "plant-1", seed=0, turn=turn)
+        assert all(site["ref_index"] != 2 for site in m.planted)
+    # Donor acts are witness-like text: the marks are reduced.
+    donor = _ref("Le [[?]] dix [[mai|mars]] mil huit cent Richer Lalonde fils de Pierre")
+    assert M.donor_acts({"p009": donor}, "p001") == [
+        "Le dix mai mil huit cent Richer Lalonde fils de Pierre"
+    ]

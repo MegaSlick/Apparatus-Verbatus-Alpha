@@ -115,6 +115,74 @@ def reduce_marks(line: str) -> str:
     return "\n".join(" ".join(part.split()) for part in text.split("\n"))
 
 
+# Struck and inserted spans that may hold doubt marks (`[struck: [[x]]]`).
+_STRUCK_OUTER = re.compile(r"\[struck:\s*((?:[^\[\]]|\[\[[^\[\]]*\]\])*)\]")
+_INSERTED_OUTER = re.compile(r"\[ins:\s*((?:[^\[\]]|\[\[[^\[\]]*\]\])*)\]")
+
+
+def diplomatic_text(text: str) -> str:
+    """A gold passage in the Perlector's own mark grammar (`common.page_prompt`).
+
+    Struck text is dropped and inserted text kept in place, as `reduce_marks` does, but
+    the doubt marks `[[?]]`, `[[word]]` and `[[word|other]]` stay exactly as written: a
+    training target must say where the ink is unread or uncertain. Spaces are collapsed.
+    `marked_words` of the result gives the same words as `reduce_marks` of the input.
+    """
+    previous = None
+    while previous != text:
+        previous = text
+        text = _STRUCK_OUTER.sub("", text)
+        text = _INSERTED_OUTER.sub(lambda m: m.group(1), text)
+    return "\n".join(" ".join(part.split()) for part in text.split("\n"))
+
+
+@dataclass
+class MarkedWord:
+    """One whitespace word of a text as scored (doubt marks reduced), with where it sits."""
+
+    text: str  # the word as `reduce_marks` leaves it
+    chars: list[int]  # offsets in the marked text of the word's characters
+    doubtful: bool  # some character comes from a `[[word]]` / `[[word|other]]` reading
+
+
+def marked_words(text: str) -> list[MarkedWord]:
+    """The scored words of a text carrying doubt marks, each with its character offsets
+    and whether it sits inside a doubtful reading -- by position, so the certain `Marie`
+    of `Marie épouse [[Marie|Maria]]` stays certain. `[[?]]` contributes no word; a
+    mark's first reading is the word, the other readings and the brackets are syntax."""
+    kept: list[tuple[str, int, bool]] = []
+    pos = 0
+    for m in _DOUBT.finditer(text):
+        kept += [(ch, i, False) for i, ch in enumerate(text[pos : m.start()], pos)]
+        inner = m.group(1)
+        if inner.strip() != "?":
+            first = inner.split("|")[0]
+            kept += [(ch, i, True) for i, ch in enumerate(first, m.start(1))]
+        pos = m.end()
+    kept += [(ch, i, False) for i, ch in enumerate(text[pos:], pos)]
+    words: list[MarkedWord] = []
+    current: list[tuple[str, int, bool]] = []
+    for item in [*kept, (" ", -1, False)]:
+        if item[0].isspace():
+            if current:
+                words.append(
+                    MarkedWord(
+                        "".join(c for c, _, _ in current),
+                        [i for _, i, _ in current],
+                        any(d for _, _, d in current),
+                    )
+                )
+            current = []
+        else:
+            current.append(item)
+    return words
+
+
+def scored_text(text: str) -> str:
+    """A marked text's words as scored, one space apart (doubt marks reduced)."""
+    return " ".join(w.text for w in marked_words(text))
+
+
 def parse_gold(text: str, stem: str = "") -> GoldPage:
     header: dict[str, str] = {}
     acts: list[Act] = []

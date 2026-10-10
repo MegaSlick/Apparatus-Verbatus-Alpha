@@ -62,7 +62,13 @@ from rapidfuzz.distance import Levenshtein
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import score as S
 from operations.bakeoff import witness_run as W
-from operations.bakeoff.gold import GoldPage, load_gold_dir
+from operations.bakeoff.gold import (
+    GoldPage,
+    diplomatic_text,
+    load_gold_dir,
+    marked_words,
+    scored_text,
+)
 
 SCHEMA = "witness-mutation.v1"
 
@@ -173,7 +179,6 @@ INVENTED_TEMPLATES = (
 )
 _PUNCT = ".,;:!?()[]{}\"'«»-–—"
 _WORD = re.compile(r"\S+")
-_DOUBT = re.compile(r"\[\[([^\[\]]*)\]\]")
 
 
 # --- the reference -------------------------------------------------------------------
@@ -230,58 +235,59 @@ def classify(token: str) -> str:
     return "word"
 
 
-def _doubtful_words(raw: str) -> Counter:
-    """First readings of `[[a|b]]` / `[[a]]` marks (never `[[?]]`): unresolved words."""
-    out: Counter = Counter()
-    for m in _DOUBT.finditer(raw):
-        first = m.group(1).split("|")[0].strip()
-        if first and first != "?":
-            out.update(S.tokens(first))
-    return out
+def reference_words(text: str) -> list[tuple[str, bool]]:
+    """(graphemic-v1 token, doubtful) for every scored word of a text in the Perlector's
+    mark grammar. Doubt is tracked by position (`gold.marked_words`), never by spelling."""
+    return [(token, w.doubtful) for w in marked_words(text) for token in S.tokens(w.text)]
 
 
 def reference_from_gold(gold: GoldPage, row_kind: str = "other") -> Reference:
     """A bake-off gold page as a Reference with every word `draft` (statuses set later).
 
+    Each entry's `text` is the diplomatic target (`gold.diplomatic_text`: struck text
+    dropped, inserted text kept, the doubt marks `[[?]]` and `[[a|b]]` kept as written),
+    so a training answer says where the ink is unread or uncertain. Its words are the
+    scored words (marks reduced); a word inside a doubtful reading is `unresolved`.
     Entries follow `GoldPage.reference_text()`'s order: acts, then headings (one `other`
     entry), then index rows (one `row_kind` entry each), so the words tokenise to exactly
-    `score.tokens(gold.reference_text())`, the scorer's reference.
+    `score.tokens(gold.reference_text())`, the scorer's reference (checked; a mismatch
+    raises ValueError). An act that is only `[[?]]` is an entry with no scored words.
     """
-    from operations.bakeoff.gold import reduce_marks
-
     ref = Reference(gold.stem, gold.status or "unknown")
 
-    def add(kind: str, label: str | None, raw: str, reduced: str, previous=False, nxt=False):
+    def add(kind: str, label: str | None, text: str, previous=False, nxt=False):
         index = len(ref.entries)
         ref.entries.append(
             {
                 "kind": kind,
                 "label": label,
-                "text": reduced,
+                "text": text,
                 "continues_from_previous_page": bool(previous),
                 "continues_to_next_page": bool(nxt),
             }
         )
-        doubtful = _doubtful_words(raw)
-        for token in S.tokens(reduced):
-            status = "draft"
-            if doubtful[token] > 0:
-                doubtful[token] -= 1
-                status = "unresolved"
+        for token, doubtful in reference_words(text):
+            status = "unresolved" if doubtful else "draft"
             ref.words.append(RefWord(token, status, classify(token), index))
 
+    def lines(raw: str) -> str:
+        return "\n".join(line for line in diplomatic_text(raw).split("\n") if line)
+
     for act in gold.acts:
-        raw = "\n".join(act.lines)
-        reduced = "\n".join(line for line in reduce_marks(raw).split("\n") if line)
-        if not reduced:
+        text = lines("\n".join(act.lines))
+        if not text:
             continue
         kind = "act" if act.kind.strip().lower() not in ("other", "heading", "note") else "other"
-        add(kind, act.kind.strip() or None, raw, reduced, act.from_previous, act.to_next)
-    headings = gold.heading_lines()
+        add(kind, act.kind.strip() or None, text, act.from_previous, act.to_next)
+    headings = lines("\n".join(h for h in gold.headings))
     if headings:
-        add("other", "headings", "\n".join(gold.headings), "\n".join(headings))
-    for raw, reduced in zip(gold.rows, gold.row_lines(), strict=False):
-        add(row_kind, "index row", raw, reduced)
+        add("other", "headings", headings)
+    for raw in gold.rows:
+        text = lines(raw.replace(" | ", " "))
+        if text:
+            add(row_kind, "index row", text)
+    if ref.tokens() != S.tokens(gold.reference_text()):
+        raise ValueError(f"{gold.stem}: reference words do not match the scorer's tokens")
     return ref
 
 
@@ -966,8 +972,9 @@ def donor_acts(refs: dict[str, Reference], exclude: str, limit: int = 40) -> lis
         if original_of(stem) == original_of(exclude):
             continue
         for e in ref.entries:
-            if e["kind"] == "act" and 8 <= len(e["text"].split()) <= 120:
-                out.append(" ".join(e["text"].split()))
+            text = scored_text(e["text"])  # witnesses write no doubt marks
+            if e["kind"] == "act" and 8 <= len(text.split()) <= 120:
+                out.append(text)
     return out[:limit]
 
 

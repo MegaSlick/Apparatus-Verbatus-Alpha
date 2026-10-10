@@ -447,8 +447,9 @@ The reference is the page's gold or silver text as a `Reference`: entries plus o
 (`checked`, `agreed`, `draft`, `unresolved`) and class per graphemic-v1 word, tokenised
 exactly as the scorer tokenises `gold.reference_text()`, so a planted site's word index is
 the scorer's. From a bake-off gold file (fool's gold today) `statuses_from_agreement` makes
-a word `agreed` when two or more shown witnesses have it, `unresolved` when it comes from a
-`[[a|b]]` mark, `draft` otherwise.
+a word `agreed` when two or more shown witnesses have it, `unresolved` when it sits inside a
+`[[a|b]]` mark (by position, `gold.marked_words`), `draft` otherwise. An entry's `text`
+keeps the doubt marks (`gold.diplomatic_text`); its words are the scored words.
 
 ```sh
 .venv/bin/python -m operations.bakeoff.mutations --run-tree <run tree> \
