@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from operations.bakeoff import queue_runner as Q
+from operations.bakeoff import witness_run as W
 from operations.bakeoff.test_bakeoff_runner import FAKE, _free_port, _pages
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -1148,3 +1149,70 @@ def test_with_threads_sets_only_the_threads_value():
     assert Q.with_threads(("x", "--threads=4"), 9) == ("x", "--threads=9")
     assert Q.with_threads(("x",), 9) == ("x",)
     assert Q.with_threads(("x", "--threads", "4"), None) == ("x", "--threads", "4")
+
+
+def test_each_witness_arm_loads_its_model_once_for_smoke_and_run(bench):
+    """The smoke's server is kept and the full run takes it over: one launch per arm,
+    where smoke and run each used to start their own."""
+    launches = bench["tmp"] / "launches.txt"
+    env = {**bench["env"], "FAKE_VLLM_LAUNCHES": str(launches)}
+    arms = [_witness_arm(bench, "chandra", "chandra"), _witness_arm(bench, "churro", "churro")]
+    queue = Q.Queue(
+        _manifest(bench, arms, end_pod="none"),
+        notifier=FakeNotifier(),
+        environ=env,
+        poll_seconds=0.05,
+    )
+    assert queue.run() == 0
+    status = json.loads((bench["out"] / "status.json").read_text())
+    assert {a["label"]: a["status"] for a in status["finished_arms"]} == {
+        "chandra": "ok",
+        "churro": "ok",
+    }
+    pids = launches.read_text().split()
+    assert len(pids) == 2  # was 4: a smoke server and a run server per arm
+    events = _events(bench["out"])
+    for name in ("chandra", "churro"):
+        mine = [e["event"] for e in events if e.get("model") == name]
+        assert mine.count("server-start") == 1 and mine.count("server-kept") == 1
+        assert mine.count("server-adopted") == 1 and mine.count("server-stopped") == 1
+        assert not (bench["out"] / name / "server-handoff.json").exists()
+    for pid in map(int, pids):  # every server is gone at the end
+        deadline = time.monotonic() + 10
+        while W._pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not W._pid_alive(pid)
+
+
+def test_a_kept_server_no_run_takes_over_is_stopped(bench):
+    """A smoke that passes its server on, then a run that never adopts it (its smoke page
+    failed here): the queue stops the server itself."""
+    launches = bench["tmp"] / "launches.txt"
+    env = {**bench["env"], "FAKE_VLLM_LAUNCHES": str(launches)}
+    arm = _witness_arm(bench, "chandra", "chandra")
+    queue = Q.Queue(
+        _manifest(bench, [arm], end_pod="none"),
+        notifier=FakeNotifier(),
+        environ=env,
+        poll_seconds=0.05,
+    )
+    real = queue._pages_ok
+    queue._pages_ok = lambda a, pages: False if len(pages) == 2 else real(a, pages)
+    assert queue.run() == 0
+    events = _events(bench["out"])
+    # The retry's smoke finds its pages cached and starts nothing, so nothing else is kept.
+    assert [e["event"] for e in events].count("queue-server-released") == 1
+    pids = launches.read_text().split()
+    assert len(pids) == 1
+    for pid in map(int, pids):
+        deadline = time.monotonic() + 10
+        while W._pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not W._pid_alive(pid)
+
+
+def test_witness_commands_may_not_carry_the_server_hand_off(bench):
+    arm = _witness_arm(bench, "chandra", "chandra")
+    arm["command"] += ["--keep-server", "/tmp/x"]
+    with pytest.raises(Q.ManifestError, match="--keep-server"):
+        _manifest(bench, [arm])

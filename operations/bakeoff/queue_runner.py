@@ -141,6 +141,11 @@ class ArmSpec:
     def records(self) -> str:
         return self.writes or self.name
 
+    @property
+    def keeps_server(self) -> bool:
+        """A GPU witness_run arm: its smoke's server is kept for its full run."""
+        return self.gpu and _runs_witness(self.command)
+
 
 @dataclass(frozen=True)
 class Manifest:
@@ -217,8 +222,9 @@ def _parse_arm(raw: Any, index: int, out: Path, pages: Path, earlier: list[str])
         raise ManifestError(f"{where}: gpu must be true or false")
     command = _argv(raw.get("command"), f"{where}: command", True)
     assert command is not None
-    if any(item == "--limit" or item.startswith("--limit=") for item in command):
-        raise ManifestError(f"{where}: command must not carry --limit; the queue adds it")
+    for flag in ("--limit", "--keep-server", "--adopt-server"):
+        if any(item == flag or item.startswith(flag + "=") for item in command):
+            raise ManifestError(f"{where}: command must not carry {flag}; the queue adds it")
     named_out = _flag_value(command, "--out")
     if named_out is not None and Path(named_out) != out:
         raise ManifestError(f"{where}: command writes to {named_out}, not the queue's out {out}")
@@ -1031,6 +1037,39 @@ class Queue:
 
     # arms -------------------------------------------------------------------------
 
+    def _handoff(self, arm: ArmSpec) -> Path:
+        return self.m.out / arm.name / "server-handoff.json"
+
+    def _phase_commands(self, arm: ArmSpec, command: tuple[str, ...]) -> tuple[list, list]:
+        """(smoke, full run). A witness_run arm's smoke leaves its server up and the full
+        run takes it over, so the model loads once per arm, not twice."""
+        limit = ["--limit", str(self.m.smoke_pages)]
+        if not arm.keeps_server or self.smoke_only:
+            return [*command, *limit], list(command)
+        handoff = str(self._handoff(arm))
+        return [*command, "--keep-server", handoff, *limit], [*command, "--adopt-server", handoff]
+
+    def _release_server(self, arm: ArmSpec) -> None:
+        """Stop a server a smoke kept that no full run took over (the hand-off left)."""
+        path = self._handoff(arm)
+        if not path.is_file():
+            return
+        from operations.bakeoff.witness_run import Server
+
+        try:
+            server = Server.adopted(json.loads(path.read_text("utf-8")))
+        except (OSError, ValueError, KeyError, TypeError):
+            server = None
+        if server is not None:
+            server.stop()
+        path.unlink(missing_ok=True)
+        self._event("queue-server-released", arm=arm.name)
+
+    def _release_servers(self) -> None:
+        for arm in self.m.arms:
+            if arm.keeps_server:
+                self._release_server(arm)
+
     def _pages_ok(self, arm: ArmSpec, pages: list[Path]) -> bool:
         """Every page read, or failed in a way that sending it again at the same settings
         would repeat (a request timeout or a loop stop); such a page is never retried."""
@@ -1132,6 +1171,8 @@ class Queue:
         except Exception as failure:  # noqa: BLE001 -- a missing program must not end the queue
             self._arm_error(arm, f"crashed ({type(failure).__name__}: {failure})"[:200])
         finally:
+            if arm.keeps_server:
+                self._release_server(arm)
             self._end_lane(lane)
 
     def _run_arm_phases(self, index: int, arm: ArmSpec, lane: str, t0: float) -> None:
@@ -1144,7 +1185,7 @@ class Queue:
                 self._arm_error(arm, "install failed")
             return
         smoke_pages = self.page_list[: self.m.smoke_pages]
-        smoke = [*arm.command, "--limit", str(self.m.smoke_pages)]
+        smoke, full = self._phase_commands(arm, arm.command)
         code = self._run_watched(index, arm, lane, "smoke", smoke)
         if self.hard_stopped:
             self._record(arm, "hard-stopped", t0)
@@ -1155,7 +1196,7 @@ class Queue:
         if self.smoke_only:
             self._record(arm, "smoke-ok", t0)
             return
-        code = self._run_watched(index, arm, lane, "run", list(arm.command))
+        code = self._run_watched(index, arm, lane, "run", full)
         if self.hard_stopped:
             self._record(arm, "hard-stopped", t0)
         elif code != 0 or not self._pages_ok(arm, self.page_list):
@@ -1192,10 +1233,10 @@ class Queue:
                 self._record(arm, "failed", t0)
                 return
             # The smoke again first (cached pages are skipped, so a passed smoke costs nothing).
-            smoke = [*command, "--limit", str(self.m.smoke_pages)]
+            smoke, full = self._phase_commands(arm, command)
             code = self._run_watched(index, arm, lane, "retry", smoke)
             if code == 0 and self._pages_ok(arm, self.page_list[: self.m.smoke_pages]):
-                code = self._run_watched(index, arm, lane, "retry", list(command))
+                code = self._run_watched(index, arm, lane, "retry", full)
             elif code == 0:
                 code = -1
             if self.hard_stopped:
@@ -1208,6 +1249,8 @@ class Queue:
             self._error(f"{arm.name}: retry crashed ({type(failure).__name__}: {failure})"[:200])
             self._record(arm, "failed", t0)
         finally:
+            if arm.keeps_server:
+                self._release_server(arm)
             self._end_lane(lane)
 
     def _retry_threads(self, arm: ArmSpec, cpu_retries: int) -> int | None:
@@ -1365,6 +1408,7 @@ class Queue:
     def terminate(self) -> int:
         self.terminated = True
         self._stop_all(30)
+        self._release_servers()
         with self.lock:
             self.state = "failed"
             self.errors.append("stopped by SIGTERM")
