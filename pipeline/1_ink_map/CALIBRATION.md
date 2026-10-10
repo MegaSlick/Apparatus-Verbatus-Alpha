@@ -127,7 +127,8 @@ which is while the fraction stays under 5000. Zero is the derivation switched of
 threshold the derivation slides with the same wrong paper value the bound is watching for:
 the six paper-255 pages measure 2239-3498 bp there, interleaved with the others (median
 2434). At the floor they measure 7077-8502 against a maximum of 6595 among admitted pages.
-So the refusal outcome is the same 13 pages either way.
+At the floor they are refused, 13 pages in all, every one `paper-is-not-a-background`. At the
+derived threshold they would pass, which is why the bound is probed at the floor.
 
 **Scale invariance, measured.** Over the same 73 resampled pages the derived margin moves by
 at most 8 grey levels (median 0).

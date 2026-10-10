@@ -132,12 +132,13 @@ accounting_ref, reask_ref, trigger_accounting_ref, entry_count}`.
 - Every sealed page must have its first `page-reading` (`page-read:1`) and its
   `page-accounting`; a page with none is `FatalAccounting`, never zero acts. Every
   submitted ordinal must have an Exemplar page.
-- The re-ask (`page-read:2`; `pipeline/4_perlector/CONTRACT.md`, "The re-ask") exists
-  exactly when `page_reask.reask_plan`, run again over the verified first reading and
-  accounting, names ids.
-- Operator re-reads (`page-read:3` on) are verified like first readings; each must answer
-  stored page re-asks and supersede every earlier reading, and the last is the page's
-  current reading. Superseded readings stay in the run tree and are not counted.
+- The machine's re-ask (`page-read:2`; `pipeline/4_perlector/CONTRACT.md`, "The re-ask")
+  exists exactly when `page_reask.reask_plan`, run again over the verified first reading and
+  accounting under the sealed `page_level_reread`, names ids.
+- Operator re-reads (`page-read:3` on) are outside that budget: a current stored page re-ask
+  decision requests each one. Each is verified like a first reading, has its own accounting,
+  and supersedes every earlier reading; the latest supplies the page's counted entries.
+  Earlier readings stay in the run tree as history and are not counted.
 - Attempts of each kind must run 1..N with no gap; nothing chooses "the latest". A stray or
   missing attempt is `FatalAccounting`.
 - `parse_state`, `disposition`, `finish_reason` and `reading_ref` are the current

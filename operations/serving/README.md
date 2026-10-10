@@ -159,9 +159,9 @@ answer.
 **The DAI chair** (`witness_adapter = "dai.v1"`, a handwriting record reader) misreads typed
 code, so it reads one pinned public RecordGold record instead (`recordgold_smoke.py`), asked
 what its run asks, and passes at a character error rate of 0.15 or under after
-`graphemic-v1` normalisation. The repository holds only the record's identity and digests;
-the pod fetches the crop from Teklia's IIIF server and the text from the Hugging Face dataset,
-verifies both, and refuses by name (`recordgold-smoke-fetch-failed`, `-image-mismatch`,
+`graphemic-v1` normalisation. The pinned crop and text are committed in
+`proof/fixtures/recordgold-smoke-v0`; the pod reads them through
+`PreflightSeams.recordgold_fetch` (by default `committed_recordgold_bytes`), verifies both, and refuses by name (`recordgold-smoke-fetch-failed`, `-image-mismatch`,
 `-text-mismatch`) before any chair starts. The receipt carries `smoke_page =
 "recordgold-record"`, the pins, the edit count and the rate, never the text.
 

@@ -65,8 +65,9 @@ so the page sequence stays complete.
 resolution), `--crop none|page|content`, `--output-mode source|grey`, `--grey-rule`,
 `--padding 4mm|20px`, `--tone-view`, `--cache DIR`, `--no-cache`, `--cache-full`.
 
-**Exit status:** 0 when no page is flagged; 1 when any page needs review or any source was
-skipped; 2 when the command cannot run at all (no usable source, an output folder inside a
+**Exit status:** 0 when no page is flagged and no source is skipped; 1 when any page needs
+review or any source is skipped while at least one is usable; 2 when the command cannot run
+at all (no usable source, an output folder inside a
 source folder or not writable, an unreadable project or overrides file, an invalid option),
 and then nothing is written.
 

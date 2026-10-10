@@ -396,9 +396,11 @@ run.
    folder whole at `/workspace/private/runs/<run id>` (the stage seals are read through that
    name). Keep the pod.
 2. **Check the replay.** Put the run's page images in `/workspace/private/bakeoff-pages`
-   (same stems), and the manifest with the run id:
-   `sed 's/RUN_ID/<run id>/' operations/bakeoff/queue/perlector-fed-96gb.toml >
-   /workspace/private/bakeoff/perlector-fed-96gb.toml`. Then
+   (same stems), and write the manifest with the run id on the pod:
+   `ssh -p <port> root@<ip> 'cd /opt/verbatus && mkdir -p /workspace/private/bakeoff && sed
+   "s/RUN_ID/<run id>/" operations/bakeoff/queue/perlector-fed-96gb.toml >
+   /workspace/private/bakeoff/perlector-fed-96gb.toml'`.
+   Then
    `.venv/bin/python -m operations.bakeoff.fed_arm prompts --run-tree /workspace/private/runs/<run id>`
    must print `whole requests byte-identical N of N` (N the run's page count) and no `config
    differs` line. Anything else: stop.

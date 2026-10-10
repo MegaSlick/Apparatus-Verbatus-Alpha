@@ -319,7 +319,7 @@ one piece of material), so `by_unit_type` is published beside `by_category`.
   `confirmed-blank` only when every act on it was, and `held-for-review` otherwise, including
   a page no reading accounts for (silence cannot tell a blank page from a detection
   failure). A page with only other readings is held until the Recensor confirms it holds no
-  act. An unclaimed-edge-ink hold makes its page held.
+  act; once it does and every such reading is delivered, the page is `delivered`. An unclaimed-edge-ink hold makes its page held.
 
 `claims.status` is `complete` only when the ledger and aggregate have no unresolved unit or
 reason. `claims.partial_reasons` names each unresolved fact once (`act <key> is <category>:

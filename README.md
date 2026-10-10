@@ -12,8 +12,9 @@ answers. Every reading points back to the part of the image it came from. Text t
 can't be read is flagged, never guessed. A page is never marked blank until its ink,
 its detected lines and every witness agree that it is.
 
-**Status: alpha.** The pipeline runs end to end on synthetic pages and on real pages on
-a GPU machine. Its accuracy has not been established yet.
+**Status: alpha.** The pipeline runs end to end on synthetic pages. A first real run took 73
+pages through the Recensor on a GPU machine; it held every page, so no real export exists
+yet and accuracy is not established.
 
 ## How it works
 

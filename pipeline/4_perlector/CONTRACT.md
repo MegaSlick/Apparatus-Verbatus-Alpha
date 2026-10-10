@@ -329,8 +329,9 @@ handle answers each request with the reply the source retained for the same requ
 ## Consumer obligations
 
 - Count acts by `kind == "act"` only. A row-kind entry (`index-row`, `table-row`,
-  `ledger-entry`) is a row: `common.page_types.row_record` gives its `rows.jsonl` line
-  (`armarium-row.v1`), with the page type from the entry's accounting.
+  `ledger-entry`) is a row. Rows reach the export today in `other.jsonl`;
+  `common.page_types.row_record` defines the planned `rows.jsonl` line (`armarium-row.v1`),
+  with the page type from the entry's accounting.
 - Recompute every attempt id from (subject, operation, ordinal), and require ordinals 1..N
   without a gap.
 - A page's current reading is its last operator re-read, else its first reading with its

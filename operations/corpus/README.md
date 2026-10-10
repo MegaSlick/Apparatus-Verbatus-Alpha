@@ -272,7 +272,7 @@ the feature itself is not built.
 
 Per page it records `native` (manifest size), `sent` (the page render at `[page_context]
 maximum_edge`), `seen` (the size the Perlector row's processor resizes it to), `page_gain_bp`
-(`sqrt(native area / seen area)` in basis points; 1 for an enlarged page), `crop_native`,
+(`sqrt(native area / seen area)` in basis points; an enlarged page is clamped to 10,000), `crop_native`,
 `crop_seen` and `gain_bp` (one crop's sizes and its real gain), `need` and `headroom` (the
 request's capacity against the row's 65,536-token context, with gold text standing in for
 three witnesses), `k`, `k_cap`, `k_capped` (the most crops round two fits, counting the

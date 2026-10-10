@@ -40,8 +40,8 @@ never the uploaded images).
 
 **The normal order.** `prepare`, `ingest` (and `triage`) and `upload` need no rented
 machine, so do them first. Then either `run` here, or run on a pod with
-`python -m operations.pod.pod_run` and `fetch-run` the tree home. Then `export` and
-`backup`. Use `review` to look, `advance` only once you have decided to pass a boundary,
+`python -m operations.pod.pod_run` and `fetch-run` the tree home. Then `export`, and
+`backup` for a tree on a network volume (a tree run here is already on this computer). Use `review` to look, `advance` only once you have decided to pass a boundary,
 and `status` whenever you are unsure what has happened.
 
 **Exit codes.** Every word exits 0 when it did what was asked and 2 otherwise (a refusal, a
