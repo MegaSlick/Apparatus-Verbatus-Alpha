@@ -4,6 +4,8 @@ import json
 import sys
 from collections import Counter
 
+import pytest
+
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import fed_score as C
 from operations.bakeoff.gold import parse_gold
@@ -70,6 +72,28 @@ def test_follow_resist_copy_and_vote_on_one_page(tmp_path):
     assert s["gold_acts"] == s["acts_matched"] == s["act_entries"] == 1
     assert 0 < s["cer_median_parsed"] < 0.5 and s["inserted"] == 0
     assert card["hard_acts"]["pages"] == 1
+
+
+def test_an_answer_naming_page_types_scores_as_its_acts_shape(tmp_path):
+    # The same reading in the `entries` grammar the protocol's `page_types = "named"`
+    # asks for: its text and its act entries score exactly as the `acts` shape's do,
+    # an instrument counting as an act and an index row not.
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run"))
+    answers = C.answers_from_run_tree(tree)
+    gold = {
+        "p001": parse_gold(GOLD.format(stem="p001", status="x", text="Le dix mai mil huit"), "p001")
+    }
+    before = C.scorecard(answers, gold, hard={"p001"})
+    for answer in answers.values():
+        acts = answer.answer.pop("acts")
+        answer.answer.update(page_type="register-acts", writing="handwritten", entries=acts)
+    assert F.reading_text(answers["p001"].answer) == "Le dix mai mil"
+    assert C.scorecard(answers, gold, hard={"p001"}) == before
+    for kind, counted in (("instrument", 1), ("index-row", 0)):
+        for answer in answers.values():
+            answer.answer["entries"][0]["kind"] = kind
+        s = C.scorecard(answers, gold, hard={"p001"})["groups"]["acts-handwritten"]
+        assert s["act_entries"] == counted
 
 
 def test_a_copied_wrong_word_is_counted(tmp_path):
@@ -182,7 +206,125 @@ def test_lead_checked_only_for_an_explicit_checked_status():
     assert C.reference_label([page("gold (Tyrel 2026-10-07)"), page("lead-checked")]) == (
         " (lead-checked gold)"
     )
-    for statuses in (["silver"], ["draft"], [""], ["gold (Tyrel)", "silver"]):
+    for statuses in (
+        ["silver"],
+        ["draft"],
+        [""],
+        ["gold (Tyrel)", "silver"],
+        ["gold (unchecked draft)"],
+    ):
         assert C.reference_label([page(s) for s in statuses]) != " (lead-checked gold)"
     assert C.reference_label([page("gold (Tyrel)"), page("fool's gold")]) == f" {FOOLS_GOLD_LABEL}"
-    assert not C.is_checked_status("fool's gold") and C.is_checked_status("Gold")
+    assert not C.is_checked_status("fool's gold")
+    assert C.is_checked_status("Gold (Tyrel 2026-10-07)")
+    # Only a named checker and a date make gold checked.
+    for status in (
+        "gold",
+        "gold (unchecked draft)",
+        "gold (AI draft)",
+        "gold (Tyrel 2026-99-99)",
+        "gold (Tyrel 2026-02-30)",
+        "gold ()",
+        "gold (2026-10-07)",
+    ):
+        assert not C.is_checked_status(status), status
+
+
+def _fed_run(tree, cache, label, *extra):
+    argv = [
+        "run", "--run-tree", str(tree), "--out", str(cache), "--label", label,
+        "--model-name", "m", "--weights", str(tree), "--vllm-cmd", sys.executable, str(FAKE),
+        "--port", str(_free_port()), "--startup-timeout", "60", *extra,
+    ]  # fmt: skip
+    assert F.main(argv) == 0
+
+
+def _retarget(src, dst, **setup_changes):
+    """Copy a cache folder with some of its recorded setup fields changed."""
+    dst.mkdir()
+    for path in src.glob("*.json"):
+        record = json.loads(path.read_text())
+        if record.get("schema") == F.SCHEMA:
+            record["setup"].update(setup_changes)
+        (dst / path.name).write_text(json.dumps(record))
+    return dst
+
+
+def test_compare_refuses_answer_sets_that_were_asked_differently(tmp_path, capsys):
+    tree = make_run_tree(tmp_path / "run", pages=(("Le dix mai", "Le dix mai"),))
+    (tree / "config.json").write_text("{}")
+    cache = tmp_path / "cache"
+    _fed_run(tree, cache, "a")
+    gold = _gold(tmp_path / "gold", {"p001": "Le dix mai"})
+    base = ["--run-tree", str(tree), "--gold", str(gold), "--gold-glob", "*.txt"]
+
+    def compare(other):
+        return C.main([*base, "--answers", str(cache / "a"), "--compare", str(other),
+                       "--names", "A,B"])  # fmt: skip
+
+    # Another model, checkpoint and recipe is the point of a comparison: allowed, and
+    # each set's identity is printed so swapped --names show.
+    other = _retarget(
+        cache / "a", tmp_path / "b", model_name="other", repo="x/y", revision="r2", recipe="fp8"
+    )
+    assert compare(other) == 0
+    printed = capsys.readouterr().out
+    assert "- B: x/y@r2, recipe fp8, served other, sampling greedy seed 0" in printed
+    for key, value in (
+        ("sampling_name", "sealed"), ("seed", 7), ("max_tokens", 100),
+        ("decoding_sha256", "0" * 64), ("variant", {"changed": True}),
+        ("run", {"run_sha256": "0" * 64}), ("stream", False),
+    ):  # fmt: skip
+        with pytest.raises(SystemExit) as refused:
+            compare(_retarget(cache / "a", tmp_path / f"b-{key}", **{key: value}))
+        assert refused.value.code != 0
+        assert "refusing to compare" in capsys.readouterr().err
+    # A mutation is part of what was asked, per page.
+    mutated = tmp_path / "b-mutation"
+    mutated.mkdir()
+    for path in (cache / "a").glob("*.json"):
+        record = json.loads(path.read_text())
+        if record.get("schema") == F.SCHEMA:
+            record["setup"]["page"] = {"mutation": {"scenario": "other"}}
+        (mutated / path.name).write_text(json.dumps(record))
+    with pytest.raises(SystemExit):
+        compare(mutated)
+    assert "mutation differs" in capsys.readouterr().err
+    # The run's own readings carry no setup: only the run tree is checked.
+    assert compare(tree) == 0
+    elsewhere = make_run_tree(tmp_path / "run2", pages=(("Le dix mai", "Le dix mai"),))
+    (elsewhere / "config.json").write_text("{}")
+    with pytest.raises(SystemExit):
+        compare(elsewhere)
+
+
+def test_one_cache_folder_may_not_mix_model_identities(tmp_path, capsys):
+    tree = make_run_tree(tmp_path / "run", pages=(("Le dix mai", "Le dix mai"),) * 2)
+    (tree / "config.json").write_text("{}")
+    cache = tmp_path / "cache"
+    _fed_run(tree, cache, "a")
+    mixed = _retarget(cache / "a", tmp_path / "mixed")
+    record = json.loads((mixed / "p002.json").read_text())
+    record["setup"]["revision"] = "another"
+    (mixed / "p002.json").write_text(json.dumps(record))
+    gold = _gold(tmp_path / "gold", {"p001": "Le dix mai", "p002": "Le dix mai"})
+    argv = ["--run-tree", str(tree), "--gold", str(gold), "--gold-glob", "*.txt"]
+    with pytest.raises(SystemExit):
+        C.main([*argv, "--answers", str(cache / "a"), "--compare", str(mixed)])
+    assert "mixes setups" in capsys.readouterr().err
+
+
+def test_caches_of_a_real_run_tree_compare_against_it(tmp_path, monkeypatch):
+    # A run tree with run.json is loaded sealed by fed_arm; the scorer must load it alike,
+    # or its identity differs from the one the caches recorded and every cache is refused.
+    tree = make_run_tree(tmp_path / "run", pages=(("Le dix mai", "Le dix mai"),))
+    (tree / "config.json").write_text("{}")
+    (tree / "run.json").write_text(json.dumps({"run_id": "run"}))
+    monkeypatch.setattr(F, "verify_seals", lambda root: None)
+    cache = tmp_path / "cache"
+    _fed_run(tree, cache, "a")
+    _fed_run(tree, cache, "b")
+    gold = _gold(tmp_path / "gold", {"p001": "Le dix mai"})
+    argv = ["--run-tree", str(tree), "--gold", str(gold), "--gold-glob", "*.txt"]
+    assert C.main([*argv, "--answers", str(cache / "a"), "--compare", str(cache / "b")]) == 0
+    assert C.main([*argv, "--answers", str(cache / "a"), "--compare", str(tree)]) == 0

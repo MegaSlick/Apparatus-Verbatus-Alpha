@@ -15,7 +15,7 @@ script, so each gold word is right or wrong for the reader and for each witness.
 Per page group (`score.page_group`; act pages split by FORM) and for the hard pages:
 
 - reading: CER median (parsed pages, and all pages with an unparsed answer read as
-  empty), act recall (gold acts matched one-to-one by a `kind: act` entry at CER <= 0.5,
+  empty), act recall (gold acts matched one-to-one by an act or instrument entry at CER <= 0.5,
   and pages whose act count is exact), index/table row recall (`score.line_recall`),
   surname recall, invented text (inserted words per gold word; false text on pages with
   no gold text);
@@ -62,6 +62,7 @@ STATUS says fool's gold; only an explicit checked status (`gold (<who> <date>)` 
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import random
@@ -74,6 +75,7 @@ from typing import Any
 
 from rapidfuzz.distance import Levenshtein
 
+from common.page_types import is_act_class
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import groups as G
 from operations.bakeoff import score as S
@@ -106,7 +108,7 @@ class Answer:
 
     @property
     def entries(self) -> list[dict[str, Any]]:
-        return [e for e in (self.answer or {}).get("acts") or [] if isinstance(e, dict)]
+        return F.answer_entries(self.answer)
 
     @property
     def text(self) -> str:
@@ -179,11 +181,100 @@ def answers_from_cache(folder: Path, names: dict[str, str] | None = None) -> dic
 
 def load_answers(path: Path, tree: F.RunTree) -> dict[str, Answer]:
     path = Path(path)
-    if (path / "4_perlector").is_dir():
+    if is_run_tree(path):
         if path.resolve() == tree.root.resolve():
             return answers_from_run_tree(tree)
-        return answers_from_run_tree(F.load_run_tree(path))
+        return answers_from_run_tree(load_tree(path))
     return answers_from_cache(path)
+
+
+def load_tree(path: Path) -> F.RunTree:
+    """A run tree loaded as `fed_arm` loads it (a real run, with run.json, has its seals
+    proven), so its identity equals the one the caches recorded."""
+    return F.load_run_tree(path, sealed=F.is_real_run(path))
+
+
+def is_run_tree(path: Path) -> bool:
+    return (Path(path) / "4_perlector").is_dir()
+
+
+# What two compared answer sets must share: the same pages asked the same way, so a
+# difference between them is the model's. The model, checkpoint and recipe may differ.
+COMPARABLE = ("variant", "sampling_name", "seed", "max_tokens", "decoding_sha256", "stream")
+# One folder is one model: its pages may not mix these.
+MODEL_IDENTITY = ("model_name", "repo", "revision", "recipe")
+
+
+def cache_setups(folder: Path) -> dict[str, dict[str, Any]] | str:
+    """Per page stem, the setup its record was written under; or why a folder has none."""
+    out = {}
+    for path in sorted(Path(folder).glob("*.json")):
+        record = json.loads(path.read_text("utf-8"))
+        if record.get("schema") != F.SCHEMA:
+            continue
+        setup = record.get("setup")
+        if not isinstance(setup, dict) or "run" not in setup:
+            return f"{path.name} records no setup (written before setups were recorded)"
+        out[record["page"]] = setup
+    return out
+
+
+def mutation_of(setup: dict[str, Any]) -> Any:
+    return (setup.get("page") or {}).get("mutation")
+
+
+def comparable_view(setup: dict[str, Any]) -> dict[str, Any]:
+    view = {k: setup.get(k) for k in (*COMPARABLE, *MODEL_IDENTITY)}
+    view["run"] = setup.get("run")
+    return view
+
+
+def describe_set(
+    path: Path, tree: F.RunTree
+) -> tuple[str, list[str], dict[str, dict[str, Any]] | None]:
+    """(a line for the card, problems, per-page setups or None for a run's own readings)."""
+    if is_run_tree(path):
+        same = Path(path).resolve() == tree.root.resolve() or load_tree(path).identity() == (
+            tree.identity()
+        )
+        problems = [] if same else [f"{path} is another run tree than --run-tree"]
+        return "the run's own first readings", problems, None
+    setups = cache_setups(path)
+    if isinstance(setups, str):
+        return "no setup recorded", [f"{path}: {setups}"], None
+    if not setups:
+        return "no answers", [f"{path} holds no fed answers"], None
+    views = {json.dumps(comparable_view(s), sort_keys=True, default=str) for s in setups.values()}
+    first = next(iter(setups.values()))
+    problems = []
+    if len(views) > 1:
+        problems.append(f"{path} mixes setups (model, run, sampling, seed, cap or decoding differ)")
+    if first.get("run") != tree.identity():
+        problems.append(f"{path} was answered on another run tree than --run-tree")
+    line = (
+        f"{first.get('repo')}@{first.get('revision')}, recipe {first.get('recipe') or 'none'}, "
+        f"served {first.get('model_name')}, sampling {first.get('sampling_name')} "
+        f"seed {first.get('seed')}"
+    )
+    return line, problems, setups
+
+
+def check_comparable(a: Path, b: Path, tree: F.RunTree) -> tuple[list[str], list[str]]:
+    """(problems, the two sets' model lines). Two fed caches must agree on run tree, variant,
+    mutation, sampling name, seed, token cap and decoding digest; a run's own readings carry
+    no setup, so only their run tree is checked."""
+    line_a, problems, setups_a = describe_set(a, tree)
+    line_b, problems_b, setups_b = describe_set(b, tree)
+    problems += problems_b
+    if setups_a is not None and setups_b is not None and not problems:
+        one_a, one_b = next(iter(setups_a.values())), next(iter(setups_b.values()))
+        for key in COMPARABLE:
+            if one_a.get(key) != one_b.get(key):
+                problems.append(f"{key} differs between the two sets")
+        shared = setups_a.keys() & setups_b.keys()
+        if any(mutation_of(setups_a[s]) != mutation_of(setups_b[s]) for s in shared):
+            problems.append("mutation differs between the two sets")
+    return problems, [line_a, line_b]
 
 
 # --- per page -----------------------------------------------------------------------
@@ -314,7 +405,7 @@ def score_page(answer: Answer, gold, hard: bool) -> dict[str, Any]:
         "false_text": len(text) > S.FALSE_TEXT_CHARS if not reference.strip() else None,
     }
     if S.page_group(gold) == "acts":
-        acts = [e.get("text") or "" for e in answer.entries if e.get("kind") == "act"]
+        acts = [e.get("text") or "" for e in answer.entries if is_act_class(e.get("kind"))]
         rec = S.record_scores({"arm": READER_ARM, "units": [{"text": t} for t in acts]}, gold)
         row.update(
             gold_acts=rec["acts"],
@@ -987,7 +1078,9 @@ def _jsonable(card: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-_CHECKED_STATUS = re.compile(r"(lead-checked|gold(\s*\(.*\))?)", re.IGNORECASE)
+_CHECKED_STATUS = re.compile(
+    r"lead-checked|gold\s*\(\s*[^()\s][^()]*?\s+(\d{4}-\d{2}-\d{2})\s*\)", re.IGNORECASE
+)
 
 
 def reference_identities(
@@ -1014,10 +1107,19 @@ def reference_identities(
 
 
 def is_checked_status(status: str) -> bool:
-    """A gold STATUS that says a person checked every word: `gold (<who> <date>)` as the
-    bake-off template writes it, `gold`, or `lead-checked`. Anything else (fool's gold,
-    silver, draft, empty, unknown) is not."""
-    return bool(_CHECKED_STATUS.fullmatch(status.strip()))
+    """A gold STATUS that says a person checked every word: `gold (<who> <date>)` with the
+    checker's name and an ISO date, or `lead-checked`. Anything else (bare `gold`, `gold
+    (unchecked draft)`, fool's gold, silver, draft, empty, unknown) is not."""
+    found = _CHECKED_STATUS.fullmatch(status.strip())
+    if found is None:
+        return False
+    if found.group(1) is None:  # lead-checked
+        return True
+    try:
+        datetime.date.fromisoformat(found.group(1))
+    except ValueError:
+        return False
+    return True
 
 
 def reference_label(golds: list) -> str:
@@ -1052,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    tree = F.load_run_tree(args.run_tree)
+    tree = load_tree(args.run_tree)
     gold = load_gold_dir(args.gold, args.gold_glob)
     if args.exclude:
         for stem in args.exclude.read_text("utf-8").split():
@@ -1061,6 +1163,16 @@ def main(argv: list[str] | None = None) -> int:
     answers = load_answers(args.answers or args.run_tree, tree)
     names = (args.names or f"{(args.answers or args.run_tree).name},"
              f"{args.compare.name if args.compare else ''}").split(",")  # fmt: skip
+    model_lines = None
+    if args.compare:
+        problems, model_lines = check_comparable(args.answers or args.run_tree, args.compare, tree)
+        if problems:
+            parser.exit(
+                2,
+                "refusing to compare answer sets that are not alike: "
+                + "; ".join(problems)
+                + "\nOnly the model, checkpoint and recipe may differ.\n",
+            )
     other = load_answers(args.compare, tree) if args.compare else None
     # Every page of the run with gold is expected: one with no answer is a failure.
     expected = set(tree.by_stem()) & set(gold)
@@ -1078,6 +1190,8 @@ def main(argv: list[str] | None = None) -> int:
             "another unchecked status): every number is a ballpark against it, not an accuracy.",
             "",
         ]
+    if model_lines:
+        lines += [f"- {n}: {m}" for n, m in zip(names, model_lines, strict=True)] + [""]
     lines += report(card, f"{names[0]}: {len(answers)} answers", label)
     out_json: dict[str, Any] = {"label": label.strip(), "answers": _jsonable(card)}
     if other is not None:

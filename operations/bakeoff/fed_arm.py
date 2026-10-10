@@ -95,7 +95,8 @@ from operations.bakeoff import witness_run as W
 SCHEMA = "bakeoff-fed-page.v1"
 ARM = A.Arm("qwen-fed", "perlector", None, "page", "generic-80gb-plus")
 RECIPE = "unproven-real-perlector"  # the recorded feeds' serving recipe
-MAX_TOKENS = 12_288  # config/perlector_protocol.toml page_max_tokens, as the run sent it
+# config/decoding.toml [perlector_generation] page_max_tokens, as the run sent it
+MAX_TOKENS = 12_288
 GREEDY = {"temperature": 0.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0}
 IMAGE_MODES = ("clear", "none", "blur", "blank", "swap")
 # The bake-off arm each chair of the 2026-10 roster is (config/models-real.toml).
@@ -885,9 +886,15 @@ def reading_text(answer: dict[str, Any] | None) -> str:
     """Every entry's text in order, one per line block: what the scorecard compares."""
     if not answer:
         return ""
-    return "\n".join(
-        str(e.get("text") or "") for e in answer.get("acts") or [] if isinstance(e, dict)
-    )
+    return "\n".join(str(e.get("text") or "") for e in answer_entries(answer))
+
+
+def answer_entries(answer: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """An answer's entries in either grammar: `entries` (page types named) or `acts`."""
+    if not answer:
+        return []
+    entries = answer.get("entries") if "entries" in answer else answer.get("acts")
+    return [e for e in entries or [] if isinstance(e, dict)]
 
 
 # --- the cache's identity -------------------------------------------------------------
@@ -1080,33 +1087,6 @@ def _pick(tree: RunTree, pages: str | None, limit: int | None) -> list[Page]:
     return chosen[: limit or None]
 
 
-def assert_quantization(row: dict[str, Any], weights: Path) -> None:
-    """Refuse a quantized recipe on a snapshot whose config.json does not declare it.
-
-    The serving manager's guard (`operations/serving/manager.py::assert_quantization`)
-    on the snapshot this arm launches, so `--recipe unproven-real-perlector-fp8` with
-    bf16 `--weights` is refused rather than quantized at load. (Branch
-    work/serving-nvfp4 adds the same wrapper to `arms.py` for `witness_run`.)
-    """
-    if row.get("quantization") is None:
-        return
-    from types import SimpleNamespace
-
-    from operations.serving.errors import ServingConfigurationError
-    from operations.serving.manager import assert_quantization as guard
-
-    profile = SimpleNamespace(
-        quantization=row["quantization"],
-        chair=row.get("chair"),
-        recipe=row.get("recipe"),
-        tier=row.get("tier"),
-    )
-    try:
-        guard(SimpleNamespace(root=Path(weights)), profile)
-    except ServingConfigurationError as error:
-        raise SystemExit(str(error)) from error
-
-
 def mutation_references(
     args: argparse.Namespace, tree: RunTree
 ) -> dict[str, dict[str, str]] | None:
@@ -1193,7 +1173,7 @@ def run(args: argparse.Namespace) -> int:
     if not url:
         weights = A.resolve_weights(ARM, args.weights, None, None)
         row = A.serving_row(ARM.chair, args.tier or ARM.default_tier, args.recipe)
-        assert_quantization(row, weights)
+        A.assert_row_quantization(row, weights)
         argv = A.server_argv(
             row, weights, port=args.port, served_name=args.model_name,
             gpu_memory_utilization=args.gpu_memory_utilization, max_num_seqs=args.max_num_seqs,

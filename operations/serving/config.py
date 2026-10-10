@@ -195,7 +195,9 @@ KV_CACHE_DTYPE_VALUES = frozenset({"fp8"})
 # for a Qwen3.5/3.8 checkpoint it reads the head's depth from
 # `text_config.mtp_num_hidden_layers`; `num_speculative_tokens` is stated
 # because the vLLM recipe for Qwen3.8-27B says startup fails without it.
-# Speculation verified by the full model changes speed, not output; vLLM
+# The full model verifies each drafted token, so speculation aims at the same
+# distribution, but the engine's numerics and batching can still change which
+# tokens come out: a speculative recipe is compared, not assumed equal. vLLM
 # refuses `min_p` > 0 and `logit_bias` under it, which no chair sends.
 SPECULATIVE_METHODS = frozenset({"mtp"})
 _SPECULATIVE_FIELDS = frozenset({"method", "num_speculative_tokens"})

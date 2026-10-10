@@ -434,7 +434,7 @@ def _unproven_real_perlector_page_v0(feed: dict[str, Any]) -> list[list[_Part]]:
 # and deliberately send the same prompt: each takes the page and re-ask builders of the
 # recipe it varies, so a Perlector chair can point at it. The evidence still names the
 # recipe asked for (`serving_recipe`); its rendered text is the base recipe's, byte for
-# byte. The NVFP4 rows arrive with branch work/serving-nvfp4.
+# byte.
 RECIPE_ALIASES: Final[dict[str, str]] = {
     "unproven-real-perlector-fp8": "unproven-real-perlector",
     "unproven-real-perlector-fp8-mtp3": "unproven-real-perlector",
