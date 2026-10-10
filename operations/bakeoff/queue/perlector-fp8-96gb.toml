@@ -9,6 +9,11 @@
 # The vendor sampling is not greedy (temperature 0.7, seed 0), so the bf16 repeat arm at the
 # end measures how much bf16 differs from itself; a difference smaller than that is noise.
 #
+# The last two arms (added 2026-10-09, design note P3) serve NVIDIA's mixed NVFP4/FP8 build
+# of the same model (`--recipe unproven-real-perlector-nvfp4[-mtp3]`, 21.9 GB, pinned in
+# weight_pins.json `qwen3.8-27b-nvfp4`). They come after the bf16 repeat so that, if the day
+# runs late, the FP8 arms and the noise floor are kept and NVFP4 is what is cut.
+#
 # When the fed-witness arm (`qwen-fed`, the Perlector's own prompt with witnesses) lands, the
 # same arms run it by changing `--model qwen-vendor` to `--model qwen-fed`; `--recipe` and the
 # weights stay as written.
@@ -92,5 +97,36 @@ prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--s
 command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
   "--label", "qwen38-27b-vendor-repeat", "--weights", "/workspace/private/model-store/hf/qwen3.8-27B",
   "--repo", "Qwen/Qwen3.8-27B", "--revision", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "--max-num-batched-tokens", "16384",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
+
+# NVIDIA's mixed NVFP4/FP8 weights (21.9 GB, pinned in weight_pins.json `qwen3.8-27b-nvfp4`):
+# MLPs and lm_head in 4-bit NVFP4, attention and DeltaNet projections FP8, vision tower and
+# MTP head bf16. vLLM 0.30.0 serves it as `modelopt_mixed`; needs a Blackwell card. The
+# smoke answers whether it starts and reads images; server.log names the NVFP4 kernel picked.
+[[arms]]
+name = "qwen38-27b-nvfp4-vendor"
+time_box_min = 30
+cut = "behind-schedule"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-nvfp4"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
+  "--label", "qwen38-27b-nvfp4-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-nvfp4",
+  "--repo", "nvidia/Qwen3.8-27B-NVFP4", "--revision", "482ca0f3832238542f8f5295dde86b5f22711d80",
+  "--recipe", "unproven-real-perlector-nvfp4",
+  "--max-num-batched-tokens", "16384",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
+
+# NVFP4/FP8 plus the bf16 MTP head, 3 draft tokens: the cheapest-per-page candidate.
+[[arms]]
+name = "qwen38-27b-nvfp4-mtp3-vendor"
+time_box_min = 30
+cut = "behind-schedule"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-nvfp4"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
+  "--label", "qwen38-27b-nvfp4-mtp3-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-nvfp4",
+  "--repo", "nvidia/Qwen3.8-27B-NVFP4", "--revision", "482ca0f3832238542f8f5295dde86b5f22711d80",
+  "--recipe", "unproven-real-perlector-nvfp4-mtp3",
   "--max-num-batched-tokens", "16384",
   "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
