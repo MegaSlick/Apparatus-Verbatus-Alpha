@@ -158,14 +158,11 @@ _FEED_FIELDS: Final = frozenset(
     }
 )
 _FEED_BOOLEAN_FIELDS: Final = ("witness_coordinates", "surya_lines", "surya_blocks")
-# Whether the reading is asked to name its page type and each entry's kind
-# (`common.page_types`): "named", or "off" for the `acts` grammar alone. The one
-# switch a sealed table may leave out, meaning "off": a protocol sealed before
-# page types existed reads, and its saved replies replay, as it always did.
+# The reading names its page type and each entry's kind (`common.page_types`).
+# The switch is required and "named" is its only value, so every feed record
+# says what the reader was asked.
 PAGE_TYPES_FIELD: Final = "page_types"
-PAGE_TYPES_NAMED: Final = "named"
-PAGE_TYPES_OFF: Final = "off"
-PAGE_TYPES_SETTINGS: Final = frozenset({PAGE_TYPES_NAMED, PAGE_TYPES_OFF})
+PAGE_TYPES_SETTINGS: Final = frozenset({"named"})
 
 # The unit kinds about one act in size (`UNIT_KINDS`); the answer reserve counts
 # act entries from these only (`answer_measure`).
@@ -214,12 +211,12 @@ def validate_feed_table(table: Any) -> dict[str, Any]:
     (`build_page_feed`).
     """
     where = f"the Perlector protocol declaration's [{FEED_TABLE}]"
-    if not isinstance(table, dict) or set(table) - {PAGE_TYPES_FIELD} != _FEED_FIELDS:
+    if not isinstance(table, dict) or set(table) != _FEED_FIELDS | {PAGE_TYPES_FIELD}:
         raise ContractError(
-            f"{where} is not its closed schema {sorted(_FEED_FIELDS)} (and, optionally, "
-            f"{PAGE_TYPES_FIELD!r}); a feed switch this build does not read cannot be applied"
+            f"{where} is not its closed schema {sorted(_FEED_FIELDS | {PAGE_TYPES_FIELD})}; "
+            "a feed switch this build does not read cannot be applied"
         )
-    if PAGE_TYPES_FIELD in table and table[PAGE_TYPES_FIELD] not in PAGE_TYPES_SETTINGS:
+    if table[PAGE_TYPES_FIELD] not in PAGE_TYPES_SETTINGS:
         raise ContractError(
             f"{where} {PAGE_TYPES_FIELD} {table[PAGE_TYPES_FIELD]!r} is not one of "
             f"{sorted(PAGE_TYPES_SETTINGS)}"

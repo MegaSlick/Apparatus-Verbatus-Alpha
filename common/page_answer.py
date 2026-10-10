@@ -7,32 +7,23 @@ object exactly as the model gave it and `problems` is empty; on `malformed`
 `answer` is `None`, the whole page is held, and `problems` is every reason the
 reply is not the grammar, each `{"code", "detail"}`.
 
-The grammar has two shapes, told apart by their top-level keys. The `entries`
-shape names the page's type and each entry's kind (`common.page_types`):
+The answer names the page's type and each entry's kind (`common.page_types`):
 
     {"page_type", "writing",
      "entries": [{"n", "kind", "label"?, "cites", "text",
                   "continues_from_previous_page", "continues_to_next_page"}, ...],
      "set_aside": [{"id", "reason"}, ...]}
 
-and a re-ask, which reads ids inside a page already typed, answers it without
-`page_type` and `writing`. The older `acts` shape names neither:
+A re-ask, which reads ids inside a page already typed, answers it without
+`page_type` and `writing`.
 
-    {"acts": [{...the same entry...}, ...], "set_aside": [...]}
-
-* exactly the top-level keys of one shape, no others;
+* exactly the top-level keys of one of those two shapes, no others;
 * `page_type` one of `common.page_types.PAGE_TYPES`, `writing` one of `WRITINGS`;
 * each entry: `n` an integer, `1..k` contiguous in the order given; `kind` one
-  of `common.page_types.ENTRY_KINDS` in the `entries` shape, `"act"` or
-  `"other"` in the `acts` shape; `label` absent, `null`, or a non-blank string
-  of at most 80 characters; `cites` a list of strings; `text` a string; both
-  continuation flags present as booleans;
+  of `common.page_types.ENTRY_KINDS`; `label` absent, `null`, or a non-blank
+  string of at most 80 characters; `cites` a list of strings; `text` a string;
+  both continuation flags present as booleans;
 * each set-aside entry: `id` and `reason`, both strings.
-
-Both shapes are read wherever an answer is read, so a saved run's answers in
-the `acts` shape replay as they were read: their kinds are already act
-classes and their page type is not stated (`stated_page_type` is `None`).
-`answer_entry_list` gives either shape's entries.
 
 A continuation flag set on an entry that is not at its page's edge is grammar,
 not a malformed answer: it is a statement about one entry, so it never costs the
@@ -72,7 +63,7 @@ UTF-8 every record is written in (`lone-surrogate`).
 ## The one repair
 
 A reply that is not JSON only because some object keys of the grammar are
-written bare (`{\nacts: [` for `{"acts": [`) is read after quoting those keys,
+written bare (`{\nentries: [` for `{"entries": [`) is read after quoting those keys,
 and nothing else (`parse_page_answer_repaired`). A key is quoted only when it is
 one of the grammar's own field names, stands outside every string right after
 `{` or `,` and is followed by `:`; the repaired text must then be one JSON value
@@ -94,22 +85,14 @@ PARSED: Final = "parsed"
 MALFORMED: Final = "malformed"
 PARSE_STATES: Final = frozenset({PARSED, MALFORMED})
 
-# The act classes: the kinds of the `acts` shape, and the `kind` of every record after it.
-ACT_KINDS: Final = frozenset({"act", "other"})
 LABEL_MAX_CHARACTERS: Final = 80
 FENCED_ANSWER: Final = "fenced-answer"
 
-# The two shapes of an answer, by their top-level keys.
-ACTS_GRAMMAR: Final = "acts"
-ENTRIES_GRAMMAR: Final = "entries"
-_TOP_FIELDS: Final = frozenset({"acts", "set_aside"})
+# The two shapes of an answer, by their top-level keys: a first reading and a re-ask.
 _ENTRIES_TOP_FIELDS: Final = frozenset({"page_type", "writing", "entries", "set_aside"})
 _REASK_ENTRIES_TOP_FIELDS: Final = frozenset({"entries", "set_aside"})
-_SHAPES: Final = {
-    _TOP_FIELDS: ACTS_GRAMMAR,
-    _ENTRIES_TOP_FIELDS: ENTRIES_GRAMMAR,
-    _REASK_ENTRIES_TOP_FIELDS: ENTRIES_GRAMMAR,
-}
+_SHAPES: Final = frozenset({_ENTRIES_TOP_FIELDS, _REASK_ENTRIES_TOP_FIELDS})
+_ENTRY_KINDS: Final = frozenset(ENTRY_KINDS)
 _ACT_REQUIRED: Final = frozenset(
     {"n", "kind", "cites", "text", "continues_from_previous_page", "continues_to_next_page"}
 )
@@ -243,9 +226,8 @@ def _shown(value: Any) -> str:
     return "a list" if isinstance(value, list) else "an object"
 
 
-def _act_problems(index: int, act: Any, list_key: str = "acts") -> list[dict[str, str]]:
-    where = f"{list_key}[{index}]"
-    kinds = ACT_KINDS if list_key == "acts" else frozenset(ENTRY_KINDS)
+def _act_problems(index: int, act: Any) -> list[dict[str, str]]:
+    where = f"entries[{index}]"
     if not isinstance(act, dict):
         return [_problem("act-not-object", f"{where} is not an object")]
     problems = []
@@ -261,7 +243,7 @@ def _act_problems(index: int, act: Any, list_key: str = "acts") -> list[dict[str
         problems.append(
             _problem("n-not-contiguous", f"{where}.n is {act['n']}, expected {index + 1}")
         )
-    if "kind" in act and not (isinstance(act["kind"], str) and act["kind"] in kinds):
+    if "kind" in act and not (isinstance(act["kind"], str) and act["kind"] in _ENTRY_KINDS):
         problems.append(_problem("kind-unknown", f"{where}.kind is {_shown(act['kind'])}"))
     label = act.get("label")
     if label is not None and (
@@ -324,17 +306,15 @@ def grammar_problems(answer: Any) -> list[dict[str, str]]:
     """Every way a decoded value departs from the page answer grammar."""
     if not isinstance(answer, dict):
         return [_problem("not-object", "the answer is not a JSON object")]
-    shape = _SHAPES.get(frozenset(answer))
-    if shape is None:
+    if frozenset(answer) not in _SHAPES:
         return [
             _problem(
                 "top-fields",
-                f"the answer's keys are {sorted(answer)}, not exactly {sorted(_TOP_FIELDS)} "
-                f"or {sorted(_ENTRIES_TOP_FIELDS)} (a re-ask: without page_type and writing)",
+                f"the answer's keys are {sorted(answer)}, not exactly "
+                f"{sorted(_ENTRIES_TOP_FIELDS)} (a re-ask: without page_type and writing)",
             )
         ]
-    list_key = "acts" if shape == ACTS_GRAMMAR else "entries"
-    acts, set_aside = answer[list_key], answer["set_aside"]
+    acts, set_aside = answer["entries"], answer["set_aside"]
     problems = []
     if "page_type" in answer and not (
         isinstance(answer["page_type"], str) and answer["page_type"] in PAGE_TYPES
@@ -347,29 +327,16 @@ def grammar_problems(answer: Any) -> list[dict[str, str]]:
     ):
         problems.append(_problem("writing-unknown", f"writing is {_shown(answer['writing'])}"))
     if not isinstance(acts, list):
-        problems.append(_problem("acts-not-list", f"{list_key} is not a list"))
+        problems.append(_problem("entries-not-list", "entries is not a list"))
     else:
         for index, act in enumerate(acts):
-            problems.extend(_act_problems(index, act, list_key))
+            problems.extend(_act_problems(index, act))
     if not isinstance(set_aside, list):
         problems.append(_problem("set-aside-not-list", "set_aside is not a list"))
     else:
         for index, entry in enumerate(set_aside):
             problems.extend(_set_aside_problems(index, entry))
     return problems
-
-
-def answer_grammar(answer: Mapping[str, Any]) -> str:
-    """The shape of a parsed answer: `"entries"` or `"acts"`."""
-    shape = _SHAPES.get(frozenset(answer))
-    if shape is None:
-        raise ValueError("not a parsed page answer")
-    return shape
-
-
-def answer_entry_list(answer: Mapping[str, Any]) -> list[Any]:
-    """A parsed answer's entries, in either shape, in the order given."""
-    return answer["entries"] if answer_grammar(answer) == ENTRIES_GRAMMAR else answer["acts"]
 
 
 def stated_page_type(answer: Mapping[str, Any] | None) -> tuple[str | None, str | None]:
@@ -415,7 +382,7 @@ def _graded(
 # --- the one repair: bare grammar keys ------------------------------------------
 
 UNQUOTED_KEYS_QUOTED: Final = "unquoted-keys-quoted"
-_GRAMMAR_KEYS: Final = _TOP_FIELDS | _ENTRIES_TOP_FIELDS | _ACT_FIELDS | _SET_ASIDE_FIELDS
+_GRAMMAR_KEYS: Final = _ENTRIES_TOP_FIELDS | _ACT_FIELDS | _SET_ASIDE_FIELDS
 _KEY_CHARACTERS: Final = frozenset("abcdefghijklmnopqrstuvwxyz_")
 
 

@@ -52,8 +52,6 @@ from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 from common.imaging import Bounds
 from common.page_answer import (
-    answer_entry_list,
-    answer_grammar,
     grammar_problems,
     stated_page_type,
 )
@@ -690,9 +688,8 @@ def duplicate_regions(
 
 
 def _row_shared_units(entry: Mapping[str, Any]) -> Mapping[str, Box]:
-    """The shared units placing a row entry; none for any other kind, or a reading of
-    the `acts` grammar, whose kinds are act classes."""
-    if entry.get("entry_kind") not in page_types.ROW_KINDS:
+    """The shared units placing a row entry; none for any other kind."""
+    if entry["entry_kind"] not in page_types.ROW_KINDS:
         return {}
     return entry.get("placing_shared") or {}
 
@@ -708,7 +705,7 @@ def _compared_regions(
     places, so two rows naming the same line are still a duplicate; a row that the
     shared unit alone places has nothing left to compare, and is no duplicate of
     another row (`rows-share-unit` records them). Every other pair is compared
-    whole, as before page types.
+    whole.
     """
     common = set(_row_shared_units(entry)) & set(_row_shared_units(other))
     if not common:
@@ -874,7 +871,7 @@ def validate_answer(
     problems: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []
     expanded = []
-    for raw in answer_entry_list(answer):
+    for raw in answer["entries"]:
         cited_ids, cite_problems = expand_cites(raw["cites"], candidates)
         if policy is not None:
             cited_ids, cite_problems = _covered_detection_ranges(
@@ -2489,7 +2486,7 @@ def _record(
                 "reading_attempt": entry.get("reading_attempt", attempt),
                 "reading_n": entry.get("reading_n", entry["n"]),
                 "kind": entry["kind"],
-                "entry_kind": entry.get("entry_kind", entry["kind"]),
+                "entry_kind": entry["entry_kind"],
                 "cited_ids": sorted(entry["cited_ids"], key=id_key),
                 "union_box_px": entry["union_box_px"],
             }
@@ -2506,7 +2503,7 @@ def _record(
         "page_type": {
             **typed,
             "kinds": page_types.kind_agreement(
-                typed["stated"], [entry.get("entry_kind", entry["kind"]) for entry in entries]
+                typed["stated"], [entry["entry_kind"] for entry in entries]
             ),
             "recorded_not_held": recorded,
         },
@@ -2518,12 +2515,11 @@ def _page_type_context(
     answer: Mapping[str, Any] | None, feed: Mapping[str, Any], record_count: int | None
 ) -> dict[str, Any]:
     """The page type a valid answer states, the model-free facts beside it, and which
-    rules apply (`common.page_types`). An answer in the `acts` grammar, or none, states
-    no type, and every rule applies."""
+    rules apply (`common.page_types`). No valid answer states no type, and every rule
+    applies."""
     page_type, writing = stated_page_type(answer)
     facts = page_types.type_facts(feed, record_count)
     return {
-        "grammar": None if answer is None else answer_grammar(answer),
         "stated": page_type,
         "writing": writing,
         "facts": facts,

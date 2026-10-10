@@ -24,12 +24,12 @@ from common.contracts.stages import (
     RECENSOR,
     STAGES,
 )
-from common.page_answer import ACT_KINDS
 from common.page_review import (
     REVIEW_DECISIONS_KIND,
     REVIEW_DECISIONS_OPERATION,
     REVIEW_DECISIONS_SUBJECT,
 )
+from common.page_types import ACT_CLASSES
 from common.review_decisions import decisions_digest
 from common.runtree.store import RUN_FILE, RunTree
 from common.stage import latest_attempt
@@ -925,7 +925,7 @@ def _progressive_acts(
     acts = []
     for row in _records_of(stage_records, PERLECTOR, "act-region"):
         payload = _payload_of(row, "the Perlector act-region record")
-        if payload.get("kind") not in ACT_KINDS:
+        if payload.get("kind") not in ACT_CLASSES:
             raise SchemaRefusal(
                 f"{row['record_ref']['relative_path']}: act-region kind "
                 f"{payload.get('kind')!r} is neither 'act' nor 'other'"

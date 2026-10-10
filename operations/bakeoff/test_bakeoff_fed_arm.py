@@ -67,6 +67,7 @@ def _feed(ordinal: int, image_path: str, png: bytes, first: str, third: str) -> 
         "switches": {
             "page_image": "legible",
             "page_overlay": "off",
+            "page_types": "named",
             "surya_blocks": True,
             "surya_lines": True,
             "witness_coordinates": True,
@@ -163,7 +164,11 @@ def make_run_tree(
             },
             "parse_state": "parsed",
             "problems": [],
-            "answer": {"acts": [{"n": 1, "kind": "act", "text": first, "cites": ["A1"]}]},
+            "answer": {
+                "page_type": "register-acts",
+                "writing": "handwritten",
+                "entries": [{"n": 1, "kind": "act", "text": first, "cites": ["A1"]}],
+            },
             "finish_reason": "stop",
             "stop_reason": "stop",
             "failure": None,
@@ -375,13 +380,6 @@ def test_a_label_refuses_pages_cached_under_another_setup(tree, tmp_path):
     (other / "config.json").write_text("{}")
     with pytest.raises(SystemExit, match="another setup"):
         F.main(_run_argv(other, out, "x", *base))
-    # A cache written before setups were recorded is refused too.
-    path = out / "x" / "p001.json"
-    record = json.loads(path.read_text())
-    record.pop("setup"), record.pop("setup_sha256")
-    path.write_text(json.dumps(record))
-    with pytest.raises(SystemExit, match="before setups were recorded"):
-        F.main(_run_argv(tree, out, "x", *base))
 
 
 def test_a_changed_mutation_under_the_same_label_is_refused(tree, tmp_path):

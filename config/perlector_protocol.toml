@@ -56,11 +56,9 @@ maximum_edge = 2560
 #   page_overlay         "off", or "boxes": a second image after the page
 #                        render, a copy of it with every shown boxed id
 #                        outlined and labelled (`common/page_overlay.py`).
-#   page_types           "named": the answer names the page's type and each
-#                        entry's kind (`common/page_types.py`); "off": the older
-#                        `acts` grammar, act or other only. A table without
-#                        this switch is "off", so a protocol sealed before page
-#                        types reads, and replays, as it did.
+#   page_types           "named": the answer names the page's type, how it is
+#                        written, and each entry's kind (`common/page_types.py`).
+#                        Required; "named" is its only value.
 [feed]
 page_image = "legible"
 witnesses = "all"

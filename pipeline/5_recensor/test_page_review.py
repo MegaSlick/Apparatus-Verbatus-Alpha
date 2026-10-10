@@ -303,7 +303,7 @@ def test_the_page_review_scenario_holds_the_unplaced_entry_naming_every_reason(r
     assert summary["by_code"]["reading-unplaced"] == {"as": "hold", "pages": 1, "units": 1}
     assert [row["act_key"] for row in summary["queue"]] == ["p2:1"]
     assert summary["by_page_type"] == {
-        "untyped": {"pages": 2, "held_pages": 1, "flagged_pages": 0, "clean_pages": 1}
+        "register-acts": {"pages": 2, "held_pages": 1, "flagged_pages": 0, "clean_pages": 1}
     }
     receipt = tree.receipt()
     assert receipt["recensor_status"] == "partial"
@@ -1383,6 +1383,4 @@ def test_the_review_summary_counts_a_page_by_the_type_its_reading_names():
         }
     }
     assert page_review.page_type_of(named) == "index"
-    old = {"payload": {"answer": {"acts": [], "set_aside": []}}}
-    assert page_review.page_type_of(old) == page_review.UNTYPED_PAGE
     assert page_review.page_type_of({"payload": {"answer": None}}) == page_review.UNTYPED_PAGE

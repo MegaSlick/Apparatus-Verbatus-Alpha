@@ -890,11 +890,10 @@ def reading_text(answer: dict[str, Any] | None) -> str:
 
 
 def answer_entries(answer: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """An answer's entries in either grammar: `entries` (page types named) or `acts`."""
+    """An answer's entries, in the order given."""
     if not answer:
         return []
-    entries = answer.get("entries") if "entries" in answer else answer.get("acts")
-    return [e for e in entries or [] if isinstance(e, dict)]
+    return [e for e in answer.get("entries") or [] if isinstance(e, dict)]
 
 
 # --- the cache's identity -------------------------------------------------------------
@@ -969,7 +968,7 @@ def cached_state(path: Path, setup: dict[str, Any], request_sha: str, settings_s
     if old.get("setup_sha256") != _digest(setup):
         raise SystemExit(
             f"{path} was cached under another setup "
-            f"({_setup_difference(old.get('setup'), setup)} differ); use a new --label"
+            f"({_setup_difference(old['setup'], setup)} differ); use a new --label"
         )
     if (old.get("request") or {}).get("sha256") != request_sha:
         raise SystemExit(
@@ -984,9 +983,7 @@ def cached_state(path: Path, setup: dict[str, Any], request_sha: str, settings_s
     return "send"
 
 
-def _setup_difference(old: Any, new: dict[str, Any]) -> str:
-    if not isinstance(old, dict):
-        return "it was written before setups were recorded; its setup and this one"
+def _setup_difference(old: dict[str, Any], new: dict[str, Any]) -> str:
     return ", ".join(sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k)))
 
 

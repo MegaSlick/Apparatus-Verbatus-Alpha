@@ -6,7 +6,7 @@ import json
 import pytest
 
 from common import page_prompt
-from common.page_answer import ACTS_GRAMMAR, ENTRIES_GRAMMAR, answer_grammar, parse_page_answer
+from common.page_answer import parse_page_answer
 from common.page_types import ENTRY_KINDS
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import mutations as M
@@ -24,9 +24,7 @@ def _refs(tree, texts=TEXTS, status="fool's gold"):
     refs = {}
     for stem, text in texts.items():
         ref = E.reference_from_gold_for(
-            parse_gold(GOLD.format(stem=stem, status=status, text=text), stem),
-            tree.by_stem()[stem].feed,
-            None,
+            parse_gold(GOLD.format(stem=stem, status=status, text=text), stem), None
         )
         M.statuses_from_agreement(ref, tree.by_stem()[stem].feed)
         refs[stem] = ref
@@ -114,7 +112,7 @@ def test_loss_spans_follow_word_status_and_tile_the_answer(tmp_path):
     weighted = {answer_json[s:e]: w for s, e, w in spans if w != 1.0}
     assert "Richer" not in weighted  # a checked word carries 1.0, like the scaffold
     assert weighted["Lalonde"] == 0.3 and weighted["dix"] == 0.7
-    assert weighted[json.dumps(answer["acts"][0]["cites"])] == E.CITES_WEIGHT
+    assert weighted[json.dumps(answer["entries"][0]["cites"])] == E.CITES_WEIGHT
     # A doubtful reading is unresolved: weight 0 (p002 has [[juin|juillet]]).
     ref2 = refs["p002"]
     answer2 = E.build_answer(ref2, tree.pages[2].feed, [])
@@ -127,7 +125,7 @@ def test_loss_spans_follow_word_status_and_tile_the_answer(tmp_path):
                                         "continues_to_next_page": False}])  # fmt: skip
     for t in ("dit", '"Le', 'Roi"', "fils"):
         ref3.words.append(M.RefWord(t, "checked", "word", 0))
-    answer3 = {"acts": [{"n": 1, "kind": "act", "cites": [], "text": ref3.entries[0]["text"],
+    answer3 = {"entries": [{"n": 1, "kind": "act", "cites": [], "text": ref3.entries[0]["text"],
                          "continues_from_previous_page": False, "continues_to_next_page": False}],
                "set_aside": []}  # fmt: skip
     j3 = json.dumps(answer3, ensure_ascii=False)
@@ -149,23 +147,27 @@ def test_build_answer_cites_every_shown_id_or_sets_it_aside(tmp_path):
     shown |= {line["id"] for line in m.feed["surya"]["lines"]} | {
         b["id"] for b in m.feed["surya"]["blocks"]
     }
-    cited = {c for e in answer["acts"] for c in e["cites"]}
+    cited = {c for e in answer["entries"] for c in e["cites"]}
     aside = {s["id"] for s in answer["set_aside"]}
     assert cited | aside == shown and not cited & aside
     assert set(m.set_aside_ids) <= aside
     assert {s["reason"] for s in answer["set_aside"] if s["id"] in m.set_aside_ids} == {
         "not on the page"
     }
-    assert answer["acts"][0]["cites"][:2] == ["A1", "C1"] and "L1" in answer["acts"][0]["cites"]
+    assert (
+        answer["entries"][0]["cites"][:2] == ["A1", "C1"] and "L1" in answer["entries"][0]["cites"]
+    )
     # "Folio 1" matches no entry: set aside, never cited as the act's text.
     assert "A2" in aside
     # A reference that brings its own cites keeps them and weighs them fully.
     own = M.Reference("p001", "silver", [{"kind": "act", "label": "b", "text": TEXT, "cites": ["A1", "L1"],
                                           "continues_from_previous_page": False,
-                                          "continues_to_next_page": True}])  # fmt: skip
+                                          "continues_to_next_page": True}],
+                      page_type="register-acts", writing="handwritten")  # fmt: skip
     answer = E.build_answer(own, page.feed, [])
     assert (
-        answer["acts"][0]["cites"] == ["A1", "L1"] and answer["acts"][0]["continues_to_next_page"]
+        answer["entries"][0]["cites"] == ["A1", "L1"]
+        and answer["entries"][0]["continues_to_next_page"]
     )
 
 
@@ -239,8 +241,8 @@ def test_donor_acts_never_come_from_held_out_pages_or_sibling_halves(tmp_path):
     texts = {"p001_1L": TEXT, "p002_1L": SECRET, "p001_2R": SECRET.replace("Secret", "Sibling")}
     refs = {}
     for stem, text in texts.items():
-        refs[stem] = M.reference_from_gold(
-            parse_gold(GOLD.format(stem=stem, status="fool's gold", text=text), stem)
+        refs[stem] = E.reference_from_gold_for(
+            parse_gold(GOLD.format(stem=stem, status="fool's gold", text=text), stem), None
         )
     assert M.donor_acts(refs, "p001_1L") == [" ".join(SECRET.split())]  # only p002_1L's act
     out = tmp_path / "out"
@@ -262,7 +264,7 @@ def test_targets_keep_unread_ink_and_uncertain_readings(tmp_path):
     texts = {**TEXTS, "p002": "Le onze [[?]] [[juin|juillet]]", "p003": "[[?]]"}
     refs = _refs(tree, texts)
     answer = E.build_answer(refs["p002"], tree.pages[2].feed, [])
-    assert answer["acts"][0]["text"] == "Le onze [[?]] [[juin|juillet]]"
+    assert answer["entries"][0]["text"] == "Le onze [[?]] [[juin|juillet]]"
     j = json.dumps(answer, ensure_ascii=False)
     state, parsed, problems = parse_page_answer(j)
     assert state == "parsed", problems
@@ -277,7 +279,7 @@ def test_targets_keep_unread_ink_and_uncertain_readings(tmp_path):
     assert weights["[[?]]"] == weights["[["] == weights["|juillet]]"] == E.WEIGHTS["draft"]
     # A gap-only act is still an act in the target.
     gap = E.build_answer(refs["p003"], tree.pages[3].feed, [])
-    assert [e["text"] for e in gap["acts"]] == ["[[?]]"]
+    assert [e["text"] for e in gap["entries"]] == ["[[?]]"]
     # A lead-checked reference weighs the mark syntax fully.
     refs["p002"].status_label = "lead-checked"
     weights = {j[s:e]: w for s, e, w in E.loss_spans(j, answer, refs["p002"], 1.0)}
@@ -285,7 +287,7 @@ def test_targets_keep_unread_ink_and_uncertain_readings(tmp_path):
 
 
 def _own_cites_ref(cites):
-    ref = M.Reference("p001", "silver")
+    ref = M.Reference("p001", "silver", page_type="register-acts", writing="handwritten")
     ref.entries.append({"kind": "act", "label": None, "text": TEXT, "cites": cites,
                         "continues_from_previous_page": False, "continues_to_next_page": False})  # fmt: skip
     for token in M.reference_words(TEXT):
@@ -304,7 +306,7 @@ def test_reference_cites_are_remapped_to_the_shown_feed_and_validated(tmp_path):
         m = M.mutate(feed, ref, scenario, seed=seed, donors=["Le deux juin mil huit cent un"])
         shown = E.shown_ids(m.feed)
         answer = E.build_answer(ref, m.feed, m.set_aside_ids, id_map=m.id_map)
-        cites = answer["acts"][0]["cites"]
+        cites = answer["entries"][0]["cites"]
         aside = {s["id"] for s in answer["set_aside"]}
         assert set(cites) <= shown, (scenario, cites, shown)
         assert set(cites) | aside == shown and not set(cites) & aside, scenario
@@ -410,7 +412,7 @@ def test_an_honest_example_whose_request_differs_from_the_run_stops_the_export(
         return images[:1], {**shown, "overlay": None}, prompt
 
     monkeypatch.setattr(E, "example_request", render_only)
-    with pytest.raises(SystemExit, match="honest, named example's request differs"):
+    with pytest.raises(SystemExit, match="honest example's request differs"):
         E.export(tree, refs, set(), tmp_path / "out", variants_per_page=4,
                  mix={"honest": 1}, blinded_share=0.0)  # fmt: skip
 
@@ -453,23 +455,7 @@ def test_each_example_is_bound_to_the_reference_it_was_planted_from(tmp_path, mo
         E.export(tree, refs, set(), tmp_path / "out2", variants_per_page=1)
 
 
-# --- the target follows the grammar the prompt asks for -----------------------------------
-
-
-@pytest.fixture
-def named_feeds(monkeypatch):
-    """Run trees whose feeds have the `page_types` switch "named", prompt rebuilt to match."""
-    from operations.bakeoff import test_bakeoff_fed_arm as T
-
-    build = T._feed
-
-    def named(*args, **kwargs):
-        feed = build(*args, **kwargs)
-        feed["switches"]["page_types"] = "named"
-        feed["prompt"] = page_prompt.page_prompt_evidence(T.RECIPE, feed)
-        return feed
-
-    monkeypatch.setattr(T, "_feed", named)
+# --- the target is the page answer the prompt asks for -----------------------------------
 
 
 def _gold_page(stem, text, category="acts-19c", form="handwritten"):
@@ -485,19 +471,18 @@ def _shown_ids(feed):
     return E.shown_ids(feed)
 
 
-def test_target_grammar_matches_the_prompt_with_the_switch_on(tmp_path, named_feeds):
+def test_the_target_is_the_answer_the_prompt_asks_for(tmp_path):
     named_tree = F.load_run_tree(make_run_tree(tmp_path / "named", pages=PAGES))
     refs = _refs(named_tree)  # gold: acts-19c, handwritten
     feed = named_tree.pages[1].feed
     answer = E.build_answer(refs["p001"], feed, [])
     prompt = page_prompt.build_page_prompt(feed["prompt"]["serving_recipe"], feed)
-    assert page_prompt.ANSWER_FORM_NAMED in prompt
+    assert page_prompt.ANSWER_FORM in prompt
     assert list(answer) == ["page_type", "writing", "entries", "set_aside"]
     assert (answer["page_type"], answer["writing"]) == ("register-acts", "handwritten")
     assert {e["kind"] for e in answer["entries"]} <= set(ENTRY_KINDS) and "acts" not in answer
     state, parsed, problems = parse_page_answer(json.dumps(answer))
     assert state == "parsed" and not problems
-    assert answer_grammar(parsed) == ENTRIES_GRAMMAR
     # The loss spans tile the entries answer too.
     answer_json = json.dumps(answer, ensure_ascii=False)
     spans = E.loss_spans(answer_json, answer, refs["p001"], E.CITES_WEIGHT)
@@ -505,68 +490,35 @@ def test_target_grammar_matches_the_prompt_with_the_switch_on(tmp_path, named_fe
     assert all(a[1] == b[0] for a, b in zip(spans, spans[1:], strict=False))
 
 
-def test_target_grammar_matches_the_prompt_with_the_switch_off(tmp_path):
-    # A page the header does not type still gets its acts-grammar target.
-    plain_tree = F.load_run_tree(make_run_tree(tmp_path / "plain", pages=PAGES))
-    feed = plain_tree.pages[1].feed
-    assert feed["switches"].get("page_types") != "named"
-    answer = E.build_answer(_refs(plain_tree)["p001"], feed, [])
-    prompt = page_prompt.build_page_prompt(feed["prompt"]["serving_recipe"], feed)
-    assert page_prompt.ANSWER_FORM in prompt and page_prompt.ANSWER_FORM_NAMED not in prompt
-    assert list(answer) == ["acts", "set_aside"]
-    state, parsed, problems = parse_page_answer(json.dumps(answer))
-    assert state == "parsed" and answer_grammar(parsed) == ACTS_GRAMMAR
-    untyped = E.reference_from_gold_for(
-        _gold_page("p001", "Le dix", "non-register", ""), feed, None
-    )
-    assert list(E.build_answer(untyped, feed, [])) == ["acts", "set_aside"]
-
-
-def test_an_acts_grammar_target_folds_kinds_to_act_classes(tmp_path):
-    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
-    ref = _refs(tree)["p001"]
-    ref.entries[0]["kind"] = "instrument"
-    answer = E.build_answer(ref, tree.pages[1].feed, [])
-    assert answer["acts"][0]["kind"] == "act"
-    assert parse_page_answer(json.dumps(answer))[0] == "parsed"
-    ref.entries[0]["kind"] = "table-row"
-    assert E.build_answer(ref, tree.pages[1].feed, [])["acts"][0]["kind"] == "other"
-    ref.entries[0]["kind"] = "nonsense"
-    with pytest.raises(E.ExampleRefused):
-        E.build_answer(ref, tree.pages[1].feed, [])
-
-
-def test_gold_page_type_writing_and_kinds_for_a_named_feed(tmp_path, named_feeds):
+def test_gold_page_type_writing_and_kinds_for_a_named_feed(tmp_path):
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
     feed = tree.pages[1].feed
     rows = "=== HEADINGS ===\nIndex\n=== ROWS ===\nLalonde | 12\nRicher | 14"
     page = _gold_page("p001", f"Le dix mai\n{rows}", category="index", form="printed form")
-    ref = E.reference_from_gold_for(page, feed, None)
+    ref = E.reference_from_gold_for(page, None)
     assert (ref.page_type, ref.writing) == ("index", "printed")
     assert [e["kind"] for e in ref.entries] == ["act", "other", "index-row", "index-row"]
     answer = E.build_answer(ref, feed, [])
     assert [e["kind"] for e in answer["entries"]][2:] == ["index-row"] * 2
     assert parse_page_answer(json.dumps(answer))[0] == "parsed"
-    contract = E.reference_from_gold_for(
-        _gold_page("p001", "Le dix", "contract", "typed"), feed, None
-    )
+    contract = E.reference_from_gold_for(_gold_page("p001", "Le dix", "contract", "typed"), None)
     assert (contract.page_type, contract.writing) == ("instrument", "typed")
     assert contract.entries[0]["kind"] == "instrument"
-    forced = E.reference_from_gold_for(page, feed, "table-row")
+    forced = E.reference_from_gold_for(page, "table-row")
     assert [e["kind"] for e in forced.entries][2:] == ["table-row"] * 2
     # What the header does not settle is refused, with the reason, not guessed.
     for category, form in (("non-register", "typed"), ("acts-19c", "")):
-        unsure = E.reference_from_gold_for(_gold_page("p001", "Le dix", category, form), feed, None)
+        unsure = E.reference_from_gold_for(_gold_page("p001", "Le dix", category, form), None)
         assert unsure.page_type is None or unsure.writing is None
         with pytest.raises(E.ExampleRefused, match="does not settle"):
             E.build_answer(unsure, feed, [])
 
 
-def test_export_with_a_named_feed_writes_prompt_grammar_targets(tmp_path, named_feeds):
+def test_export_with_a_named_feed_writes_prompt_grammar_targets(tmp_path):
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
     refs = _refs(tree)
     refs["p003"] = E.reference_from_gold_for(
-        _gold_page("p003", "Le douze mai", "non-register"), tree.pages[3].feed, None
+        _gold_page("p003", "Le douze mai", "non-register"), None
     )
     out = tmp_path / "out"
     manifest = E.export(tree, refs, set(), out, seed=3, variants_per_page=4, blinded_share=0.0)
@@ -577,8 +529,8 @@ def test_export_with_a_named_feed_writes_prompt_grammar_targets(tmp_path, named_
     for example in examples:
         state, parsed, problems = parse_page_answer(example["messages"][1]["content"])
         assert state == "parsed", problems
-        assert answer_grammar(parsed) == ENTRIES_GRAMMAR
-        assert page_prompt.ANSWER_FORM_NAMED in example["messages"][0]["content"][-1]["text"]
+        assert list(parsed) == ["page_type", "writing", "entries", "set_aside"]
+        assert page_prompt.ANSWER_FORM in example["messages"][0]["content"][-1]["text"]
 
 
 def test_reference_json_validates_kinds_page_type_and_writing():
@@ -601,14 +553,14 @@ def test_reference_json_validates_kinds_page_type_and_writing():
     assert old.page_type is None and old.typing_problem
 
 
-def test_a_reference_with_no_entries_sets_every_shown_id_aside(tmp_path, named_feeds):
+def test_a_reference_with_no_entries_sets_every_shown_id_aside(tmp_path):
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
     feed = tree.pages[1].feed
     blank = M.Reference("p001", "fool's gold", page_type="blank", writing="handwritten")
     assert blank.blank and not blank.entries
-    typed = E.reference_from_gold_for(_gold_page("p001", "[[?]]", "blank"), feed, None)
+    typed = E.reference_from_gold_for(_gold_page("p001", "[[?]]", "blank"), None)
     assert (typed.page_type, typed.writing) == ("blank", "handwritten")
-    full = E.reference_from_gold_for(_gold_page("p001", "Le dix", "blank"), feed, None)
+    full = E.reference_from_gold_for(_gold_page("p001", "Le dix", "blank"), None)
     assert full.page_type is None  # a blank page whose gold has text is not typed blank
     answer = E.build_answer(blank, feed, [])
     assert answer["entries"] == []

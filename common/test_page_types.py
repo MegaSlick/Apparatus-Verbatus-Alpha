@@ -25,12 +25,14 @@ from common.test_page_accounting import (
 
 
 def entries_answer(answer: dict, page_type: str, writing: str, kinds: dict | None = None) -> dict:
-    """An `acts`-grammar answer restated in the `entries` grammar, kinds renamed by `kinds`."""
+    """An answer that states no page type given one, its kinds renamed by `kinds`."""
     kinds = kinds or {}
     return {
         "page_type": page_type,
         "writing": writing,
-        "entries": [{**act, "kind": kinds.get(act["kind"], act["kind"])} for act in answer["acts"]],
+        "entries": [
+            {**act, "kind": kinds.get(act["kind"], act["kind"])} for act in answer["entries"]
+        ],
         "set_aside": answer["set_aside"],
     }
 
@@ -66,22 +68,18 @@ def test_the_vocabularies_are_the_lead_s_and_each_kind_has_an_act_class():
 # --- the grammar -------------------------------------------------------------------------
 
 
-def test_both_shapes_parse_and_each_keeps_its_own_kinds():
-    old = page()["reading"]["answer"]
-    new = entries_answer(old, "register-acts", "handwritten")
-    for answer, grammar in ((old, "acts"), (new, "entries")):
+def test_a_first_reading_states_its_type_and_a_re_ask_does_not():
+    reask = page()["reading"]["answer"]
+    first = entries_answer(reask, "index", "handwritten", {"act": "index-row"})
+    for answer in (reask, first):
         state, parsed, problems = page_answer.parse_page_answer(json.dumps(answer))
-        assert (state, problems) == ("parsed", [])
-        assert page_answer.answer_grammar(parsed) == grammar
-        assert page_answer.answer_entry_list(parsed) == answer[grammar]
-    assert page_answer.stated_page_type(new) == ("register-acts", "handwritten")
-    assert page_answer.stated_page_type(old) == (None, None)
-    # An index row in the `acts` shape is not its grammar; in the `entries` shape it is.
-    mixed = copy.deepcopy(old)
-    mixed["acts"][0]["kind"] = "index-row"
-    assert page_answer.parse_page_answer(json.dumps(mixed))[0] == "malformed"
-    rows = entries_answer(old, "index", "handwritten", {"act": "index-row"})
-    assert page_answer.parse_page_answer(json.dumps(rows))[0] == "parsed"
+        assert (state, parsed, problems) == ("parsed", answer, [])
+    assert page_answer.stated_page_type(first) == ("index", "handwritten")
+    assert page_answer.stated_page_type(reask) == (None, None)
+    # The older `acts` shape is no answer.
+    old = {"acts": reask["entries"], "set_aside": reask["set_aside"]}
+    state, _parsed, problems = page_answer.parse_page_answer(json.dumps(old))
+    assert state == "malformed" and problems[0]["code"] == "top-fields"
 
 
 @pytest.mark.parametrize(
@@ -102,7 +100,7 @@ def test_a_re_ask_answers_entries_without_a_page_type_and_keys_mix_no_shape():
     answer = entries_answer(page()["reading"]["answer"], "index", "typed")
     del answer["page_type"], answer["writing"]
     assert page_answer.parse_page_answer(json.dumps(answer))[0] == "parsed"
-    both = {**answer, "acts": []}
+    both = {**answer, "writing": "typed"}
     state, _parsed, problems = page_answer.parse_page_answer(json.dumps(both))
     assert state == "malformed" and problems[0]["code"] == "top-fields"
 
@@ -128,7 +126,7 @@ def test_an_instrument_is_a_page_edge_and_a_row_is_not():
 # --- the accounting: the act class, and what an unstated type keeps -------------------
 
 
-def test_an_entries_answer_is_accounted_as_its_acts_answer_with_kinds_beside():
+def test_a_stated_type_is_accounted_with_the_same_rules_and_its_facts_beside():
     case = page()
     old = account(case)
     typed = copy.deepcopy(case)
@@ -139,9 +137,8 @@ def test_an_entries_answer_is_accounted_as_its_acts_answer_with_kinds_beside():
     assert new["rules"] == old["rules"] and new["holds"] == old["holds"] == []
     assert [e["entry_kind"] for e in new["entries"]] == ["act", "act", "act"]
     assert new["page_type"]["stated"] == "register-acts"
-    assert new["page_type"]["grammar"] == "entries"
     assert new["page_type"]["applicability"]["i"]["applies"] is True
-    assert old["page_type"]["stated"] is None and old["page_type"]["grammar"] == "acts"
+    assert old["page_type"]["stated"] is None
     assert old["page_type"]["agreement"] == []
     assert new["page_type"]["agreement"] == [
         {
@@ -164,14 +161,14 @@ def no_records(case: dict) -> dict:
     case["detections"]["record_census"]["detection_count"] = 0
     case["feed"]["witnesses"] = [w for w in case["feed"]["witnesses"] if w["letter"] != "B"]
     case["witnesses"] = list(case["feed"]["witnesses"])
-    for act in case["reading"]["answer"]["acts"]:
+    for act in case["reading"]["answer"]["entries"]:
         act["cites"] = [cite for cite in act["cites"] if not cite.startswith("B")]
     return case
 
 
 def test_the_detector_rule_holds_only_on_handwritten_register_acts():
     case = no_records(page())
-    # Unstated (the `acts` grammar): held, as before page types.
+    # Unstated (no valid answer stated a type): held.
     unstated = account(case)
     assert NO_RECORD_ON_ACT_PAGE in unstated["holds"] + unstated["flags"]
     for writing, held in (
@@ -220,10 +217,10 @@ def index_page(rows: int = 3, *, own_lines: bool = False) -> dict:
         {
             "id": "A1",
             "box_px": table,
-            "text": " ".join(act["text"] for act in case["reading"]["answer"]["acts"]),
+            "text": " ".join(act["text"] for act in case["reading"]["answer"]["entries"]),
         }
     ]
-    for k, act in enumerate(case["reading"]["answer"]["acts"]):
+    for k, act in enumerate(case["reading"]["answer"]["entries"]):
         act["cites"] = ["A1", f"C{k + 1}"] + ([f"L{3 * k + 1}"] if own_lines else [])
     return case
 
@@ -231,7 +228,7 @@ def index_page(rows: int = 3, *, own_lines: bool = False) -> dict:
 def test_rows_placed_only_by_a_shared_table_unit_are_recorded_not_duplicates():
     case = index_page()
     old = account(case)
-    # In the `acts` grammar every pair of rows on the table unit is a duplicate claim.
+    # Read as acts, every pair of rows on the table unit is a duplicate claim.
     assert codes(old, "h").count(DUPLICATE_REGION) == 3
     typed = copy.deepcopy(case)
     typed["reading"]["answer"] = entries_answer(
@@ -242,7 +239,7 @@ def test_rows_placed_only_by_a_shared_table_unit_are_recorded_not_duplicates():
     assert DUPLICATE_REGION not in new["holds"]
     [shared] = [f for f in new["rules"]["h"]["findings"] if f["code"] == ROWS_SHARE_UNIT]
     assert shared == {"code": ROWS_SHARE_UNIT, "id": "A1", "ns": [1, 2, 3]}
-    # The same rows read as acts in the new grammar keep the act semantics.
+    # The same rows read as acts on a typed page of acts keep the act semantics.
     as_acts = copy.deepcopy(case)
     as_acts["reading"]["answer"] = entries_answer(
         case["reading"]["answer"], "register-acts", "typed"
@@ -252,7 +249,7 @@ def test_rows_placed_only_by_a_shared_table_unit_are_recorded_not_duplicates():
 
 def test_two_rows_naming_the_same_line_are_still_duplicates():
     case = index_page(own_lines=True)
-    case["reading"]["answer"]["acts"][1]["cites"] = ["A1", "C2", "L1"]
+    case["reading"]["answer"]["entries"][1]["cites"] = ["A1", "C2", "L1"]
     typed = copy.deepcopy(case)
     typed["reading"]["answer"] = entries_answer(
         case["reading"]["answer"], "index", "handwritten", {"act": "index-row"}
@@ -350,15 +347,17 @@ def test_the_length_signal_is_not_judged_on_a_kind_it_was_not_calibrated_for():
 # --- the Perlectio and the rows export ---------------------------------------------------
 
 
-def test_a_perlectio_carries_the_entry_kind_only_when_the_answer_named_it():
+def test_a_perlectio_carries_an_entry_kind_of_its_act_class():
     base = {field: None for field in page_path.PERLECTIO_FIELDS}
-    assert page_path.is_perlectio_field_set(base)
+    assert page_path.is_perlectio_field_set({**base, "kind": "act", "entry_kind": "act"})
+    assert not page_path.is_perlectio_field_set(base)
+    assert not page_path.is_perlectio_field_set(
+        {key: value for key, value in base.items() if key != "entry_kind"}
+    )
     assert page_path.is_perlectio_field_set({**base, "kind": "other", "entry_kind": "index-row"})
     assert page_path.is_perlectio_field_set({**base, "kind": "act", "entry_kind": "instrument"})
     assert not page_path.is_perlectio_field_set({**base, "kind": "act", "entry_kind": "index-row"})
     assert not page_path.is_perlectio_field_set({**base, "kind": "other", "entry_kind": "row"})
-    assert page_path.named_kind_fields({"entry_kind": None}) == {}
-    assert page_path.named_kind_fields({"entry_kind": "paragraph"}) == {"entry_kind": "paragraph"}
 
 
 def test_a_row_kind_entry_becomes_one_rows_jsonl_line_and_nothing_else_does():
@@ -406,7 +405,3 @@ def test_a_row_kind_entry_becomes_one_rows_jsonl_line_and_nothing_else_does():
             )
             is None
         )
-    old = {key: value for key, value in perlectio.items() if key != "entry_kind"}
-    assert page_types.row_record(old, page_type=None, act_key="k", act_id="i") is None
-    assert page_types.entry_kind_of(old) == "other"
-    assert page_types.entry_kind_of(perlectio) == "index-row"

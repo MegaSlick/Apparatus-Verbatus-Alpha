@@ -127,6 +127,11 @@ def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=Fa
     }
 
 
+# Every first reading names its page a handwritten page of register acts, so the
+# record-detector rule applies to it (`common.page_types.applicability`).
+_REGISTER_ACTS = {"page_type": "register-acts", "writing": "handwritten"}
+
+
 # What the fake Perlector answers when it reads a page whole. The ids are the
 # page feed's: A is attestator_1 (Chandra, one boxed unit per declared act on
 # page 1, one unboxed unit of page text on page 2), B
@@ -143,7 +148,8 @@ def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=Fa
 # record on page 1 is a2's (B1), and no record lies in the `other` reading.
 # Proves wiring only, never reading ink.
 _PAGE_ONE_ANSWER = {
-    "acts": [
+    **_REGISTER_ACTS,
+    "entries": [
         _page_entry(
             1, "a1", ["A1", "B1", "C1"], text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]"
         ),
@@ -157,7 +163,8 @@ PAGE_ANSWERS = (
         "scenario": "happy",
         "page_ordinal": 2,
         "answer": {
-            "acts": [
+            **_REGISTER_ACTS,
+            "entries": [
                 _page_entry(1, "a2", ["A1", "B1", "C1", "L1", "L2", "L3"], from_previous=True)
             ],
             "set_aside": [],
@@ -168,7 +175,8 @@ PAGE_ANSWERS = (
         "scenario": "page-review",
         "page_ordinal": 2,
         "answer": {
-            "acts": [_page_entry(1, "a2", ["A1", "C1"], from_previous=True)],
+            **_REGISTER_ACTS,
+            "entries": [_page_entry(1, "a2", ["A1", "C1"], from_previous=True)],
             "set_aside": [],
         },
     },
@@ -177,7 +185,8 @@ PAGE_ANSWERS = (
         "scenario": "page-no-act",
         "page_ordinal": 2,
         "answer": {
-            "acts": [
+            **_REGISTER_ACTS,
+            "entries": [
                 _page_entry(
                     1, "a2", ["A1", "C1", "L1", "L2", "L3"], from_previous=True, kind="other"
                 )
@@ -189,7 +198,8 @@ PAGE_ANSWERS = (
         "scenario": "page-other",
         "page_ordinal": 1,
         "answer": {
-            "acts": [
+            **_REGISTER_ACTS,
+            "entries": [
                 _page_entry(
                     1,
                     "a1",
@@ -206,7 +216,8 @@ PAGE_ANSWERS = (
         "scenario": "page-other",
         "page_ordinal": 2,
         "answer": {
-            "acts": [
+            **_REGISTER_ACTS,
+            "entries": [
                 _page_entry(1, "a2", ["A1", "B1", "C1", "L1", "L2", "L3"], from_previous=True)
             ],
             "set_aside": [],
@@ -308,7 +319,9 @@ def _with_entry(answer: dict, n: int, **fields) -> dict:
     """`answer` with entry `n`'s fields changed."""
     return {
         **answer,
-        "acts": [{**entry, **fields} if entry["n"] == n else entry for entry in answer["acts"]],
+        "entries": [
+            {**entry, **fields} if entry["n"] == n else entry for entry in answer["entries"]
+        ],
     }
 
 
@@ -339,18 +352,18 @@ def _unbroken(pages: dict[int, Any] | None = None) -> dict[int, Any]:
 # but page 2's act says it runs on past the run's last page.
 def _citing(answer: dict, *, add: tuple[str, ...] = (), drop: tuple[str, ...] = ()) -> dict:
     """`answer` with its one entry citing `add` too and none of `drop`."""
-    (entry,) = answer["acts"]
+    (entry,) = answer["entries"]
     cites = [cite for cite in entry["cites"] if cite not in drop] + list(add)
-    return {**answer, "acts": [{**entry, "cites": cites}]}
+    return {**answer, "entries": [{**entry, "cites": cites}]}
 
 
 def _citing_no_churro_unit(answer: dict) -> dict:
     """`answer` with every Churro (`C`) id dropped from its citations."""
     return {
         **answer,
-        "acts": [
+        "entries": [
             {**entry, "cites": [cite for cite in entry["cites"] if not cite.startswith("C")]}
-            for entry in answer["acts"]
+            for entry in answer["entries"]
         ],
     }
 
@@ -362,7 +375,8 @@ PAGE_ANSWER_VARIANTS = {
         {
             1: lambda answer: _with_entry(answer, 2, continues_to_next_page=False),
             2: lambda _answer: {
-                "acts": [],
+                **_REGISTER_ACTS,
+                "entries": [],
                 "set_aside": [
                     {"id": identifier, "reason": "blank paper"}
                     for identifier in _HAPPY_PAGE_TWO_IDS
@@ -416,7 +430,11 @@ PAGE_ANSWER_VARIANTS = {
 
 def _first_act_only(answer: dict) -> dict:
     """Page 1 read as a1 alone: a2's units, record and lines left unaccounted for."""
-    return {"acts": [{**answer["acts"][0], "continues_to_next_page": False}], "set_aside": []}
+    return {
+        **_REGISTER_ACTS,
+        "entries": [{**answer["entries"][0], "continues_to_next_page": False}],
+        "set_aside": [],
+    }
 
 
 def _no_continuation_in(answer: dict) -> dict:
@@ -449,10 +467,14 @@ _REASK_FIRST_READINGS = {
     "reask-duplicate": {1: lambda answer: _with_entry(answer, 2, cites=["C2"])},
     "reask-cited-forgot": {1: lambda answer: _with_entry(answer, 2, cites=["A2", "C2"])},
     "reask-continuation": {
-        1: lambda answer: {"acts": [{**answer["acts"][1], "n": 1}], "set_aside": []}
+        1: lambda answer: {
+            **_REGISTER_ACTS,
+            "entries": [{**answer["entries"][1], "n": 1}],
+            "set_aside": [],
+        }
     },
     "blank-then-recovered": {
-        1: lambda _answer: {"acts": [], "set_aside": []},
+        1: lambda _answer: {**_REGISTER_ACTS, "entries": [], "set_aside": []},
         2: _no_continuation_in,
     },
 }
@@ -470,7 +492,11 @@ PAGE_ANSWERS += tuple(
     if row["scenario"] == base
 ) + tuple(
     # The ink-free page is read as blank paper: nothing on it to cite.
-    {"scenario": scenario, "page_ordinal": 3, "answer": {"acts": [], "set_aside": []}}
+    {
+        "scenario": scenario,
+        "page_ordinal": 3,
+        "answer": {**_REGISTER_ACTS, "entries": [], "set_aside": []},
+    }
     for scenario in ("ink-free-page", "ink-free-page-unwitnessed")
 )
 
@@ -489,18 +515,18 @@ _RECOVERED_A1 = _page_entry(
     text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]",
 )
 _RECOVERED_A2 = _page_entry(1, "a2", ["A2", "B2", "L5", "L6", "L7", "L8", "L9"])
-_PAGE_TWO_A2_AGAIN = {"acts": [_page_entry(1, "a2", ["B1", "L1", "L2", "L3"])], "set_aside": []}
+_PAGE_TWO_A2_AGAIN = {"entries": [_page_entry(1, "a2", ["B1", "L1", "L2", "L3"])], "set_aside": []}
 PAGE_REASK_ANSWERS = (
     {
         "scenario": "reask-recovers",
         "page_ordinal": 1,
-        "answer": {"acts": [_RECOVERED_A2], "set_aside": []},
+        "answer": {"entries": [_RECOVERED_A2], "set_aside": []},
     },
     {
         "scenario": "reask-sets-aside",
         "page_ordinal": 1,
         "answer": {
-            "acts": [],
+            "entries": [],
             "set_aside": [
                 {"id": identifier, "reason": "no entry here"}
                 for identifier in ("A2", "B2", "L5", "L6", "L7", "L8", "L9")
@@ -511,23 +537,23 @@ PAGE_REASK_ANSWERS = (
     {
         "scenario": "reask-cut-off",
         "page_ordinal": 1,
-        "answer": {"acts": [_RECOVERED_A2], "set_aside": []},
+        "answer": {"entries": [_RECOVERED_A2], "set_aside": []},
         "stop_reason": "length",
     },
     {
         "scenario": "reask-duplicate",
         "page_ordinal": 1,
-        "answer": {"acts": [_RECOVERED_A2], "set_aside": []},
+        "answer": {"entries": [_RECOVERED_A2], "set_aside": []},
     },
     {
         "scenario": "reask-continuation",
         "page_ordinal": 1,
-        "answer": {"acts": [_RECOVERED_A1], "set_aside": []},
+        "answer": {"entries": [_RECOVERED_A1], "set_aside": []},
     },
     {
         "scenario": "blank-then-recovered",
         "page_ordinal": 1,
-        "answer": {"acts": [_RECOVERED_A1, {**_RECOVERED_A2, "n": 2}], "set_aside": []},
+        "answer": {"entries": [_RECOVERED_A1, {**_RECOVERED_A2, "n": 2}], "set_aside": []},
     },
     {"scenario": "page-review", "page_ordinal": 2, "answer": _PAGE_TWO_A2_AGAIN},
     {"scenario": "page-review-other", "page_ordinal": 2, "answer": _PAGE_TWO_A2_AGAIN},

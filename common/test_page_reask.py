@@ -76,7 +76,7 @@ def plan(case: dict, record: dict | None = None, budget: int = 1) -> list[dict]:
 def missing_last(records: int = 3) -> dict:
     """A clean page whose reading leaves out its last record: its units, lines and record."""
     case = page(records)
-    case["reading"]["answer"]["acts"] = acts(case)[:-1]
+    case["reading"]["answer"]["entries"] = acts(case)[:-1]
     del case["entry_truncation"][records]
     return case
 
@@ -152,7 +152,7 @@ def test_only_a_read_answer_finished_on_stop_is_re_asked(change):
 
 def test_a_reading_with_no_entry_is_re_asked_about_every_boxed_id():
     case = page(2)
-    case["reading"]["answer"]["acts"] = []
+    case["reading"]["answer"]["entries"] = []
     case["entry_truncation"] = {}
     ids = named_ids(plan(case))
     assert ids == ["A1", "A2", "B1", "B2", "L1", "L2", "L3", "L4", "L5", "L6"]
@@ -225,14 +225,14 @@ def reask_of(case: dict, answer, *, parse_state="parsed", finish_reason="stop", 
         "reading": {"parse_state": parse_state, "finish_reason": finish_reason, "answer": answer},
         "named": ids,
         "entry_truncation": {
-            item["n"]: "complete" for item in (answer or {}).get("acts", []) if item["cites"]
+            item["n"]: "complete" for item in (answer or {}).get("entries", []) if item["cites"]
         },
     }
 
 
 def recovered(case: dict, text: str, cites=("A3", "B3", "L7", "L8", "L9"), **fields) -> dict:
     return {
-        "acts": [
+        "entries": [
             {
                 "n": 1,
                 "kind": "act",
@@ -308,7 +308,7 @@ def test_a_duplicate_check_past_the_work_budget_is_not_measured_and_holds():
 def test_a_named_id_the_re_ask_sets_aside_holds():
     case = missing_last()
     answer = {
-        "acts": [],
+        "entries": [],
         "set_aside": [
             {"id": identifier, "reason": "no entry"}
             for identifier in ("A3", "B3", "L7", "L8", "L9")
@@ -381,12 +381,12 @@ def test_the_first_readings_last_entry_may_continue_with_a_recovered_entry_after
 
 def test_a_blank_first_reading_is_recovered_whole():
     case = page(2)
-    case["reading"]["answer"]["acts"] = []
+    case["reading"]["answer"]["entries"] = []
     case["entry_truncation"] = {}
     answer = {
-        "acts": [
+        "entries": [
             {
-                **recovered(case, record_text(k), cites=(f"A{k + 1}", f"B{k + 1}"))["acts"][0],
+                **recovered(case, record_text(k), cites=(f"A{k + 1}", f"B{k + 1}"))["entries"][0],
                 "n": k + 1,
                 "cites": [f"A{k + 1}", f"B{k + 1}", *(f"L{3 * k + row}" for row in (1, 2, 3))],
             }
@@ -451,11 +451,11 @@ def _set_aside(*identifiers: str) -> list[dict]:
     ("first_sets_aside", "answer", "named", "code"),
     [
         # The first reading cites A1; the re-ask sets it aside.
-        ((), {"acts": [], "set_aside": _set_aside("A1")}, ["A1"], "cited-and-set-aside"),
+        ((), {"entries": [], "set_aside": _set_aside("A1")}, ["A1"], "cited-and-set-aside"),
         # The first reading sets A3 aside; the re-ask cites it.
         (("A3",), "recovered", ["A3", "B3", "L7", "L8", "L9"], "cited-and-set-aside"),
         # Both readings set L7 aside.
-        (("L7",), {"acts": [], "set_aside": _set_aside("L7")}, ["L7"], "set-aside-twice"),
+        (("L7",), {"entries": [], "set_aside": _set_aside("L7")}, ["L7"], "set-aside-twice"),
     ],
     ids=["read-then-set-aside", "set-aside-then-read", "set-aside-twice"],
 )
@@ -498,7 +498,7 @@ def test_what_a_re_ask_did_splits_its_named_ids_by_the_last_accounting():
         "unread": [],
         "duplicate": [],
     }
-    aside = {"acts": [], "set_aside": _set_aside("A3", "B3", "L7", "L8", "L9")}
+    aside = {"entries": [], "set_aside": _set_aside("A3", "B3", "L7", "L8", "L9")}
     assert reask_outcome(named, account(case, reask=reask_of(case, aside)))["set_aside"] == ids
     malformed = account(case, reask=reask_of(case, None, parse_state="malformed"))
     assert reask_outcome(named, malformed)["unread"] == ids

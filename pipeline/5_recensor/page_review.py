@@ -1211,24 +1211,21 @@ def write_reading_receipt(
 # --- the review summary --------------------------------------------------------------
 
 REVIEW_SUMMARY_SCHEMA: Final = "recensor-review-summary.v1"
-# A page whose reading names no type: the Perlector's page types, when it names
-# them, are read from the page reading (`page_type_of`).
+# A page whose reading states no valid type (unread, malformed or invalid); every
+# other page is counted under the type its reading names (`page_type_of`).
 UNTYPED_PAGE: Final = "untyped"
 
 
 def page_type_of(reading: Mapping[str, Any]) -> str:
-    """The page type a page reading names, or `untyped`.
+    """The page type a page reading's answer names, or `untyped`.
 
-    Read from the reading payload's `page_type`, or its answer's, so a reading
-    that carries one in either place is counted by it; nothing here decides
-    what a type means or which checks it turns on, which is the page
-    accounting's business.
+    Nothing here decides what a type means or which checks it turns on, which is
+    the page accounting's business.
     """
-    payload = reading.get("payload") or {}
-    answer = payload.get("answer")
-    for candidate in (payload.get("page_type"), (answer or {}).get("page_type")):
-        if isinstance(candidate, str) and candidate:
-            return candidate
+    answer = (reading.get("payload") or {}).get("answer")
+    candidate = (answer or {}).get("page_type")
+    if isinstance(candidate, str) and candidate:
+        return candidate
     return UNTYPED_PAGE
 
 

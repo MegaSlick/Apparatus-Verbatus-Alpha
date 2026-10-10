@@ -6,15 +6,13 @@
 
 Every example is one page shown once under one witness story (`operations.bakeoff.mutations`:
 honest, planted, removed, structural) with the same answer every time: the reference
-(gold or silver) in the grammar the prompt asks for (`common.page_answer`): the `entries`
-shape with page type and writing when the feed's `page_types` switch is "named", else the
-older `acts` shape. The prompt is
-the Perlector's, with every image the request carries: `fed_arm.request_images` gives
+(gold or silver) as a page answer (`common.page_answer`): the `entries` shape with page
+type and writing. The prompt is the Perlector's, with every image the request carries: `fed_arm.request_images` gives
 the images as stage 4 sends them (the render, then the page overlay when the feed draws
 one, `common/page_path.py`), `fed_arm.build_body` renders the request, and the example
 carries those images in that order and the body's text block as the prompt, byte for
 byte. Every page's source request is checked against the run before any variant is
-drawn (prompt text, image digests, the reading's `request_digest`); an honest, named
+drawn (prompt text, image digests, the reading's `request_digest`); an honest
 example's whole request (text and image digests, `page_path.request_digest`) must equal
 the run's recorded `request_digest`, or the export stops.
 
@@ -63,7 +61,6 @@ from typing import Any
 from rapidfuzz.distance import Levenshtein
 
 from common import page_path
-from common.page_answer import answer_entry_list
 from common.page_types import (
     ACT,
     BLANK,
@@ -82,7 +79,6 @@ from common.page_types import (
     TABLE,
     TABLE_ROW,
     WRITINGS,
-    act_class,
 )
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import mutations as M
@@ -94,7 +90,7 @@ from operations.bakeoff.groups import form_of
 
 SCHEMA = "perlector-training-example.v1"
 REFERENCE_SCHEMA = "training-reference.v2"
-# v1 records carry no page type or writing: they train the `acts` grammar only.
+# v1 records carry no page type or writing, so every example of one is refused.
 READABLE_REFERENCE_SCHEMAS = ("training-reference.v1", REFERENCE_SCHEMA)
 WEIGHTS = {"checked": 1.0, "agreed": 0.7, "draft": 0.3, "unresolved": 0.0}
 CITES_WEIGHT = 0.3  # cites rebuilt from geometry are a draft, not a checked fact
@@ -222,24 +218,15 @@ def gold_typing(page: GoldPage, blank: bool) -> tuple[str | None, str | None, st
     return page_type, writing, "; ".join(problems) or None
 
 
-def is_named(feed: dict[str, Any]) -> bool:
-    """Whether the feed's prompt asks for the page type and entry kinds (the `entries` grammar)."""
-    return feed.get("switches", {}).get("page_types") == "named"
-
-
-def reference_from_gold_for(page: GoldPage, feed: dict[str, Any], row_kind: str | None):
-    """A gold page as a Reference for the grammar `feed` asks for. In the `entries`
-    grammar its rows and acts take the kinds of its page type; `row_kind` overrides the
-    kind of the rows. In the `acts` grammar rows are `other` unless `row_kind` says."""
-    named = is_named(feed)
+def reference_from_gold_for(page: GoldPage, row_kind: str | None):
+    """A gold page as a Reference: its rows and acts take the kinds of its page type;
+    `row_kind` overrides the kind of the rows."""
     page_type, writing, problem = gold_typing(page, not S.tokens(page.reference_text()))
-    default_row = ROW_KIND_OF.get(page_type, OTHER) if named else OTHER
-    ref = M.reference_from_gold(page, row_kind or default_row)
+    ref = M.reference_from_gold(page, row_kind or ROW_KIND_OF.get(page_type, OTHER))
     ref.page_type, ref.writing, ref.typing_problem = page_type, writing, problem
-    if named:
-        for entry in ref.entries:
-            if entry["kind"] == ACT:
-                entry["kind"] = ACT_KIND_OF.get(page_type, ACT)
+    for entry in ref.entries:
+        if entry["kind"] == ACT:
+            entry["kind"] = ACT_KIND_OF.get(page_type, ACT)
     return ref
 
 
@@ -262,7 +249,7 @@ def load_references(
     if gold:
         for stem, page in load_gold_dir(gold, gold_glob).items():
             if stem in stems and stem not in refs:
-                ref = reference_from_gold_for(page, stems[stem].feed, row_kind)
+                ref = reference_from_gold_for(page, row_kind)
                 M.statuses_from_agreement(ref, stems[stem].feed)
                 refs[stem] = ref
     return refs
@@ -336,13 +323,11 @@ def build_answer(
     set_aside_ids: list[str],
     id_map: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
-    """The reference as a page answer in the grammar the shown feed's prompt asks for: the
-    `entries` shape with the page's type and writing when its `page_types` switch is
-    "named" (ExampleRefused when the reference cannot say them, or names a kind that is
-    not an entry kind), else the `acts` shape with each kind folded to its act class.
-    Entries in order with cites rebuilt from the shown feed (witness units by word
-    overlap, Surya lines and blocks by the cited boxes' rows), planted units set aside,
-    every other shown id cited by some entry. A reference with no entries cites nothing:
+    """The reference as a page answer: the `entries` shape with the page's type and
+    writing (ExampleRefused when the reference cannot say them, or names a kind that is
+    not an entry kind). Entries in order with cites rebuilt from the shown feed (witness
+    units by word overlap, Surya lines and blocks by the cited boxes' rows), planted units
+    set aside, every other shown id cited by some entry. A reference with no entries cites nothing:
     every shown id is set aside as empty.
 
     A reference that brings its own cites (all entries or none, else ExampleRefused) has
@@ -350,8 +335,7 @@ def build_answer(
     shown id, None when no longer shown), every cite is checked against the shown ids
     (ExampleRefused on any mismatch), and every shown id it does not cite is set aside.
     """
-    named = is_named(feed)
-    if named and (ref.page_type is None or ref.writing is None):
+    if ref.page_type is None or ref.writing is None:
         raise ExampleRefused(ref.typing_problem or "the reference names no page type")
     aside = set(set_aside_ids)
     shown = shown_ids(feed)
@@ -371,7 +355,7 @@ def build_answer(
         entries.append(
             {
                 "n": n + 1,
-                "kind": e["kind"] if named else act_class(e["kind"]),
+                "kind": e["kind"],
                 "label": e.get("label"),
                 "cites": cites,
                 "text": e["text"],
@@ -438,8 +422,6 @@ def build_answer(
     reasons = {uid: "not on the page" for uid in set_aside_ids}
     other = "not in the reading" if entries else "empty"
     set_aside = [{"id": uid, "reason": reasons.get(uid, other)} for uid in sorted(aside)]
-    if not named:
-        return {"acts": entries, "set_aside": set_aside}
     return {
         "page_type": ref.page_type,
         "writing": ref.writing,
@@ -491,7 +473,7 @@ def loss_spans(answer_json: str, answer: dict[str, Any], ref: M.Reference, cites
     Spans tile the whole string."""
     special: list[tuple[int, int, float]] = []
     cursor = 0
-    for n, e in enumerate(answer_entry_list(answer)):
+    for n, e in enumerate(answer["entries"]):
         cites_json = '"cites": ' + json.dumps(e["cites"], ensure_ascii=False)
         at = answer_json.index(cites_json, cursor)
         special.append((at + len('"cites": '), at + len(cites_json), cites_weight))
@@ -660,8 +642,7 @@ def export(
     rebuild the run's own request (`source_request_problems`: prompt text, images,
     request digest): a page that differs stops the export (SystemExit naming the pages)
     unless `allow_prompt_mismatch`, which leaves those pages out and lists them in the
-    manifest. Each example carries every image of its request; an honest, named
-    example whose request digest differs from the run's recorded one stops the export.
+    manifest. Each example carries every image of its request; an honest example whose request digest differs from the run's recorded one stops the export.
     An example whose target cannot be made right (`ExampleRefused`) is not written and
     is counted by reason."""
     mix = mix or dict(M.DEFAULT_MIX)
@@ -757,7 +738,7 @@ def export(
                         matched["requests_unrecorded"] += 1
                     if not matches_run or request_matches is False:
                         raise SystemExit(
-                            f"{example_id}: an honest, named example's request differs from "
+                            f"{example_id}: an honest example's request differs from "
                             f"the run's (prompt text {'same' if matches_run else 'differs'}, "
                             f"request digest {request_sha[:12]} vs recorded "
                             f"{(recorded or '-')[:12]}); the exporter would train on a "
@@ -889,8 +870,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--row-kind",
         choices=ENTRY_KINDS,
-        help="entry kind for the rows of a list (default: by page type in the entries "
-        "grammar, `other` in the acts grammar)",
+        help="entry kind for the rows of a list (default: by page type)",
     )
     parser.add_argument("--pages", help="comma-separated stems or ordinals")
     parser.add_argument("--no-copy-images", action="store_true", help="reference the run's renders")

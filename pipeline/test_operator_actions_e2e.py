@@ -72,7 +72,7 @@ def reading_held(designated, tmp_path_factory) -> SimpleNamespace:  # noqa: F811
     shutil.copytree(designated.run_root, root)
     read_by_live_witnesses(designated, root, work / "witnesses")
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][1]["cites"] = ["A1", "B1", "C1", "A2", "B2", "C2"]
+    answer["entries"][1]["cites"] = ["A1", "B1", "C1", "A2", "B2", "C2"]
     reader = PageReaderWorld(
         designated.catalogue, work / "reader", {1: json.dumps(answer), 2: PAGE_ANSWERS[2]}
     )
@@ -620,7 +620,7 @@ def unreadable(designated, tmp_path_factory) -> SimpleNamespace:  # noqa: F811
     shutil.copytree(designated.run_root, root)
     read_by_live_witnesses(designated, root, work / "witnesses")
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][1]["text"] = ""
+    answer["entries"][1]["text"] = ""
     reader = PageReaderWorld(
         designated.catalogue, work / "reader", {1: json.dumps(answer), 2: PAGE_ANSWERS[2]}
     )
@@ -799,10 +799,10 @@ def _held_on_p1_2(designated, tmp_path_factory, text: str) -> SimpleNamespace:  
     read_by_live_witnesses(designated, root, work / "witnesses")
     # No act runs across the page break, so nothing on page 2 keeps the run partial.
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][1]["text"] = text
-    answer["acts"][1]["continues_to_next_page"] = False
+    answer["entries"][1]["text"] = text
+    answer["entries"][1]["continues_to_next_page"] = False
     second = json.loads(PAGE_ANSWERS[2])
-    for act in second["acts"]:
+    for act in second["entries"]:
         act["continues_from_previous_page"] = False
     reader = PageReaderWorld(
         designated.catalogue,
@@ -890,7 +890,7 @@ def doubt_held(designated, tmp_path_factory) -> SimpleNamespace:  # noqa: F811
     shutil.copytree(designated.run_root, root)
     read_by_live_witnesses(designated, root, work / "witnesses")
     answer = json.loads(PAGE_ANSWERS[2])
-    answer["acts"][0]["text"] = "[[SYNTHETIC ACT TWO delta epsilon zeta eta]]"
+    answer["entries"][0]["text"] = "[[SYNTHETIC ACT TWO delta epsilon zeta eta]]"
     reader = PageReaderWorld(
         designated.catalogue, work / "reader", {1: PAGE_ANSWERS[1], 2: json.dumps(answer)}
     )

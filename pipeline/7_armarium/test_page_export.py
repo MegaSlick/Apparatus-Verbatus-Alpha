@@ -1000,7 +1000,7 @@ def _reask_recovers_clean_rows() -> dict[str, list[dict]]:
             continue
         if row["page_ordinal"] == 1:
             answer = json.loads(row["answer"])
-            for entry in answer["acts"]:
+            for entry in answer["entries"]:
                 entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith("C")]
             row = {**row, "answer": json.dumps(answer, separators=(",", ":"))}
         answers.append(renamed(row))

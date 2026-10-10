@@ -1245,11 +1245,7 @@ def test_a_live_answer_naming_its_page_type_flows_into_every_page_record(
     }
     for record in _artifacts(root, "page-accounting"):
         typed = record["payload"]["page_type"]
-        assert (typed["grammar"], typed["stated"], typed["writing"]) == (
-            "entries",
-            "index",
-            "typed",
-        )
+        assert (typed["stated"], typed["writing"]) == ("index", "typed")
         assert typed["applicability"]["i"]["applies"] is False
         assert typed["kinds"] == {"agrees": False, "unexpected_kinds": ["act"]}
         kinds = [e["entry_kind"] for e in record["payload"]["entries"]]

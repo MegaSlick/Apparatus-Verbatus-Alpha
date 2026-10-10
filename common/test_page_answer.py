@@ -10,7 +10,9 @@ import pytest
 from common import page_answer
 
 GOOD = {
-    "acts": [
+    "page_type": "register-acts",
+    "writing": "handwritten",
+    "entries": [
         {
             "n": 1,
             "kind": "act",
@@ -67,31 +69,32 @@ def test_a_code_fenced_answer_is_malformed_and_named(opening):
         (json.dumps(GOOD) + json.dumps(GOOD), "content-outside-object"),
         ("```json\n" + json.dumps(GOOD) + "\n```\n```json\n{}\n```", "fenced-answer"),
         (json.dumps(GOOD)[:-5], "not-json"),
-        ('{"acts": [], "acts": [], "set_aside": []}', "duplicate-key"),
-        ('{"acts": [{"n": NaN}], "set_aside": []}', "not-json"),
+        ('{"entries": [], "entries": [], "set_aside": []}', "duplicate-key"),
+        ('{"entries": [{"n": NaN}], "set_aside": []}', "not-json"),
         ("[" * 100_000 + "]" * 100_000, "too-deep"),
-        ('{"acts": [' + "[" * 64 + "]" * 64 + '], "set_aside": []}', "too-deep"),
+        ('{"entries": [' + "[" * 64 + "]" * 64 + '], "set_aside": []}', "too-deep"),
         ("[]", "not-object"),
-        ('{"acts": []}', "top-fields"),
-        ('{"acts": [], "set_aside": [], "notes": ""}', "top-fields"),
-        ('{"acts": {}, "set_aside": []}', "acts-not-list"),
-        ('{"acts": [], "set_aside": {}}', "set-aside-not-list"),
-        ('{"acts": [1], "set_aside": []}', "act-not-object"),
-        (_with(lambda a: a["acts"][0].pop("text")), "act-field-missing"),
-        (_with(lambda a: a["acts"][1].pop("continues_to_next_page")), "act-field-missing"),
-        (_with(lambda a: a["acts"][0].update(confidence="high")), "act-field-unknown"),
-        (_with(lambda a: a["acts"][1].update(n=3)), "n-not-contiguous"),
-        (_with(lambda a: a["acts"].reverse()), "n-not-contiguous"),
-        (_with(lambda a: a["acts"][0].update(n=1.0)), "n-not-integer"),
-        (_with(lambda a: a["acts"][0].update(n=True)), "n-not-integer"),
-        (_with(lambda a: a["acts"][0].update(kind="baptism")), "kind-unknown"),
-        (_with(lambda a: a["acts"][0].update(label="x" * 81)), "label-invalid"),
-        (_with(lambda a: a["acts"][0].update(label="  ")), "label-invalid"),
-        (_with(lambda a: a["acts"][0].update(label=7)), "label-invalid"),
-        (_with(lambda a: a["acts"][0].update(cites="A1-A4")), "cites-invalid"),
-        (_with(lambda a: a["acts"][0].update(cites=["A1", 2])), "cites-invalid"),
-        (_with(lambda a: a["acts"][0].update(text=None)), "text-invalid"),
-        (_with(lambda a: a["acts"][0].update(continues_to_next_page="no")), "flag-invalid"),
+        ('{"entries": []}', "top-fields"),
+        ('{"acts": [], "set_aside": []}', "top-fields"),
+        ('{"entries": [], "set_aside": [], "notes": ""}', "top-fields"),
+        ('{"entries": {}, "set_aside": []}', "entries-not-list"),
+        ('{"entries": [], "set_aside": {}}', "set-aside-not-list"),
+        ('{"entries": [1], "set_aside": []}', "act-not-object"),
+        (_with(lambda a: a["entries"][0].pop("text")), "act-field-missing"),
+        (_with(lambda a: a["entries"][1].pop("continues_to_next_page")), "act-field-missing"),
+        (_with(lambda a: a["entries"][0].update(confidence="high")), "act-field-unknown"),
+        (_with(lambda a: a["entries"][1].update(n=3)), "n-not-contiguous"),
+        (_with(lambda a: a["entries"].reverse()), "n-not-contiguous"),
+        (_with(lambda a: a["entries"][0].update(n=1.0)), "n-not-integer"),
+        (_with(lambda a: a["entries"][0].update(n=True)), "n-not-integer"),
+        (_with(lambda a: a["entries"][0].update(kind="baptism")), "kind-unknown"),
+        (_with(lambda a: a["entries"][0].update(label="x" * 81)), "label-invalid"),
+        (_with(lambda a: a["entries"][0].update(label="  ")), "label-invalid"),
+        (_with(lambda a: a["entries"][0].update(label=7)), "label-invalid"),
+        (_with(lambda a: a["entries"][0].update(cites="A1-A4")), "cites-invalid"),
+        (_with(lambda a: a["entries"][0].update(cites=["A1", 2])), "cites-invalid"),
+        (_with(lambda a: a["entries"][0].update(text=None)), "text-invalid"),
+        (_with(lambda a: a["entries"][0].update(continues_to_next_page="no")), "flag-invalid"),
         (_with(lambda a: a["set_aside"].append({"id": "A1"})), "set-aside-invalid"),
         (_with(lambda a: a["set_aside"].append({"id": 4, "reason": "x"})), "set-aside-invalid"),
     ],
@@ -105,11 +108,11 @@ def test_anything_else_is_malformed_and_held_with_its_reason(raw, code):
 @pytest.mark.parametrize(
     "change",
     [
-        lambda a: a["acts"][0].pop("label"),
-        lambda a: a["acts"][0].update(label=None),
-        lambda a: a["acts"][0].update(label="x" * 80),
-        lambda a: a.update(acts=[], set_aside=[]),
-        lambda a: a["acts"][1].update(cites=["Z99", "L17-L10"]),
+        lambda a: a["entries"][0].pop("label"),
+        lambda a: a["entries"][0].update(label=None),
+        lambda a: a["entries"][0].update(label="x" * 80),
+        lambda a: a.update(entries=[], set_aside=[]),
+        lambda a: a["entries"][1].update(cites=["Z99", "L17-L10"]),
         lambda a: a["set_aside"].append({"id": "C9", "reason": ""}),
     ],
     ids=["no-label", "null-label", "80-characters", "empty-page", "ids-unchecked", "blank-reason"],
@@ -121,12 +124,12 @@ def test_what_the_accounting_judges_is_not_judged_here(change):
 
 
 def test_one_act_may_carry_both_continuation_flags():
-    raw = _with(lambda a: a.update(acts=[a["acts"][0] | {"continues_to_next_page": True}]))
+    raw = _with(lambda a: a.update(entries=[a["entries"][0] | {"continues_to_next_page": True}]))
     assert page_answer.parse_page_answer(raw)[0] == "parsed"
 
 
 def test_every_problem_in_an_answer_is_reported_not_only_the_first():
-    raw = _with(lambda a: (a["acts"][0].update(kind="entry"), a["acts"][1].update(text=3)))
+    raw = _with(lambda a: (a["entries"][0].update(kind="entry"), a["entries"][1].update(text=3)))
     assert _codes(page_answer.parse_page_answer(raw)[2]) == ["kind-unknown", "text-invalid"]
 
 
@@ -146,7 +149,7 @@ _DEEP = "[" * 900 + "]" * 900
         *(("act", field) for field in sorted(page_answer._ACT_FIELDS)),
         ("set_aside", "id"),
         ("set_aside", "reason"),
-        ("top", "acts"),
+        ("top", "entries"),
         ("top", "set_aside"),
     ],
     ids=lambda place: ".".join(place),
@@ -155,7 +158,7 @@ def test_a_value_of_any_json_type_anywhere_is_read_or_held_never_an_error(place,
     where, field = place
 
     def change(answer):
-        target = {"act": answer["acts"][0], "set_aside": answer["set_aside"][0], "top": answer}
+        target = {"act": answer["entries"][0], "set_aside": answer["set_aside"][0], "top": answer}
         target[where][field] = value
 
     state, answer, problems = page_answer.parse_page_answer(_with(change))
@@ -165,9 +168,9 @@ def test_a_value_of_any_json_type_anywhere_is_read_or_held_never_an_error(place,
 
 @pytest.mark.parametrize("field", ["n", "kind", "label", "cites", "text", "id"])
 def test_a_deeply_nested_value_is_named_by_its_type_not_quoted(field):
-    act = {**GOOD["acts"][0]}
+    act = {**GOOD["entries"][0]}
     act.pop("label")
-    raw = json.dumps({"acts": [act], "set_aside": [{"id": "C9", "reason": "r"}]})
+    raw = json.dumps({"entries": [act], "set_aside": [{"id": "C9", "reason": "r"}]})
     target = '"C9"' if field == "id" else json.dumps(act[field] if field in act else "x")
     if field == "label":
         raw = raw.replace('"text":', '"label": "x", "text":', 1)
@@ -179,7 +182,7 @@ def test_a_deeply_nested_value_is_named_by_its_type_not_quoted(field):
 
 def test_a_non_string_kind_is_malformed_not_a_crash():
     for kind in (["act"], {"act": 1}):
-        raw = _with(lambda a, kind=kind: a["acts"][0].update(kind=kind))
+        raw = _with(lambda a, kind=kind: a["entries"][0].update(kind=kind))
         state, answer, problems = page_answer.parse_page_answer(raw)
         assert (state, answer, _codes(problems)) == ("malformed", None, ["kind-unknown"])
 
@@ -190,10 +193,10 @@ _SURROGATE = "\\ud800"
 @pytest.mark.parametrize(
     "path",
     [
-        ("acts", 0, "kind"),
-        ("acts", 0, "label"),
-        ("acts", 0, "cites", 0),
-        ("acts", 0, "text"),
+        ("entries", 0, "kind"),
+        ("entries", 0, "label"),
+        ("entries", 0, "cites", 0),
+        ("entries", 0, "text"),
         ("set_aside", 0, "id"),
         ("set_aside", 0, "reason"),
     ],
@@ -222,7 +225,7 @@ def test_a_lone_surrogate_in_a_key_or_an_unknown_field_is_malformed():
 def test_a_surrogate_pair_is_one_character_and_is_read():
     raw = json.dumps(GOOD).replace('"12"', '"\\ud83d\\ude00"')
     state, parsed, _problems = page_answer.parse_page_answer(raw)
-    assert state == "parsed" and parsed["acts"][1]["text"] == "\U0001f600"
+    assert state == "parsed" and parsed["entries"][1]["text"] == "\U0001f600"
 
 
 def test_fence_detection_reads_a_long_near_fence_in_linear_time():
@@ -240,7 +243,7 @@ def test_nesting_is_counted_by_its_own_limit_and_never_inside_a_string():
     limit = page_answer.MAX_NESTING_DEPTH
     at_limit = "[" * limit + "]" * limit
     assert _codes(page_answer.parse_page_answer(at_limit)[2]) == ["not-object"]
-    quoted = _with(lambda a: a["acts"][0].update(text="[" * 1_000 + '\\"{'))
+    quoted = _with(lambda a: a["entries"][0].update(text="[" * 1_000 + '\\"{'))
     assert page_answer.parse_page_answer(quoted)[0] == "parsed"
 
 
@@ -278,7 +281,7 @@ def _page(*entries) -> str:
         }
         for n, (kind, start, end) in enumerate(entries, 1)
     ]
-    return json.dumps({"acts": acts, "set_aside": []})
+    return json.dumps({"entries": acts, "set_aside": []})
 
 
 ACT, OTHER = ("act", False, False), ("other", False, False)
@@ -336,44 +339,44 @@ def test_a_flag_anywhere_else_keeps_the_answer_and_is_named_on_its_entry(raw):
     named by entry for the Recensor to judge, never a reason to drop the page."""
     state, answer, problems = page_answer.parse_page_answer(raw)
     assert (state, answer, problems) == ("parsed", json.loads(raw), [])
-    assert page_answer.stray_continuation_flags(answer["acts"])
+    assert page_answer.stray_continuation_flags(answer["entries"])
 
 
 def test_stray_flags_are_named_by_entry_and_flag():
-    acts = json.loads(_page(ACT, START, ("act", True, True), ACT, END))["acts"]
+    acts = json.loads(_page(ACT, START, ("act", True, True), ACT, END))["entries"]
     assert page_answer.stray_continuation_flags(acts) == {
         1: ["continues_from_previous_page"],
         2: ["continues_from_previous_page", "continues_to_next_page"],
     }
-    edges_only = json.loads(_page(OTHER, START, ACT, END, OTHER))["acts"]
+    edges_only = json.loads(_page(OTHER, START, ACT, END, OTHER))["entries"]
     assert page_answer.stray_continuation_flags(edges_only) == {}
 
 
 BARE = (
-    '{\nacts: [{n: 1, kind: "act", label: null, cites: ["A1"], '
-    'text: "Le 3 mai, kind: x, n: 2 {acts: y}", continues_from_previous_page: false, '
+    '{\nentries: [{n: 1, kind: "act", label: null, cites: ["A1"], '
+    'text: "Le 3 mai, kind: x, n: 2 {entries: y}", continues_from_previous_page: false, '
     "continues_to_next_page: false}],\n set_aside: []}"
 )
 
 
 def test_bare_grammar_keys_are_quoted_and_the_repair_recorded():
-    """The cold73 shape: `{\nacts: [` with every grammar key bare. Text inside a
+    """A reply with every grammar key bare: `{\nentries: [`. Text inside a
     string that looks like a key is never touched."""
     assert page_answer.parse_page_answer(BARE)[2][0]["code"] == "not-json"
     state, answer, problems, repairs = page_answer.parse_page_answer_repaired(BARE)
     assert (state, problems) == ("parsed", [])
-    assert answer["acts"][0]["text"] == "Le 3 mai, kind: x, n: 2 {acts: y}"
+    assert answer["entries"][0]["text"] == "Le 3 mai, kind: x, n: 2 {entries: y}"
     assert [(repair["code"], repair["keys"]) for repair in repairs] == [("unquoted-keys-quoted", 9)]
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        "{acts: [], set_aside: [], }",
-        "{acts: [], set_aside: [], 'x': 1}",
-        "{acts: [], colour: []}",
-        "```json\n{acts: [], set_aside: []}\n```",
-        "{acts: [], set_aside: []} trailing",
+        "{entries: [], set_aside: [], }",
+        "{entries: [], set_aside: [], 'x': 1}",
+        "{entries: [], colour: []}",
+        "```json\n{entries: [], set_aside: []}\n```",
+        "{entries: [], set_aside: []} trailing",
     ],
     ids=["trailing-comma", "single-quotes", "unknown-bare-key", "fenced", "trailing-prose"],
 )
@@ -385,7 +388,7 @@ def test_the_repair_quotes_grammar_keys_and_nothing_else(raw):
 
 
 def test_a_repaired_reply_still_meets_the_grammar_or_is_held():
-    raw = '{acts: [{n: 2, kind: "act", cites: [], text: "x", continues_from_previous_page: false, continues_to_next_page: false}], set_aside: []}'
+    raw = '{entries: [{n: 2, kind: "act", cites: [], text: "x", continues_from_previous_page: false, continues_to_next_page: false}], set_aside: []}'
     state, answer, problems, repairs = page_answer.parse_page_answer_repaired(raw)
     assert (state, answer, _codes(problems)) == ("malformed", None, ["n-not-contiguous"])
     assert _codes(repairs) == ["unquoted-keys-quoted"]

@@ -415,7 +415,7 @@ words are graphemic-v1 tokens aligned by unit-cost edit script, as `roster.py` d
 Per page group (act pages split by form) and for the hard pages:
 
 - **reading**: CER median on parsed pages, and on all pages with an unparsed answer read
-  as empty; act recall (gold acts matched by a `kind: act` entry at CER <= 0.5) and pages
+  as empty; act recall (gold acts matched by an act or instrument entry at CER <= 0.5) and pages
   with the exact act count; row recall and surname recall on index and table pages;
   inserted words per gold word; false text on pages with no gold text;
 - **answer health**: parsed and malformed (by reason), errors, finish reasons,
