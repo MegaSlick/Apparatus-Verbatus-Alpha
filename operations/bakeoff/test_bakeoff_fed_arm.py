@@ -650,7 +650,9 @@ def test_a_bare_key_reply_is_parsed_as_the_pipeline_parses_it(tmp_path):
     bare = json.loads((out / "bare" / "p002.json").read_text())
     assert bare["parse_state"] == "parsed" and bare["parse_problems"] == []
     assert bare["repaired"] is True and bare["text"] == "Le dix mai"
-    assert [(r["code"], r["keys"]) for r in bare["answer_repairs"]] == [("unquoted-keys-quoted", 9)]
+    assert [(r["code"], r["keys"]) for r in bare["answer_repairs"]] == [
+        ("unquoted-keys-quoted", 11)
+    ]
     # The unrepaired grammar would have called it malformed; a loop-stopped or cut-off
     # reply is never repaired.
     from common import page_answer

@@ -40,7 +40,8 @@ PERLECTOR_ANSWER = {
 
 
 BARE_KEY_ANSWER = (
-    '{\nacts: [{n: 1, kind: "act", label: null, cites: ["A1"], text: "Le dix mai", '
+    '{\npage_type: "register-acts", writing: "handwritten", '
+    'entries: [{n: 1, kind: "act", label: null, cites: ["A1"], text: "Le dix mai", '
     "continues_from_previous_page: false, continues_to_next_page: false}],\n set_aside: []}"
 )
 
