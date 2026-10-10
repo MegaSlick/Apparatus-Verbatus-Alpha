@@ -69,7 +69,6 @@ from common.contracts.outcomes import (
 )
 from common.contracts.serving import (
     CHAIR_STREAM_CALL_RECORD_SCHEMA,
-    RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS,
     SERVING_CONFIG_INPUTS_FIELDS,
     SERVING_CONFIG_INPUTS_SCHEMA,
     SERVING_LAUNCH_AUDIT_SCHEMA,
@@ -761,11 +760,6 @@ class StageContext:
             ) from error
         if canonical != payload or not isinstance(audit, dict):
             raise SchemaRefusal("serving launch audit is not a canonical JSON object")
-        if audit.get("schema") in RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS:
-            raise SchemaRefusal(
-                f"serving launch audit was written as {audit['schema']}, which this build no "
-                "longer reads; re-run"
-            )
         if audit.get("schema") != SERVING_LAUNCH_AUDIT_SCHEMA:
             raise SchemaRefusal("serving launch audit has the wrong or missing schema")
         if not isinstance(audit.get("chair"), str) or not audit["chair"].strip():
@@ -1480,12 +1474,6 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
         fixture = tomllib.load(handle)
     if not fixture.get("page"):
         raise ContractError(f"{path} declares no pages")
-    if "page_witness_chairs" in fixture:
-        raise ContractError(
-            f"{path} declares page_witness_chairs, a key retired to the models configuration's "
-            "witness_scope. A stale fixture carrying it would be silently ignored rather "
-            "than honoured; remove the key so the sealed roster is the only source of scope."
-        )
     return fixture
 
 

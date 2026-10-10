@@ -474,27 +474,27 @@ def test_a_chandra_capture_recorded_unrecognized_whose_bytes_now_parse_is_refuse
 
 
 @pytest.mark.parametrize(
-    ("witness", "retired"),
+    ("witness", "other"),
     [
         (0, "chandra-layout-text.v1"),
         (2, "churro-historical-document-text.v1"),
     ],
 )
-def test_a_capture_read_under_a_retired_text_view_is_refused_by_name(witness, retired):
+def test_a_capture_read_under_another_text_view_is_refused_by_name(witness, other):
     blobs = _Blobs()
     rows = witnesses(blobs)
     capture = rows[witness]["testimonium"]["payload"]["native_capture"]
-    capture["text_view"] = retired
+    capture["text_view"] = other
     with pytest.raises(
         SchemaRefusal,
-        match=f"the retired text view {retired}.*re-run the submission from the Door",
+        match=f"names text view '{other}'.*re-run the submission from the Door",
     ):
         page_witness_units._checked_capture(capture, capture["adapter"], blobs.read_bytes)
-    with pytest.raises(SchemaRefusal, match=f"the retired text view {retired}"):
+    with pytest.raises(SchemaRefusal, match=f"names text view '{other}'"):
         feed_for(blobs, rows=rows)
 
 
-def test_the_perlector_refuses_a_page_capture_read_under_a_retired_text_view():
+def test_the_perlector_refuses_a_page_capture_read_under_another_text_view():
     blobs = _Blobs()
     record = churro_testimonium(blobs, CHURRO_XML)
     capture = record["payload"]["native_capture"]
@@ -509,9 +509,7 @@ def test_the_perlector_refuses_a_page_capture_read_under_a_retired_text_view():
         context, "act act-1", "attestator_3", testimonium, capture
     )
     capture["text_view"] = "churro-historical-document-text.v1"
-    with pytest.raises(
-        SchemaRefusal, match="the retired text view churro-historical-document-text.v1"
-    ):
+    with pytest.raises(SchemaRefusal, match="names text view 'churro-historical-document-text.v1'"):
         page_testimonia.verify_page_native_capture(
             context, "act act-1", "attestator_3", testimonium, capture
         )

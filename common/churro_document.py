@@ -134,9 +134,6 @@ class _DocumentTooDeep(Exception):
 # One rule, three shapes: whichever shape the response took, this is the view
 # whose name a record carries.
 CHURRO_TEXT_VIEW: Final = "churro-historical-document-text.v2"
-# Views a retained capture may name but this build no longer produces: a capture
-# read under one is refused by that name, never re-derived under the current view.
-RETIRED_CHURRO_TEXT_VIEWS: Final = frozenset({"churro-historical-document-text.v1"})
 # The parser word for this adapter, as `feeding._RUNNABLE_PARSERS` and the
 # capture contract spell it.
 CHURRO_PARSER: Final = "xml"

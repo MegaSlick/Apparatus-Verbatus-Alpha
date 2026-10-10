@@ -2151,9 +2151,9 @@ def test_a_pass_whose_page_record_never_arrives_holds(live_run, tmp_path, monkey
     assert run_attestatores(live_run, run_root, factory=world.factory) == attestatores.EXIT_HELD
 
 
-def test_a_resumed_terminal_refuses_a_capture_read_under_a_retired_text_view():
+def test_a_resumed_terminal_refuses_a_capture_read_under_another_text_view():
     """The one place a resumed live pass reuses a sealed capture refuses one read
-    under a view this build no longer produces, by name, before its bytes are
+    under a view this build does not produce, by name, before its bytes are
     reused."""
     reference = {"relative_path": "3_attestatores/blobs/sha256/" + "a" * 64, "sha256": "a" * 64}
     capture = {
@@ -2169,11 +2169,11 @@ def test_a_resumed_terminal_refuses_a_capture_read_under_a_retired_text_view():
     }
 
     def refuse_read(relative_path):
-        raise AssertionError(f"a retired capture's bytes must not be reused: {relative_path}")
+        raise AssertionError(f"another view's capture bytes must not be reused: {relative_path}")
 
     evidence = dict.fromkeys(attestatores.chandra_native._CHANDRA_RESULT_FIELDS)
     evidence["native_capture"] = capture
-    refusal = "the retired text view chandra-layout-text.v1.*re-run the submission from the Door"
+    refusal = "names text view 'chandra-layout-text.v1'.*re-run the submission from the Door"
     with pytest.raises(SchemaRefusal, match=refusal):
         attestatores.chandra_native._attempt_from_evidence_record(
             SimpleNamespace(tree=SimpleNamespace(read_bytes=refuse_read)), evidence
@@ -2316,7 +2316,9 @@ def test_a_tallied_call_is_held_to_its_chair_s_row_and_seed(chair, field):
             attestatores.verify_page_call_sampling(
                 context, retained({**call, "generation_sent": moved}), chair
             )
-    with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
+    with pytest.raises(
+        SchemaRefusal, match="has schema .chair-call-record.v2., not one this build writes"
+    ):
         attestatores.verify_page_call_sampling(
             context, retained({**call, "schema": "chair-call-record.v2"}), chair
         )

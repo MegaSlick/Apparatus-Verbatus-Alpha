@@ -54,7 +54,6 @@ from common.contracts.errors import SchemaRefusal
 ADAPTER: Final = "dots-mocr.v1"
 PARSER: Final = "layout-json"
 TEXT_VIEW: Final = "dots-layout-text.v1"
-RETIRED_TEXT_VIEWS: Final = frozenset()
 QUANTIZATION_RULE: Final = "dots-smart-resize-floor-ceil.v1"
 
 IMAGE_PLACEHOLDER: Final = "<|img|><|imgpad|><|endofimg|>"

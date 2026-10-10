@@ -988,60 +988,38 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
 # under; only an adapter and parser in `CAPTURE_TEXT_VIEWS` has one, and there it
 # is required whenever the bytes are re-derived.
 _NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity", "text_view"})
-# The text view each vendor grammar's capture must name, by (adapter, parser),
-# and the views it retires. A capture made before its view was recorded, or
-# under a retired one, is refused by name whatever its parse state: its text and
-# findings are not what this build's parser reads from the same bytes.
+# The text view each vendor grammar's capture must name, by (adapter, parser).
+# A capture naming any other view, or none, is refused whatever its parse state:
+# its text and findings are not what this build's parser reads from the same bytes.
 CAPTURE_TEXT_VIEWS: Final = {
-    (dots_layout.ADAPTER, dots_layout.PARSER): (
-        dots_layout.TEXT_VIEW,
-        dots_layout.RETIRED_TEXT_VIEWS,
-    ),
-    ("chandra.v1", "html"): (
-        chandra_layout.LAYOUT_TEXT_VIEW,
-        chandra_layout.RETIRED_LAYOUT_TEXT_VIEWS,
-    ),
-    ("churro.v1", churro_document.CHURRO_PARSER): (
-        churro_document.CHURRO_TEXT_VIEW,
-        churro_document.RETIRED_CHURRO_TEXT_VIEWS,
-    ),
+    (dots_layout.ADAPTER, dots_layout.PARSER): dots_layout.TEXT_VIEW,
+    ("chandra.v1", "html"): chandra_layout.LAYOUT_TEXT_VIEW,
+    ("churro.v1", churro_document.CHURRO_PARSER): churro_document.CHURRO_TEXT_VIEW,
 }
 
 
 def capture_text_view(adapter: str, parser: str | None) -> str | None:
     """The text view a capture of this adapter and parser records, if it records one."""
-    views = CAPTURE_TEXT_VIEWS.get((adapter, parser))
-    return None if views is None else views[0]
+    return CAPTURE_TEXT_VIEWS.get((adapter, parser))
 
 
 def validate_capture_text_view(capture: dict[str, Any]) -> dict[str, Any]:
-    """Refuse a capture not read under this build's text view for its grammar, by name.
+    """Refuse a capture not read under this build's text view for its grammar.
 
-    Called wherever a retained capture is reused or re-derived, so a capture
-    read under a retired view, or before views were recorded, is refused as
-    that rather than as a capture that differs from its own bytes.
+    Called wherever a retained capture is reused or re-derived, so such a
+    capture is refused by its view rather than as a capture that differs from
+    its own bytes.
     """
-    views = CAPTURE_TEXT_VIEWS.get((capture["adapter"], capture["parse"].get("parser")))
-    if views is None:
+    current = CAPTURE_TEXT_VIEWS.get((capture["adapter"], capture["parse"].get("parser")))
+    if current is None:
         return capture
-    current, retired = views
     named = capture.get("text_view")
-    if named == current:
-        return capture
-    if named is None or named in retired:
-        read_under = (
-            "records no text view"
-            if named is None
-            else f"was read under the retired text view {named}, which this build no longer reads"
-        )
+    if named != current:
         raise SchemaRefusal(
-            f"a {capture['adapter']} page capture {read_under}; this build reads {current}; "
-            "its text and findings are not this parser's; re-run the submission from the Door"
+            f"a {capture['adapter']} page capture names text view {named!r}, not {current}; "
+            "re-run the submission from the Door"
         )
-    raise SchemaRefusal(
-        f"a {capture['adapter']} page capture names unknown text view {named!r}, not {current}; "
-        "re-run the submission from the Door"
-    )
+    return capture
 
 
 _VENDOR_IDENTITY_FIELDS: Final = frozenset({"repository", "sha", "carried_strings"})

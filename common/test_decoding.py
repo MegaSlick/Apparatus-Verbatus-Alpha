@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from common.chandra_native_retry import recipe_record
-from common.contracts.errors import ContractError, SchemaRefusal
-from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA, RETIRED_CALL_RECORD_SCHEMAS
+from common.contracts.errors import ContractError
+from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA
 from common.decoding import (
     DEFAULT_DECODING_CONFIG_PATH,
     ENGINE_FILLED_SAMPLING_FIELDS,
@@ -22,7 +22,6 @@ from common.decoding import (
     perlector_page_max_tokens,
     reconstructor_max_tokens,
     recorded_wire_decimals,
-    refuse_retired_call_record,
     verify_call_sampling,
 )
 
@@ -174,14 +173,11 @@ def test_shipped_decoding_policy_declares_its_sections():
         "decoding.v8",
     ],
 )
-def test_legacy_decoding_schema_is_refused_by_name(tmp_path: Path, schema: str):
+def test_an_earlier_decoding_schema_is_refused(tmp_path: Path, schema: str):
     path = tmp_path / "decoding.toml"
     path.write_text(f'schema = "{schema}"\n', encoding="utf-8")
 
-    with pytest.raises(
-        ContractError,
-        match=f"sealed under {schema}, which this build no longer reads; re-run",
-    ):
+    with pytest.raises(ContractError, match="unsupported schema"):
         load_decoding_policy(path)
 
 
@@ -482,15 +478,12 @@ def test_a_request_that_sends_no_seed_is_stated_and_held_to_it():
         verify_call_sampling(unseeded, policy, "attestator_1", attempt_ordinal=4, expected_seed=7)
 
 
-@pytest.mark.parametrize("schema", sorted(RETIRED_CALL_RECORD_SCHEMAS))
-def test_a_retired_call_record_is_refused_by_its_schema_name(schema):
+@pytest.mark.parametrize("schema", ["chair-call-record.v3", "chair-call-record.v9", None])
+def test_a_call_record_under_another_schema_is_refused(schema):
     policy, _digest = load_decoding_policy()
     call = {**_call("attestator_3"), "schema": schema}
-    with pytest.raises(ContractError, match=f"written as {schema}, which this build no longer"):
+    with pytest.raises(ContractError, match=f"has schema {schema!r}, not one this build writes"):
         verify_call_sampling(call, policy, "attestator_3", expected_seed=7)
-    with pytest.raises(SchemaRefusal, match=schema):
-        refuse_retired_call_record(schema, subject="a record", error_type=SchemaRefusal)
-    refuse_retired_call_record(CHAIR_CALL_RECORD_SCHEMA, subject="a record")
 
 
 def test_decoded_wire_decimals_restores_each_canonical_tagged_float() -> None:

@@ -733,7 +733,9 @@ def test_an_engine_call_off_its_sealed_row_or_retired_is_refused(live_run):
     root, _catalogue = live_run
     tree = RunTree(root, "r")
     context, retired = _engine_call_world(tree, seed=7, schema="chair-call-record.v2")
-    with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
+    with pytest.raises(
+        SchemaRefusal, match="has schema .chair-call-record.v2., not one this build writes"
+    ):
         live_calls.engine_call_inputs(context, retired)
 
 

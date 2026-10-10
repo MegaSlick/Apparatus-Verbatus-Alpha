@@ -121,7 +121,7 @@ def test_serving_receipts_are_refused_as_stage_artifacts_and_accepted_as_run_rec
     assert receipt["revision"] == identity.receipt_revision
 
 
-def test_a_launch_audit_under_a_retired_schema_is_refused_by_name(tmp_path):
+def test_a_launch_audit_under_another_schema_is_refused(tmp_path):
     context, _ = _context(tmp_path)
     audit = {
         "schema": "serving-launch-audit.v1",
@@ -131,7 +131,7 @@ def test_a_launch_audit_under_a_retired_schema_is_refused_by_name(tmp_path):
     }
     reference = context.write_serving_launch_audit(audit)
 
-    with pytest.raises(SchemaRefusal, match="written as serving-launch-audit.v1.*re-run"):
+    with pytest.raises(SchemaRefusal, match="wrong or missing schema"):
         context._read_serving_launch_audit(reference)
 
 

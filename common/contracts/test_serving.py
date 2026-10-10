@@ -5,6 +5,7 @@ the closed shapes and stop-reason vocabularies the live reading seam adds.
 import pytest
 
 from common.contracts.serving import (
+    CALL_RECORD_SCHEMAS,
     CALLER_GENERATION_FIELDS,
     CHAIR_CALL_RECORD_FIELDS,
     CHAIR_CALL_RECORD_SCHEMA,
@@ -18,7 +19,6 @@ from common.contracts.serving import (
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
     ENGINE_STOP_COMPLETE,
     ENGINE_STOP_CUT_OFF,
-    RETIRED_CALL_RECORD_SCHEMAS,
     SERVING_CONFIG_INPUTS_FIELDS,
     SERVING_CONFIG_INPUTS_SCHEMA,
     STOP_REASON_UNREPORTED,
@@ -70,16 +70,13 @@ def test_chair_call_record_field_set_is_closed_and_exact() -> None:
             "usage_reconciliation",
         }
     )
-    assert RETIRED_CALL_RECORD_SCHEMAS == {
-        "chair-call-record.v1",
-        "chair-call-record.v2",
-        "chair-call-record.v3",
-        "chair-transport-failure.v1",
-        "chair-transport-failure.v2",
-        "chandra-native-call-record.v1",
-        "chandra-native-call-record.v2",
-        "chandra-native-transport-failure.v1",
-        "chandra-native-transport-failure.v2",
+    assert CALL_RECORD_SCHEMAS == {
+        "chair-call-record.v4",
+        "chair-transport-failure.v3",
+        "chair-stream-call-record.v1",
+        "chair-stream-transport-failure.v1",
+        "chandra-native-call-record.v3",
+        "chandra-native-transport-failure.v3",
     }
     assert CALLER_GENERATION_FIELDS == {"max_tokens", "chat_template_kwargs", "stop_token_ids"}
     assert CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA == "chair-transport-failure.v3"
