@@ -306,8 +306,14 @@ def test_reference_cites_are_remapped_to_the_shown_feed_and_validated(tmp_path):
         assert set(cites) | aside == shown and not set(cites) & aside, scenario
         expected = {m.id_map[u] for u in ("A1", "C1") if m.id_map[u]} | {"L1"}
         assert set(cites) == expected, scenario
-    permuted = M.mutate(feed, ref, "permute", seed=0)
-    assert permuted.id_map["A1"] != "A1" or permuted.id_map["C1"] != "C1"
+    # A permutation may change only the order (letters kept); the page sha that seeds it
+    # differs across machines, so look for a seed whose permutation renames letters.
+    for seed in range(20):
+        permuted = M.mutate(feed, ref, "permute", seed=seed)
+        if permuted.id_map["A1"] != "A1" or permuted.id_map["C1"] != "C1":
+            break
+    else:
+        raise AssertionError("no seed in 0..19 renamed a witness letter")
     dropped = M.mutate(feed, ref, "drop-one", turn=0)
     assert dropped.id_map["A1"] is None and dropped.id_map["C1"] == "B1"
     merged = M.mutate(feed, ref, "merged-entries", seed=0)
