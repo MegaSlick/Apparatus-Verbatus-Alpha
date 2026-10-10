@@ -169,7 +169,12 @@ How it scores:
 `queue_runner.py` runs one pod's whole day from a manifest (`queue/example-*.toml`,
 schema `bakeoff-queue.v1`) and ends the pod itself, so no laptop has to notice when a job
 ends. Each arm runs a smoke of `smoke_pages` pages (`--limit N` appended), then the full
-run. A failed arm (one whose program cannot even start included) is retried once at the
+run. A GPU `witness_run` arm loads its model once: its smoke runs with `--keep-server
+<out>/<arm>/server-handoff.json` and leaves its vLLM server up, and its full run, with
+`--adopt-server` on the same file, takes that server over when it is the same command
+and still answers (otherwise it stops it and starts its own). A kept server no run took
+over (a failed smoke, a hard stop, SIGTERM) is stopped by the queue. The native arms
+still load twice. A failed arm (one whose program cannot even start included) is retried once at the
 end, smoke first, then reported. Retries keep their lanes: GPU arms one at a time on the
 card, CPU arms beside them in the CPU lane, all at once, each with an equal part of the
 lane's whole `cpu_threads` (never less than its own; the command's `--threads` is

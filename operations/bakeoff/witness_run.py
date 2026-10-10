@@ -129,13 +129,30 @@ def settings_digest(repo: str | None, revision: str | None, requests: list[dict]
 # --- the vLLM server ----------------------------------------------------------------
 
 
+def _pid_alive(pid: int) -> bool:
+    """Whether the process exists and is not a zombie left for its new parent to reap."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return True
+
+
 class Server:
+    """One `vllm serve` in its own session. A server kept by an earlier process (the
+    smoke run's, `--keep-server`) is taken over with `Server.adopted`, by its pid."""
+
     def __init__(self, prefix: list[str], argv: list[str], port: int, log: Path) -> None:
         self.url = f"http://127.0.0.1:{port}"
         log.parent.mkdir(parents=True, exist_ok=True)
         self._log = open(log, "ab")
         self.argv = [*prefix, *argv]
-        self.process = subprocess.Popen(
+        self.process: subprocess.Popen | None = subprocess.Popen(
             self.argv,
             stdout=self._log,
             stderr=subprocess.STDOUT,
@@ -143,6 +160,31 @@ class Server:
             env={**os.environ, **OFFLINE_ENV},
             start_new_session=True,
         )
+        self.pid = self.process.pid
+
+    @classmethod
+    def adopted(cls, handoff: dict[str, Any]) -> Server:
+        server = cls.__new__(cls)
+        server.url, server.argv, server.pid = handoff["url"], handoff["argv"], handoff["pid"]
+        server.process, server._log = None, None
+        return server
+
+    def handoff(self) -> dict[str, Any]:
+        return {"url": self.url, "argv": self.argv, "pid": self.pid}
+
+    def alive(self) -> bool:
+        if self.process is not None:
+            return self.process.poll() is None
+        return _pid_alive(self.pid)
+
+    def answers(self, served_name: str) -> bool:
+        try:
+            with urllib.request.urlopen(self.url + "/v1/models", timeout=5) as response:
+                models = json.loads(response.read())
+        except (OSError, ValueError, urllib.error.URLError):
+            return False
+        names = [m.get("id") for m in models.get("data", []) if isinstance(m, dict)]
+        return served_name in names
 
     def wait_ready(self, timeout: float) -> None:
         deadline = time.monotonic() + timeout
@@ -159,6 +201,9 @@ class Server:
         raise RuntimeError(f"server not ready after {timeout:.0f} s")
 
     def stop(self) -> None:
+        if self.process is None:
+            self._stop_adopted()
+            return
         if self.process.poll() is None:
             try:
                 os.killpg(self.process.pid, signal.SIGTERM)
@@ -170,6 +215,19 @@ class Server:
                     pass
                 self.process.wait(timeout=30)
         self._log.close()
+
+    def _stop_adopted(self) -> None:
+        """Stop a server this process did not start: no child to wait on, so watch its pid."""
+        for signum, grace in ((signal.SIGTERM, 60.0), (signal.SIGKILL, 30.0)):
+            if not _pid_alive(self.pid):
+                return
+            try:
+                os.killpg(self.pid, signum)
+            except (ProcessLookupError, PermissionError):
+                return
+            deadline = time.monotonic() + grace
+            while _pid_alive(self.pid) and time.monotonic() < deadline:
+                time.sleep(0.2)
 
 
 def _timed_out(failure: BaseException) -> bool:
@@ -455,7 +513,8 @@ class ModelJob:
             self.prepared.append((page, requests))
         event(self.args.out, "prepare-done", model=self.label, pages=len(self.prepared))
 
-    def serve(self) -> Server:
+    def server_command(self) -> tuple[list[str], list[str]]:
+        """(the command prefix, the `serve` arguments) this model's server runs."""
         argv = A.server_argv(
             self.row,
             self.weights,
@@ -467,6 +526,36 @@ class ModelJob:
             max_num_batched_tokens=self.args.max_num_batched_tokens,
         )
         prefix = self.args.vllm_cmd or [sys.executable, "-m", "vllm.entrypoints.cli.main"]
+        return prefix, argv
+
+    def adopt(self, path: Path | None) -> Server | None:
+        """The server a `--keep-server` run left at `path`, if it is this model's own and
+        answers; any other is stopped. The hand-off file is consumed either way."""
+        if path is None or not path.is_file():
+            return None
+        try:
+            handoff = json.loads(path.read_text("utf-8"))
+            server = Server.adopted(handoff)
+        except (OSError, ValueError, KeyError, TypeError):
+            path.unlink(missing_ok=True)
+            return None
+        path.unlink(missing_ok=True)
+        prefix, argv = self.server_command()
+        if server.argv != [*prefix, *argv]:
+            reason = "another server command"
+        elif not server.alive():
+            reason = "not running"
+        elif not server.answers(self.served_name):
+            reason = "not answering"
+        else:
+            event(self.args.out, "server-adopted", model=self.label, pid=server.pid)
+            return server
+        server.stop()
+        event(self.args.out, "server-not-adopted", model=self.label, reason=reason)
+        return None
+
+    def serve(self) -> Server:
+        prefix, argv = self.server_command()
         event(
             self.args.out,
             "server-start",
@@ -634,9 +723,14 @@ def run_models(names: list[str], args: argparse.Namespace) -> None:
     model's preparation and weight pre-read start as soon as this one's preparation is
     done; the next server starts as soon as this one has answered its last request and
     stopped.
+
+    `--adopt-server` takes over the server a `--keep-server` run left (one model load
+    for a smoke and its full run); `--keep-server` leaves this run's server up and
+    writes the hand-off when the run ends normally. Any other end stops it.
     """
     pages = list_pages(args.pages)[: args.limit or None]
     jobs = [ModelJob(name, args) for name in names]
+    keep_path, adopt_path = args.keep_server, args.adopt_server
     gpu = GpuLog(args.out)
     cpu = ThreadPoolExecutor(max_workers=2)
     try:
@@ -646,8 +740,12 @@ def run_models(names: list[str], args: argparse.Namespace) -> None:
         prep = cpu.submit(jobs[0].prepare, pages)
         for index, job in enumerate(jobs):
             pending = [p for p in pages if not settled(job.dir / f"{p.stem}.json")]
-            server = None
-            if pending and not args.server_url:
+            server, kept = job.adopt(adopt_path) if not args.server_url else None, False
+            if server is not None and not pending:
+                server.stop()
+                event(args.out, "server-stopped", model=job.label)
+                server = None
+            if pending and server is None and not args.server_url:
                 server = job.serve()
             try:
                 prep.result()
@@ -666,8 +764,13 @@ def run_models(names: list[str], args: argparse.Namespace) -> None:
                     job.send_all(args.server_url.rstrip("/"), None)
                 else:
                     job.send_all(server.url, server.argv)
+                if server is not None and keep_path is not None:
+                    keep_path.parent.mkdir(parents=True, exist_ok=True)
+                    write_json(keep_path, server.handoff())
+                    kept = True
+                    event(args.out, "server-kept", model=job.label, pid=server.pid)
             finally:
-                if server is not None:
+                if server is not None and not kept:
                     server.stop()
                     event(args.out, "server-stopped", model=job.label)
             if staged is not None:
@@ -707,6 +810,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             p.add_argument("--model", required=True, choices=sorted(A.ARMS))
             p.add_argument("--weights", type=Path, help="a local snapshot directory")
             p.add_argument("--label", help="cache folder name (default: the model name)")
+            p.add_argument(
+                "--keep-server",
+                type=Path,
+                help="leave the server running at the end and write its hand-off here",
+            )
+            p.add_argument(
+                "--adopt-server",
+                type=Path,
+                help="take over the server a --keep-server run left here, if it is this one",
+            )
         else:
             p.add_argument("--models", required=True, help="ordered, comma-separated")
             p.add_argument("--stage-dir", type=Path, help="copy next weights to local disk here")
@@ -768,6 +881,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.run_all:
         args.weights_map = dict(item.split("=", 1) for item in args.weights)
         args.weights, args.label = None, None
+        args.keep_server, args.adopt_server = None, None
     else:
         args.stage_dir, args.weights_map = None, {}
     return args
