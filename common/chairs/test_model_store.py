@@ -1,4 +1,4 @@
-"""Synthetic-store tests for R1 acquisition; no network or real weights are used."""
+"""Synthetic-store tests for model acquisition; no network or real weights are used."""
 
 import copy
 import hashlib

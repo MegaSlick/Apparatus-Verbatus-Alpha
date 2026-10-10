@@ -1,15 +1,15 @@
 # Pod F: the Perlector's model served smaller and faster, on the 96 GB card (RTX PRO 6000).
-# Not run yet; prepared 2026-10-09 (workbench design note S0c). Launch: as pod R in
+# Launch: as pod R in
 # RUNBOOK.md sections 2.4 and 4.2, with this manifest in place of reader-96gb.toml. Paths are the pod's.
 #
-# Each arm is the 2026-10-09 `qwen38-27b-vendor` arm (same prompt, sampling, pixels, 32 in
+# Each arm is the `qwen38-27b-vendor` arm (same prompt, sampling, pixels, 32 in
 # flight, 0.92 of the card) with one change, named by `--recipe`: a row of
 # config/serving_recipes_real_variants.toml. So each cache compares page for page with the
 # bf16 cache already home (private/bakeoff/reader-cache-2026-10-09-verified/qwen38-27b-vendor).
 # The vendor sampling is not greedy (temperature 0.7, seed 0), so the bf16 repeat arm at the
 # end measures how much bf16 differs from itself; a difference smaller than that is noise.
 #
-# The last two arms (added 2026-10-09, design note P3) serve NVIDIA's mixed NVFP4/FP8 build
+# The last two arms serve NVIDIA's mixed NVFP4/FP8 build
 # of the same model (`--recipe unproven-real-perlector-nvfp4[-mtp3]`, 21.9 GB, pinned in
 # weight_pins.json `qwen3.8-27b-nvfp4`). They come after the bf16 repeat so that, if the day
 # runs late, the FP8 arms and the noise floor are kept and NVFP4 is what is cut.
@@ -89,7 +89,7 @@ command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "-
   "--max-num-batched-tokens", "16384",
   "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
 
-# The bf16 control run again (55.6 GB fetch): how far bf16 differs from its own 10-09 run.
+# The bf16 control run again (55.6 GB fetch): how far bf16 differs from its own earlier cache.
 [[arms]]
 name = "qwen38-27b-vendor-repeat"
 time_box_min = 25

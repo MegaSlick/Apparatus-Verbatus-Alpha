@@ -983,9 +983,8 @@ class _RunPodAdapter:
 class RunPodProvider(_RunPodAdapter):
     """RunPod REST v1 implementation of the seven provider verbs.
 
-    Kept beside `RunPodV2Provider` until the first live run under v2 is green,
-    then deleted in its own commit (`V2_MIGRATION.md`). Selected by
-    ``live_runpod_provider(..., route="v1")``.
+    Selected by ``live_runpod_provider(..., route="v1")``; `V2_MIGRATION.md`
+    maps it to `RunPodV2Provider`.
     """
 
     ROOT = RUNPOD_REST_ROOT
@@ -2009,8 +2008,8 @@ def live_runpod_provider(
 ) -> "RunPodProvider | RunPodV2Provider":
     """The adapter for ``route`` over a live transport at that route's root.
 
-    The one place the route is chosen: ``"v2"`` by default, ``"v1"`` while v1
-    is still kept (until the first live v2 run is green). An untracked
+    The one place the route is chosen: ``"v2"`` by default, ``"v1"`` on request.
+    An untracked
     ``--provider-factory`` calls this rather than pairing a class and a root
     by hand; ``options`` are passed to the adapter unchanged.
     """

@@ -1,5 +1,5 @@
-# Pod R: the three readers on the 96 GB card, blind arms already run on 2026-10-08, so
-# the vendor arms come first; the blind 9B and 27B rows are here to resume or repeat.
+# Pod R: the three readers on the 96 GB card. The vendor arms come first; the blind 9B
+# and 27B rows resume from an earlier cache or repeat.
 # Launch: RUNBOOK.md section 4. Paths are the pod's. Commits are the cards' pins. The
 # volume may start empty: each arm's `prepare` fetches and verifies its snapshot
 # (`operations/bakeoff/weights.py`; arms sharing one fetch it once), offline after.
@@ -55,7 +55,7 @@ command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "-
   "--max-num-batched-tokens", "16384",
   "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
 
-# The blind arms resume from a cache copied up from 2026-10-08, or repeat if absent.
+# The blind arms resume from a cache copied up beforehand, or repeat if absent.
 [[arms]]
 name = "qwen35-27b-blind"
 time_box_min = 30

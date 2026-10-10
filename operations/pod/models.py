@@ -677,9 +677,8 @@ def _required_timer_arguments(
     # ``bootstrap_main.resolve_plan`` holds it to the same rules on the pod: a
     # journal path that does not name the launch token is refused there, and
     # the token is minted inside ``create``, so no operator can pre-write it.
-    # An unbound journal therefore refused every full bootstrap plan on the pod
-    # after billing began -- the same shape as the nested report path before
-    # ``launch`` learned to bind it.
+    # An unbound journal would refuse every full bootstrap plan on the pod after
+    # billing began.
     nested_halves = _nested_argv_halves(bootstrap)
     report_paths: list[tuple[list[str], PurePosixPath]] = []
     bootstrap_journal: PurePosixPath | None = None

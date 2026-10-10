@@ -5164,7 +5164,7 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
 def test_a_second_pod_sets_the_first_pods_journal_aside_and_same_pod_still_resumes(
     tmp_path: Path,
 ) -> None:
-    """2026-10-08: a replacement pod given the dead pod's journal went red at cuda-compat."""
+    """A replacement pod given the dead pod's journal must not resume its cuda-compat step."""
 
     class Actions(FakeBootstrapActions):
         driver = "570.195.03"
