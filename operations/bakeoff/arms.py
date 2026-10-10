@@ -253,15 +253,38 @@ def resolve_weights(
     )
 
 
-def assert_row_quantization(row: dict[str, Any], weights: Path) -> None:
-    """Refuse a row whose `quantization` the snapshot's own config.json does not declare.
+def declared_quantization(weights: Path) -> dict[str, Any] | None:
+    """The `quantization_config` in a snapshot's config.json (or its `text_config`), if any;
+    None for a snapshot with no readable config.json, such as the detector's `model.pt`."""
+    try:
+        document = json.loads((Path(weights) / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(document, dict):
+        return None
+    for section in (document, document.get("text_config")):
+        if isinstance(section, dict) and section.get("quantization_config"):
+            return section["quantization_config"]
+    return None
 
-    The serving manager's guard (`operations/serving/manager.py::assert_quantization`),
-    applied to the bake-off's snapshot directory: vLLM given `--quantization` and an
-    unquantized checkpoint would quantize it at load, serving weights nobody pinned. A
-    row without `quantization` is not checked.
+
+def assert_row_quantization(row: dict[str, Any], weights: Path) -> None:
+    """Refuse a snapshot whose own config.json disagrees with the row's `quantization`.
+
+    A row that names a method needs a snapshot declaring it (the serving manager's guard,
+    `operations/serving/manager.py::assert_quantization`): vLLM given `--quantization` and
+    an unquantized checkpoint would quantize it at load, serving weights nobody pinned. A
+    row that names none needs a snapshot declaring none, or a quantized checkpoint served
+    with no `--recipe` would be recorded as the bf16 run.
     """
     if row.get("quantization") is None:
+        declared = declared_quantization(weights)
+        if declared:
+            raise SystemExit(
+                f"{weights} declares quantization_config {declared!r} but the serving row "
+                f"(recipe={row.get('recipe')!r}) names no quantization: pass the --recipe "
+                "that serves this checkpoint"
+            )
         return
     from types import SimpleNamespace
 
