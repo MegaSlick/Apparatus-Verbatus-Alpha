@@ -295,17 +295,22 @@ def _flagged(finding: dict) -> dict:
     return {**finding, "flagged": True}
 
 
-def test_a_flagged_page_holds_every_unit_on_it_through_main(page_tree, tmp_path, monkeypatch):
+def test_a_flagged_page_flags_every_unit_on_it_through_main(page_tree, tmp_path, monkeypatch):
+    """Residual ink is a review flag under the committed `[flags]`: named on every unit of
+    the page, placed in the queue, holding nothing (`common.page_accounting`)."""
     root = _copy(page_tree, tmp_path)
     _substituted(monkeypatch, _flagged)
-    assert _run_main(root, monkeypatch) == RUN.EXIT_HELD
+    assert _run_main(root, monkeypatch) == RUN.EXIT_COMPLETE
 
     reviews = _reviews(root)
     assert reviews
     for review in reviews:
-        assert review["outcome"] == "held-for-review"
+        assert review["outcome"] == "accepted"
         assert review["payload"]["page_coverage"]["flagged_pages"]
-        assert page_review.RESIDUAL_INK in review["payload"]["hold_codes"]
+        assert page_review.RESIDUAL_INK in review["payload"]["flag_codes"]
+        assert page_review.RESIDUAL_INK not in review["payload"]["hold_codes"]
+        assert review["payload"]["review_priority"] == 1
+        assert "flagged for review, not held" in review["payload"]["reason"]
 
 
 def test_a_second_pass_that_clears_a_flag_does_not_collide_with_the_first(
@@ -313,14 +318,14 @@ def test_a_second_pass_that_clears_a_flag_does_not_collide_with_the_first(
 ):
     """A review's content can change between passes while its unit does not.
 
-    Pass 1 flags every page; pass 2 measures honestly. Each unit's second
-    review is minted at a fresh ordinal rather than republished under the
-    first's identity, which the immutable writer would refuse; a third,
-    identical pass mints nothing.
+    Pass 1 flags every page's ink (a review flag, so the units are accepted
+    with it); pass 2 measures honestly. Each unit's second review is minted at
+    a fresh ordinal rather than republished under the first's identity, which
+    the immutable writer would refuse; a third, identical pass mints nothing.
     """
     root = _copy(page_tree, tmp_path)
     _substituted(monkeypatch, _flagged)
-    assert _run_main(root, monkeypatch) == RUN.EXIT_HELD
+    assert _run_main(root, monkeypatch) == RUN.EXIT_COMPLETE
     monkeypatch.undo()
     assert _run_main(root, monkeypatch) == RUN.EXIT_COMPLETE
 
@@ -330,8 +335,10 @@ def test_a_second_pass_that_clears_a_flag_does_not_collide_with_the_first(
     assert by_unit
     for unit, reviews in by_unit.items():
         assert sorted(reviews) == [1, 2], f"unit {unit}: {sorted(reviews)}"
-        assert reviews[1]["outcome"] == "held-for-review"
+        assert reviews[1]["outcome"] == "accepted"
+        assert reviews[1]["payload"]["flag_codes"] == [page_review.RESIDUAL_INK]
         assert reviews[2]["outcome"] == "accepted"
+        assert reviews[2]["payload"]["flag_codes"] == []
         assert reviews[2]["payload"]["page_coverage"]["flagged_pages"] == []
 
     before = {review["artifact_id"] for review in _reviews(root)}

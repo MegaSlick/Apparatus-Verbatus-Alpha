@@ -503,6 +503,9 @@ class ReadOnlyRunTree:
     def recensor_partition_receipt_path(self) -> str:
         return self._tree.recensor_partition_receipt_path()
 
+    def recensor_review_summary_path(self) -> str:
+        return self._tree.recensor_review_summary_path()
+
     def serving_log_path(self, stage: str) -> str:
         return self._tree.serving_log_path(stage)
 
@@ -527,6 +530,7 @@ class ReadOnlyRunTree:
     write_run_receipt = _refused_write
     write_approval_record = _refused_write
     write_recensor_partition_receipt = _refused_write
+    write_recensor_review_summary = _refused_write
     note_launch_audit = _refused_write
     # Makes a new run; a read-only wrapper never does.
     create_replay = _refused_write

@@ -76,7 +76,7 @@ What the page type changes, all recorded on the page accounting's `page_type`:
 - **Rule (i), the record detector**, applies only on a page whose type is not stated
   and on `handwritten` or `mixed` `register-acts`. On every other stated page it is
   still measured and recorded, but its findings are listed in
-  `page_type.recorded_not_held` instead of `holds`.
+  `page_type.recorded_not_held` instead of `holds` or `flags`.
 - **Rule (h), duplicate regions**: two entries of a row kind (`index-row`,
   `table-row`, `ledger-entry`) placed by one witness unit they both cite -- a whole
   table a witness gave as one unit -- are compared without that unit's box, and the
@@ -94,8 +94,8 @@ What the page type changes, all recorded on the page accounting's `page_type`:
   are facts only: none holds here, and whether a disagreement flags or holds a page is
   the review configuration's decision.
 
-Whether any check that applies holds a page or only flags it is the Recensor's and its
-configuration's; this stage decides only which checks apply to a page type.
+Whether a check that applies holds a page or only flags it is the sealed `[flags]`
+table of `config/page_accounting.toml`; the page type decides only which checks apply.
 
 **`reader-sent`** (subject `page_id`, live only), published before the call leaves:
 
@@ -188,14 +188,22 @@ differ from an unbatched one in low-order bits.
 
 **`page-accounting`** (subject `page_id`, the reading's own attempt), published for
 every page with a feed, after its reading and before any act record:
-`page-accounting.v2` from `common/page_accounting.py` under the sealed policy. It
+`page-accounting.v3` from `common/page_accounting.py` under the sealed policy. It
 measures the reading against every witness unit, every Surya line, every detector
 record and the page's ink, rule by rule, and lists its `holds`; outcome `held` when
-there are any. Its `entries` carry `kind` (the act class) and `entry_kind`, and its
-`page_type` block `{grammar, stated, writing, facts, agreement, applicability, kinds,
-recorded_not_held}` says what the reading stated and which rules applied ("Page types
-and entry kinds" above). Its inputs are the feed, the reading, every page witness's Testimonium
-and every detection and ink record it measured.
+there are any. A finding whose code the policy's `[flags] codes` names is a review
+flag: listed in `flags` instead, recorded and reported but holding nothing, and a rule
+whose every finding is one has status `flag`. A rule the page type switches off is
+still measured, and its findings are listed in `page_type.recorded_not_held`, neither
+held nor flagged. Rule (e) names a cited witness unit of at
+most `short_unit_characters` normalized characters read differently
+`witness-short-unit-not-read` (a signature or initials: a dissent about a few letters),
+and any other unit `witness-text-not-read`. Its `entries` carry `kind` (the act class)
+and `entry_kind`, and its `page_type` block `{grammar, stated, writing, facts,
+agreement, applicability, kinds, recorded_not_held}` says what the reading stated and
+which rules applied ("Page types and entry kinds" above). Its inputs are the feed, the
+reading, every page witness's Testimonium and every detection and ink record it
+measured.
 
 Then, per entry of a `read` answer, in answer order, two records. Each names the
 page's last accounting as `page_accounting_ref` and carries its holds as

@@ -515,9 +515,11 @@ def test_a_decision_that_would_release_an_unplaced_reading_keeps_it_held(tmp_pat
     review = _reviews(root)["p2:1"]
     assert review["outcome"] == "held-for-review"
     assert READING_HELD in review["payload"]["hold_codes"]
-    # The reading's own holds stay; the residual ink the page decision cleared does not.
+    # The reading's own holds stay. The two ink checks are review flags under the
+    # committed `[flags]`, so they were never holds for a decision to clear.
     codes = review["payload"]["hold_codes"]
     assert "reading-unplaced" in codes and "residual-ink" not in codes
+    assert review["payload"]["flag_codes"] == ["residual-ink", "unread-ink"]
     assert READING_HELD in review["payload"]["operator_review"]["added"]
     assert "no decision can send that reading to export" in review["payload"]["reason"]
     assert "reading-unplaced row, which has no region on its page" in review["payload"]["reason"]
@@ -525,15 +527,13 @@ def test_a_decision_that_would_release_an_unplaced_reading_keeps_it_held(tmp_pat
     assert decisions["applied"], "the decisions were applied, not refused"
     # Only what took effect is reported cleared: the unit release cleared nothing
     # that still holds it, so no unit clearance reaches the aggregate. The page
-    # decision cleared every code of p2's, yet all but the residual ink still hold
-    # its reading, so the page row reports the residual ink alone.
+    # decision cleared every code of p2's, yet every one of them still holds its
+    # reading (the ink checks were flags, not holds), so nothing is reported cleared.
     cleared = review["payload"]["operator_review"]["cleared"]
     assert not set(cleared["unit"] + cleared["page"]) & set(codes)
-    assert cleared["page"] == ["residual-ink"]
+    assert cleared["page"] == []
     rows = aggregate_clearances(decisions, unit_key="act_key")
-    assert [(row["scope"], row["subject"], row["cleared"]) for row in rows] == [
-        ("page", 2, ["residual-ink"])
-    ]
+    assert rows == []
 
 
 def test_an_edit_of_an_unplaced_reading_keeps_it_held(tmp_path):

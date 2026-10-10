@@ -63,7 +63,7 @@ from common.perlector_audit import TRUNCATION_COMPLETE
 from common.residual_ink import CoverageAuditPolicy, residual_ink_from_runs
 from common.sealed_config import read_sealed_toml
 
-SCHEMA: Final = "page-accounting.v2"
+SCHEMA: Final = "page-accounting.v3"
 SEALED_CONFIG_NAME: Final = "page-accounting"
 DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "page_accounting.toml"
@@ -103,6 +103,11 @@ WITNESS_READ_BLANK: Final = "witness-read-blank"
 UNREAD_LINE: Final = "unread-line"
 UNREAD_LINE_NOT_MEASURED: Final = "unread-line-not-measured"
 WITNESS_TEXT_NOT_READ: Final = "witness-text-not-read"
+# Rule (e) on a short witness unit (a signature, initials, a lone surname: at most
+# `short_unit_characters` of normalized text) that an entry cites and reads
+# differently: a dissent about a few letters, not text left unread, so it has its
+# own code. A short unit no entry cites keeps `witness-text-not-read`: nobody read it.
+WITNESS_SHORT_UNIT_NOT_READ: Final = "witness-short-unit-not-read"
 WITNESS_TEXT_NOT_MEASURED: Final = "witness-text-not-measured"
 TOO_FEW_DISTINCTIVE_PIECES: Final = "too-few-distinctive-pieces"
 UNREAD_INK: Final = "unread-ink"
@@ -154,6 +159,7 @@ HOLD_CODES: Final = frozenset(
         UNREAD_LINE,
         UNREAD_LINE_NOT_MEASURED,
         WITNESS_TEXT_NOT_READ,
+        WITNESS_SHORT_UNIT_NOT_READ,
         WITNESS_TEXT_NOT_MEASURED,
         UNREAD_INK,
         UNREAD_INK_NOT_MEASURED,
@@ -193,8 +199,39 @@ NOT_MEASURED_CODES: Final = frozenset(
 )
 _PROBLEM_RULE: Final = {UNKNOWN_ID: "b"}
 
+# --- review flags ---------------------------------------------------------------------
+#
+# A hold code the sealed policy names in `[flags] codes` is a review flag: the
+# finding is measured and recorded exactly as before, the Recensor and the
+# Armarium report it and the flagged export carries the reading with it, but it
+# holds nothing. The lead's choice (2026-10-09) for the checks not yet
+# calibrated for this corpus: the record detector's disagreement, the ink
+# thresholds and a short witness unit read differently. Reverting one is a
+# config change: take its code out of `[flags] codes`, and it holds again.
+#
+# The Recensor's own residual-ink check repeats rule (f)'s policy on the same
+# regions (`pipeline/5_recensor/page_review.py`); its code is named here so the
+# one sealed list decides both.
+RESIDUAL_INK: Final = "residual-ink"
+DEFAULT_FLAG_CODES: Final = frozenset(
+    {NO_RECORD_ON_ACT_PAGE, UNREAD_INK, RESIDUAL_INK, WITNESS_SHORT_UNIT_NOT_READ}
+)
+# How many normalized characters a witness unit may have and still be a short
+# unit for rule (e): a signature, initials or a lone surname, not an index row
+# or a one-line burial (on the 2026-10-09 run the units read differently were 1
+# to 15 characters). Starting value; to be measured on the proof run.
+DEFAULT_SHORT_UNIT_CHARACTERS: Final = 15
+# Only a page-level finding may be a flag. `duplicate-region` and
+# `reading-incomplete` are also entry holds (`page_path.entry_plans`), which no
+# flag lifts, so naming one would flag the page and still hold its entries: refused
+# rather than half-applied.
+FLAGGABLE_CODES: Final = (HOLD_CODES - {DUPLICATE_REGION, READING_INCOMPLETE}) | {RESIDUAL_INK}
+
 PASS: Final = "pass"
 HOLD: Final = "hold"
+# The rule found something, and every finding is a review flag under the sealed
+# policy: recorded, reported, not held.
+FLAG: Final = "flag"
 NOT_MEASURED: Final = "not-measured"
 NOT_APPLICABLE: Final = "not-applicable"
 RULES: Final = ("a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
@@ -266,7 +303,17 @@ class PageAccountingPolicy:
     max_act_doubt_share_bp: int
     max_page_doubt_share_bp: int
     sha256: str
+    # `[flags]`: the hold codes that are review flags (recorded, not held) and
+    # the length under which rule (e)'s unit is a short unit. A file without the
+    # table seals the code's defaults (`DEFAULT_FLAG_CODES`,
+    # `DEFAULT_SHORT_UNIT_CHARACTERS`), so a run sealed before the table existed
+    # replays under them.
+    flag_codes: frozenset[str] = DEFAULT_FLAG_CODES
+    short_unit_characters: int = DEFAULT_SHORT_UNIT_CHARACTERS
 
+
+FLAGS_TABLE: Final = "flags"
+_FLAGS_FIELDS: Final = frozenset({"codes", "short_unit_characters"})
 
 _POLICY_TABLES: Final = {
     "inside": ("min_area_bp",),
@@ -317,6 +364,7 @@ def load_page_accounting_policy(
 ) -> PageAccountingPolicy:
     """Read the closed, sealed page-accounting configuration."""
     record, digest = read_sealed_toml(path, "page accounting configuration")
+    flags = _flags_policy(record.pop(FLAGS_TABLE, None))
     if set(record) != set(_POLICY_TABLES) or any(
         not isinstance(record[table], dict) or set(record[table]) != set(fields)
         for table, fields in _POLICY_TABLES.items()
@@ -335,7 +383,33 @@ def load_page_accounting_policy(
             "page accounting direct_alignment_max_pairs exceeds max_alignment_pairs"
         )
     inside = values.pop("min_area_bp")
-    return PageAccountingPolicy(inside_min_area_bp=inside, **values, sha256=digest)
+    return PageAccountingPolicy(inside_min_area_bp=inside, **values, sha256=digest, **flags)
+
+
+def _flags_policy(table: Any) -> dict[str, Any]:
+    """The `[flags]` table checked, or the code's defaults when the file has none."""
+    if table is None:
+        return {}
+    if not isinstance(table, dict) or set(table) != _FLAGS_FIELDS:
+        raise ContractError(
+            "page accounting [flags] must hold exactly codes and short_unit_characters"
+        )
+    codes, length = table["codes"], table["short_unit_characters"]
+    if not isinstance(codes, list) or any(not isinstance(code, str) for code in codes):
+        raise ContractError("page accounting [flags] codes must be a list of hold codes")
+    if len(set(codes)) != len(codes):
+        raise ContractError("page accounting [flags] codes names a code twice")
+    unknown = sorted(set(codes) - FLAGGABLE_CODES)
+    if unknown:
+        raise ContractError(
+            f"page accounting [flags] codes names {unknown}, which no page-level hold code "
+            "is; a flag that lifts no hold would be applied to nothing"
+        )
+    if not isinstance(length, int) or isinstance(length, bool) or length <= 0:
+        raise ContractError(
+            "page accounting [flags] short_unit_characters must be a positive integer"
+        )
+    return {"flag_codes": frozenset(codes), "short_unit_characters": length}
 
 
 class _SealedContext(Protocol):
@@ -1941,7 +2015,10 @@ def _witness_text_rule(
     entries is what catches a unit that merged two records while only one was
     read: the other record's formula would otherwise find itself in a
     neighbouring entry's reading. A unit is held (`witness-text-not-read`,
-    naming every reason) when:
+    naming every reason; `witness-short-unit-not-read` instead for a unit of
+    at most `short_unit_characters` normalized characters that some entry
+    cites: a signature or initials read differently is a dissent about a few
+    letters, and the sealed `[flags]` may make it a review flag) when:
 
     - `unread-run`: a run of its text longer than `max_unread_characters` is unread;
     - `unread-share`: its unread text exceeds `max_unread_share_bp` of it;
@@ -2026,10 +2103,13 @@ def _witness_text_rule(
             }
         )
         if reasons:
+            # A short unit some entry cites and reads differently is a dissent
+            # about a few letters; an uncited one nobody read at all.
+            short = len(witness) <= policy.short_unit_characters and identifier in cited_by
             findings.append(
                 _located(
                     {
-                        "code": WITNESS_TEXT_NOT_READ,
+                        "code": WITNESS_SHORT_UNIT_NOT_READ if short else WITNESS_TEXT_NOT_READ,
                         "id": identifier,
                         "reasons": reasons,
                         "unread_characters": coverage.unread_run,
@@ -2371,18 +2451,20 @@ def _record(
     typed: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     typed = typed if typed is not None else _page_type_context(None, feed, None)
+    # A rule the page type switches off (`common.page_types.applicability`) is still
+    # measured; its findings are recorded, neither held nor flagged.
     not_applied = {
         rule for rule, verdict in typed["applicability"].items() if not verdict["applies"]
     }
-    holds = sorted(
-        {
-            finding["code"]
-            for name, rule in rules.items()
-            if name not in not_applied
-            for finding in rule["findings"]
-            if finding["code"] in HOLD_CODES
-        }
-    )
+    found = {
+        finding["code"]
+        for name, rule in rules.items()
+        if name not in not_applied
+        for finding in rule["findings"]
+        if finding["code"] in HOLD_CODES
+    }
+    holds = sorted(found - policy.flag_codes)
+    flags = sorted(found & policy.flag_codes)
     recorded = sorted(
         {
             finding["code"]
@@ -2390,7 +2472,7 @@ def _record(
             for finding in rules[name]["findings"]
             if finding["code"] in HOLD_CODES
         }
-        - set(holds)
+        - found
     )
     return {
         "schema": SCHEMA,
@@ -2413,11 +2495,14 @@ def _record(
             }
             for entry in entries
         ],
-        "rules": {name: rules[name] for name in RULES},
+        "rules": {name: _flagged_status(rules[name], policy) for name in RULES},
         "units": unit_rows,
         "lines": line_rows,
         "records": record_rows,
         "holds": holds,
+        # Findings the sealed `[flags]` make review flags: recorded, reported by
+        # the Recensor and the flagged export, holding nothing.
+        "flags": flags,
         "page_type": {
             **typed,
             "kinds": page_types.kind_agreement(
@@ -2445,3 +2530,17 @@ def _page_type_context(
         "agreement": page_types.type_agreement(page_type, writing, facts),
         "applicability": page_types.applicability(page_type, writing),
     }
+
+
+def _flagged_status(rule: dict[str, Any], policy: PageAccountingPolicy) -> dict[str, Any]:
+    """A rule whose every held finding is a review flag under the policy is `flag`, not `hold`.
+
+    A not-measured finding is never a flag by default (it says the check did not
+    run), and a rule with one held finding outside the flags still holds.
+    """
+    if rule["status"] not in (HOLD, NOT_MEASURED):
+        return rule
+    found = {finding["code"] for finding in rule["findings"] if finding["code"] in HOLD_CODES}
+    if found and found <= policy.flag_codes:
+        return {**rule, "status": FLAG}
+    return rule

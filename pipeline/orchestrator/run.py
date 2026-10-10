@@ -1423,6 +1423,11 @@ def report_held_recensor(args, held: list[dict]) -> None:
             flush=True,
         )
     print(
+        "  holds and review flags counted per page, per unit, by code and by page type, with "
+        "the review queue in priority order: run-health/recensor-review-summary.json",
+        flush=True,
+    )
+    print(
         "  next: record operator review decisions in this run, then resume it from the "
         "recensor (--from recensor --to armarium), which applies them, or from the perlector "
         "(--from perlector --to armarium) when a page re-ask asks for a page to be read "

@@ -173,7 +173,7 @@ def test_the_detector_rule_holds_only_on_handwritten_register_acts():
     case = no_records(page())
     # Unstated (the `acts` grammar): held, as before page types.
     unstated = account(case)
-    assert NO_RECORD_ON_ACT_PAGE in unstated["holds"]
+    assert NO_RECORD_ON_ACT_PAGE in unstated["holds"] + unstated["flags"]
     for writing, held in (
         ("handwritten", True),
         ("mixed", True),
@@ -185,7 +185,8 @@ def test_the_detector_rule_holds_only_on_handwritten_register_acts():
             case["reading"]["answer"], "register-acts", writing
         )
         record = account(typed)
-        assert (NO_RECORD_ON_ACT_PAGE in record["holds"]) is held
+        # Where it applies, the sealed [flags] decide hold or flag; where not, neither.
+        assert (NO_RECORD_ON_ACT_PAGE in record["holds"] + record["flags"]) is held
         # The rule is measured either way; where it does not apply it is recorded only.
         assert codes(record, "i") == [NO_RECORD_ON_ACT_PAGE]
         assert record["page_type"]["recorded_not_held"] == ([] if held else [NO_RECORD_ON_ACT_PAGE])

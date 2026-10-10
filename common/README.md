@@ -170,6 +170,7 @@ must have an Exemplar page.
 | `accounting_ref` | the page's last `page-accounting`; `None` for `page-refused` |
 | `perlectio_ref` | the entry's `perlectio.v3`; `None` for a page row |
 | `hold_codes` | sorted: the recomputed page accounting's `holds`, the entry's own holds, and the page row's hold |
+| `flag_codes` | sorted: the recomputed page accounting's `flags`, the findings the sealed `[flags]` policy records without holding (`config/page_accounting.toml`); empty for `page-refused` |
 | `continues_from_previous_page`, `continues_to_next_page` | the answer's flags; `None` for a page row |
 
 On a page an operator re-read, the last re-read stands for the first reading and its

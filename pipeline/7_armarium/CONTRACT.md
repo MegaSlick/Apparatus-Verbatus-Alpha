@@ -80,8 +80,8 @@ aggregate contain only real pages and readings.
 ## The `export` record and manifest entries
 
 Each `manifest-entry` carries the reading's identity, kind, class, page ordinal,
-category, hold codes, witness coverage, review notes and digest-checked evidence
-references; a delivered reading adds its text, `text_status`, provenance, source
+category, hold codes, flag codes and review priority, witness coverage, review notes
+and digest-checked evidence references; a delivered reading adds its text, `text_status`, provenance, source
 regions, witnesses, uncertainty layer and its `perlectio_ref`, `recensor_ref` and
 `dissent_ref`; a reading not delivered adds its reason. A delivered reading's
 `witnesses` are the page witnesses its feed showed, each `{chair, witness_label,
@@ -146,6 +146,7 @@ work tree that git does not ignore.
 | `operator.jsonl` | `jsonl`, when an operator acted on a delivered reading | `armarium-operator-action.v1` |
 | `model_readings.jsonl` | `jsonl`, when a person corrected a delivered reading | `armarium-model-reading.v1` |
 | `review-items.jsonl` | `review-items` | `armarium-review-item.v3` |
+| `flagged.jsonl` | `review-items`, when a reading is held or flagged | `armarium-flagged-reading.v1` |
 | `pixels/pages/<ordinal>.img`, `pixels/crops/<region_id>.img` | `embed_pixels = true` | — |
 
 Every id moves with its closed field set, and the verifier recognises only these, so a
@@ -215,7 +216,7 @@ text_status, approval_ref}` per act, `approval_ref` exactly for an exclusion), `
 `ink_map_pages`, `other_outcomes` and `other_citations` (the same for other readings,
 with `page_ordinal`), `page_accounting` and `act_readings`. When present:
 `continuation_joins`, `reconstructions` (the act ids of each shown reconstruction),
-`operator_actions`, `reading_hold_codes` and `model_readings`.
+`operator_actions`, `reading_hold_codes`, `model_readings` and `flagged_readings`.
 
 ### The text bundle
 
@@ -360,6 +361,24 @@ text bundle shows each beneath its reading's section as an `operator_label:` lin
 the row, and `acts.sqlite` names each act's label. Whenever the run has review
 decisions, `sources.json` also carries `reading_hold_codes`: every delivered reading's
 own hold codes, empty for one that carried none.
+
+**The flagged layer** (`flagged_layer.py`): every counted reading, act or other, that
+the Recensor held or that carries a review flag (`pipeline/5_recensor/CONTRACT.md`,
+"Review flags"), as one `armarium-flagged-reading.v1` row `{act_id, act_key, lot, kind,
+page_ordinal, status, category, review_priority, hold_codes, flag_codes, text,
+text_label, reason, perlectio_ref, page_reading_ref, recensor_ref, evidence_refs}`. A
+delivered reading's row is `established-with-flags` and its `text` the established text
+(`text_label` "established"); every other row is `not-established`, its `text` the
+model's reading as its Perlectio holds it, labelled "model reading, not established",
+or null for a page row with no reading. It is the review queue with the text in it and
+the training plan's doubt-weighted fool's gold; it is no act count, and nothing in it
+changes a delivered reading. `sources.json` carries every row (`flagged_readings`) so
+the label travels in every package; `flagged.jsonl` repeats them with the review-items
+format, written exactly when there are any. Verification holds each row to the
+package's own accounting: a counted reading's identity, kind, category and reason, codes
+that hold or flag it, the priority those codes give, and, with JSONL, the delivered
+literal for an established row. The established formats stay exactly as strict: a held
+reading's text appears here and nowhere else.
 
 **A person's correction** is delivered as the person's text with the fixed no-doubt
 layer, counted like any accepted act, its provenance labelled `corrected by a person`
