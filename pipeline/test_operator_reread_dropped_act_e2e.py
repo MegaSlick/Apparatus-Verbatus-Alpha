@@ -69,8 +69,9 @@ def _accounting_holds(root: Path, reading: dict) -> list[str]:
 @pytest.mark.parametrize(
     ("how", "expected"),
     [
-        ("omitted", {"unaccounted-witness-unit", "unread-ink"}),
-        ("set-aside", {"set-aside-substantial", "unread-ink"}),
+        # `unread-ink` is measured on both pages too, as a review flag that holds nothing.
+        ("omitted", {"unaccounted-witness-unit"}),
+        ("set-aside", {"set-aside-substantial"}),
         ("merged", {"merged-detection", "witness-text-not-read"}),
         ("merged-with-text", {"merged-detection"}),
         ("other", {"record-read-as-other"}),

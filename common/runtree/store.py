@@ -664,8 +664,17 @@ class RunTree:
         ):
             raise SchemaRefusal("Recensor review summary does not belong to this run authority")
         relative = self.recensor_review_summary_path()
-        self.resolve(relative).parent.mkdir(parents=True, exist_ok=True)
-        self._atomic_write(relative, canonical_bytes(record))
+        target = self.resolve(relative)
+        data = canonical_bytes(record)
+        if target.exists():
+            try:
+                if target.read_bytes() == data:
+                    # An identical pass rewrites nothing, as a resume must not.
+                    return PublishResult(relative, reused=True)
+            except OSError:
+                pass
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write(relative, data)
         return PublishResult(relative, reused=False)
 
     def read_recensor_partition_receipt(self) -> dict[str, Any]:

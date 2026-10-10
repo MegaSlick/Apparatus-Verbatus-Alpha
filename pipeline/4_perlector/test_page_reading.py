@@ -407,9 +407,10 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
         "record-not-read",
         "truncation-not-classified",
         "unaccounted-witness-unit",
-        "unread-ink",
         "unread-line",
     ]
+    # The ink threshold is a review flag under the committed `[flags]`: recorded, not held.
+    assert first["payload"]["flags"] == ["unread-ink"]
     # Re-asked about DAI's record and Surya's lines, the reader reads the a2 it
     # already read: the ids are accounted for, and the entry is held as a duplicate
     # of it. The first reading's unplaced entry still holds, as it did.
@@ -1525,7 +1526,8 @@ def test_a_real_act_set_aside_is_published_but_its_page_holds(live_tree, tmp_pat
     for account in (first, last):
         dispositions = {unit["id"]: unit["disposition"] for unit in account["units"]}
         assert dispositions["A2"] == dispositions["B2"] == "set-aside"
-        assert "unread-ink" in account["holds"]
+        # The set-aside record's ink is measured and flagged, never held, under `[flags]`.
+        assert "unread-ink" in account["flags"] and "unread-ink" not in account["holds"]
     assert "reask-set-aside" in last["holds"]
 
 
