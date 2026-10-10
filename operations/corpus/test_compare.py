@@ -308,6 +308,7 @@ def test_the_read_only_wrapper_covers_every_method_run_tree_declares():
     missing = {name for name in declared if not hasattr(ReadOnlyRunTree, name)}
     assert missing == set(), f"RunTree methods the read-only wrapper does not answer: {missing}"
     writes = {name for name in declared if name.startswith(("write_", "put_", "publish_"))}
+    writes.add("create_replay")
     for name in sorted(writes):
         with pytest.raises(CorpusRefusal, match="run-tree-write-refused"):
             getattr(ReadOnlyRunTree(None), name)()

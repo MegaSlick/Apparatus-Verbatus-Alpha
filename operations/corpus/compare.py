@@ -476,6 +476,9 @@ class ReadOnlyRunTree:
     def has_artifact(self, stage: str, kind: str, artifact_id: str) -> bool:
         return self._tree.has_artifact(stage, kind, artifact_id)
 
+    def holds_run_id(self, run_id: Any, stage: Any) -> bool:
+        return self._tree.holds_run_id(run_id, stage)
+
     def manifest_agrees_with_disk(self, stage: str) -> bool:
         return self._tree.manifest_agrees_with_disk(stage)
 
@@ -525,6 +528,8 @@ class ReadOnlyRunTree:
     write_approval_record = _refused_write
     write_recensor_partition_receipt = _refused_write
     note_launch_audit = _refused_write
+    # Makes a new run; a read-only wrapper never does.
+    create_replay = _refused_write
 
 
 # --- The comparison record ---------------------------------------------------
