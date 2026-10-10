@@ -1,6 +1,6 @@
 # Pod F: the Perlector's model served smaller and faster, on the 96 GB card (RTX PRO 6000).
-# Not run yet; prepared 2026-10-09 (workbench design note S0c). Launch: RUNBOOK.md section 4,
-# exactly as reader-96gb.toml. Paths are the pod's.
+# Not run yet; prepared 2026-10-09 (workbench design note S0c). Launch: as pod R in
+# RUNBOOK.md sections 2.4 and 4.2, with this manifest in place of reader-96gb.toml. Paths are the pod's.
 #
 # Each arm is the 2026-10-09 `qwen38-27b-vendor` arm (same prompt, sampling, pixels, 32 in
 # flight, 0.92 of the card) with one change, named by `--recipe`: a row of
