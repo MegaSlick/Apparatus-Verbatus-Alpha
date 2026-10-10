@@ -36,6 +36,11 @@ instruction stay what the pipeline would build for that feed:
 - `--image clear|none|blur|blank|swap`: the render as sent; none drops the image and
   lets the builder say so ("page image: not shown."); blur (`--blur-radius`), blank (a
   white page of the same size) and swap (the next page's render) keep the prompt as is.
+- `--mutations DIR`: a folder of `witness-mutation.v1` records (`<page stem>.json`,
+  written by `operations.bakeoff.mutations`): each page's feed is the record's
+  counterfactual feed (planted errors, a dropped act, a shuffled roster...) and the
+  record's sidecar of planted sites travels with the cached answer, so `fed_score` can
+  count copied planted errors. The other feed variants apply on top of it.
 
 Each page is cached at `<out>/<label>/<page stem>.json` (schema `bakeoff-fed-page.v1`):
 the variant, the feed as shown, the prompt evidence and whether it matches the run's,
@@ -151,10 +156,14 @@ class Variant:
     order: tuple[str, ...] = ()
     image: str = "clear"
     blur_radius: float = 8.0
+    mutations: str | None = None  # folder of witness-mutation.v1 records, one per page
 
     @property
     def feed_changed(self) -> bool:
-        return bool(self.drop or self.add or self.letter_map or self.order) or self.image == "none"
+        return (
+            bool(self.drop or self.add or self.letter_map or self.order or self.mutations)
+            or self.image == "none"
+        )
 
     @property
     def unchanged(self) -> bool:
@@ -168,6 +177,7 @@ class Variant:
             "order": list(self.order),
             "image": self.image,
             "blur_radius": self.blur_radius if self.image == "blur" else None,
+            "mutations": self.mutations,
         }
 
 
@@ -258,13 +268,32 @@ def witness_row_from_cache(
     return row
 
 
-def apply_variant(feed: dict[str, Any], variant: Variant, added: dict[str, Any]) -> dict[str, Any]:
-    """The feed as this variant shows it. `added` maps each added label to its record."""
+def load_mutation(variant: Variant, stem: str) -> dict[str, Any] | None:
+    """The page's witness-mutation record under `variant.mutations`, or None."""
+    if not variant.mutations:
+        return None
+    path = Path(variant.mutations) / f"{stem}.json"
+    if not path.is_file():
+        raise SystemExit(f"--mutations {variant.mutations}: no record for page {stem!r}")
+    record = json.loads(path.read_text("utf-8"))
+    if record.get("schema") != "witness-mutation.v1":
+        raise SystemExit(f"{path} is not a witness-mutation.v1 record")
+    return record
+
+
+def apply_variant(
+    feed: dict[str, Any],
+    variant: Variant,
+    added: dict[str, Any],
+    mutation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The feed as this variant shows it. `added` maps each added label to its record;
+    `mutation` (a witness-mutation.v1 record) replaces the feed before the other variants."""
     from common.page_feed import WITNESS_LETTERS
 
     if not variant.feed_changed:
         return feed
-    feed = copy.deepcopy(feed)
+    feed = copy.deepcopy(mutation["feed"] if mutation else feed)
     rows = feed["witnesses"]
     labels = [r["witness_label"] for r in rows]
     unknown = [label for label in variant.drop if label not in labels]
@@ -549,6 +578,7 @@ def reading_text(answer: dict[str, Any] | None) -> str:
 def page_record(
     page: Page, feed: dict[str, Any], variant: Variant, args: argparse.Namespace,
     body: bytes, image: bytes | None, result: dict[str, Any],
+    mutation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:  # fmt: skip
     from common.page_answer import parse_page_answer
 
@@ -571,6 +601,9 @@ def page_record(
         "page": page.stem,
         "page_ordinal": page.ordinal,
         "variant": variant.record(),
+        "mutation": None
+        if mutation is None
+        else {k: v for k, v in mutation.items() if k != "feed"},
         "feed": feed,
         "prompt": {
             **check["rebuilt"],
@@ -651,7 +684,8 @@ def run(args: argparse.Namespace) -> int:
         _same_setup(path, variant, args)
         if W.cached_ok(path):
             continue
-        feed = apply_variant(page.feed, variant, _load_added(variant, page.stem))
+        mutation = load_mutation(variant, page.stem)
+        feed = apply_variant(page.feed, variant, _load_added(variant, page.stem), mutation)
         if (
             not variant.feed_changed
             and not prompt_check(feed)["identical"]
@@ -666,7 +700,7 @@ def run(args: argparse.Namespace) -> int:
             feed, image, model_name=args.model_name, sampling=sampling, seed=args.seed,
             max_tokens=args.max_tokens, stream=not args.no_stream,
         )  # fmt: skip
-        todo.append((page, feed, image, body))
+        todo.append((page, feed, image, body, mutation))
     if not todo:
         W.event(args.out, "nothing-to-do", model=args.label)
         return 0
@@ -696,17 +730,17 @@ def run(args: argparse.Namespace) -> int:
         W.event(args.out, "requests-start", model=args.label, pages=len(todo))
 
         def send(item):
-            page, feed, image, body = item
+            page, feed, image, body, mutation = item
             if args.no_stream:
                 result = _whole(url, body, args.request_timeout)
             else:
                 result = _stream(url, body, args.request_timeout, guard)
-            return page, feed, image, body, result
+            return page, feed, image, body, mutation, result
 
         with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
             for future in as_completed([pool.submit(send, item) for item in todo]):
-                page, feed, image, body, result = future.result()
-                record = page_record(page, feed, variant, args, body, image, result)
+                page, feed, image, body, mutation, result = future.result()
+                record = page_record(page, feed, variant, args, body, image, result, mutation)
                 errors += record["error"] is not None
                 with gzip.open(folder / f"{page.stem}.sse.gz", "wb") as handle:
                     handle.write(result["raw"])
@@ -756,6 +790,7 @@ def variant_from_args(args: argparse.Namespace) -> Variant:
         order=order,
         image=args.image,
         blur_radius=args.blur_radius,
+        mutations=str(args.mutations) if args.mutations else None,
     )
 
 
@@ -766,6 +801,7 @@ def _variant_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--witness-order", metavar="LABEL,LABEL,...")
     p.add_argument("--image", choices=IMAGE_MODES, default="clear")
     p.add_argument("--blur-radius", type=float, default=8.0)
+    p.add_argument("--mutations", type=Path, metavar="DIR", help="witness-mutation.v1 records")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -816,7 +852,8 @@ def prompts(args: argparse.Namespace) -> int:
 
         variant = variant_from_args(args)
         page = tree.pages[args.show]
-        feed = apply_variant(page.feed, variant, _load_added(variant, page.stem))
+        mutation = load_mutation(variant, page.stem)
+        feed = apply_variant(page.feed, variant, _load_added(variant, page.stem), mutation)
         print(page_prompt.build_page_prompt(feed["prompt"]["serving_recipe"], feed))
         return 0
     report = verify_prompts(tree)
