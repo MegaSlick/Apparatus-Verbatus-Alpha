@@ -1249,8 +1249,7 @@ def test_a_kept_server_no_run_takes_over_is_stopped(bench):
         environ=env,
         poll_seconds=0.05,
     )
-    real = queue._pages_ok
-    queue._pages_ok = lambda a, pages: False if len(pages) == 2 else real(a, pages)
+    queue._smoke_verdict = lambda a, pages: "failed"
     assert queue.run() == 0
     events = _events(bench["out"])
     # The retry's smoke finds its pages cached and starts nothing, so nothing else is kept.
