@@ -2479,7 +2479,7 @@ def test_console_entry_renders_an_application_import_failure(
         raise RuntimeError("Traceback (most recent call last): missing fixture application")
 
     monkeypatch.setattr(entry, "_load_application", broken_application)
-    # The boundary now records the failure in the default state directory;
+    # The boundary records the failure in the default state directory;
     # that must be this test's, not the developer's.
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg-state"))
 
@@ -2535,11 +2535,8 @@ def test_interactive_fetch_run_asks_for_each_optional_evidence_key(
     report's ``-hold``, ``-liveness``, ``-timings`` and ``-transcript.log``
     siblings, the pod-timer runtime report and its ``-terminating`` breadcrumb,
     the bootstrap journal and the volume-root transfer journal -- exactly what
-    ``--evidence-key`` is for, each independently optional. The liveness report
-    and the transfer journal were not asked for at all while they had no route
-    home, and the four token-named siblings ``launch_evidence_keys`` derives
-    were reachable only through a saved receipt until this route was added. A
-    saved launch receipt is asked for first and derives the
+    ``--evidence-key`` is for, each independently optional. A saved launch
+    receipt is asked for first and derives the
     token-bound keys itself; this is the route for a run whose receipt is not
     to hand."""
 

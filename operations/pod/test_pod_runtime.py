@@ -7612,10 +7612,8 @@ def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceilin
 ) -> None:
     """The schema identifier separates an operator's mistake from a change in this code.
 
-    ``account_balance_alert_usd`` became required. A file that was a complete
-    configured v2 policy is now an incomplete v3 one, and under the unchanged
-    schema name it failed as "missing a required ceiling" -- an accusation
-    against configuration nobody had touched.
+    A complete configured v2 policy lacks the v3 ``account_balance_alert_usd``; it is
+    refused as an older schema, not as "missing a required ceiling".
     """
 
     from .spend import load_spend_policy

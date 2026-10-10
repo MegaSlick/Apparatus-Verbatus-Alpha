@@ -199,8 +199,8 @@ def test_a_moved_state_directory_reads_its_receipts_through_the_descriptor(
     assert path.parent == moved / records.RECEIPTS_DIRECTORY
     assert moved_store.read(path)["payload"] == {"summary": "a run", "state": "complete"}
 
-    # An index written before this change carried absolute paths; only the
-    # name is used from those, so the old index reads at the new location too.
+    # An index entry with an absolute path: only its name is used, so it reads at
+    # the new location too.
     legacy = moved_descriptor.receipt_path(str(receipt))
     assert legacy == path
     assert moved_store.read(legacy)["kind"] == "run"

@@ -352,12 +352,12 @@ def test_a_page_whose_prompt_no_longer_rebuilds_stops_the_export(tmp_path):
     assert all(e["source_prompt_matches_run"] for e in _examples(tmp_path / "out2"))
 
 
-# --- R3: every image of the request, the whole request checked, the reference bound ----
+# --- every image of the request, the whole request checked, the reference bound ----
 
 
 def test_overlay_examples_carry_the_render_and_the_overlay_as_the_pipeline_sends(tmp_path):
-    # R3: the exporter sent the render alone; the pipeline (common/page_path.py) sends
-    # the render, then the overlay. Every example now carries both, in that order.
+    # The pipeline (common/page_path.py) sends the render, then the overlay; every
+    # example carries both, in that order.
     from common import page_path
 
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES, overlay=True))
@@ -400,7 +400,7 @@ def test_overlay_examples_carry_the_render_and_the_overlay_as_the_pipeline_sends
 def test_an_honest_example_whose_request_differs_from_the_run_stops_the_export(
     tmp_path, monkeypatch
 ):
-    # R3: the request (text and every image) of an honest, named example must be the run's.
+    # The request (text and every image) of an honest, named example must be the run's.
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES, overlay=True))
     refs = _refs(tree)
     real = E.example_request
@@ -416,7 +416,7 @@ def test_an_honest_example_whose_request_differs_from_the_run_stops_the_export(
 
 
 def test_the_source_request_is_checked_not_the_builder_code_digest(tmp_path):
-    # R3: a page whose recorded request digest differs stops the export before any
+    # A page whose recorded request digest differs stops the export before any
     # variant; a builder code digest that moved while the bytes sent did not (R2's
     # recipe aliases) does not: on cold73 that stopped every page.
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES, overlay=True))
@@ -431,7 +431,7 @@ def test_the_source_request_is_checked_not_the_builder_code_digest(tmp_path):
 
 
 def test_each_example_is_bound_to_the_reference_it_was_planted_from(tmp_path, monkeypatch):
-    # R3: the mutation names the whole reference; the target must be built from it.
+    # The mutation names the whole reference; the target must be built from it.
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
     refs = _refs(tree)
     out = tmp_path / "out"

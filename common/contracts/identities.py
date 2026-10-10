@@ -182,8 +182,8 @@ def page_id(origin: Any, transform: Any) -> str:
     return derive("page", page_bindings(origin, transform))
 
 
-# Rectangle-bound classes. No stage mints them now; corpus-register and gold
-# records minted under them stay readable.
+# Rectangle-bound classes. No stage mints them; corpus-register and gold
+# records that carry them stay readable.
 ACT_CLASSES: Final = frozenset({"proposal", "residual", "page-fallback", "page-residual"})
 # The classes the Perlector's whole-page reading mints (`common/page_path.py`,
 # `entry_plans`). An entry of a page reading is bound to that reading's attempt,

@@ -459,8 +459,9 @@ def test_planted_sites_are_bound_to_the_scored_reference():
 
 
 def test_planted_sites_are_bound_to_the_whole_reference(tmp_path):
-    # R3: R1 bound sites to the scored words; two references with the same words but
-    # another doubt mark (so other statuses, other plantable words) now differ too.
+    # Sites are bound to the whole reference, not only the scored words: two references
+    # with the same words but another doubt mark (other statuses, other plantable
+    # words) differ.
     tree = _tree(tmp_path)
     feed = tree.pages[1].feed
     plain = _ref(TEXT, feed)
@@ -496,7 +497,7 @@ def test_planted_sites_are_bound_to_the_whole_reference(tmp_path):
 
 
 def test_fed_arm_and_scorer_refuse_a_mutation_planted_from_another_reference(tmp_path):
-    # R3: the gold changed (a doubt mark added) after the mutations were planted; the
+    # The gold changed (a doubt mark added) after the mutations were planted; the
     # scored words are the same. fed_arm --gold refuses before sending; the scorer
     # judges no site.
     tree = make_run_tree(tmp_path / "run", pages=((TEXT, TEXT),))

@@ -29,8 +29,7 @@ armarium = "unproven-real-armarium"
 # so an A/B between the two is a line here rather than an edit to code on a pod.
 # The resolved name is written onto every Testimonium the chair produces.
 #
-# Both framings are now a vendor artifact's own bytes, and the two names this
-# file carried before them are gone with the prompts they named. `registry-v0.3.0`
+# Both framings are a vendor artifact's own bytes. `registry-v0.3.0`
 # is what `providers/specs.py::resolve_ocr_profile("stanford-oval/churro-3B")`
 # returns at tag `v0.3.0`; `paper-harness-ed09bc7` is the `SYSTEM_MESSAGE` the
 # paper's own benchmark harness sent, spelling errors included. Which of the two

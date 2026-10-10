@@ -1282,8 +1282,8 @@ def test_an_unplaceable_shape_carries_the_grammars_own_sentence_as_its_outcome()
 def test_the_grammars_findings_travel_on_the_capture_beside_the_repetition_scans():
     """Both halves of a capture's `findings`, and in that order.
 
-    A capture used to be allowed at most one finding, because the only producer
-    was the tail-cycle scan. The grammar reports facts of its own -- an echo
+    A capture may carry more than the tail-cycle scan's finding. The grammar
+    reports facts of its own -- an echo
     trimmed, a stray character escaped, ink outside every section -- and each is
     a fact about this response the page text alone cannot show.
     """
