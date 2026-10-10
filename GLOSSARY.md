@@ -14,15 +14,27 @@ what the project exists to recover.
 
 ## Everyday words with a specific meaning
 
-**act** — one unit of body text, usually a register entry (a baptism, marriage or
-burial). Registers also hold index rows, letters and notes, so the term is kept
-deliberately loose: a narrow definition would exclude material, and a missed act is worse
-than a poorly read one.
+**act** — one registered act: a baptism, marriage, burial or other act entered in a
+parish or civil register, with its margin note and signatures. A notarial act or
+contract (an *instrument*) counts as an act for "never lose an act". Index rows, table
+rows, ledger entries and paragraphs of running text are entries of their own kind, read
+and accounted for like acts but never counted as acts.
 
-**entry kind `other`** — an entry of a page reading that is text but not an act: a
-heading, a page number, a marginal note that is not an entry. It is read, placed and
-accounted for like an act but is not counted as one, and a page whose entries are all
-`other` is held until the Recensor confirms it holds no act.
+**page type** — what kind of document a page is, as the Perlector names it:
+`register-acts`, `index`, `table`, `ledger`, `instrument`, `prose` or `blank`. It decides
+which checks apply to the page; detection facts (Surya's and the witnesses' `Table`
+labels, the record detector's count) are recorded beside it as a cross-check.
+
+**entry kind** — what one entry of a page reading is: `act`, `index-row`, `table-row`,
+`ledger-entry`, `instrument`, `paragraph` or `other`. An `act` or `instrument` is of the
+act class; every other kind is of the `other` class, which is what later records call
+the entry's `kind`. Rows of an index, table or ledger are exported as rows, not acts.
+
+**entry kind `other`** — an entry of a page reading that is text but no entry of the
+page's own kind: a heading, a page number, a marginal note that is not an entry. Every
+entry of the `other` class is read, placed and accounted for like an act but is not
+counted as one, and a page whose entries are all of that class is held until the
+Recensor confirms it holds no act.
 
 **page** — one image from the source.
 

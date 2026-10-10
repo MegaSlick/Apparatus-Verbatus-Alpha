@@ -36,7 +36,10 @@ both this stage and the Armarium derive them with.
 `reconstruction-plan` (subject `coniector`, outcome `planned`), schema
 `coniector-plan.v2`: `{mode, pages_are_consecutive, policy_sha256, calls}`. `calls` is
 `common.reconstruction.reconstruction_plan` over the entries: one call per page,
-`{page_ordinal, subjects, chains, context}`. Chains (an act crossing an agreed
+`{page_ordinal, subjects, chains, context}`. Subjects are the page's entries of
+`kind` `act` only: an act or an instrument where the Perlector named entry kinds
+(`common/page_types.py`); an index row, table row, ledger entry, paragraph or `other`
+entry is never reconstructed. Chains (an act crossing an agreed
 page break) and context (the neighbouring pages' edge acts) exist only when the
 run is sealed `pages_are_consecutive`. With `mode = "off"` `calls` is empty and
 no model is loaded. An act a page's re-ask recovered (`reading_attempt` 2) is a

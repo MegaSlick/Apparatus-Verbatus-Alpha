@@ -80,6 +80,48 @@ ANSWER_FORM: Final = (
     '"continues_from_previous_page": false, "continues_to_next_page": false}], '
     '"set_aside": [{"id": "<id>", "reason": "<short reason>"}]}'
 )
+# The answer's shape when the feed's `page_types` switch is "named"
+# (`common.page_types`): the page's type and how it is written, then the entries.
+ANSWER_FORM_NAMED: Final = (
+    '{"page_type": "<page type>", "writing": "<how the page is written>", '
+    '"entries": [{"n": 1, "kind": "<entry kind>", "label": "<a few words>", '
+    '"cites": ["<id>", "<first unit id>-<last unit id>"], "text": "<the entry\'s text>", '
+    '"continues_from_previous_page": false, "continues_to_next_page": false}], '
+    '"set_aside": [{"id": "<id>", "reason": "<short reason>"}]}'
+)
+# A re-ask reads ids inside a page already typed, so it names no page type.
+REASK_ANSWER_FORM_NAMED: Final = (
+    '{"entries": [{"n": 1, "kind": "<entry kind>", "label": "<a few words>", '
+    '"cites": ["<id>", "<first unit id>-<last unit id>"], "text": "<the entry\'s text>", '
+    '"continues_from_previous_page": false, "continues_to_next_page": false}], '
+    '"set_aside": [{"id": "<id>", "reason": "<short reason>"}]}'
+)
+# What each page type and entry kind is, as the reader is told.
+PAGE_TYPE_SENTENCE: Final = (
+    "First name the page's type, page_type: "
+    '"register-acts" for a parish or civil register of acts (baptisms, marriages, burials '
+    "and other registered acts); "
+    '"index" for an index or table of names that points to acts elsewhere; '
+    '"table" for a list or census-like table of rows, such as a family or wage list; '
+    '"ledger" for accounts or a journal of dated entries with amounts; '
+    '"instrument" for a notarial act, a contract, an engagement or a filled-in form; '
+    '"prose" for a letter, a note, an attestation or other running text; '
+    '"blank" for a page with no writing. '
+    'Name how the page is written, writing: "handwritten", "typed", "printed" or "mixed". '
+)
+ENTRY_KIND_SENTENCE: Final = (
+    "Give each entry a kind: "
+    '"act" for one registered act, such as a baptism, a marriage or a burial, with its '
+    "margin note and its signatures; "
+    '"index-row" for one row of an index; '
+    '"table-row" for one row of a table or list; '
+    '"ledger-entry" for one entry of accounts; '
+    '"instrument" for one notarial act or contract, whole; '
+    '"paragraph" for one paragraph of running text; '
+    '"other" for every other text on the page, such as a heading, a page number or a '
+    "marginal note that is not an entry. "
+)
+
 # The repetition finding that says a witness's answer repeats itself.
 REPEATING: Final = "post-hoc-repetition"
 
@@ -116,6 +158,8 @@ def _shown(feed: dict[str, Any]) -> dict[str, bool]:
         "witness_boxes": any(unit["box_1000"] is not None for row in rows for unit in row["units"]),
         "lines": surya is not None and bool(surya["lines"]),
         "blocks": surya is not None and bool(surya["blocks"]),
+        # An absent switch is a protocol sealed before page types: the `acts` grammar.
+        "page_types": feed["switches"].get("page_types") == "named",
     }
 
 
@@ -279,13 +323,22 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
             "No page image is shown. The reading is made from what was reported of this page: "
             f"{_listed(clues)} above. Any of them may be wrong or incomplete. "
         )
-    parts.append(
-        "Establish all the text written on the page, entry by entry, in the order it is "
-        "written, numbered n = 1, 2, 3 and so on. An act is one register entry, such as a "
-        'baptism, a marriage or a burial: give it kind "act". Every other text on the page, '
-        "such as a heading, a page number or a marginal note that is not an entry, is read "
-        'too, as an entry of kind "other". '
-    )
+    if shown["page_types"]:
+        parts.append(
+            "Establish all the text written on the page, entry by entry, in the order it is "
+            "written, numbered n = 1, 2, 3 and so on. "
+        )
+        parts.append(PAGE_TYPE_SENTENCE)
+        parts.append(ENTRY_KIND_SENTENCE)
+        parts.append("Every text on the page is read, whatever its kind. ")
+    else:
+        parts.append(
+            "Establish all the text written on the page, entry by entry, in the order it is "
+            "written, numbered n = 1, 2, 3 and so on. An act is one register entry, such as a "
+            'baptism, a marriage or a burial: give it kind "act". Every other text on the page, '
+            "such as a heading, a page number or a marginal note that is not an entry, is read "
+            'too, as an entry of kind "other". '
+        )
     covers = "its ink covers" if shown["image"] else "it is read from"
     ranges = []
     if shown["witnesses"]:
@@ -346,6 +399,15 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
             )
             + ', with a short reason, such as "empty" or "not text". '
         )
+    if shown["page_types"]:
+        parts.append(
+            "Set continues_from_previous_page to true only on the first act or instrument, when "
+            "it began on an earlier page, and continues_to_next_page to true only on the last act "
+            "or instrument, when it runs onto the next page; every other value of both is false. "
+            "Answer with one JSON object and nothing else, with no code fence, in this form: "
+            + ANSWER_FORM_NAMED
+        )
+        return "".join(parts)
     parts.append(
         "Set continues_from_previous_page to true only on the first entry, when it began on an "
         "earlier page, and continues_to_next_page to true only on the last entry, when it runs "
@@ -465,7 +527,8 @@ def page_reask_instruction(feed: dict[str, Any]) -> str:
     entry is, what to give for it and how to cite, as the page's instruction
     says them, limited to the ids the re-ask names.
     """
-    image = _shown(feed)["image"]
+    shown = _shown(feed)
+    image = shown["image"]
     parts = ["The ids just above were not accounted for by the entries already read. "]
     if image:
         parts.append(
@@ -479,9 +542,14 @@ def page_reask_instruction(feed: dict[str, Any]) -> str:
             "wrong or incomplete. "
         )
     parts.append(
-        "An act is one register entry, such as a baptism, a marriage or a burial: give it "
-        'kind "act". Any other text, such as a heading, a page number or a marginal note '
-        'that is not an entry, is an entry of kind "other". For each entry you find at these '
+        (
+            ENTRY_KIND_SENTENCE
+            if shown["page_types"]
+            else "An act is one register entry, such as a baptism, a marriage or a burial: give "
+            'it kind "act". Any other text, such as a heading, a page number or a marginal note '
+            'that is not an entry, is an entry of kind "other". '
+        )
+        + "For each entry you find at these "
         "ids give: n, numbered 1, 2, 3 and so on; kind; label, if you wish, a few words "
         "naming the entry, at most 80 characters; cites, the ids just above that "
         + ("its ink covers" if image else "it is read from")
@@ -509,7 +577,7 @@ def page_reask_instruction(feed: dict[str, Any]) -> str:
         )
     parts.append(
         "Answer with one JSON object and nothing else, with no code fence, in this form: "
-        + ANSWER_FORM
+        + (REASK_ANSWER_FORM_NAMED if shown["page_types"] else ANSWER_FORM)
     )
     return "".join(parts)
 

@@ -198,6 +198,7 @@ def classify(
     page_pixels: int,
     truncation_policy: Mapping[str, object],
     stop_reason: str | None = None,
+    length_exempt_kind: str | None = None,
 ) -> TruncationRecord:
     """Classify one reading attempt `complete | truncated | unknown`.
 
@@ -220,10 +221,19 @@ def classify(
     A split vote is `unknown` for the reason the module docstring gives, and so
     is silence from the engine: neither is resolved toward `complete`, because
     an ambiguous signal is exactly what "unknown holds" means.
+
+    `length_exempt_kind` names the entry kind of a reading the length signal was
+    not calibrated for (`common.page_types.length_signal_applies`: it was
+    measured on register acts, and an index row in a row-sized box is not short
+    for its region). The signal is then not judged, as on a page below the
+    legible size, and the measure records the kind as `length_exempt_kind`; the
+    record carries no such field otherwise.
     """
     floor = truncation_policy[LENGTH_FLOOR_FIELD]
     legible = truncation_policy[LEGIBLE_PAGE_FIELD]
-    judged = length_judged(page_pixels=page_pixels, legible_page_pixels=legible)
+    judged = length_exempt_kind is None and length_judged(
+        page_pixels=page_pixels, legible_page_pixels=legible
+    )
     signals: TruncationSignals = {
         "stop_reason_declared": stop_reason,
         "unclosed_structure": has_unclosed_structure(text),
@@ -242,6 +252,8 @@ def classify(
         "legible_page_pixels": legible,
         "length_judged": judged,
     }
+    if length_exempt_kind is not None:
+        measure["length_exempt_kind"] = length_exempt_kind  # type: ignore[typeddict-unknown-key]
 
     # Refuses an unrecognised engine word by name before any decision is made;
     # the decision itself is the shared rule every consumer re-derives the

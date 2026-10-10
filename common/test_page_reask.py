@@ -275,6 +275,7 @@ def test_a_recovered_record_clears_every_id_it_was_asked_about():
         "reading_attempt": 2,
         "reading_n": 1,
         "kind": "act",
+        "entry_kind": "act",
         "cited_ids": ["A3", "B3", "L7", "L8", "L9"],
         "union_box_px": band(2),
     }

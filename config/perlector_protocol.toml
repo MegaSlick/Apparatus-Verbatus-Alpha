@@ -56,6 +56,11 @@ maximum_edge = 2560
 #   page_overlay         "off", or "boxes": a second image after the page
 #                        render, a copy of it with every shown boxed id
 #                        outlined and labelled (`common/page_overlay.py`).
+#   page_types           "named": the answer names the page's type and each
+#                        entry's kind (`common/page_types.py`); "off": the older
+#                        `acts` grammar, act or other only. A table without
+#                        this switch is "off", so a protocol sealed before page
+#                        types reads, and replays, as it did.
 [feed]
 page_image = "legible"
 witnesses = "all"
@@ -64,3 +69,4 @@ witness_coordinates = true
 surya_lines = true
 surya_blocks = true
 page_overlay = "off"
+page_types = "named"

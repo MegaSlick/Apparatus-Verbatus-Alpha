@@ -35,7 +35,15 @@ import re
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
-from common import dissent, page_accounting, page_answer, page_edges, page_render, truncation
+from common import (
+    dissent,
+    page_accounting,
+    page_answer,
+    page_edges,
+    page_render,
+    page_types,
+    truncation,
+)
 from common import reading_annotations as annotations
 from common.alignment import bracket_marker_view
 from common.background import (
@@ -754,22 +762,29 @@ def answer_entries(
     accounting_policy: page_accounting.PageAccountingPolicy,
     named: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Each entry of a valid answer: the entry, its expanded ids, region and region holds."""
+    """Each entry of a valid answer: the entry, its expanded ids, region and region holds.
+
+    The entry's `kind` is its act class; `entry_kind` is the kind an answer in the
+    `entries` grammar named, `None` for one in the `acts` grammar.
+    """
     validated = _validated(answer, feed, accounting_policy, named)
     shared = {
         n
         for finding in page_accounting.duplicate_regions(validated["entries"], accounting_policy)
         for n in finding["ns"]
     }
+    named_kinds = page_answer.answer_grammar(answer) == page_answer.ENTRIES_GRAMMAR
     entries = []
-    for act, entry in zip(answer["acts"], validated["entries"], strict=True):
+    for raw, entry in zip(page_answer.answer_entry_list(answer), validated["entries"], strict=True):
         union = entry["union_box_px"]
         holds = [] if union is not None else [UNPLACED]
         if entry["n"] in shared:
             holds.append(DUPLICATE_REGION)
         entries.append(
             {
-                "act": act,
+                # The entry as given, its kind its act class (`common.page_types`).
+                "act": {**raw, "kind": entry["kind"]},
+                "entry_kind": entry["entry_kind"] if named_kinds else None,
                 "cited_ids": entry["cited_ids"],
                 "region_boxes_px": entry["region_boxes_px"],
                 "union_box_px": union,
@@ -841,6 +856,7 @@ def entry_plans(
         reading_holds = list(region_holds)
         if assessment["state"] == annotations.ASSESSMENT_MALFORMED:
             reading_holds.append(DOUBT_MARKS_MALFORMED)
+        entry_kind = entry["entry_kind"]
         record = (
             truncation.classify(
                 text,
@@ -848,6 +864,9 @@ def entry_plans(
                 page_pixels=page_pixels,
                 truncation_policy=truncation_policy,
                 stop_reason=stop_reason,
+                length_exempt_kind=None
+                if entry_kind is None or page_types.length_signal_applies(entry_kind)
+                else entry_kind,
             )
             if union is not None
             else None
@@ -878,6 +897,7 @@ def entry_plans(
                 "reading_attempt": attempt,
                 "n": first_count + act["n"],
                 "reading_n": act["n"],
+                "entry_kind": entry_kind,
                 "act_class": act_class,
                 "cited_ids": list(entry["cited_ids"]),
                 "region_boxes_px": list(entry["region_boxes_px"]),
@@ -1365,6 +1385,7 @@ def expected_perlectio(
         "engine_call": reading["engine_call"],
         "provenance": reading["provenance"],
         **recovered_fields(plan),
+        **named_kind_fields(plan),
     }
 
 
@@ -1372,10 +1393,27 @@ def expected_perlectio(
 RECOVERED_FIELDS: Final = frozenset({"reading_attempt", "reading_n"})
 
 
+# What a Perlectio of an entry read in the `entries` grammar holds beyond `PERLECTIO_FIELDS`.
+NAMED_KIND_FIELDS: Final = frozenset({"entry_kind"})
+
+
+def named_kind_fields(plan: Mapping[str, Any]) -> dict[str, str]:
+    """`entry_kind` for an entry whose answer named its kind (`common.page_types`), else
+    nothing: a reading in the `acts` grammar keeps the Perlectio it always had."""
+    return {} if plan.get("entry_kind") is None else {"entry_kind": plan["entry_kind"]}
+
+
 def is_perlectio_field_set(payload: Mapping[str, Any]) -> bool:
     """True when `payload` holds exactly a first reading's Perlectio fields, or those
-    and `RECOVERED_FIELDS` with the re-ask's `reading_attempt`."""
+    and `RECOVERED_FIELDS` with the re-ask's `reading_attempt`, either with or without
+    `NAMED_KIND_FIELDS`."""
     fields = set(payload)
+    if NAMED_KIND_FIELDS <= fields:
+        if payload["entry_kind"] not in page_types.ENTRY_KINDS or (
+            page_types.act_class(payload["entry_kind"]) != payload.get("kind")
+        ):
+            return False
+        fields -= NAMED_KIND_FIELDS
     if fields == PERLECTIO_FIELDS:
         return True
     return (
