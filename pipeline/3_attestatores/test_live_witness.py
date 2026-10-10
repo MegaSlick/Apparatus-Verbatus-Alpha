@@ -38,11 +38,13 @@ import live_witness  # noqa: E402
 import witness_adapters  # noqa: E402
 from chandra import FIXTURE_RESPONSE_SCHEMA as CHANDRA_FIXTURE_SCHEMA  # noqa: E402
 
+from common import native_witness  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.contracts.canonical import digest_bytes  # noqa: E402
 from common.contracts.errors import SchemaRefusal  # noqa: E402
 from common.contracts.serving import STOP_REASON_UNREPORTED  # noqa: E402
 from common.contracts.stages import ATTESTATORES  # noqa: E402
+from common.decoding import witness_loop_guard  # noqa: E402
 from common.imaging import encode_grayscale_png  # noqa: E402
 from common.native_witness import CHURRO_OUTPUT_TOKENS  # noqa: E402
 from common.request_capacity import (  # noqa: E402
@@ -2042,4 +2044,137 @@ def test_captured_page_attempt_refuses_the_fixture_placeholder_schema_from_a_ser
             transport_stop_reason="stop",
             parser="json",
             served=True,
+        )
+
+
+# ===================== streamed under the witness loop guard =====================
+
+WITNESS_GUARD = witness_loop_guard(shipped_decoding_policy()[0], "attestator_3")
+# Synthetic rows, then one line over and over until the guard stops the reply.
+_ROWS = [f"Tremblay, {name} f. {12 + index}" for index, name in enumerate(["Jean", "Marie"] * 5)]
+_LOOPING = "\n".join(_ROWS + ["Tremblay, Jean f. 12"] * 80) + "\n"
+
+
+def _read_streamed(tmp_path: Path, *, role: str, content: str, finish_reason: str = "length"):
+    chair = dataclasses.replace(_identity(role=role), witness_adapter="churro.v1")
+    client, endpoint, blob_store = _world(tmp_path, chair=chair)
+    with client:
+        endpoint.script(ScriptedAnswer(content=content, finish_reason=finish_reason))
+        response = client.read(
+            ChairRequest(
+                kind="chat-completions",
+                messages=({"role": "user", "content": "read the page"},),
+                image_sha256s=(),
+                generation_declared={},
+                generation_sent={},
+                loop_guard=WITNESS_GUARD,
+            )
+        )
+    return response, endpoint
+
+
+def test_a_looping_witness_reply_is_abandoned_and_kept_as_a_cut_off_reading(tmp_path: Path):
+    response, endpoint = _read_streamed(tmp_path, role="attestator_2", content=_LOOPING)
+    assert endpoint.streams_stopped == 1 and response.loop_stop is not None
+    # Nothing after the loop line was read, and nothing is defaulted to a finish.
+    assert response.content.count("Tremblay, Jean f. 12") == 31
+    assert response.finish_reason is None
+    assert live_witness.unmeasured_stop_reason(response, "the reply") is None
+    adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": response.content}})
+
+    attempt = live_witness.live_attempt_from_response(
+        _Context(tree=_FakeTree()),
+        adapter,
+        "dai.v1",
+        response,
+        generation_declared={},
+        parser="text",
+        **_dai_view_kwargs(),
+    )
+
+    assert attempt.outcome == "read"
+    assert attempt.native_payload == response.content
+    assert attempt.native_capture["transport_stop_reason"] == "repetition-loop"
+    assert attempt.health["truncated"] is True
+    assert attempt.health["truncation_basis"] == "trusted-response-boundary"
+
+
+def test_a_looping_witness_reply_that_does_not_parse_names_the_loop(tmp_path: Path):
+    response, _endpoint = _read_streamed(tmp_path, role="attestator_3", content=_LOOPING)
+    adapter = _stub_adapter(
+        retain_result={"parse": {"state": "failed", "reason": "unterminated output element"}}
+    )
+
+    attempt = live_witness.captured_page_attempt(
+        _Context(tree=_FakeTree()), 1, "attestator_3", "churro.v1", adapter, response
+    )
+
+    assert attempt.outcome == "failed"
+    assert "stopped the response on a repetition loop" in attempt.reason
+    assert attempt.health["truncation_basis"] == (
+        "response stopped by the client on a repetition loop ('repetition-loop'); "
+        "unterminated output element"
+    )
+
+
+def test_a_churro_capture_stopped_on_a_loop_keeps_that_stop_over_the_post_hoc_scan():
+    raw = _LOOPING.encode("utf-8")
+    capture = native_witness.derive_churro_capture(
+        raw, "repetition-loop", parser="xml", system_prompt=churro.prompt()["system"]
+    )
+    assert capture["parse"]["state"] == "parsed"
+    # The post-hoc scan still records the repeated tail; the guard's stop is the reason.
+    assert capture["findings"][-1]["kind"] == "post-hoc-repetition"
+    assert capture["stop_reason"] == "repetition-loop"
+    finished = native_witness.derive_churro_capture(
+        raw, "stop", parser="xml", system_prompt=churro.prompt()["system"]
+    )
+    assert finished["stop_reason"] == "partial-post-hoc-repetition-detected"
+
+
+def test_a_witness_reply_with_no_loop_is_read_as_before(tmp_path: Path):
+    content = "\n".join(_ROWS) + "\n"
+    response, endpoint = _read_streamed(
+        tmp_path, role="attestator_2", content=content, finish_reason="stop"
+    )
+    assert endpoint.streams_stopped == 0
+    assert (response.content, response.finish_reason, response.loop_stop) == (content, "stop", None)
+    adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": content}})
+
+    attempt = live_witness.live_attempt_from_response(
+        _Context(tree=_FakeTree()),
+        adapter,
+        "dai.v1",
+        response,
+        generation_declared={},
+        parser="text",
+        **_dai_view_kwargs(),
+    )
+
+    assert attempt.outcome == "read"
+    assert attempt.native_capture["transport_stop_reason"] == "stop"
+    assert attempt.health["truncated"] is False
+
+
+def test_the_page_builder_carries_a_guard_and_refuses_one_for_chandra():
+    row = _sealed_churro_rows()[0]
+    context = _Context(tree=_FakeTree())
+    image_bytes = _png(50, 70)
+    presentation = _presentation(kind="page", image_bytes=image_bytes)
+    context.tree.seed(presentation["image_path"], image_bytes)
+    adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=churro.prompt)
+    request = live_witness.page_chair_request(
+        context, adapter, "churro.v1", presentation, profile=row, loop_guard=WITNESS_GUARD
+    )
+    assert dict(request.loop_guard) == WITNESS_GUARD
+
+    chandra_adapter = SimpleNamespace(present=lambda ctx, pres: pres, prompt=chandra.prompt)
+    with pytest.raises(SchemaRefusal, match="never streamed"):
+        live_witness.page_chair_request(
+            context,
+            chandra_adapter,
+            "chandra.v1",
+            presentation,
+            profile=dataclasses.replace(row, chair="attestator_1"),
+            loop_guard=WITNESS_GUARD,
         )

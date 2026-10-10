@@ -191,8 +191,8 @@ receipt), then calls `read(ChairRequest)`, which sends exactly one request:
    instead, with delivery and completion recorded as unknown.
 
 A request carrying a `loop_guard` (the Perlector's page reading, under the sealed
-guard of `[perlector_generation]` in `config/decoding.toml`; no other chair has
-one) is streamed instead: the client watches the reply's server-sent events as
+guard of `[perlector_generation]` in `config/decoding.toml`, or a witness chair's
+reading other than Chandra's, under `[witness_generation]`) is streamed instead: the client watches the reply's server-sent events as
 they arrive and closes the connection, which makes vLLM abandon the request, as
 soon as `common/repetition_loop.py` finds the same line or block of lines
 repeated the sealed number of times in a row. The bytes received up to the stop

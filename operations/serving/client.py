@@ -43,12 +43,14 @@ from common.contracts.serving import (
     CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
 )
 from common.decoding import (
+    STREAMED_WITNESS_CHAIRS,
     chair_attempt_decoding,
     chair_decoding,
     decoded_wire_decimals,
     engine_effective_sampling,
     perlector_loop_guard,
     recorded_wire_decimals,
+    witness_loop_guard,
 )
 from common.repetition_loop import LoopScanner
 from common.sealed_config import table_seal
@@ -211,9 +213,9 @@ class ChairRequest:
 
     ``loop_guard``, when given, streams the reply and abandons it at the first
     repetition loop (``common.repetition_loop``); it must be the sealed guard of
-    the client's chair (``common.decoding.perlector_loop_guard``, the Perlector's
-    alone), and the call is recorded under the stream schemas. ``None`` sends the
-    plain, whole-response request every other chair sends.
+    the client's chair (``common.decoding.perlector_loop_guard`` for the Perlector,
+    ``witness_loop_guard`` for a streamed witness chair), and the call is recorded
+    under the stream schemas. ``None`` sends the plain, whole-response request.
 
     **The capacity record is sealed at construction, all the way down.** It is
     not flat -- it carries an ``images`` list of per-image dictionaries -- and
@@ -913,18 +915,22 @@ class ChairClient:
     def _loop_guard(self, request: ChairRequest, *, native: bool) -> dict[str, int] | None:
         """The sealed guard a streamed request is watched under, or ``None`` for a plain one.
 
-        A request may ask only for its chair's sealed guard, and only the Perlector
-        has one; a Chandra native request is never streamed.
+        A request may ask only for its chair's sealed guard: the Perlector's, or a
+        streamed witness chair's; a Chandra native request is never streamed.
         """
 
         if request.loop_guard is None:
             return None
+        role = self._identity.role
         try:
-            sealed = (
-                perlector_loop_guard(self._decoding_policy)
-                if self._identity.role == "perlector" and not native
-                else None
-            )
+            if native:
+                sealed = None
+            elif role == "perlector":
+                sealed = perlector_loop_guard(self._decoding_policy)
+            elif role in STREAMED_WITNESS_CHAIRS:
+                sealed = witness_loop_guard(self._decoding_policy, role)
+            else:
+                sealed = None
         except ContractError as error:
             raise ChairRequestRefusal("CHAIR_REQUEST_INVALID", str(error)) from error
         if sealed is None or dict(request.loop_guard) != sealed:

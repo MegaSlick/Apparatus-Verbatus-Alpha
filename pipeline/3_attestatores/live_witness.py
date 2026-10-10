@@ -57,6 +57,12 @@ the transport word is a recognized natural completion; an empty response
 whose stop word is a cut-off, unreported, or unrecognized is held as
 ``failed`` instead (none of those default to "finished
 naturally"). This applies to a whole-page response and a DAI record response alike.
+
+**Streamed under a loop guard**: every request but Chandra's carries its chair's
+sealed repetition-loop guard (``config/decoding.toml``'s ``witness_generation``),
+so its reply is streamed and abandoned at the first loop. Such a reply is read
+as cut off, under the stop word ``repetition-loop``: what arrived is kept, and
+it is never full testimony.
 """
 
 from __future__ import annotations
@@ -79,10 +85,11 @@ from common.contracts.serving import (
     ENGINE_STOP_CUT_OFF,
     RAW_RESPONSE_MODEL_OUTPUT,
     RAW_RESPONSE_TRANSPORT_BODY,
+    READER_STOP_REPETITION_LOOP,
     STOP_REASON_UNREPORTED,
 )
 from common.imaging import dimensions
-from common.native_witness import native_parse_refusal
+from common.native_witness import cut_off_basis, native_parse_refusal
 from common.request_capacity import (
     DECLARED_ANSWER_BOUND_TOKENS,
     dense_page_answer_budget,
@@ -247,14 +254,21 @@ def request_capacity_or_refuse(
 
 
 def record_chair_request(
-    context: Any, adapter: Any, presentation: Mapping[str, Any], *, profile: Any
+    context: Any,
+    adapter: Any,
+    presentation: Mapping[str, Any],
+    *,
+    profile: Any,
+    loop_guard: Mapping[str, int] | None = None,
 ) -> RecordChairRequest:
     """Build one DAI reading request from one detector record crop's presentation.
 
     ``presentation`` is exactly what `run.py::presentation_for_region` returns
     for the record's crop; ``adapter.present`` is DAI's own crop-and-resize
     step, publishing and returning the image this request embeds. ``profile``
-    is the sealed serving row this chair runs under.
+    is the sealed serving row this chair runs under. ``loop_guard`` is the
+    chair's sealed repetition-loop guard (`common.decoding.witness_loop_guard`):
+    the reply is streamed and abandoned at the first loop.
     """
 
     presented = adapter.present(context, dict(presentation))
@@ -283,6 +297,7 @@ def record_chair_request(
         generation_declared=generation_declared,
         generation_sent=generation_sent,
         capacity=capacity,
+        loop_guard=loop_guard,
     )
     return RecordChairRequest(
         request=request,
@@ -357,6 +372,7 @@ def page_chair_request(
     *,
     profile: Any,
     framing: str | None = None,
+    loop_guard: Mapping[str, int] | None = None,
 ) -> ChairRequest:
     """Build one page-scoped (Churro or Chandra) reading request from a whole page.
 
@@ -374,7 +390,16 @@ def page_chair_request(
     declared bound is reserved in full, so it sends its ``max_tokens`` on every
     row it is admitted to; Chandra's 12,384 exceeds what its 24/48 GB rows
     leave, so there it sends none -- a fact about the catalogue, not the adapter.
+
+    ``loop_guard`` is the chair's sealed repetition-loop guard, as
+    `record_chair_request` takes it. Chandra's request is read under its native
+    recipe's own retry loop and is never streamed, so it takes none.
     """
+    if loop_guard is not None and adapter_name == "chandra.v1":
+        raise SchemaRefusal(
+            "a chandra.v1 page request is read under its native recipe and is never streamed "
+            "under a repetition-loop guard"
+        )
 
     presented = adapter.present(context, dict(presentation))
     image_bytes = _presented_image_bytes(context, presented)
@@ -421,6 +446,7 @@ def page_chair_request(
         generation_declared=generation_declared,
         generation_sent=generation_sent,
         capacity=capacity,
+        loop_guard=loop_guard,
     )
 
 
@@ -431,9 +457,12 @@ def _finish_reason_facts(response: ChairResponse) -> tuple[str, bool | None, boo
     marker, never to a meaning. ``completed``/``cut_off`` are ``True``/``False``
     only when the word positively says so; an absent or unrecognized
     ``finish_reason`` leaves both ``None`` rather than guessing (an unread
-    engine signal is never defaulted to a meaning).
+    engine signal is never defaulted to a meaning). A streamed reply the client
+    abandoned on a repetition loop is cut off, under ``repetition-loop``.
     """
 
+    if response.loop_stop is not None:
+        return READER_STOP_REPETITION_LOOP, False, True
     finish_reason = response.finish_reason
     if finish_reason is None:
         return STOP_REASON_UNREPORTED, None, None
@@ -454,7 +483,7 @@ def _unconfirmed_blank_reason(kind: str, transport_stop_reason: str, cut_off: bo
 
     if cut_off:
         return (
-            "the provider response parsed empty after the provider stopped it at its bound "
+            f"the provider response parsed empty after {_stopper(transport_stop_reason)} "
             f"(transport_stop_reason {transport_stop_reason!r}); a cut-off response is not a "
             f"confirmed blank {kind}"
         )
@@ -479,12 +508,19 @@ def _failed_parse_composition(
 
     if cut_off:
         cut_note = (
-            f"the provider stopped the response at its bound "
+            f"{_stopper(transport_stop_reason)} "
             f"(transport_stop_reason {transport_stop_reason!r}) and "
         )
-        basis = f"response cut off by the provider ({transport_stop_reason!r}); {parse_reason}"
-        return f"{cut_note}{parse_reason}", basis
+        return f"{cut_note}{parse_reason}", cut_off_basis(transport_stop_reason, parse_reason)
     return parse_reason, parse_reason
+
+
+def _stopper(transport_stop_reason: str) -> str:
+    """Who cut a response off: the client on a repetition loop, or the provider."""
+
+    if transport_stop_reason == READER_STOP_REPETITION_LOOP:
+        return "the client stopped the response on a repetition loop"
+    return "the provider stopped the response at its bound"
 
 
 def dai_model_view(
@@ -782,10 +818,15 @@ def unmeasured_stop_reason(response: Any, what: str) -> str | None:
 
     Calling such an answer complete or cut off would invent a measurement, so
     the attempt fails on that request alone, with the response retained, before
-    any adapter reads it. `None` for a recognized word or none at all.
+    any adapter reads it. `None` for a recognized word or none at all, and for a
+    reply the client stopped on a repetition loop, which is measured.
     """
     word = response.finish_reason
-    if word is None or word in ENGINE_STOP_COMPLETE | ENGINE_STOP_CUT_OFF:
+    if (
+        getattr(response, "loop_stop", None) is not None
+        or word is None
+        or word in ENGINE_STOP_COMPLETE | ENGINE_STOP_CUT_OFF
+    ):
         return None
     return (
         f"{what} reports transport_stop_reason {word!r}, which this pipeline has never "

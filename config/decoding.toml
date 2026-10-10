@@ -1,5 +1,5 @@
 # Its values are sealed into every run's decoding provenance.
-schema = "decoding.v9"
+schema = "decoding.v10"
 
 [perlector_generation]
 # The output cap of one whole-page reading, which answers every act on the page
@@ -21,6 +21,17 @@ page_max_tokens = 12288
 # dense index has many similar rows in a row (one surname over and over), but
 # each differs by its given name or folio, so 30 identical lines, or the same
 # block 10 times over, is a loop and not a page. Chosen wide, not measured.
+loop_line_repeats = 30
+loop_block_repeats = 10
+loop_block_max_lines = 8
+
+[witness_generation]
+# The repetition-loop guard of every served witness chair that sends a plain
+# request: Attestatores 2 (DAI), 3 (Churro) and 4 (dots.mocr). Their replies are
+# streamed and abandoned at the first loop, by the same rule and thresholds as
+# the Perlector's above, and the reply up to the stop is kept as a partial
+# reading under the stop reason `repetition-loop`. Attestator 1 (Chandra) reads
+# under its native recipe's own retry loop and is never streamed.
 loop_line_repeats = 30
 loop_block_repeats = 10
 loop_block_max_lines = 8

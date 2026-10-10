@@ -42,6 +42,7 @@ from common.decoding import (
     load_decoding_policy,
     perlector_loop_guard,
     recorded_wire_decimals,
+    witness_loop_guard,
 )
 from common.sealed_config import table_seal
 
@@ -1743,6 +1744,80 @@ def test_only_the_perlector_streams_and_only_under_its_sealed_guard(
     with client:
         with pytest.raises(ChairRequestRefusal, match="sealed repetition-loop guard"):
             client.read(_request(loop_guard=guard))
+    assert endpoint.requests == []
+
+
+WITNESS_GUARD = witness_loop_guard(SHIPPED_POLICY, "attestator_3")
+
+
+@pytest.mark.parametrize("role", ["attestator_2", "attestator_3"])
+def test_a_witness_reply_streams_under_its_sealed_guard_and_stops_on_a_loop(
+    tmp_path: Path, role: str
+) -> None:
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role=role))
+    content = "\n".join(DENSE_ROWS + ["<line>same</line>"] * 50) + "\n"
+    with client:
+        endpoint.script(ScriptedAnswer(content=content, finish_reason="length"))
+        response = client.read(_request(loop_guard=witness_loop_guard(SHIPPED_POLICY, role)))
+    record = json.loads((blob_store.root / response.call_record_ref["relative_path"]).read_bytes())
+    finding = {"kind": "line", "block_lines": 1, "repeats": 30, "line": 150}
+    assert endpoint.requests[0]["stream"] is True and endpoint.streams_stopped == 1
+    assert dict(response.loop_stop) == finding
+    assert response.content == "\n".join((DENSE_ROWS + ["<line>same</line>"] * 50)[:150]) + "\n"
+    assert record["schema"] == CHAIR_STREAM_CALL_RECORD_SCHEMA
+    assert record["stream"] == {
+        "schema": "chair-stream.v1",
+        "loop_guard": WITNESS_GUARD,
+        "stopped": finding,
+    }
+
+
+def test_a_witness_reply_with_no_loop_is_read_to_its_end(tmp_path: Path) -> None:
+    client, endpoint, blob_store, _ = _built(tmp_path, chair=_identity(role="attestator_3"))
+    content = "\n".join(DENSE_ROWS) + "\n"
+    with client:
+        endpoint.script(ScriptedAnswer(content=content, finish_reason="stop"))
+        response = client.read(_request(loop_guard=WITNESS_GUARD))
+    record = json.loads((blob_store.root / response.call_record_ref["relative_path"]).read_bytes())
+    assert endpoint.streams_stopped == 0
+    assert (response.content, response.finish_reason, response.loop_stop) == (content, "stop", None)
+    assert record["stream"]["stopped"] is None
+
+
+@pytest.mark.parametrize(
+    ("role", "guard"),
+    [
+        # Chandra reads under its native recipe and is never streamed.
+        ("attestator_1", WITNESS_GUARD),
+        ("attestator_3", {**WITNESS_GUARD, "loop_block_repeats": 11}),
+        ("attestator_2", GUARD | {"loop_line_repeats": 29}),
+    ],
+)
+def test_a_witness_streams_only_under_its_own_sealed_guard(
+    tmp_path: Path, role: str, guard: dict[str, int]
+) -> None:
+    client, endpoint, _blob_store, _ = _built(tmp_path, chair=_identity(role=role))
+    with client:
+        with pytest.raises(ChairRequestRefusal, match="sealed repetition-loop guard"):
+            client.read(_request(loop_guard=guard))
+    assert endpoint.requests == []
+
+
+def test_a_chandra_native_request_is_never_streamed(tmp_path: Path) -> None:
+    chair = ChairIdentity(
+        **{**_identity().to_record(), "witness_adapter": "chandra.v1", "witness_scope": "page"}
+    )
+    client, endpoint, _blob_store, _ = _built(tmp_path, chair=chair)
+    intent_ref = {"relative_path": "3_attestatores/artifacts/intent.json", "sha256": "d" * 64}
+    request = _request(
+        generation_declared={"max_new_tokens": 12384},
+        generation_sent={"chat_template_kwargs": {"enable_thinking": False}},
+        loop_guard=WITNESS_GUARD,
+    )
+    with client:
+        dispatch = client.prepare_chandra_native(request, attempt_ordinal=1)
+        with pytest.raises(ChairRequestRefusal, match="sealed repetition-loop guard"):
+            client.read_chandra_native(dispatch, intent_ref=intent_ref)
     assert endpoint.requests == []
 
 
