@@ -27,6 +27,11 @@ model's row in `config/serving_recipes_real.toml` (`max_model_len`, pixel bounds
 caching), except that the bake-off keeps the card full: `--gpu-memory-utilization 0.92`
 and `--max-num-seqs 32` by default, and the client keeps twice that many requests in
 flight (`--concurrency`), so vLLM's queue is never empty.
+`--recipe NAME` serves the chair's row of that name instead, from the run catalogue or
+`config/serving_recipes_real_variants.toml` (the FP8 and MTP Perlector shapes; queue
+`queue/perlector-fp8-96gb.toml`). `--allowed-tokens latin-json-v1`, off by default,
+restricts what a reader may emit to Latin-script, digit and punctuation tokens of the
+served tokenizer (`allowed_tokens.py`); each request record names the set and its digest.
 
 ## What a cached page holds
 

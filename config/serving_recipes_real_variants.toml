@@ -1,0 +1,199 @@
+# Alternative serving shapes for a real chair, kept apart from the run catalogue.
+#
+# config/serving_recipes_real.toml must name exactly the recipes
+# config/models-real.toml configures (`verify_recipes_cover_chairs`), so a shape
+# no chair uses yet cannot live there. These rows are the same schema, checked by
+# the same parser (`operations/serving/config.py`), and are read by name: the
+# bake-off launcher (`operations/bakeoff/arms.py::serving_row`, `--recipe`) and,
+# once a chair is pointed at one, a run catalogue that copies the row in.
+# Nothing here changes a row of the run catalogue, its digest or its argv.
+#
+# Every row is `unproven`: a complete launch shape, not a claim that it started,
+# fitted or answered on real silicon. They exist for the post-bake-off Perlector
+# test (workbench design notes A5, A9, S0c, 2026-10-09): the same Qwen3.8-27B
+# reader, served smaller or faster, compared page by page with the bf16 row.
+#
+# Each row differs from the bf16 Perlector row (`unproven-real-perlector`,
+# generic-80gb-plus) only in `recipe`, `served_model_id`, `weights_gib`,
+# `kv_gib_per_seq`, `startup_timeout_seconds` and its engine options
+# (`quantization`, `kv_cache_dtype`, `speculative_config`);
+# operations/serving/test_serving_variants.py holds them to that, so a
+# comparison measures the option and nothing else. Its repository pin is a
+# separate thing: these rows serve `Qwen/Qwen3.8-27B-FP8` at
+# 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a (operations/bakeoff/weight_pins.json
+# `qwen3.8-27b-fp8`, every file by SHA-256; the canonical manifest a chair pin would
+# carry digests to 9825ce119c9693172e04dd2a1f2437884503ceab9bf55606141e6662c9fe301e),
+# whose tokenizer, chat template, preprocessor and generation config are
+# byte-identical to the bf16 pin's (same SHA-256 as config/manifests/qwen3.8-27B.json), so the
+# prompt, image geometry and sampling rows are unchanged.
+#
+# The FP8 checkpoint ("fine-grained fp8 quantization with block size of 128",
+# its card) keeps the vision tower, both word tables, the MTP head, every norm and
+# the DeltaNet gate/state parameters in bf16 (`modules_to_not_convert`, 882
+# entries in its config.json); only the large attention, DeltaNet and MLP
+# projections are FP8 (e4m3, dynamic activation scales). 30,890,049,597 bytes in
+# 81 files = 28.8 GiB, against 51.7 GiB for bf16. `quantization = "fp8"` is what
+# its config.json already says; stating it makes the sealed row say so, and
+# `manager.assert_quantization` refuses the row on a snapshot that does not
+# declare fp8 itself (vLLM would otherwise quantize a bf16 checkpoint at load).
+#
+# KV: 16 full-attention layers x 4 KV heads x 256 x 2 (K, V) x 2 bytes = 64 KiB a
+# token, 4 GiB at 65,536 tokens (as the bf16 row). The MTP head is one more
+# full-attention layer, so a speculating row holds 17 layers' KV: 4.25 GiB. An
+# fp8 KV cache halves it. None of these is measured.
+#
+# Speculative decoding (`speculative_config`): the checkpoint's own one-layer
+# MTP head (`text_config.mtp_num_hidden_layers` 1). The model verifies every
+# drafted token, so the text is the model's own; only speed changes. vLLM's
+# recipe for Qwen3.8-27B (github.com/vllm-project/recipes, models/Qwen/
+# Qwen3.8-27B.yaml at 8ac4feb) uses 3 draft tokens, 5 on the RTX PRO 6000, and
+# reports acceptance 92.2% (BF16) / 84.8% (FP8) on short prompts; a forum user
+# had errors above 1 on Qwen3.5-27B-FP8 under an older vLLM. Hence two rows, 3
+# (first choice) and 1 (fallback). vLLM 0.30.0 carries the gated-DeltaNet
+# speculative fixes the recipe names (vllm-project/vllm#51812, #51674: both
+# merged before tag v0.30.0). vLLM refuses `min_p` > 0 and `logit_bias` under
+# speculation; config/decoding.toml sends min_p 0.0 and no logit_bias.
+#
+# Tiers: generic-80gb-plus only. At generic-48gb (A40, RTX 6000 Ada, L40S) the
+# FP8 weights fit, but that tier's `context_cap` is 32,768 (config/
+# pod_placement.toml) while the Perlector's planning page needs 65,536
+# (`max_model_len`, serving_recipes_real.toml). Every cold73 page fitted in
+# under 26,000 tokens, but the cap and the planning size are the lead's to
+# change, not a variant's; see the S0c design note.
+schema = "serving-recipes.v1"
+
+# Official FP8 weights, otherwise the bf16 row.
+[[profiles]]
+kind = "vllm"
+recipe = "unproven-real-perlector-fp8"
+chair = "perlector"
+tier = "generic-80gb-plus"
+host = "127.0.0.1"
+port = 8106
+served_model_id = "perlector-qwen3.8-27b-fp8"
+dtype = "bfloat16"
+seed = 0
+required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
+quantization = "fp8"
+max_model_len = 65536
+max_num_seqs = 4
+weights_gib = "28.8"
+kv_gib_per_seq = "4"
+max_num_batched_tokens = 8192
+gpu_memory_utilization = "0.88"
+min_pixels = 65536
+max_pixels = 5299200
+patch_size = 16
+merge_size = 2
+enable_prefix_caching = false  # hybrid attention, as the bf16 row
+enforce_eager = false
+trust_remote_code = false
+generation_config = "vllm"
+preflight_state = "unproven"
+startup_timeout_seconds = 600  # UNMEASURED: the bf16 row's allowance; fewer bytes to load
+poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value, as the bf16 row
+readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+
+# FP8 weights plus the model's own MTP head drafting 3 tokens.
+[[profiles]]
+kind = "vllm"
+recipe = "unproven-real-perlector-fp8-mtp3"
+chair = "perlector"
+tier = "generic-80gb-plus"
+host = "127.0.0.1"
+port = 8106
+served_model_id = "perlector-qwen3.8-27b-fp8-mtp3"
+dtype = "bfloat16"
+seed = 0
+required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
+quantization = "fp8"
+speculative_config = { method = "mtp", num_speculative_tokens = 3 }
+max_model_len = 65536
+max_num_seqs = 4
+weights_gib = "28.8"
+kv_gib_per_seq = "4.25"  # 17 full-attention layers: the 16 of the model and the MTP head's
+max_num_batched_tokens = 8192
+gpu_memory_utilization = "0.88"
+min_pixels = 65536
+max_pixels = 5299200
+patch_size = 16
+merge_size = 2
+enable_prefix_caching = false  # hybrid attention, as the bf16 row
+enforce_eager = false
+trust_remote_code = false
+generation_config = "vllm"
+preflight_state = "unproven"
+startup_timeout_seconds = 900  # UNMEASURED: the drafter adds its own load and graph capture
+poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value, as the bf16 row
+readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+
+# The fallback if 3 draft tokens fail to start or answer: 1 draft token.
+[[profiles]]
+kind = "vllm"
+recipe = "unproven-real-perlector-fp8-mtp1"
+chair = "perlector"
+tier = "generic-80gb-plus"
+host = "127.0.0.1"
+port = 8106
+served_model_id = "perlector-qwen3.8-27b-fp8-mtp1"
+dtype = "bfloat16"
+seed = 0
+required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
+quantization = "fp8"
+speculative_config = { method = "mtp", num_speculative_tokens = 1 }
+max_model_len = 65536
+max_num_seqs = 4
+weights_gib = "28.8"
+kv_gib_per_seq = "4.25"  # 17 full-attention layers: the 16 of the model and the MTP head's
+max_num_batched_tokens = 8192
+gpu_memory_utilization = "0.88"
+min_pixels = 65536
+max_pixels = 5299200
+patch_size = 16
+merge_size = 2
+enable_prefix_caching = false  # hybrid attention, as the bf16 row
+enforce_eager = false
+trust_remote_code = false
+generation_config = "vllm"
+preflight_state = "unproven"
+startup_timeout_seconds = 900  # UNMEASURED: the drafter adds its own load and graph capture
+poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value, as the bf16 row
+readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }
+
+# Optional, not in the default queue: FP8 weights with an FP8 KV cache. Only
+# worth a run if a card is short of KV; it adds a precision change on long prompts.
+[[profiles]]
+kind = "vllm"
+recipe = "unproven-real-perlector-fp8-kvfp8"
+chair = "perlector"
+tier = "generic-80gb-plus"
+host = "127.0.0.1"
+port = 8106
+served_model_id = "perlector-qwen3.8-27b-fp8-kvfp8"
+dtype = "bfloat16"
+seed = 0
+required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" = "0.0.14" }
+quantization = "fp8"
+kv_cache_dtype = "fp8"
+max_model_len = 65536
+max_num_seqs = 4
+weights_gib = "28.8"
+kv_gib_per_seq = "2"  # the bf16 row's 4 GiB at one byte a value
+max_num_batched_tokens = 8192
+gpu_memory_utilization = "0.88"
+min_pixels = 65536
+max_pixels = 5299200
+patch_size = 16
+merge_size = 2
+enable_prefix_caching = false  # hybrid attention, as the bf16 row
+enforce_eager = false
+trust_remote_code = false
+generation_config = "vllm"
+preflight_state = "unproven"
+startup_timeout_seconds = 600  # UNMEASURED: the bf16 row's allowance
+poll_interval_seconds = 2
+request_timeout_seconds = 1800  # UNMEASURED planning value, as the bf16 row
+readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\"role\":\"user\",\"content\":\"READY\"}],\"max_tokens\":4}" }

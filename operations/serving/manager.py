@@ -85,7 +85,9 @@ from .residency import ResidencyHandle, ResidencyLease
 # for any model, so only the row's explicit `--no-enable-prefix-caching` keeps
 # it off. A row for one of these with it on is refused at launch. Keyed by
 # repository, not role, since tests reuse role names for fixture chairs.
-_HYBRID_ATTENTION_REPOSITORIES = frozenset({"datalab-to/chandra-ocr-2", "Qwen/Qwen3.8-27B"})
+_HYBRID_ATTENTION_REPOSITORIES = frozenset(
+    {"datalab-to/chandra-ocr-2", "Qwen/Qwen3.8-27B", "Qwen/Qwen3.8-27B-FP8"}
+)
 
 # Two launch-purpose tokens admit an `unproven` row; every other check still
 # runs. The private one is held only by the serving smoke assembly (preflight
@@ -515,6 +517,7 @@ class ServingManager:
                 return adopted
             snapshot = self.registry.ensure(identity)
             assert_processor_geometry(snapshot, profile)
+            assert_quantization(snapshot, profile)
             endpoint = profile.endpoint
             # Held from endpoint probing through failed-launch cleanup, or two
             # assemblers can race from an empty endpoint into GPU co-residency.
@@ -683,6 +686,7 @@ class ServingManager:
         try:
             snapshot = self.registry.ensure(identity)
             assert_processor_geometry(snapshot, profile)
+            assert_quantization(snapshot, profile)
             argv = render_vllm_argv(
                 command_prefix=self.command_prefix, profile=profile, snapshot=snapshot
             )
@@ -1397,6 +1401,7 @@ class ServingManager:
                     "enforce_eager": profile.enforce_eager,
                     "trust_remote_code": profile.trust_remote_code,
                     "generation_config": profile.generation_config,
+                    **_engine_option_record(profile),
                     "request_logging": False,
                     "startup_timeout_seconds": profile.startup_timeout_seconds,
                     "poll_interval_seconds": profile.poll_interval_seconds,
@@ -1645,6 +1650,62 @@ def assert_processor_geometry(snapshot: VerifiedSnapshot, profile: ServingProfil
         return
 
 
+def assert_quantization(snapshot: VerifiedSnapshot, profile: ServingProfile) -> None:
+    """Refuse a row whose ``quantization`` the verified checkpoint does not declare.
+
+    vLLM refuses a checkpoint quantized another way, but given an unquantized
+    checkpoint it would quantize the weights itself at load: a different model
+    served under the row's name. So a row that names a method needs the
+    snapshot's ``config.json`` to carry ``quantization_config.quant_method``
+    equal to it. A row that names none is not checked, as before.
+    """
+
+    declared = getattr(profile, "quantization", None)
+    if declared is None:
+        return
+    path = snapshot.root / "config.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ServingConfigurationError(
+            f"chair {profile.chair!r} serving row (recipe={profile.recipe!r}) declares "
+            f"quantization={declared!r}, and config.json in its verified snapshot could not "
+            f"be read to confirm it: {error}"
+        ) from error
+    sections = [document] if isinstance(document, dict) else []
+    text = document.get("text_config") if isinstance(document, dict) else None
+    if isinstance(text, dict):
+        sections.append(text)
+    observed = next(
+        (
+            section["quantization_config"].get("quant_method")
+            for section in sections
+            if isinstance(section.get("quantization_config"), dict)
+        ),
+        None,
+    )
+    if observed != declared:
+        raise ServingConfigurationError(
+            f"chair {profile.chair!r} serving row (recipe={profile.recipe!r}, "
+            f"tier={profile.tier!r}) declares quantization={declared!r}, but config.json at "
+            f"the pinned revision declares quant_method={observed!r}; vLLM would quantize "
+            "an unquantized checkpoint itself, serving weights nobody pinned"
+        )
+
+
+def _engine_option_record(profile: ServingProfile) -> dict[str, object]:
+    """The row's optional engine options for the launch audit, only those it states."""
+
+    record: dict[str, object] = {}
+    if profile.quantization is not None:
+        record["quantization"] = profile.quantization
+    if profile.kv_cache_dtype is not None:
+        record["kv_cache_dtype"] = profile.kv_cache_dtype
+    if profile.speculative_config is not None:
+        record["speculative_config"] = dict(profile.speculative_config)
+    return record
+
+
 # Filenames the repository already treats as credential-bearing (`.env`,
 # `.env.*` except the tracked example), plus `local.env` as an operator habit.
 _ENV_OVERRIDE_EXACT_NAMES: Final = frozenset({"local.env", ".env"})
@@ -1833,6 +1894,9 @@ def render_vllm_argv(
         else "--no-enable-prefix-caching",
         "--enforce-eager" if profile.enforce_eager else "--no-enforce-eager",
         "--trust-remote-code" if profile.trust_remote_code else "--no-trust-remote-code",
+        # Optional engine options last, and only when the row states them, so a
+        # row without them renders exactly the argv it always did.
+        *profile.engine_option_argv(),
     ]
     return tuple(argv)
 
