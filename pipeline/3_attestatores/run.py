@@ -1501,12 +1501,11 @@ def page_rosters(context, pages: list[tuple[int, str]]) -> dict[str, list[str]]:
     """
     roster = page_witness_roster(context)
     declared = set(roster)
-    return {
-        page_id: [
-            chair for chair in roster if chair in page_witness_chairs(context, page_id, declared)
-        ]
-        for _ordinal, page_id in pages
-    }
+    rosters = {}
+    for _ordinal, page_id in pages:
+        seated = page_witness_chairs(context, page_id, declared)
+        rosters[page_id] = [chair for chair in roster if chair in seated]
+    return rosters
 
 
 def publish_witness_routing(context, pages: list[tuple[int, str]]) -> list[dict[str, Any]]:

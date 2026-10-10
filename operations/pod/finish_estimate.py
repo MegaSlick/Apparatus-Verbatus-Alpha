@@ -44,6 +44,7 @@ from common.contracts.stages import (
     PERLECTOR,
     WRITING_DIRECTORIES,
 )
+from common.witness_routing import ROUTING_KIND
 from operations.notify.client import NotifyOutcome
 
 from .durable import atomic_write, canonical_json
@@ -116,6 +117,7 @@ class RunTreeProgress:
         self._root = Path(run_directory)
         self._chairs = chairs
         self._seen: dict[Path, tuple[str, str | None] | None] = {}
+        self._routing: dict[Path, tuple[str, tuple[bool, frozenset[str]]] | None] = {}
         self._run: dict[str, Any] | None = None
 
     def _records(self, stage: str, kind: str) -> list[tuple[str, str | None]]:
@@ -164,11 +166,41 @@ class RunTreeProgress:
             witnesses = self._page_witnesses(run)
             if witnesses is None:
                 return None
-            pages *= witnesses
+            # A routed chair reads only the pages routed to it; until a page's
+            # decision is sealed it is counted as read by the whole roster.
+            unread = sum(
+                len(chairs & witnesses)
+                for routed, chairs in self._routing_decisions()
+                if not routed
+            )
+            return pages * len(witnesses) - unread
         return pages
 
-    def _page_witnesses(self, run: dict[str, Any] | None) -> int | None:
-        """How many of the sealed roster's witnesses read whole pages, as the Attestatores
+    def _routing_decisions(self) -> list[tuple[bool, frozenset[str]]]:
+        """Each sealed `witness-routing` record's (routed, routed chairs); empty when the
+        run routes no witness (``common/witness_routing.py``)."""
+
+        directory = self._root / WRITING_DIRECTORIES[ATTESTATORES] / "artifacts" / ROUTING_KIND
+        try:
+            names = sorted(entry for entry in directory.iterdir() if entry.suffix == ".json")
+        except OSError:
+            return []
+        for path in names:
+            if path not in self._routing:
+                try:
+                    self._routing[path] = _decision(json.loads(path.read_bytes()))
+                except (OSError, ValueError, RecursionError):
+                    continue
+        decisions: dict[str, tuple[bool, frozenset[str]]] = {}
+        for path in names:
+            found = self._routing.get(path)
+            if found is not None:
+                page, decision = found
+                decisions[page] = decision
+        return list(decisions.values())
+
+    def _page_witnesses(self, run: dict[str, Any] | None) -> frozenset[str] | None:
+        """The sealed roster's witnesses that read whole pages, as the Attestatores
         decide it (``common.page_path.declared_page_witness_chairs``); None when the roster
         and the configuration do not say."""
 
@@ -181,10 +213,11 @@ class RunTreeProgress:
             or set(roster) - set(self._chairs)
         ):
             return None
-        return sum(
-            isinstance(self._chairs[chair], ChairIdentity)
-            and self._chairs[chair].witness_scope == "page"
+        return frozenset(
+            chair
             for chair in roster
+            if isinstance(self._chairs[chair], ChairIdentity)
+            and self._chairs[chair].witness_scope == "page"
         )
 
     def count(self, stage: str) -> StageProgress:
@@ -198,6 +231,23 @@ class RunTreeProgress:
             if self._records(stage, page.kind) and not self._sealed(stage):
                 return self.count(stage)
         return None
+
+
+def _decision(record: object) -> tuple[str, tuple[bool, frozenset[str]]] | None:
+    """One `witness-routing` record's page, and whether its routed chairs read it."""
+
+    payload = record.get("payload") if isinstance(record, dict) else None
+    if not isinstance(payload, dict):
+        return None
+    page, routed, chairs = (payload.get(key) for key in ("page_id", "routed", "routed_chairs"))
+    if (
+        not isinstance(page, str)
+        or not isinstance(routed, bool)
+        or not isinstance(chairs, list)
+        or any(type(chair) is not str for chair in chairs)
+    ):
+        return None
+    return page, (routed, frozenset(chairs))
 
 
 def _unit(record: object, *, per_witness: bool) -> tuple[str, str | None] | None:
