@@ -4,6 +4,8 @@ import json
 import sys
 from collections import Counter
 
+import pytest
+
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import fed_score as C
 from operations.bakeoff.gold import parse_gold
@@ -204,7 +206,91 @@ def test_lead_checked_only_for_an_explicit_checked_status():
     assert C.reference_label([page("gold (Tyrel 2026-10-07)"), page("lead-checked")]) == (
         " (lead-checked gold)"
     )
-    for statuses in (["silver"], ["draft"], [""], ["gold (Tyrel)", "silver"]):
+    for statuses in (
+        ["silver"],
+        ["draft"],
+        [""],
+        ["gold (Tyrel)", "silver"],
+        ["gold (unchecked draft)"],
+    ):
         assert C.reference_label([page(s) for s in statuses]) != " (lead-checked gold)"
     assert C.reference_label([page("gold (Tyrel)"), page("fool's gold")]) == f" {FOOLS_GOLD_LABEL}"
-    assert not C.is_checked_status("fool's gold") and C.is_checked_status("Gold")
+    assert not C.is_checked_status("fool's gold")
+    assert C.is_checked_status("Gold (Tyrel 2026-10-07)")
+    # Only a named checker and a date make gold checked.
+    for status in (
+        "gold",
+        "gold (unchecked draft)",
+        "gold (AI draft)",
+        "gold ()",
+        "gold (2026-10-07)",
+    ):
+        assert not C.is_checked_status(status), status
+
+
+def _fed_run(tree, cache, label, *extra):
+    argv = [
+        "run", "--run-tree", str(tree), "--out", str(cache), "--label", label,
+        "--model-name", "m", "--weights", str(tree), "--vllm-cmd", sys.executable, str(FAKE),
+        "--port", str(_free_port()), "--startup-timeout", "60", *extra,
+    ]  # fmt: skip
+    assert F.main(argv) == 0
+
+
+def _retarget(src, dst, **setup_changes):
+    """Copy a cache folder with some of its recorded setup fields changed."""
+    dst.mkdir()
+    for path in src.glob("*.json"):
+        record = json.loads(path.read_text())
+        if record.get("schema") == F.SCHEMA:
+            record["setup"].update(setup_changes)
+        (dst / path.name).write_text(json.dumps(record))
+    return dst
+
+
+def test_compare_refuses_answer_sets_that_were_asked_differently(tmp_path, capsys):
+    tree = make_run_tree(tmp_path / "run", pages=(("Le dix mai", "Le dix mai"),))
+    (tree / "config.json").write_text("{}")
+    cache = tmp_path / "cache"
+    _fed_run(tree, cache, "a")
+    gold = _gold(tmp_path / "gold", {"p001": "Le dix mai"})
+    base = ["--run-tree", str(tree), "--gold", str(gold), "--gold-glob", "*.txt"]
+
+    def compare(other):
+        return C.main([*base, "--answers", str(cache / "a"), "--compare", str(other),
+                       "--names", "A,B"])  # fmt: skip
+
+    # Another model, checkpoint and recipe is the point of a comparison: allowed, and
+    # each set's identity is printed so swapped --names show.
+    other = _retarget(
+        cache / "a", tmp_path / "b", model_name="other", repo="x/y", revision="r2", recipe="fp8"
+    )
+    assert compare(other) == 0
+    printed = capsys.readouterr().out
+    assert "- B: x/y@r2, recipe fp8, served other, sampling greedy seed 0" in printed
+    for key, value in (
+        ("sampling_name", "sealed"), ("seed", 7), ("max_tokens", 100),
+        ("decoding_sha256", "0" * 64), ("variant", {"changed": True}),
+        ("run", {"run_sha256": "0" * 64}),
+    ):  # fmt: skip
+        with pytest.raises(SystemExit) as refused:
+            compare(_retarget(cache / "a", tmp_path / f"b-{key}", **{key: value}))
+        assert refused.value.code != 0
+        assert "refusing to compare" in capsys.readouterr().err
+    # A mutation is part of what was asked, per page.
+    mutated = tmp_path / "b-mutation"
+    mutated.mkdir()
+    for path in (cache / "a").glob("*.json"):
+        record = json.loads(path.read_text())
+        if record.get("schema") == F.SCHEMA:
+            record["setup"]["page"] = {"mutation": {"scenario": "other"}}
+        (mutated / path.name).write_text(json.dumps(record))
+    with pytest.raises(SystemExit):
+        compare(mutated)
+    assert "mutation differs" in capsys.readouterr().err
+    # The run's own readings carry no setup: only the run tree is checked.
+    assert compare(tree) == 0
+    elsewhere = make_run_tree(tmp_path / "run2", pages=(("Le dix mai", "Le dix mai"),))
+    (elsewhere / "config.json").write_text("{}")
+    with pytest.raises(SystemExit):
+        compare(elsewhere)

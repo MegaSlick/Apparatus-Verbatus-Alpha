@@ -356,7 +356,9 @@ folder.
 Sampling: `--sampling greedy` (the default: the sealed row with temperature 0, top_p 1,
 top_k 0, min_p 0, so two arms differ by their inputs, not by chance) or `sealed` (the
 Perlector's row; with the run's served name and an unchanged feed the request is the
-run's own, byte for byte, which is the noise-floor repeat). The reply streams under the
+run's own, byte for byte, which is the noise-floor repeat; repeat with the same
+`--sampling` as the comparison it calibrates, since `--compare` refuses sets sampled
+differently). The reply streams under the
 Perlector's sealed repetition-loop guard (`config/decoding.toml`), and a reply stopped
 by it has `finish_reason` `repetition-loop`; `--no-stream` sends one plain request with
 no guard. A request that no longer matches the run's on an unchanged feed (prompt text,
@@ -434,8 +436,12 @@ Per page group (act pages split by form) and for the hard pages:
 - **with `--compare`**: the paired pages (both answers parsed, with how many each side
   failed) and each rate's per-page difference with its interval; per page the CER between
   the two readings, pages read identically, gold words whose right/wrong flipped by
-  group, and the headline rows side by side. Run the same arm twice (`--sampling sealed`)
-  to see the noise floor before reading a change.
+  group, and the headline rows side by side. The two sets must have been asked alike:
+  same run tree, variant, mutation, sampling, seed, token cap and decoding digest, or
+  the scorer refuses; model, checkpoint and recipe may differ and are printed for each
+  set. A run tree given to `--compare` is the run's own readings (only its run tree is
+  checked). Run the same arm twice, with the same `--sampling` as the comparison, to see
+  the noise floor before reading a change.
 
 `scorecard.md` and `scorecard.json` go to `--out`. Every heading says **vs fool's gold
 (ballpark, not accuracy)** while any scored gold page's STATUS says fool's gold; only an
