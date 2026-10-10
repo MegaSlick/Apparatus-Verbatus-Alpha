@@ -85,7 +85,8 @@ differ from an unbatched one in low-order bits.
   nothing sent, nothing trimmed); `call-failed` (an engine or transport failure,
   `failure` naming what was observed and its retained bytes as inputs); `not-run`
   (nothing asked: `page-not-sealed`, `chair-absent`, `no-witness-testimony` or
-  `nothing-to-show`, every reason that applies).
+  `nothing-to-show`, every reason that applies; on a replay's re-ask, `not-replayed`,
+  see "A replay").
 - `disposition` is `read` only for `parsed` with no problem. Any problem holds the
   whole answer with it: an id the feed does not define, a range over Surya ids that
   could name ink the entry did not read (a range of lines is read only when every line
@@ -325,6 +326,28 @@ The re-read is also accounted against the page's evidence like any reading.
   against what is left of a background start's timeout and every page to send.
 - The engine's `stop` and `length` are the reading's own words; anything else is a
   `call-failed` reading with its retained bytes named.
+
+## A replay
+
+A replay run (`common/replay.py`, made by `operations/replay/replay.py`) reads a saved
+run's pages again with the current code and calls no model. Its `run.json` carries
+`replay` (`run-replay.v1`: the source run's id, its authority's self-hash and commit,
+the stages it imports, `replies: "recorded"`), and its `repository_commit` is the
+code that replayed. It holds the source's Door, Exemplar, Ink map, Designator and
+Attestatores records byte for byte, under the source's run id, and never runs those
+stages. This stage then runs as in a live pass, through a real `ChairClient`, but the
+chair's handle answers each request with the reply the source run retained for the
+same request bytes (`operations/serving/replay.py`), so each call record, reply and
+receipt is the source's own. The client keeps no bytes the source did not keep.
+
+- A first reading or an operator re-read whose request the source did not send in
+  exactly these bytes and get answered refuses the pass: its page could not be read.
+- A re-ask the source did not send in exactly these bytes is not asked: its
+  `page-reading` (attempt 2) is `not-run` with one problem, `not-replayed`, and no
+  request digest, call or receipt; the accounting holds it `reask-unread` and the
+  page stands on its first reading. The Recensor accepts that state only in a
+  replay run.
+- A source re-ask the current plan does not make is not read.
 
 ## Consumer obligations
 
