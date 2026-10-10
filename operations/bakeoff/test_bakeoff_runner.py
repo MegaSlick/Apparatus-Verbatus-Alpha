@@ -257,3 +257,20 @@ def test_a_label_is_refused_under_another_checkpoint_or_recipe(tmp_path):
         )
         == []
     )
+
+
+def test_a_stale_handoff_never_signals_an_unrelated_process(tmp_path):
+    import subprocess
+
+    argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+    process = subprocess.Popen(argv, start_new_session=True)
+    try:
+        stale = {"url": "http://127.0.0.1:1", "argv": ["vllm", "serve", "x"], "pid": process.pid}
+        W.Server.adopted(stale).stop()
+        assert process.poll() is None  # the pid is alive but is not the recorded server
+        W.Server.adopted({**stale, "argv": argv}).stop()
+        process.wait(timeout=70)
+        assert process.returncode is not None
+    finally:
+        if process.poll() is None:
+            process.kill()
