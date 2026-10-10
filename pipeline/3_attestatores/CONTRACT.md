@@ -46,8 +46,10 @@ record detector found no record on it (`zero-detector-records`), or both (`both`
 Both signals are read from the Designator's sealed `surya-page`, `surya-block` and
 `detector-page` records, before any witness reads the page, so the decision never
 depends on a witness or on the Perlector's page type. A roster that routes a
-witness must configure both Designator chairs, may not route every witness, and
-names only configured witness chairs; any other is refused when it loads.
+witness must configure both Designator chairs, may not route every witness, must
+leave at least `witness_floor` configured witnesses reading every page, and names
+only configured witness chairs; any other is refused when it loads. The preflight's
+floor check counts only the witnesses that read every page.
 
 **The record.** Before the first witness is asked, the pass publishes one
 `kind="witness-routing"` per sealed page (subject the page id, outcome `recorded`,
