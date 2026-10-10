@@ -11,6 +11,8 @@ transcriptions. Nothing here touches a run tree, a seal or a receipt.
 | `arms.py` | what each model is sent: prompt, image preparation, sampling, answer bound; DAI's record detector |
 | `gold.py` | reads the lead's `<stem>.txt` files (the bake-off set's `TEMPLATE.txt` format) |
 | `score.py` | normalises each answer to plain text and writes `scores.jsonl` and `scores.md` |
+| `fed_arm.py` | `qwen-fed`: the Perlector's own page request, rebuilt from a sealed run tree, sent to any served model, with witness, letter and image variants |
+| `fed_score.py` | the Perlector scorecard: reading quality, answer health and scepticism per page group |
 | `fake_vllm_server.py` | a stand-in server for the tests; no GPU |
 
 ## The models
@@ -261,6 +263,112 @@ pass `--max-num-batched-tokens 16384`:
 ```
 
 Run cards for every model are in `cards/` (index: `cards/README.md`).
+
+## The fed-witness reader arm (`qwen-fed`)
+
+The arms above read a page alone. `fed_arm.py` sends a reader the Perlector's whole page
+request, witnesses included, so a base model, a LoRA adapter or a merged checkpoint can be
+judged in the Perlector's seat without running the pipeline. It reads a sealed run tree
+(stages 1-4 done; for example the cold run extracted from its tar) and never writes to it.
+
+What it sends is the run's own request. For every page it takes the `page-feed` record and
+the render the run retained (`4_perlector/blobs/`), rebuilds the prompt with
+`common.page_prompt.build_page_prompt`, and rebuilds the whole body with
+`operations.serving.http.request_body`: the render, then the text, one user turn,
+thinking off, `max_tokens` 12,288, streamed, with the seed the receipt names. `prompts`
+checks both against what the run recorded (the feed's `prompt` digests and the call
+record's `request_sha256`) and exits 1 on any difference:
+
+```sh
+.venv/bin/python -m operations.bakeoff.fed_arm prompts --run-tree <run tree>
+# pages 73: prompts byte-identical 73; requests byte-identical 73 of 73 with a recorded call
+```
+
+`run` sends every page to a server: `--server-url` for one already up (a base model, or
+vLLM serving LoRA adapters under their own names), or `--weights` to start vLLM on a
+snapshot with the Perlector's serving row (the same server options as `witness_run`).
+`--model-name` is the served name the requests ask for; `--label` names the cache folder.
+
+```sh
+.venv/bin/python -m operations.bakeoff.fed_arm run --run-tree $V/runs/cold73-2026-10-09 \
+  --out $V/bakeoff/fed-cache --label qwen38-base-greedy --model-name perlector-qwen3.8-27b \
+  --server-url http://127.0.0.1:8190 --concurrency 16
+```
+
+Sampling: `--sampling greedy` (the default: the sealed row with temperature 0, top_p 1,
+top_k 0, min_p 0, so two arms differ by their inputs, not by chance) or `sealed` (the
+Perlector's row; with the run's served name and an unchanged feed the request is the
+run's own, byte for byte, which is the noise-floor repeat). The reply streams under the
+Perlector's sealed repetition-loop guard (`config/decoding.toml`), and a reply stopped
+by it has `finish_reason` `repetition-loop`; `--no-stream` sends one plain request with
+no guard. A prompt that no longer matches the run's digests on an unchanged feed (the
+builder has changed since) is refused unless `--accept-new-builder`.
+
+Variants change the feed before the prompt is rendered, so the text and the instruction
+are what the pipeline would build for that feed:
+
+| Option | What the reader is shown |
+|---|---|
+| `--drop-witness attestator_2` | the feed without that witness; letters reassigned in label order, as `page_feed` assigns them |
+| `--add-witness attestator_4=<witness cache>/dots-mocr` | a bake-off witness as one more row: dots.mocr's layout cells as boxed units, any other arm's text as one unit; no cached page is a `failed` witness. Name it like a chair: under the named regime the label is shown |
+| `--letter-map attestator_1=C,attestator_3=A` | other letters for the same witnesses (unit ids follow) |
+| `--witness-order attestator_3,attestator_2,attestator_1` | the rows in another order; with `--letter-map`, the swap test |
+| `--image none` | no image; the builder says "page image: not shown." and asks for a reading from the reports |
+| `--image blur` (`--blur-radius 8`), `blank`, `swap` | the render blurred, a white page, or the next page's render; the prompt unchanged |
+
+`prompts --show <ordinal>` with the same options prints that page's variant prompt.
+
+Each page is `<out>/<label>/<page stem>.json` (schema `bakeoff-fed-page.v1`): the variant,
+the feed as shown, the prompt digests and whether they match the run's, the request
+digest and whether it matches the run's, the sampling, the image digest, the reply's
+content, finish reason, usage, loop stop and seconds, the answer grammar's verdict
+(`common.page_answer`: parsed or malformed, and why), the answer and its text. The raw
+stream is beside it as `<page stem>.sse.gz`. A page cached without an error is skipped
+next time; a label that holds another variant, model or sampling is refused. The page
+accounting (holds) is not run here.
+
+## The Perlector scorecard
+
+`fed_score.py` scores one answer set (a run tree's own first readings, or a `fed_arm`
+cache folder) and, with `--compare`, a second one beside it:
+
+```sh
+.venv/bin/python -m operations.bakeoff.fed_score --run-tree <run tree> \
+  [--answers <fed cache>/<label>] [--compare <fed cache>/<other label> --names A,B] \
+  --gold "$HOME/Desktop/Bake-off set/Pages" --gold-glob '*/Prepped/*.txt' \
+  --hard-pages private/bakeoff/hard-pages.txt --out <dir>
+```
+
+Each answer is judged against the witnesses its reader was shown (the run's feeds, or the
+variant feed a cache record carries); witnesses are named by their bake-off arm
+(`chandra`, `dai`, `churro`) or their label, never by letter, so a swap compares like
+with like. The reading's text is every entry's text in order, doubt marks reduced; gold
+words are graphemic-v1 tokens aligned by unit-cost edit script, as `roster.py` does.
+Per page group (act pages split by form) and for the hard pages:
+
+- **reading**: CER median on parsed pages, and on all pages with an unparsed answer read
+  as empty; act recall (gold acts matched by a `kind: act` entry at CER <= 0.5) and pages
+  with the exact act count; row recall and surname recall on index and table pages;
+  inserted words per gold word; false text on pages with no gold text;
+- **answer health**: parsed and malformed (by reason), errors, finish reasons,
+  loop-guard stops, completion tokens, seconds;
+- **scepticism** (pages whose answer parsed): per witness, when only it has a gold word
+  right, how often the reader follows; when only it is wrong, how often the reader
+  resists; of the words it got wrong, how often the reader wrote its same wrong word;
+  all witnesses wrong and the reader right (recovery); all right and the reader wrong
+  (damage); beats the vote (right where most witnesses that read the page were wrong,
+  minus wrong where most were right); and the share of the reader's errors that are a
+  witness's error;
+- **with `--compare`**: per page the CER between the two readings, pages read
+  identically, gold words whose right/wrong flipped by group, and the headline rows side
+  by side. Run the same arm twice (`--sampling sealed`) to see the noise floor before
+  reading a change.
+
+`scorecard.md` and `scorecard.json` go to `--out`. Every heading says **vs fool's gold
+(ballpark, not accuracy)** while any gold page's STATUS says fool's gold; lead-checked
+gold drops the label. On the cold run's own readings it reproduces the follow table of
+the 2026-10-09 witness-hints note (handwritten acts: 8,769 gold words, only Chandra right
+followed 440 of 582, only DAI 82 of 234, only Churro 378 of 657).
 
 ## Fair scoring and the roster
 
