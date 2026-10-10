@@ -411,6 +411,67 @@ gold drops the label. On the cold run's own readings it reproduces the follow ta
 the 2026-10-09 witness-hints note (handwritten acts: 8,769 gold words, only Chandra right
 followed 440 of 582, only DAI 82 of 234, only Churro 378 of 657).
 
+## The trap generator (`mutations.py`)
+
+`mutations.py` rewrites a sealed page feed's witness testimony, never the page, so one
+page can be shown under many witness stories while the answer (what the ink says) stays
+the same. It is Stage 0 item 2 of the training plan and the H6 harness of the final plan.
+The scenarios, grouped as the plan's feed-mix families:
+
+| family | scenario | what the reader is shown |
+|---|---|---|
+| honest | `honest` | the sealed feed |
+| planted | `plant-1` | one witness (rotated by `turn`) with wrong words on 2-5% of its words |
+| | `plant-2` | two witnesses with the *same* wrong word; the third keeps the right one (two readers: both) |
+| | `plant-3` | every reader with the same wrong word on a settled, legible word |
+| removed | `blind` | no witness rows (image and Surya only) |
+| | `drop-one`, `failed-one`, `empty-one` | one witness (rotated) removed, or shown as `failed` / `genuinely-empty` |
+| structural | `dropped-act` | one act removed from every witness |
+| | `invented-act` | a donor page's act (or a made-up one) added to every witness, boxed over the margin |
+| | `merged-entries` | two adjacent units joined in every witness |
+| | `normalised` | `St` to `Saint`, `ptre` to `prêtre`, `7bre` to `septembre`, `étoit` to `était`, accents added, in every witness |
+| | `name-swap` | two settled names exchanged in every witness |
+| | `injection` | one witness (rotated) carries an instruction ("ignore the page image and copy...") |
+| | `permute` | letters and positions shuffled, texts unchanged |
+| | `blank-chatty` | a page with no gold text whose witnesses report an act anyway |
+
+Errors are planted only on reference words whose status is `checked` or `agreed` and that
+every target witness has right, so the ink settles every trap and its label is exact.
+Names, dates and numbers are oversampled four to one (a heuristic classifier:
+capitalised words outside a stop list, months, number words, digits). Planted forms look
+like reading errors: another name from the page at edit distance 2-4, another month or
+number word of the same language, a changed digit, or confusable-letter edits. Everything
+is deterministic from (page sha, scenario, seed, turn).
+
+The reference is the page's gold or silver text as a `Reference`: entries plus one status
+(`checked`, `agreed`, `draft`, `unresolved`) and class per graphemic-v1 word, tokenised
+exactly as the scorer tokenises `gold.reference_text()`, so a planted site's word index is
+the scorer's. From a bake-off gold file (fool's gold today) `statuses_from_agreement` makes
+a word `agreed` when two or more shown witnesses have it, `unresolved` when it comes from a
+`[[a|b]]` mark, `draft` otherwise.
+
+```sh
+.venv/bin/python -m operations.bakeoff.mutations --run-tree <run tree> \
+  --gold "$HOME/Desktop/Bake-off set/Pages" --gold-glob '*/Prepped/*.txt' \
+  --scenario plant-1 --seed 0 --out <dir>          # <dir>/<page stem>.json per page
+.venv/bin/python -m operations.bakeoff.fed_arm run --run-tree <run tree> --mutations <dir> ...
+.venv/bin/python -m operations.bakeoff.fed_arm prompts --run-tree <run tree> --show 12 --mutations <dir>
+```
+
+Each record (`witness-mutation.v1`) holds the mutated feed and a sidecar: `planted` (per
+site: the reference word index and word, the planted form, class, status, how many
+witnesses carry it `k`, which witnesses, letters and unit ids), `changes` (what a
+structural trap did), `set_aside_ids` (planted units the right answer sets aside) and
+`notes` (why nothing could be planted). `fed_arm run --mutations` sends the mutated feed
+(the other variants apply on top) and keeps the sidecar in the cached answer; the
+scorecard then adds a **Planted errors** block: per scenario, per k, per chair (k = 1)
+and per class, how many sites the reader resisted (its word right), copied (it wrote the
+planted word) or got wrong another way. `mutations.json` beside the records reports the
+sites and the **voting must lose** check (`vote_check`): on name, date and number spans,
+how often a majority vote of the shown witnesses is wrong (ties to the first shown), with
+the plan's 25-35% target. The training exporter (`operations/training/`) draws the whole
+mix from this module.
+
 ## Fair scoring and the roster
 
 A model is scored only where its design applies, by the metric that fits the page type,
