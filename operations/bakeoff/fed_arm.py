@@ -601,7 +601,9 @@ def page_record(
         "page": page.stem,
         "page_ordinal": page.ordinal,
         "variant": variant.record(),
-        "mutation": None if mutation is None else {k: v for k, v in mutation.items() if k != "feed"},
+        "mutation": None
+        if mutation is None
+        else {k: v for k, v in mutation.items() if k != "feed"},
         "feed": feed,
         "prompt": {
             **check["rebuilt"],

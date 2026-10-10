@@ -569,7 +569,9 @@ def planted_report(card: dict[str, Any]) -> list[str]:
             f"{p.get(f'{g},other-wrong', 0)} |"
         )
     if p.get("misaligned"):
-        out.append(f"\nSites not judged (reference index past this gold's words): {p['misaligned']}")
+        out.append(
+            f"\nSites not judged (reference index past this gold's words): {p['misaligned']}"
+        )
     return out + [""]
 
 
