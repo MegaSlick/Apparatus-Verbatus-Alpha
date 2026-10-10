@@ -277,9 +277,12 @@ High-level and binding. Detailed schemas and interface contracts are in each sta
    acts.
 9. A witness's reading is never itself an output. Showing testimony as testimony is not
    a second text.
-10. No code repairs, rewrites or re-rolls what a model returned. Each model is asked
-    properly — complete input, in its documented format, with a way to mark what it
-    cannot read — and its answer is recorded as given and flagged if it looks wrong.
+10. No code repairs, rewrites or re-rolls what a model returned, with one exception:
+    a page answer whose only fault is bare JSON keys is parsed with those keys quoted,
+    the repair recorded and the reply's bytes kept as sent
+    (`pipeline/4_perlector/CONTRACT.md`). Each model is asked properly — complete
+    input, in its documented format, with a way to mark what it cannot read — and its
+    answer is recorded as given and flagged if it looks wrong.
 11. Every stored reading carries the identity and revision of the model that produced
     it, the image region it read and the transforms applied to that image.
     Configuration protects future runs; the record protects the past.

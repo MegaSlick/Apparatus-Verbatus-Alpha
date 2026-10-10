@@ -2893,7 +2893,14 @@ def _refs_by_path(references: Any, what: str) -> list[dict[str, str]]:
 
 
 # The fields a reading derives from what the engine said, or from why it was not asked.
-_REPLY_FIELDS: Final = ("parse_state", "answer", "problems", "finish_reason", "stop_reason")
+_REPLY_FIELDS: Final = (
+    "parse_state",
+    "answer",
+    "problems",
+    "finish_reason",
+    "stop_reason",
+    page_path.ANSWER_REPAIRS_FIELD,
+)
 _REPLY_STATES: Final = frozenset(
     {page_path.PARSED, page_path.MALFORMED, page_path.CUT_OFF, page_path.REPETITION_LOOP}
 )
@@ -2910,7 +2917,7 @@ def _verify_reply(
     *,
     named: list[str] | None = None,
 ) -> None:
-    """The reading's parse state, answer, problems and finish, derived again, never trusted.
+    """The reading's parse state, answer, problems, finish and repair, derived again, never trusted.
 
     A fixture run's operator re-read is answered with the page's declared
     answer, as its first reading is.
@@ -2942,6 +2949,7 @@ def _verify_reply(
             ),
             "finish_reason": None,
             "stop_reason": None,
+            page_path.ANSWER_REPAIRS_FIELD: None,
         }
         _require(
             engine_call is None and failure is None and payload.get("request_digest") is None,
@@ -2965,6 +2973,7 @@ def _verify_reply(
             else [{"code": failure.get("code"), "detail": failure.get("detail")}],
             "finish_reason": None,
             "stop_reason": None,
+            page_path.ANSWER_REPAIRS_FIELD: None,
         }
     else:
         _require(
@@ -2997,7 +3006,7 @@ def _verify_reply(
                 )
                 content, finish = row["answer"], row.get("stop_reason", "stop")
                 stop = finish
-            parse_state, answer, problems = page_path.read_reply(
+            parse_state, answer, problems, repairs = page_path.read_reply(
                 content, stop, feed, index.accounting_policy, named
             )
         except (ContractError, KeyError, TypeError, ValueError, OSError) as error:
@@ -3008,6 +3017,8 @@ def _verify_reply(
             "problems": problems,
             "finish_reason": finish,
             "stop_reason": stop,
+            # Present only when the one repair was made (`page_answer`).
+            page_path.ANSWER_REPAIRS_FIELD: repairs or None,
         }
     mismatched = sorted(name for name in _REPLY_FIELDS if payload.get(name) != derived[name])
     _require(

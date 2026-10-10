@@ -1612,16 +1612,19 @@ def test_an_answer_outside_the_one_grammar_is_named_by_it():
     assert grammar_codes({"acts": [_entry(1, ["A1"]), _entry(3, ["A2"])], "set_aside": []}) == [
         "n-not-contiguous"
     ]
-    assert grammar_codes(
-        {
-            "acts": [
-                _entry(1, ["A1"]),
-                _entry(2, ["L1"], continues_from_previous_page=True),
-                _entry(3, ["L5"], continues_to_next_page=True),
-            ],
-            "set_aside": [],
-        }
-    ) == ["continuation-not-at-edge"]
+    assert (
+        grammar_codes(
+            {
+                "acts": [
+                    _entry(1, ["A1"]),
+                    _entry(2, ["L1"], continues_from_previous_page=True),
+                    _entry(3, ["L5"], continues_to_next_page=True),
+                ],
+                "set_aside": [],
+            }
+        )
+        == []
+    )
     assert grammar_codes({"acts": [_entry(1, ["A1"], extra=1)], "set_aside": []}) == [
         "act-field-unknown"
     ]

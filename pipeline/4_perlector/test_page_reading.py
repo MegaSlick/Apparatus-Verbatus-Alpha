@@ -33,7 +33,7 @@ from test_live_perlector import (
     _TreeBlobs,
 )
 
-from common import page_feed, page_path
+from common import page_answer, page_feed, page_path
 from common.alignment import load_dissent_limits
 from common.background import DEFAULT_INK_MAP_CONFIG_PATH
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
@@ -1318,6 +1318,61 @@ def test_an_answer_that_cannot_stand_is_held_whole_with_no_act_record(
         failure = readings[0]["payload"]["failure"]
         assert failure["code"] == "ENGINE_FINISH_REASON_UNRECOGNIZED"
         assert failure["raw_response_ref"] in readings[0]["inputs"]
+
+
+def _bare_keys(answer: str) -> str:
+    """`answer` with every grammar key written bare, as Qwen3.8 once replied (`{\nacts: [`)."""
+    for key in (
+        "acts",
+        "set_aside",
+        "n",
+        "kind",
+        "label",
+        "cites",
+        "text",
+        "continues_from_previous_page",
+        "continues_to_next_page",
+    ):
+        answer = answer.replace(f'"{key}":', f"{key}:")
+    return answer
+
+
+def test_a_stray_flag_keeps_the_page_and_bare_keys_are_quoted_and_recorded(
+    live_tree, tmp_path, monkeypatch
+):
+    """Page 1 says its first act runs on from the page before; page 2's reply writes its
+    keys bare. Both keep every entry: the flag stays on its entry for the Recensor, the
+    repair is recorded on the reading, the response bytes stay as sent, and a later
+    stage reading both pages again from those bytes finds the same. Synthetic text."""
+    root = live_tree.root
+    stray = json.loads(PAGE_ANSWERS[1])
+    stray["acts"][1]["continues_from_previous_page"] = True
+    bare = _bare_keys(PAGE_ANSWERS[2])
+    assert page_answer.parse_page_answer(bare)[0] == "malformed"
+    _endpoint, exit_code = _read_pages(
+        live_tree,
+        tmp_path,
+        monkeypatch,
+        _scripted(stray),
+        ScriptedAnswer(content=bare, finish_reason="stop"),
+    )
+    assert exit_code == 0
+    first, second = (r["payload"] for r in _records(root, "page-reading"))
+    assert (first["parse_state"], first["problems"], first["answer"]) == ("parsed", [], stray)
+    assert "answer_repairs" not in first
+    assert (second["parse_state"], second["problems"]) == ("parsed", [])
+    assert second["answer"] == json.loads(PAGE_ANSWERS[2])
+    assert [repair["code"] for repair in second["answer_repairs"]] == ["unquoted-keys-quoted"]
+    raw = (root / "r" / second["engine_call"]["raw_response_ref"]["relative_path"]).read_bytes()
+    assert b"acts:" in raw and b'"acts":' not in raw
+    perlectios = {
+        (r["payload"]["page_ordinal"], r["payload"]["n"]): r["payload"]
+        for r in _records(root, "perlectio")
+    }
+    assert sorted(perlectios) == [(1, 1), (1, 2), (2, 1)]
+    assert perlectios[(1, 2)]["continues_from_previous_page"] is True
+    rows = reading_acts(_denominator_context(live_tree))
+    assert not [row for row in rows if row["class"] == "page-unread"]
 
 
 def test_a_looping_reply_is_stopped_and_held_whole_and_read_again_from_its_bytes(

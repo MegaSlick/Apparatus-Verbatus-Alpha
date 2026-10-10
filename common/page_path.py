@@ -121,6 +121,9 @@ PAGE_READ_OPERATION: Final = "page-read"
 READING_ORDINALS: Final = (page_edges.FIRST_READING, page_edges.REASK_READING)
 # The `page-reading` field only an operator re-read carries (`operator_reread_record`).
 OPERATOR_REREAD_FIELD: Final = "operator_reread"
+# The `page-reading` field only a reading whose reply was repaired before parsing
+# carries (`page_answer.parse_page_answer_repaired`).
+ANSWER_REPAIRS_FIELD: Final = "answer_repairs"
 ACT_REGION_OPERATION: Final = "reading-region"
 PERLECTIO_OPERATION: Final = "perlegere"
 
@@ -659,11 +662,14 @@ def read_reply(
     feed: Mapping[str, Any],
     accounting_policy: page_accounting.PageAccountingPolicy,
     named: list[str] | None = None,
-) -> tuple[str, Any, list[dict[str, Any]]]:
-    """`(parse_state, answer, problems)` for a reply the engine finished or was cut on,
-    or the client stopped on a repetition loop.
+) -> tuple[str, Any, list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(parse_state, answer, problems, repairs)` for a reply the engine finished or was cut
+    on, or the client stopped on a repetition loop.
 
     `named` is `None` for a first reading, and a re-ask's named ids for its reply.
+    `repairs` is the page answer's one repair when it was applied
+    (`page_answer.parse_page_answer_repaired`), else empty; a cut-off or looping
+    reply is never parsed, so never repaired.
     """
     if stop_reason == REPETITION_LOOP:
         return (
@@ -676,6 +682,7 @@ def read_reply(
                     "over, and was stopped; the answer is held whole",
                 }
             ],
+            [],
         )
     if stop_reason == "length":
         return (
@@ -687,11 +694,12 @@ def read_reply(
                     "detail": "the engine stopped at the output cap; the answer is held whole",
                 }
             ],
+            [],
         )
-    state, answer, problems = page_answer.parse_page_answer(content)
+    state, answer, problems, repairs = page_answer.parse_page_answer_repaired(content)
     if state == PARSED:
         problems = answer_problems(answer, feed, stop_reason, accounting_policy, named)
-    return state, answer, problems
+    return state, answer, problems, repairs
 
 
 # --- the answer -----------------------------------------------------------------

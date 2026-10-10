@@ -38,7 +38,8 @@ record names it (`page_accounting_ref`) and carries the page's hold codes
 (`page_holds`): an act on a held page is held. An answer that is not the
 grammar, is cut off at the output cap, cites an id the feed does not define,
 or could not be asked is held whole on its `page-reading` and makes no act
-record: nothing is repaired, trimmed or split. An entry of a valid answer that
+record: nothing is trimmed or split, and the one repair is quoting bare grammar
+keys, recorded as `answer_repairs` (`common.page_answer`). An entry of a valid answer that
 cites no placing id is still published, as a held `reading-unplaced` act with
 no crop. Every page has a `page-reading`, a page the Exemplar refused
 included, so no page is silently absent; every sealed page has a feed and an
@@ -84,6 +85,7 @@ from common.page_edges import FIRST_READING, OPERATOR_REREAD_FIRST, REASK_READIN
 from common.page_path import (
     ACT_REGION_KIND,
     ACT_REGION_SCHEMA,
+    ANSWER_REPAIRS_FIELD,
     CALL_FAILED,
     HELD,
     NOT_RUN,
@@ -793,6 +795,7 @@ def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -
     not_run = page.not_run if page_path.is_whole_page_reading(request.ordinal) else []
     attempted = not not_run and request.refusal is None
     engine_call = capacity = failure = answer = None
+    repairs: list[dict[str, Any]] = []
     finish_reason = stop_reason = None
     inputs: list[dict[str, str] | None] = [
         page.feed_ref,
@@ -813,7 +816,7 @@ def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -
     elif not state.live:
         row = request.fixture_row
         finish_reason = stop_reason = row.get("stop_reason", "stop")
-        parse_state, answer, problems = page_path.read_reply(
+        parse_state, answer, problems, repairs = page_path.read_reply(
             row["answer"], stop_reason, page.feed, state.accounting_policy, request.named
         )
     else:
@@ -837,7 +840,7 @@ def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -
             engine_call = result["engine_call"]
             finish_reason, stop_reason = result["finish_reason"], result["stop_reason"]
             inputs += live_calls.engine_call_inputs(context, engine_call)
-            parse_state, answer, problems = page_path.read_reply(
+            parse_state, answer, problems, repairs = page_path.read_reply(
                 result["content"], stop_reason, page.feed, state.accounting_policy, request.named
             )
     disposition = READ if parse_state == PARSED and not problems else HELD
@@ -864,6 +867,7 @@ def _publish_reading(state: _PagePass, page: _Page, request: _Request, result) -
         "disposition": disposition,
         "reask": request.reask,
         **({} if request.reread is None else {OPERATOR_REREAD_FIELD: request.reread}),
+        **({ANSWER_REPAIRS_FIELD: repairs} if repairs else {}),
         "audit": state.audit,
         "provenance": provenance_for(
             context, run.chair, attempted=attempted, receipt_ref=receipt_ref

@@ -73,7 +73,7 @@ differ from an unbatched one in low-order bits.
  feed_ref, request_digest, engine_call | null, sampling | null, capacity | null,
  finish_reason, stop_reason, parse_state, answer | null, problems: [{code, detail}],
  failure | null, disposition: "read" | "held", reask: null | {...},
- operator_reread?: {...}, audit, provenance}
+ operator_reread?: {...}, answer_repairs?: [{code, keys, detail}], audit, provenance}
 ```
 
 - `parse_state`: `parsed` (`answer` is the object exactly as given); `malformed` (not
@@ -89,7 +89,22 @@ differ from an unbatched one in low-order bits.
 - `disposition` is `read` only for `parsed` with no problem. Any problem holds the
   whole answer with it: an id the feed does not define, a range over Surya ids, an id
   both cited and set aside, a set-aside without a reason, a missing finish reason. No
-  answer is repaired, trimmed or split.
+  answer is trimmed or split.
+- A continuation flag set on an entry that is not at its page's edge (only the first
+  `act` entry may continue from the page before, only the last onto the page after,
+  and an `other` entry only as the answer's first or last entry) is not a problem of
+  the answer: the page keeps every entry, and the flag stays on its entry's Perlectio
+  exactly as given. It is on no page break, so it joins nothing, and the Recensor
+  holds that `act` entry `continuation-off-page-edge` or notes it on an `other` entry
+  (`pipeline/5_recensor/CONTRACT.md`). A re-ask may still set no flag at all.
+- One repair is made, and recorded: a reply that is not JSON only because some of the
+  grammar's own keys are written bare (`{acts: [`) is parsed after quoting those keys
+  outside strings and nothing else (`common.page_answer.parse_page_answer_repaired`).
+  The reading then carries `answer_repairs`, one `{code: "unquoted-keys-quoted", keys,
+  detail}`; a reading that needed no repair carries no such field. The repaired text
+  must be one JSON value with no other decode problem, or the reply stays `malformed`
+  (`not-json`) as it came, and the repaired answer meets the grammar and the feed like
+  any other. The raw response blob is never changed.
 - The envelope outcome is the disposition, except `call-failed`, whose outcome is
   `failed` so that the run-level hard-failure cap counts it.
 - `engine_call` (live only) is `{call_record_ref, raw_response_ref, response_sha256,
