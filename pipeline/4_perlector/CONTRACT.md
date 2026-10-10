@@ -88,7 +88,10 @@ differ from an unbatched one in low-order bits.
   `nothing-to-show`, every reason that applies; on a replay's re-ask, `not-replayed`,
   see "A replay").
 - `disposition` is `read` only for `parsed` with no problem. Any problem holds the
-  whole answer with it: an id the feed does not define, a range over Surya ids, an id
+  whole answer with it: an id the feed does not define, a range over Surya ids that
+  could name ink the entry did not read (a range of lines is read only when every line
+  lies inside the witness units the same entry cites, and a range of blocks, which place
+  nothing, is read; `common/page_accounting.py`, `_covered_detection_ranges`), an id
   both cited and set aside, a set-aside without a reason, a missing finish reason. No
   answer is trimmed or split.
 - A continuation flag set on an entry that is not at its page's edge (only the first
