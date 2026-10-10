@@ -134,12 +134,13 @@ A stage enters the client (which starts the chair and re-reads its receipt), the
    transport failure writes a `chair-transport-failure` record with delivery and completion
    unknown.
 
-A request carrying a `loop_guard` (only the Perlector's page reading, under
-`[perlector_generation]` in `config/decoding.toml`) is streamed: the client closes the
-connection, making vLLM abandon the request, as soon as `common/repetition_loop.py` finds the
-same line or block repeated the sealed number of times. The bytes received are retained as
-they arrived, in a `chair-stream-call-record` (or `chair-stream-transport-failure`) whose
-`stream` names the guard and the loop.
+A request carrying a `loop_guard` is streamed: the Perlector's page reading (guard in
+`[perlector_generation]` of `config/decoding.toml`) and every witness reading except
+Chandra's (guard in `[witness_generation]`). The client closes the connection, making vLLM
+abandon the request, as soon as `common/repetition_loop.py` finds the same line or block
+repeated the sealed number of times. The bytes received are retained as they arrived, in a
+`chair-stream-call-record` (or `chair-stream-transport-failure`) whose `stream` names the
+guard and the loop. Every other request is sent whole.
 
 Chandra's retry loop uses `prepare_chandra_native` / `read_chandra_native`: one prepared
 dispatch per attempt, bound to a durable intent record the stage publishes first.

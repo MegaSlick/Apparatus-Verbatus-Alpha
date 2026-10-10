@@ -4,7 +4,7 @@ A dense index page legitimately gives many similar lines in a row (the same surn
 over and over, each row with its own given name and folio), so similarity is never
 the signal. What is caught is the model emitting the *exact* same line, or the exact
 same short block of lines, again and again: the sealed `[perlector_generation]`
-thresholds of `config/decoding.toml` say how many times.
+and `[witness_generation]` thresholds of `config/decoding.toml` say how many times.
 
 A line ends at a newline or at the JSON escape for one (`\\n`, optionally after
 `\\r`), since the answer is one JSON object whose texts carry their rows as escaped
@@ -22,7 +22,7 @@ from typing import Any, Final
 
 from common.contracts.errors import ContractError
 
-# The guard's sealed fields (`common.decoding.perlector_loop_guard`).
+# The guard's sealed fields (`common.decoding.perlector_loop_guard`, `witness_loop_guard`).
 GUARD_FIELDS: Final = ("loop_line_repeats", "loop_block_repeats", "loop_block_max_lines")
 # A block is at least two lines; one line repeated is the line rule's.
 MIN_BLOCK_LINES: Final = 2

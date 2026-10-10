@@ -26,7 +26,7 @@ The knobs. One question per file, each answerable without reading code.
 | `page_accounting.toml` | the page accounting's policy: `[inside]`, `[witness_text]`, `[alignment]`, `[identity]`, `[region]`, `[doubt]`, and `[flags]` (review-flag codes that record a finding without holding the page) |
 | `reconstruction.toml` | whether the Coniector runs, whether pages are consecutive leaves of one register, and departure bounds |
 | `triage_modes.toml` | the triage modes (`manual`, `semi`, `auto`) and their review thresholds |
-| `decoding.toml` | each reading chair's maker-recommended sampling, with source and revision; the Perlector's page output cap and repetition-loop guard; the reconstructor's answer cap; Chandra's native recipe |
+| `decoding.toml` | each reading chair's maker-recommended sampling, with source and revision; the Perlector's page output cap and repetition-loop guard; the streamed witnesses' repetition-loop guard; the reconstructor's answer cap; Chandra's native recipe |
 
 Beside them:
 

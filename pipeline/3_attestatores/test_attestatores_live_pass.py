@@ -40,7 +40,10 @@ from common import chandra_layout  # noqa: E402
 from common.chairs.models import ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
-from common.contracts.serving import CHAIR_CALL_RECORD_SCHEMA  # noqa: E402
+from common.contracts.serving import (  # noqa: E402
+    CHAIR_CALL_RECORD_SCHEMA,
+    CHAIR_STREAM_CALL_RECORD_SCHEMA,
+)
 from common.contracts.stages import ATTESTATORES  # noqa: E402
 from common.decoding import load_decoding_policy  # noqa: E402
 from common.request_capacity import (  # noqa: E402
@@ -1548,6 +1551,7 @@ def test_a_live_chair_uses_its_sequence_width_and_seals_pages_in_order(monkeypat
         attestatores.witness_adapters, "resolve_runnable_adapter", lambda _name: object()
     )
     monkeypatch.setattr(attestatores, "_read_page_unit", read)
+    monkeypatch.setattr(attestatores, "witness_reply_guard", lambda *_args: None)
     monkeypatch.setattr(attestatores, "_serve_page_unit", seal)
     pages = [(page, f"p{page}") for page in range(1, 6)]
 
@@ -1605,6 +1609,7 @@ def _record_reader_pass(monkeypatch, *, width: int, records: dict[int, int], rea
         attestatores.witness_adapters, "resolve_runnable_adapter", lambda _name: object()
     )
     monkeypatch.setattr(attestatores, "_read_detector_record", record)
+    monkeypatch.setattr(attestatores, "witness_reply_guard", lambda *_args: None)
     monkeypatch.setattr(attestatores, "publish_detector_page_testimonium", publish)
     pages = [(page, f"p{page}") for page in sorted(records)]
     return attestatores.live_pass(
@@ -2284,8 +2289,9 @@ def test_a_tallied_call_is_held_to_its_chair_s_row_and_seed(chair, field):
     policy, _digest = load_decoding_policy()
     sampling = chair_decoding(policy, chair)
     sent = {**recorded_wire_decimals(sampling), "max_tokens": 64, "seed": 7}
-    context, call, retained = _call_world(sent, field=field)
+    context, call, retained = _call_world(sent, field=field, schema=CHAIR_STREAM_CALL_RECORD_SCHEMA)
     call["sampling_effective"] = recorded_wire_decimals(engine_effective_sampling(sampling))
+    call["stream"] = _stream(chair)
     attestatores.verify_page_call_sampling(context, retained(call), chair)
 
     for moved, message in (
@@ -2303,6 +2309,102 @@ def test_a_tallied_call_is_held_to_its_chair_s_row_and_seed(chair, field):
         attestatores.verify_page_call_sampling(
             context, retained({**call, "schema": "chair-call-record.v2"}), chair
         )
+
+
+def _stream(chair: str, stopped: dict[str, Any] | None = None) -> dict[str, Any]:
+    from common.decoding import witness_loop_guard
+
+    guard = witness_loop_guard(load_decoding_policy()[0], chair)
+    return {"schema": "chair-stream.v1", "loop_guard": guard, "stopped": stopped}
+
+
+_LOOP_ROWS = [f"Roy, {name} f. 4" for name in ("Jean", "Marie", "Paul")]
+_LOOP_TEXT = "\n".join(_LOOP_ROWS + ["Roy, Jean f. 4"] * 31) + "\n"
+_LOOP = {"kind": "line", "block_lines": 1, "repeats": 30, "line": 33}
+
+
+def _stream_world(raw: str):
+    """A context holding one retained witness reply, and a capture naming it."""
+    from common.decoding import DEFAULT_DECODING_CONFIG_PATH
+
+    data = raw.encode("utf-8")
+    digest = hashlib.sha256(data).hexdigest()
+    path = f"3_attestatores/blobs/sha256/{digest}"
+    context = SimpleNamespace(
+        tree=SimpleNamespace(read_bytes={path: data}.__getitem__),
+        args=SimpleNamespace(decoding_config=DEFAULT_DECODING_CONFIG_PATH),
+        require_sealed_config=lambda _name, _digest: None,
+    )
+    return context, {"relative_path": path, "sha256": digest}
+
+
+@pytest.mark.parametrize(
+    ("raw", "stopped", "stop_word"),
+    [
+        (_LOOP_TEXT, _LOOP, "repetition-loop"),
+        ("\n".join(_LOOP_ROWS) + "\n", None, "length"),
+    ],
+    ids=["stopped-on-a-loop", "read-to-its-end"],
+)
+def test_a_witness_call_is_held_to_its_streamed_guard_and_its_reply(raw, stopped, stop_word):
+    """The writer and the tally scan a streamed witness reply again: its loop is
+    measured from the retained bytes, never taken from the call record."""
+    context, reference = _stream_world(raw)
+    capture = {"raw_response_ref": reference, "transport_stop_reason": stop_word}
+    call = {"schema": CHAIR_STREAM_CALL_RECORD_SCHEMA, "stream": _stream("attestator_3", stopped)}
+    attestatores.verify_call_stream(context, call, "attestator_3", capture)
+    # Without a reading there is no reply to scan, but the guard is still held.
+    attestatores.verify_call_stream(context, call, "attestator_3", None)
+
+    misstated = {**call, "stream": _stream("attestator_3", None if stopped else _LOOP)}
+    with pytest.raises(SchemaRefusal, match="shows the repetition loop"):
+        attestatores.verify_call_stream(context, misstated, "attestator_3", capture)
+    other_word = {**capture, "transport_stop_reason": "length" if stopped else "repetition-loop"}
+    with pytest.raises(SchemaRefusal, match="shows the repetition loop"):
+        attestatores.verify_call_stream(context, call, "attestator_3", other_word)
+
+
+@pytest.mark.parametrize(
+    ("chair", "call"),
+    [
+        # A streamed witness chair's call that was not streamed.
+        ("attestator_2", {"schema": CHAIR_CALL_RECORD_SCHEMA}),
+        # Streamed under a guard that is not the sealed one.
+        (
+            "attestator_3",
+            {
+                "schema": CHAIR_STREAM_CALL_RECORD_SCHEMA,
+                "stream": {
+                    **_stream("attestator_3"),
+                    "loop_guard": {
+                        **_stream("attestator_3")["loop_guard"],
+                        "loop_line_repeats": 300,
+                    },
+                },
+            },
+        ),
+        # Chandra is never streamed.
+        ("attestator_1", {"schema": CHAIR_STREAM_CALL_RECORD_SCHEMA, "stream": None}),
+    ],
+    ids=["unstreamed-witness", "wrong-guard", "streamed-chandra"],
+)
+def test_a_witness_call_streamed_otherwise_than_its_chair_is_refused(chair, call):
+    context, _reference = _stream_world("")
+    with pytest.raises(SchemaRefusal, match="streamed"):
+        attestatores.verify_call_stream(context, call, chair, None)
+
+
+def test_a_chandra_reading_that_claims_a_loop_stop_is_refused():
+    context, reference = _stream_world(_LOOP_TEXT)
+    capture = {"raw_response_ref": reference, "transport_stop_reason": "repetition-loop"}
+    with pytest.raises(SchemaRefusal, match="never streamed"):
+        attestatores.verify_call_stream(
+            context, {"schema": CHAIR_CALL_RECORD_SCHEMA}, "attestator_1", capture
+        )
+    capture["transport_stop_reason"] = "stop"
+    attestatores.verify_call_stream(
+        context, {"schema": CHAIR_CALL_RECORD_SCHEMA}, "attestator_1", capture
+    )
 
 
 def test_a_live_whole_page_record_that_names_no_serving_call_is_refused():
@@ -2385,3 +2487,37 @@ def test_a_response_kept_unread_is_bound_to_its_page_record(live_run, tmp_path, 
         blob.unlink()
     with pytest.raises(Exception, match="digest|missing|No such file|not found"):
         tree.read_artifact(ATTESTATORES, "page-testimonium", record["artifact_id"])
+
+
+def test_a_looping_witness_reply_is_abandoned_and_sealed_as_a_cut_off_reading(live_run, tmp_path):
+    """Churro and DAI are streamed under the sealed witness guard: a reply that loops
+    is stopped at the first loop, kept under `repetition-loop`, and never full testimony.
+    Chandra is never streamed."""
+    run_root = fresh_tree(live_run, tmp_path)
+    scripts = default_scripts()
+    looping_page = "<HistoricalDocument><Page><Body>\n" + "<Line>alpha beta</Line>\n" * 80
+    scripts["attestator_3"][0] = ScriptedAnswer(content=looping_page, finish_reason="length")
+    looping_record = "\n".join([DAI_ACT_ONE] * 80)
+    scripts["attestator_2"][0] = ScriptedAnswer(content=looping_record, finish_reason="length")
+    world = LiveWorld(live_run, tmp_path, scripts)
+    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
+
+    assert world.endpoints["attestator_3"].streams_stopped == 1
+    assert world.endpoints["attestator_2"].streams_stopped == 1
+    assert all(request["stream"] for request in world.requests("attestator_3"))
+    assert not any(request.get("stream") for request in world.requests("attestator_1"))
+    tree = RunTree(run_root, RUN_ID)
+    records = page_records(tree)
+
+    churro = records[(1, "attestator_3")]["payload"]
+    assert records[(1, "attestator_3")]["outcome"] == "failed"
+    assert churro["native_capture"]["transport_stop_reason"] == "repetition-loop"
+    assert "stopped the response on a repetition loop" in churro["reason"]
+    call = json.loads(tree.read_bytes(churro["serving_call_ref"]["relative_path"]))
+    assert call["schema"] == CHAIR_STREAM_CALL_RECORD_SCHEMA
+    assert call["stream"]["stopped"]["repeats"] == 30
+
+    dai = records[(1, "attestator_2")]["payload"]
+    assert dai["unit_captures"][0]["transport_stop_reason"] == "repetition-loop"
+    assert dai["unit_captures"][0]["parse"]["text"].count(DAI_ACT_ONE) == 30
+    assert dai["content_health"]["truncated"] is True

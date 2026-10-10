@@ -40,14 +40,22 @@ from common import dots_layout  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
+from common.contracts.envelope import read_verified  # noqa: E402
 from common.contracts.errors import ContractError, FatalAccounting, SchemaRefusal  # noqa: E402
 from common.contracts.identities import artifact_id, attempt_id, region_id  # noqa: E402
 from common.contracts.serving import (  # noqa: E402
+    CHAIR_STREAM_CALL_RECORD_SCHEMA,
+    CHAIR_STREAM_FIELDS,
+    CHAIR_STREAM_SCHEMA,
+    CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_SCHEMA,
     RAW_RESPONSE_MODEL_OUTPUT,
+    READER_STOP_REPETITION_LOOP,
 )
 from common.contracts.stages import ATTESTATORES, DESIGNATOR, EXEMPLAR, PERLECTOR  # noqa: E402
 from common.decoding import (  # noqa: E402
+    STREAMED_WITNESS_CHAIRS,
     load_decoding_policy,
+    witness_loop_guard,
 )
 from common.exemplar_boundary import (  # noqa: E402
     read_sealed_page,
@@ -78,6 +86,7 @@ from common.page_testimonia import (  # noqa: E402
     verify_page_native_capture,
 )
 from common.page_witness_units import reads_detector_records  # noqa: E402
+from common.repetition_loop import first_repetition_loop  # noqa: E402
 from common.request_capacity import RequestCapacityRefusal  # noqa: E402
 from common.stage import (  # noqa: E402
     ATTEMPTED_WITNESS_OUTCOMES,
@@ -90,6 +99,7 @@ from common.stage import (  # noqa: E402
     latest_attempt,
     open_stage_context,
     run_stage,
+    sealed_decoding_policy,
     stage_manifest,
     stage_parser,
     validate_serving_provenance,
@@ -2292,13 +2302,14 @@ def _read_detector_record(
     resolved: ChairIdentity,
     adapter,
     region: dict[str, Any],
+    loop_guard: dict[str, int] | None,
 ) -> tuple[dict[str, Any], dict[str, Any], Attempt]:
     """Read one DAI record crop: one request, its response retained as it arrives."""
     source = presentation_for_region(region)
     what = f"the {resolved.witness_adapter} request for record {region['subject_id']}"
     try:
         built = live_witness.record_chair_request(
-            context, adapter, source, profile=client.handle.profile
+            context, adapter, source, profile=client.handle.profile, loop_guard=loop_guard
         )
     except RequestCapacityRefusal as error:
         presented = adapter.present(context, dict(source))
@@ -2341,6 +2352,7 @@ def _detector_record_jobs(
     units: list[dict[str, Any]],
     ordinal: int,
     page_ids: dict[int, str],
+    loop_guard: dict[str, int] | None,
 ):
     """One window job per record of a DAI page; the last record to finish seals the page.
 
@@ -2380,6 +2392,7 @@ def _detector_record_jobs(
                 resolved=resolved,
                 adapter=adapter,
                 region=region,
+                loop_guard=loop_guard,
             ),
             partial(finish, index=index),
         )
@@ -2479,6 +2492,7 @@ def verify_page_call_sampling(context, payload: dict[str, Any], chair: str) -> N
             raise SchemaRefusal(
                 f"a page Testimonium's unit call record is not its sealed request: {error}"
             ) from error
+        verify_call_stream(context, call, chair, captures[index] if index < len(captures) else None)
     if "unit_call_refs" in payload:
         return
     reference = payload.get("serving_call_ref")
@@ -2510,6 +2524,60 @@ def verify_page_call_sampling(context, payload: dict[str, Any], chair: str) -> N
         raise SchemaRefusal(
             f"a page Testimonium's serving call record is not its sealed request: {error}"
         ) from error
+    verify_call_stream(context, call, chair, payload.get("native_capture"))
+
+
+_STREAM_RECORD_SCHEMAS: Final = frozenset(
+    {CHAIR_STREAM_CALL_RECORD_SCHEMA, CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_SCHEMA}
+)
+
+
+def verify_call_stream(context, call: dict[str, Any], chair: str, capture: Any) -> None:
+    """Hold one witness call to its chair's streaming, and its reply to where it stopped.
+
+    A streamed witness chair's call is streamed under its sealed repetition-loop
+    guard; Chandra's never is. Where the reply was read (`capture`), it is scanned
+    again under that guard: the loop found must be exactly the one the call record
+    says stopped it, or none, and the capture's stop word is `repetition-loop`
+    exactly when there is one. Whether a reply looped is measured from its bytes.
+    """
+    streamed = call.get("schema") in _STREAM_RECORD_SCHEMAS
+    stop_word = capture.get("transport_stop_reason") if isinstance(capture, dict) else None
+    guard = witness_reply_guard(context, chair)
+    if guard is None:
+        if streamed or stop_word == READER_STOP_REPETITION_LOOP:
+            raise SchemaRefusal(
+                f"chair {chair!r} is never streamed under a repetition-loop guard, but its call "
+                "record or reading says it was"
+            )
+        return
+    stream = call.get("stream")
+    if (
+        not streamed
+        or not isinstance(stream, dict)
+        or set(stream) != CHAIR_STREAM_FIELDS
+        or stream["schema"] != CHAIR_STREAM_SCHEMA
+        or stream["loop_guard"] != guard
+        or not (stream["stopped"] is None or isinstance(stream["stopped"], dict))
+    ):
+        raise SchemaRefusal(
+            f"chair {chair!r}'s call record is not streamed under its sealed repetition-loop guard"
+        )
+    if capture is None:
+        return
+    raw = read_verified(context.tree.read_bytes, capture["raw_response_ref"], "a witness reply")
+    try:
+        loop = first_repetition_loop(raw.decode("utf-8"), guard)
+    except UnicodeDecodeError as error:
+        raise SchemaRefusal(f"chair {chair!r}'s retained reply is not UTF-8 text") from error
+    if loop != stream["stopped"] or (stop_word == READER_STOP_REPETITION_LOOP) != (
+        loop is not None
+    ):
+        raise SchemaRefusal(
+            f"chair {chair!r}'s retained reply shows the repetition loop {loop!r}, but its call "
+            f"record says it was stopped on {stream['stopped']!r} and its reading on "
+            f"{stop_word!r}"
+        )
 
 
 def _read_page_unit(
@@ -2524,6 +2592,7 @@ def _read_page_unit(
     page_ids: dict[int, str],
     framing: str | None = None,
     chandra_page: chandra_native.ChandraPage | None = None,
+    loop_guard: dict[str, int] | None = None,
 ) -> Attempt | chandra_native.ChandraPage:
     """Read one whole-page witness, including Chandra's page-local retry loop.
 
@@ -2540,6 +2609,7 @@ def _read_page_unit(
             # The generation bound derives from this row and the request's capacity.
             profile=client.handle.profile,
             framing=framing,
+            loop_guard=loop_guard,
         )
     except RequestCapacityRefusal as error:
         # Only this page fails. No model view, since there was no response.
@@ -2584,6 +2654,15 @@ def _read_page_unit(
 
 def _reads_chandra_natively(resolved) -> bool:
     return resolved.witness_adapter == "chandra.v1" and resolved.role == "attestator_1"
+
+
+def witness_reply_guard(context, chair: str) -> dict[str, int] | None:
+    """The sealed repetition-loop guard a chair's replies are streamed under, or `None`
+    for Chandra, which reads under its native recipe's own retry loop."""
+    if chair not in STREAMED_WITNESS_CHAIRS:
+        return None
+    policy, _digest = sealed_decoding_policy(context)
+    return witness_loop_guard(policy, chair)
 
 
 def _serve_page_unit(
@@ -2775,9 +2854,10 @@ def live_pass(
                 continue
             resolved = context.registry.resolve(chair)
             adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
+            loop_guard = witness_reply_guard(context, chair)
             with serving_factory(context, resolved, tier) as client:
 
-                def jobs(chair=chair, resolved=resolved, adapter=adapter):
+                def jobs(chair=chair, resolved=resolved, adapter=adapter, loop_guard=loop_guard):
                     for page_ordinal in sorted(to_read[chair]):
                         if chair in detector_chairs:
                             yield from _detector_record_jobs(
@@ -2790,6 +2870,7 @@ def live_pass(
                                 units=detector[0][page_ordinal],
                                 ordinal=ordinal,
                                 page_ids=page_ids,
+                                loop_guard=loop_guard,
                             )
                         else:
                             # Read here, where records are written: what an
@@ -2819,6 +2900,7 @@ def live_pass(
                                     page_ids=page_ids,
                                     framing=framings[chair],
                                     chandra_page=chandra_page,
+                                    loop_guard=loop_guard,
                                 ),
                                 partial(
                                     _serve_page_unit,

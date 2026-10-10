@@ -78,7 +78,8 @@ CHAIR_TRANSPORT_FAILURE_RECORD_FIELDS: Final = CHAIR_CALL_RECORD_FIELDS | frozen
 )
 
 # A call whose reply was streamed so a repetition loop could stop it early (the
-# Perlector's page reading, `common/repetition_loop.py`). `raw_response_ref` names
+# Perlector's page reading and every witness reading but Chandra's,
+# `common/repetition_loop.py`). `raw_response_ref` names
 # the server-sent event bytes exactly as received, up to the stop; `stream` is
 # `{schema, loop_guard, stopped}`: the sealed guard the reply was watched under,
 # and the loop that stopped it, or null when the engine ended the stream itself.
