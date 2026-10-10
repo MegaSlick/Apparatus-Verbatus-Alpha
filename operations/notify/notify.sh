@@ -6,7 +6,7 @@ set +x
 set -eu
 
 if [ "$#" -lt 2 ]; then
-  echo "usage: notify.sh <milestone|decision|done> <one-line message>" >&2
+  echo "usage: notify.sh <milestone|decision|done|queue-done> <one-line message>" >&2
   exit 2
 fi
 
@@ -18,6 +18,7 @@ case $event in
   milestone) title="Milestone"; priority=3; tag=white_check_mark ;;
   decision) title="Needs a decision"; priority=4; tag=warning ;;
   done) title="Session complete"; priority=3; tag=checkered_flag ;;
+  queue-done) title="Queue finished"; priority=3; tag=checkered_flag ;;
   *) echo "notify: unknown event '$event'" >&2; exit 2 ;;
 esac
 

@@ -170,7 +170,16 @@ How it scores:
 schema `bakeoff-queue.v1`) and ends the pod itself, so no laptop has to notice when a job
 ends. Each arm runs a smoke of `smoke_pages` pages (`--limit N` appended), then the full
 run. A failed arm (one whose program cannot even start included) is retried once at the
-end, smoke first, then reported. Time boxes never kill work: an overrun is pinged once,
+end, smoke first, then reported. Retries keep their lanes: GPU arms one at a time on the
+card, CPU arms beside them in the CPU lane, all at once, each with an equal part of the
+lane's whole `cpu_threads` (never less than its own; the command's `--threads` is
+rewritten), so a retried CPU arm no longer runs alone on its first share while the rest
+of the CPUs sit idle. A page that ran to the request timeout or was stopped by the loop
+detector is recorded as failed with its reason (`failure` in the page record,
+`failed_pages` in the arm's `finished_arms` entry and its end ping) and counts as settled:
+it never makes its arm "incomplete", and witness_run never sends it again under the same
+settings (same checkpoint and request records, `failure.settings_sha256`); changed
+settings, such as another `--guard`, send it again. Time boxes never kill work: an overrun is pinged once,
 and the `cut` rule only skips later arms (`overrun`, `behind-schedule`, `install-failed`;
 `never` always runs).
 
@@ -214,7 +223,12 @@ snapshot fetch it once. No repository is gated; no token is needed.
 older `witness_run fetch` and the native arms' `fetch` write into `<store>/hf/` outside
 the store's record; on a store, use `weights fetch` instead. `hard_stop_min`, off unless set, stops the arm in flight and ends
 the day early. `status.json` beside the cache is rewritten every 30 s; the queue's events
-join `events.jsonl`; each milestone pings the phone once.
+join `events.jsonl`; each milestone pings the phone once. The phone hears `Milestone` for
+the queue's own progress, including an arm the queue retries or reports itself (`arm
+failed: ...`); `Needs a decision` only when the queue cannot go on by itself (no pages,
+stopped by SIGTERM, a pod it could not or would not end); and `Queue finished` (the
+`queue-done` event, `operations/notify/README.md`) once at the end, which is not the end
+of the session.
 
 At the end it copies the cache to `sync_to` (`rsync -rt`), compares every file's sha256,
 writes `DONE.json` (digests and summary) to both, pings, and ends the pod: with a guard

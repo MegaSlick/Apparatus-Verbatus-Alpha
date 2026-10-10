@@ -45,6 +45,7 @@ OFFLINE_ENV = {"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1", "DO_NOT_TRACK"
 # Why a request was stopped before the engine ended it.
 REQUEST_TIMEOUT = "request-timeout"
 REPETITION_LOOP = "repetition-loop"
+TERMINAL_STOPS = frozenset({REQUEST_TIMEOUT, REPETITION_LOOP})
 _events_lock = threading.Lock()
 
 
@@ -95,6 +96,34 @@ def cached_ok(path: Path) -> bool:
         return json.loads(path.read_text(encoding="utf-8")).get("error") is None
     except (OSError, ValueError):
         return False
+
+
+def terminal_failure(path: Path) -> dict[str, Any] | None:
+    """The cached page's failure when sending it again at its settings cannot help.
+
+    A request that ran to the request timeout or into a loop would do the same again,
+    so such a page is recorded as failed, with its reasons and the digest of the
+    settings it was sent under (`settings_sha256`), and is never re-sent under them.
+    """
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    failure = record.get("failure") if isinstance(record, dict) else None
+    return failure if isinstance(failure, dict) and failure.get("terminal") else None
+
+
+def settled(path: Path) -> bool:
+    """Cached without an error, or failed in a way a retry at the same settings repeats."""
+    return cached_ok(path) or terminal_failure(path) is not None
+
+
+def settings_digest(repo: str | None, revision: str | None, requests: list[dict]) -> str:
+    """What a page was sent under: the checkpoint and every request record."""
+    value = {"repo": repo, "revision": revision, "requests": requests}
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
 
 
 # --- the vLLM server ----------------------------------------------------------------
@@ -393,7 +422,8 @@ class ModelJob:
             return detector_box[0]
 
         for page in pages:
-            if cached_ok(self.dir / f"{page.stem}.json"):
+            cached = self.dir / f"{page.stem}.json"
+            if cached_ok(cached):
                 continue
             png = A.load_page_png(page)
             records = self._records(page, png, detector) if self.arm.scope == "record" else None
@@ -411,6 +441,17 @@ class ModelJob:
                 )
                 for unit in A.page_units(self.arm, png, records)
             ]
+            failure = terminal_failure(cached)
+            digest = settings_digest(self.repo, self.revision, [r for _, r in requests])
+            if failure is not None and failure.get("settings_sha256") == digest:
+                event(
+                    self.args.out,
+                    "page-not-retried",
+                    model=self.label,
+                    page=page.stem,
+                    reasons=failure.get("reasons"),
+                )
+                continue
             self.prepared.append((page, requests))
         event(self.args.out, "prepare-done", model=self.label, pages=len(self.prepared))
 
@@ -525,9 +566,23 @@ class ModelJob:
             "guard": self.guard,
             "stops": sorted({u["stop"] for u in units if u.get("stop")}),
             "error": "; ".join(errors) if errors else None,
+            "failure": self._failure(units),
             "written": now(),
         }
         write_json(self.dir / f"{page.stem}.json", record)
+
+    def _failure(self, units: list[dict]) -> dict[str, Any] | None:
+        """A terminal failure when every unit in error was stopped by a timeout or a loop."""
+        failed = [u for u in units if u["error"]]
+        if not failed or any(u.get("stop") not in TERMINAL_STOPS for u in failed):
+            return None
+        return {
+            "terminal": True,
+            "reasons": sorted({u["stop"] for u in failed}),
+            "settings_sha256": settings_digest(
+                self.repo, self.revision, [u["request"] for u in units]
+            ),
+        }
 
 
 def warm(weights: Path, stage_dir: Path | None, name: str) -> Path:
@@ -590,19 +645,22 @@ def run_models(names: list[str], args: argparse.Namespace) -> None:
                 job.resolve_weights()
         prep = cpu.submit(jobs[0].prepare, pages)
         for index, job in enumerate(jobs):
-            pending = [p for p in pages if not cached_ok(job.dir / f"{p.stem}.json")]
+            pending = [p for p in pages if not settled(job.dir / f"{p.stem}.json")]
             server = None
             if pending and not args.server_url:
                 server = job.serve()
             try:
                 prep.result()
+                if job.prepared and server is None and not args.server_url:
+                    # A failed page whose settings changed is sent again.
+                    server = job.serve()
                 nxt = jobs[index + 1] if index + 1 < len(jobs) else None
                 staged = None
                 if nxt is not None:
                     prep = cpu.submit(nxt.prepare, pages)
                     if nxt.weights is not None:
                         staged = cpu.submit(warm, nxt.weights, args.stage_dir, nxt.label)
-                if not pending:
+                if not job.prepared:
                     event(args.out, "nothing-to-do", model=job.label)
                 elif server is None:
                     job.send_all(args.server_url.rstrip("/"), None)

@@ -49,7 +49,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from operations.bakeoff.witness_run import cached_ok, event, list_pages, write_json
+from operations.bakeoff.witness_run import (
+    cached_ok,
+    event,
+    list_pages,
+    settled,
+    terminal_failure,
+    write_json,
+)
 
 QUEUE_SCHEMA = "bakeoff-queue.v1"
 STATUS_SCHEMA = "bakeoff-queue-status.v1"
@@ -74,7 +81,9 @@ GPU_LANE_CPUS = 2
 ESTIMATE_CPUS = (8, 16, 32)
 # Files the queue keeps rewriting after the copy; they are copied but not digested.
 LIVE_FILES = frozenset({"status.json", "status.tmp", "events.jsonl", "DONE.json", "DONE.tmp"})
-DONE_TITLE = "Session complete"
+# The phone's word for the queue's last ping (`operations/notify`, event `queue-done`).
+DONE_EVENT = "queue-done"
+DONE_TITLE = "Queue finished"
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _MANIFEST_KEYS = {
     "schema",
@@ -554,6 +563,19 @@ def copy_tree(source: Path, target: Path, run: Callable[..., Any] = subprocess.r
     return "python copy"
 
 
+def with_threads(command: tuple[str, ...], threads: int | None) -> tuple[str, ...]:
+    """The command with its `--threads` value set to `threads` (unchanged without either)."""
+    if threads is None:
+        return command
+    out = list(command)
+    for index, item in enumerate(out):
+        if item == "--threads" and index + 1 < len(out):
+            out[index + 1] = str(threads)
+        elif item.startswith("--threads="):
+            out[index] = f"--threads={threads}"
+    return tuple(out)
+
+
 def write_json_anywhere(path: Path, value: Any) -> None:
     """write_json's atomic write, or a direct write where the folder refuses a rename."""
     try:
@@ -1010,7 +1032,17 @@ class Queue:
     # arms -------------------------------------------------------------------------
 
     def _pages_ok(self, arm: ArmSpec, pages: list[Path]) -> bool:
-        return all(cached_ok(self.m.out / arm.records / f"{p.stem}.json") for p in pages)
+        """Every page read, or failed in a way that sending it again at the same settings
+        would repeat (a request timeout or a loop stop); such a page is never retried."""
+        return all(settled(self.m.out / arm.records / f"{p.stem}.json") for p in pages)
+
+    def _failed_pages(self, arm: ArmSpec) -> list[dict[str, Any]]:
+        failed = []
+        for page in self.page_list:
+            failure = terminal_failure(self.m.out / arm.records / f"{page.stem}.json")
+            if failure is not None:
+                failed.append({"page": page.stem, "reasons": failure.get("reasons") or []})
+        return failed
 
     def _end_lane(self, lane: str) -> None:
         with self.lock:
@@ -1022,6 +1054,7 @@ class Queue:
 
     def _record(self, arm: ArmSpec, status: str, t0: float) -> None:
         pages = len(self._ok_pages(arm.records))
+        failed = self._failed_pages(arm)
         minutes = (time.monotonic() - t0) / 60
         with self.lock:
             self.outcome[arm.name] = status
@@ -1029,27 +1062,38 @@ class Queue:
                 {
                     "label": arm.name,
                     "pages": pages,
+                    "failed_pages": failed,
                     "wall_seconds": round(minutes * 60, 1),
                     "status": status,
                 }
             )
-        self._event("queue-arm-end", arm=arm.name, status=status, pages=pages)
+        self._event("queue-arm-end", arm=arm.name, status=status, pages=pages, failed=failed)
         if status in ("ok", "smoke-ok"):
+            reasons: dict[str, int] = {}
+            for entry in failed:
+                for reason in entry["reasons"]:
+                    reasons[reason] = reasons.get(reason, 0) + 1
+            note = ", ".join(f"{n} {reason}" for reason, n in sorted(reasons.items()))
             self.ping(
                 f"arm-end:{arm.name}",
                 "milestone",
-                f"{arm.name} {status}: {pages} pages in {minutes:.0f} min",
+                f"{arm.name} {status}: {pages} pages in {minutes:.0f} min"
+                + (f"; {len(failed)} failed, not retried ({note})" if failed else ""),
             )
         elif status == "failed":
-            self.ping(f"failed:{arm.name}", "decision", f"{arm.name} failed after its retry")
+            self.ping(f"failed:{arm.name}", "milestone", f"arm failed: {arm.name}, after its retry")
         elif status == "smoke-failed":
-            self.ping(f"failed:{arm.name}", "decision", f"{arm.name} smoke failed (smoke only)")
+            self.ping(
+                f"failed:{arm.name}", "milestone", f"arm failed: {arm.name} smoke (smoke only)"
+            )
 
     def _arm_error(self, arm: ArmSpec, what: str) -> None:
+        """An arm's failure is the queue's own business (it retries the arm at the end), so
+        the phone hears a milestone; a decision is asked only when the queue cannot go on."""
         self._error(f"{arm.name}: {what}")
         self._event("queue-arm-error", arm=arm.name, detail=what)
         later = "reported at the end" if self.smoke_only else "retried at the end"
-        self.ping(f"error:{arm.name}", "decision", f"{arm.name} {what}; {later}")
+        self.ping(f"error:{arm.name}", "milestone", f"arm failed: {arm.name} {what}; {later}")
         with self.lock:
             self.outcome[arm.name] = "failed"
             self.retry.append(arm)
@@ -1119,12 +1163,14 @@ class Queue:
         else:
             self._record(arm, "ok", t0)
 
-    def _retry_arm(self, arm: ArmSpec) -> None:
+    def _retry_arm(self, arm: ArmSpec, lane: str = "gpu", threads: int | None = None) -> None:
+        """The arm's one retry, in its own lane; a CPU arm's `--threads` becomes `threads`."""
         t0 = time.monotonic()
         index = self.m.arms.index(arm)
         never_ran = self.outcome.get(arm.name) == "deferred"
+        command = with_threads(arm.command, threads)
         with self.lock:
-            self.lanes["gpu"] = {
+            self.lanes[lane] = {
                 "arm": arm.name,
                 "records": arm.records,
                 "index": index,
@@ -1132,7 +1178,9 @@ class Queue:
                 "t0": self.clock(),
                 "wall0": time.time(),
                 "retry": True,
+                "threads": threads,
             }
+        self._event("queue-arm-retry", arm=arm.name, lane=lane, threads=threads)
         try:
             if never_ran:
                 # Its first attempt: install and prepare as any arm does (once).
@@ -1144,10 +1192,10 @@ class Queue:
                 self._record(arm, "failed", t0)
                 return
             # The smoke again first (cached pages are skipped, so a passed smoke costs nothing).
-            smoke = [*arm.command, "--limit", str(self.m.smoke_pages)]
-            code = self._run_watched(index, arm, "gpu", "retry", smoke)
+            smoke = [*command, "--limit", str(self.m.smoke_pages)]
+            code = self._run_watched(index, arm, lane, "retry", smoke)
             if code == 0 and self._pages_ok(arm, self.page_list[: self.m.smoke_pages]):
-                code = self._run_watched(index, arm, "gpu", "retry", list(arm.command))
+                code = self._run_watched(index, arm, lane, "retry", list(command))
             elif code == 0:
                 code = -1
             if self.hard_stopped:
@@ -1160,7 +1208,64 @@ class Queue:
             self._error(f"{arm.name}: retry crashed ({type(failure).__name__}: {failure})"[:200])
             self._record(arm, "failed", t0)
         finally:
-            self._end_lane("gpu")
+            self._end_lane(lane)
+
+    def _retry_threads(self, arm: ArmSpec, cpu_retries: int) -> int | None:
+        """A CPU retry's share: the lane's whole budget split among the CPU retries, never
+        less than the arm's own; None (the arm's own setting) when there is no budget."""
+        if arm.gpu or self.budget is None:
+            return None
+        return max(arm.threads, self.budget // max(1, cpu_retries))
+
+    def _run_retries(self) -> None:
+        """Every arm retried at the end, once: GPU arms one at a time on the card, CPU arms
+        beside them in the CPU lane sharing its whole thread budget. An arm whose `after`
+        names an arm still being retried waits for that retry."""
+        pending = sorted(self.retry, key=self.m.arms.index)
+        cpu_retries = sum(1 for arm in pending if not arm.gpu)
+        running: dict[Future, ArmSpec] = {}
+        while pending or running:
+            for future in [f for f in running if f.done()]:
+                running.pop(future)
+                future.result()
+            busy = list(running.values())
+            unsettled = {a.name for a in pending} | {a.name for a in busy}
+            for arm in list(pending):
+                if any(name in unsettled for name in arm.after):
+                    continue
+                state, reason = self._blocker(arm, final=True)
+                if state != "ready":
+                    pending.remove(arm)
+                    self.skip(arm, reason or "a dependency did not finish")
+                elif self.smoke_only:
+                    pending.remove(arm)
+                    self._record(arm, "smoke-failed", time.monotonic())
+                elif self.hard_stopped or self.hard_stop_passed():
+                    pending.remove(arm)
+                    if self.outcome.get(arm.name) == "deferred":
+                        self.skip(arm, "hard stop reached")
+                    else:
+                        self._record(arm, "hard-stopped", time.monotonic())
+                elif arm.gpu and any(a.gpu for a in busy):
+                    continue
+                elif not arm.gpu and self.budget is None and any(not a.gpu for a in busy):
+                    continue
+                else:
+                    pending.remove(arm)
+                    busy.append(arm)
+                    if arm.gpu:
+                        future = self.gpu_pool.submit(self._retry_arm, arm, "gpu", None)
+                    else:
+                        threads = self._retry_threads(arm, cpu_retries)
+                        lane = f"cpu:{arm.name}"
+                        future = self.cpu_pool.submit(self._retry_arm, arm, lane, threads)
+                    running[future] = arm
+            if running:
+                wait(list(running), timeout=self.poll_seconds, return_when=FIRST_COMPLETED)
+            else:
+                for arm in pending:  # nothing runs and nothing can start: never loop forever
+                    self.skip(arm, "could not start (no lane free)")
+                pending.clear()
 
     # the whole queue ---------------------------------------------------------------
 
@@ -1188,19 +1293,7 @@ class Queue:
         self._ticker_thread.start()
         try:
             self._run_arms()
-            for arm in sorted(self.retry, key=self.m.arms.index):
-                state, reason = self._blocker(arm, final=True)
-                if state != "ready":
-                    self.skip(arm, reason or "a dependency did not finish")
-                elif self.smoke_only:
-                    self._record(arm, "smoke-failed", time.monotonic())
-                elif self.hard_stopped or self.hard_stop_passed():
-                    if self.outcome.get(arm.name) == "deferred":
-                        self.skip(arm, "hard stop reached")
-                    else:
-                        self._record(arm, "hard-stopped", time.monotonic())
-                else:
-                    self._retry_arm(arm)
+            self._run_retries()
             with self.lock:
                 self.retry.clear()
             return self.finish()
@@ -1339,7 +1432,8 @@ class Queue:
             self.ping("sync", "milestone", f"copy verified: {len(digests)} files")
         else:
             self._error(f"copy not verified: {failure or f'{len(mismatched)} files differ'}")
-            self.ping("sync", "decision", f"copy NOT verified ({len(mismatched)} files differ)")
+            # Not a decision by itself: an own-disk pod is then kept and that end asks one.
+            self.ping("sync", "milestone", f"copy NOT verified ({len(mismatched)} files differ)")
         return done
 
     def finish(self) -> int:
@@ -1347,7 +1441,7 @@ class Queue:
             with self.lock:
                 self.state, self.end_action = "done", "kept (smoke only)"
             counts = self.summary()["arms"]
-            self.ping("done", "done", f"smoke run finished {counts}; pod kept")
+            self.ping("done", DONE_EVENT, f"smoke run finished {counts}; pod kept")
             self.write_status()
             return 0
         done = self.sync()
@@ -1384,7 +1478,7 @@ class Queue:
             self.ping("end-pod", "decision", f"pod {words[plan]}; delete it by hand")
         self.ping(
             "done",
-            "done",
+            DONE_EVENT,
             f"queue finished {counts}, {len(self.skipped)} skipped; pod {words[plan]}",
         )
         self.write_status()

@@ -218,3 +218,32 @@ def test_a_request_past_its_timeout_is_recorded_as_a_timeout(tmp_path):
     assert W.main(argv) == 0
     unit = json.loads((out / "qv" / "p000.json").read_text())["units"][0]
     assert unit["stop"] == W.REQUEST_TIMEOUT and unit["error"] == "request-timeout after 1 s"
+
+
+def test_a_page_stopped_by_a_loop_is_not_sent_again_at_the_same_settings(tmp_path):
+    pages, out, weights = tmp_path / "pages", tmp_path / "cache", tmp_path / "w"
+    _pages(pages, 2)
+    weights.mkdir()
+    (weights / "config.json").write_text("{}")
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("LOOP: transcribe")
+    launches = tmp_path / "launches.txt"
+    env = {"FAKE_VLLM_LAUNCHES": str(launches)}
+    with pytest.MonkeyPatch.context() as patch:
+        for name, value in env.items():
+            patch.setenv(name, value)
+        assert W.main(_vendor_argv(pages, out, weights, prompt)) == 0
+        record = json.loads((out / "qv" / "p000.json").read_text())
+        assert record["failure"]["terminal"] and record["failure"]["reasons"] == ["repetition-loop"]
+        assert not W.cached_ok(out / "qv" / "p000.json") and W.settled(out / "qv" / "p000.json")
+
+        # Same settings: nothing is sent and no server is started.
+        assert W.main(_vendor_argv(pages, out, weights, prompt)) == 0
+        events = [json.loads(x) for x in (out / "events.jsonl").read_text().splitlines()]
+        assert [e["page"] for e in events if e["event"] == "page-not-retried"] == ["p000", "p001"]
+        assert len(launches.read_text().splitlines()) == 1
+
+        # Other settings (the raw vendor request): the page is sent again and read.
+        assert W.main(_vendor_argv(pages, out, weights, prompt, "--guard", "none")) == 0
+        assert W.cached_ok(out / "qv" / "p000.json")
+        assert len(launches.read_text().splitlines()) == 2

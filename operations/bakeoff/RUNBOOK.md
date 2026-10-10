@@ -302,7 +302,10 @@ instead. Do nothing else on the pod: no `pgrep`, no `nvidia-smi` loops, no secon
 
 | You see | Do |
 |---|---|
-| An arm errors or its smoke fails | Nothing now. It is retried once at the end and reported in `status.json` (`errors`, `finished_arms`). Arm failures never stop the day. Fix at home; rerun that arm alone on a later pod (cached pages are skipped). |
+| An arm errors or its smoke fails (phone: `Milestone`, `arm failed: ...`) | Nothing now. It is retried once at the end (a CPU arm in the CPU lane with the lane's whole thread share) and reported in `status.json` (`errors`, `finished_arms`). Arm failures never stop the day. Fix at home; rerun that arm alone on a later pod (cached pages are skipped). |
+| An arm ends with `failed_pages` (a request timeout or a loop stop) | Nothing. Those pages are failed with their reason and not retried at the same settings; the reading is the finding. |
+| The phone says `Needs a decision` | The queue cannot go on by itself (no pages, SIGTERM, or a pod it did not end): act on the message. |
+| The phone says `Queue finished` | The queue is done, not the session: fetch (step 6), then delete the pod. |
 | `watch` warns the status is 10 minutes old | Look once: `ssh -p <port> root@<ip> 'tail -n 5 /workspace/private/bakeoff/queue-witness-24gb.log; cat /workspace/private/bakeoff/witness-cache/status.json'`. If the queue is still running an arm, leave it. If the process is gone, tell the lead. Do not restart things from the Mac. |
 | The queue ends `state: failed` | Three causes only: the own-disk copy did not verify (`end_action` `NOT ended …`), `pod_delete.sh` failed, or the queue found no pages (it returns before any pod handling: pod left up, no `end_action`). The pod is up: do step 6 (fetch from its disk), then delete it by hand and confirm it is gone. |
 | `end_action` says `pod_delete.sh exit 3` | The pod was stopped, not deleted; its disk still bills. `runpodctl pod delete <id>`, then `pod list --all`. |
