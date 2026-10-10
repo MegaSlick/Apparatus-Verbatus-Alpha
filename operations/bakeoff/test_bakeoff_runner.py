@@ -2,6 +2,7 @@
 
 import io
 import json
+import signal
 import socket
 import sys
 from pathlib import Path
@@ -242,21 +243,17 @@ def test_a_label_is_refused_under_another_checkpoint_or_recipe(tmp_path):
     assert W.main(argv) == 0  # the same setup resumes
     with pytest.raises(SystemExit, match="cached under another setup .*revision"):
         W.main([*argv, "--revision", "b" * 40])
-    # A page cached before recipes were recorded is judged by checkpoint and revision only.
+    # A page cached before recipes were recorded was served with none: fine for a run with
+    # none, a conflict for a run that selects a (quantized) recipe.
     assert W.cache_conflict(cached, {"repo": "x/y", "revision": "z", "recipe": "r"}) == [
-        "recipe",
-        "repo",
-        "revision",
-    ]
+        "recipe", "repo", "revision"
+    ]  # fmt: skip
     record = json.loads(cached.read_text())
     del record["recipe"]
     cached.write_text(json.dumps(record))
-    assert (
-        W.cache_conflict(
-            cached, {"repo": record["repo"], "revision": record["revision"], "recipe": "fp8"}
-        )
-        == []
-    )
+    same = {"repo": record["repo"], "revision": record["revision"]}
+    assert W.cache_conflict(cached, {**same, "recipe": None}) == []
+    assert W.cache_conflict(cached, {**same, "recipe": "fp8"}) == ["recipe"]
 
 
 def test_a_stale_handoff_never_signals_an_unrelated_process(tmp_path):
@@ -269,8 +266,8 @@ def test_a_stale_handoff_never_signals_an_unrelated_process(tmp_path):
         W.Server.adopted(stale).stop()
         assert process.poll() is None  # the pid is alive but is not the recorded server
         W.Server.adopted({**stale, "argv": argv}).stop()
-        process.wait(timeout=70)
-        assert process.returncode is not None
+        process.wait(timeout=10)  # well short of the child's 60 s sleep
+        assert process.returncode == -signal.SIGTERM
     finally:
         if process.poll() is None:
             process.kill()

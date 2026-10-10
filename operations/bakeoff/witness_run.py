@@ -100,12 +100,13 @@ def cached_ok(path: Path) -> bool:
 
 def cache_conflict(path: Path, setup: dict[str, Any]) -> list[str]:
     """The fields of `setup` (checkpoint, revision, recipe) a cached page was written under
-    differently. A page cached before recipes were recorded has no `recipe` to compare."""
+    differently. A page cached before recipes were recorded was served with none, so it
+    conflicts with a run that selects a recipe."""
     try:
         old = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return []
-    return sorted(k for k, v in setup.items() if k in old and old[k] != v)
+    return sorted(k for k, v in setup.items() if (k in old or k == "recipe") and old.get(k) != v)
 
 
 def terminal_failure(path: Path) -> dict[str, Any] | None:
