@@ -15,8 +15,8 @@ Designator's own page evidence says the page is an index list or a table:
 Either signal routes the page; `both` names a page both signals route. The
 decision is read only from the Designator's sealed records, before any witness
 reads the page, so it never depends on a witness's reading or on the
-Perlector's page type. It is recomputed from those records wherever a later
-stage needs a page's roster, and the Attestatores publish it per page as a
+Perlector's page type. It is recomputed from those records, once per pass,
+wherever a later stage needs a page's roster, and the Attestatores publish it per page as a
 `witness-routing` record (subject: the page id) and summarise it in
 `run-health/witness-routing.json`, so a person can see which pages the routed
 chair read and why.
@@ -30,6 +30,7 @@ more page witness like any other, and counts toward the floor like any other.
 
 from __future__ import annotations
 
+import copy
 from typing import Any, Final, Mapping
 
 from common.contracts.errors import FatalAccounting, SchemaRefusal
@@ -88,8 +89,38 @@ def _designator_entries(context) -> list[dict[str, Any]]:
     return stage_manifest(context, DESIGNATOR)["artifacts"]
 
 
-def _only(entries: list[dict[str, Any]], kind: str, subject: str, page_id: str) -> dict | None:
-    found = [entry for entry in entries if entry["kind"] == kind and entry["subject_id"] == subject]
+# The Designator's records by (kind, subject), and each page's measured
+# signals, kept per run tree beside the manifest they were read from.
+# `stage_manifest` hands a pass the same manifest object on every call, so a
+# page is measured once per pass; any other manifest, a later pass's or a
+# republished stage's, is indexed and measured anew.
+_PASS_INDEX: dict[tuple[str, str], tuple[list, dict, dict]] = {}
+
+
+def _index_entries(entries: list[dict[str, Any]]) -> dict[tuple[str, str], list[dict]]:
+    index: dict[tuple[str, str], list[dict]] = {}
+    for entry in entries:
+        index.setdefault((entry["kind"], entry["subject_id"]), []).append(entry)
+    return index
+
+
+def _pass_index(context) -> tuple[dict[tuple[str, str], list[dict]], dict[str, tuple]]:
+    """The Designator index and the page-signal memo for the manifest this pass reads."""
+    entries = _designator_entries(context)
+    root = getattr(context.tree, "root", None)
+    run_id = getattr(context.tree, "run_id", None)
+    if root is None or run_id is None:
+        return _index_entries(entries), {}
+    key = (str(root), str(run_id))
+    held = _PASS_INDEX.get(key)
+    if held is None or held[0] is not entries:
+        held = (entries, _index_entries(entries), {})
+        _PASS_INDEX[key] = held
+    return held[1], held[2]
+
+
+def _only(index: dict[tuple[str, str], list[dict]], kind: str, subject: str, page_id: str):
+    found = index.get((kind, subject), [])
     if len(found) > 1:
         raise FatalAccounting(f"the Designator sealed two {kind} records for page {page_id}")
     return found[0] if found else None
@@ -102,9 +133,18 @@ def page_signals(context, page_id: str) -> tuple[dict[str, Any], list[dict[str, 
     detector census: a routed run requires both chairs, so a page either
     measure is missing for cannot be routed honestly either way.
     """
-    entries = _designator_entries(context)
-    census_entry = _only(entries, SURYA_PAGE_KIND, page_id, page_id)
-    detector_entry = _only(entries, DETECTOR_PAGE_KIND, page_id, page_id)
+    index, measured = _pass_index(context)
+    if page_id not in measured:
+        measured[page_id] = _measure_page(context, index, page_id)
+    signals, refs = measured[page_id]
+    return copy.deepcopy(signals), copy.deepcopy(refs)
+
+
+def _measure_page(
+    context, index: dict[tuple[str, str], list[dict]], page_id: str
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    census_entry = _only(index, SURYA_PAGE_KIND, page_id, page_id)
+    detector_entry = _only(index, DETECTOR_PAGE_KIND, page_id, page_id)
     if census_entry is None or detector_entry is None:
         missing = [
             name
@@ -123,7 +163,7 @@ def page_signals(context, page_id: str) -> tuple[dict[str, Any], list[dict[str, 
     refs = [context.artifact_ref(DESIGNATOR, SURYA_PAGE_KIND, census_entry["artifact_id"])]
     tables = []
     for subject in subjects:
-        entry = _only(entries, SURYA_BLOCK_KIND, subject, page_id)
+        entry = _only(index, SURYA_BLOCK_KIND, subject, page_id)
         if entry is None:
             raise FatalAccounting(f"page {page_id}'s Surya census names block {subject!r} unsealed")
         block = context.tree.read_artifact(DESIGNATOR, SURYA_BLOCK_KIND, entry["artifact_id"])
