@@ -17,8 +17,15 @@ rather than retyped wherever they are importable without a run context:
 - qwen-vendor: the same reader as its vendor documents a page transcription: the Qwen
   cookbook's plain-text OCR instruction around the project's verbatim rules, no system
   prompt, the model card's non-thinking sampling preset, the checkpoint's own pixel
-  bounds, thinking off, and no reply cap (the context's remainder). `--repo` picks the
-  family preset (`VENDOR_PRESETS`).
+  bounds, thinking off. `--repo` picks the family preset (`VENDOR_PRESETS`).
+
+Every arm also declares a guard (`--guard`, `GUARDS`). `perlector`, the default for the
+reader arms, gives a request that would otherwise go out with no reply cap the
+Perlector's page cap (`[perlector_generation] page_max_tokens` of `config/decoding.toml`,
+or the context the prompt leaves, whichever is smaller) and streams every reply through
+the Perlector's loop detector (`common/repetition_loop.py`), which abandons it at the
+first degenerate loop. `none`, the default for the witness arms, sends the vendor's
+request as it is: the raw vendor behaviour, chosen explicitly for a reader arm.
 
 Sampling comes from `config/decoding.toml` (the sealed per-chair rows); answer bounds from
 `common.request_capacity.DECLARED_ANSWER_BOUND_TOKENS`.
@@ -120,6 +127,33 @@ ARMS: dict[str, Arm] = {
     "qwen-vendor": Arm("qwen-vendor", "perlector", None, "page", "generic-80gb-plus"),
 }
 DETECTOR_ARTIFACT = "yolov26-record-detection"
+GUARDS = ("perlector", "none")
+# The reader arms are the ones a looping page held a card for; the witness arms keep
+# the bounds their pipeline chairs send.
+READER_ARMS = frozenset({"qwen-blind", "qwen-vendor"})
+
+
+def default_guard(arm: Arm) -> str:
+    return "perlector" if arm.name in READER_ARMS else "none"
+
+
+def perlector_guard() -> dict[str, Any]:
+    """The Perlector's sealed page cap and loop guard, read from config/decoding.toml."""
+    from common.decoding import (
+        load_decoding_policy,
+        perlector_loop_guard,
+        perlector_page_max_tokens,
+    )
+
+    policy, _ = load_decoding_policy(ROOT / "config" / "decoding.toml")
+    return {
+        "name": "perlector",
+        "page_max_tokens": perlector_page_max_tokens(policy),
+        "loop_guard": perlector_loop_guard(policy),
+        "source": "config/decoding.toml [perlector_generation]",
+    }
+
+
 DETECTOR_CHAIR = "secondary_proposer"
 
 
@@ -344,13 +378,19 @@ def build_request(
     max_model_len: int,
     prompt_text: str | None = None,
     repo: str | None = None,
+    guard: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """(the chat-completions body, the request record cached beside the answer).
 
     `max_tokens` is the vendor's declared bound when it surely fits beside the prompt
     (prompt text counted as one token per byte, an over-count); otherwise it is left
     out and vLLM answers up to the context's remainder -- the pipeline's own rule.
-    qwen-vendor always leaves it out: no reply cap. `repo` picks qwen-vendor's preset.
+    qwen-vendor declares no bound. `repo` picks qwen-vendor's preset.
+
+    `guard` (default: `default_guard`) is `perlector` or `none`. Under `perlector` a
+    request left with no cap takes the Perlector's page cap, or the room the prompt
+    estimate leaves, whichever is smaller, and every request is streamed so the
+    Perlector's loop detector can stop it (`guard` in the record).
     """
     prompt = _prompt(arm, prompt_text)
     png = unit["png"]
@@ -377,6 +417,21 @@ def build_request(
         basis = "declared-bound"
     else:
         basis = f"omitted: declared {declared} + prompt estimate {estimate} > {max_model_len}"
+    guard = guard or default_guard(arm)
+    if guard not in GUARDS:
+        raise SystemExit(f"unknown guard {guard!r}; known: {list(GUARDS)}")
+    guard_record: dict[str, Any] = {"name": "none"}
+    if guard == "perlector":
+        guard_record = perlector_guard()
+        room = max_model_len - estimate
+        if "max_tokens" not in body and room > 0:
+            body["max_tokens"] = min(guard_record["page_max_tokens"], room)
+            basis = (
+                f"perlector guard: page cap {guard_record['page_max_tokens']} or the "
+                f"room {room} the prompt estimate leaves, whichever is smaller"
+            )
+        body["stream"] = True
+        body["stream_options"] = {"include_usage": True}
     record = {
         "unit": unit["unit"],
         "bounds": unit["bounds"],
@@ -390,6 +445,7 @@ def build_request(
         "image_size": [width, height],
         "image_sha256": hashlib.sha256(png).hexdigest(),
         "image_tokens_estimate": image_tokens(row, width, height),
+        "guard": guard_record,
     }
     if arm.name == "qwen-vendor":
         preset = vendor_preset(repo)

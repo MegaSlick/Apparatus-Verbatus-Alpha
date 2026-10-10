@@ -28,6 +28,18 @@ caching), except that the bake-off keeps the card full: `--gpu-memory-utilizatio
 and `--max-num-seqs 32` by default, and the client keeps twice that many requests in
 flight (`--concurrency`), so vLLM's queue is never empty.
 
+**The guard (`--guard`).** Each arm declares one. `perlector`, the default for the reader
+arms (`qwen-blind`, `qwen-vendor`), gives them the Perlector's two guards: a request that
+would go out with no reply cap gets the Perlector's page cap (`page_max_tokens`, 12,288,
+in `[perlector_generation]` of `config/decoding.toml`, or the context the prompt leaves,
+whichever is smaller), and every reply is streamed through the Perlector's loop detector
+(`common/repetition_loop.py`: the same line 30 times, or the same block of 2 to 8 lines 10
+times, abandons it). `none`, the default for the witness arms, sends the vendor's request
+unchanged; pass `--guard none` to a reader arm for the raw vendor behaviour, or `--guard
+perlector` to a witness arm to guard it too. Each request record names its guard
+(`guard`), and each page record says which guard ran (`guard`) and why any request was cut
+short (`stops`: `repetition-loop` or `request-timeout`).
+
 ## What a cached page holds
 
 `<out>/<model>/<page stem>.json`: model, repo, revision, weights path, the server's
@@ -242,8 +254,11 @@ The same Qwen readers as `qwen-blind`, sent the way Qwen documents a page readin
 Qwen3-VL OCR cookbook's plain-text instruction around the project's verbatim rules, no
 system prompt, the model card's non-thinking sampling (temperature 0.7, top_p 0.8,
 top_k 20, presence_penalty 1.5), thinking off, the checkpoint's own pixel bounds
-(65,536 to 16,777,216 pixels, served through `--mm-processor-kwargs`), and no reply cap
-(`max_tokens` left out, so vLLM answers up to the context's remainder). `--repo` picks
+(65,536 to 16,777,216 pixels, served through `--mm-processor-kwargs`). The vendor
+declares no reply cap; by default the arm runs under the Perlector's guard (above), so a
+looping page stops in seconds instead of holding the card to the 1,800 s request
+timeout, as one page did twice on 2026-10-09. `--guard none` sends no cap and runs no
+detector (`max_tokens` left out, vLLM answers up to the context's remainder). `--repo` picks
 the family preset (`arms.VENDOR_PRESETS`; Qwen3.8 and Qwen3.5 today) and every request
 record carries it under `vendor_preset`. A page can reach about 16,400 image tokens, so
 pass `--max-num-batched-tokens 16384`:

@@ -34,12 +34,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from common.repetition_loop import LoopScanner
 from operations.bakeoff import arms as A
 from operations.bakeoff.score import loop_flag
+from operations.serving.http import SSE_DONE, sse_data, sse_events
 
 SCHEMA = "bakeoff-witness-page.v1"
 IMAGE_SUFFIXES = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 OFFLINE_ENV = {"HF_HUB_OFFLINE": "1", "VLLM_NO_USAGE_STATS": "1", "DO_NOT_TRACK": "1"}
+# Why a request was stopped before the engine ended it.
+REQUEST_TIMEOUT = "request-timeout"
+REPETITION_LOOP = "repetition-loop"
 _events_lock = threading.Lock()
 
 
@@ -138,27 +143,57 @@ class Server:
         self._log.close()
 
 
-def post(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
+def _timed_out(failure: BaseException) -> bool:
+    return isinstance(failure, TimeoutError) or isinstance(
+        getattr(failure, "reason", None), TimeoutError
+    )
+
+
+def _stop_error(stop: str, timeout: float, loop: dict[str, Any] | None) -> str:
+    if stop == REQUEST_TIMEOUT:
+        return f"{REQUEST_TIMEOUT} after {timeout:g} s"
+    assert loop is not None
+    return f"{REPETITION_LOOP}: {loop['kind']} of {loop['block_lines']} line(s) x{loop['repeats']}"
+
+
+def _decoded(raw: bytes) -> tuple[str | None, str | None]:
+    try:
+        return raw.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, base64.b64encode(raw).decode("ascii")
+
+
+def post(
+    url: str, body: dict[str, Any], timeout: float, loop_guard: dict[str, int] | None = None
+) -> dict[str, Any]:
+    """One request; `stop` says why it was cut short (`REQUEST_TIMEOUT`, `REPETITION_LOOP`).
+
+    A streamed body (`"stream": true`, the Perlector guard) is read as it arrives and
+    abandoned at the first loop `loop_guard` finds, or when `timeout` has passed in all.
+    """
+    if body.get("stream"):
+        return _post_stream(url, body, timeout, loop_guard)
     data = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         url + "/v1/chat/completions", data=data, headers={"Content-Type": "application/json"}
     )
     started = time.monotonic()
-    status, raw, error = None, b"", None
+    status, raw, error, stop = None, b"", None, None
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             status, raw = response.status, response.read()
     except urllib.error.HTTPError as failure:
         status, raw, error = failure.code, failure.read(), f"HTTP {failure.code}"
     except (OSError, urllib.error.URLError) as failure:
-        error = f"{type(failure).__name__}: {failure}"
+        if _timed_out(failure):
+            stop, error = REQUEST_TIMEOUT, _stop_error(REQUEST_TIMEOUT, timeout, None)
+        else:
+            error = f"{type(failure).__name__}: {failure}"
     seconds = round(time.monotonic() - started, 3)
-    try:
-        raw_text, raw_b64 = raw.decode("utf-8"), None
-    except UnicodeDecodeError:
-        raw_text, raw_b64 = None, base64.b64encode(raw).decode("ascii")
+    raw_text, raw_b64 = _decoded(raw)
     result = {"http_status": status, "raw_response": raw_text, "raw_response_b64": raw_b64}
     result.update(seconds=seconds, error=error, finish_reason=None, usage=None, text=None)
+    result.update(stop=stop, loop_stop=None)
     if error is None:
         try:
             parsed = json.loads(raw)
@@ -171,6 +206,80 @@ def post(url: str, body: dict[str, Any], timeout: float) -> dict[str, Any]:
         except (ValueError, KeyError, IndexError, TypeError) as failure:
             result["error"] = f"unreadable response: {type(failure).__name__}"
     return result
+
+
+def _post_stream(
+    url: str, body: dict[str, Any], timeout: float, loop_guard: dict[str, int] | None
+) -> dict[str, Any]:
+    data = json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(
+        url + "/v1/chat/completions", data=data, headers={"Content-Type": "application/json"}
+    )
+    started = time.monotonic()
+    deadline = started + timeout
+    scanner = LoopScanner(loop_guard) if loop_guard else None
+    status, raw, error, stop = None, bytearray(), None, None
+    pending, parts, finish, usage, ended = b"", [], None, None, False
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = response.status
+            while stop is None and not ended:
+                chunk = response.read1(1 << 16)
+                if not chunk:
+                    break
+                raw += chunk
+                events, pending = sse_events(pending + chunk)
+                for item in events:
+                    try:
+                        text = sse_data(item)
+                    except UnicodeDecodeError:
+                        continue
+                    if text == SSE_DONE:
+                        ended = True
+                        continue
+                    try:
+                        payload = json.loads(text) if text is not None else None
+                    except ValueError:
+                        continue
+                    if not isinstance(payload, dict):
+                        continue
+                    usage = payload.get("usage") or usage
+                    choices = payload.get("choices") or []
+                    if not choices or not isinstance(choices[0], dict):
+                        continue
+                    finish = choices[0].get("finish_reason") or finish
+                    piece = (choices[0].get("delta") or {}).get("content") or ""
+                    parts.append(piece)
+                    if scanner is not None and scanner.feed(piece) is not None:
+                        stop = REPETITION_LOOP
+                        break
+                if stop is None and time.monotonic() > deadline:
+                    stop = REQUEST_TIMEOUT
+    except urllib.error.HTTPError as failure:
+        status, raw, error = failure.code, bytearray(failure.read()), f"HTTP {failure.code}"
+    except (OSError, urllib.error.URLError) as failure:
+        if _timed_out(failure):
+            stop = REQUEST_TIMEOUT
+        else:
+            error = f"{type(failure).__name__}: {failure}"
+    loop = scanner.finding if scanner is not None else None
+    if stop is not None:
+        error = _stop_error(stop, timeout, loop)
+    elif error is None and finish is None:
+        error = "unreadable stream: no finish reason"
+    raw_text, raw_b64 = _decoded(bytes(raw))
+    return {
+        "http_status": status,
+        "raw_response": raw_text,
+        "raw_response_b64": raw_b64,
+        "seconds": round(time.monotonic() - started, 3),
+        "error": error,
+        "finish_reason": finish,
+        "usage": usage,
+        "text": "".join(parts) if status == 200 else None,
+        "stop": stop,
+        "loop_stop": loop if stop == REPETITION_LOOP else None,
+    }
 
 
 # --- one model ----------------------------------------------------------------------
@@ -192,6 +301,7 @@ class ModelJob:
         self.revision = args.revision or identity["revision"]
         self.row = A.arm_row(self.arm, self.row, self.repo)
         self.prompt_text = args.prompt_file.read_text("utf-8") if args.prompt_file else None
+        self.guard = args.guard or A.default_guard(self.arm)
         self.served_name = f"bakeoff-{self.label}"
         self.weights: Path | None = None
         self.prepared: list[tuple[Path, list[tuple[dict, dict]]]] = []
@@ -279,6 +389,7 @@ class ModelJob:
                     max_model_len=self.max_model_len,
                     prompt_text=self.prompt_text,
                     repo=self.repo,
+                    guard=self.guard,
                 )
                 for unit in A.page_units(self.arm, png, records)
             ]
@@ -320,7 +431,13 @@ class ModelJob:
         started = time.monotonic()
         with ThreadPoolExecutor(max_workers=max(1, concurrency)) as pool:
             futures: dict[Future, tuple[Path, int, dict]] = {
-                pool.submit(post, url, body, self.args.request_timeout): (page, i, record)
+                pool.submit(
+                    post,
+                    url,
+                    body,
+                    self.args.request_timeout,
+                    record["guard"].get("loop_guard"),
+                ): (page, i, record)
                 for page, i, body, record in units
             }
             for future in as_completed(futures):
@@ -353,7 +470,12 @@ class ModelJob:
             if self.arm.scope == "record"
             else (texts[0] if texts else "")
         )
-        loops = [loop_flag(u["text"] or "", u["finish_reason"]) for u in units]
+        loops = [
+            (True, REPETITION_LOOP)
+            if u.get("loop_stop")
+            else loop_flag(u["text"] or "", u["finish_reason"])
+            for u in units
+        ]
         record = {
             "schema": SCHEMA,
             "model": self.label,
@@ -376,6 +498,8 @@ class ModelJob:
             "loop": any(f for f, _ in loops),
             "loop_reasons": [r for f, r in loops if f],
             "seconds": round(sum(u["seconds"] for u in units), 3),
+            "guard": self.guard,
+            "stops": sorted({u["stop"] for u in units if u.get("stop")}),
             "error": "; ".join(errors) if errors else None,
             "written": now(),
         }
@@ -535,6 +659,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         p.add_argument("--startup-timeout", type=float, default=1200)
         p.add_argument("--request-timeout", type=float, default=1800)
         p.add_argument("--prompt-file", type=Path, help="qwen-blind: replace the plain prompt")
+        p.add_argument(
+            "--guard",
+            choices=A.GUARDS,
+            help="perlector: the Perlector's page cap where no cap is sent, and its streaming "
+            "loop detector; none: the vendor's request as it is (default: perlector for the "
+            "reader arms, none for the witness arms)",
+        )
         p.add_argument("--repo")
         p.add_argument("--revision")
         p.add_argument("--limit", type=int, help="first N pages only (a smoke run)")
