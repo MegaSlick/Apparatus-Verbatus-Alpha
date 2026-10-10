@@ -684,8 +684,10 @@ def _placing_ids(
         for identifier in cited_ids
         if identifier not in shared and candidates.get(identifier) is not None
     ]
-    return [identifier for identifier in cited_ids if identifier not in shared] if own else list(
-        cited_ids
+    return (
+        [identifier for identifier in cited_ids if identifier not in shared]
+        if own
+        else list(cited_ids)
     )
 
 
