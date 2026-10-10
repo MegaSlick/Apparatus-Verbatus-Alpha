@@ -8,7 +8,9 @@ so every stage that reasons about a break derives the same sides.
 
 Entries are mappings carrying at least `page_ordinal`, `n`, `kind`,
 `continues_from_previous_page` and `continues_to_next_page`; an entry whose `n`
-is `None` stands for a page with no reading and has no edge.
+is `None` stands for a page with no reading and has no edge. The page-wide
+functions take records whose `kind` is already the act class (`act`); only
+`edge_acts` reads an answer's own entries, where an `instrument` counts as an act.
 """
 
 from __future__ import annotations
@@ -61,8 +63,10 @@ def edge_acts(page: Sequence[Mapping[str, Any]]) -> tuple[Any, Any] | None:
     page after; a heading, page number or other `other` entry around or between
     them is never an edge, and a page with no `act` entry has none. An answer's
     `instrument` entry is of the act class (`common.page_types`) and is an edge
-    like an `act`; every record after the answer carries the class itself. The
-    answer grammar and the page-break join both take a page's edges from here.
+    like an `act`; every record after the answer carries the class itself, which
+    is why `act_entries_by_page` and `page_edges` take records whose `kind` is the
+    act class. The answer grammar and the page-break join both take a page's edges
+    from here.
     """
     acts = [entry for entry in page if is_act_class(entry.get("kind"))]
     return (acts[0], acts[-1]) if acts else None

@@ -55,9 +55,6 @@ class Prepared:
     source_dir: Path | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
-    def crop_paths(self) -> list[Path]:
-        return [self.source_dir / row["file"] for row in (self.lines or {}).get("lines", [])]
-
 
 @dataclass
 class PageResult:
@@ -430,15 +427,6 @@ def subprocess_page(
     with open(log, "a", encoding="utf-8") as handle:
         handle.write(f"$ {' '.join(argv)}\n{done.stdout}{done.stderr}\n")
     return done, seconds
-
-
-def failed_lines(prepared: Prepared, settings: dict, message: str, seconds: float) -> PageResult:
-    rows = (prepared.lines or {}).get("lines", [])
-    share = seconds / max(1, len(rows))
-    units = [
-        unit(line_request(prepared, row, settings), None, None, share, message) for row in rows
-    ]
-    return PageResult(units=units, argv=None, error=None if units else message)
 
 
 def iterate(prepared: list[Prepared], one: Callable[[Prepared], PageResult]) -> Iterator:

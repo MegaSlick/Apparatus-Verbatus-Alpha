@@ -39,7 +39,7 @@ The sealed serving row picks the reader. A `kind = "vllm"` row for the Perlector
 reads live; any other row reads the synthetic fixture's declared answers, which prove
 wiring only. A real submission on a row that is not live is refused before anything is
 published. An absent Perlector chair reads nothing: every page is `not-run`
-(`chair-absent`). `--act` is refused: the Perlector names its own acts.
+(`chair-absent`). The command line takes no act selection: the Perlector names its own acts.
 
 ## Records, per page, in publication order
 
@@ -416,13 +416,14 @@ receipt is the source's own. The client keeps no bytes the source did not keep.
 
 ## Consumer obligations
 
-- Count acts by `kind == "act"` only. Export an entry of a row kind
-  (`entry_kind` `index-row`, `table-row` or `ledger-entry`) as a row, never as an act:
+- Count acts by `kind == "act"` only. An entry of a row kind
+  (`entry_kind` `index-row`, `table-row` or `ledger-entry`) is a row, never an act:
   `common.page_types.row_record` gives its `rows.jsonl` line (`armarium-row.v1`:
   `act_key, act_id, page_id, page_ordinal, page_type, n, entry_kind, label, text,
   uncertain_spans, gaps, holds`, and `review` when the caller passes one), the page
   type read from the entry's page accounting (`page_type.stated`). A Perlectio with
-  no `entry_kind` is of an `acts` answer and has no row.
+  no `entry_kind` is of an `acts` answer and has no row. The Armarium does not write
+  `rows.jsonl` yet (see *Not built* below and the Armarium's contract).
 
 - Recompute every attempt id from (subject, operation, ordinal), and require
   ordinals 1..N without a gap: a gap is an attempt that is no longer there.
@@ -445,6 +446,11 @@ its seal leaves none, and the successor refuses the missing boundary.
 ## Not built
 
 - Live serving has been proven only against the serving fakes, not on a card.
+- `rows.jsonl` is not written. `row_record` defines a line, but no sealed format or
+  writer exists in the Armarium, so index, table and ledger rows reach the export as
+  `other.jsonl` readings of kind `other`. `entry_kind`, `page_type` and `writing` stay
+  on the Perlector's records; the Archetypus and Armarium records carry only the act
+  class `kind`.
 - Pass C, the audit that would flag and re-prove spans of a reading, is recorded as
   not run on every reading.
 - A truncated or unknown entry is held, never re-read automatically; a person can ask

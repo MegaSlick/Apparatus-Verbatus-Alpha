@@ -980,9 +980,10 @@ NOT_MEASURED_INSTRUMENTS: Final = (
 )
 
 
-# `declared-unproduced` means no stage in this build publishes the instrument, so
-# nothing was attempted; `not-measured` would suggest an attempt that came back
-# empty.
+# `declared-unproduced` means this run recorded nothing for the instrument: no stage
+# in this build publishes it, or the run had nothing to assess (no act or no page
+# read), so nothing was attempted; `not-measured` would suggest an attempt that
+# came back empty or partial.
 _NOT_MEASURED_STATUSES: Final = frozenset({"measured", "not-measured", "declared-unproduced"})
 _NOT_MEASURED_ENTRY_FIELDS: Final = frozenset({"instrument", "status", "detail", "recorded_in"})
 _NOT_MEASURED_FIELDS: Final = frozenset({"schema", "count", "entries"})
@@ -4632,9 +4633,11 @@ def _page_ledger_category(
 ) -> tuple[str, str | None]:
     """One sealed page's terminal category, derived from the acts cut on it.
 
-    Every rule errs toward `held-for-review`. A page with no acts is held, never
+    Every rule errs toward `held-for-review`. A page with no acts is never
     `confirmed-blank`, because silence cannot tell a blank page from a detection
-    failure; a page is blank only when all its acts are.
+    failure; a page is blank only when all its acts are. A page whose readings
+    are all `other` and all delivered is a delivered no-act page; one with no
+    reading at all, or with an undelivered `other` reading, is held.
     """
     if edge_hold:
         return (

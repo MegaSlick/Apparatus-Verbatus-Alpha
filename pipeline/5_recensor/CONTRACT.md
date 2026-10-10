@@ -76,7 +76,9 @@ A code the sealed page-accounting policy names in `[flags] codes`
 (`config/page_accounting.toml`, `common/page_accounting.py`) is a review flag: the
 finding is measured and recorded exactly as a hold is, but it holds nothing. The row's
 `flag_codes` are the page accounting's `flags`; this stage's own `residual-ink` is a
-flag when the policy names it. A unit's review carries both lists apart: `hold_codes`
+flag when the policy names it. The committed policy names four: `no-detector-record-on-act-page`,
+`unread-ink`, `residual-ink` and `witness-short-unit-not-read`; `codes = []` restores
+every one of them as a hold. A unit's review carries both lists apart: `hold_codes`
 decide the outcome, `flag_codes` are named in `reason` as "flagged for review, not
 held", and `review_priority` (`common.page_review.REVIEW_PRIORITY`: 1 look first, text
 or ink may be missing; 2 structure doubt; 3 thin evidence) places the unit in the
@@ -86,6 +88,9 @@ pass or are `flag`: the flagged finding is recorded on every unit of the page an
 reaches the flagged export. The Armarium carries every held or flagged reading with
 its text in the flagged layer (`pipeline/7_armarium/CONTRACT.md`); the established
 export is unchanged by a flag.
+
+Not built: `verbatus review` does not show flags yet, and the exactly-once
+reconciliation (`operations/corpus/exactly_once.py`) counts holds only.
 
 After the receipt the stage rebuilds `run-health/recensor-review-summary.json`
 (`recensor-review-summary.v1`), a report for a person and nothing a later stage reads:
@@ -300,7 +305,7 @@ Refused, before anything is published:
 ## The partition receipt
 
 After every review is published, the stage rebuilds `recensor-partition-receipt.v6`
-(under `run-health/`) from disk:
+(`run-health/recensor-partition-receipt.json`) from disk:
 
 ```
 {schema, run_id, config_digest, scope: "reading-acts-and-configured-witnesses",

@@ -5,7 +5,9 @@ its own ``smart_resize`` against the row's ``min_pixels``/``max_pixels``.  A
 row whose ``max_model_len`` cannot hold image + prompt + answer makes vLLM
 answer HTTP 400 before generating anything, on a card that bills by the hour.
 This module computes the exact count and refuses locally instead; it never
-downscales, clamps or reserves.
+downscales an image or shrinks a request to fit. The answer reserve it charges
+(:func:`page_answer_bound`) is an estimate that decides admission only, clamped to
+the page cap, and it never bounds the reply.
 
 :func:`smart_resize` is a rewrite of the published formula (source named in
 :data:`SMART_RESIZE_SOURCE`); the token count is the processor's own
@@ -578,7 +580,7 @@ PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS: Final = (
 # The page answer's reserve. The answer transcribes the same ink the witnesses
 # read, so its text is estimated at the page's longest witness text, each act
 # entry adds its JSON scaffold -- this skeleton, one entry with an empty text, a
-# three-word label and five cites -- and each Surya line shown adds one cite of
+# short label and five cites -- and each Surya line shown adds one cite of
 # its own, since lines are cited one by one, never by a range. All are
 # estimated at the carried rate. The
 # reserve decides admission only: it is the estimate or the page cap, whichever

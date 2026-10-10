@@ -102,8 +102,9 @@ volume's only job is keeping results safe when the pod deletes itself.
   queue makes each arm's command offline itself.
 - `runpodctl pod list` without `--all` hides stopped pods, which still bill for disk.
 - RunPod REST v1 retires on 2026-11-15; the project's default is v2.
-- RunPod's Cloudflare refuses urllib's default User-Agent (error 1010, HTTP 403); every
-  project call sends `verbatus-pod/1.0` (2026-10-09).
+- RunPod's Cloudflare refuses urllib's default User-Agent (error 1010, HTTP 403); the
+  project's urllib transport (`provider_runpod.py`) sends `verbatus-pod/1.0`;
+  `pod_guard.sh` and `pod_delete.sh` call the API with curl and set no such header.
 - Verify a queue's results at home (`queue_runner fetch` checks every digest), not on the
   pod: the end-of-queue sha256 pass over the pod's network disk crawled for 30 min on
   35,000 small files (2026-10-09).
