@@ -26,6 +26,13 @@ The project lead does not write code. The lead decides:
 Everything else is engineering and the session decides it. Put the reason in the commit
 message or pull request, not in a TODO or a handoff.
 
+## Old runs
+
+No real run has been made yet, and the pipeline keeps changing. Nothing has to stay
+compatible with earlier run trees, records, configuration files or answer formats:
+change a format when it helps, and remove code, switches and documents kept only for
+older runs rather than carry them.
+
 ## RunPod
 
 Before any RunPod work (a pod, a volume, a price, stock, the API), read
