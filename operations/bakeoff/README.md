@@ -317,7 +317,7 @@ Run cards for every model are in `cards/` (index: `cards/README.md`).
 The arms above read a page alone. `fed_arm.py` sends a reader the Perlector's whole page
 request, witnesses included, so a base model, a LoRA adapter or a merged checkpoint can be
 judged in the Perlector's seat without running the pipeline. It reads a sealed run tree
-(stages 1-4 done; for example the cold run extracted from its tar) and never writes to it.
+(stages 1-4 done) and never writes to it.
 A pipeline run tree (one with `run.json`) is used only once its Exemplar and Perlector
 stage seals verify, and every feed, call record and render it reads is digest-checked.
 
@@ -350,7 +350,7 @@ declare that quantization. `--model-name` is the served name the requests ask fo
 folder.
 
 ```sh
-.venv/bin/python -m operations.bakeoff.fed_arm run --run-tree $V/runs/cold73-2026-10-09 \
+.venv/bin/python -m operations.bakeoff.fed_arm run --run-tree $V/runs/<run> \
   --out $V/bakeoff/fed-cache --label qwen38-base-greedy --model-name perlector-qwen3.8-27b \
   --server-url http://127.0.0.1:8190 --concurrency 16
 ```
@@ -448,11 +448,7 @@ Per page group (act pages split by form) and for the hard pages:
 `scorecard.md` and `scorecard.json` go to `--out`. Every heading says **vs fool's gold
 (ballpark, not accuracy)** while any scored gold page's STATUS says fool's gold; only an
 explicit checked status (`gold (<who> <date>)` or `lead-checked`) on every scored page,
-in both compared sets, drops the label. On the cold run's own readings it reproduces the
-follow column of the 2026-10-09 witness-hints note (handwritten acts: 8,769 gold words,
-only Chandra right followed 440 of 582, only DAI 82 of 234, only Churro 378 of 657); its
-resisted, copied and vote figures differ from that note by design (absent witnesses
-apart, one-to-one copies, plurality vote with ties apart).
+in both compared sets, drops the label.
 
 ## The trap generator (`mutations.py`)
 

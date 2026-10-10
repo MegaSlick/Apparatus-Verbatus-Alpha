@@ -38,7 +38,7 @@ pages witnessed are those whose Exemplar `page` record is `sealed`.
 A models roster may seat a witness on some pages only: `[witness_routing]` names the
 chair and its rule (`common/chairs/config.py`). Absent, which is every committed
 roster, every configured witness reads every sealed page, nothing below is written,
-and a run is byte for byte what it was before routing existed.
+and a run that routes nothing seals no routing record.
 
 The one rule, `index-and-table.v1` (`common/witness_routing.py`), routes a page to
 the chair when Surya's layout tags a block on it `Table` (`surya-table`), when the

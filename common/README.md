@@ -195,7 +195,8 @@ the classes that are), proven from its one `not-run` reading (attempt
 `page-read:1`, problem `page-not-sealed`, the Exemplar's refused page its only
 input), with no accounting or act record naming the page.
 
-The Recensor's v5 receipt (`recensor_receipt.py`; v4 is still read) counts
+The Recensor's partition receipt (`recensor-partition-receipt.v6`,
+`recensor_receipt.py`) counts
 these units, and binds each page's first reading, re-ask and last accounting
 with what the re-ask did. A held
 unit whose review is completed with a named `release_reason` is resolved and
