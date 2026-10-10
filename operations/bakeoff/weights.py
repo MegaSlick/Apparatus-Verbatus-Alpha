@@ -13,12 +13,12 @@ nothing. Three kinds of name:
   the chair that uses the artifact) into `<store>/hf/<artifact>` (`local/` for Surya's
   bundle), then refused unless the store's manifest digest is the one
   `config/models-real.toml` pins. A present artifact is hashed again, never downloaded.
-- Bake-off snapshots (`qwen3.5-27b`, `qwen3.5-9b`, `DotsMOCR`, `qwen3.8-27b-fp8`): the Hub
-  repository at the commit `weight_pins.json` names, into `<store>/hf/<name>` (where
-  witness_run and the native arms look), every file checked against the pinned size and its
-  Hub digest (SHA-256 for LFS files, the git blob SHA-1 for the rest; a row that also carries
-  a SHA-256 is checked by that, so the pin also gives the canonical model-store manifest a
-  later chair would seal). `<name>.verified.json` beside
+- Bake-off snapshots (`qwen3.5-27b`, `qwen3.5-9b`, `DotsMOCR`, `qwen3.8-27b-fp8`,
+  `qwen3.8-27b-nvfp4`): the Hub repository at the commit `weight_pins.json` names, into
+  `<store>/hf/<name>` (where witness_run and the native arms look), every file checked
+  against the pinned size and its Hub digest (SHA-256 for LFS files, the git blob SHA-1
+  for the rest; a row that also carries a SHA-256 is checked by that, so the pin also gives
+  the canonical model-store manifest a later chair would seal). `<name>.verified.json` beside
   the snapshot records each file's size and modification time once it verified, so an
   unchanged snapshot is not hashed again.
 - Line-arm weights (`kraken-*`, `pylaia-*`, `party-v2`, `surya-ocr-2`): the arm module's

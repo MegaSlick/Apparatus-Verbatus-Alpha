@@ -546,6 +546,7 @@ class ModelJob:
 
     def server_command(self) -> tuple[list[str], list[str]]:
         """(the command prefix, the `serve` arguments) this model's server runs."""
+        A.assert_row_quantization(self.row, self.weights)
         argv = A.server_argv(
             self.row,
             self.weights,

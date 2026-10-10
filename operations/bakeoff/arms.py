@@ -80,16 +80,20 @@ _NON_THINKING = {
     "presence_penalty": 1.5,
     "repetition_penalty": 1.0,
 }
+_QWEN38_PRESET: dict[str, Any] = {
+    "family": "qwen3.8",
+    "sampling": _NON_THINKING,
+    "min_pixels": 65_536,
+    "max_pixels": 16_777_216,
+    "prompt_source": _QWEN_COOKBOOK,
+    "card": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/"
+    "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/README.md",
+}
 VENDOR_PRESETS: dict[str, dict[str, Any]] = {
-    "Qwen/Qwen3.8-": {
-        "family": "qwen3.8",
-        "sampling": _NON_THINKING,
-        "min_pixels": 65_536,
-        "max_pixels": 16_777_216,
-        "prompt_source": _QWEN_COOKBOOK,
-        "card": "https://huggingface.co/Qwen/Qwen3.8-27B/blob/"
-        "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0/README.md",
-    },
+    "Qwen/Qwen3.8-": _QWEN38_PRESET,
+    # NVIDIA's quantized Qwen3.8 builds (`nvidia/Qwen3.8-27B-NVFP4`): the same model and
+    # chat template, so Qwen's own recommendations apply unchanged.
+    "nvidia/Qwen3.8-": _QWEN38_PRESET,
     "Qwen/Qwen3.5-": {
         "family": "qwen3.5",
         "sampling": _NON_THINKING,
@@ -247,6 +251,33 @@ def resolve_weights(
         f"no weights for {arm.name}: pass --weights, or a --store-root/--cache-root holding "
         f"one of {[str(c) for c in candidates] or 'nothing (no artifact for this arm)'}"
     )
+
+
+def assert_row_quantization(row: dict[str, Any], weights: Path) -> None:
+    """Refuse a row whose `quantization` the snapshot's own config.json does not declare.
+
+    The serving manager's guard (`operations/serving/manager.py::assert_quantization`),
+    applied to the bake-off's snapshot directory: vLLM given `--quantization` and an
+    unquantized checkpoint would quantize it at load, serving weights nobody pinned. A
+    row without `quantization` is not checked.
+    """
+    if row.get("quantization") is None:
+        return
+    from types import SimpleNamespace
+
+    from operations.serving.errors import ServingConfigurationError
+    from operations.serving.manager import assert_quantization
+
+    profile = SimpleNamespace(
+        quantization=row["quantization"],
+        chair=row.get("chair"),
+        recipe=row.get("recipe"),
+        tier=row.get("tier"),
+    )
+    try:
+        assert_quantization(SimpleNamespace(root=Path(weights)), profile)
+    except ServingConfigurationError as error:
+        raise SystemExit(str(error)) from error
 
 
 def server_argv(

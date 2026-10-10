@@ -1,5 +1,5 @@
-"""Optional engine options (FP8 weights, FP8 KV cache, MTP speculation) and the variants
-catalogue that uses them. Offline: no vLLM, no GPU, no network."""
+"""Optional engine options (FP8 or mixed NVFP4/FP8 weights, FP8 KV cache, MTP speculation)
+and the variants catalogue that uses them. Offline: no vLLM, no GPU, no network."""
 
 from __future__ import annotations
 
@@ -115,12 +115,17 @@ def test_the_variants_catalogue_is_a_valid_catalogue_of_unproven_perlector_rows(
         "unproven-real-perlector-fp8-mtp3",
         "unproven-real-perlector-fp8-mtp1",
         "unproven-real-perlector-fp8-kvfp8",
+        "unproven-real-perlector-nvfp4",
+        "unproven-real-perlector-nvfp4-mtp3",
     }
     for profile in recipes.profiles:
         assert isinstance(profile, ServingProfile)
         assert (profile.chair, profile.tier) == ("perlector", "generic-80gb-plus")
         assert profile.preflight_state == "unproven"
-        assert profile.quantization == "fp8"
+        # Each row's weights by its name: `-fp8` the official FP8 build, `-nvfp4`
+        # NVIDIA's ModelOpt mixed NVFP4/FP8 build.
+        expected = "modelopt_mixed" if "-nvfp4" in profile.recipe else "fp8"
+        assert profile.quantization == expected, profile.recipe
         assert profile.enable_prefix_caching is False  # hybrid attention
     run = {profile.recipe for profile in parse_serving_recipes(_raw(RUN_CATALOGUE)).profiles}
     assert not names & run
@@ -155,8 +160,34 @@ def test_the_speculating_rows_render_their_flags_last():
     ) == ["served_model_id", "speculative_config"]
 
 
-def test_the_fp8_repository_is_guarded_as_hybrid_attention():
+def test_the_nvfp4_rows_render_vllms_modelopt_mixed_name_last():
+    recipes = parse_serving_recipes(_raw(VARIANTS))
+    by_name = {profile.recipe: profile for profile in recipes.profiles}
+    argv = render_vllm_argv(
+        command_prefix=("vllm",),
+        profile=by_name["unproven-real-perlector-nvfp4-mtp3"],
+        snapshot=_snapshot(),
+    )
+    assert list(argv[-5:]) == [
+        "--no-trust-remote-code",
+        "--quantization",
+        "modelopt_mixed",
+        "--speculative-config",
+        '{"method":"mtp","num_speculative_tokens":3}',
+    ]
+    assert by_name["unproven-real-perlector-nvfp4"].engine_option_argv() == (
+        "--quantization",
+        "modelopt_mixed",
+    )
+    # The NVFP4 pair differs from the FP8 pair only in the weights it names.
+    assert launch_differences(
+        by_name["unproven-real-perlector-nvfp4"], by_name["unproven-real-perlector-fp8"]
+    ) == ["served_model_id", "quantization"]
+
+
+def test_the_quantized_repositories_are_guarded_as_hybrid_attention():
     assert "Qwen/Qwen3.8-27B-FP8" in _HYBRID_ATTENTION_REPOSITORIES
+    assert "nvidia/Qwen3.8-27B-NVFP4" in _HYBRID_ATTENTION_REPOSITORIES
 
 
 # --- the closed schema ----------------------------------------------------------------
@@ -166,6 +197,8 @@ def test_the_fp8_repository_is_guarded_as_hybrid_attention():
     "field,value,message",
     [
         ("quantization", "awq", "quantization must be one of"),
+        ("quantization", "modelopt", "quantization must be one of"),
+        ("quantization", "modelopt_fp4", "quantization must be one of"),
         ("quantization", "", "non-blank"),
         ("kv_cache_dtype", "fp8_e5m2", "kv_cache_dtype must be one of"),
         ("speculative_config", {"method": "mtp"}, "exactly"),
@@ -234,3 +267,30 @@ def test_an_fp8_row_needs_a_checkpoint_that_declares_fp8(tmp_path):
 
 def test_a_row_without_quantization_is_not_checked(tmp_path):
     assert_quantization(SimpleNamespace(root=tmp_path / "absent"), _quant_row(None))
+
+
+def test_a_modelopt_mixed_row_needs_a_modelopt_mixed_precision_checkpoint(tmp_path):
+    # As NVIDIA's Qwen3.8-27B-NVFP4 config.json says it (quant_algo case is vLLM's to
+    # normalise); per-layer FP8 / NVFP4 is vLLM's `modelopt_mixed` method.
+    mixed = {
+        "quantization_config": {
+            "quant_method": "modelopt",
+            "quant_algo": "MIXED_PRECISION",
+            "quantized_layers": {"lm_head": {"quant_algo": "NVFP4", "group_size": 16}},
+        }
+    }
+    assert_quantization(_config_snapshot(tmp_path, mixed), _quant_row("modelopt_mixed"))
+    mixed["quantization_config"]["quant_algo"] = "mixed_precision"
+    assert_quantization(_config_snapshot(tmp_path, mixed), _quant_row("modelopt_mixed"))
+    refused = [
+        ({"architectures": ["x"]}, "quant_method=None"),
+        ({"quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4"}}, "'NVFP4'"),
+        ({"quantization_config": {"quant_method": "modelopt"}}, "quant_algo=None"),
+        ({"quantization_config": {"quant_method": "fp8"}}, "quant_method='fp8'"),
+    ]
+    for document, message in refused:
+        with pytest.raises(ServingConfigurationError, match=message):
+            assert_quantization(_config_snapshot(tmp_path, document), _quant_row("modelopt_mixed"))
+    # And an fp8 row is not satisfied by the ModelOpt checkpoint.
+    with pytest.raises(ServingConfigurationError, match="quant_method='modelopt'"):
+        assert_quantization(_config_snapshot(tmp_path, mixed), _quant_row("fp8"))
