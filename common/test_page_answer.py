@@ -363,9 +363,7 @@ def test_bare_grammar_keys_are_quoted_and_the_repair_recorded():
     state, answer, problems, repairs = page_answer.parse_page_answer_repaired(BARE)
     assert (state, problems) == ("parsed", [])
     assert answer["acts"][0]["text"] == "Le 3 mai, kind: x, n: 2 {acts: y}"
-    assert [(repair["code"], repair["keys"]) for repair in repairs] == [
-        ("unquoted-keys-quoted", 9)
-    ]
+    assert [(repair["code"], repair["keys"]) for repair in repairs] == [("unquoted-keys-quoted", 9)]
 
 
 @pytest.mark.parametrize(
