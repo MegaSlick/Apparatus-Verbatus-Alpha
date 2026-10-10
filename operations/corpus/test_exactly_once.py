@@ -461,10 +461,60 @@ def test_a_catch_through_an_unplaced_region_only_is_reported_not_credited():
                 "g": {"findings": [{"code": "reading-incomplete", "n": 3}]},
                 "i": {"findings": [{"code": "record-not-read", "id": "A9", "box_px": band(0)}]},
             },
+            "holds": [
+                "reading-incomplete",
+                "reading-unplaced",
+                "record-not-read",
+                "unread-ink",
+                "witness-text-not-read",
+            ],
+            "flags": [],
         },
     }
 
     assert _caught_by(held, box) == (["g"], ["f"], ["b", "e"])
+
+
+def test_only_findings_listed_in_the_accounting_holds_catch_a_failure():
+    """A review flag and a finding left out of `holds` catch nothing."""
+    box = band(1)
+    page_records = {
+        "act_regions": [
+            {"n": 1, "kind": "act", "region_boxes_px": [band(1)], "union_box_px": band(1)},
+        ],
+        "accounting": {
+            "units": [{"id": "A2", "disposition": "cited", "by": [1]}],
+            "rules": {
+                "e": {"findings": [{"code": "witness-short-unit-not-read", "id": "A2"}]},
+                "i": {"findings": [{"code": "record-read-as-other", "n": 1, "id": "A2"}]},
+            },
+            "holds": [],
+            "flags": ["witness-short-unit-not-read"],
+        },
+    }
+
+    assert _caught_by(page_records, box) == ([], [], [])
+    assert _caught_by(page_records, box, "flags") == (["e"], [], [])
+
+
+def test_a_loss_only_a_review_flag_reaches_is_uncaught_and_reported_flagged():
+    """Rule (e) finds record 2 read otherwise; under a policy that makes that finding a
+    review flag the reading is delivered as read, so the loss is not caught."""
+    acts = one_act_each()
+    acts[2]["text"] = "Le premier juin, rien."
+    flagged = page(acts)
+    accounting = flagged["accounting"]
+    assert accounting["holds"] == ["witness-text-not-read"]
+    flagged["accounting"] = {**accounting, "holds": [], "flags": accounting["holds"]}
+
+    result = report([flagged])
+
+    [lost] = [row for row in result["rows"] if row["outcome"] == "lost"]
+    assert (lost["caught_by"], lost["flagged_by"]) == ([], ["e"])
+    assert result["records"]["failures_caught_by_rule"] == {}
+    assert result["records"]["failures_flagged_by_rule"] == {"e": 1}
+    assert result["records"]["uncaught_record_ids"] == ["rec-2"]
+    assert result["gate"]["uncaught_failures"] == 1
 
 
 def test_a_held_reading_publishes_no_region_and_its_records_are_caught_page_wide():
@@ -1033,7 +1083,7 @@ def test_the_command_scores_a_selection_and_never_overwrites_or_writes_into_the_
         "split": "val",
         "rows_not_scored": 0,
     }
-    assert written["schema"] == "exactly-once-report.v4"
+    assert written["schema"] == "exactly-once-report.v5"
     assert written["run"]["run_id"] == "r"
     assert is_sha256(written["run"]["export_sha256"])
     with pytest.raises(Refusal, match="^output-exists:"):
