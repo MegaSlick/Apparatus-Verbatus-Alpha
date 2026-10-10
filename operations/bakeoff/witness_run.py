@@ -98,6 +98,17 @@ def cached_ok(path: Path) -> bool:
         return False
 
 
+def cache_conflict(path: Path, setup: dict[str, Any]) -> list[str]:
+    """The fields of `setup` (checkpoint, revision, recipe) a cached page was written under
+    differently. A page cached before recipes were recorded was served with none, so it
+    conflicts with a run that selects a recipe."""
+    try:
+        old = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return sorted(k for k, v in setup.items() if (k in old or k == "recipe") and old.get(k) != v)
+
+
 def terminal_failure(path: Path) -> dict[str, Any] | None:
     """The cached page's failure when sending it again at its settings cannot help.
 
@@ -224,8 +235,20 @@ class Server:
                 self.process.wait(timeout=30)
         self._log.close()
 
+    def _is_recorded_server(self) -> bool:
+        """Whether the process at the hand-off's pid still runs the recorded command: a
+        stale file's pid may have been given to an unrelated process."""
+        try:
+            raw = Path(f"/proc/{self.pid}/cmdline").read_bytes()
+        except OSError:
+            return False
+        return raw.rstrip(b"\0").decode("utf-8", "replace").split("\0") == self.argv
+
     def _stop_adopted(self) -> None:
-        """Stop a server this process did not start: no child to wait on, so watch its pid."""
+        """Stop a server this process did not start: no child to wait on, so watch its pid.
+        A pid that is no longer that server is left alone."""
+        if not self._is_recorded_server():
+            return
         for signum, grace in ((signal.SIGTERM, 60.0), (signal.SIGKILL, 30.0)):
             if not _pid_alive(self.pid):
                 return
@@ -511,6 +534,12 @@ class ModelJob:
         for page in pages:
             cached = self.dir / f"{page.stem}.json"
             if cached_ok(cached):
+                differ = cache_conflict(cached, self.checkpoint())
+                if differ:
+                    raise SystemExit(
+                        f"{cached} was cached under another setup ({', '.join(differ)} "
+                        "differ); use a new --label"
+                    )
                 continue
             png = A.load_page_png(page)
             records = self._records(page, png, detector) if self.arm.scope == "record" else None
@@ -668,6 +697,7 @@ class ModelJob:
             "arm": self.arm.name,
             "repo": self.repo,
             "revision": self.revision,
+            "recipe": self.recipe,
             "weights": str(self.weights),
             "server": {"url": url, "argv": argv},
             "page": page.stem,
@@ -691,6 +721,10 @@ class ModelJob:
             "written": now(),
         }
         write_json(self.dir / f"{page.stem}.json", record)
+
+    def checkpoint(self) -> dict[str, Any]:
+        """What a label's cached pages must agree on: the model served behind it."""
+        return {"repo": self.repo, "revision": self.revision, "recipe": self.recipe}
 
     def _failure(self, units: list[dict]) -> dict[str, Any] | None:
         """A terminal failure when every unit in error was stopped by a timeout or a loop."""
