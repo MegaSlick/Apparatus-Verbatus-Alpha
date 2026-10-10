@@ -1,0 +1,134 @@
+# Pod F: the Perlector's model served smaller and faster, on the 96 GB card (RTX PRO 6000).
+# Not run yet; prepared 2026-10-09 (workbench design note S0c). Launch: RUNBOOK.md section 4,
+# exactly as reader-96gb.toml. Paths are the pod's.
+#
+# Each arm is the 2026-10-09 `qwen38-27b-vendor` arm (same prompt, sampling, pixels, 32 in
+# flight, 0.92 of the card) with one change, named by `--recipe`: a row of
+# config/serving_recipes_real_variants.toml. So each cache compares page for page with the
+# bf16 cache already home (private/bakeoff/reader-cache-2026-10-09-verified/qwen38-27b-vendor).
+# The vendor sampling is not greedy (temperature 0.7, seed 0), so the bf16 repeat arm at the
+# end measures how much bf16 differs from itself; a difference smaller than that is noise.
+#
+# The last two arms (added 2026-10-09, design note P3) serve NVIDIA's mixed NVFP4/FP8 build
+# of the same model (`--recipe unproven-real-perlector-nvfp4[-mtp3]`, 21.9 GB, pinned in
+# weight_pins.json `qwen3.8-27b-nvfp4`). They come after the bf16 repeat so that, if the day
+# runs late, the FP8 arms and the noise floor are kept and NVFP4 is what is cut.
+#
+# The fed-witness arm (`qwen-fed`, the Perlector's own prompt with witnesses) is its own
+# module, not a witness_run model: `operations.bakeoff.fed_arm run --run-tree <cold73 tree>
+# --label ... --model-name ... --weights <the same snapshot> --recipe <the same row>
+# --revision <the same pin>`. Its cache refuses a label reused under another checkpoint,
+# recipe, seed, token cap or run tree, and it refuses a quantized row on bf16 weights.
+schema = "bakeoff-queue.v1"
+name = "perlector-fp8-96gb"
+pages = "/workspace/private/bakeoff-pages"
+out = "/workspace/private/bakeoff/reader-cache"
+sync_to = "/workspace/private/bakeoff/reader-cache-home"   # the network-volume route
+own_disk = false
+smoke_pages = 2
+behind_schedule_min = 30
+end_pod = "delete"
+# hard_stop_min = 120            # the lead's cap for the day; off unless set
+
+# Official FP8 weights (30.9 GB, pinned in weight_pins.json `qwen3.8-27b-fp8`).
+[[arms]]
+name = "qwen38-27b-fp8-vendor"
+time_box_min = 30
+cut = "never"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-fp8"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
+  "--label", "qwen38-27b-fp8-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-fp8",
+  "--repo", "Qwen/Qwen3.8-27B-FP8", "--revision", "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+  "--recipe", "unproven-real-perlector-fp8",
+  "--max-num-batched-tokens", "16384",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
+
+# FP8 plus the model's own MTP head, 3 draft tokens. The first request answers whether image
+# inputs and MTP work together on vLLM 0.30.0; server.log carries the acceptance counters.
+[[arms]]
+name = "qwen38-27b-fp8-mtp3-vendor"
+time_box_min = 30
+cut = "never"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-fp8"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
+  "--label", "qwen38-27b-fp8-mtp3-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-fp8",
+  "--repo", "Qwen/Qwen3.8-27B-FP8", "--revision", "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+  "--recipe", "unproven-real-perlector-fp8-mtp3",
+  "--max-num-batched-tokens", "16384",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
+
+# The fallback depth, worth its 15 minutes only if 3 failed or accepted poorly.
+[[arms]]
+name = "qwen38-27b-fp8-mtp1-vendor"
+time_box_min = 30
+cut = "behind-schedule"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-fp8"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
+  "--label", "qwen38-27b-fp8-mtp1-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-fp8",
+  "--repo", "Qwen/Qwen3.8-27B-FP8", "--revision", "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+  "--recipe", "unproven-real-perlector-fp8-mtp1",
+  "--max-num-batched-tokens", "16384",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
+
+# FP8 with output restricted to Latin-script, digit and punctuation tokens (default off
+# everywhere else; operations/bakeoff/allowed_tokens.py). Any change from the FP8 arm is
+# where the model would have used a token from another script.
+[[arms]]
+name = "qwen38-27b-fp8-latin-vendor"
+time_box_min = 30
+cut = "behind-schedule"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-fp8"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
+  "--label", "qwen38-27b-fp8-latin-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-fp8",
+  "--repo", "Qwen/Qwen3.8-27B-FP8", "--revision", "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+  "--recipe", "unproven-real-perlector-fp8", "--allowed-tokens", "latin-json-v1",
+  "--max-num-batched-tokens", "16384",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
+
+# The bf16 control run again (55.6 GB fetch): how far bf16 differs from its own 10-09 run.
+[[arms]]
+name = "qwen38-27b-vendor-repeat"
+time_box_min = 25
+cut = "behind-schedule"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27B"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
+  "--label", "qwen38-27b-vendor-repeat", "--weights", "/workspace/private/model-store/hf/qwen3.8-27B",
+  "--repo", "Qwen/Qwen3.8-27B", "--revision", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "--max-num-batched-tokens", "16384",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
+
+# NVIDIA's mixed NVFP4/FP8 weights (21.9 GB, pinned in weight_pins.json `qwen3.8-27b-nvfp4`):
+# MLPs and lm_head in 4-bit NVFP4, attention and DeltaNet projections FP8, vision tower and
+# MTP head bf16. vLLM 0.30.0 serves it as `modelopt_mixed`; needs a Blackwell card. The
+# smoke answers whether it starts and reads images; server.log names the NVFP4 kernel picked.
+[[arms]]
+name = "qwen38-27b-nvfp4-vendor"
+time_box_min = 30
+cut = "behind-schedule"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-nvfp4"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
+  "--label", "qwen38-27b-nvfp4-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-nvfp4",
+  "--repo", "nvidia/Qwen3.8-27B-NVFP4", "--revision", "482ca0f3832238542f8f5295dde86b5f22711d80",
+  "--recipe", "unproven-real-perlector-nvfp4",
+  "--max-num-batched-tokens", "16384",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]
+
+# NVFP4/FP8 plus the bf16 MTP head, 3 draft tokens: the cheapest-per-page candidate.
+[[arms]]
+name = "qwen38-27b-nvfp4-mtp3-vendor"
+time_box_min = 30
+cut = "behind-schedule"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-nvfp4"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "--model", "qwen-vendor",
+  "--label", "qwen38-27b-nvfp4-mtp3-vendor", "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-nvfp4",
+  "--repo", "nvidia/Qwen3.8-27B-NVFP4", "--revision", "482ca0f3832238542f8f5295dde86b5f22711d80",
+  "--recipe", "unproven-real-perlector-nvfp4-mtp3",
+  "--max-num-batched-tokens", "16384",
+  "--pages", "/workspace/private/bakeoff-pages", "--out", "/workspace/private/bakeoff/reader-cache"]

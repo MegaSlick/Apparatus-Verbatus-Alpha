@@ -66,3 +66,42 @@ def test_missing_header_is_a_problem_and_dir_loader(tmp_path):
     (tmp_path / "a" / "p001.txt").write_text(SYNTHETIC, encoding="utf-8")
     (tmp_path / "README.txt").write_text("not a page file\n", encoding="utf-8")
     assert list(load_gold_dir(tmp_path)) == ["p001"]
+
+
+def test_diplomatic_text_keeps_doubt_marks_and_scores_like_reduce_marks():
+    # C7 P1: training targets were built from reduce_marks, which erases [[?]] and the
+    # other readings. The diplomatic text keeps the Perlector's doubt grammar; its scored
+    # words are still exactly reduce_marks's.
+    from operations.bakeoff.gold import diplomatic_text, marked_words, scored_text
+
+    cases = [
+        "Le [[?]] [[juin|juillet]] mil huit",
+        "a [struck: b [[c|d]]] e",
+        "a [ins: [[b|c]] d] e",
+        "[[?]] x [[?]]",
+        "l'[[abbé]], [[Jean Baptiste|J. Bte]] fils",
+        "Le [struck: dix\nonze] mai",
+    ]
+    for raw in cases:
+        text = diplomatic_text(raw)
+        assert [w.text for w in marked_words(text)] == reduce_marks(raw).split(), raw
+    assert diplomatic_text("Le [[?]] [[juin|juillet]] mil") == "Le [[?]] [[juin|juillet]] mil"
+    assert diplomatic_text("a [struck: b [[c|d]]] e") == "a e"
+    assert diplomatic_text("a [ins: [[b|c]] d] e") == "a [[b|c]] d e"
+    assert scored_text("[[?]] [[?]]") == ""
+    words = marked_words("l'[[abbé]], [[Jean Baptiste|J. Bte]] fils")
+    assert [(w.text, w.doubtful) for w in words] == [
+        ("l'abbé,", True), ("Jean", True), ("Baptiste", True), ("fils", False),
+    ]  # fmt: skip
+    text = "l'[[abbé]], x"
+    assert "".join(text[i] for i in marked_words(text)[0].chars) == "l'abbé,"
+
+
+def test_doubt_is_tracked_by_position_not_spelling():
+    # C7 P2: `Marie épouse [[Marie|Maria]]` -- the first, certain Marie is not doubtful.
+    from operations.bakeoff.gold import marked_words
+
+    words = marked_words("Marie épouse [[Marie|Maria]]")
+    assert [(w.text, w.doubtful) for w in words] == [
+        ("Marie", False), ("épouse", False), ("Marie", True),
+    ]  # fmt: skip

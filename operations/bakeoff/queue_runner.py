@@ -21,7 +21,9 @@ first. The next arm's install and preparation run while the current arm's comman
 `status.json` beside the cache is rewritten every 30 s and at every change, the queue's
 events join the arms' `events.jsonl`, and the lead's phone hears of each milestone once.
 At the end the cache is copied to `sync_to`, every file's sha256 is compared, `DONE.json`
-is written to both, and the pod is ended through its guard (or `pod_delete.sh`).
+is written to both, and the pod is ended through its guard (or `pod_delete.sh`). With
+`--own-disk --keep-pod` the copy is not read back on the pod: `fetch` checks every file
+against `DONE.json` at home.
 """
 
 from __future__ import annotations
@@ -49,7 +51,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from operations.bakeoff.witness_run import cached_ok, event, list_pages, write_json
+from operations.bakeoff.witness_run import (
+    cached_ok,
+    event,
+    list_pages,
+    settled,
+    terminal_failure,
+    write_json,
+)
 
 QUEUE_SCHEMA = "bakeoff-queue.v1"
 STATUS_SCHEMA = "bakeoff-queue-status.v1"
@@ -74,7 +83,9 @@ GPU_LANE_CPUS = 2
 ESTIMATE_CPUS = (8, 16, 32)
 # Files the queue keeps rewriting after the copy; they are copied but not digested.
 LIVE_FILES = frozenset({"status.json", "status.tmp", "events.jsonl", "DONE.json", "DONE.tmp"})
-DONE_TITLE = "Session complete"
+# The phone's word for the queue's last ping (`operations/notify`, event `queue-done`).
+DONE_EVENT = "queue-done"
+DONE_TITLE = "Queue finished"
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _MANIFEST_KEYS = {
     "schema",
@@ -131,6 +142,11 @@ class ArmSpec:
     @property
     def records(self) -> str:
         return self.writes or self.name
+
+    @property
+    def keeps_server(self) -> bool:
+        """A GPU witness_run arm: its smoke's server is kept for its full run."""
+        return self.gpu and _runs_witness(self.command)
 
 
 @dataclass(frozen=True)
@@ -208,8 +224,9 @@ def _parse_arm(raw: Any, index: int, out: Path, pages: Path, earlier: list[str])
         raise ManifestError(f"{where}: gpu must be true or false")
     command = _argv(raw.get("command"), f"{where}: command", True)
     assert command is not None
-    if any(item == "--limit" or item.startswith("--limit=") for item in command):
-        raise ManifestError(f"{where}: command must not carry --limit; the queue adds it")
+    for flag in ("--limit", "--keep-server", "--adopt-server"):
+        if any(item == flag or item.startswith(flag + "=") for item in command):
+            raise ManifestError(f"{where}: command must not carry {flag}; the queue adds it")
     named_out = _flag_value(command, "--out")
     if named_out is not None and Path(named_out) != out:
         raise ManifestError(f"{where}: command writes to {named_out}, not the queue's out {out}")
@@ -552,6 +569,19 @@ def copy_tree(source: Path, target: Path, run: Callable[..., Any] = subprocess.r
             except OSError:
                 pass  # object storage keeps no times; the sha256 compare is the proof
     return "python copy"
+
+
+def with_threads(command: tuple[str, ...], threads: int | None) -> tuple[str, ...]:
+    """The command with its `--threads` value set to `threads` (unchanged without either)."""
+    if threads is None:
+        return command
+    out = list(command)
+    for index, item in enumerate(out):
+        if item == "--threads" and index + 1 < len(out):
+            out[index + 1] = str(threads)
+        elif item.startswith("--threads="):
+            out[index] = f"--threads={threads}"
+    return tuple(out)
 
 
 def write_json_anywhere(path: Path, value: Any) -> None:
@@ -1009,8 +1039,73 @@ class Queue:
 
     # arms -------------------------------------------------------------------------
 
+    def _handoff(self, arm: ArmSpec) -> Path:
+        return self.m.out / arm.name / "server-handoff.json"
+
+    def _phase_commands(self, arm: ArmSpec, command: tuple[str, ...]) -> tuple[list, list]:
+        """(smoke, full run). A witness_run arm's smoke leaves its server up and the full
+        run takes it over, so the model loads once per arm, not twice."""
+        limit = ["--limit", str(self.m.smoke_pages)]
+        if not arm.keeps_server or self.smoke_only:
+            return [*command, *limit], list(command)
+        handoff = str(self._handoff(arm))
+        return [*command, "--keep-server", handoff, *limit], [*command, "--adopt-server", handoff]
+
+    def _release_server(self, arm: ArmSpec) -> None:
+        """Stop a server a smoke kept that no full run took over (the hand-off left)."""
+        path = self._handoff(arm)
+        if not path.is_file():
+            return
+        from operations.bakeoff.witness_run import Server
+
+        try:
+            server = Server.adopted(json.loads(path.read_text("utf-8")))
+        except (OSError, ValueError, KeyError, TypeError):
+            server = None
+        if server is not None:
+            server.stop()
+        path.unlink(missing_ok=True)
+        self._event("queue-server-released", arm=arm.name)
+
+    def _release_servers(self) -> None:
+        for arm in self.m.arms:
+            if arm.keeps_server:
+                self._release_server(arm)
+
     def _pages_ok(self, arm: ArmSpec, pages: list[Path]) -> bool:
-        return all(cached_ok(self.m.out / arm.records / f"{p.stem}.json") for p in pages)
+        """Every page read, or failed in a way that sending it again at the same settings
+        would repeat (a request timeout or a loop stop); such a page is never retried."""
+        return all(settled(self.m.out / arm.records / f"{p.stem}.json") for p in pages)
+
+    def _smoke_verdict(self, arm: ArmSpec, pages: list[Path]) -> str:
+        """ "ok" when every smoke page settled and at least one gave an answer; "useless"
+        when every page settled but none answered (each ran into a timeout or a loop: the
+        full run would repeat that at the same settings, so it is not started, and the
+        arm is not retried); "failed" otherwise (an ordinary error, retried at the end)."""
+        paths = [self.m.out / arm.records / f"{p.stem}.json" for p in pages]
+        if not all(settled(path) for path in paths):
+            return "failed"
+        return "ok" if any(cached_ok(path) for path in paths) else "useless"
+
+    def _smoke_useless(self, arm: ArmSpec, t0: float) -> None:
+        failed = self._failed_pages(arm)
+        what = (
+            f"smoke gave no answer: all {len(failed)} smoke page(s) failed terminally "
+            f"({', '.join(sorted({r for f in failed for r in f['reasons']}))}); "
+            "full run not started, not retried at the same settings"
+        )
+        self._error(f"{arm.name}: {what}")
+        self._event("queue-arm-error", arm=arm.name, detail=what)
+        self.ping(f"error:{arm.name}", "milestone", f"arm failed: {arm.name} {what}")
+        self._record(arm, "failed", t0)
+
+    def _failed_pages(self, arm: ArmSpec) -> list[dict[str, Any]]:
+        failed = []
+        for page in self.page_list:
+            failure = terminal_failure(self.m.out / arm.records / f"{page.stem}.json")
+            if failure is not None:
+                failed.append({"page": page.stem, "reasons": failure.get("reasons") or []})
+        return failed
 
     def _end_lane(self, lane: str) -> None:
         with self.lock:
@@ -1022,6 +1117,7 @@ class Queue:
 
     def _record(self, arm: ArmSpec, status: str, t0: float) -> None:
         pages = len(self._ok_pages(arm.records))
+        failed = self._failed_pages(arm)
         minutes = (time.monotonic() - t0) / 60
         with self.lock:
             self.outcome[arm.name] = status
@@ -1029,27 +1125,38 @@ class Queue:
                 {
                     "label": arm.name,
                     "pages": pages,
+                    "failed_pages": failed,
                     "wall_seconds": round(minutes * 60, 1),
                     "status": status,
                 }
             )
-        self._event("queue-arm-end", arm=arm.name, status=status, pages=pages)
+        self._event("queue-arm-end", arm=arm.name, status=status, pages=pages, failed=failed)
         if status in ("ok", "smoke-ok"):
+            reasons: dict[str, int] = {}
+            for entry in failed:
+                for reason in entry["reasons"]:
+                    reasons[reason] = reasons.get(reason, 0) + 1
+            note = ", ".join(f"{n} {reason}" for reason, n in sorted(reasons.items()))
             self.ping(
                 f"arm-end:{arm.name}",
                 "milestone",
-                f"{arm.name} {status}: {pages} pages in {minutes:.0f} min",
+                f"{arm.name} {status}: {pages} pages in {minutes:.0f} min"
+                + (f"; {len(failed)} failed, not retried ({note})" if failed else ""),
             )
         elif status == "failed":
-            self.ping(f"failed:{arm.name}", "decision", f"{arm.name} failed after its retry")
+            self.ping(f"failed:{arm.name}", "milestone", f"arm failed: {arm.name}, after its retry")
         elif status == "smoke-failed":
-            self.ping(f"failed:{arm.name}", "decision", f"{arm.name} smoke failed (smoke only)")
+            self.ping(
+                f"failed:{arm.name}", "milestone", f"arm failed: {arm.name} smoke (smoke only)"
+            )
 
     def _arm_error(self, arm: ArmSpec, what: str) -> None:
+        """An arm's failure is the queue's own business (it retries the arm at the end), so
+        the phone hears a milestone; a decision is asked only when the queue cannot go on."""
         self._error(f"{arm.name}: {what}")
         self._event("queue-arm-error", arm=arm.name, detail=what)
         later = "reported at the end" if self.smoke_only else "retried at the end"
-        self.ping(f"error:{arm.name}", "decision", f"{arm.name} {what}; {later}")
+        self.ping(f"error:{arm.name}", "milestone", f"arm failed: {arm.name} {what}; {later}")
         with self.lock:
             self.outcome[arm.name] = "failed"
             self.retry.append(arm)
@@ -1088,6 +1195,8 @@ class Queue:
         except Exception as failure:  # noqa: BLE001 -- a missing program must not end the queue
             self._arm_error(arm, f"crashed ({type(failure).__name__}: {failure})"[:200])
         finally:
+            if arm.keeps_server:
+                self._release_server(arm)
             self._end_lane(lane)
 
     def _run_arm_phases(self, index: int, arm: ArmSpec, lane: str, t0: float) -> None:
@@ -1100,18 +1209,22 @@ class Queue:
                 self._arm_error(arm, "install failed")
             return
         smoke_pages = self.page_list[: self.m.smoke_pages]
-        smoke = [*arm.command, "--limit", str(self.m.smoke_pages)]
+        smoke, full = self._phase_commands(arm, arm.command)
         code = self._run_watched(index, arm, lane, "smoke", smoke)
         if self.hard_stopped:
             self._record(arm, "hard-stopped", t0)
             return
-        if code != 0 or not self._pages_ok(arm, smoke_pages):
+        verdict = self._smoke_verdict(arm, smoke_pages)
+        if code == 0 and verdict == "useless":
+            self._smoke_useless(arm, t0)
+            return
+        if code != 0 or verdict != "ok":
             self._arm_error(arm, f"smoke failed (exit {code})")
             return
         if self.smoke_only:
             self._record(arm, "smoke-ok", t0)
             return
-        code = self._run_watched(index, arm, lane, "run", list(arm.command))
+        code = self._run_watched(index, arm, lane, "run", full)
         if self.hard_stopped:
             self._record(arm, "hard-stopped", t0)
         elif code != 0 or not self._pages_ok(arm, self.page_list):
@@ -1119,12 +1232,14 @@ class Queue:
         else:
             self._record(arm, "ok", t0)
 
-    def _retry_arm(self, arm: ArmSpec) -> None:
+    def _retry_arm(self, arm: ArmSpec, lane: str = "gpu", threads: int | None = None) -> None:
+        """The arm's one retry, in its own lane; a CPU arm's `--threads` becomes `threads`."""
         t0 = time.monotonic()
         index = self.m.arms.index(arm)
         never_ran = self.outcome.get(arm.name) == "deferred"
+        command = with_threads(arm.command, threads)
         with self.lock:
-            self.lanes["gpu"] = {
+            self.lanes[lane] = {
                 "arm": arm.name,
                 "records": arm.records,
                 "index": index,
@@ -1132,7 +1247,9 @@ class Queue:
                 "t0": self.clock(),
                 "wall0": time.time(),
                 "retry": True,
+                "threads": threads,
             }
+        self._event("queue-arm-retry", arm=arm.name, lane=lane, threads=threads)
         try:
             if never_ran:
                 # Its first attempt: install and prepare as any arm does (once).
@@ -1144,10 +1261,11 @@ class Queue:
                 self._record(arm, "failed", t0)
                 return
             # The smoke again first (cached pages are skipped, so a passed smoke costs nothing).
-            smoke = [*arm.command, "--limit", str(self.m.smoke_pages)]
-            code = self._run_watched(index, arm, "gpu", "retry", smoke)
-            if code == 0 and self._pages_ok(arm, self.page_list[: self.m.smoke_pages]):
-                code = self._run_watched(index, arm, "gpu", "retry", list(arm.command))
+            smoke, full = self._phase_commands(arm, command)
+            code = self._run_watched(index, arm, lane, "retry", smoke)
+            verdict = self._smoke_verdict(arm, self.page_list[: self.m.smoke_pages])
+            if code == 0 and verdict == "ok":
+                code = self._run_watched(index, arm, lane, "retry", full)
             elif code == 0:
                 code = -1
             if self.hard_stopped:
@@ -1160,7 +1278,77 @@ class Queue:
             self._error(f"{arm.name}: retry crashed ({type(failure).__name__}: {failure})"[:200])
             self._record(arm, "failed", t0)
         finally:
-            self._end_lane("gpu")
+            if arm.keeps_server:
+                self._release_server(arm)
+            self._end_lane(lane)
+
+    def _retry_threads(self, arm: ArmSpec, cpu_retries: int) -> int | None:
+        """A CPU retry's share: the lane's whole budget split among the CPU retries, never
+        less than the arm's own; None (the arm's own setting) when there is no budget.
+        `_run_retries` starts a retry only while the shares running fit the budget."""
+        if arm.gpu or self.budget is None:
+            return None
+        return max(arm.threads, self.budget // max(1, cpu_retries))
+
+    def _run_retries(self) -> None:
+        """Every arm retried at the end, once: GPU arms one at a time on the card, CPU arms
+        beside them in the CPU lane sharing its whole thread budget. An arm whose `after`
+        names an arm still being retried waits for that retry."""
+        pending = sorted(self.retry, key=self.m.arms.index)
+        cpu_retries = sum(1 for arm in pending if not arm.gpu)
+        running: dict[Future, ArmSpec] = {}
+        shares: dict[Future, int] = {}  # each running CPU retry's threads
+        while pending or running:
+            for future in [f for f in running if f.done()]:
+                running.pop(future)
+                shares.pop(future, None)
+                future.result()
+            busy = list(running.values())
+            unsettled = {a.name for a in pending} | {a.name for a in busy}
+            for arm in list(pending):
+                if any(name in unsettled for name in arm.after):
+                    continue
+                state, reason = self._blocker(arm, final=True)
+                if state != "ready":
+                    pending.remove(arm)
+                    self.skip(arm, reason or "a dependency did not finish")
+                elif self.smoke_only:
+                    pending.remove(arm)
+                    self._record(arm, "smoke-failed", time.monotonic())
+                elif self.hard_stopped or self.hard_stop_passed():
+                    pending.remove(arm)
+                    if self.outcome.get(arm.name) == "deferred":
+                        self.skip(arm, "hard stop reached")
+                    else:
+                        self._record(arm, "hard-stopped", time.monotonic())
+                elif arm.gpu and any(a.gpu for a in busy):
+                    continue
+                elif not arm.gpu and self.budget is None and any(not a.gpu for a in busy):
+                    continue
+                else:
+                    threads = self._retry_threads(arm, cpu_retries)
+                    if (
+                        not arm.gpu
+                        and threads is not None
+                        and not _fits(threads, list(shares.values()), self.budget)
+                    ):
+                        continue  # the budget is spent; it starts when a retry ends
+                    pending.remove(arm)
+                    busy.append(arm)
+                    if arm.gpu:
+                        future = self.gpu_pool.submit(self._retry_arm, arm, "gpu", None)
+                    else:
+                        lane = f"cpu:{arm.name}"
+                        future = self.cpu_pool.submit(self._retry_arm, arm, lane, threads)
+                        if threads is not None:
+                            shares[future] = threads
+                    running[future] = arm
+            if running:
+                wait(list(running), timeout=self.poll_seconds, return_when=FIRST_COMPLETED)
+            else:
+                for arm in pending:  # nothing runs and nothing can start: never loop forever
+                    self.skip(arm, "could not start (no lane free)")
+                pending.clear()
 
     # the whole queue ---------------------------------------------------------------
 
@@ -1188,19 +1376,7 @@ class Queue:
         self._ticker_thread.start()
         try:
             self._run_arms()
-            for arm in sorted(self.retry, key=self.m.arms.index):
-                state, reason = self._blocker(arm, final=True)
-                if state != "ready":
-                    self.skip(arm, reason or "a dependency did not finish")
-                elif self.smoke_only:
-                    self._record(arm, "smoke-failed", time.monotonic())
-                elif self.hard_stopped or self.hard_stop_passed():
-                    if self.outcome.get(arm.name) == "deferred":
-                        self.skip(arm, "hard stop reached")
-                    else:
-                        self._record(arm, "hard-stopped", time.monotonic())
-                else:
-                    self._retry_arm(arm)
+            self._run_retries()
             with self.lock:
                 self.retry.clear()
             return self.finish()
@@ -1272,6 +1448,7 @@ class Queue:
     def terminate(self) -> int:
         self.terminated = True
         self._stop_all(30)
+        self._release_servers()
         with self.lock:
             self.state = "failed"
             self.errors.append("stopped by SIGTERM")
@@ -1293,6 +1470,12 @@ class Queue:
             "finished_arms": list(self.finished),
         }
 
+    def verify_at_home(self) -> bool:
+        """An own-disk cache whose pod is kept: `fetch` copies it home from that disk and
+        checks every file against DONE.json, so the copy on the volume is not read back
+        here (35,408 small files on a network disk took longer than the whole copy)."""
+        return self.m.own_disk and self.m.end_pod == "none"
+
     def sync(self) -> dict[str, Any]:
         """Copy out to sync_to, compare every digest, and write DONE.json to both."""
         with self.lock:
@@ -1307,14 +1490,19 @@ class Queue:
         for pool in (*self.ready_pools.values(), self.gpu_pool, self.cpu_pool):
             pool.shutdown(wait=True, cancel_futures=True)
         method, mismatched = None, []
+        at_home = self.verify_at_home()
         try:
             method = copy_tree(self.m.out, self.m.sync_to)
             digests = tree_digests(self.m.out)
-            mismatched = compare_digests(digests, self.m.sync_to)
+            if not at_home:
+                mismatched = compare_digests(digests, self.m.sync_to)
             failure = None
         except (OSError, subprocess.CalledProcessError) as error:
             digests, failure = {}, f"{type(error).__name__}: {error}"
-        verified = failure is None and not mismatched
+        # None: not checked on the pod; `fetch` checks every file at home.
+        verified: bool | None = failure is None and not mismatched
+        if at_home and failure is None:
+            verified = None
         done = {
             "schema": DONE_SCHEMA,
             "queue": self.m.name,
@@ -1322,6 +1510,7 @@ class Queue:
             "finished": iso(time.time()),
             "copy": method,
             "verified": verified,
+            "verify": "at home, by fetch" if at_home else "on the pod",
             "mismatched": mismatched,
             "failure": failure,
             "files": len(digests),
@@ -1335,11 +1524,14 @@ class Queue:
             except OSError as error:
                 self._error(f"DONE.json not written to {folder}: {error}")
         self._event("queue-sync", verified=verified, files=len(digests), mismatched=mismatched)
-        if verified:
+        if verified is None:
+            self.ping("sync", "milestone", f"copy made: {len(digests)} files; verify at home")
+        elif verified:
             self.ping("sync", "milestone", f"copy verified: {len(digests)} files")
         else:
             self._error(f"copy not verified: {failure or f'{len(mismatched)} files differ'}")
-            self.ping("sync", "decision", f"copy NOT verified ({len(mismatched)} files differ)")
+            # Not a decision by itself: an own-disk pod is then kept and that end asks one.
+            self.ping("sync", "milestone", f"copy NOT verified ({len(mismatched)} files differ)")
         return done
 
     def finish(self) -> int:
@@ -1347,7 +1539,7 @@ class Queue:
             with self.lock:
                 self.state, self.end_action = "done", "kept (smoke only)"
             counts = self.summary()["arms"]
-            self.ping("done", "done", f"smoke run finished {counts}; pod kept")
+            self.ping("done", DONE_EVENT, f"smoke run finished {counts}; pod kept")
             self.write_status()
             return 0
         done = self.sync()
@@ -1384,7 +1576,7 @@ class Queue:
             self.ping("end-pod", "decision", f"pod {words[plan]}; delete it by hand")
         self.ping(
             "done",
-            "done",
+            DONE_EVENT,
             f"queue finished {counts}, {len(self.skipped)} skipped; pod {words[plan]}",
         )
         self.write_status()
@@ -1524,7 +1716,8 @@ def watch_ssh(
             verified = (done or {}).get("verified")
             files = (done or {}).get("files")
             action = (status or {}).get("end_action")
-            say(f"queue done: copy verified {verified}, {files} files; pod {action}")
+            checked = "at home by fetch" if verified is None and done else verified
+            say(f"queue done: copy verified {checked}, {files} files; pod {action}")
             return 0
         sleep(interval)
 
@@ -1600,7 +1793,7 @@ def verify_fetched(into: Path, say: Callable[[str], None] = print) -> int:
     for relative in bad:
         say(f"MISMATCH {relative}")
     say(f"verified {len(digests) - len(bad)} of {len(digests)} files against DONE.json")
-    if not done.get("verified"):
+    if done.get("verified") is False:
         say("note: the pod's own copy check did not pass (DONE.json verified = false)")
     return 1 if bad else 0
 

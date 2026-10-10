@@ -6,7 +6,7 @@ notification is needed.
 ## Sending one
 
 ```sh
-sh operations/notify/notify.sh <milestone|decision|done> "<one line>"
+sh operations/notify/notify.sh <milestone|decision|done|queue-done> "<one line>"
 ```
 
 The message must be a single non-empty line. A newline or carriage return in it is refused
@@ -20,9 +20,10 @@ this file owns the rule.
 
 | Event | Title on the phone | Priority | Sent by |
 |---|---|---|---|
-| `milestone` | Milestone | 3 | the session, the operator tool with `--notify`, and a pod lease's launch, close and balance reports |
-| `decision` | Needs a decision | 4 | the session, the operator tool with `--notify`, the pod's systemic alarm, and the session-end pod check |
+| `milestone` | Milestone | 3 | the session, the operator tool with `--notify`, a pod lease's launch, close and balance reports, and a bake-off queue's arms (an arm that failed and that the queue retries or reports itself is a milestone starting `arm failed:`) |
+| `decision` | Needs a decision | 4 | the session, the operator tool with `--notify`, the pod's systemic alarm, the session-end pod check, and a bake-off queue that cannot go on by itself (no pages, stopped, pod not ended) |
 | `done` | Session complete | 3 | the session, when it closes |
+| `queue-done` | Queue finished | 3 | a bake-off queue (`operations/bakeoff/queue_runner.py`), when its last arm has ended; the session is not over |
 
 Any other event name is refused.
 
