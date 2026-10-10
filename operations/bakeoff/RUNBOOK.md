@@ -456,9 +456,13 @@ requests and scored at home. **This costs money and needs the lead's approval be
 first pod: section 0's approvals cover 2026-10-09 only.** The queue alone plans 6.5 hours
 on the 96 GB card (`queue_runner run --dry-run` prints it), on top of the fresh run.
 
-1. **Fresh run.** On a 96 GB pod, `pod_run --from door --to perlector` with the Perlector
-   served bf16 (`operations/pod/README.md`, "`pod_run.py`"). Do not use an older run: its
-   requests were served under other settings. Keep the whole run folder intact, named by
+1. **Fresh run.** Create and set up a 96 GB pod as in 4.2, but with a guard window long
+   enough for the whole day: the fresh run, the 6.5-hour queue, the downloads and the
+   fetch, about 10 hours (`pod_start_command.sh 10 <sha>`). The lead approves the window
+   with the spend; the 6-hour window of 4.2 would delete the pod partway through the queue.
+   Then `pod_run --from door --to perlector` with the Perlector served bf16
+   (`operations/pod/README.md`, "`pod_run.py`"). Do not use an older run: its requests
+   were served under other settings. Keep the whole run folder intact, named by
    its run id, at `/workspace/private/runs/<run id>` (copy it there with `cp -a` if the
    run wrote it elsewhere): the stage seals are read through that name. Keep the pod.
 2. **Check the replay.** Put the run's page images in `/workspace/private/bakeoff-pages`
@@ -469,7 +473,7 @@ on the 96 GB card (`queue_runner run --dry-run` prints it), on top of the fresh 
    must print `whole requests byte-identical N of N` with N the run's page count and no
    `config differs` line. Anything else: stop and tell the lead.
 3. **Run the fed queue**, validate, dry-run and launch exactly as in 2.4, with
-   `Q="--manifest /workspace/private/bakeoff/perlector-fed-96gb.toml --sync-to /workspace/global/bakeoff/fed-cache-home --own-disk --keep-pod"`
+   `Q="--manifest /workspace/private/bakeoff/perlector-fed-96gb.toml --keep-pod"`
    and the log `/workspace/private/bakeoff/queue-perlector-fed-96gb.log`; watch as in
    section 3 with `--status /workspace/private/bakeoff/fed-cache/status.json`. Arms run in
    this order: bf16-a, bf16-b, fp8, fp8-mtp3, nvfp4, qwen35. Each asks for the model name
@@ -481,8 +485,8 @@ on the 96 GB card (`queue_runner run --dry-run` prints it), on top of the fresh 
    reads it. Then delete the pod and confirm it is gone.
 5. **Score at home**, with `fed_score` (README, "The Perlector scorecard"). First bf16-a
    against bf16-b (`--answers .../bf16-a --compare .../bf16-b --names bf16-a,bf16-b`): that
-   is the noise floor. Then each build against bf16-a. A difference no larger than a
-   against b is not a finding. Read answer health beside the reading: malformed pages,
+   is the noise floor. Then each build against bf16-a. A difference no larger than the
+   bf16-a-versus-bf16-b difference is not a finding. Read answer health beside the reading: malformed pages,
    pages repaired before parsing, loop stops, errors.
 
 What this does not measure: the pipeline sends a page one more time (a re-ask) when its
