@@ -1314,3 +1314,98 @@ def test_a_terminal_page_is_resent_when_its_timeout_or_concurrency_changes(bench
     events = [e["event"] for e in _events(bench["out"])]
     assert events.count("page-not-retried") == 1
     assert events.count("requests-start") == 3
+
+
+def test_an_arm_whose_every_page_failed_terminally_is_failed_and_blocks_its_dependents(bench):
+    """A full run whose pages all ran into a timeout or a loop settles every page but gave
+    no answer: it was recorded ok with 0 pages and its dependents ran on nothing."""
+    arms = [
+        _vendor_arm(bench, "qv", "LOOP: transcribe"),
+        _cpu_arm(bench, "child", gpu=False, after=["qv"]),
+    ]
+    notifier = FakeNotifier()
+    queue = Recording(
+        _manifest(bench, arms, end_pod="none"),
+        notifier=notifier,
+        environ=bench["env"],
+        poll_seconds=0.05,
+    )
+    queue._smoke_verdict = lambda arm, pages: "ok"  # as if the smoke pages had answered
+    queue.run()
+    status = json.loads((bench["out"] / "status.json").read_text())
+    qv = next(a for a in status["finished_arms"] if a["label"] == "qv")
+    assert qv["status"] == "failed" and qv["pages"] == 0 and len(qv["failed_pages"]) == 3
+    assert any("run gave no answer" in e for e in status["errors"])
+    assert [s["arm"] for s in status["skipped"]] == ["child"]
+    assert queue.outcome["qv"] == "failed"
+    assert queue.final_failed == {"qv"}
+    assert any("arm failed: qv, not retried" in m for _, m in notifier.sent)
+    assert not any("after its retry" in m for _, m in notifier.sent)
+    assert status["skipped"] == [{"arm": "child", "reason": "needs qv, which failed"}]
+    assert not [e for e in _events(bench["out"]) if e["event"] == "queue-arm-retry"]
+
+
+def test_an_arm_with_some_terminal_failures_is_ok_with_failures(tmp_path):
+    out = tmp_path / "out"
+    (out / "a").mkdir(parents=True)
+    terminal = {"error": "loop", "failure": {"terminal": True, "reasons": ["repetition-loop"]}}
+    (out / "a" / "p0.json").write_text(json.dumps({"error": None}))
+    (out / "a" / "p1.json").write_text(json.dumps(terminal))
+
+    class Q_:
+        m = type("M", (), {"out": out})()
+        page_list = [tmp_path / "p0.tif", tmp_path / "p1.tif"]
+        _run_status = Q.Queue._run_status
+        _failed_pages = Q.Queue._failed_pages
+
+    arm = type("Arm", (), {"records": "a"})()
+    assert Q_()._run_status(arm) == "ok-with-failures"
+    (out / "a" / "p1.json").write_text(json.dumps({"error": None}))
+    assert Q_()._run_status(arm) == "ok"
+    (out / "a" / "p0.json").write_text(json.dumps(terminal))
+    (out / "a" / "p1.json").write_text(json.dumps(terminal))
+    assert Q_()._run_status(arm) == "failed"
+
+
+def test_dependents_follow_the_dependency_outcome(tmp_path):
+    class Q_:
+        _blocker = Q.Queue._blocker
+
+        def __init__(self, outcome, final_failed=()):
+            self.outcome, self.final_failed = outcome, set(final_failed)
+
+    child = type("Arm", (), {"after": ("dep",)})()
+    # A dependent builds on an arm that answered some pages, not on one that answered none.
+    assert Q_({"dep": "ok-with-failures"})._blocker(child, False) == ("ready", None)
+    assert Q_({"dep": "ok"})._blocker(child, False) == ("ready", None)
+    # A failure that will be retried defers the dependent behind the retry ...
+    assert Q_({"dep": "failed"})._blocker(child, False)[0] == "defer"
+    # ... one that will not (no page answered) skips it at once.
+    kind, reason = Q_({"dep": "failed"}, {"dep"})._blocker(child, False)
+    assert kind == "skip" and reason == "needs dep, which failed"
+
+
+def test_a_nonzero_exit_after_every_page_failed_terminally_is_not_retried(bench):
+    arms = [
+        _vendor_arm(bench, "qv", "LOOP: transcribe"),
+        _cpu_arm(bench, "child", gpu=False, after=["qv"]),
+    ]
+    queue = Recording(
+        _manifest(bench, arms, end_pod="none"),
+        notifier=FakeNotifier(),
+        environ=bench["env"],
+        poll_seconds=0.05,
+    )
+    queue._smoke_verdict = lambda arm, pages: "ok"
+    real = queue._run_watched
+
+    def nonzero(index, arm, lane, phase, command):
+        real(index, arm, lane, phase, command)
+        return 1 if phase == "run" else 0
+
+    queue._run_watched = nonzero
+    queue.run()
+    assert queue.final_failed == {"qv"} and queue.outcome["qv"] == "failed"
+    assert not [e for e in _events(bench["out"]) if e["event"] == "queue-arm-retry"]
+    status = json.loads((bench["out"] / "status.json").read_text())
+    assert [s["arm"] for s in status["skipped"]] == ["child"]

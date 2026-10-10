@@ -99,6 +99,19 @@ def test_the_launcher_refuses_a_snapshot_that_does_not_declare_the_rows_quantiza
     A.assert_row_quantization(A.serving_row("perlector", "generic-80gb-plus"), tmp_path / "absent")
 
 
+def test_a_quantized_snapshot_is_refused_when_the_row_names_no_quantization(tmp_path):
+    bf16_row = A.serving_row("perlector", "generic-80gb-plus")
+    (tmp_path / "config.json").write_text(json.dumps({"architectures": ["X"]}))
+    A.assert_row_quantization(bf16_row, tmp_path)
+    for document in (
+        {"quantization_config": {"quant_method": "fp8"}},
+        {"text_config": {"quantization_config": {"quant_method": "modelopt"}}},
+    ):
+        (tmp_path / "config.json").write_text(json.dumps(document))
+        with pytest.raises(SystemExit, match="names no quantization"):
+            A.assert_row_quantization(bf16_row, tmp_path)
+
+
 # --- the FP8 checkpoint's pins ----------------------------------------------------------
 
 
