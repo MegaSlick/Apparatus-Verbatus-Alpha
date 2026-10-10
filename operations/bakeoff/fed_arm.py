@@ -885,9 +885,15 @@ def reading_text(answer: dict[str, Any] | None) -> str:
     """Every entry's text in order, one per line block: what the scorecard compares."""
     if not answer:
         return ""
-    return "\n".join(
-        str(e.get("text") or "") for e in answer.get("acts") or [] if isinstance(e, dict)
-    )
+    return "\n".join(str(e.get("text") or "") for e in answer_entries(answer))
+
+
+def answer_entries(answer: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """An answer's entries in either grammar: `entries` (page types named) or `acts`."""
+    if not answer:
+        return []
+    entries = answer.get("entries") if "entries" in answer else answer.get("acts")
+    return [e for e in entries or [] if isinstance(e, dict)]
 
 
 # --- the cache's identity -------------------------------------------------------------

@@ -15,7 +15,7 @@ script, so each gold word is right or wrong for the reader and for each witness.
 Per page group (`score.page_group`; act pages split by FORM) and for the hard pages:
 
 - reading: CER median (parsed pages, and all pages with an unparsed answer read as
-  empty), act recall (gold acts matched one-to-one by a `kind: act` entry at CER <= 0.5,
+  empty), act recall (gold acts matched one-to-one by an act or instrument entry at CER <= 0.5,
   and pages whose act count is exact), index/table row recall (`score.line_recall`),
   surname recall, invented text (inserted words per gold word; false text on pages with
   no gold text);
@@ -74,6 +74,7 @@ from typing import Any
 
 from rapidfuzz.distance import Levenshtein
 
+from common.page_types import is_act_class
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import groups as G
 from operations.bakeoff import score as S
@@ -106,7 +107,7 @@ class Answer:
 
     @property
     def entries(self) -> list[dict[str, Any]]:
-        return [e for e in (self.answer or {}).get("acts") or [] if isinstance(e, dict)]
+        return F.answer_entries(self.answer)
 
     @property
     def text(self) -> str:
@@ -314,7 +315,7 @@ def score_page(answer: Answer, gold, hard: bool) -> dict[str, Any]:
         "false_text": len(text) > S.FALSE_TEXT_CHARS if not reference.strip() else None,
     }
     if S.page_group(gold) == "acts":
-        acts = [e.get("text") or "" for e in answer.entries if e.get("kind") == "act"]
+        acts = [e.get("text") or "" for e in answer.entries if is_act_class(e.get("kind"))]
         rec = S.record_scores({"arm": READER_ARM, "units": [{"text": t} for t in acts]}, gold)
         row.update(
             gold_acts=rec["acts"],
