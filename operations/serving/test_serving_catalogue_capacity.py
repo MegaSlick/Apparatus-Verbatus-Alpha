@@ -239,10 +239,10 @@ def test_no_shipped_row_exceeds_its_tiers_context_cap():
 
 
 def test_the_measured_failures_this_change_answers_are_still_failures_at_the_old_numbers():
-    """The counterfactual, against the numbers the catalogue used to ship.
+    """The counterfactual, against the earlier, too-large catalogue numbers.
 
-    Kept because the fix is a config change: without this, a later edit could
-    put the old contexts back and nothing would notice until a card was rented.
+    The guard is a config value, so without this a later edit could put those
+    contexts back and nothing would notice until a card was rented.
     """
 
     old = {

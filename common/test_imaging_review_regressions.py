@@ -334,14 +334,12 @@ def test_native_decoder_refuses_a_chunk_it_would_have_to_drop() -> None:
     [("I;16", "<"), ("I;16L", "<"), ("I;16B", ">"), ("I;16N", "<")],
 )
 def test_every_16bit_mode_scales_rather_than_refusing_the_page(mode: str, byte_order: str) -> None:
-    """All four modes `_HIGH_PRECISION_SCALE` names, not only the one that worked.
+    """All four modes `_HIGH_PRECISION_SCALE` names.
 
     Pillow 12.3.0 compiles a callable `point` for `I`, `I;16` and `F` only; the
     three byte-order spellings raise `ValueError("point operation not supported
-    for this mode")` before a pixel is read, which `grayscale_rows` re-worded as
-    "not a decodable image" and turned into a dropped page. Measured,
-    not assumed: this parametrisation failed on `I;16L`, `I;16B` and `I;16N`
-    before the fix and passes on all four after it.
+    for this mode")` before a pixel is read, which `grayscale_rows` must not
+    turn into "not a decodable image" and a dropped page.
 
     `frombytes` rather than a file because `I;16N` has no container that spells
     it; the test below carries the file half.

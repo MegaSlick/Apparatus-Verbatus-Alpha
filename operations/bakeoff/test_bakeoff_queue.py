@@ -1301,7 +1301,7 @@ def test_own_disk_without_keep_pod_still_checks_the_copy_on_the_pod(bench):
 
 
 def test_a_terminal_page_is_resent_when_its_timeout_or_concurrency_changes(bench):
-    """"The same settings" include the request timeout, concurrency and the server's
+    """The same settings include the request timeout, concurrency and the server's
     batch settings, so a page that failed under them is sent again once they change."""
     argv = _vendor_arm(bench, "qv", "LOOP: transcribe")["command"][3:]
     argv = [*argv, "--limit", "1"]

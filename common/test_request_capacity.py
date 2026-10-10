@@ -1,9 +1,7 @@
 """Drills for the request-capacity arithmetic.
 
-The numbers asserted here are the ones measured on the session host against the
-four pinned model repositories' own processors and tokenizers (the measurement
-recorded in this branch's token-cost study, reproduced in the report beside it).
-They are pinned rather than recomputed by a second implementation of the same
+The numbers asserted here were measured against the four pinned model
+repositories' own processors and tokenizers. They are pinned rather than recomputed by a second implementation of the same
 formula: a drift in this module's ``smart_resize`` rewrite must fail against a
 *measured* value, not against another copy of the arithmetic that would drift
 with it.

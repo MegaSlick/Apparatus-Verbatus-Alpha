@@ -5187,7 +5187,7 @@ def test_status_rejoins_a_state_relative_run_root_for_an_advance_record(
 def test_the_cli_catch_all_writes_an_unexpected_receipt_and_names_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The one failure class with nothing to hand to a later session now leaves a record."""
+    """The one failure class with nothing to hand to a later session leaves a record."""
 
     class BrokenSurface:
         def __init__(self, *_args, **_kwargs) -> None:
