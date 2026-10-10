@@ -183,24 +183,7 @@ def make_document_repo(path):
         "CLAUDE.md",
     ):
         (repo / name).write_text(f"# {name}\n")
-    write_separation(repo)
     return repo
-
-
-def write_separation(repo, *rows):
-    """A separation inventory whose table holds `rows` of (path, class)."""
-    (repo / "docs").mkdir(exist_ok=True)
-    table = "".join(f"| `{path}` | {kind} | |\n" for path, kind in rows)
-    (repo / "docs" / "SEPARATION.md").write_text(
-        f"# Separation\n\n| Path | Class | Note |\n|---|---|---|\n{table}"
-    )
-
-
-def track(repo, *names):
-    for name in names:
-        (repo / name).parent.mkdir(parents=True, exist_ok=True)
-        (repo / name).write_text("tracked\n")
-    git(repo, "add", *names)
 
 
 @pytest.mark.full
@@ -235,55 +218,6 @@ def test_document_check_rejects_control_character_paths(tmp_path):
     result = run_hook(repo, "check-documents.sh")
     assert result.returncode == 1
     assert "control-path" in result.stderr
-
-
-def test_separation_check_refuses_an_unclassified_path(tmp_path):
-    repo = make_document_repo(tmp_path / "repo")
-    write_separation(
-        repo,
-        ("LICENSE", "PRODUCT"),
-        ("ops/pod/", "PRODUCT"),
-        ("ops/pod/HANDOFF.md", "HISTORY"),
-        ("ops/bench/", "HARNESS"),
-    )
-    track(repo, "LICENSE", "ops/pod/run.py", "ops/pod/HANDOFF.md", "ops/bench/scale.py")
-    assert run_hook(repo, "check-documents.sh").returncode == 0
-
-    # A new top-level path, and a new path in a folder classified below its top level.
-    track(repo, "NOTES.md", "ops/spike/a.py", "ops/spike/b.py")
-    result = run_hook(repo, "check-documents.sh")
-    assert result.returncode == 1
-    assert "unclassified path: NOTES.md\n" in result.stderr
-    assert result.stderr.count("unclassified path: ops/spike/\n") == 1
-    # A new file under a classified folder is covered by the folder's row.
-    assert "ops/pod" not in result.stderr
-
-
-def test_separation_check_refuses_a_row_with_no_tracked_path(tmp_path):
-    repo = make_document_repo(tmp_path / "repo")
-    write_separation(repo, ("LICENSE", "PRODUCT"), ("gone/", "HISTORY"))
-    track(repo, "LICENSE")
-    result = run_hook(repo, "check-documents.sh")
-    assert result.returncode == 1
-    assert "separation row matches no tracked path: gone/" in result.stderr
-
-
-def test_separation_check_refuses_a_row_without_a_known_class(tmp_path):
-    # The folder row covers the file, so only the bad class itself can fail the check.
-    repo = make_document_repo(tmp_path / "repo")
-    write_separation(repo, ("lib/", "PRODUCT"), ("lib/a.py", "MAYBE"))
-    track(repo, "lib/a.py")
-    result = run_hook(repo, "check-documents.sh")
-    assert result.returncode == 1
-    assert "separation row has no known class: | `lib/a.py` | MAYBE |" in result.stderr
-
-
-def test_separation_check_reports_a_missing_inventory(tmp_path):
-    repo = make_document_repo(tmp_path / "repo")
-    (repo / "docs" / "SEPARATION.md").unlink()
-    result = run_hook(repo, "check-documents.sh")
-    assert result.returncode == 1
-    assert "missing separation inventory: docs/SEPARATION.md" in result.stderr
 
 
 def run_commit_message(message, env=None):

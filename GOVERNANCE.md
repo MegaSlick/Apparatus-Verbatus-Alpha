@@ -11,8 +11,8 @@ merged, what is published and how the rules change.
 - For anything larger, such as a new feature, a change to a stage or its contract, or a
   new dependency, open an issue first and wait for the maintainer to agree before you
   write the code.
-- Read [CONTRIBUTING.md](CONTRIBUTING.md) before you start. AI agents also follow
-  [docs/AI_CONTRIBUTORS.md](docs/AI_CONTRIBUTORS.md).
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) before you start, including its
+  section for AI agents.
 
 ## Outside issues and pull requests
 
