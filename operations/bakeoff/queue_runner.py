@@ -1260,14 +1260,12 @@ class Queue:
         code = self._run_watched(index, arm, lane, "run", full)
         if self.hard_stopped:
             self._record(arm, "hard-stopped", t0)
+        elif self._pages_ok(arm, self.page_list) and self._run_status(arm) == "failed":
+            self._run_useless(arm, t0)  # whatever the exit code: a retry would repeat it
         elif code != 0 or not self._pages_ok(arm, self.page_list):
             self._arm_error(arm, f"run incomplete (exit {code})")
         else:
-            status = self._run_status(arm)
-            if status == "failed":
-                self._run_useless(arm, t0)
-            else:
-                self._record(arm, status, t0)
+            self._record(arm, self._run_status(arm), t0)
 
     def _retry_arm(self, arm: ArmSpec, lane: str = "gpu", threads: int | None = None) -> None:
         """The arm's one retry, in its own lane; a CPU arm's `--threads` becomes `threads`."""

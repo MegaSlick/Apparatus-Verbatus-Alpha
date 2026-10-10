@@ -1383,3 +1383,29 @@ def test_dependents_follow_the_dependency_outcome(tmp_path):
     # ... one that will not (no page answered) skips it at once.
     kind, reason = Q_({"dep": "failed"}, {"dep"})._blocker(child, False)
     assert kind == "skip" and reason == "needs dep, which failed"
+
+
+def test_a_nonzero_exit_after_every_page_failed_terminally_is_not_retried(bench):
+    arms = [
+        _vendor_arm(bench, "qv", "LOOP: transcribe"),
+        _cpu_arm(bench, "child", gpu=False, after=["qv"]),
+    ]
+    queue = Recording(
+        _manifest(bench, arms, end_pod="none"),
+        notifier=FakeNotifier(),
+        environ=bench["env"],
+        poll_seconds=0.05,
+    )
+    queue._smoke_verdict = lambda arm, pages: "ok"
+    real = queue._run_watched
+
+    def nonzero(index, arm, lane, phase, command):
+        real(index, arm, lane, phase, command)
+        return 1 if phase == "run" else 0
+
+    queue._run_watched = nonzero
+    queue.run()
+    assert queue.final_failed == {"qv"} and queue.outcome["qv"] == "failed"
+    assert not [e for e in _events(bench["out"]) if e["event"] == "queue-arm-retry"]
+    status = json.loads((bench["out"] / "status.json").read_text())
+    assert [s["arm"] for s in status["skipped"]] == ["child"]
