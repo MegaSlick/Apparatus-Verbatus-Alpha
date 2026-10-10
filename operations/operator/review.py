@@ -719,10 +719,9 @@ def _reading_row(stage_records: list[dict[str, Any]], act_id: str) -> dict[str, 
     same reason, for witnesses.
 
     The doubt report and its layers are carried through exactly as the record
-    holds them: `None` means a record written before this contract existed,
-    while a present-but-malformed value is a fault of the run tree, refused
-    by field like every other projection list. Collapsing both to `None`
-    would print a broken layer as no doubt at all.
+    holds them: a missing or malformed value is a fault of the run tree,
+    refused by field like every other projection list, never printed as no
+    doubt at all.
     """
     rows = _records_of(stage_records, PERLECTOR, "perlectio", act_id)
     # An act id is minted per page-reading attempt, so it has at most one

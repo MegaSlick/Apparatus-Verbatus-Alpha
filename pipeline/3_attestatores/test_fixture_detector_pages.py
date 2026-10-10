@@ -105,7 +105,7 @@ def test_dai_reads_each_detector_record_on_its_page_with_its_declared_answer(wit
         texts = []
         for capture in payload["unit_captures"]:
             assert capture["adapter"] == "dai.v1"
-            assert capture["view"]["adapter"] in {"dai-atr.v1", "dai-atr.v2"}
+            assert capture["view"]["adapter"] == "dai-atr.v2"
             assert capture["transport_stop_reason"] == "fixture-complete"
             assert capture["parse"]["parser"] == "text"
             raw = read_verified(tree.read_bytes, capture["raw_response_ref"], "a DAI response")

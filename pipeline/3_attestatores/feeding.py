@@ -246,7 +246,7 @@ def dai_model_view(
     system_prompt_ref: dict[str, str],
     query_prompt_ref: dict[str, str],
     generation_config_ref: dict[str, str],
-    generation_accounting: dict[str, Any] | None = None,
+    generation_accounting: dict[str, Any],
 ) -> dict[str, Any]:
     """Build DAI's crop view, referencing carried prompt/config bytes by manifest.
 
@@ -281,7 +281,7 @@ def dai_model_view(
         raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
     limits = _dai_image_limits()
     view = {
-        "adapter": "dai-atr.v1" if generation_accounting is None else "dai-atr.v2",
+        "adapter": "dai-atr.v2",
         "source_image_ref": source_image_ref,
         "model_image_ref": model_image_ref,
         "transform": {
@@ -298,10 +298,8 @@ def dai_model_view(
         "prompts": {"system": system_prompt_ref, "query": query_prompt_ref},
         "generation_config_ref": generation_config_ref,
         "uncertainty_tokens_preserved": list(_UNCERTAINTY_TOKENS),
+        "generation_accounting": validate_dai_generation_accounting(generation_accounting),
     }
-    if generation_accounting is not None:
-        validate_dai_generation_accounting(generation_accounting)
-        view["generation_accounting"] = generation_accounting
     return validate_dai_model_view(view)
 
 
@@ -330,15 +328,11 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
         "prompts",
         "generation_config_ref",
         "uncertainty_tokens_preserved",
+        "generation_accounting",
     }
-    if not isinstance(value, dict) or value.get("adapter") not in {"dai-atr.v1", "dai-atr.v2"}:
+    if not isinstance(value, dict) or value.get("adapter") != "dai-atr.v2" or set(value) != fields:
         raise SchemaRefusal("DAI model view is not its closed adapter schema")
-    if value["adapter"] == "dai-atr.v2":
-        fields.add("generation_accounting")
-    if set(value) != fields:
-        raise SchemaRefusal("DAI model view is not its closed adapter schema")
-    if value["adapter"] == "dai-atr.v2":
-        validate_dai_generation_accounting(value["generation_accounting"])
+    validate_dai_generation_accounting(value["generation_accounting"])
 
     for name, reference in (
         ("source image", value["source_image_ref"]),

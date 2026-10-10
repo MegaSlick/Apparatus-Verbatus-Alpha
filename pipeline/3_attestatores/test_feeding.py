@@ -896,6 +896,7 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     assert DAI_MAX_WIDTH_PX == 1_500
     assert view["transform"]["target_width_px"] == 1_500
@@ -908,7 +909,7 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
     assert set(view["prompts"]["system"]) == {"relative_path", "sha256"}
 
 
-def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_readable():
+def test_dai_model_view_retains_the_auto_generation_ledger():
     kwargs = {
         "source_image_ref": _ref("designator/crops/a.png"),
         "model_image_ref": _ref("attestatores/model-views/a.jpg", "b" * 64),
@@ -918,10 +919,6 @@ def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_reada
         "query_prompt_ref": _ref("models/dai/query.txt"),
         "generation_config_ref": _ref("models/dai/generation_config.json"),
     }
-    legacy = dai_model_view(**kwargs)
-    assert legacy["adapter"] == "dai-atr.v1"
-    assert validate_dai_model_view(legacy) is legacy
-
     ledger = dai_generation_accounting()
     current = dai_model_view(**kwargs, generation_accounting=ledger)
     assert current["adapter"] == "dai-atr.v2"
@@ -944,6 +941,10 @@ def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_reada
     assert ledger["vendor_do_sample"] is carried_generation["do_sample"]
     assert validate_dai_generation_accounting(ledger) is ledger
     assert validate_dai_model_view(current) is current
+    without_ledger = {k: v for k, v in current.items() if k != "generation_accounting"}
+    for view in (without_ledger, {**without_ledger, "adapter": "dai-atr.v1"}):
+        with pytest.raises(SchemaRefusal, match="closed adapter schema"):
+            validate_dai_model_view(view)
 
     forged = {**ledger, "vendor_keys_without_request_field": []}
     with pytest.raises(SchemaRefusal, match="generation accounting differs"):
@@ -1013,6 +1014,7 @@ def test_every_dai_ceiling_seals_where_it_came_from():
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     limits = view["image_limits"]
     # Width only: the model card states no height or area ceiling.
@@ -1051,6 +1053,7 @@ def test_dai_resize_applies_only_the_model_cards_width_ceiling(
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     target = (view["transform"]["target_width_px"], view["transform"]["target_height_px"])
     assert target == expected
@@ -1068,6 +1071,7 @@ def test_dai_identity_view_requires_the_exact_source_image_reference():
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     assert view["transform"]["kind"] == "identity"
     assert view["model_image_ref"] == source
@@ -1080,6 +1084,7 @@ def test_dai_identity_view_requires_the_exact_source_image_reference():
             system_prompt_ref=_ref("models/dai/system.txt"),
             query_prompt_ref=_ref("models/dai/query.txt"),
             generation_config_ref=_ref("models/dai/generation_config.json"),
+            generation_accounting=dai_generation_accounting(),
         )
 
 
@@ -1104,6 +1109,7 @@ def test_dai_identity_view_accepts_one_image_under_two_stage_owned_paths():
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     assert view["transform"]["kind"] == "identity"
     # Both references survive verbatim: the record shows the one set of bytes
@@ -1127,6 +1133,7 @@ def test_dai_model_view_refuses_reference_paths_that_escape_the_run_tree(unsafe_
             system_prompt_ref=_ref("models/dai/system.txt"),
             query_prompt_ref=_ref("models/dai/query.txt"),
             generation_config_ref=_ref("models/dai/generation_config.json"),
+            generation_accounting=dai_generation_accounting(),
         )
 
 
@@ -1140,6 +1147,7 @@ def test_dai_retention_refuses_an_image_limits_digest_that_was_not_compared():
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     valid = retain_model_view(
         _Context(tree=_Tree()),
@@ -1176,6 +1184,7 @@ def test_dai_model_view_refuses_rehashed_limits_that_change_the_sealed_ceiling()
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     view["image_limits"]["max_width_px"] += 1
     view["image_limits_sha256"] = digest_of(view["image_limits"])

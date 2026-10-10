@@ -1154,6 +1154,7 @@ def _dai_view_kwargs() -> dict[str, Any]:
         "presentation": _dai_presentation(),
         "presented": _dai_presented(),
         "prompt": feeding.dai_prompt(),
+        "generation_accounting": feeding.dai_generation_accounting(),
     }
 
 
@@ -1588,7 +1589,7 @@ def test_live_attempt_from_response_real_dai_adapter_round_trip(tmp_path: Path):
     assert attempt.outcome == "read"
     assert attempt.native_payload == "texte transcrit"
     assert attempt.native_capture["adapter"] == "dai.v1"
-    assert attempt.native_capture["view"]["adapter"] == "dai-atr.v1"
+    assert attempt.native_capture["view"]["adapter"] == "dai-atr.v2"
     assert blob_store.has(response.response_sha256)
 
 
@@ -1617,6 +1618,7 @@ def test_a_no_resize_dai_record_is_carried_rather_than_refused_after_its_answer(
         generation_declared=feeding.dai_generation(),
         parser="text",
         **view_kwargs,
+        generation_accounting=feeding.dai_generation_accounting(),
     )
 
     assert attempt.outcome == "read"
@@ -1661,6 +1663,7 @@ def test_a_no_resize_dai_record_whose_model_image_is_other_bytes_is_still_refuse
             generation_declared=feeding.dai_generation(),
             parser="text",
             **view_kwargs,
+            generation_accounting=feeding.dai_generation_accounting(),
         )
 
 
@@ -1684,6 +1687,7 @@ def test_a_live_record_says_which_kind_of_bytes_it_retained(tmp_path: Path):
         generation_declared=feeding.dai_generation(),
         parser="text",
         **_dai_identity_view_kwargs(),
+        generation_accounting=feeding.dai_generation_accounting(),
     )
     assert parsed.raw_response_kind == "model-output"
     assert parsed.raw_response_ref == dict(parsed.native_capture["raw_response_ref"])
@@ -1700,6 +1704,7 @@ def test_a_live_record_says_which_kind_of_bytes_it_retained(tmp_path: Path):
         generation_declared=feeding.dai_generation(),
         parser="text",
         **_dai_identity_view_kwargs(),
+        generation_accounting=feeding.dai_generation_accounting(),
     )
     assert malformed.raw_response_kind == "transport-response-body"
     assert malformed.native_capture is None
