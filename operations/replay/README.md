@@ -6,9 +6,9 @@ No model is called and no pod is needed. Use it to prove a change to how the
 Perlector's answers are read or accounted on a real run that has already been read.
 
 ```sh
-python operations/replay/replay.py --source <runs>/<saved-run-id> \
+.venv/bin/python operations/replay/replay.py --source <runs>/<saved-run-id> \
     --run-root <dir> --run-id <new-run-id> -- <the saved run's orchestrator arguments>
-python operations/replay/compare.py <runs>/<saved-run-id> <dir>/<new-run-id>
+.venv/bin/python operations/replay/compare.py <runs>/<saved-run-id> <dir>/<new-run-id>
 ```
 
 - The **new run** gets its own run id. Its `run.json` says it replays the saved run

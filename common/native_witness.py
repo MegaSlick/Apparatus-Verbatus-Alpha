@@ -138,7 +138,7 @@ CHURRO_MAX_IMAGE_DIM_PX: Final = CHURRO_MAX_INLINE_IMAGE_DIM
 # vendor repository is a context length, not a generation bound.)
 CHURRO_OUTPUT_TOKENS: Final = DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]
 # The one intake ceiling before the parser or the repetition scan reads a byte;
-# over 209 bytes per declared token, far beyond any transcription.
+# about 167 bytes per declared token, far beyond any transcription.
 # `churro_document` takes it as an argument rather than declaring its own.
 CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
 # Shortest repeating unit and minimum tail repeats.  Declared, not measured.

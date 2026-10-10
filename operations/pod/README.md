@@ -558,7 +558,7 @@ in the launch record's `balance_notification`, not refused.
 `pod_run --notify` adds a fourth, the one question among them: a run on the pod that
 stops with more of its pages held than its sealed review policy allows, or exports past
 that stop on a person's advance, sends the systemic alarm as a `decision`
-(`notify_systemic`), the line `verbatus run --notify` sends for a run on this computer.
+(`notify_systemic`), the line `verbatus --notify run ...` sends for a run on this computer.
 `pod_run` reads the alarm from its invocation's stop record (`systemic`) and records the
 line and the notification outcome in its run report. If the orchestrator ran but left no
 usable stop record (`read_stop_record`), whether it sounded the alarm is unknown. The
@@ -881,7 +881,7 @@ outside the repository, but also leaves it in the shell's history; prefer the va
    ```
 
    The first seals the folder and copies it to a local folder only, which a local
-   `verbatus --state-dir private/verbatus-state run` can check at the Door for free
+   `verbatus --state-dir private/verbatus-state run --run-id <id>` can check at the Door for free
    (`operations/operator/README.md`, "`run`, `export` and holds"); the second writes
    `submission/` and `submission-manifest.json` at the volume root. A second sealed set on
    the same volume needs its own `--prefix` (`--prefix spreads` writes `spreads/` and

@@ -9,13 +9,11 @@ schema = "bakeoff-queue.v1"
 name = "witness-24gb"
 pages = "/workspace/private/bakeoff-pages"
 out = "/workspace/private/bakeoff/witness-cache"
-sync_to = "/workspace/private/bakeoff/witness-cache-home"   # the network-volume route
+sync_to = "/workspace/private/bakeoff/witness-cache-home"   # a second copy on the same disk
 own_disk = false
-# Global-volume route (RUNBOOK 2.1): the pod's own disk at /workspace/private and the
-# global volume at /workspace/global. Same manifest; the command line moves the copy:
-#   queue_runner run --manifest ... --sync-to /workspace/global/bakeoff/witness-cache-home --own-disk --keep-pod
-# (`--own-disk`: the pod is kept unless the copy verified; `--keep-pod`: kept anyway, so the
-# session fetches from the pod's disk and deletes the pod itself.)
+# The pod's own disk at /workspace/private holds the cache and this copy of it. Run with
+# `--keep-pod` (RUNBOOK 2.4): the pod is kept so the session fetches the cache home over
+# SSH and deletes the pod itself; `end_pod = "delete"` below would take the results with it.
 smoke_pages = 2
 behind_schedule_min = 30
 end_pod = "delete"
