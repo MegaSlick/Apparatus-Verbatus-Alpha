@@ -141,6 +141,14 @@ def parse_models_config(raw: Any, *, source_path: str | Path | None = None) -> M
                 "routes every configured witness chair, so a page no rule routes would have "
                 "no witness at all; leave at least one witness reading every page",
             )
+        if len(unrouted) < witness_floor:
+            raise ConfigurationRefusal(
+                "witness_routing",
+                f"leaves {len(unrouted)} configured witness chair(s) {sorted(unrouted)} reading "
+                f"every page, below the witness floor ({witness_floor}); a page the rule does "
+                "not route could never meet it. Configure the missing witness or lower the "
+                "floor deliberately",
+            )
         for needed in ("designator_surya", "secondary_proposer"):
             if not isinstance(chairs.get(needed), ChairIdentity):
                 raise ConfigurationRefusal(

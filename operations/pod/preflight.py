@@ -1165,11 +1165,17 @@ class PreflightRunner:
             )
         floor = self.models.witness_floor_status()
         if not floor.meets_floor:
+            routed = (
+                f"; routed chair(s) {list(floor.routed_roles)} read only the pages their rule "
+                "sends them and do not count"
+                if floor.routed_roles
+                else ""
+            )
             issues.append(
                 PreflightIssue(
                     "witness-floor-unmet",
-                    f"configured Attestator chairs ({floor.configured_count}) fall short of "
-                    f"the witness floor ({floor.floor})",
+                    f"configured Attestator chairs reading every page ({floor.configured_count}) "
+                    f"fall short of the witness floor ({floor.floor}){routed}",
                     "Configure the missing Attestator chairs or lower the floor deliberately "
                     "before a paid run.",
                 )
