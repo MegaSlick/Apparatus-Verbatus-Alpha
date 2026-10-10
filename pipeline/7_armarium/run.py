@@ -47,6 +47,7 @@ from armarium_export import (  # noqa: E402
     unpaired_continuations,
 )
 from coniector_layer import export_rows  # noqa: E402
+from flagged_layer import flagged_row  # noqa: E402
 from operator_layer import corrected_row, released_row  # noqa: E402
 
 from common import page_edges, page_path  # noqa: E402
@@ -105,6 +106,7 @@ from common.page_review import (  # noqa: E402
     require_establishable,
     require_recensor_passed,
     review_coverage,
+    review_flags,
     review_notes,
     review_reason,
     reviewed_rows,
@@ -878,6 +880,19 @@ def verify_established_page_record(
     return payload, reading
 
 
+def model_text(context, row: dict) -> str | None:
+    """The model's reading of a counted entry as its Perlectio holds it; None for a page row."""
+    if row["perlectio_ref"] is None:
+        return None
+    reading = context.tree.read_artifact_reference(
+        row["perlectio_ref"], stage=PERLECTOR, kind="perlectio", subject_id=row["act_id"]
+    )
+    text = reading["payload"].get("text")
+    if not isinstance(text, str):
+        raise FatalAccounting(f"the Perlectio of {row['act_key']} carries no text to export")
+    return text
+
+
 def model_reading_row(row: dict, reading: dict) -> dict:
     """The model's reading of a corrected entry, exported beside the person's text."""
     payload = reading["payload"]
@@ -1078,7 +1093,9 @@ def page_not_measured_basis(context, pages: dict[int, dict], projected_acts: lis
     policy = require_page_accounting_policy(context, context.page_accounting_config_path)
     thresholds = []
     for field in dataclasses.fields(policy):
-        if field.name == "sha256":
+        # The flag list is no threshold: `policy_sha256` seals it, every flagged
+        # row names its codes, and the Recensor's summary counts them.
+        if field.name in ("sha256", "flag_codes"):
             continue
         value = getattr(policy, field.name)
         if not isinstance(value, int) or isinstance(value, bool):
@@ -1372,6 +1389,8 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
     operator_actions: list[dict] = []
     # The model's reading of each delivered entry a person corrected, by act id.
     model_readings: dict[str, dict] = {}
+    # The flagged layer (`flagged_layer`): every held or flagged reading with its text.
+    flagged: list[dict] = []
     submission_id, fixture_id, run_identity = export_run_identity(context)
     real_census = {ordinal: page for ordinal, page in census.items() if ordinal not in canaries}
     denominator = reading_denominator(context)
@@ -1439,6 +1458,8 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             "page_ordinal": row["page_ordinal"],
             "category": category.value,
             "hold_codes": row["hold_codes"],
+            "flag_codes": review_flags(review),
+            "review_priority": review["payload"]["review_priority"],
             "witness_coverage": review_coverage(review),
             "review_notes": review_notes(review),
             "evidence_refs": export_evidence_refs(context, review, established),
@@ -1500,6 +1521,22 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             entry["reason"] = reason
             non_delivered.append(entry)
         is_delivered = category is ArmariumCategory.DELIVERED
+        # The review's codes, which the run's operator decisions may have moved,
+        # not the denominator row's: a released reading is no longer held.
+        flagged_reading = flagged_row(
+            row,
+            category=category.value,
+            hold_codes=review["payload"]["hold_codes"],
+            flag_codes=entry["flag_codes"],
+            priority=entry["review_priority"],
+            text=entry["text"] if is_delivered else model_text(context, row),
+            reason=entry.get("reason"),
+            recensor_ref=context.artifact_ref(RECENSOR, "review", review["artifact_id"]),
+            evidence_refs=entry["evidence_refs"],
+            lot=lot_id(context.run["self_hash"]) if formats.lot else None,
+        )
+        if flagged_reading is not None:
+            flagged.append(flagged_reading)
         projected = {
             "act_id": row["act_id"],
             "act_key": row["act_key"],
@@ -1635,6 +1672,7 @@ def _export(context, formats, census: dict[int, dict], canaries: set[int]) -> in
             reconstructions=tuple(reconstructions),
             operator_actions=tuple(sorted(operator_actions, key=lambda row: row["act_id"])),
             model_readings=tuple(model_readings[act_id] for act_id in sorted(model_readings)),
+            flagged_readings=tuple(flagged),
             reading_hold_codes=(
                 None
                 if review_basis is None

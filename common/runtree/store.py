@@ -98,6 +98,10 @@ ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
 RECEIPTS_DIR: Final = "receipts/sha256"
 RECENSOR_PARTITION_RECEIPT_FILE: Final = "run-health/recensor-partition-receipt.json"
+# The Recensor's derived review summary: holds and review flags counted per page
+# and per unit, by code and by page type, with the review queue in priority order.
+# A report for a person, rebuilt on every pass; nothing after the Recensor reads it.
+RECENSOR_REVIEW_SUMMARY_FILE: Final = "run-health/recensor-review-summary.json"
 # The Attestatores' summary of which pages a routed witness reads, and why
 # (`common/witness_routing.py`). A report for a person, rebuilt on every pass and
 # written only on a run that routes a witness; nothing reads it back.
@@ -533,6 +537,10 @@ class RunTree:
         """The current derived partition receipt at the Recensor boundary."""
         return RECENSOR_PARTITION_RECEIPT_FILE
 
+    def recensor_review_summary_path(self) -> str:
+        """The current derived review summary at the Recensor boundary."""
+        return RECENSOR_REVIEW_SUMMARY_FILE
+
     def witness_routing_summary_path(self) -> str:
         """The current derived witness-routing summary at the Attestatores boundary."""
         return WITNESS_ROUTING_SUMMARY_FILE
@@ -648,6 +656,31 @@ class RunTree:
                     "denominator is sealed by the readings and cannot differ between two "
                     "passes over them"
                 )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write(relative, data)
+        return PublishResult(relative, reused=False)
+
+    def write_recensor_review_summary(self, record: dict[str, Any]) -> PublishResult:
+        """Atomically replace the derived Recensor review summary.
+
+        A report for a person, derived from the reviews on disk and rebuilt on
+        every pass, so it is replaced in place like the partition receipt; it
+        binds to this run's authority and nothing after the Recensor reads it.
+        """
+        if record.get("run_id") != self.run_id or record.get("config_digest") != (
+            self._run_authority()
+        ):
+            raise SchemaRefusal("Recensor review summary does not belong to this run authority")
+        relative = self.recensor_review_summary_path()
+        target = self.resolve(relative)
+        data = canonical_bytes(record)
+        if target.exists():
+            try:
+                if target.read_bytes() == data:
+                    # An identical pass rewrites nothing, as a resume must not.
+                    return PublishResult(relative, reused=True)
+            except OSError:
+                pass
         target.parent.mkdir(parents=True, exist_ok=True)
         self._atomic_write(relative, data)
         return PublishResult(relative, reused=False)
@@ -1584,6 +1617,7 @@ class RunTree:
             RUN_FILE,
             f"{RECEIPTS_DIR}/",
             RECENSOR_PARTITION_RECEIPT_FILE,
+            RECENSOR_REVIEW_SUMMARY_FILE,
             WITNESS_ROUTING_SUMMARY_FILE,
         ]
         for directory in sorted(set(_all_writing_directories())):

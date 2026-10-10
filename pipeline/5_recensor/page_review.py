@@ -21,7 +21,13 @@ what it measures itself:
 
 A unit is `accepted` only when its row is `read`, the floor holds, no chair is
 unresolved and the page's ink is covered; every other unit is `held-for-review`
-with every reason named. Nothing here reads, repairs or chooses text, and
+with every reason named. A finding whose code the sealed `[flags]` policy
+names (`common.page_accounting`, the row's `flag_codes` and this stage's
+`residual-ink`) is a review flag: recorded in `flag_codes`, named in the
+reason, placed in the queue by `review_priority`, holding nothing. After the
+receipt the pass writes `run-health/recensor-review-summary.json`
+(`review_summary`): holds and flags per page and per unit, by code and by page
+type, and the queue. Nothing here reads, repairs or chooses text, and
 nothing asks for a recovery: `recoveries_used` is the page's re-asks, which
 stage 4 planned itself (0 or 1, from the page's row), and the receipt binds
 each page's re-ask and what it did.
@@ -37,10 +43,10 @@ with no decision publishes exactly what the machine derives.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any, Final
 
-from common import page_edges
+from common import page_accounting, page_edges
 from common.contracts.approval import PAGE_SCOPE, UNIT_SCOPE
 from common.contracts.errors import ApprovalRefusal, FatalAccounting
 from common.contracts.identities import artifact_id, attempt_id
@@ -52,7 +58,7 @@ from common.contracts.outcomes import (
     witnessed_count,
 )
 from common.contracts.stages import ARCHETYPUS, ATTESTATORES, EXEMPLAR, PERLECTOR, RECENSOR
-from common.page_accounting import NOT_APPLICABLE, PASS
+from common.page_accounting import FLAG, NOT_APPLICABLE, PASS, RESIDUAL_INK
 from common.page_path import (
     ACT_REGION_SCHEMA,
     PAGE_ACCOUNTING_KIND,
@@ -78,6 +84,7 @@ from common.page_review import (
     operator_correction,
     override_refusal,
     require_establishable,
+    review_priority,
     reviewed_rows,
     run_page_breaks,
     superseded_readings,
@@ -116,9 +123,10 @@ CONFIRMED_BLANK: Final = "confirmed-blank"
 NO_TESTIMONIUM_OUTCOME: Final = "not-run"
 
 # The codes this stage adds to a unit's own, each with the sentence its reason uses.
+# `residual-ink` is named in `common.page_accounting`, where the sealed `[flags]`
+# policy may make it a review flag: it repeats rule (f)'s check on the same regions.
 UNDER_WITNESSED: Final = "under-witnessed"
 UNRESOLVED_WITNESS: Final = "unresolved-witness"
-RESIDUAL_INK: Final = "residual-ink"
 RESIDUAL_INK_NOT_MEASURABLE: Final = "residual-ink-not-measurable"
 RESIDUAL_INK_NOT_MEASURED: Final = "residual-ink-not-measured"
 ASSESSMENT_MALFORMED: Final = "uncertainty-assessment-malformed"
@@ -132,8 +140,17 @@ CONTINUATION_ON_OTHER: Final = "continuation-flag-on-other"
 # The page accounting rules a page said to hold no act must pass. A blank page
 # has no entry for a detector record to be read as, so without a record
 # detector its rule (i) does not apply; a page of `other` entries does need it.
+# A rule whose every finding is a review flag under the sealed `[flags]` policy
+# (`flag`) confirms too: the finding is recorded on every unit of the page and
+# reaches the flagged export, and the lead chose to review it rather than hold.
 NO_ACT_RULES: Final = ("d", "e", "f", "i")
-BLANK_RULES: Final = {"d": {PASS}, "e": {PASS}, "f": {PASS}, "i": {PASS, NOT_APPLICABLE}}
+CONFIRMING: Final = frozenset({PASS, FLAG})
+BLANK_RULES: Final = {
+    "d": CONFIRMING,
+    "e": CONFIRMING,
+    "f": CONFIRMING,
+    "i": CONFIRMING | {NOT_APPLICABLE},
+}
 
 
 # --- the page witnesses ------------------------------------------------------------
@@ -284,7 +301,7 @@ def confirmation(
     a reading of the page's text.
     """
     rules = accounting.get("rules", {})
-    allowed = BLANK_RULES if blank else {rule: {PASS} for rule in NO_ACT_RULES}
+    allowed = BLANK_RULES if blank else {rule: CONFIRMING for rule in NO_ACT_RULES}
     statuses = {rule: rules.get(rule, {}).get("status") for rule in allowed}
     lines = len(accounting.get("lines") or [])
     witnesses = [
@@ -524,11 +541,21 @@ def review_of(
     confirmed: dict | None,
     off_edge: list[str] | None = None,
     recoveries_used: int = 0,
+    flag_codes: frozenset[str] = frozenset(),
 ) -> tuple[str, dict[str, Any]]:
-    """The outcome and payload of one unit's review, without its attempt ordinal."""
+    """The outcome and payload of one unit's review, without its attempt ordinal.
+
+    `flag_codes` is the sealed `[flags]` policy (`common.page_accounting`): a
+    finding of this stage whose code it names is recorded as a review flag,
+    named in `flag_codes` and the reason, and holds nothing. The row's own
+    `flag_codes` are the page accounting's, measured the same way.
+    """
     ordinal = act["page_ordinal"]
-    own = own_findings(coverage, page_coverage, assessment, ordinal, off_edge)
+    found = own_findings(coverage, page_coverage, assessment, ordinal, off_edge)
+    own = [(code, sentence) for code, sentence in found if code not in flag_codes]
+    flagged = [(code, sentence) for code, sentence in found if code in flag_codes]
     row_codes = list(act["hold_codes"])
+    flags = sorted(set(act["flag_codes"]) | {code for code, _sentence in flagged})
     release = None
     sentences = [sentence for _code, sentence in own]
     if confirmed is not None and not confirmed["confirmed"]:
@@ -560,16 +587,26 @@ def review_of(
     elif row_codes:
         sentences.insert(0, f"the page-read records hold this unit: {', '.join(row_codes)}")
     hold_codes = sorted(set(row_codes) | {code for code, _sentence in own})
+    if flags:
+        sentences.append(
+            f"flagged for review, not held, under the sealed review flags: {', '.join(flags)}"
+            + "".join(f"; {sentence}" for _code, sentence in flagged)
+        )
     if hold_codes:
         outcome = HELD
         reason = "; ".join(sentences)
     elif act["class"] == PAGE_BLANK_CLASS:
         outcome, reason = CONFIRMED_BLANK, f"page {ordinal} is confirmed blank"
+    elif flags:
+        outcome = ACCEPTED
+        reason = "read, and nothing holds it"
     else:
         outcome = ACCEPTED
         reason = (
             "read, witnessed to the floor, and no ink on its page lies outside the reading regions"
         )
+    if outcome != HELD and flags:
+        reason = "; ".join([reason, *sentences])
     payload = {
         "act_key": act["act_key"],
         "unit_class": act["class"],
@@ -577,6 +614,8 @@ def review_of(
         "page_ordinal": ordinal,
         "reason": reason,
         "hold_codes": hold_codes,
+        "flag_codes": flags,
+        "review_priority": review_priority(set(hold_codes) | set(flags)),
         "coverage": coverage,
         "page_reading_ref": act["reading_ref"],
         "page_accounting_ref": act["accounting_ref"],
@@ -681,6 +720,13 @@ def decide_reviews(
                 codes = set(payload["hold_codes"])
                 reheld[(UNIT_SCOPE, act["act_id"])] = codes
                 reheld.setdefault((PAGE_SCOPE, act["page_id"]), set()).update(codes)
+        # A decision moved the unit's hold codes; its place in the queue follows them.
+        payload = {
+            **payload,
+            "review_priority": review_priority(
+                set(payload["hold_codes"]) | set(payload["flag_codes"])
+            ),
+        }
         decided.append((act, outcome, payload, inputs, approval_ref))
     record = {
         "schema": REVIEW_DECISIONS_SCHEMA,
@@ -834,6 +880,11 @@ def plan_reviews(
     )
     off_edge = continuation_off_edge(acts)
     floor = context.witness_floor
+    # The sealed `[flags]` policy the page accounting was measured under decides
+    # which of this stage's own findings are review flags too.
+    flag_codes = page_accounting.require_page_accounting_policy(
+        context, context.page_accounting_config_path
+    ).flag_codes
     planned = []
     for act in acts:
         records = testimonia.get(act["page_id"], [])
@@ -863,6 +914,7 @@ def plan_reviews(
             confirmed=confirmed,
             off_edge=off_edge.get(act["act_id"]),
             recoveries_used=page_reasks(pages[act["page_ordinal"]]),
+            flag_codes=flag_codes,
         )
         exemplar_page = context.artifact_ref(
             EXEMPLAR, "page", artifact_id(EXEMPLAR, "page", act["page_id"])
@@ -1146,3 +1198,131 @@ def write_reading_receipt(
         page_holds=[] if decisions is None else decisions["page_holds"],
     )
     context.tree.write_recensor_partition_receipt(receipt)
+    context.tree.write_recensor_review_summary(
+        review_summary(
+            context,
+            pages,
+            [(act, outcome, payload) for act, outcome, payload, _inputs, _ref in decided],
+            [] if decisions is None else decisions["page_holds"],
+        )
+    )
+
+
+# --- the review summary --------------------------------------------------------------
+
+REVIEW_SUMMARY_SCHEMA: Final = "recensor-review-summary.v1"
+# A page whose reading names no type: the Perlector's page types, when it names
+# them, are read from the page reading (`page_type_of`).
+UNTYPED_PAGE: Final = "untyped"
+
+
+def page_type_of(reading: Mapping[str, Any]) -> str:
+    """The page type a page reading names, or `untyped`.
+
+    Read from the reading payload's `page_type`, or its answer's, so a reading
+    that carries one in either place is counted by it; nothing here decides
+    what a type means or which checks it turns on, which is the page
+    accounting's business.
+    """
+    payload = reading.get("payload") or {}
+    answer = payload.get("answer")
+    for candidate in (payload.get("page_type"), (answer or {}).get("page_type")):
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return UNTYPED_PAGE
+
+
+def review_summary(
+    context,
+    pages: Mapping[int, Mapping[str, Any]],
+    reviews: list[tuple[Mapping[str, Any], str, Mapping[str, Any]]],
+    page_holds: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Holds and review flags counted apart, per page and per unit, by code and by page type.
+
+    A page-level finding reaches every unit of its page, so counting units
+    alone multiplies one finding by the page's entries; `by_code` counts the
+    pages a code is on beside the units carrying it. A page is `held` when any
+    of its units is held or a decision holds the page, `flagged` when none is
+    held and some unit carries a review flag, and `clean` otherwise. The queue
+    lists every held or flagged unit in review priority, then page order.
+    """
+    types = {
+        ordinal: page_type_of(
+            context.tree.read_artifact_reference(
+                page["reading_ref"], stage=PERLECTOR, kind=PAGE_READING_KIND
+            )
+        )
+        for ordinal, page in pages.items()
+    }
+    decided_pages = {row["page_ordinal"] for row in page_holds}
+    held: set[int] = set(decided_pages)
+    flagged: set[int] = set()
+    by_code: dict[str, dict[str, Any]] = {}
+    queue = []
+    held_units = flagged_units = 0
+    for act, outcome, payload in reviews:
+        ordinal = act["page_ordinal"]
+        codes = {code: "hold" for code in payload["hold_codes"]}
+        codes.update({code: "flag" for code in payload["flag_codes"]})
+        if outcome == HELD:
+            held.add(ordinal)
+            held_units += 1
+        elif payload["flag_codes"]:
+            flagged.add(ordinal)
+            flagged_units += 1
+        for code, role in codes.items():
+            row = by_code.setdefault(code, {"as": set(), "pages": set(), "units": 0})
+            row["as"].add(role)
+            row["pages"].add(ordinal)
+            row["units"] += 1
+        if codes:
+            queue.append(
+                {
+                    "review_priority": payload["review_priority"],
+                    "page_ordinal": ordinal,
+                    "act_key": act["act_key"],
+                    "act_id": act["act_id"],
+                    "kind": act["kind"],
+                    "page_type": types.get(ordinal, UNTYPED_PAGE),
+                    "outcome": outcome,
+                    "hold_codes": list(payload["hold_codes"]),
+                    "flag_codes": list(payload["flag_codes"]),
+                }
+            )
+    flagged -= held
+    by_type: dict[str, dict[str, Any]] = {}
+    for ordinal, page_type in types.items():
+        row = by_type.setdefault(
+            page_type, {"pages": 0, "held_pages": 0, "flagged_pages": 0, "clean_pages": 0}
+        )
+        row["pages"] += 1
+        if ordinal in held:
+            row["held_pages"] += 1
+        elif ordinal in flagged:
+            row["flagged_pages"] += 1
+        else:
+            row["clean_pages"] += 1
+    queue.sort(key=lambda row: (row["review_priority"], row["page_ordinal"], row["act_key"]))
+    return {
+        "schema": REVIEW_SUMMARY_SCHEMA,
+        "run_id": context.tree.run_id,
+        "config_digest": context.run["config_digest"],
+        "pages": len(pages),
+        "units": len(reviews),
+        "held_pages": sorted(held),
+        "flagged_pages": sorted(flagged),
+        "clean_pages": sorted(set(pages) - held - flagged),
+        "held_units": held_units,
+        "flagged_units": flagged_units,
+        "by_code": {
+            code: {
+                "as": "both" if len(row["as"]) == 2 else next(iter(row["as"])),
+                "pages": len(row["pages"]),
+                "units": row["units"],
+            }
+            for code, row in sorted(by_code.items())
+        },
+        "by_page_type": dict(sorted(by_type.items())),
+        "queue": queue,
+    }

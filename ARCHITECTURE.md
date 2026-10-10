@@ -189,6 +189,12 @@ A unit is accepted only when nothing holds it. Otherwise it is held for review w
 every reason named. The Recensor may confirm a page blank or confirm that it holds no
 act, and it links material across a page break when both sides agree.
 
+A check the lead has judged not yet calibrated for the corpus is a **review flag**
+rather than a hold (`[flags]` in `config/page_accounting.toml`): measured and recorded
+like a hold, reported per page and per unit, carried with the reading's text in the
+Armarium's flagged export beside the strict established export, but holding nothing.
+Taking a code out of that list makes it hold again.
+
 **It recovers coverage, not quality.** A suspected fabrication or a poor reading may be
 flagged for review. It may never be re-rolled until it looks better. A witness model's
 own pinned retry recipe belongs to that witness and gives the Recensor no extra recovery.

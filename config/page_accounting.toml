@@ -161,3 +161,35 @@ max_act_doubt_share_bp = 2000
 # Every entry of a page reading is held `page-doubt-share-high` when more than
 # this share of all its entries together is doubtful or unread. Provisional: 30%.
 max_page_doubt_share_bp = 3000
+
+[flags]
+# Review flags (the lead's choice, 2026-10-09). A finding whose code is named here
+# is measured and recorded exactly as a hold is, counted and reported by the
+# Recensor (`run-health/recensor-review-summary.json`) and carried with the
+# reading's text in the Armarium's flagged export (`flagged.jsonl`), but it holds
+# nothing: the reading is established and exported as read. These are the checks
+# not yet calibrated for this corpus: the record detector's disagreement with a
+# reading that establishes acts, the two ink thresholds (`[coverage_audit]` in
+# `config/ink_map.toml` says `calibrated_for_this_corpus = false`), and a short
+# witness unit read differently.
+# To make one hold again, take its code out of this list; `codes = []` is the
+# pipeline exactly as strict as before the flags existed. Only a page-level hold
+# code may be named (`common/page_accounting.py`, `FLAGGABLE_CODES`); a code that
+# is also an entry hold is refused rather than half-applied. A file with no
+# `[flags]` table seals the same four codes, so a run sealed before the table
+# existed replays under them.
+codes = [
+  "no-detector-record-on-act-page",
+  "unread-ink",
+  "residual-ink",
+  "witness-short-unit-not-read",
+]
+
+# How many normalized characters (letters and digits) a witness unit may have and
+# still be a short unit for rule (e): a signature, initials or a lone surname, not
+# an index row or a one-line burial. A cited short unit read differently is
+# `witness-short-unit-not-read` (a dissent about a few letters); an uncited one,
+# or a longer one, keeps `witness-text-not-read`, which holds. On the 2026-10-09
+# run the units read differently were 1 to 15 characters. Starting value; to be
+# measured on the proof run.
+short_unit_characters = 15
