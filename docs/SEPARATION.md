@@ -84,6 +84,7 @@ for a script to read.
 | `operations/pod/` | PRODUCT | |
 | `operations/pod/V2_MIGRATION.md` | HISTORY | |
 | `operations/pod/session_end_pod_check.sh` | HARNESS | Claude Code session-end hook |
+| `operations/replay/` | PRODUCT | re-run a saved run from its recorded model replies (no model calls) |
 | `operations/serving/` | PRODUCT | |
 | `operations/submit/` | PRODUCT | |
 | `operations/test_http_deadline.py` | PRODUCT | |
