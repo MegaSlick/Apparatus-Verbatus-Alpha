@@ -2315,9 +2315,15 @@ def test_an_entry_citing_another_entrys_units_beside_its_own_ink_is_still_a_dupl
 # --- review flags ----------------------------------------------------------------------
 
 
-def test_the_committed_file_seals_the_lead_s_review_flags():
-    """No `[flags]` table in the file means the code's defaults: the four uncalibrated checks."""
+def test_the_committed_file_seals_the_lead_s_review_flags(tmp_path: Path):
+    """The committed `[flags]` table is the lead's four codes, and a file with no table seals
+    the same four (the code's defaults), so a run sealed before the table existed replays
+    under them."""
     assert SEALED.flag_codes == page_accounting_module.DEFAULT_FLAG_CODES
+    silent = tmp_path / "silent.toml"
+    silent.write_text(_without_flags_table(), encoding="utf-8")
+    assert load_page_accounting_policy(silent).flag_codes == SEALED.flag_codes
+    assert load_page_accounting_policy(silent).sha256 != SEALED.sha256
     assert SEALED.flag_codes == {
         "no-detector-record-on-act-page",
         "unread-ink",
@@ -2327,12 +2333,16 @@ def test_the_committed_file_seals_the_lead_s_review_flags():
     assert SEALED.short_unit_characters == page_accounting_module.DEFAULT_SHORT_UNIT_CHARACTERS
 
 
+def _without_flags_table() -> str:
+    """The committed file with its `[flags]` table (the last table) cut off."""
+    text = DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH.read_text(encoding="utf-8")
+    head, _flags = text.split("\n[flags]\n", 1)
+    return head + "\n"
+
+
 def _with_flags(tmp_path: Path, table: str) -> Path:
     edited = tmp_path / "flags.toml"
-    edited.write_text(
-        DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH.read_text(encoding="utf-8") + "\n" + table,
-        encoding="utf-8",
-    )
+    edited.write_text(_without_flags_table() + "\n" + table, encoding="utf-8")
     return edited
 
 
