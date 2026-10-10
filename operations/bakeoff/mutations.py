@@ -470,6 +470,9 @@ class Mutation:
     changes: list[dict[str, Any]] = field(default_factory=list)
     set_aside_ids: list[str] = field(default_factory=list)  # units the answer must set aside
     notes: list[str] = field(default_factory=list)
+    # Every unit id of the source feed -> its id in the shown feed, None when the unit is
+    # no longer shown (a removed witness, a dropped act); a merged unit stands for both.
+    id_map: dict[str, str | None] = field(default_factory=dict)
 
     @property
     def family(self) -> str:
@@ -647,6 +650,7 @@ def _merged_entries(m: Mutation, rng: random.Random, rows: list[dict]) -> None:
         k = rng.randrange(len(row["units"]) - 1)
         a, b = row["units"][k], row["units"][k + 1]
         merged = {**a, "text": a["text"].rstrip() + " " + b["text"].lstrip()}
+        merged[_ORIGIN] = [*a.get(_ORIGIN, []), *b.get(_ORIGIN, [])]
         if a.get("box_1000") and b.get("box_1000"):
             merged["box_1000"] = [
                 min(a["box_1000"][0], b["box_1000"][0]), min(a["box_1000"][1], b["box_1000"][1]),
@@ -804,25 +808,43 @@ def mutate(
         turn,
         copy.deepcopy(feed),
     )
+    for row in m.feed["witnesses"]:
+        for unit in row["units"]:
+            unit[_ORIGIN] = [unit["id"]]
+    _scenario(m, ref, scenario, rng, turn, donors or [])
+    shown = {}
+    for row in m.feed["witnesses"]:
+        for unit in row["units"]:
+            for origin in unit.pop(_ORIGIN, []):
+                shown[origin] = unit["id"]
+    m.id_map = {
+        u["id"]: shown.get(u["id"]) for row in feed["witnesses"] for u in row["units"]
+    }  # fmt: skip
+    return m
+
+
+_ORIGIN = "_source_ids"  # a working tag on each unit while a mutation runs, never written
+
+
+def _scenario(m: Mutation, ref: Reference, scenario: str, rng, turn: int, donors) -> None:
     rows = present(m.feed)
-    donors = donors or []
     if scenario == "honest":
-        return m
+        return
     if scenario == "blind":
         m.feed["witnesses"] = []
         m.changes.append({"kind": "blind"})
-        return m
+        return
     if scenario == "permute":
         _permute(m, rng)
-        return m
+        return
     if scenario == "blank-chatty":
         if not ref.blank:
             m.notes.append("page has gold text; blank-chatty needs a blank page")
         _blank_chatty(m, ref, rng, donors)
-        return m
+        return
     if not rows:
         m.notes.append("no witness read this page; nothing to change")
-        return m
+        return
     chair = rows[_rotate(rows, turn)]
     if scenario in ("drop-one", "failed-one", "empty-one"):
         outcome = {"drop-one": None, "failed-one": "failed", "empty-one": "genuinely-empty"}[
@@ -853,7 +875,6 @@ def mutate(
         _name_swap(m, ref, rng, rows)
     elif scenario == "injection":
         _injection(m, ref, rng, chair, donors)
-    return m
 
 
 def blind_labels(m: Mutation, seed: int) -> None:
