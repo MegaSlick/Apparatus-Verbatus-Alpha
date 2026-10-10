@@ -148,6 +148,9 @@ _SEALED_CONFIG_DIGESTS_FIELD: Final = "sealed_config_digests"
 # not a build, and binding it would refuse every resume after a fix.  The commit
 # behind each later stage is in the orchestrator's timing journal, outside the tree.
 _REPOSITORY_COMMIT_FIELD: Final = "repository_commit"
+# A replay run's source (`common.replay`): which run's stages it imports as sealed
+# and answers its model calls from. Bound, so no other run may be opened under it.
+_REPLAY_FIELD: Final = "replay"
 
 
 class PublishResult:
@@ -209,6 +212,8 @@ class RunTree:
         if self.root.exists():
             self._bind_root_identity()
         self._config_digest: str | None = None
+        # The run id and stages a replay run imports from its source, once read.
+        self._imports: tuple[str | None, frozenset[str]] | None = None
 
     # --- Creation and the run authority ---------------------------------------
 
@@ -353,6 +358,84 @@ class RunTree:
                 _verify_compatible_reuse(tree, run_id, authority)
                 _verify_register_snapshot_present(tree, snapshot_digest)
         return tree
+
+    @classmethod
+    def create_replay(
+        cls,
+        root: Path,
+        run_id: str,
+        *,
+        source: Mapping[str, Any],
+        replay: Mapping[str, Any],
+        repository_commit: str,
+    ) -> "RunTree":
+        """Open a new run that replays `source`, a run authority already read and verified.
+
+        The authority is the source's own, with this run's id, the commit of the code
+        that replays, and the `replay` block naming the source; everything a stage is
+        bound to (pages, configuration, chairs, register) stays the source's, so the
+        stages it imports read as sealed. The run directory must not exist yet: a
+        replay is always a new run, never written into one.
+        """
+        from common.replay import validate_replay_block
+
+        tree = cls(root, run_id)
+        block = validate_replay_block(replay)
+        if (
+            source.get("run_id") != block["source_run_id"]
+            or source.get("self_hash") != block["source_run_sha256"]
+        ):
+            raise SchemaRefusal("a replay block must name the run authority it replays")
+        if _REPLAY_FIELD in source:
+            raise SchemaRefusal(
+                f"run {source.get('run_id')!r} is itself a replay; replay the run it names"
+            )
+        if tree.run_id == block["source_run_id"]:
+            raise SchemaRefusal("a replay is a new run, so it takes a run id of its own")
+        if not is_hf_revision(repository_commit):
+            raise SchemaRefusal(
+                "a replay's repository_commit must be forty lowercase hexadecimal characters"
+            )
+        authority = {
+            key: value for key, value in source.items() if key not in ("self_hash", "run_id")
+        }
+        authority["run_id"] = tree.run_id
+        authority[_REPOSITORY_COMMIT_FIELD] = repository_commit
+        authority[_REPLAY_FIELD] = block
+        authority["self_hash"] = self_hash(authority)
+        if tree.root.exists():
+            raise IncompatibleReuse(
+                f"{tree.root} already exists; a replay writes a new run and never into one"
+            )
+        tree.root.parent.mkdir(parents=True, exist_ok=True)
+        with _run_creation_lock(tree.root.parent):
+            tree.root.mkdir(parents=False, exist_ok=False)
+            tree._bind_root_identity()
+            _atomic_create(tree.root / RUN_FILE, canonical_bytes(authority))
+        return tree
+
+    def holds_run_id(self, run_id: Any, stage: Any) -> bool:
+        """Whether a record of `stage` naming run `run_id` belongs to this run.
+
+        A run's own records name its id. A replay run also holds the records of
+        the stages it imported from its source, which keep the source's id.
+        """
+        if run_id == self.run_id:
+            return True
+        source_id, stages = self._replay_imports()
+        return source_id is not None and run_id == source_id and stage in stages
+
+    def _replay_imports(self) -> tuple[str | None, frozenset[str]]:
+        if self._imports is None:
+            block = self.read_run().get(_REPLAY_FIELD)
+            if block is None:
+                self._imports = (None, frozenset())
+            else:
+                from common.replay import validate_replay_block
+
+                checked = validate_replay_block(block)
+                self._imports = (checked["source_run_id"], frozenset(checked["imported_stages"]))
+        return self._imports
 
     def read_run(self) -> dict[str, Any]:
         """The run authority, refused unless its self-hash verifies its current contents."""
@@ -1337,7 +1420,7 @@ class RunTree:
         Integrity, not authentication: every input to the hash is inside the
         record, so this proves no author.
         """
-        if record["run_id"] != self.run_id:
+        if not self.holds_run_id(record["run_id"], record["stage"]):
             raise SchemaRefusal(
                 f"artifact belongs to run {record['run_id']!r}, not {self.run_id!r}"
             )
@@ -1537,6 +1620,7 @@ def _verify_compatible_reuse(tree: RunTree, run_id: str, authority: dict[str, An
             _RENDER_SETTINGS_FIELD,
             _SEALED_CONFIG_DIGESTS_FIELD,
             SEAL_METHOD_FIELD,
+            _REPLAY_FIELD,
         )
         if field in authority or field in existing
     )

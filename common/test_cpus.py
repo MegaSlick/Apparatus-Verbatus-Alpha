@@ -101,6 +101,25 @@ def test_pool_workers_are_bounded_by_cpus_tasks_and_memory_after_the_parent_s_re
     )
 
 
+def test_a_named_ceiling_caps_the_pool_workers_and_a_bad_one_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(cpus, "usable_cpus", lambda *args: 16)
+    no_cgroup = _cgroup(tmp_path, {})
+
+    def workers():
+        return cpus.pool_workers(
+            100, bytes_per_task=1, meminfo=tmp_path / "absent", cgroup_root=no_cgroup
+        )
+
+    monkeypatch.setenv(cpus.POOL_WORKERS_ENV, "2")
+    assert workers() == 2
+    monkeypatch.setenv(cpus.POOL_WORKERS_ENV, "64")
+    assert workers() == 16
+    for bad in ("0", "two"):
+        monkeypatch.setenv(cpus.POOL_WORKERS_ENV, bad)
+        with pytest.raises(ValueError, match=cpus.POOL_WORKERS_ENV):
+            workers()
+
+
 def test_a_cgroup_v2_limit_below_the_host_s_memory_caps_the_workers(tmp_path, monkeypatch):
     monkeypatch.setattr(cpus, "usable_cpus", lambda *args: 32)
     host = _meminfo(tmp_path, 512 * GIB)
