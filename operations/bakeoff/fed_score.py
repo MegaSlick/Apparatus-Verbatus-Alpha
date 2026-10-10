@@ -36,6 +36,11 @@ Per page group (`score.page_group`; act pages split by FORM) and for the hard pa
   repeat of the same arm for the noise floor), side by side, and invariance: per page
   the CER between the two readings' texts, pages read identically, and gold words whose
   right/wrong flipped.
+- planted errors: a `fed_arm` cache made with `--mutations` carries each page's
+  `witness-mutation.v1` sidecar (`operations/bakeoff/mutations.py`); for every planted
+  site the reader either resisted (its word is right), copied (it wrote the planted
+  word) or went wrong another way, counted per scenario, per number of witnesses that
+  carried the error (k = 1, 2, 3), per chair for k = 1, and per word class.
 
 Every heading says "vs fool's gold (ballpark, not accuracy)" while any gold page's
 STATUS says fool's gold; only lead-checked gold drops the label.
@@ -81,6 +86,7 @@ class Answer:
     seconds: float | None
     error: str | None
     witnesses: list[Witness] = field(default_factory=list)
+    mutation: dict[str, Any] | None = None  # the witness-mutation sidecar, if any
 
     @property
     def entries(self) -> list[dict[str, Any]]:
@@ -150,6 +156,7 @@ def answers_from_cache(folder: Path, names: dict[str, str] | None = None) -> dic
             seconds=record.get("seconds"),
             error=record.get("error"),
             witnesses=witnesses_of(record["feed"], names),
+            mutation=record.get("mutation"),
         )
     return out
 
@@ -294,6 +301,43 @@ def scepticism(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"counts": c, "witnesses": names}
 
 
+def planted_copies(rows: list[dict[str, Any]], answers: dict[str, Answer]) -> dict[str, Any]:
+    """Per planted site: resisted (reader right), copied (the reader wrote the planted
+    word) or other-wrong; grouped by scenario, by k, by chair (k = 1) and by class.
+    A site whose reference index lies past this gold's words is `misaligned` (the
+    sidecar was planted against another reference) and not judged."""
+    c: Counter = Counter()
+    for row in rows:
+        answer = answers[row["page"]]
+        sidecar = answer.mutation
+        if not sidecar or not row["parsed"]:
+            continue
+        scenario = sidecar.get("scenario", "?")
+        for site in sidecar.get("planted") or []:
+            i = site.get("ref_index")
+            if i is None or i >= len(row["reader_right"]):
+                c["misaligned"] += 1
+                continue
+            planted = " ".join(S.tokens(site["planted"]))
+            mine = row["reader_form"][i]
+            outcome = (
+                "resisted"
+                if row["reader_right"][i]
+                else "copied"
+                if mine is not None and " ".join(S.tokens(mine)) == planted
+                else "other-wrong"
+            )
+            k = site.get("k") or len(site.get("witnesses") or [])
+            keys = [f"scenario:{scenario}", f"k:{k}", f"class:{site.get('cls', '?')}", "all"]
+            if k == 1 and site.get("witnesses"):
+                label = site["witnesses"][0]
+                keys.append(f"chair:{F.CHAIR_ARMS.get(label, label)}")
+            for key in keys:
+                c[f"{key},sites"] += 1
+                c[f"{key},{outcome}"] += 1
+    return dict(c)
+
+
 def _ratio(n: int, d: int) -> float | None:
     return n / d if d else None
 
@@ -342,6 +386,7 @@ def summarise(rows: list[dict[str, Any]], answers: dict[str, Answer]) -> dict[st
         # Only pages whose answer parsed: an unparsed page says nothing about whom the
         # reader follows (A4's rule), and its words count under answer health instead.
         "scepticism": scepticism(parsed),
+        "planted": planted_copies(parsed, answers),
     }
 
 
@@ -500,7 +545,32 @@ def report(card: dict[str, Any], title: str, label: str) -> list[str]:
                 f"{_share(c[f'wrong-form:{w},copied'], c[f'wrong-form:{w}'])} |"
             )
         out.append("")
+    out += planted_report(card)
     return out
+
+
+def planted_report(card: dict[str, Any]) -> list[str]:
+    """The planted-error block, only when some answer carried a mutation sidecar."""
+    p = card["all"]["planted"]
+    if not p.get("all,sites") and not p.get("misaligned"):
+        return []
+    out = [
+        "### Planted errors (witness-mutation sidecars; pages whose answer parsed)",
+        "",
+        "| group | sites | copied | resisted | other wrong |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    groups = sorted({k.split(",")[0] for k in p if "," in k}, key=lambda g: (g != "all", g))
+    for g in groups:
+        out.append(
+            f"| {g} | {p.get(f'{g},sites', 0)} | "
+            f"{_share(p.get(f'{g},copied', 0), p.get(f'{g},sites', 0))} | "
+            f"{_share(p.get(f'{g},resisted', 0), p.get(f'{g},sites', 0))} | "
+            f"{p.get(f'{g},other-wrong', 0)} |"
+        )
+    if p.get("misaligned"):
+        out.append(f"\nSites not judged (reference index past this gold's words): {p['misaligned']}")
+    return out + [""]
 
 
 def compare_report(card_a, card_b, inv, names: tuple[str, str], label: str) -> list[str]:
