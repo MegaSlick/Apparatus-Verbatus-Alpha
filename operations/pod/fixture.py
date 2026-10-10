@@ -24,9 +24,9 @@ binary float.
 
 **The launch token is scrubbed too.** `VERBATUS_LAUNCH_TOKEN` is not a
 capability, and `models.PodCreateRequest` exempts it from the credential
-scan of pod metadata for that reason. This recorder does not: the brief for
-the fixture is "secrets scrubbed by the predicates", and predicates with no
-exemptions are a rule a reader can check without reading this file. Replaying
+scan of pod metadata for that reason. This recorder does not: a fixture's
+secrets are scrubbed by the predicates, and predicates with no exemptions are a
+rule a reader can check without reading this file. Replaying
 the exact-token recovery path from a fixture therefore needs the token
 re-substituted from the lease, which the record's `scrubbed` list makes
 possible.

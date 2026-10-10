@@ -230,8 +230,7 @@ SECRET = "Le vingt mai mil huit cent Secret Heldout fils de Pierre Heldout"
 
 
 def test_donor_acts_never_come_from_held_out_pages_or_sibling_halves(tmp_path):
-    # C7 P1: invented acts and injections borrowed text from every reference, held-out
-    # pages included. p001's only possible donors here are held out (p002_1L) or its own
+    # Invented acts and injections never borrow text from a held-out page. p001's only possible donors here are held out (p002_1L) or its own
     # sibling half (p001_2R is not a donor for p001_1L).
     pages = ((TEXT, TEXT), (SECRET, SECRET), (SECRET, SECRET))
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=pages))
@@ -256,9 +255,8 @@ def test_donor_acts_never_come_from_held_out_pages_or_sibling_halves(tmp_path):
 
 
 def test_targets_keep_unread_ink_and_uncertain_readings(tmp_path):
-    # C7 P1: the assistant target was the scoring text, so `[[?]]` vanished and
-    # `[[juin|juillet]]` became a plain `juin`. The target now keeps the doubt grammar;
-    # the readings inside carry the unresolved weight (0) and the mark syntax a draft's.
+    # The assistant target keeps the doubt grammar (`[[?]]`, `[[juin|juillet]]`), not
+    # the scoring text; the readings inside carry the unresolved weight (0) and the mark syntax a draft's.
     pages = ((TEXT, TEXT), ("Le onze juin", "Le onze juin"), ("Le douze mai", "Le douze mai"))
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=pages))
     texts = {**TEXTS, "p002": "Le onze [[?]] [[juin|juillet]]", "p003": "[[?]]"}
@@ -296,8 +294,8 @@ def _own_cites_ref(cites):
 
 
 def test_reference_cites_are_remapped_to_the_shown_feed_and_validated(tmp_path):
-    # C7 P2: a reference's own cites were copied unchanged, so after a permutation the
-    # target cited `A1` although no A1 was shown (at weight 1.0).
+    # A reference's cites follow the permutation: the target never cites an id that
+    # was not shown.
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
     feed = tree.pages[1].feed  # A1 A2 | B empty | C1, Surya L1 S1
     ref = _own_cites_ref(["A1", "C1", "L1"])
@@ -340,8 +338,8 @@ def test_reference_cites_are_remapped_to_the_shown_feed_and_validated(tmp_path):
 
 
 def test_a_page_whose_prompt_no_longer_rebuilds_stops_the_export(tmp_path):
-    # C7: an honest prompt mismatch was recorded and the export went on; blinded and
-    # mutated examples were never checked. The source feed is now checked first.
+    # A prompt mismatch stops the export, and the source feed is checked before any
+    # blinded or mutated example.
     tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
     refs = _refs(tree)
     tree.pages[3].feed["prompt"]["rendered_sha256"] = "0" * 64  # the run sent another prompt

@@ -60,7 +60,7 @@ def test_follow_resist_copy_and_vote_on_one_page(tmp_path):
     assert (c["tokens"], c["reader-right"]) == (5, 4)
     assert (c["only-right:chandra"], c["only-right:chandra,followed"]) == (1, 1)  # "mai"
     assert (c["only-right:churro"], c["only-right:churro,followed"]) == (1, 0)  # "huit"
-    # DAI read nothing: absent, never "the only one wrong" (C7: that measured absence).
+    # DAI read nothing: absent, never "the only one wrong".
     assert (c["only-wrong:dai"], c["absent:dai"]) == (0, 5)
     assert (c["wrong-form:churro"], c["wrong-form:churro,copied"]) == (1, 0)  # "mars"
     assert c["wrong-form:chandra"] == 1 and c["wrong-form:dai"] == 0  # an empty DAI has no form
@@ -139,8 +139,8 @@ def test_a_fed_cache_scored_and_compared_end_to_end(tmp_path):
 
 
 def test_copy_attribution_is_one_to_one():
-    # C7: `Jean Paul` read as `Jeanne` gave `Jeanne` for both gold words, so one
-    # emitted word could count as two copied errors.
+    # `Jean Paul` read as `Jeanne`: one emitted word is aligned to one gold word, so it
+    # never counts as two copied errors.
     right, form, inserted = C.aligned(("Jean", "Paul"), ("Jeanne",))
     assert right == [False, False] and form == ["Jeanne", None] and inserted == 0
     right, form, _ = C.aligned(("le", "Jean", "Paul", "fils"), ("le", "Paule", "Jeanne", "fils"))
@@ -149,8 +149,7 @@ def test_copy_attribution_is_one_to_one():
 
 
 def test_absent_witnesses_are_not_the_only_one_wrong():
-    # C7: with DAI empty, every word Chandra and Churro agreed on was "only DAI wrong,
-    # resisted". An absent witness is counted apart; a witness that read the page but
+    # An absent witness is counted apart, never as "only wrong"; a witness that read the page but
     # wrote nothing in the place is "only-omitted", not "only-wrong".
     def w(right, form, read=True):
         return {"right": right, "form": form, "read": read}
@@ -167,8 +166,8 @@ def test_absent_witnesses_are_not_the_only_one_wrong():
 
 
 def test_failures_count_and_intervals_resample_pages(tmp_path):
-    # C7: missing answers were left out of even the "all" metrics, and rates were read
-    # as if every word were independent.
+    # Missing answers count in the "all" metrics, and rates are not read as if every
+    # word were independent.
     tree = F.load_run_tree(
         make_run_tree(tmp_path / "run", pages=(("Le dix mai", "Le dix mai"),) * 3)
     )
@@ -191,8 +190,8 @@ def test_failures_count_and_intervals_resample_pages(tmp_path):
 
 
 def test_lead_checked_only_for_an_explicit_checked_status():
-    # C7: any status without "fool" (silver, draft, unknown) was labelled lead-checked,
-    # and a comparison inherited the first set's label.
+    # Only a checked status is labelled lead-checked (not silver, draft or unknown), and
+    # a comparison does not inherit the first set's label.
     def page(status):
         return parse_gold(GOLD.format(stem="p", status=status, text="Le dix"), "p")
 

@@ -1,20 +1,13 @@
-"""Regressions from an outside review of `common/imaging.py`.
+"""Regression cases for `common/imaging.py`.
 
-Source: "GPT-6 review kit" — proposed by an outside reviewer reading `main`
-on the web, with no checkout. The kit records its own licence as
-Apache-2.0, which permits this carry, named here rather than merged in
-silently. The fixtures, the independent PNG writer and the case list are the
-reviewer's; the assertions below were re-run against the real module and the
-ones the fix answered differently are adjusted here, each with its reason.
+The fixtures, the independent PNG writer and the case list come from an outside
+review kit ("GPT-6 review kit"), licensed Apache-2.0. Where an assertion here
+differs from the kit's, its docstring says why.
 
-The kit's own limits are worth keeping: it was syntax-checked, never executed,
-and it makes no claim that an admitted source reaches any of these branches.
-That trace was done separately and is what decided the fixes — every case below
-is reachable from a source the door admits, and the tests that prove *that* live
-at the end of this file rather than in the reviewer's original set. The one
-exception is the palette-alpha refusal, which guards a route no decoder in this
-stack was measured to produce; its own docstring says so rather than borrowing
-the claim the rest of the file earns.
+Every case below is reachable from a source the door admits; the tests that show
+it are at the end of this file. The one exception is the palette-alpha refusal,
+which guards a route no decoder in this stack is known to produce, as its
+docstring says.
 
 All fixtures are tiny, written by an independent PNG writer rather than by the
 encoder under test, and Pillow is the rendering oracle.
@@ -95,7 +88,7 @@ def test_full_crop_preserves_transparency(color_type: int) -> None:
 
 
 def test_a_partial_crop_keeps_the_transparency_of_the_pixels_it_kept() -> None:
-    """Not only the full-page case the reviewer wrote: the cut is what a crop is.
+    """Not only the full-page case: the cut is what a crop is.
 
     A full-frame crop can pass on a passthrough that never re-encodes anything,
     so the case that actually exercises the encoder is one where the geometry
@@ -137,7 +130,7 @@ def test_grayscale_crop_preserves_valid_gray_icc_profile() -> None:
 def test_grayscale_crop_preserves_a_profile_with_no_system_profile_to_borrow() -> None:
     """The same assertion as the case above, on a machine that has no profile.
 
-    The reviewer's case skips wherever no valid grayscale profile happens to be
+    A case that borrows a system profile skips wherever no valid grayscale profile is
     installed, which on a CI worker is most of the time — and a regression that
     skips on the machine that gates the merge is not a regression test:
     a metric that cannot be measured is a failure, not a pass.
@@ -308,10 +301,9 @@ def test_native_decoder_rejects_invalid_internal_png(case: str, message: str) ->
     from fallback support for otherwise-valid formats outside this native codec's
     supported subset.
 
-    Adjusted from the reviewer's version in one way: each case asserts the
-    *named* refusal rather than any ValueError, because a decoder that refused
-    all seven with one message would pass the original test while telling an
-    operator nothing about which fault it found.
+    Each case asserts the *named* refusal rather than any ValueError, because a
+    decoder that refused all seven with one message would tell an operator nothing
+    about which fault it found.
     """
     with pytest.raises(ValueError, match=message):
         decode_grayscale_png(_invalid_png(case))
@@ -535,7 +527,6 @@ def test_a_palette_whose_used_entries_are_opaque_still_reads() -> None:
     ]
 
 
-# The trace the reviewer could not run — that an admitted, ordinary source really
-# does reach each of these branches — is asserted against the door itself, in
+# That an admitted, ordinary source really does reach each of these branches — is asserted against the door itself, in
 # `pipeline/1_exemplar/test_image_formats.py`, because only a test beside the door
 # may import it.

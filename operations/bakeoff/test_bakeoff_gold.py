@@ -69,7 +69,7 @@ def test_missing_header_is_a_problem_and_dir_loader(tmp_path):
 
 
 def test_diplomatic_text_keeps_doubt_marks_and_scores_like_reduce_marks():
-    # C7 P1: training targets were built from reduce_marks, which erases [[?]] and the
+    # Training targets are not built from reduce_marks, which erases [[?]] and the
     # other readings. The diplomatic text keeps the Perlector's doubt grammar; its scored
     # words are still exactly reduce_marks's.
     from operations.bakeoff.gold import diplomatic_text, marked_words, scored_text
@@ -98,7 +98,7 @@ def test_diplomatic_text_keeps_doubt_marks_and_scores_like_reduce_marks():
 
 
 def test_doubt_is_tracked_by_position_not_spelling():
-    # C7 P2: `Marie épouse [[Marie|Maria]]` -- the first, certain Marie is not doubtful.
+    # `Marie épouse [[Marie|Maria]]` -- the first, certain Marie is not doubtful.
     from operations.bakeoff.gold import marked_words
 
     words = marked_words("Marie épouse [[Marie|Maria]]")

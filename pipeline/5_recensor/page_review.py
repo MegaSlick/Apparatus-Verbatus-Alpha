@@ -142,7 +142,7 @@ CONTINUATION_ON_OTHER: Final = "continuation-flag-on-other"
 # detector its rule (i) does not apply; a page of `other` entries does need it.
 # A rule whose every finding is a review flag under the sealed `[flags]` policy
 # (`flag`) confirms too: the finding is recorded on every unit of the page and
-# reaches the flagged export, and the lead chose to review it rather than hold.
+# reaches the flagged export for review rather than holding the page.
 NO_ACT_RULES: Final = ("d", "e", "f", "i")
 CONFIRMING: Final = frozenset({PASS, FLAG})
 BLANK_RULES: Final = {
