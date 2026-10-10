@@ -91,7 +91,7 @@ Please output the layout information from the PDF image, including each layout e
 
 ## What differs from our vLLM adapter
 
-No vLLM adapter exists for dots.mocr (the bake-off README's "Not done yet"). Nearest neighbour: `qwen-blind` with `--prompt-file`, which would send a different message shape (no placeholder, `openai` content format), no fitz render and greedy decoding.
+The bake-off's own vLLM arms have no dots.mocr adapter (the bake-off README's "Not done yet"); nearest neighbour: `qwen-blind` with `--prompt-file`, which would send a different message shape (no placeholder, `openai` content format), no fitz render and greedy decoding. The pipeline now has one, `dots-mocr.v1` (`pipeline/3_attestatores/dots.py`, `common/dots_layout.py`), for seating dots.mocr on index and table pages by witness routing (`pipeline/3_attestatores/CONTRACT.md`): the same prompt, placeholder, sampling and text rule as this arm, but the page sent at its own size (the vendor's `--no_fitz_preprocess` path), so its readings are not the ones this arm scored.
 
 ## Untested here
 

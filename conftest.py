@@ -273,6 +273,7 @@ _DERIVED_INVENTORY_SUFFIXES = (
     "/manifest-door.json",
     "/index.json",
     "run-health/recensor-partition-receipt.json",
+    "run-health/witness-routing.json",
 )
 
 
@@ -701,3 +702,64 @@ def forge_continuation_links(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(canonical_bytes(record))
     rewitness_stage_boundary(context.tree, RECENSOR)
+
+
+# --- dots.mocr seated on index and table pages ----------------------------------------
+
+DOTS_CHAIR = "attestator_4"
+DOTS_TIERS = ("generic-24gb", "generic-48gb", "generic-80gb-plus")
+
+
+def dots_models_config(directory: Path, *, routed: bool = True) -> Path:
+    """The committed fixture roster with dots.mocr (`attestator_4`) seated, routed or not.
+
+    Written under `directory`; nothing committed seats the chair. `routed` adds
+    `[witness_routing]` (index and table pages only). The synthetic fixture's
+    `dots-*` scenarios make page 2 a page the rule routes.
+    """
+    from common.chairs.manifests import build_manifest, write_manifest
+
+    shutil.copytree(ROOT / "config" / "model-fixtures", directory / "model-fixtures")
+    shutil.copytree(ROOT / "config" / "manifests", directory / "manifests")
+    snapshot = directory / "model-fixtures" / DOTS_CHAIR
+    snapshot.mkdir()
+    (snapshot / "identity.txt").write_bytes(f"fixture chair: {DOTS_CHAIR}\n".encode())
+    pin = write_manifest(build_manifest(snapshot), directory / "manifests" / f"{DOTS_CHAIR}.json")
+    text = (ROOT / "config" / "models.toml").read_text(encoding="utf-8")
+    chair = f"""
+[chairs.{DOTS_CHAIR}]
+state = "configured"
+source = "local-repository"
+path = "{DOTS_CHAIR}"
+digest_manifest = "{pin}"
+manifest = "manifests/{DOTS_CHAIR}.json"
+serving_recipe = "fake-attestatores-v0"
+license_note = "fixture identity only; no model weights or model license apply"
+witness_adapter = "dots-mocr.v1"
+witness_scope = "page"
+"""
+    routing = f'\n[witness_routing]\n{DOTS_CHAIR} = "index-and-table.v1"\n' if routed else ""
+    path = directory / "models.toml"
+    path.write_text(text + chair + routing, encoding="utf-8")
+    return path
+
+
+def dots_serving_recipes(directory: Path) -> Path:
+    """The committed fixture catalogue with `attestator_4`'s fixture row at every tier."""
+    rows = "".join(
+        f"""
+[[profiles]]
+kind = "fixture"
+recipe = "fake-attestatores-v0"
+chair = "{DOTS_CHAIR}"
+tier = "{tier}"
+description = "offline walking-skeleton fixture for Attestator 4 (dots.mocr)"
+"""
+        for tier in DOTS_TIERS
+    )
+    path = directory / "serving_recipes.toml"
+    path.write_text(
+        (ROOT / "config" / "serving_recipes.toml").read_text(encoding="utf-8") + rows,
+        encoding="utf-8",
+    )
+    return path

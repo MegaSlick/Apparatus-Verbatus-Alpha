@@ -328,7 +328,13 @@ def test_the_registry_binds_the_native_intake_contract_seams():
         "chandra.v1": {"can_express_uncertainty": False, "can_express_layout": True},
         "churro.v1": {"can_express_uncertainty": True, "can_express_layout": False},
         "dai.v1": {"can_express_uncertainty": True, "can_express_layout": False},
+        # dots.mocr's cells each carry a box, and nothing in its grammar marks doubt.
+        "dots-mocr.v1": {"can_express_uncertainty": False, "can_express_layout": True},
     }
+    assert (
+        adapters.RUNNABLE_ADAPTERS["dots-mocr.v1"].format_capabilities
+        is adapters.dots.FORMAT_CAPABILITIES
+    )
     assert (
         adapters.RUNNABLE_ADAPTERS["churro.v1"].format_capabilities
         is adapters.churro.FORMAT_CAPABILITIES
@@ -352,11 +358,17 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     )
     assert adapters.RUNNABLE_ADAPTERS["churro.v1"].quantization is None
     assert adapters.RUNNABLE_ADAPTERS["dai.v1"].quantization is None
-    assert adapters.declared_quantization_rules() == frozenset({adapters.chandra.QUANTIZATION_RULE})
+    assert (
+        adapters.RUNNABLE_ADAPTERS["dots-mocr.v1"].quantization == adapters.dots.QUANTIZATION_RULE
+    )
+    assert adapters.declared_quantization_rules() == frozenset(
+        {adapters.chandra.QUANTIZATION_RULE, adapters.dots.QUANTIZATION_RULE}
+    )
     assert {name: entry.takes_page_size for name, entry in adapters.RUNNABLE_ADAPTERS.items()} == {
         "chandra.v1": True,
         "churro.v1": False,
         "dai.v1": False,
+        "dots-mocr.v1": True,
     }
     presented = {
         "kind": "page",

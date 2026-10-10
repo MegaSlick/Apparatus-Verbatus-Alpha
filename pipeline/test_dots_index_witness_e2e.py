@@ -18,10 +18,9 @@ from pathlib import Path
 
 import pytest
 
-from conftest import run_orchestrator
-from pipeline import dots_routing_world as world
+from conftest import DOTS_CHAIR, dots_models_config, dots_serving_recipes, run_orchestrator
 
-DOTS = world.DOTS_CHAIR
+DOTS = DOTS_CHAIR
 BASE_CHAIRS = ["attestator_1", "attestator_2", "attestator_3"]
 PAGE_TWO_TEXT = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 
@@ -31,8 +30,8 @@ def _run(base: Path, scenario: str, *, roster: str = "routed") -> Path:
     options: dict[str, object] = {}
     if roster != "committed":
         options = {
-            "models_config": world.models_config(base / "models", routed=roster == "routed"),
-            "serving_recipes_config": world.serving_recipes(base),
+            "models_config": dots_models_config(base / "models", routed=roster == "routed"),
+            "serving_recipes_config": dots_serving_recipes(base),
         }
     root = base / "runs"
     result = run_orchestrator(root, "r", scenario, **options)
@@ -138,6 +137,14 @@ def test_a_page_surya_tags_a_table_is_read_by_dots_and_the_decision_is_recorded(
     (observed,) = dots["payload"]["observed"]
     assert observed["bounds_source"] == "native"
     assert observed["bounds"] == {"x": 20, "y": 20, "w": 160, "h": 61}
+
+    # dots.mocr's Table cell joins the page-type cross-check's table evidence.
+    accounting = {
+        record["payload"]["page_ordinal"]: record["payload"]
+        for record in _records(run, "4_perlector", "page-accounting")
+    }
+    assert accounting[2]["page_type"]["facts"]["witness_table_units"][DOTS] == 1
+    assert DOTS not in accounting[1]["page_type"]["facts"]["witness_table_units"]
 
     feed = _feeds(run)[2]
     letters = {row["letter"]: row for row in feed["witnesses"]}

@@ -395,7 +395,10 @@ or refused source only when nothing above already says why.
 witness coverage, page census and `aggregate_basis`: `coverage_records`,
 `unaddressed_chairs`, `act_pages` (each act's own page and every page its regions were
 cut from), `act_text_status` (each delivered act's status), `continuation_flags` and
-`page_witness_chairs`; `review_decisions` (`{clearances, page_holds, corrections}`) on a
+`page_witness_chairs`; `routed_page_witness_chairs` (the chairs seated on routed pages
+only, a proper part of `page_witness_chairs`) on a run that routes a witness, so a
+coverage record counts either every page witness or every one but the routed;
+`review_decisions` (`{clearances, page_holds, corrections}`) on a
 run with operator review decisions; and `systemic_review` (`{held_pages, pages,
 max_held_page_share}`) when a person advanced the run past a held share above its
 sealed limit. A clearance, a held page, a systemic share, a damaged delivered act, an

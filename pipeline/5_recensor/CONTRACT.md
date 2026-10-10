@@ -29,7 +29,12 @@ chair testified to must carry every configured page witness and no other, and ea
 must be one its page accounting measured, or the stage refuses. Every unit on a page
 shares the page's coverage: `witness_coverage` over each roster chair's outcome, a
 roster chair with no Testimonium for the page counted `not-run`, so `configured` is
-the sealed page roster's size. The floor counts chairs that read the page (`read` or
+the page roster's size. The page roster is the sealed roster's, less a routed witness
+on a page its rule does not route to it (`common.page_testimonia.page_witness_chairs`;
+Attestatores CONTRACT, "Witness routing"): on an act page a routed dots.mocr is no part
+of the count, so three of three still read; on a page routed to it, it counts like any
+witness, so three of the four reading meets a floor of 3, and dots.mocr can fill the
+seat DAI leaves empty on a page its detector found nothing on. The floor counts chairs that read the page (`read` or
 `genuinely-empty`) and were not truncated, against the sealed `witness_floor`;
 `health_unrecorded` and `shortfalls` (`failed`, `truncated`, `unaligned: 0`) complete
 the shape the page-read receipt recomputes; a receipt whose `shortfalls.unaligned` is not 0 is

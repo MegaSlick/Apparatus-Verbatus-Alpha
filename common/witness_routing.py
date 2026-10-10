@@ -61,8 +61,11 @@ ROUTING_FIELDS: Final = frozenset(
 
 
 def routed_chairs(context) -> Mapping[str, str]:
-    """The run's routed witness chairs and their rule, empty when the run routes none."""
-    return context.registry.config.witness_routing
+    """The run's routed witness chairs and their rule, empty when the run routes none.
+
+    A stand-in configuration with no routing table routes nothing.
+    """
+    return getattr(context.registry.config, "witness_routing", None) or {}
 
 
 def routing_rule(context) -> str | None:
