@@ -1256,9 +1256,7 @@ def test_two_entries_on_one_region_hold_both():
 
     record = account(case)
 
-    # Every unit is cited by both entries, so no unit places either (`_placing_ids`):
-    # both are placed by the same lines 4..6, which fill band 1, and still hold.
-    region = 800 * 300
+    region = 800 * 300 * 2  # bands 1 and 2; lines 4..6 lie inside band 1
     assert record["rules"]["h"]["status"] == "hold"
     assert {
         "code": "duplicate-region",
@@ -2280,12 +2278,26 @@ def test_a_line_range_with_no_unit_of_its_own_holds_the_reading_whole():
     assert problem_codes_of(account(case)) == ["detection-range"]
 
 
-def test_a_unit_two_entries_share_lends_area_only_to_an_entry_with_nothing_else():
-    """A table unit cited by every row places no row that has its own line."""
+def test_a_unit_holding_several_entries_places_none_of_those_reading_a_part_of_it():
+    """One witness unit over two records (a whole index table): each entry cites it
+    beside its own lines and units, all inside it, and is placed by those alone."""
     case = page()
-    acts(case)[0]["cites"] = ["A1", "B1", "C1", "L1", "L2", "L3", "A2"]
-    acts(case)[1]["cites"] = ["A2", "B2", "C2", "L4", "L5", "L6"]
+    table = bx(100, 100, 900, 800)
+    case["feed"]["witnesses"][0]["units"][0]["box_px"] = table
+    acts(case)[0]["cites"] = ["A1", "B1", "C1", "L1", "L2", "L3"]
+    acts(case)[1]["cites"] = ["A1", "B2", "C2", "L4", "L5", "L6"]
 
     record = account(case)
 
     assert duplicates(record) == []
+    entries = {entry["n"]: entry for entry in record["entries"]}
+    assert entries[1]["union_box_px"] == band(0)
+    assert entries[2]["union_box_px"] == band(1)
+
+
+def test_an_entry_citing_another_entrys_units_beside_its_own_ink_is_still_a_duplicate():
+    """Entry 2 claims record 1's units as well as its own: two claims on the same ink."""
+    case = page()
+    acts(case)[1]["cites"] = ["A1", "B1", "C1", "A2", "B2", "C2"]
+
+    assert duplicates(account(case)) == [[1, 2]]

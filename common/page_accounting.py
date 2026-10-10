@@ -669,26 +669,37 @@ def _shared_units(
 
 
 def _placing_ids(
-    cited_ids: Sequence[str], shared: frozenset[str], candidates: Mapping[str, Box | None]
+    cited_ids: Sequence[str],
+    shared: frozenset[str],
+    candidates: Mapping[str, Box | None],
+    policy: PageAccountingPolicy | None,
 ) -> list[str]:
-    """The cited ids that place an entry: a unit other entries cite too places it only alone.
+    """The cited ids that place an entry: a shared unit it reads a part of places it not.
 
-    A witness unit several entries cite (a whole table, or two acts the witness
-    ran together) cannot say which part of its box is whose, so it lends no
-    area to an entry that cites any other placing id (its own lines or
-    units); that entry is placed by those. An entry placed by nothing else
-    keeps the shared unit's box, and rule (h) then holds it as a duplicate.
+    A witness unit several entries cite (a whole index table, or two acts the
+    witness ran together) cannot say which part of its box is whose. It lends
+    no area to an entry whose own placing ids (its lines and the units no other
+    entry cites) all lie inside it (`is_inside`): that entry claims a part of
+    the unit, and is placed by that part. A shared unit an entry cites beside
+    ink of its own elsewhere on the page, or an entry with no placing id of its
+    own, keeps the unit's box: that is two entries claiming the same ink, and
+    rule (h) holds them as duplicates. Without a policy every cited id places.
     """
+    if policy is None:
+        return list(cited_ids)
     own = [
-        identifier
+        candidates[identifier]
         for identifier in cited_ids
         if identifier not in shared and candidates.get(identifier) is not None
     ]
-    return (
-        [identifier for identifier in cited_ids if identifier not in shared]
-        if own
-        else list(cited_ids)
-    )
+    if not own:
+        return list(cited_ids)
+    return [
+        identifier
+        for identifier in cited_ids
+        if identifier not in shared
+        or not all(is_inside(box, [candidates[identifier]], policy) for box in own)
+    ]
 
 
 def validate_answer(
@@ -739,7 +750,7 @@ def validate_answer(
         expanded.append((raw, cited_ids))
     shared = _shared_units([cited_ids for _raw, cited_ids in expanded], candidates)
     for raw, cited_ids in expanded:
-        boxes = region_boxes(_placing_ids(cited_ids, shared, candidates), candidates)
+        boxes = region_boxes(_placing_ids(cited_ids, shared, candidates, policy), candidates)
         entries.append(
             {
                 "n": raw["n"],
