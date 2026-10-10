@@ -608,16 +608,16 @@ Run cards: `cards/kraken-ppocrv6.md`, `cards/kraken-mccatmus.md`,
 
 ```sh
 # Surya lines: the repository's runner in its own environment (CPU), then the crops.
-# `bundle` takes the model store's verified copy (local/surya2-detection) or fetches the
-# pinned bundle into --bundle-dir (Datalab's host and the Hub; no token); both are
-# checked against config/manifests/surya2-detection.json. The queue's surya-lines arm
-# runs these three steps.
+# `run` takes the model store's verified copy (local/surya2-detection) through
+# --store-root, else a bundle folder through --weights; either must be the pinned
+# bundle (config/manifests/surya2-detection.json). Without the store, fetch the bundle
+# first (Datalab's host and the Hub; no token), with the Surya environment's Python, run
+# as a path: `operations/serving/surya/.venv/bin/python operations/serving/surya/prefetch.py --out $V/bakeoff/surya-bundle`.
+# The queue's surya-lines arm runs `run` against the store's copy.
 .venv/bin/python -m operations.bakeoff.lines.surya_rec install       # the Surya environment
-.venv/bin/python -m operations.bakeoff.lines.surya_lines bundle --store-root $V/model-store \
-  --bundle-dir $V/bakeoff/surya-bundle
 .venv/bin/python -m operations.bakeoff.lines.surya_lines run --pages $V/bakeoff-pages \
   --lines-dir $V/bakeoff/surya-docs --out $V/bakeoff/witness-cache \
-  --store-root $V/model-store --bundle-dir $V/bakeoff/surya-bundle --threads 8
+  --store-root $V/model-store --threads 8
 # blla lines: kraken's segmenter in the kraken environment.
 .venv/bin/python -m operations.bakeoff.lines.kraken_ppocr install
 .venv/bin/python -m operations.bakeoff.lines.blla prepare --pages $V/bakeoff-pages \

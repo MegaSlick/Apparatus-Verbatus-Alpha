@@ -509,3 +509,11 @@ Verification proves a package is internally consistent and closed. A self-hash d
 authenticate the run-derived facts; the publisher adds the binding to the retained run
 tree, and authenticity beyond that needs an external trust root. There is no
 stand-alone verifier for a recipient without this repository.
+
+## Not built
+
+- `rows.jsonl` is not written. Index, table and ledger rows are in `other.jsonl` as
+  kind `other`; writing them as rows needs a sealed format and a writer. The Archetypus
+  and Armarium records carry only the act class `kind`, not `entry_kind`, `page_type`
+  or `writing`, which stay on the Perlector's records
+  (`pipeline/4_perlector/CONTRACT.md`).

@@ -2038,8 +2038,8 @@ def _sealed_page_rectangle(context, page_id: str, ordinal: int, what: str) -> di
 #
 # A run counts the acts the Perlector established on each page it read whole.
 # The records are the Perlector's page path (`pipeline/4_perlector/CONTRACT.md`,
-# "Page reading"); what each says that decides the count or a hold -- the
-# feed, the reading's answer and problems, the accounting, each entry's
+# "Records, per page, in publication order"); what each says that decides the count
+# or a hold -- the feed, the reading's answer and problems, the accounting, each entry's
 # act-region and Perlectio, its dissent included -- is recomputed here from
 # the sealed evidence with stage 4's own derivations (`common/page_path.py`),
 # never trusted. The run tree binds every record read to this run's

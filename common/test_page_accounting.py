@@ -2363,6 +2363,14 @@ def test_the_flags_table_is_read_and_checked(tmp_path: Path):
                 tmp_path, '[flags]\ncodes = ["duplicate-region"]\nshort_unit_characters = 15\n'
             )
         )
+    # Each code that is also an entry hold is refused, not half-applied.
+    for entry_hold in ("duplicate-region", "reading-incomplete", "reading-unplaced"):
+        with pytest.raises(ContractError, match="no page-level hold code"):
+            load_page_accounting_policy(
+                _with_flags(
+                    tmp_path, f'[flags]\ncodes = ["{entry_hold}"]\nshort_unit_characters = 15\n'
+                )
+            )
     with pytest.raises(ContractError, match="exactly codes and short_unit_characters"):
         load_page_accounting_policy(_with_flags(tmp_path, '[flags]\ncodes = ["unread-ink"]\n'))
     with pytest.raises(ContractError, match="twice"):
