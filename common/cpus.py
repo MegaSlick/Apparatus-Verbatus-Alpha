@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import Mapping
 
 IO_WORKERS_ENV = "VERBATUS_IO_WORKERS"
+# A ceiling on CPU-bound pool workers, for a machine that must not run every core
+# flat out (a laptop that overheats); unset, the usable CPUs decide alone.
+POOL_WORKERS_ENV = "VERBATUS_POOL_WORKERS"
 IO_WORKERS_MIN = 2
 IO_WORKERS_MAX = 32
 CGROUP_CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
@@ -156,6 +159,20 @@ def _meminfo_available(meminfo: Path) -> int | None:
     return None
 
 
+def _pool_worker_ceiling() -> int:
+    """`POOL_WORKERS_ENV` as a positive count, or no ceiling when it is unset."""
+    raw = os.environ.get(POOL_WORKERS_ENV)
+    if raw is None:
+        return 1 << 30
+    try:
+        count = int(raw)
+    except ValueError:
+        count = 0
+    if count < 1:
+        raise ValueError(f"{POOL_WORKERS_ENV}={raw!r} is not a positive worker count")
+    return count
+
+
 def pool_workers(
     tasks: int,
     *,
@@ -166,10 +183,11 @@ def pool_workers(
     """Processes for `tasks` independent CPU-bound tasks each holding about
     `bytes_per_task`: the usable CPUs, no more than the tasks, no more than the
     available memory holds at once after `PARENT_RESERVE_BYTES` is kept for the
-    process that starts them, and one at the least. One worker is what the
+    process that starts them, no more than `POOL_WORKERS_ENV` when it is set, and
+    one at the least. One worker is what the
     caller runs in its own process, without a pool."""
 
-    workers = min(usable_cpus(), tasks)
+    workers = min(usable_cpus(), tasks, _pool_worker_ceiling())
     memory = available_memory_bytes(meminfo, cgroup_root)
     if memory is not None:
         workers = min(workers, max(0, memory - PARENT_RESERVE_BYTES) // max(1, bytes_per_task))
