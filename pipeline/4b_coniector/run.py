@@ -66,6 +66,7 @@ from common.reconstruction_records import (  # noqa: E402
     reply_state,
     sealed_generations,
 )
+from common.replay import not_replayed_problem, open_source, replay_of  # noqa: E402
 from common.request_capacity import (  # noqa: E402
     RequestCapacityRefusal,
     reconstruction_request_capacity,
@@ -422,6 +423,21 @@ class _Pass:
         self.policy = policy
         self.max_tokens = max_tokens
         self.replanned = replanned
+        # The source run a replay answers from (`common.replay`), once a live call needs it.
+        self._replay = None
+
+    def _replay_source(self):
+        """The source run of a replay, or `None` on any other run."""
+        if self._replay is None and replay_of(self.context.run) is not None:
+            self._replay = open_source(self.context.run)
+        return self._replay
+
+    def _recorded(self, page_id: str, call: dict, text: str) -> bool:
+        """Whether a replay's source asked exactly this call, in this prompt, and was answered."""
+        return any(
+            payload.get("call") == call and payload.get("prompt_sha256") == text_sha256(text)
+            for payload in self._replay_source().answered_calls(page_id)
+        )
 
     def width(self) -> int:
         """How many calls may be in flight: only a live engine batches, up to the
@@ -493,6 +509,10 @@ class _Pass:
         admitted = _admit(chair, call, text, self.policy, self.max_tokens)
         if "reply_text" in admitted:
             return None, lambda _result: finish(admitted)
+        if self._replay_source() is not None and not self._recorded(page_id, call, text):
+            problem = not_replayed_problem(context.run)
+            asked = _not_asked(problem["code"], problem["detail"])
+            return None, lambda _result: finish(asked)
         chair.ready()
         what = f"the reconstruction of page {call['page_ordinal']}"
         return (

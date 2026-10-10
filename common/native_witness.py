@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable
 from typing import Any, Final
 
-from common import chandra_layout, churro_document
+from common import chandra_layout, churro_document, dots_layout
 from common.chairs.models import is_hf_revision
 from common.chandra_native_retry import validate_trace as validate_chandra_native_trace
 from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256
@@ -138,7 +138,7 @@ CHURRO_MAX_IMAGE_DIM_PX: Final = CHURRO_MAX_INLINE_IMAGE_DIM
 # vendor repository is a context length, not a generation bound.)
 CHURRO_OUTPUT_TOKENS: Final = DECLARED_ANSWER_BOUND_TOKENS["attestator_3"]
 # The one intake ceiling before the parser or the repetition scan reads a byte;
-# over 209 bytes per declared token, far beyond any transcription.
+# about 167 bytes per declared token, far beyond any transcription.
 # `churro_document` takes it as an argument rather than declaring its own.
 CHURRO_MAX_RESPONSE_BYTES: Final = 4 * 1024 * 1024
 # Shortest repeating unit and minimum tail repeats.  Declared, not measured.
@@ -689,6 +689,8 @@ def validate_page_testimonium_payload(
         capture = validate_native_capture(payload["native_capture"])
         if capture["adapter"] == "churro.v1":
             _validate_churro_page_health(payload, capture)
+        elif capture["adapter"] == dots_layout.ADAPTER:
+            _validate_churro_page_health(payload, capture, label="dots.mocr")
     if "native_inference" in payload:
         _validate_chandra_native_inference(payload)
     if "unit_captures" in payload:
@@ -769,13 +771,21 @@ def _validate_serving_call_ref(
         read_verified(read_bytes, reference, "page Testimonium serving call record")
 
 
-def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any]) -> None:
+def _validate_churro_page_health(
+    payload: dict[str, Any], capture: dict[str, Any], *, label: str = "Churro"
+) -> None:
+    """A whole-page capture's record agrees with its parse: text, health and reason.
+
+    Churro's rule, and dots.mocr's (`label`), whose page records are written
+    the same way: the parsed text is the page text, the health is measured
+    from it and the stop word, and an unread or cut-off empty answer names why.
+    """
     parse = capture["parse"]
     parsed_text = parse.get("text")
     if parse["state"] == "parsed":
         if payload["payload"] != parsed_text:
             raise SchemaRefusal(
-                "a Churro page Testimonium payload differs from its parsed native capture"
+                f"a {label} page Testimonium payload differs from its parsed native capture"
             )
         truncated, truncation_basis = _truncation_from_stop_word(capture["transport_stop_reason"])
         expected_health = {
@@ -790,7 +800,7 @@ def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any
         }
         if payload["content_health"] != expected_health:
             raise SchemaRefusal(
-                "a Churro page Testimonium health differs from its parsed native capture"
+                f"a {label} page Testimonium health differs from its parsed native capture"
             )
         # An empty reading is a confirmed blank only when the model
         # positively finished; cut off or unreported needs a reason.
@@ -798,13 +808,13 @@ def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any
         if interrupted_silence:
             if not (isinstance(payload.get("reason"), str) and payload["reason"].strip()):
                 raise SchemaRefusal(
-                    "a cut-off empty Churro page capture has no failed-attempt reason"
+                    f"a cut-off empty {label} page capture has no failed-attempt reason"
                 )
         elif "reason" in payload:
-            raise SchemaRefusal("a usable Churro page capture carries a failed-attempt reason")
+            raise SchemaRefusal(f"a usable {label} page capture carries a failed-attempt reason")
     else:
         if payload["payload"] is not None:
-            raise SchemaRefusal("an unread Churro page capture claims retained page text")
+            raise SchemaRefusal(f"an unread {label} page capture claims retained page text")
         cut_off = capture["transport_stop_reason"] in _CHURRO_CUTOFF_STOP_REASONS
         # The same helper the writer uses, so the two cannot disagree.
         parse_refusal = native_parse_refusal(parse)
@@ -826,12 +836,12 @@ def _validate_churro_page_health(payload: dict[str, Any], capture: dict[str, Any
         }
         if payload["content_health"] != expected_health:
             raise SchemaRefusal(
-                "an unparseable Churro page Testimonium health differs from its capture"
+                f"an unparseable {label} page Testimonium health differs from its capture"
             )
         reason = payload.get("reason")
         if not isinstance(reason, str) or not reason.strip() or parse_refusal not in reason:
             raise SchemaRefusal(
-                "an unparseable Churro page capture has no reason naming its parser refusal"
+                f"an unparseable {label} page capture has no reason naming its parser refusal"
             )
 
 
@@ -978,62 +988,44 @@ _NATIVE_CAPTURE_FIELDS: Final = frozenset(
 # under; only an adapter and parser in `CAPTURE_TEXT_VIEWS` has one, and there it
 # is required whenever the bytes are re-derived.
 _NATIVE_CAPTURE_OPTIONAL_FIELDS: Final = frozenset({"vendor_identity", "text_view"})
-# The text view each vendor grammar's capture must name, by (adapter, parser),
-# and the views it retires. A capture made before its view was recorded, or
-# under a retired one, is refused by name whatever its parse state: its text and
-# findings are not what this build's parser reads from the same bytes.
+# The text view each vendor grammar's capture must name, by (adapter, parser).
+# A capture naming any other view, or none, is refused whatever its parse state:
+# its text and findings are not what this build's parser reads from the same bytes.
 CAPTURE_TEXT_VIEWS: Final = {
-    ("chandra.v1", "html"): (
-        chandra_layout.LAYOUT_TEXT_VIEW,
-        chandra_layout.RETIRED_LAYOUT_TEXT_VIEWS,
-    ),
-    ("churro.v1", churro_document.CHURRO_PARSER): (
-        churro_document.CHURRO_TEXT_VIEW,
-        churro_document.RETIRED_CHURRO_TEXT_VIEWS,
-    ),
+    (dots_layout.ADAPTER, dots_layout.PARSER): dots_layout.TEXT_VIEW,
+    ("chandra.v1", "html"): chandra_layout.LAYOUT_TEXT_VIEW,
+    ("churro.v1", churro_document.CHURRO_PARSER): churro_document.CHURRO_TEXT_VIEW,
 }
 
 
 def capture_text_view(adapter: str, parser: str | None) -> str | None:
     """The text view a capture of this adapter and parser records, if it records one."""
-    views = CAPTURE_TEXT_VIEWS.get((adapter, parser))
-    return None if views is None else views[0]
+    return CAPTURE_TEXT_VIEWS.get((adapter, parser))
 
 
 def validate_capture_text_view(capture: dict[str, Any]) -> dict[str, Any]:
-    """Refuse a capture not read under this build's text view for its grammar, by name.
+    """Refuse a capture not read under this build's text view for its grammar.
 
-    Called wherever a retained capture is reused or re-derived, so a capture
-    read under a retired view, or before views were recorded, is refused as
-    that rather than as a capture that differs from its own bytes.
+    Called wherever a retained capture is reused or re-derived, so such a
+    capture is refused by its view rather than as a capture that differs from
+    its own bytes.
     """
-    views = CAPTURE_TEXT_VIEWS.get((capture["adapter"], capture["parse"].get("parser")))
-    if views is None:
+    current = CAPTURE_TEXT_VIEWS.get((capture["adapter"], capture["parse"].get("parser")))
+    if current is None:
         return capture
-    current, retired = views
     named = capture.get("text_view")
-    if named == current:
-        return capture
-    if named is None or named in retired:
-        read_under = (
-            "records no text view"
-            if named is None
-            else f"was read under the retired text view {named}, which this build no longer reads"
-        )
+    if named != current:
         raise SchemaRefusal(
-            f"a {capture['adapter']} page capture {read_under}; this build reads {current}; "
-            "its text and findings are not this parser's; re-run the submission from the Door"
+            f"a {capture['adapter']} page capture names text view {named!r}, not {current}; "
+            "re-run the submission from the Door"
         )
-    raise SchemaRefusal(
-        f"a {capture['adapter']} page capture names unknown text view {named!r}, not {current}; "
-        "re-run the submission from the Door"
-    )
+    return capture
 
 
 _VENDOR_IDENTITY_FIELDS: Final = frozenset({"repository", "sha", "carried_strings"})
-#: One parser name per vendor grammar: Chandra `html`, Churro `xml`, DAI `text`.
-#: Closed because re-derivation dispatches on the recorded name.
-NATIVE_CAPTURE_PARSERS: Final = frozenset({"html", "xml", "text"})
+#: One parser name per vendor grammar: Chandra `html`, Churro `xml`, DAI `text`,
+#: dots.mocr `layout-json`. Closed because re-derivation dispatches on the recorded name.
+NATIVE_CAPTURE_PARSERS: Final = frozenset({"html", "xml", "text", dots_layout.PARSER})
 #: `json` is the committed fixture's Chandra placeholder, not a vendor grammar;
 #: kept apart so removing it is one line once `proof/` uses vendor grammars.
 _TRANSITIONAL_CAPTURE_PARSERS: Final = frozenset({"json"})
@@ -1253,6 +1245,96 @@ def churro_capture_system_prompt(capture: dict[str, Any]) -> str | None:
     return system if isinstance(system, str) else None
 
 
+def derive_dots_capture(
+    raw: bytes, transport_stop_reason: str, *, parser: str | None
+) -> dict[str, Any]:
+    """The facts a dots.mocr capture may publish, derived from its raw answer alone.
+
+    Churro's shape (`derive_churro_capture`): the parse under the layout
+    grammar (`common/dots_layout.py`), the grammar's findings and the
+    repetition scan's, and the stop reason they leave. The scan reads the
+    parsed text where there is one, else the raw answer.
+    """
+    if parser is not None and parser != dots_layout.PARSER:
+        raise SchemaRefusal(
+            f"a dots.mocr capture cannot be derived under parser {parser!r}; this chair reads "
+            f"one grammar, {dots_layout.PARSER!r}"
+        )
+    parse: dict[str, Any] = {"state": "not-requested", "parser": None}
+    findings: list[dict[str, Any]] = []
+    text_view: str | None = None
+    if parser is not None:
+        layout = dots_layout.parse_layout(raw)
+        if layout["state"] == "parsed":
+            parse = {"state": "parsed", "parser": parser, "text": layout["text"]}
+            findings.extend(dict(finding) for finding in layout["findings"])
+            text_view = layout["view"]
+        elif layout["state"] == "failed":
+            parse = {"state": "failed", "parser": parser, "reason": layout["reason"]}
+        else:
+            parse = {"state": "unrecognized-shape", "parser": parser, "outcome": layout["reason"]}
+    parsed_text = parse.get("text")
+    inspected, basis = (
+        (parsed_text.encode("utf-8"), "parsed-text")
+        if isinstance(parsed_text, str)
+        else (raw, "raw-response")
+    )
+    repeated = False
+    if len(raw) <= dots_layout.MAX_RESPONSE_BYTES and (finding := detect_repetition(inspected)):
+        findings.append({**finding, "inspected": basis})
+        repeated = finding["kind"] == "post-hoc-repetition"
+    derived = {
+        "parse": parse,
+        "findings": findings,
+        "stop_reason": _churro_stop_reason(
+            transport_stop_reason, parse["state"], repeated=repeated
+        ),
+    }
+    if text_view is not None:
+        derived["text_view"] = text_view
+    return derived
+
+
+def _validate_dots_capture(value: dict[str, Any]) -> None:
+    """Close the rules that belong to dots.mocr alone, once the shared shape holds."""
+    parse = value["parse"]
+    if value["transport_stop_reason"] not in _CHURRO_STOP_REASONS:
+        raise SchemaRefusal(
+            "a dots.mocr page capture has an unknown transport stop reason "
+            f"{value['transport_stop_reason']!r}"
+        )
+    if value["view"] != dots_capture_view():
+        raise SchemaRefusal(
+            "a dots.mocr page capture does not retain exactly the vendor's prompt and its "
+            f"{dots_layout.MAX_COMPLETION_TOKENS}-token bound"
+        )
+    if (
+        parse["state"] not in {"parsed", "failed", "unrecognized-shape"}
+        or parse.get("parser") != dots_layout.PARSER
+    ):
+        raise SchemaRefusal("a retained dots.mocr page capture has no terminal parse record")
+    for finding in value["findings"]:
+        if finding["kind"] not in REPETITION_FINDING_KINDS | dots_layout.FINDING_KINDS:
+            raise SchemaRefusal(
+                f"a dots.mocr page capture has unknown finding kind {finding['kind']!r}"
+            )
+    repeated = any(finding["kind"] == "post-hoc-repetition" for finding in value["findings"])
+    if value["stop_reason"] != _churro_stop_reason(
+        value["transport_stop_reason"], parse["state"], repeated=repeated
+    ):
+        raise SchemaRefusal(
+            "a dots.mocr page capture stop reason disagrees with its parse and findings"
+        )
+
+
+def dots_capture_view() -> dict[str, Any]:
+    """The one model view a dots.mocr capture retains: the prompt sent and its answer bound."""
+    return {
+        "prompt": {"user": dots_layout.prompt_text()},
+        "generation": {"max_completion_tokens": dots_layout.MAX_COMPLETION_TOKENS},
+    }
+
+
 def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
     """Verify one capture's derived record against raw bytes already digest-checked.
 
@@ -1260,6 +1342,16 @@ def verify_native_capture_bytes(value: Any, raw: bytes) -> dict[str, Any]:
     that name first, rather than reported as differing from its bytes.
     """
     capture = validate_capture_text_view(validate_native_capture(value))
+    if capture["adapter"] == dots_layout.ADAPTER:
+        derived = derive_dots_capture(
+            raw, capture["transport_stop_reason"], parser=capture["parse"]["parser"]
+        )
+        for field in ("parse", "findings", "stop_reason"):
+            if capture[field] != derived[field]:
+                raise SchemaRefusal(
+                    f"a dots.mocr native capture's {field} differs from its retained raw response"
+                )
+        return capture
     if capture["adapter"] != "churro.v1":
         return capture
     derived = derive_churro_capture(
@@ -1478,6 +1570,8 @@ def validate_native_capture(value: Any) -> dict[str, Any]:
         raise SchemaRefusal("a page Testimonium native capture names a blank text view")
     if value["adapter"] == "churro.v1":
         _validate_churro_capture(value)
+    elif value["adapter"] == dots_layout.ADAPTER:
+        _validate_dots_capture(value)
     if "text_view" in value and (value["adapter"], parser) not in CAPTURE_TEXT_VIEWS:
         raise SchemaRefusal(
             f"a {value['adapter']} page capture under parser {parser!r} names text view "

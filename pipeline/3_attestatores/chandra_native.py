@@ -78,7 +78,6 @@ from common.contracts.serving import (
 from common.contracts.stages import ATTESTATORES
 from common.decoding import (
     SAMPLING_FIELDS,
-    refuse_retired_call_record,
     verify_call_sampling,
 )
 from common.native_witness import (
@@ -331,12 +330,6 @@ def _validated_chandra_serving_call(context, payload, native_attempt_ordinal, in
         call_record = json.loads(context.tree.read_bytes(call_ref["relative_path"]))
     except (UnicodeDecodeError, ValueError, RecursionError) as error:
         raise SchemaRefusal("a Chandra native serving call record is not JSON") from error
-    if isinstance(call_record, dict):
-        refuse_retired_call_record(
-            call_record.get("schema"),
-            subject="a Chandra native serving call record",
-            error_type=SchemaRefusal,
-        )
     schemas = {
         CHANDRA_NATIVE_CALL_RECORD_SCHEMA: CHANDRA_NATIVE_CALL_RECORD_FIELDS,
         CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA: (

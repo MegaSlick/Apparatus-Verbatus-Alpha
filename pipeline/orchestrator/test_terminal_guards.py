@@ -66,6 +66,10 @@ def _accepted_review() -> dict:
                 "unresolved_chairs": 0,
                 "shortfalls": {"failed": 0, "truncated": 0, "unaligned": 0},
             },
+            # A review names its holds, its flags and its queue place: none when clean.
+            "hold_codes": [],
+            "flag_codes": [],
+            "review_priority": None,
         },
     }
 

@@ -29,7 +29,12 @@ chair testified to must carry every configured page witness and no other, and ea
 must be one its page accounting measured, or the stage refuses. Every unit on a page
 shares the page's coverage: `witness_coverage` over each roster chair's outcome, a
 roster chair with no Testimonium for the page counted `not-run`, so `configured` is
-the sealed page roster's size. The floor counts chairs that read the page (`read` or
+the page roster's size. The page roster is the sealed roster's, less a routed witness
+on a page its rule does not route to it (`common.page_testimonia.page_witness_chairs`;
+Attestatores CONTRACT, "Witness routing"): on an act page a routed dots.mocr is no part
+of the count, so three of three still read; on a page routed to it, it counts like any
+witness, so three of the four reading meets a floor of 3, and dots.mocr can fill the
+seat DAI leaves empty on a page its detector found nothing on. The floor counts chairs that read the page (`read` or
 `genuinely-empty`) and were not truncated, against the sealed `witness_floor`;
 `health_unrecorded` and `shortfalls` (`failed`, `truncated`, `unaligned: 0`) complete
 the shape the page-read receipt recomputes; a receipt whose `shortfalls.unaligned` is not 0 is
@@ -65,13 +70,47 @@ every code of this stage (`under-witnessed`, `unresolved-witness`, `residual-ink
 each named in `reason`. An operator review decision can change that outcome
 ("Operator review decisions" below).
 
+## Review flags
+
+A code the sealed page-accounting policy names in `[flags] codes`
+(`config/page_accounting.toml`, `common/page_accounting.py`) is a review flag: the
+finding is measured and recorded exactly as a hold is, but it holds nothing. The row's
+`flag_codes` are the page accounting's `flags`; this stage's own `residual-ink` is a
+flag when the policy names it. The committed policy names four: `no-detector-record-on-act-page`,
+`unread-ink`, `residual-ink` and `witness-short-unit-not-read`; `codes = []` restores
+every one of them as a hold. A unit's review carries both lists apart: `hold_codes`
+decide the outcome, `flag_codes` are named in `reason` as "flagged for review, not
+held", and `review_priority` (`common.page_review.REVIEW_PRIORITY`: 1 look first, text
+or ink may be missing; 2 structure doubt; 3 thin evidence) places the unit in the
+review queue by the lowest tier of any code it carries, hold or flag, `null` with
+none. A page said to hold no act is confirmed when rules (d), (e), (f) and (i) each
+pass or are `flag`: the flagged finding is recorded on every unit of the page and
+reaches the flagged export. The Armarium carries every held or flagged reading with
+its text in the flagged layer (`pipeline/7_armarium/CONTRACT.md`); the established
+export is unchanged by a flag.
+
+Not built: `verbatus review` does not show flags yet, and the exactly-once
+reconciliation (`operations/corpus/exactly_once.py`) counts holds only.
+
+After the receipt the stage rebuilds `run-health/recensor-review-summary.json`
+(`recensor-review-summary.v1`), a report for a person and nothing a later stage reads:
+`held_pages`, `flagged_pages` (a flag and no hold) and `clean_pages`; `held_units` and
+`flagged_units`; `by_code`, each code's pages and units counted apart, since a
+page-level finding reaches every unit of its page, with whether it acted `as` a hold,
+a flag or both; `by_page_type`, pages held, flagged and clean under the type the page
+reading names (`page_type` on the reading or its answer, else `untyped`); and `queue`,
+every held or flagged unit in review priority, then page order.
+
 ## A page that holds no act
 
 A `page-blank` row (`page-blank-unconfirmed`) and an entry of a page whose entries are
 all `other` (`no-act-on-page-unconfirmed`) are confirmed only when the page
 accounting's rules (d), (e) and (f) pass. A page of `other` entries also needs rule
 (i) to pass, so no detector record lies in an `other` region; with no record detector
-(`not-applicable`) or none measured it stays held. A blank page needs rule (i) to pass
+(`not-applicable`) or none measured it stays held. A rule the page accounting records
+as not applying to the page's stated type (`page_type.applicability`, rule (i) on every
+typed page but handwritten or mixed register acts) confirms whatever its status, since
+its findings hold nothing there; an untyped page has no such rule. A blank page needs rule (i) to pass
 or not apply, no detected Surya line, and every witness that read the page to have
 retained blank text. DAI's census counts as a blank witness, but at least one blank
 witness must be one that read the page's text, so a page no witness read as blank text
@@ -102,7 +141,8 @@ plus the `attempt_ordinal` every review carries; that module also holds the link
 fields below and is how the Archetypus and the Armarium read both records):
 
 ```
-{act_key, unit_class, kind, page_ordinal, reason, hold_codes, coverage,
+{act_key, unit_class, kind, page_ordinal, reason, hold_codes, flag_codes,
+ review_priority: 1 | 2 | 3 | null, coverage,
  page_reading_ref, page_accounting_ref, act_region_ref | null, perlectio_ref | null,
  page_coverage: {checked_pages, flagged_pages, unmeasurable_pages, ink | null},
  continuation: {continues_from_previous_page, continues_to_next_page},
@@ -265,7 +305,7 @@ Refused, before anything is published:
 ## The partition receipt
 
 After every review is published, the stage rebuilds `recensor-partition-receipt.v6`
-(under `run-health/`) from disk:
+(`run-health/recensor-partition-receipt.json`) from disk:
 
 ```
 {schema, run_id, config_digest, scope: "reading-acts-and-configured-witnesses",

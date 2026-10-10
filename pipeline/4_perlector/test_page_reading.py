@@ -33,7 +33,7 @@ from test_live_perlector import (
     _TreeBlobs,
 )
 
-from common import page_feed, page_path
+from common import page_answer, page_feed, page_path
 from common.alignment import load_dissent_limits
 from common.background import DEFAULT_INK_MAP_CONFIG_PATH
 from common.contracts.canonical import canonical_bytes, digest_bytes, digest_of, self_hash
@@ -393,7 +393,7 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
     assert set(accounts) == {1, 2}
     for account in accounts.values():
         payload = account["payload"]
-        assert payload["schema"] == "page-accounting.v2" and account["outcome"] == "read"
+        assert payload["schema"] == "page-accounting.v3" and account["outcome"] == "read"
         assert payload["holds"] == []
         assert {unit["disposition"] for unit in payload["units"]} == {"cited"}
         # Every DAI record lies inside exactly one act region.
@@ -407,9 +407,10 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
         "record-not-read",
         "truncation-not-classified",
         "unaccounted-witness-unit",
-        "unread-ink",
         "unread-line",
     ]
+    # The ink threshold is a review flag under the committed `[flags]`: recorded, not held.
+    assert first["payload"]["flags"] == ["unread-ink"]
     # Re-asked about DAI's record and Surya's lines, the reader reads the a2 it
     # already read: the ids are accounted for, and the entry is held as a duplicate
     # of it. The first reading's unplaced entry still holds, as it did.
@@ -930,7 +931,7 @@ def test_entries_on_one_region_are_held_and_keep_their_own_ids():
         "continues_from_previous_page": False,
         "continues_to_next_page": False,
     }
-    answer = {"acts": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
+    answer = {"entries": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
     entries = page_path.answer_entries(answer, feed, load_page_accounting_policy())
     assert [entry["holds"] for entry in entries] == [["duplicate-region"]] * 2
     assert [entry["union_box_px"] for entry in entries] == [box, box]
@@ -957,10 +958,10 @@ def test_entries_on_one_region_do_not_hold_the_reading_whole_but_an_unknown_id_d
         "continues_from_previous_page": False,
         "continues_to_next_page": False,
     }
-    answer = {"acts": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
+    answer = {"entries": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
     policy = load_page_accounting_policy()
     assert page_path.answer_problems(answer, feed, "stop", policy) == []
-    answer["acts"][1]["cites"] = ["Q7"]
+    answer["entries"][1]["cites"] = ["Q7"]
     assert [p["code"] for p in page_path.answer_problems(answer, feed, "stop", policy)] == [
         "unknown-id"
     ]
@@ -1296,7 +1297,7 @@ def test_two_pages_in_flight_publish_what_one_at_a_time_does(live_chain, tmp_pat
             ),
             "malformed",
         ),
-        (ScriptedAnswer(content='{"acts": [{"n": 1', finish_reason="length"), "cut-off"),
+        (ScriptedAnswer(content='{"entries": [{"n": 1', finish_reason="length"), "cut-off"),
         (ScriptedAnswer(content="{}", finish_reason="eos_token"), "call-failed"),
     ],
     ids=["malformed", "cut-off", "unrecognized-stop"],
@@ -1320,6 +1321,63 @@ def test_an_answer_that_cannot_stand_is_held_whole_with_no_act_record(
         assert failure["raw_response_ref"] in readings[0]["inputs"]
 
 
+def _bare_keys(answer: str) -> str:
+    """`answer` with every grammar key written bare, such as `{\nentries: [`."""
+    for key in (
+        "page_type",
+        "writing",
+        "entries",
+        "set_aside",
+        "n",
+        "kind",
+        "label",
+        "cites",
+        "text",
+        "continues_from_previous_page",
+        "continues_to_next_page",
+    ):
+        answer = answer.replace(f'"{key}":', f"{key}:")
+    return answer
+
+
+def test_a_stray_flag_keeps_the_page_and_bare_keys_are_quoted_and_recorded(
+    live_tree, tmp_path, monkeypatch
+):
+    """Page 1 says its first act runs on from the page before; page 2's reply writes its
+    keys bare. Both keep every entry: the flag stays on its entry for the Recensor, the
+    repair is recorded on the reading, the response bytes stay as sent, and a later
+    stage reading both pages again from those bytes finds the same. Synthetic text."""
+    root = live_tree.root
+    stray = json.loads(PAGE_ANSWERS[1])
+    stray["entries"][1]["continues_from_previous_page"] = True
+    bare = _bare_keys(PAGE_ANSWERS[2])
+    assert page_answer.parse_page_answer(bare)[0] == "malformed"
+    _endpoint, exit_code = _read_pages(
+        live_tree,
+        tmp_path,
+        monkeypatch,
+        _scripted(stray),
+        ScriptedAnswer(content=bare, finish_reason="stop"),
+    )
+    assert exit_code == 0
+    first, second = (r["payload"] for r in _records(root, "page-reading"))
+    assert (first["parse_state"], first["problems"], first["answer"]) == ("parsed", [], stray)
+    assert "answer_repairs" not in first
+    assert (second["parse_state"], second["problems"]) == ("parsed", [])
+    assert second["answer"] == json.loads(PAGE_ANSWERS[2])
+    assert [repair["code"] for repair in second["answer_repairs"]] == ["unquoted-keys-quoted"]
+    raw = (root / "r" / second["engine_call"]["raw_response_ref"]["relative_path"]).read_bytes()
+    assert b"entries:" in raw and b'"entries":' not in raw
+    perlectios = {
+        (r["payload"]["page_ordinal"], r["payload"]["n"]): r["payload"]
+        for r in _records(root, "perlectio")
+    }
+    assert sorted(perlectios) == [(1, 1), (1, 2), (2, 1)]
+    assert perlectios[(1, 2)]["continues_from_previous_page"] is True
+    rows = reading_acts(_denominator_context(live_tree))
+    assert not [row for row in rows if row["class"] == "page-unread"]
+
+
 def test_a_looping_reply_is_stopped_and_held_whole_and_read_again_from_its_bytes(
     live_tree, tmp_path, monkeypatch
 ):
@@ -1327,7 +1385,7 @@ def test_a_looping_reply_is_stopped_and_held_whole_and_read_again_from_its_bytes
     repeat, held `repetition-loop` (never parsed, never a cut-off), and a later stage
     reading the page again finds the same loop in the retained bytes. Synthetic text."""
     root = live_tree.root
-    head = '{"acts": [{"n": 1, "kind": "other", "label": "index", "cites": ["A1"], "text": "\n'
+    head = '{"entries": [{"n": 1, "kind": "other", "label": "index", "cites": ["A1"], "text": "\n'
     looped = ScriptedAnswer(
         content=head + "Tremblay, Jean f. 12\n" * 300 + '"}], "set_aside": []}',
         finish_reason="length",
@@ -1433,7 +1491,7 @@ def test_an_answer_citing_an_id_the_feed_never_showed_is_held_with_its_answer(
 ):
     root = live_tree.root
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][0]["cites"] = ["A1", "Q7"]
+    answer["entries"][0]["cites"] = ["A1", "Q7"]
     scripted = _scripted(answer)
     _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, scripted, scripted)
     assert exit_code == 0
@@ -1446,7 +1504,7 @@ def test_an_answer_citing_an_id_the_feed_never_showed_is_held_with_its_answer(
 def test_a_real_act_set_aside_is_published_but_its_page_holds(live_tree, tmp_path, monkeypatch):
     root = live_tree.root
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"] = answer["acts"][:1]
+    answer["entries"] = answer["entries"][:1]
     answer["set_aside"] = [
         {"id": "A2", "reason": "not an entry"},
         {"id": "B2", "reason": "not an entry"},
@@ -1456,7 +1514,7 @@ def test_a_real_act_set_aside_is_published_but_its_page_holds(live_tree, tmp_pat
     # published, before page 2's.
     reask = _scripted(
         {
-            "acts": [],
+            "entries": [],
             "set_aside": [{"id": f"L{line}", "reason": "not an entry"} for line in range(5, 10)],
         }
     )
@@ -1470,7 +1528,8 @@ def test_a_real_act_set_aside_is_published_but_its_page_holds(live_tree, tmp_pat
     for account in (first, last):
         dispositions = {unit["id"]: unit["disposition"] for unit in account["units"]}
         assert dispositions["A2"] == dispositions["B2"] == "set-aside"
-        assert "unread-ink" in account["holds"]
+        # The set-aside record's ink is measured and flagged, never held, under `[flags]`.
+        assert "unread-ink" in account["flags"] and "unread-ink" not in account["holds"]
     assert "reask-set-aside" in last["holds"]
 
 
@@ -1479,7 +1538,7 @@ def test_a_page_held_by_rule_e_holds_every_act_record_on_it(live_tree, tmp_path,
     holds the page, and both its act records carry that code and are held."""
     root = live_tree.root
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][0]["text"] = "Le deux mai a été inhumé Jean Roy, âgé de trois jours"
+    answer["entries"][0]["text"] = "Le deux mai a été inhumé Jean Roy, âgé de trois jours"
     _endpoint, exit_code = _read_pages(
         live_tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1]
     )
@@ -1504,7 +1563,7 @@ def test_a_page_held_by_rule_e_holds_every_act_record_on_it(live_tree, tmp_path,
 def test_an_entry_with_no_readable_text_is_held_by_its_own_code(live_tree, tmp_path, monkeypatch):
     root = live_tree.root
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][1]["text"] = "  [[?]]  "
+    answer["entries"][1]["text"] = "  [[?]]  "
     _endpoint, exit_code = _read_pages(
         live_tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1]
     )
@@ -1974,8 +2033,8 @@ def test_under_flat_witnesses_the_accounting_measures_the_regions_the_stage_cut(
     unread by both readings of the page."""
     tree = _live_chain(tmp_path / "flat", feed={"witness_units": "flat"}, reask=0)
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][0]["cites"] = ["A1", "B1", "L1"]
-    answer["acts"][1]["cites"] = ["A2", "B2", "L5", "L6", "L7", "L8", "L9"]
+    answer["entries"][0]["cites"] = ["A1", "B1", "L1"]
+    answer["entries"][1]["cites"] = ["A2", "B2", "L5", "L6", "L7", "L8", "L9"]
     _endpoint, exit_code = _read_pages(
         tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1]
     )

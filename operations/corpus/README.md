@@ -127,10 +127,13 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   rule (e): the gold text's character error rate against a holding act's reading
   is at most 20%, and no other gold record on the page is closer to that reading.
   A lost or merged record is **caught** only by a held finding located on it
-  (names a placed region or a box overlapping it, or a unit such a region cites);
-  a hold elsewhere on the page does not catch it. Page-wide catches (a hold naming
-  no region, box or unit) and unplaced-only catches (one reaching the record only
-  through an unplaced region) are reported beside it and not credited. A page
+  (one whose code is among the accounting's `holds`, naming a placed region or a
+  box overlapping it, or a unit such a region cites); a hold elsewhere on the page
+  does not catch it. Page-wide catches (a hold naming no region, box or unit),
+  unplaced-only catches (one reaching the record only through an unplaced region)
+  and located review flags (`flagged_by`: a flag holds nothing, so the reading is
+  delivered as read) are reported beside it and not credited; a finding of a rule
+  the page type switched off catches nothing. A page
   with no accounting is **unchecked**, a failure of its own. Beside the outcomes: records split by merge case (a detector record or
   another witness's boxed unit holding two gold records), how often rule (i)
   `merged-detection` fired on regions that truly hold two gold records and on
@@ -182,7 +185,8 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   not read, or whose units carry no box, gives every record an empty hypothesis by name,
   and so does a witness shown on another page of the run that this page's feed does not
   show (`witness-not-in-feed`), so the denominator is every record on every page for
-  every witness;
+  every witness of that page's roster. A routed witness belongs to the roster only of
+  the pages its sealed `witness-routing` decision routed to it;
   `scoreable_cer_*` is the rate over the records a unit lay on. With no `--page-id` it
   scores every admitted page the run sealed and lists the rest under
   `reference_pages_outside_run`. `--basis page-testimonium` with one or more

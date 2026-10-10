@@ -158,6 +158,9 @@ BOUNDARY_OUTCOMES: Final = {
     # What one Recensor pass did with the run's operator review decisions; it
     # decides about no unit, each review does.
     "review-decisions": "recorded",
+    # Which page a routed witness reads (`common/witness_routing.py`): a roster
+    # fact about one page, never a witness outcome or an act's category.
+    "witness-routing": "recorded",
 }
 
 # Boundary evidence, never an act's category (an Armarium boundary record is not
@@ -263,8 +266,8 @@ def terminal_category(stage: str, outcome: Any) -> ArmariumCategory | None:
 def require_approval(stage: str, outcome: Any, approval_ref: Any) -> None:
     """Refuse an approval-bound outcome that carries no approval-record reference.
 
-    Only two outcome words in the whole algebra are approval-bound, `excluded` (a
-    Designator or Recensor outcome) and its Armarium category, and both mean a unit
+    Only two outcome words in the whole algebra are approval-bound, `excluded` (an
+    Attestatores or Recensor outcome) and its Armarium category, and both mean a unit
     left the pipeline as `completed` without its text being established. A claimed
     approval with no artifact is no approval.
     """

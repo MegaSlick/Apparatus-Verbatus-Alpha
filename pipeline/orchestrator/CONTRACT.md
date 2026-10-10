@@ -94,7 +94,7 @@ When their share is more than the run's sealed `[review] max_held_page_share`
 `review` seal), the report opens with one line, `run <id>: systemic: <held> of <pages>
 page(s) are held after the recensor, more than the sealed limit of <share> ...`,
 naming the held pages. The run stops all the same: the alarm adds a reason, never a
-pass. A run sealed before the policy existed says the check was not made.
+pass.
 
 A person's recorded `advance` of the Recensor's seal may still pass a systemic run: it
 is an explicit choice, and the run is not trapped. The alarm never goes silent:

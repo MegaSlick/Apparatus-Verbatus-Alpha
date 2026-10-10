@@ -27,7 +27,7 @@ def _answer(text: str) -> str:
     """A page answer as the reader writes it: pretty-printed JSON, rows as escaped newlines."""
     return json.dumps(
         {
-            "acts": [
+            "entries": [
                 {
                     "n": 1,
                     "kind": "other",

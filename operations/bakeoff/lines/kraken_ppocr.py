@@ -133,7 +133,9 @@ class KrakenRecogniser:
         xml = self.raw_dir / f"{prepared.page.stem}.xml"
         xml.unlink(missing_ok=True)
         argv = self.page_argv(prepared.page, xml)
-        done, seconds = harness.subprocess_page(argv, self.log, self.runner)
+        done, seconds = harness.subprocess_page(
+            argv, self.log, self.runner, harness.thread_env(self.args.threads)
+        )
         request = {
             "line_source": "blla (this command's own segment step)",
             "image": {"file": str(prepared.page), "sha256": harness.sha256_file(prepared.page)},
@@ -155,7 +157,9 @@ class KrakenRecogniser:
         for _, text in pairs:
             text.unlink(missing_ok=True)
         argv = self.lines_argv(pairs)
-        done, seconds = harness.subprocess_page(argv, self.log, self.runner)
+        done, seconds = harness.subprocess_page(
+            argv, self.log, self.runner, harness.thread_env(self.args.threads)
+        )
         share = seconds / len(rows)
         units = []
         for row, (_, text_file) in zip(rows, pairs, strict=True):

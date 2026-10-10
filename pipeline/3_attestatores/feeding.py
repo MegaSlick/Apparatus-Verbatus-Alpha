@@ -9,7 +9,7 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Any, Final, Mapping
 
-from common import chandra_layout
+from common import chandra_layout, dots_layout
 from common.contracts.canonical import digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.decoding import SAMPLING_FIELDS
@@ -18,6 +18,7 @@ from common.native_witness import (
     capture_text_view,
     churro_capture_system_prompt,
     derive_churro_capture,
+    derive_dots_capture,
     detect_repetition,
     parse_churro_response,
     validate_capture_text_view,
@@ -51,6 +52,8 @@ _RUNNABLE_PARSERS = frozenset(
         # in both postures.
         ("churro.v1", "xml"),
         ("dai.v1", "text"),
+        # dots.mocr has one grammar, its JSON layout cells, in both postures.
+        (dots_layout.ADAPTER, dots_layout.PARSER),
     }
 )
 # The expert transcription convention defined on the training dataset's own
@@ -243,7 +246,7 @@ def dai_model_view(
     system_prompt_ref: dict[str, str],
     query_prompt_ref: dict[str, str],
     generation_config_ref: dict[str, str],
-    generation_accounting: dict[str, Any] | None = None,
+    generation_accounting: dict[str, Any],
 ) -> dict[str, Any]:
     """Build DAI's crop view, referencing carried prompt/config bytes by manifest.
 
@@ -278,7 +281,7 @@ def dai_model_view(
         raise SchemaRefusal("DAI identity transform does not retain the source image bytes exactly")
     limits = _dai_image_limits()
     view = {
-        "adapter": "dai-atr.v1" if generation_accounting is None else "dai-atr.v2",
+        "adapter": "dai-atr.v2",
         "source_image_ref": source_image_ref,
         "model_image_ref": model_image_ref,
         "transform": {
@@ -295,10 +298,8 @@ def dai_model_view(
         "prompts": {"system": system_prompt_ref, "query": query_prompt_ref},
         "generation_config_ref": generation_config_ref,
         "uncertainty_tokens_preserved": list(_UNCERTAINTY_TOKENS),
+        "generation_accounting": validate_dai_generation_accounting(generation_accounting),
     }
-    if generation_accounting is not None:
-        validate_dai_generation_accounting(generation_accounting)
-        view["generation_accounting"] = generation_accounting
     return validate_dai_model_view(view)
 
 
@@ -327,15 +328,11 @@ def validate_dai_model_view(value: Any) -> dict[str, Any]:
         "prompts",
         "generation_config_ref",
         "uncertainty_tokens_preserved",
+        "generation_accounting",
     }
-    if not isinstance(value, dict) or value.get("adapter") not in {"dai-atr.v1", "dai-atr.v2"}:
+    if not isinstance(value, dict) or value.get("adapter") != "dai-atr.v2" or set(value) != fields:
         raise SchemaRefusal("DAI model view is not its closed adapter schema")
-    if value["adapter"] == "dai-atr.v2":
-        fields.add("generation_accounting")
-    if set(value) != fields:
-        raise SchemaRefusal("DAI model view is not its closed adapter schema")
-    if value["adapter"] == "dai-atr.v2":
-        validate_dai_generation_accounting(value["generation_accounting"])
+    validate_dai_generation_accounting(value["generation_accounting"])
 
     for name, reference in (
         ("source image", value["source_image_ref"]),
@@ -440,8 +437,9 @@ def _record_post_hoc_repetition(
     already retained and parsed, so a degenerated-but-complete answer does not
     reach the Perlector as full testimony under ``stop_reason = "stop"``.
 
-    Shared with Churro's own scan so two page witnesses mean the same thing by
-    one finding: inspects ``parse["text"]`` when a parse produced one (markup
+    Only Chandra calls this helper. It scans with `native_witness.detect_repetition`,
+    the same detector Churro's own scan uses, so two page witnesses mean the same
+    thing by one finding: inspects ``parse["text"]`` when a parse produced one (markup
     like `<div data-bbox=...>` repeats by construction, so raw bytes would be
     the wrong signal), skips a body past the grammar's parsing ceiling rather
     than scanning unbounded bytes, and lets a parse outcome win over a
@@ -576,6 +574,15 @@ def retain_model_view(
         else:
             record["parse"] = {"state": "parsed", "parser": parser, "text": parsed}
         _record_post_hoc_repetition(record, raw_response, ceiling=chandra.MAX_RESPONSE_BYTES)
+    elif adapter == dots_layout.ADAPTER:
+        record["vendor_identity"] = {
+            "repository": dots_layout.PROMPT_PROVENANCE["repository"],
+            "sha": dots_layout.PROMPT_PROVENANCE["sha"],
+            "carried_strings": {
+                dots_layout.PROMPT_PROVENANCE["symbol"]: dots_layout.LAYOUT_PROMPT_SHA256
+            },
+        }
+        record.update(derive_dots_capture(raw_response, transport_stop_reason, parser=parser))
     elif adapter == "dai.v1" and parser == "text":
         try:
             record["parse"] = {

@@ -101,10 +101,10 @@ FIXTURE = "synthetic-two-page-v0"
 # record. Both trees carry the Coniector's records, since the committed
 # reconstruction config runs it: a call per page, a reconstruction per act, and
 # the reconstructor's receipt.
-HAPPY_SNAPSHOT_FILES = 141
-REVIEW_SNAPSHOT_FILES = 132
-HAPPY_RUN_TREE_DIGEST = "37bb7b9f66a1ad5a551066519d8e4e40d4e8ef6745523532d9f7475234f79308"
-REVIEW_RUN_TREE_DIGEST = "14667854358aafd55c33623838a6aeb53f0115561932eb2ba2305313e59b1b15"
+HAPPY_SNAPSHOT_FILES = 142
+REVIEW_SNAPSHOT_FILES = 133
+HAPPY_RUN_TREE_DIGEST = "53b1eba5752c925593e2cedee336cb2b10f7c6c0f745b1e5c832d70c6bc97d4b"
+REVIEW_RUN_TREE_DIGEST = "bda1e9bbe6a2168ccd0f2994d848a18e8dd164707d6deba9de96def6169e7254"
 
 
 def orchestrate_to_export(

@@ -65,10 +65,12 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Final, Mapping
 
+import dots
 import feeding
 import witness_adapters
 from attempt import Attempt, content_health, unrecordable_health
 
+from common import dots_layout
 from common.chair_wire import chandra_wire_fields
 from common.contracts.envelope import read_verified
 from common.contracts.errors import SchemaRefusal
@@ -105,7 +107,7 @@ class RecordChairRequest:
     presented: Mapping[str, Any]
     prompt: Mapping[str, Any]
     capacity: Mapping[str, Any]
-    generation_accounting: Mapping[str, Any] | None
+    generation_accounting: Mapping[str, Any]
 
 
 def _data_uri(image_bytes: bytes) -> str:
@@ -165,6 +167,7 @@ _ADAPTER_CHAIRS: Mapping[str, str] = {
     "chandra.v1": "attestator_1",
     "dai.v1": "attestator_2",
     "churro.v1": "attestator_3",
+    dots.ADAPTER: "attestator_4",
 }
 
 
@@ -204,9 +207,10 @@ def request_capacity_or_refuse(
     asked at (``"page"`` or ``"record"``): Chandra reserves a dense page's
     answer, DAI one record's answer, since reserving a page's would refuse
     ordinary record crops.
-    Churro is the exception: its whole vendor answer bound is reserved, so a
-    row that cannot hold it refuses the page rather than letting the engine
-    stop the answer short of what the vendor's own pipeline allows.
+    Churro and dots.mocr are the exception: each one's whole vendor answer bound
+    is reserved, so a row that cannot hold it refuses the page rather than
+    letting the engine stop the answer short of what the vendor's own pipeline
+    allows.
 
     Never a silent downscale: the alternative is showing the model fewer
     pixels than the render config argues are needed to read the ink, which is
@@ -226,7 +230,13 @@ def request_capacity_or_refuse(
             f"a witness request was checked at scope {scope!r}; the scopes are {sorted(budgets)}"
         )
     budget = budgets[scope]
-    answer = DECLARED_ANSWER_BOUND_TOKENS[chair] if adapter_name == "churro.v1" else budget(chair)
+    # Churro and dots.mocr reserve their vendor's whole answer bound: a row that
+    # cannot hold it refuses the page rather than stop the answer short.
+    answer = (
+        DECLARED_ANSWER_BOUND_TOKENS[chair]
+        if adapter_name in {"churro.v1", dots.ADAPTER}
+        else budget(chair)
+    )
     return refuse_unless_it_fits(
         profile,
         [dimensions(image) for image in image_bytes_list],
@@ -296,7 +306,7 @@ def generation_bound_sent(chair: str, capacity: Mapping[str, Any]) -> dict[str, 
 
 #: The adapters this seam builds a page request for and captures a page
 #: response from.
-_PAGE_SCOPED_ADAPTERS: Final = frozenset({"churro.v1", "chandra.v1"})
+_PAGE_SCOPED_ADAPTERS: Final = frozenset({"churro.v1", "chandra.v1", dots.ADAPTER})
 
 
 def _framed_prompt(adapter: Any, framing: str | None) -> Mapping[str, Any]:
@@ -394,6 +404,9 @@ def page_chair_request(
     elif adapter_name == "chandra.v1":
         generation_declared = dict(feeding.chandra_generation())
         wire_fields = chandra_wire_fields()
+    elif adapter_name == dots.ADAPTER:
+        generation_declared = dots.generation()
+        wire_fields = {}
     else:
         raise SchemaRefusal(
             f"page-scoped adapter {adapter_name!r} has no declared generation view at this "
@@ -480,7 +493,7 @@ def dai_model_view(
     presented: Mapping[str, Any],
     prompt: Mapping[str, Any],
     generation_declared: Mapping[str, Any],
-    generation_accounting: Mapping[str, Any] | None = None,
+    generation_accounting: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Build DAI's closed model view (`feeding.dai_model_view`) for this record.
 
@@ -513,9 +526,7 @@ def dai_model_view(
         generation_config_ref=context.retain(
             json.dumps(dict(generation_declared), sort_keys=True).encode("utf-8")
         ),
-        generation_accounting=(
-            None if generation_accounting is None else dict(generation_accounting)
-        ),
+        generation_accounting=dict(generation_accounting),
     )
 
 
@@ -633,7 +644,7 @@ def live_attempt_from_response(
     prompt: Mapping[str, Any],
     generation_declared: Mapping[str, Any],
     parser: str,
-    generation_accounting: Mapping[str, Any] | None = None,
+    generation_accounting: Mapping[str, Any],
 ) -> Attempt:
     """Derive one DAI record reading's `Attempt` from its retained response.
 
@@ -696,12 +707,13 @@ def captured_page_attempt(
     """The live twin of `run.py::captured_churro_page_attempt`, generalized.
 
     Takes an already-retained `ChairResponse` instead of a fixture row, and
-    keeps every branch that function has. Runs for both page-scoped adapters:
+    keeps every branch that function has. Runs for the three page-scoped adapters:
     Chandra reads the vendor's layout grammar (`common/chandra_layout.py`), a
     body with no top-level block landing on `unrecognized-shape`; Churro reads
-    `HistoricalDocument` (`common/churro_document.py`). Both carry their bytes
-    forward as ``observation_payload`` for `run.py` to derive page geometry
-    from, though Churro's own grammar reports none.
+    `HistoricalDocument` (`common/churro_document.py`); dots.mocr reads its JSON
+    layout cells (`dots_layout`). All carry their bytes forward as
+    ``observation_payload`` for `run.py` to derive page geometry from, though
+    Churro's own grammar reports none.
 
     ``page_ordinal`` and ``chair`` are unread here; accepted only to keep this
     call site self-describing.
@@ -718,6 +730,9 @@ def captured_page_attempt(
     elif adapter_name == "chandra.v1":
         generation_declared = dict(feeding.chandra_generation())
         parser = "html"  # The vendor layout grammar; "json" is fixture-only.
+    elif adapter_name == dots.ADAPTER:
+        generation_declared = dots.generation()
+        parser = dots_layout.PARSER  # Its one grammar, JSON layout cells.
     else:
         raise SchemaRefusal(
             f"captured_page_attempt has no capture recipe for adapter {adapter_name!r}; "
@@ -751,11 +766,11 @@ def captured_page_attempt(
         transport_stop_reason=transport_stop_reason,
         parse_failure_reason=native_parse_refusal,
         # Unconditional, on purpose: this dispatch has already refused every
-        # adapter but the two page-scoped ones, so a membership test here
-        # would only be a second, quieter copy of that list -- and a third
+        # adapter but the page-scoped ones, so a membership test here
+        # would only be a second, quieter copy of that list -- and a further
         # page chair added above and forgotten here would then silently
-        # derive no geometry. Both page-scoped adapters derive
-        # their block geometry in `run.py` from these same bytes rather than
+        # derive no geometry. Every page-scoped adapter derives
+        # its block geometry in `run.py` from these same bytes rather than
         # from the parsed text (Churro reports none, but the bytes still
         # travel the same way as Chandra's).
         observation_payload=response.content.encode("utf-8"),

@@ -127,6 +127,11 @@ def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=Fa
     }
 
 
+# Every first reading names its page a handwritten page of register acts, so the
+# record-detector rule applies to it (`common.page_types.applicability`).
+_REGISTER_ACTS = {"page_type": "register-acts", "writing": "handwritten"}
+
+
 # What the fake Perlector answers when it reads a page whole. The ids are the
 # page feed's: A is attestator_1 (Chandra, one boxed unit per declared act on
 # page 1, one unboxed unit of page text on page 2), B
@@ -143,7 +148,8 @@ def _page_entry(n, act_key, cites, *, text=None, from_previous=False, to_next=Fa
 # record on page 1 is a2's (B1), and no record lies in the `other` reading.
 # Proves wiring only, never reading ink.
 _PAGE_ONE_ANSWER = {
-    "acts": [
+    **_REGISTER_ACTS,
+    "entries": [
         _page_entry(
             1, "a1", ["A1", "B1", "C1"], text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]"
         ),
@@ -157,7 +163,8 @@ PAGE_ANSWERS = (
         "scenario": "happy",
         "page_ordinal": 2,
         "answer": {
-            "acts": [
+            **_REGISTER_ACTS,
+            "entries": [
                 _page_entry(1, "a2", ["A1", "B1", "C1", "L1", "L2", "L3"], from_previous=True)
             ],
             "set_aside": [],
@@ -168,7 +175,8 @@ PAGE_ANSWERS = (
         "scenario": "page-review",
         "page_ordinal": 2,
         "answer": {
-            "acts": [_page_entry(1, "a2", ["A1", "C1"], from_previous=True)],
+            **_REGISTER_ACTS,
+            "entries": [_page_entry(1, "a2", ["A1", "C1"], from_previous=True)],
             "set_aside": [],
         },
     },
@@ -177,7 +185,8 @@ PAGE_ANSWERS = (
         "scenario": "page-no-act",
         "page_ordinal": 2,
         "answer": {
-            "acts": [
+            **_REGISTER_ACTS,
+            "entries": [
                 _page_entry(
                     1, "a2", ["A1", "C1", "L1", "L2", "L3"], from_previous=True, kind="other"
                 )
@@ -189,7 +198,8 @@ PAGE_ANSWERS = (
         "scenario": "page-other",
         "page_ordinal": 1,
         "answer": {
-            "acts": [
+            **_REGISTER_ACTS,
+            "entries": [
                 _page_entry(
                     1,
                     "a1",
@@ -206,7 +216,8 @@ PAGE_ANSWERS = (
         "scenario": "page-other",
         "page_ordinal": 2,
         "answer": {
-            "acts": [
+            **_REGISTER_ACTS,
+            "entries": [
                 _page_entry(1, "a2", ["A1", "B1", "C1", "L1", "L2", "L3"], from_previous=True)
             ],
             "set_aside": [],
@@ -308,7 +319,9 @@ def _with_entry(answer: dict, n: int, **fields) -> dict:
     """`answer` with entry `n`'s fields changed."""
     return {
         **answer,
-        "acts": [{**entry, **fields} if entry["n"] == n else entry for entry in answer["acts"]],
+        "entries": [
+            {**entry, **fields} if entry["n"] == n else entry for entry in answer["entries"]
+        ],
     }
 
 
@@ -334,18 +347,53 @@ def _unbroken(pages: dict[int, Any] | None = None) -> dict[int, Any]:
 # `page-review-other`: page-review's unplaced entry read as `other`, with no
 # act running onto it. `page-unbroken`, `page-other-unbroken` and
 # `page-no-act-unbroken`: their base with no act running across the page
-# break. `page-flags-disagree`: page 1's last act says it runs on and page 2's
-# first says it does not. `page-runs-past-end`: nothing runs across the break,
-# but page 2's act says it runs on past the run's last page.
+# break. `page-typed-index`: page types named, page 1 handwritten register acts
+# read as an act and an instrument, page 2 a typed index whose one row holds the
+# record detector's record there, so rule (i), which does not apply to an index
+# page, records it and holds nothing. `page-flags-disagree`: page 1's last act
+# says it runs on and page 2's first says it does not. `page-runs-past-end`:
+# nothing runs across the break, but page 2's act says it runs on past the run's
+# last page.
+def _citing(answer: dict, *, add: tuple[str, ...] = (), drop: tuple[str, ...] = ()) -> dict:
+    """`answer` with its one entry citing `add` too and none of `drop`."""
+    (entry,) = answer["entries"]
+    cites = [cite for cite in entry["cites"] if cite not in drop] + list(add)
+    return {**answer, "entries": [{**entry, "cites": cites}]}
+
+
 def _citing_no_churro_unit(answer: dict) -> dict:
     """`answer` with every Churro (`C`) id dropped from its citations."""
     return {
         **answer,
-        "acts": [
+        "entries": [
             {**entry, "cites": [cite for cite in entry["cites"] if not cite.startswith("C")]}
-            for entry in answer["acts"]
+            for entry in answer["entries"]
         ],
     }
+
+
+def _typed(page_type: str, writing: str, kinds: tuple[str, ...]):
+    """A reader of `answer` with the page type stated, the kinds given entry by entry,
+    and nothing running across the page break."""
+
+    def answer(base: dict) -> dict:
+        entries = [
+            {
+                **entry,
+                "kind": kind,
+                "continues_from_previous_page": False,
+                "continues_to_next_page": False,
+            }
+            for entry, kind in zip(base["entries"], kinds, strict=True)
+        ]
+        return {
+            "page_type": page_type,
+            "writing": writing,
+            "entries": entries,
+            "set_aside": base["set_aside"],
+        }
+
+    return answer
 
 
 PAGE_ANSWER_VARIANTS = {
@@ -355,7 +403,8 @@ PAGE_ANSWER_VARIANTS = {
         {
             1: lambda answer: _with_entry(answer, 2, continues_to_next_page=False),
             2: lambda _answer: {
-                "acts": [],
+                **_REGISTER_ACTS,
+                "entries": [],
                 "set_aside": [
                     {"id": identifier, "reason": "blank paper"}
                     for identifier in _HAPPY_PAGE_TWO_IDS
@@ -373,6 +422,13 @@ PAGE_ANSWER_VARIANTS = {
     "page-unbroken": ("happy", _unbroken()),
     "page-other-unbroken": ("page-other", _unbroken()),
     "page-no-act-unbroken": ("page-no-act", _unbroken()),
+    "page-typed-index": (
+        "happy",
+        {
+            1: _typed("register-acts", "handwritten", ("act", "instrument")),
+            2: _typed("index", "typed", ("index-row",)),
+        },
+    ),
     "page-flags-disagree": (
         "happy",
         {2: lambda answer: _with_entry(answer, 1, continues_from_previous_page=False)},
@@ -398,12 +454,22 @@ PAGE_ANSWER_VARIANTS = {
     "malformed-capabilities": ("happy", {1: _citing_no_churro_unit}),
     "ink-free-page": ("happy", {}),
     "ink-free-page-unwitnessed": ("happy", {}),
+    # dots.mocr, seated on index and table pages only, reads page 2 when it is
+    # one (DOTS_PAGE_RESPONSES); a run that seats no such chair reads these
+    # scenarios as `happy` reads, except as the detector's records say.
+    "dots-table": ("happy", {2: lambda answer: _citing(answer, add=("D1",))}),
+    "dots-no-record": ("happy", {2: lambda answer: _citing(answer, add=("D1",), drop=("B1",))}),
+    "dots-cut-off": ("happy", {}),
 }
 
 
 def _first_act_only(answer: dict) -> dict:
     """Page 1 read as a1 alone: a2's units, record and lines left unaccounted for."""
-    return {"acts": [{**answer["acts"][0], "continues_to_next_page": False}], "set_aside": []}
+    return {
+        **_REGISTER_ACTS,
+        "entries": [{**answer["entries"][0], "continues_to_next_page": False}],
+        "set_aside": [],
+    }
 
 
 def _no_continuation_in(answer: dict) -> dict:
@@ -436,10 +502,14 @@ _REASK_FIRST_READINGS = {
     "reask-duplicate": {1: lambda answer: _with_entry(answer, 2, cites=["C2"])},
     "reask-cited-forgot": {1: lambda answer: _with_entry(answer, 2, cites=["A2", "C2"])},
     "reask-continuation": {
-        1: lambda answer: {"acts": [{**answer["acts"][1], "n": 1}], "set_aside": []}
+        1: lambda answer: {
+            **_REGISTER_ACTS,
+            "entries": [{**answer["entries"][1], "n": 1}],
+            "set_aside": [],
+        }
     },
     "blank-then-recovered": {
-        1: lambda _answer: {"acts": [], "set_aside": []},
+        1: lambda _answer: {**_REGISTER_ACTS, "entries": [], "set_aside": []},
         2: _no_continuation_in,
     },
 }
@@ -457,7 +527,11 @@ PAGE_ANSWERS += tuple(
     if row["scenario"] == base
 ) + tuple(
     # The ink-free page is read as blank paper: nothing on it to cite.
-    {"scenario": scenario, "page_ordinal": 3, "answer": {"acts": [], "set_aside": []}}
+    {
+        "scenario": scenario,
+        "page_ordinal": 3,
+        "answer": {**_REGISTER_ACTS, "entries": [], "set_aside": []},
+    }
     for scenario in ("ink-free-page", "ink-free-page-unwitnessed")
 )
 
@@ -476,18 +550,18 @@ _RECOVERED_A1 = _page_entry(
     text="SYNTHETIC ACT ONE alpha beta [[gamma|gamna]]",
 )
 _RECOVERED_A2 = _page_entry(1, "a2", ["A2", "B2", "L5", "L6", "L7", "L8", "L9"])
-_PAGE_TWO_A2_AGAIN = {"acts": [_page_entry(1, "a2", ["B1", "L1", "L2", "L3"])], "set_aside": []}
+_PAGE_TWO_A2_AGAIN = {"entries": [_page_entry(1, "a2", ["B1", "L1", "L2", "L3"])], "set_aside": []}
 PAGE_REASK_ANSWERS = (
     {
         "scenario": "reask-recovers",
         "page_ordinal": 1,
-        "answer": {"acts": [_RECOVERED_A2], "set_aside": []},
+        "answer": {"entries": [_RECOVERED_A2], "set_aside": []},
     },
     {
         "scenario": "reask-sets-aside",
         "page_ordinal": 1,
         "answer": {
-            "acts": [],
+            "entries": [],
             "set_aside": [
                 {"id": identifier, "reason": "no entry here"}
                 for identifier in ("A2", "B2", "L5", "L6", "L7", "L8", "L9")
@@ -498,23 +572,23 @@ PAGE_REASK_ANSWERS = (
     {
         "scenario": "reask-cut-off",
         "page_ordinal": 1,
-        "answer": {"acts": [_RECOVERED_A2], "set_aside": []},
+        "answer": {"entries": [_RECOVERED_A2], "set_aside": []},
         "stop_reason": "length",
     },
     {
         "scenario": "reask-duplicate",
         "page_ordinal": 1,
-        "answer": {"acts": [_RECOVERED_A2], "set_aside": []},
+        "answer": {"entries": [_RECOVERED_A2], "set_aside": []},
     },
     {
         "scenario": "reask-continuation",
         "page_ordinal": 1,
-        "answer": {"acts": [_RECOVERED_A1], "set_aside": []},
+        "answer": {"entries": [_RECOVERED_A1], "set_aside": []},
     },
     {
         "scenario": "blank-then-recovered",
         "page_ordinal": 1,
-        "answer": {"acts": [_RECOVERED_A1, {**_RECOVERED_A2, "n": 2}], "set_aside": []},
+        "answer": {"entries": [_RECOVERED_A1, {**_RECOVERED_A2, "n": 2}], "set_aside": []},
     },
     {"scenario": "page-review", "page_ordinal": 2, "answer": _PAGE_TWO_A2_AGAIN},
     {"scenario": "page-review-other", "page_ordinal": 2, "answer": _PAGE_TWO_A2_AGAIN},
@@ -527,10 +601,12 @@ _PAGE_ACTS = {1: ("a1", "a2"), 2: ("a2",)}
 
 
 def churro_xml(text: str) -> str:
-    """Frame fixture text as Churro XML; it is not a measured model response."""
+    """Frame fixture text in Churro's `HistoricalDocument` grammar, one `Line` per line;
+    it is not a measured model response."""
     if "<" in text or ">" in text or "&" in text:
         raise ValueError("a declared Churro response text must not need XML escaping")
-    return f"<output>{text}</output>"
+    lines = "".join(f"<Line>{line}</Line>" for line in text.split("\n"))
+    return f"<HistoricalDocument><Page><Body>{lines}</Body></Page></HistoricalDocument>"
 
 
 def _joined_page_text(page_ordinal: int, chair: str) -> str:
@@ -594,6 +670,49 @@ CHURRO_PAGE_RESPONSES = tuple(
         # Cut at `length` but valid: the text is kept, marked truncated.
         "chair": "attestator_3",
         "raw_xml": churro_xml(_churro_native_page_text(2, "attestator_3")),
+        "transport_stop_reason": "length",
+    },
+)
+
+
+# dots.mocr (attestator_4 in a roster that seats it; config/models.toml does
+# not) answers page 2 in its own grammar: JSON layout cells, boxes in the
+# 196x252 image its processor makes of the 200x260 page, mapping back onto
+# a2's continuation at (20, 20)-(180, 81). Read only by a roster that routes it
+# there; the cut-off answer is broken JSON at the token bound.
+DOTS_CHAIR = "attestator_4"
+_DOTS_BBOX = [20, 20, 176, 78]
+DOTS_PAGE_RESPONSES = (
+    {
+        "scenario": "dots-table",
+        "page_ordinal": 2,
+        "chair": DOTS_CHAIR,
+        "raw_json": json.dumps(
+            [
+                {
+                    "bbox": _DOTS_BBOX,
+                    "category": "Table",
+                    "text": "<table><tr><td>SYNTHETIC ACT TWO</td>"
+                    "<td>delta epsilon zeta eta</td></tr></table>",
+                }
+            ]
+        ),
+        "transport_stop_reason": "stop",
+    },
+    {
+        "scenario": "dots-no-record",
+        "page_ordinal": 2,
+        "chair": DOTS_CHAIR,
+        "raw_json": json.dumps(
+            [{"bbox": _DOTS_BBOX, "category": "Text", "text": TESTIMONY["a2"]["attestator_1"]}]
+        ),
+        "transport_stop_reason": "stop",
+    },
+    {
+        "scenario": "dots-cut-off",
+        "page_ordinal": 2,
+        "chair": DOTS_CHAIR,
+        "raw_json": '[{"bbox": [20, 20, 176, 78], "category": "Table", "text": "<table><tr><td>SYN',
         "transport_stop_reason": "length",
     },
 )
@@ -730,6 +849,21 @@ SCENARIOS = (
         "malformed-capabilities",
         "Churro's page 1 response declares a capability record that is not an object.",
     ),
+    (
+        "dots-table",
+        "Surya tags page 2 a Table, so a roster that routes dots.mocr to index and table "
+        "pages seats it there; it reads the page's one row.",
+    ),
+    (
+        "dots-no-record",
+        "The record detector finds nothing on page 2, so a routed dots.mocr reads it; DAI "
+        "has nothing to read there.",
+    ),
+    (
+        "dots-cut-off",
+        "page 2 tagged a Table, and dots.mocr's answer cut at its bound: broken JSON, "
+        "retained and never salvaged.",
+    ),
 )
 
 
@@ -780,13 +914,34 @@ SURYA_BLOCKS = tuple(
 )
 
 
+# Page 2 tagged a table: one `Table` block over a2's continuation, after its `Text`
+# block, in the scenarios that route dots.mocr to page 2 by Surya's tag. Kept apart
+# from SURYA_BLOCKS, which every scenario reads.
+_PAGE_TWO_TEXT_BLOCK = next(row for row in SURYA_BLOCKS if row["page_ordinal"] == 2)
+SCENARIO_SURYA_BLOCKS = tuple(
+    {
+        "scenario": scenario,
+        **_PAGE_TWO_TEXT_BLOCK,
+        "label": "Table",
+        "raw_label": "Table",
+        "position": 1,
+        "confidence_bp": 9400,
+    }
+    for scenario in ("dots-table", "dots-cut-off")
+)
+
+
 # What DAI's own project's record detector finds on the synthetic pages: one
 # record over each act's ink, inset from the act's bounds, in the order the acts
 # sit down the page. Page 3 carries no ink, so the detector finds nothing there.
 # Two scenarios declare records of their own, which replace these: `page-other`
 # finds no record over a1, and `page-no-act` none on page 2 (`_SCENARIO_RECORDS`).
 DETECTOR_RECORD_INSET_PX = 5
-_SCENARIO_RECORDS = {"page-other": {1: ("a2",), 2: ("a2",)}, "page-no-act": {1: ("a1", "a2")}}
+_SCENARIO_RECORDS = {
+    "page-other": {1: ("a2",), 2: ("a2",)},
+    "page-no-act": {1: ("a1", "a2")},
+    "dots-no-record": {1: ("a1", "a2")},
+}
 _SCENARIO_RECORDS |= {
     variant: _SCENARIO_RECORDS[base]
     for variant, (base, _pages) in PAGE_ANSWER_VARIANTS.items()
@@ -1036,7 +1191,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         lines += ["", "[[surya_line]]"]
         lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
 
-    for row in SURYA_BLOCKS:
+    for row in SURYA_BLOCKS + SCENARIO_SURYA_BLOCKS:
         lines += ["", "[[surya_block]]"]
         lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
 
@@ -1064,6 +1219,17 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
             f"page_ordinal = {row['page_ordinal']}",
             f"chair = {toml_string(row['chair'])}",
             f"raw_xml = {toml_string(row['raw_xml'])}",
+            f"transport_stop_reason = {toml_string(row['transport_stop_reason'])}",
+        ]
+
+    for row in DOTS_PAGE_RESPONSES:
+        lines += [
+            "",
+            "[[dots_page_response]]",
+            f"scenario = {toml_string(row['scenario'])}",
+            f"page_ordinal = {row['page_ordinal']}",
+            f"chair = {toml_string(row['chair'])}",
+            f"raw_json = {toml_string(row['raw_json'])}",
             f"transport_stop_reason = {toml_string(row['transport_stop_reason'])}",
         ]
 

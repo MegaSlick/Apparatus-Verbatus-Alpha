@@ -63,6 +63,7 @@ from common.reconstruction_prompt import (
     shown_keys,
     shown_texts,
 )
+from common.replay import not_replayed_problem, replay_of
 from common.stage import (
     RECONSTRUCTOR_CHAIR,
     real_page_entries,
@@ -111,7 +112,9 @@ CALL_FAILED: Final = "call-failed"
 REPLY_CUT_OFF: Final = "reply-cut-off"
 REPLY_MALFORMED: Final = "reply-malformed"
 REPLY_ANSWER_INVALID: Final = "reply-answer-invalid"
-NOT_ASKED_CODES: Final = frozenset({CHAIR_ABSENT, REQUEST_OVER_CAPACITY, CALL_FAILED})
+# A replay's call its source run never sent (`common.replay`).
+NOT_REPLAYED: Final = "not-replayed"
+NOT_ASKED_CODES: Final = frozenset({CHAIR_ABSENT, REQUEST_OVER_CAPACITY, CALL_FAILED, NOT_REPLAYED})
 # A join the Coniector says does not continue: nothing to reconstruct.
 DOES_NOT_CONTINUE: Final = "does-not-continue"
 
@@ -673,6 +676,16 @@ def _require_not_asked_evidence(context, payload: Mapping[str, Any], what: str) 
     capacity, failure = payload["capacity"], payload["failure"]
     if code == CHAIR_ABSENT and (capacity is not None or failure is not None):
         raise FatalAccounting(f"{what} names an absent chair and a call")
+    if code == NOT_REPLAYED and (
+        replay_of(context.run) is None
+        or capacity is not None
+        or failure is not None
+        or problems[0] != not_replayed_problem(context.run)
+    ):
+        raise FatalAccounting(
+            f"{what} says its source run never sent it, but this run replays none, or it "
+            "names a call"
+        )
     if code == REQUEST_OVER_CAPACITY and (
         failure is not None
         or not isinstance(capacity, Mapping)

@@ -1388,18 +1388,11 @@ def report_systemic_share(args) -> None:
     """Print the systemic alarm line when the run's held share is above its sealed limit.
 
     The line (`common.review_policy.alarm_line`) is what the operator's
-    notification carries, and the stop record names it (`_record_stop`). A run
-    that sealed no review policy says the share was not checked.
+    notification carries, and the stop record names it (`_record_stop`).
     """
     tree = _run_tree(args)
     share = held_share(tree, run_sealed_config_digests(tree.read_run()), args.review_config)
-    if share is None:
-        print(
-            f"run {args.run_id}: this run sealed no review policy, so whether its held share "
-            "is systemic was not checked",
-            flush=True,
-        )
-    elif share["systemic"]:
+    if share["systemic"]:
         args.systemic_line = alarm_line(args.run_id, share["held_pages"], share["pages"], share)
         print(args.systemic_line, flush=True)
 
@@ -1422,6 +1415,11 @@ def report_held_recensor(args, held: list[dict]) -> None:
             f"  - {item['what']} ({item['subject_id']})" + (f": {codes}" if codes else ""),
             flush=True,
         )
+    print(
+        "  holds and review flags counted per page, per unit, by code and by page type, with "
+        "the review queue in priority order: run-health/recensor-review-summary.json",
+        flush=True,
+    )
     print(
         "  next: record operator review decisions in this run, then resume it from the "
         "recensor (--from recensor --to armarium), which applies them, or from the perlector "

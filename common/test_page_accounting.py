@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import random
 from pathlib import Path
 
@@ -26,7 +27,10 @@ from common.page_accounting import (
 )
 from common.residual_ink import INK_RUNS_SCHEMA
 
-POLICY = load_page_accounting_policy()
+# The committed policy, and the same with no review flag: the rule tests below
+# are about what each rule measures, so they run with every finding holding.
+SEALED = load_page_accounting_policy()
+POLICY = dataclasses.replace(SEALED, flag_codes=frozenset())
 WIDTH, HEIGHT = 1000, 1400
 RULE_NAMES = "abcdefghi"
 # A first reading's accounting: every rule passes, and rule (j), the re-ask's, does not apply.
@@ -175,7 +179,7 @@ def page(
         "record_census": {"detection_count": records, "max_det": 300, "max_det_reached": False},
     }
     answer = {
-        "acts": [
+        "entries": [
             {
                 "n": k + 1,
                 "kind": "act",
@@ -229,7 +233,7 @@ def codes(record: dict, rule: str) -> list[str]:
 
 
 def acts(case: dict) -> list[dict]:
-    return case["reading"]["answer"]["acts"]
+    return case["reading"]["answer"]["entries"]
 
 
 def witness(case: dict, letter: str) -> dict:
@@ -259,7 +263,8 @@ def test_a_clean_page_passes_every_rule():
 
     assert statuses(record) == CLEAN
     assert record["holds"] == []
-    assert record["schema"] == "page-accounting.v2"
+    assert record["schema"] == "page-accounting.v3"
+    assert record["flags"] == []
     assert record["policy_sha256"] == POLICY.sha256
     assert record["units"][0] == {"id": "A1", "disposition": "cited", "by": [1]}
     assert record["lines"][:3] == [
@@ -960,10 +965,14 @@ def test_a_marginal_name_that_is_read_passes_and_one_that_is_not_holds():
 
     acts(case)[2]["text"] = acts(case)[2]["text"].removesuffix(" Jean Roy")
     unread = account(case)
-    [held] = [f for f in unread["rules"]["e"]["findings"] if f["code"] == "witness-text-not-read"]
+    # A cited unit of seven letters read differently is a short-unit dissent, with its own code.
+    [held] = [
+        f for f in unread["rules"]["e"]["findings"] if f["code"] == "witness-short-unit-not-read"
+    ]
     assert held["id"] == "C4"
     assert held["reasons"] == ["short-unit-distance"]
     assert held["distance_bp"] > POLICY.max_short_unit_distance_bp
+    assert unread["holds"] == ["witness-short-unit-not-read"]
 
 
 def test_a_burial_folded_into_a_merged_unit_and_read_by_one_witness_alone_holds():
@@ -1148,7 +1157,7 @@ def test_a_dense_page_is_measured_within_the_sealed_budget():
         reading={
             "parse_state": "parsed",
             "finish_reason": "stop",
-            "answer": {"acts": readings, "set_aside": []},
+            "answer": {"entries": readings, "set_aside": []},
         },
         entry_truncation={k + 1: "complete" for k in range(20)},
         ink=None,
@@ -1424,7 +1433,7 @@ def _detector_found_nothing(case: dict) -> None:
         "max_det_reached": False,
     }
     witness(case, "B").update(units=[], outcome="genuinely-empty", blank=True)
-    for entry in case["reading"]["answer"]["acts"]:
+    for entry in case["reading"]["answer"]["entries"]:
         entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith("B")]
 
 
@@ -1608,54 +1617,59 @@ def grammar_codes(answer) -> list[str]:
 def test_an_answer_outside_the_one_grammar_is_named_by_it():
     """The grammar is `common.page_answer`'s, label rule included: no second reading."""
     assert grammar_codes([]) == ["not-object"]
-    assert grammar_codes({"acts": [], "set_aside": [], "extra": 1}) == ["top-fields"]
-    assert grammar_codes({"acts": [_entry(1, ["A1"]), _entry(3, ["A2"])], "set_aside": []}) == [
+    assert grammar_codes({"entries": [], "set_aside": [], "extra": 1}) == ["top-fields"]
+    assert grammar_codes({"entries": [_entry(1, ["A1"]), _entry(3, ["A2"])], "set_aside": []}) == [
         "n-not-contiguous"
     ]
-    assert grammar_codes(
-        {
-            "acts": [
-                _entry(1, ["A1"]),
-                _entry(2, ["L1"], continues_from_previous_page=True),
-                _entry(3, ["L5"], continues_to_next_page=True),
-            ],
-            "set_aside": [],
-        }
-    ) == ["continuation-not-at-edge"]
-    assert grammar_codes({"acts": [_entry(1, ["A1"], extra=1)], "set_aside": []}) == [
+    assert (
+        grammar_codes(
+            {
+                "entries": [
+                    _entry(1, ["A1"]),
+                    _entry(2, ["L1"], continues_from_previous_page=True),
+                    _entry(3, ["L5"], continues_to_next_page=True),
+                ],
+                "set_aside": [],
+            }
+        )
+        == []
+    )
+    assert grammar_codes({"entries": [_entry(1, ["A1"], extra=1)], "set_aside": []}) == [
         "act-field-unknown"
     ]
-    assert grammar_codes({"acts": [_entry(1, ["A1"], label="x" * 81)], "set_aside": []}) == [
+    assert grammar_codes({"entries": [_entry(1, ["A1"], label="x" * 81)], "set_aside": []}) == [
         "label-invalid"
     ]
     # A blank label is outside the grammar here exactly as it is for the page answer.
-    assert grammar_codes({"acts": [_entry(1, ["A1"], label="  ")], "set_aside": []}) == [
+    assert grammar_codes({"entries": [_entry(1, ["A1"], label="  ")], "set_aside": []}) == [
         "label-invalid"
     ]
-    validated = validate_answer({"acts": [_entry(1, ["A1"], extra=1)], "set_aside": []}, CANDIDATES)
+    validated = validate_answer(
+        {"entries": [_entry(1, ["A1"], extra=1)], "set_aside": []}, CANDIDATES
+    )
     assert validated["entries"] == [] and validated["set_aside"] == {}
 
 
 def test_validation_names_every_problem():
     assert problem_codes(
-        {"acts": [_entry(1, ["A1"])], "set_aside": [{"id": "A1", "reason": "r"}]}
+        {"entries": [_entry(1, ["A1"])], "set_aside": [{"id": "A1", "reason": "r"}]}
     ) == ["cited-and-set-aside"]
     assert problem_codes(
         {
-            "acts": [_entry(1, ["A1"])],
+            "entries": [_entry(1, ["A1"])],
             "set_aside": [{"id": "A2-A3", "reason": "r"}, {"id": "A2", "reason": "r"}],
         }
     ) == ["set-aside-twice"]
     assert problem_codes(
-        {"acts": [_entry(1, ["A1"])], "set_aside": [{"id": "L1", "reason": ""}]}
+        {"entries": [_entry(1, ["A1"])], "set_aside": [{"id": "L1", "reason": ""}]}
     ) == ["set-aside-without-reason"]
     # Two entries on one region are the accounting's rule (h), not an answer problem.
-    assert problem_codes({"acts": [_entry(1, ["A1"]), _entry(2, ["A1"])], "set_aside": []}) == []
+    assert problem_codes({"entries": [_entry(1, ["A1"]), _entry(2, ["A1"])], "set_aside": []}) == []
 
 
 def test_edge_continuation_flags_and_an_unplaced_entry_are_valid():
     answer = {
-        "acts": [
+        "entries": [
             _entry(1, ["A1"], continues_from_previous_page=True),
             _entry(2, ["C1"]),
             _entry(3, ["L5"], continues_to_next_page=True),
@@ -1674,7 +1688,7 @@ def test_edge_continuation_flags_and_an_unplaced_entry_are_valid():
 
 
 def test_the_union_box_bounds_every_cited_box_unpadded():
-    answer = {"acts": [_entry(1, ["L4", "L2", "L3", "C1", "L2"])], "set_aside": []}
+    answer = {"entries": [_entry(1, ["L4", "L2", "L3", "C1", "L2"])], "set_aside": []}
     validated = validate_answer(answer, CANDIDATES)
 
     [entry] = validated["entries"]
@@ -1804,7 +1818,7 @@ def two_columns(
         },
     }
     answer = {
-        "acts": [
+        "entries": [
             {
                 "n": n,
                 "kind": "act",
@@ -1926,7 +1940,7 @@ def _doubt_plans(*texts: str) -> list[dict]:
     """The entry plans of a two-column page read as `texts`, one line each."""
     case = two_columns([[f"L{n}"] for n in range(1, len(texts) + 1)])
     answer = copy.deepcopy(case["reading"]["answer"])
-    for act, text in zip(answer["acts"], texts, strict=True):
+    for act, text in zip(answer["entries"], texts, strict=True):
         act["text"] = text
     return page_path.entry_plans(
         answer,
@@ -2008,8 +2022,12 @@ def test_unanchorable_or_wholly_unread_entries_count_as_unread_on_the_page():
 
 
 def test_interleaved_blocks_are_cited_one_by_one_and_lend_no_area():
+    # A block range is read (a block places nothing), and lends no area: the
+    # entry is unplaced and every line stays unread.
     record = account(two_columns([["S1-S3"]]))
-    assert problem_codes_of(record) == ["detection-range"]
+    assert problem_codes_of(record) == []
+    assert codes(record, "b") == ["reading-unplaced"]
+    assert unread_lines(record) == COLUMN_ONE + COLUMN_TWO
 
     # Blocks S1 and S3 hold column 1; cited one by one they place nothing, so
     # column 1 is read by its lines and column 2 stays unread.
@@ -2227,8 +2245,8 @@ class _Context:
 
 
 def test_the_stage_reads_the_policy_only_under_the_run_seal(tmp_path: Path):
-    policy = require_page_accounting_policy(_Context({"page-accounting": POLICY.sha256}))
-    assert policy == POLICY
+    policy = require_page_accounting_policy(_Context({"page-accounting": SEALED.sha256}))
+    assert policy == SEALED
 
     edited = tmp_path / "edited.toml"
     edited.write_text(
@@ -2239,3 +2257,177 @@ def test_the_stage_reads_the_policy_only_under_the_run_seal(tmp_path: Path):
     )
     with pytest.raises(ContractError, match="page-accounting configuration changed"):
         require_page_accounting_policy(_Context({"page-accounting": POLICY.sha256}), edited)
+
+
+def test_a_line_range_inside_the_entrys_own_units_is_read():
+    """The lines of record 1 lie inside its units A1 and B1, so citing them as a range
+    names no ink the entry's units do not already claim."""
+    case = page()
+    acts(case)[0]["cites"] = ["A1", "B1", "C1", "L1-L3"]
+
+    record = account(case)
+
+    assert problem_codes_of(record) == []
+    assert record["rules"]["d"]["status"] == "pass"
+    assert record["entries"][0]["cited_ids"] == ["A1", "B1", "C1", "L1", "L2", "L3"]
+
+
+def test_a_line_range_reaching_past_the_entrys_own_units_holds_the_reading_whole():
+    case = page()
+    acts(case)[0]["cites"] = ["A1", "B1", "C1", "L1-L4"]
+
+    record = account(case)
+
+    assert problem_codes_of(record) == ["detection-range"]
+    assert "page-answer-incomplete" in record["holds"]
+
+
+def test_a_line_range_with_no_unit_of_its_own_holds_the_reading_whole():
+    case = page()
+    acts(case)[0]["cites"] = ["L1-L3"]
+
+    assert problem_codes_of(account(case)) == ["detection-range"]
+
+
+def test_a_unit_holding_several_entries_places_none_of_those_reading_a_part_of_it():
+    """One witness unit over two records (a whole index table): each entry cites it
+    beside its own lines and units, all inside it, and is placed by those alone."""
+    case = page()
+    table = bx(100, 100, 900, 800)
+    case["feed"]["witnesses"][0]["units"][0]["box_px"] = table
+    acts(case)[0]["cites"] = ["A1", "B1", "C1", "L1", "L2", "L3"]
+    acts(case)[1]["cites"] = ["A1", "B2", "C2", "L4", "L5", "L6"]
+
+    record = account(case)
+
+    assert duplicates(record) == []
+    entries = {entry["n"]: entry for entry in record["entries"]}
+    assert entries[1]["union_box_px"] == band(0)
+    assert entries[2]["union_box_px"] == band(1)
+
+
+def test_an_entry_citing_another_entrys_units_beside_its_own_ink_is_still_a_duplicate():
+    """Entry 2 claims record 1's units as well as its own: two claims on the same ink."""
+    case = page()
+    acts(case)[1]["cites"] = ["A1", "B1", "C1", "A2", "B2", "C2"]
+
+    assert duplicates(account(case)) == [[1, 2]]
+
+
+# --- review flags ----------------------------------------------------------------------
+
+
+def test_the_committed_file_seals_the_lead_s_review_flags(tmp_path: Path):
+    """The committed `[flags]` table is the lead's four codes, and a file with no table is
+    refused."""
+    assert SEALED.flag_codes == {
+        "no-detector-record-on-act-page",
+        "unread-ink",
+        "residual-ink",
+        "witness-short-unit-not-read",
+    }
+    assert SEALED.short_unit_characters == 15
+    silent = tmp_path / "silent.toml"
+    silent.write_text(_without_flags_table(), encoding="utf-8")
+    with pytest.raises(ContractError, match=r"no \[flags\] table"):
+        load_page_accounting_policy(silent)
+
+
+def _without_flags_table() -> str:
+    """The committed file with its `[flags]` table (the last table) cut off."""
+    text = DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH.read_text(encoding="utf-8")
+    head, _flags = text.split("\n[flags]\n", 1)
+    return head + "\n"
+
+
+def _with_flags(tmp_path: Path, table: str) -> Path:
+    edited = tmp_path / "flags.toml"
+    edited.write_text(_without_flags_table() + "\n" + table, encoding="utf-8")
+    return edited
+
+
+def test_the_flags_table_is_read_and_checked(tmp_path: Path):
+    policy = load_page_accounting_policy(
+        _with_flags(tmp_path, '[flags]\ncodes = ["unread-ink"]\nshort_unit_characters = 9\n')
+    )
+    assert policy.flag_codes == {"unread-ink"} and policy.short_unit_characters == 9
+    assert policy.sha256 != SEALED.sha256
+    # Every code may be taken back: an empty list holds everything, as before the flags.
+    strict = load_page_accounting_policy(
+        _with_flags(tmp_path, "[flags]\ncodes = []\nshort_unit_characters = 15\n")
+    )
+    assert strict.flag_codes == frozenset()
+    with pytest.raises(ContractError, match="no page-level hold code"):
+        load_page_accounting_policy(
+            _with_flags(
+                tmp_path, '[flags]\ncodes = ["duplicate-region"]\nshort_unit_characters = 15\n'
+            )
+        )
+    # Each code that is also an entry hold is refused, not half-applied.
+    for entry_hold in ("duplicate-region", "reading-incomplete", "reading-unplaced"):
+        with pytest.raises(ContractError, match="no page-level hold code"):
+            load_page_accounting_policy(
+                _with_flags(
+                    tmp_path, f'[flags]\ncodes = ["{entry_hold}"]\nshort_unit_characters = 15\n'
+                )
+            )
+    with pytest.raises(ContractError, match="exactly codes and short_unit_characters"):
+        load_page_accounting_policy(_with_flags(tmp_path, '[flags]\ncodes = ["unread-ink"]\n'))
+    with pytest.raises(ContractError, match="twice"):
+        load_page_accounting_policy(
+            _with_flags(
+                tmp_path,
+                '[flags]\ncodes = ["unread-ink", "unread-ink"]\nshort_unit_characters = 1\n',
+            )
+        )
+
+
+def test_a_flagged_finding_is_recorded_and_holds_nothing():
+    """Under the sealed flags the detector's silence is measured, named, and holds no one."""
+    case = page()
+    _detector_found_nothing(case)
+
+    record = account(case, SEALED)
+
+    assert record["rules"]["i"]["status"] == "flag"
+    assert record["rules"]["i"]["findings"] == [
+        {"code": "no-detector-record-on-act-page", "acts": [1, 2, 3]}
+    ]
+    assert record["holds"] == []
+    assert record["flags"] == ["no-detector-record-on-act-page"]
+    # The same page under a policy with no flags holds, as it always did.
+    assert account(case)["holds"] == ["no-detector-record-on-act-page"]
+
+
+def test_a_rule_with_a_held_finding_beside_a_flagged_one_still_holds():
+    case = page()
+    _detector_found_nothing(case)
+    acts(case)[2]["text"] = acts(case)[2]["text"].removesuffix(" Jean Roy")
+    witness(case, "C")["units"].append({"id": "C4", "box_px": None, "text": "Jean Roy"})
+    acts(case)[2]["cites"].append("C4")
+    # An uncited short unit nobody read is unread text, not a dissent, whatever its length.
+    witness(case, "C")["units"].append({"id": "C5", "box_px": None, "text": "Zqxwv Kjyq"})
+
+    record = account(case, SEALED)
+
+    codes = {f["id"]: f["code"] for f in record["rules"]["e"]["findings"] if "id" in f}
+    assert codes["C4"] == "witness-short-unit-not-read"
+    assert codes["C5"] == "witness-text-not-read"
+    assert record["rules"]["e"]["status"] == "hold"
+    # The uncited unit is also unaccounted for under rule (c); both hold.
+    assert record["holds"] == ["unaccounted-witness-unit", "witness-text-not-read"]
+    assert record["flags"] == ["no-detector-record-on-act-page", "witness-short-unit-not-read"]
+
+
+def test_a_long_unit_read_differently_is_never_a_short_unit():
+    """The burial folded into a merged unit (50 letters) keeps the hold the lead did not relax."""
+    case = page(noise=0.15, seed=3)
+    burial = noisy(BURIAL, 0.3, 11)
+    witness(case, "A")["units"][2]["text"] += " " + burial
+    witness(case, "C")["units"].append({"id": "C4", "box_px": None, "text": BURIAL})
+    acts(case)[2]["cites"].append("C4")
+
+    record = account(case, SEALED)
+
+    assert record["holds"] == ["witness-text-not-read"]
+    assert record["flags"] == []

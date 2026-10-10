@@ -29,7 +29,7 @@ notes, never here.
 | Need | Use | Notes |
 |---|---|---|
 | Stock, prices, vCPU per card | RunPod connector (MCP) `get-gpu-type` / `list-gpu-types` with availability, product POD, cloud SECURE | Free reads. Stock and prices move by the hour. |
-| Create a pod | `python -m operations.pod.create_pod` (v1 GraphQL; the only route that takes a global volume) or the connector `create-pod` (REST v2) | Always with the guard start command. Both routes take a minimum vCPU count (`--min-vcpu` / `minVcpuCountPerGpu`) and a CUDA constraint (`--cuda 13.0` / `allowedCudaVersions`). Always with an hours window, never `off`, so a stuck pod ends. |
+| Create a pod | `python -m operations.pod.create_pod` (v1 GraphQL) or the connector `create-pod` (REST v2) | Always with the guard start command. Both routes take a minimum vCPU count (`--min-vcpu` / `minVcpuCountPerGpu`) and a CUDA constraint (`--cuda 13.0` / `allowedCudaVersions`). Always with an hours window, never `off`, so a stuck pod ends. |
 | List / inspect / delete pods | `runpodctl pod list --all`, `pod get`, `pod delete`; or the connector | Shutdown is the safe direction: allowed without a fresh approval, and verified afterwards (listing empty, billing stopped). The connector refuses to delete pods it did not create; `runpodctl` does not. |
 | Network volumes | Connector or `runpodctl network-volume create/list/delete` | Datacenter-bound; create needs a datacenter id. |
 | SSH / scp to a pod | `ssh -p <port> root@<ip>` from `pod get` | The `ssh.runpod.io` proxy cannot run commands or `scp`. |
@@ -50,6 +50,9 @@ to v1; runpod/runpod-plugins-official#56): avoid it.
   in the console on 2026-10-08. Ask for a minimum (`--min-vcpu` on the pod tool,
   `minVcpuCountPerGpu` on REST v2; both validated 2026-10-08) and read the count after
   creating; `queue_runner run --dry-run` prints the day's length for the pod it runs on.
+  On 2026-10-09 every Secure A40 and A6000 host had 9 vCPU (no create at `--min-vcpu 16`);
+  an RTX PRO 4500 came with 32 (a 27-CPU quota) and the console lists the L40 at 32. Search
+  by vCPU across several card types, not one card.
 - **Pin the CUDA version to the image** (`--cuda 13.0` for the cu1300 image): a card's stock
   mixes host CUDA versions, and a container on an older host never starts but bills.
 - Prices seen 2026-10-08 evening, Secure on-demand: A40 $0.59/h, RTX 3090 $0.50/h (community
@@ -74,16 +77,15 @@ eventual consistency. A `git clone` on one restart-loops the pod. Mount it on it
 and write to it once, at the end. Billing is per stored data plus requests; an empty one
 costs nothing.
 
-**Attaching a global volume (verified 2026-10-08 against the live schema, not yet with a
-real deploy):** only the v1 GraphQL mutation takes it:
-
-```
-podFindAndDeployOnDemand(input: { …, objectMounts: [{ objectStoreId: "<global volume id>", mountPath: "/workspace/global" }] })
-```
-
-A running pod reports it as `objectStores { objectStoreId mountPath }`. There is no API to
-list global volumes; the id is on the console's Storage page. The console attaches it on
-the deploy page under Persistent storage, where the mount path is editable. CPU pods
+**Attaching a global volume: console only (2026-10-09).** The v1 GraphQL mutation accepts
+`objectMounts: [{ objectStoreId, mountPath }]` without an error, but on three real pods
+(mount paths `/workspace/global`, `/workspace`, `/workspace-global`; with and without the
+pod's own disk) it attached nothing: the reply's `objectStores` was empty and no mount
+existed inside the pod. `create_pod` exits 3 on that, correctly. RunPod documents only the
+console route: the deploy page's Persistent storage, where the mount path is editable, or
+"Configure Pod with volume" on the Storage page. So the lead deploys a pod with the volume
+from the console and the session copies results into it over SSH. There is no API to list
+global volumes; the id is on the console's Storage page. CPU pods
 cannot mount one (GPU pods only), so fetching from a global volume later needs a GPU pod:
 fetch results over SSH from the pod's own disk first, and treat the global copy as the
 safety net.
@@ -99,8 +101,15 @@ volume's only job is keeping results safe when the pod deletes itself.
 - Do not export `HF_HUB_OFFLINE=1` before starting a queue: preparation steps download; the
   queue makes each arm's command offline itself.
 - `runpodctl pod list` without `--all` hides stopped pods, which still bill for disk.
-- RunPod REST v1 retires on 2026-11-15; the project's default is v2. The global-volume route
-  is the only reason to touch v1 GraphQL.
+- RunPod REST v1 retires on 2026-11-15; the project's default is v2.
+- RunPod's Cloudflare refuses urllib's default User-Agent (error 1010, HTTP 403); the
+  project's urllib transport (`provider_runpod.py`) sends `verbatus-pod/1.0`;
+  `pod_guard.sh` and `pod_delete.sh` call the API with curl and set no such header.
+- Verify a queue's results at home (`queue_runner fetch` checks every digest), not on the
+  pod: the end-of-queue sha256 pass over the pod's network disk crawled for 30 min on
+  35,000 small files (2026-10-09).
+- Over ssh, `pkill -f <pattern>` also kills the ssh shell whose own command line holds the
+  pattern; kill by pid.
 - A short commit hash in the guard start command arms the guard and then fails the bootstrap:
   use the full 40 characters.
 - The guard's idle ladder only warns (`ladder_delete` is off in `config/spend.toml`), and

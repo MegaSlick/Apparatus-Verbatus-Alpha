@@ -72,6 +72,8 @@ when a second user needs it.
 | `native_witness.py` | the closed waist derived from a witness's raw response: what it was shown and the page boxes it reported |
 | `chandra_layout.py` | Chandra's own prompt and a reader for its layout answer |
 | `churro_document.py` | Churro's own request framing and a reader for its answer |
+| `dots_layout.py` | dots.mocr's own prompt, a reader for its layout-cell answer, its text view and how its boxes map back to the page |
+| `witness_routing.py` | which pages a routed witness reads (dots.mocr on index and table pages), decided from the Designator's evidence, and each page's roster under it |
 | `alignment.py` | loss-accounted comparison views of witness text |
 | `page_witness_units.py` | each witness's page broken into its own units, re-derived from retained bytes |
 | `page_testimonia.py` | the page-witness roster and each page's current, validated Testimonia, as every consumer reads them |
@@ -84,6 +86,7 @@ when a second user needs it.
 | `page_render.py`, `page_overlay.py` | the page render the reading sees, and the labelled copy of it the overlay draws ids on |
 | `page_prompt.py` | the request text rendered from a feed, with the pinned instruction |
 | `page_answer.py` | the page answer grammar, read and never repaired |
+| `page_types.py` | page types and entry kinds: each kind's act class, which checks apply per type, the type cross-check facts and the `rows.jsonl` line |
 | `page_accounting.py` | the page accounting: the model-free check that a reading accounted for everything on its page |
 | `page_path.py` | everything the Perlector's page records derive, for the stage that writes them and every reader that checks them |
 | `page_reask.py` | the plan of a page's one re-ask: which ids it names and what it shows |
@@ -169,6 +172,7 @@ must have an Exemplar page.
 | `accounting_ref` | the page's last `page-accounting`; `None` for `page-refused` |
 | `perlectio_ref` | the entry's `perlectio.v3`; `None` for a page row |
 | `hold_codes` | sorted: the recomputed page accounting's `holds`, the entry's own holds, and the page row's hold |
+| `flag_codes` | sorted: the recomputed page accounting's `flags`, the findings the sealed `[flags]` policy records without holding (`config/page_accounting.toml`); empty for `page-refused` |
 | `continues_from_previous_page`, `continues_to_next_page` | the answer's flags; `None` for a page row |
 
 On a page an operator re-read, the last re-read stands for the first reading and its
@@ -191,7 +195,8 @@ the classes that are), proven from its one `not-run` reading (attempt
 `page-read:1`, problem `page-not-sealed`, the Exemplar's refused page its only
 input), with no accounting or act record naming the page.
 
-The Recensor's v5 receipt (`recensor_receipt.py`; v4 is still read) counts
+The Recensor's partition receipt (`recensor-partition-receipt.v6`,
+`recensor_receipt.py`) counts
 these units, and binds each page's first reading, re-ask and last accounting
 with what the re-ask did. A held
 unit whose review is completed with a named `release_reason` is resolved and

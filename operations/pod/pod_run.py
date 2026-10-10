@@ -56,7 +56,9 @@ idle ladder, when switched to delete, ends the hold early:
 last tick records when the hold actually ended.
 
 A selected range ending before Armarium records ``selection-complete`` when it
-completes, and returns at once when it holds. The pod timer closes the card;
+completes, and returns at once when it holds. ``--stop-after-coniector`` (off by
+default) cuts any selection to end at the Coniector, the last stage that needs the
+card, so the pod closes and Recensor onward runs from the fetched tree off the card. The pod timer closes the card;
 the run tree remains on the volume for the next selection.
 
 **A run that holds before its export returns at once too.**  A held
@@ -355,6 +357,7 @@ class RunPlan:
     triage_producer_recipe: Path | None = None
     corpus_register: Path | None = None
     hourly_usd: Decimal | None = None
+    stop_after_coniector: bool = False
 
     @property
     def volume_run_root(self) -> Path:
@@ -559,6 +562,7 @@ class RunPlan:
             else None,
             "corpus_register": str(self.corpus_register) if self.corpus_register else None,
             "hourly_usd": None if self.hourly_usd is None else str(self.hourly_usd),
+            "stop_after_coniector": self.stop_after_coniector,
             "bootstrap": self.bootstrap.to_record(),
         }
 
@@ -809,6 +813,13 @@ def build_parser() -> bootstrap_main.RefusingParser:
         help="for a run started by hand: after the final report, return and move the pod "
         "guard's deadline to now instead of holding",
     )
+    parser.add_argument(
+        "--stop-after-coniector",
+        action="store_true",
+        help="end the selection at the Coniector, the last stage that needs the card, so "
+        "the GPU pod is released; Recensor through Armarium then run from the fetched tree "
+        "off the card (--from recensor --to armarium). Off by default",
+    )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument("--stage", choices=SEQUENCE_NAMES)
     selection.add_argument("--from", dest="from_stage", choices=SEQUENCE_NAMES)
@@ -1011,6 +1022,8 @@ def resolve_run_plan(
         from_stage, to_stage = "door", "attestatores"
     elif args.models == "big":
         from_stage, to_stage = "perlector", "armarium"
+    if args.stop_after_coniector:
+        stage, from_stage, to_stage = _end_at_coniector(stage, from_stage, to_stage, report_path)
     return RunPlan(
         bootstrap=bootstrap,
         report_path=report_path,
@@ -1036,6 +1049,7 @@ def resolve_run_plan(
         triage_producer_recipe=triage_paths["--triage-producer-recipe"],
         corpus_register=triage_paths["--corpus-register"],
         hourly_usd=hourly_usd,
+        stop_after_coniector=args.stop_after_coniector,
     )
 
 
@@ -1144,6 +1158,28 @@ def _placement_tier(report: BootstrapReport) -> tuple[str, dict[str, object]]:
             f"{error}"
         ) from error
     return tier, validated.to_record()
+
+
+def _end_at_coniector(
+    stage: str | None, from_stage: str | None, to_stage: str | None, report_path: Path
+) -> tuple[str | None, str | None, str | None]:
+    """The selection cut to end at the Coniector: the full run becomes Door through
+    Coniector, a range past it ends there, and a selection starting after it is refused,
+    since it would run nothing on the card."""
+    last = SEQUENCE_NAMES.index("coniector")
+    first = stage or from_stage
+    if first is not None and SEQUENCE_NAMES.index(first) > last:
+        raise RunRefusal(
+            f"--stop-after-coniector with a selection starting at {first} runs nothing; "
+            "run that selection without it, off the card",
+            report_path=report_path,
+        )
+    if stage is not None:
+        return stage, None, None
+    if from_stage is None:
+        return None, SEQUENCE_NAMES[0], "coniector"
+    assert to_stage is not None
+    return None, from_stage, SEQUENCE_NAMES[min(SEQUENCE_NAMES.index(to_stage), last)]
 
 
 def _capacity_plan(report: BootstrapReport, placement_tier: str) -> CapacityPlan | None:

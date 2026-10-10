@@ -4767,3 +4767,127 @@ def test_a_systemic_share_is_a_reason_the_package_carries_and_cannot_drop(tmp_pa
 def test_a_systemic_reason_within_its_limit_is_refused():
     with pytest.raises(SchemaRefusal, match="held share within its limit"):
         build_armarium_bundle(_systemic("1/1"), _formats(embed_pixels=False), _source_bytes)
+
+
+# --- the flagged layer -------------------------------------------------------------------
+
+
+def _flagged_rows(projection: ArmariumProjection) -> tuple[dict, ...]:
+    """A held act's row with the model's text, and a delivered act's with a review flag."""
+    held, delivered = projection.acts[1], projection.acts[0]
+    refs = {
+        "perlectio_ref": {
+            "relative_path": "4_perlector/artifacts/perlectio/x.json",
+            "sha256": "1" * 64,
+        },
+        "page_reading_ref": {
+            "relative_path": "4_perlector/artifacts/page-reading/p1.json",
+            "sha256": "2" * 64,
+        },
+        "recensor_ref": {"relative_path": "5_recensor/artifacts/review/x.json", "sha256": "3" * 64},
+    }
+    return (
+        {
+            "schema": "armarium-flagged-reading.v1",
+            "act_id": held["act_id"],
+            "act_key": held["act_key"],
+            "lot": _LOT,
+            "kind": "act",
+            "page_ordinal": 1,
+            "status": "not-established",
+            "category": "held-for-review",
+            "review_priority": 1,
+            "hold_codes": ["reading-unplaced"],
+            "flag_codes": ["unread-ink"],
+            "text": "Cesar d'Exemple, as the model read it",
+            "text_label": "model reading, not established",
+            "reason": held["reason"],
+            **refs,
+            "evidence_refs": held["evidence_refs"],
+        },
+        {
+            "schema": "armarium-flagged-reading.v1",
+            "act_id": delivered["act_id"],
+            "act_key": delivered["act_key"],
+            "lot": _LOT,
+            "kind": "act",
+            "page_ordinal": 1,
+            "status": "established-with-flags",
+            "category": "delivered",
+            "review_priority": 3,
+            "hold_codes": [],
+            "flag_codes": ["no-detector-record-on-act-page"],
+            "text": delivered["canonical_clean_text"],
+            "text_label": "established",
+            "reason": None,
+            **refs,
+            "evidence_refs": delivered["evidence_refs"],
+        },
+    )
+
+
+def test_the_flagged_layer_carries_held_and_flagged_readings_with_their_text(tmp_path):
+    projection = replace(_projection(), flagged_readings=_flagged_rows(_projection()))
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+
+    rows = [json.loads(line) for line in members["flagged.jsonl"].decode("utf-8").splitlines()]
+    assert [(row["act_key"], row["status"]) for row in rows] == [
+        ("p1:2", "not-established"),
+        ("p1:1", "established-with-flags"),
+    ]
+    assert rows[0]["text"] == "Cesar d'Exemple, as the model read it"
+    assert rows[0]["text_label"] == "model reading, not established"
+    assert rows[1]["text"] == "Cǣsar d’Exemple" and rows[1]["text_label"] == "established"
+    # Run-tree citations travel marked, never as bare paths.
+    assert rows[0]["perlectio_ref"]["availability"] == "requires-retained-run-access"
+    sources = json.loads(members["sources.json"])
+    assert sources["flagged_readings"] == rows
+    # The strict formats are untouched: one held act, no text for it anywhere else.
+    acts = [json.loads(line) for line in members["acts.jsonl"].decode("utf-8").splitlines()]
+    assert [act["canonical_clean_text"] for act in acts] == ["Cǣsar d’Exemple", None]
+    manifest = verify_export_bundle(bundle.data, tmp_path / "clean")
+    assert manifest["claims"]["partial_reasons"] == [
+        "act p1:2 is held-for-review: the review remains unresolved"
+    ]
+
+
+def test_a_flagged_row_that_contradicts_the_package_is_refused(tmp_path):
+    base = _projection()
+    held, delivered = _flagged_rows(base)
+    for row, match in (
+        ({**delivered, "text": "another text"}, "other than the delivered literal"),
+        ({**held, "act_id": "act-9"}, "no counted reading"),
+        ({**held, "hold_codes": [], "flag_codes": []}, "neither held nor flagged"),
+        ({**held, "review_priority": 3}, "priority its codes do not give"),
+        ({**held, "status": "established-with-flags"}, "says 'established-with-flags'"),
+        (
+            {**delivered, "hold_codes": ["unread-ink"], "review_priority": 1},
+            "says a delivered reading is held",
+        ),
+        ({**held, "text_label": "established"}, "labels its text against its category"),
+        ({**held, "category": "delivered"}, "another key, kind, lot, category or reason"),
+    ):
+        with pytest.raises(SchemaRefusal, match=match):
+            build_armarium_bundle(
+                replace(base, flagged_readings=(row,)), _formats(embed_pixels=False), _source_bytes
+            )
+
+
+def test_a_flagged_member_that_differs_from_the_sources_is_refused(tmp_path):
+    projection = replace(_projection(), flagged_readings=_flagged_rows(_projection()))
+    bundle = build_armarium_bundle(projection, _formats(embed_pixels=False), _source_bytes)
+    members = _members(bundle.data)
+    rows = members["flagged.jsonl"].decode("utf-8").splitlines()
+    members["flagged.jsonl"] = (rows[0] + "\n").encode("utf-8")
+    _refresh_manifest_member(members, "flagged.jsonl")
+    with pytest.raises(SchemaRefusal, match="other flagged readings than sources.json"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")
+    # And a package that drops the member while its sources record the rows.
+    members = _members(bundle.data)
+    del members["flagged.jsonl"]
+    manifest = json.loads(members[EXPORT_MANIFEST_NAME])
+    manifest["members"] = [row for row in manifest["members"] if row["path"] != "flagged.jsonl"]
+    _refresh_manifest(members, manifest)
+    with pytest.raises(SchemaRefusal, match="members disagree"):
+        verify_export_bundle(_zip_bytes(members), tmp_path / "clean")

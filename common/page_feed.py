@@ -158,6 +158,11 @@ _FEED_FIELDS: Final = frozenset(
     }
 )
 _FEED_BOOLEAN_FIELDS: Final = ("witness_coordinates", "surya_lines", "surya_blocks")
+# The reading names its page type and each entry's kind (`common.page_types`).
+# The switch is required and "named" is its only value, so every feed record
+# says what the reader was asked.
+PAGE_TYPES_FIELD: Final = "page_types"
+PAGE_TYPES_SETTINGS: Final = frozenset({"named"})
 
 # The unit kinds about one act in size (`UNIT_KINDS`); the answer reserve counts
 # act entries from these only (`answer_measure`).
@@ -206,10 +211,15 @@ def validate_feed_table(table: Any) -> dict[str, Any]:
     (`build_page_feed`).
     """
     where = f"the Perlector protocol declaration's [{FEED_TABLE}]"
-    if not isinstance(table, dict) or set(table) != _FEED_FIELDS:
+    if not isinstance(table, dict) or set(table) != _FEED_FIELDS | {PAGE_TYPES_FIELD}:
         raise ContractError(
-            f"{where} is not its closed schema {sorted(_FEED_FIELDS)}; a feed switch this "
-            "build does not read cannot be applied"
+            f"{where} is not its closed schema {sorted(_FEED_FIELDS | {PAGE_TYPES_FIELD})}; "
+            "a feed switch this build does not read cannot be applied"
+        )
+    if table[PAGE_TYPES_FIELD] not in PAGE_TYPES_SETTINGS:
+        raise ContractError(
+            f"{where} {PAGE_TYPES_FIELD} {table[PAGE_TYPES_FIELD]!r} is not one of "
+            f"{sorted(PAGE_TYPES_SETTINGS)}"
         )
     if table["page_image"] not in PAGE_IMAGE_SETTINGS:
         raise ContractError(
@@ -424,10 +434,10 @@ def answer_measure(
     number of Surya lines shown. The answer transcribes
     the same ink the witnesses read, so its text is measured by the longest
     witness text, text outside its units included. Its entries are the page's
-    likely act count: the most of Surya's blocks, DAI's detector records and
-    Chandra's layout blocks, each about one act. A line witness's lines are
-    fractions of acts and are not counted. With none of the three shown the
-    count is 0 and only the text is reserved. Every line shown is cited or
+    likely act count: the most of Surya's blocks and of any shown witness's
+    layout blocks or detector records (Chandra's, DAI's, dots.mocr's), each about
+    one act. A line witness's lines are fractions of acts and are not counted.
+    With none of these shown the count is 0 and only the text is reserved. Every line shown is cited or
     set aside by its own id, so each is one more cite. The reserve decides
     admission, and the request is sent the page cap or the room left,
     whichever is less.

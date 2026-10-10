@@ -14,7 +14,9 @@ from common.chairs.models import AbsentChair, ModelsConfig
 from common.contracts.errors import ContractError, SchemaRefusal
 
 WITNESS_SCOPES: Final = frozenset({"page"})
-KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset({"chandra.v1", "churro.v1", "dai.v1"})
+KNOWN_WITNESS_ADAPTER_NAMES: Final = frozenset(
+    {"chandra.v1", "churro.v1", "dai.v1", "dots-mocr.v1"}
+)
 # Bounded before scanning, so a malformed config cannot flood its refusal message.
 MAX_WITNESS_ADAPTER_NAME_LENGTH: Final = 128
 

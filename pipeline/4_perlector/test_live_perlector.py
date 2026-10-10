@@ -733,7 +733,9 @@ def test_an_engine_call_off_its_sealed_row_or_retired_is_refused(live_run):
     root, _catalogue = live_run
     tree = RunTree(root, "r")
     context, retired = _engine_call_world(tree, seed=7, schema="chair-call-record.v2")
-    with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
+    with pytest.raises(
+        SchemaRefusal, match="has schema .chair-call-record.v2., not one this build writes"
+    ):
         live_calls.engine_call_inputs(context, retired)
 
 
@@ -1191,3 +1193,62 @@ def test_a_reply_another_record_binds_answers_no_send():
     # The raw bytes are bound here, so only the unknown-schema blob can count.
     blobs["call"] = json.dumps({**call, "schema": "chair-call-record.v2"}).encode()
     assert live_calls.unrecorded_replies(context(["4_perlector/blobs/raw"])) == ([], True)
+
+
+# --- page types and entry kinds, live ----------------------------------------------
+
+
+def _artifacts(root: Path, kind: str) -> list[dict[str, Any]]:
+    directory = root / "r" / "4_perlector" / "artifacts" / kind
+    return [
+        json.loads(path.read_text(encoding="utf-8")) for path in sorted(directory.glob("*.json"))
+    ]
+
+
+def test_a_live_answer_naming_its_page_type_flows_into_every_page_record(
+    live_run, tmp_path, monkeypatch
+):
+    entry = {
+        "label": None,
+        "cites": [],
+        "continues_from_previous_page": False,
+        "continues_to_next_page": False,
+    }
+    answer = {
+        "page_type": "index",
+        "writing": "typed",
+        "entries": [
+            {**entry, "n": 1, "kind": "index-row", "text": "114 21 Guyotte, Charles"},
+            {**entry, "n": 2, "kind": "act", "text": "Le deux mai a été inhumé Jean Roy"},
+        ],
+        "set_aside": [],
+    }
+    endpoint, exit_code = _run_perlector(
+        live_run,
+        tmp_path,
+        monkeypatch,
+        ScriptedAnswer(content=json.dumps(answer, ensure_ascii=False), finish_reason="stop"),
+    )
+    assert exit_code == 0
+    root = live_run[0]
+    # This catalogue's recipe sends no instruction; the request is the feed alone.
+    assert endpoint.requests
+    readings = [r["payload"] for r in _artifacts(root, "page-reading")]
+    assert readings and all(r["parse_state"] == "parsed" for r in readings)
+    assert all(r["disposition"] == "read" for r in readings)
+    # First readings only; a page's re-ask, answered by the same script, adds its own.
+    perlectios = [
+        r["payload"] for r in _artifacts(root, "perlectio") if "reading_attempt" not in r["payload"]
+    ]
+    assert perlectios
+    assert {(p["n"], p["kind"], p["entry_kind"]) for p in perlectios} == {
+        (1, "other", "index-row"),
+        (2, "act", "act"),
+    }
+    for record in _artifacts(root, "page-accounting"):
+        typed = record["payload"]["page_type"]
+        assert (typed["stated"], typed["writing"]) == ("index", "typed")
+        assert typed["applicability"]["i"]["applies"] is False
+        assert typed["kinds"] == {"agrees": False, "unexpected_kinds": ["act"]}
+        kinds = [e["entry_kind"] for e in record["payload"]["entries"]]
+        assert kinds[:2] == ["index-row", "act"]

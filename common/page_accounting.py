@@ -6,9 +6,10 @@ Surya lines `L1..` and blocks `S1..` -- plus the ids it set aside with a reason.
 This module takes that answer, the feed and the page's sealed witnesses and
 detections as plain data and says, rule by rule, whether every witness unit,
 every detected line, every detector record, every witness's text and the
-page's ink are accounted for. It reads no file, calls no model and chooses nothing among the
-witnesses. A hold only asks a human to look; a measurement that cannot be
-taken holds; any hold holds the page's acts for review.
+page's ink are accounted for. It reads no page file (the sealed policy is the one
+configuration it loads), calls no model and chooses nothing among the witnesses. A
+hold only asks a human to look; a measurement that cannot be taken holds; any hold
+holds the page's acts for review.
 
 `placement_boxes`, `expand_cites`, `validate_answer` and `duplicate_regions`
 are the one reading of an answer's ids and regions that both this check and
@@ -46,18 +47,22 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Final, Protocol
 
+from common import page_types
 from common.contracts.errors import ContractError
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 from common.imaging import Bounds
-from common.page_answer import grammar_problems
+from common.page_answer import (
+    grammar_problems,
+    stated_page_type,
+)
 from common.page_edges import FIRST_READING, OPERATOR_REREAD_FIRST, REASK_READING
 from common.page_witness_units import DETECTION_LETTERS
 from common.perlector_audit import TRUNCATION_COMPLETE
 from common.residual_ink import CoverageAuditPolicy, residual_ink_from_runs
 from common.sealed_config import read_sealed_toml
 
-SCHEMA: Final = "page-accounting.v2"
+SCHEMA: Final = "page-accounting.v3"
 SEALED_CONFIG_NAME: Final = "page-accounting"
 DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH: Final = (
     Path(__file__).resolve().parents[1] / "config" / "page_accounting.toml"
@@ -71,7 +76,10 @@ ANSWER_GRAMMAR: Final = "answer-grammar"
 UNKNOWN_ID: Final = "unknown-id"
 MALFORMED_RANGE: Final = "malformed-range"
 # A range over Surya lines or blocks: their numbering follows the detector, not
-# the page's columns, so a range could name ink the entry never read.
+# the page's columns, so a range could name ink the entry never read. Under a
+# policy (`validate_answer`) a range is read when it can name no such ink: a
+# block range (blocks place nothing), or a line range whose every line lies
+# inside the entry's own cited witness units.
 DETECTION_RANGE: Final = "detection-range"
 CITED_AND_SET_ASIDE: Final = "cited-and-set-aside"
 SET_ASIDE_TWICE: Final = "set-aside-twice"
@@ -94,6 +102,11 @@ WITNESS_READ_BLANK: Final = "witness-read-blank"
 UNREAD_LINE: Final = "unread-line"
 UNREAD_LINE_NOT_MEASURED: Final = "unread-line-not-measured"
 WITNESS_TEXT_NOT_READ: Final = "witness-text-not-read"
+# Rule (e) on a short witness unit (a signature, initials, a lone surname: at most
+# `short_unit_characters` of normalized text) that an entry cites and reads
+# differently: a dissent about a few letters, not text left unread, so it has its
+# own code. A short unit no entry cites keeps `witness-text-not-read`: nobody read it.
+WITNESS_SHORT_UNIT_NOT_READ: Final = "witness-short-unit-not-read"
 WITNESS_TEXT_NOT_MEASURED: Final = "witness-text-not-measured"
 TOO_FEW_DISTINCTIVE_PIECES: Final = "too-few-distinctive-pieces"
 UNREAD_INK: Final = "unread-ink"
@@ -103,6 +116,11 @@ READING_INCOMPLETE: Final = "reading-incomplete"
 # region to classify over): whether it is complete was not measured.
 TRUNCATION_NOT_CLASSIFIED: Final = "truncation-not-classified"
 SHARED_LINE: Final = "shared-line"
+# Row entries (index rows, table rows, ledger entries) placed by one witness unit
+# they all cite -- a whole table a witness gave as one unit: rule (h) records the
+# unit and its rows, and the area that unit lends them is not a duplicate claim
+# between them (`duplicate_regions`).
+ROWS_SHARE_UNIT: Final = "rows-share-unit"
 MERGED_DETECTION: Final = "merged-detection"
 RECORD_READ_AS_OTHER: Final = "record-read-as-other"
 RECORD_NOT_READ: Final = "record-not-read"
@@ -140,6 +158,7 @@ HOLD_CODES: Final = frozenset(
         UNREAD_LINE,
         UNREAD_LINE_NOT_MEASURED,
         WITNESS_TEXT_NOT_READ,
+        WITNESS_SHORT_UNIT_NOT_READ,
         WITNESS_TEXT_NOT_MEASURED,
         UNREAD_INK,
         UNREAD_INK_NOT_MEASURED,
@@ -179,8 +198,33 @@ NOT_MEASURED_CODES: Final = frozenset(
 )
 _PROBLEM_RULE: Final = {UNKNOWN_ID: "b"}
 
+# --- review flags ---------------------------------------------------------------------
+#
+# A hold code the sealed policy names in `[flags] codes` is a review flag: the
+# finding is measured and recorded exactly as before, the Recensor and the
+# Armarium report it and the flagged export carries the reading with it, but it
+# holds nothing. The lead's choice (2026-10-09) for the checks not yet
+# calibrated for this corpus: the record detector's disagreement, the ink
+# thresholds and a short witness unit read differently. Reverting one is a
+# config change: take its code out of `[flags] codes`, and it holds again.
+#
+# The Recensor's own residual-ink check repeats rule (f)'s policy on the same
+# regions (`pipeline/5_recensor/page_review.py`); its code is named here so the
+# one sealed list decides both.
+RESIDUAL_INK: Final = "residual-ink"
+# Only a page-level finding may be a flag. `duplicate-region`, `reading-incomplete`
+# and `reading-unplaced` are also entry holds (`page_path.entry_plans`), which no
+# flag lifts, so naming one would flag the page and still hold its entries: refused
+# rather than half-applied.
+FLAGGABLE_CODES: Final = (HOLD_CODES - {DUPLICATE_REGION, READING_INCOMPLETE, READING_UNPLACED}) | {
+    RESIDUAL_INK
+}
+
 PASS: Final = "pass"
 HOLD: Final = "hold"
+# The rule found something, and every finding is a review flag under the sealed
+# policy: recorded, reported, not held.
+FLAG: Final = "flag"
 NOT_MEASURED: Final = "not-measured"
 NOT_APPLICABLE: Final = "not-applicable"
 RULES: Final = ("a", "b", "c", "d", "e", "f", "g", "h", "i", "j")
@@ -252,7 +296,14 @@ class PageAccountingPolicy:
     max_act_doubt_share_bp: int
     max_page_doubt_share_bp: int
     sha256: str
+    # `[flags]`: the hold codes that are review flags (recorded, not held) and
+    # the length under which rule (e)'s unit is a short unit.
+    flag_codes: frozenset[str]
+    short_unit_characters: int
 
+
+FLAGS_TABLE: Final = "flags"
+_FLAGS_FIELDS: Final = frozenset({"codes", "short_unit_characters"})
 
 _POLICY_TABLES: Final = {
     "inside": ("min_area_bp",),
@@ -303,6 +354,9 @@ def load_page_accounting_policy(
 ) -> PageAccountingPolicy:
     """Read the closed, sealed page-accounting configuration."""
     record, digest = read_sealed_toml(path, "page accounting configuration")
+    if FLAGS_TABLE not in record:
+        raise ContractError("page accounting configuration has no [flags] table")
+    flags = _flags_policy(record.pop(FLAGS_TABLE))
     if set(record) != set(_POLICY_TABLES) or any(
         not isinstance(record[table], dict) or set(record[table]) != set(fields)
         for table, fields in _POLICY_TABLES.items()
@@ -321,7 +375,31 @@ def load_page_accounting_policy(
             "page accounting direct_alignment_max_pairs exceeds max_alignment_pairs"
         )
     inside = values.pop("min_area_bp")
-    return PageAccountingPolicy(inside_min_area_bp=inside, **values, sha256=digest)
+    return PageAccountingPolicy(inside_min_area_bp=inside, **values, sha256=digest, **flags)
+
+
+def _flags_policy(table: Any) -> dict[str, Any]:
+    """The `[flags]` table checked."""
+    if not isinstance(table, dict) or set(table) != _FLAGS_FIELDS:
+        raise ContractError(
+            "page accounting [flags] must hold exactly codes and short_unit_characters"
+        )
+    codes, length = table["codes"], table["short_unit_characters"]
+    if not isinstance(codes, list) or any(not isinstance(code, str) for code in codes):
+        raise ContractError("page accounting [flags] codes must be a list of hold codes")
+    if len(set(codes)) != len(codes):
+        raise ContractError("page accounting [flags] codes names a code twice")
+    unknown = sorted(set(codes) - FLAGGABLE_CODES)
+    if unknown:
+        raise ContractError(
+            f"page accounting [flags] codes names {unknown}, which no page-level hold code "
+            "is; a flag that lifts no hold would be applied to nothing"
+        )
+    if not isinstance(length, int) or isinstance(length, bool) or length <= 0:
+        raise ContractError(
+            "page accounting [flags] short_unit_characters must be a positive integer"
+        )
+    return {"flag_codes": frozenset(codes), "short_unit_characters": length}
 
 
 class _SealedContext(Protocol):
@@ -577,23 +655,23 @@ def duplicate_regions(
     region. That holds one region inside another, and the same ink named by
     other ids (a range of units against the lines under them). An act sharing
     one line with its neighbour at its edge stays under the share; rule (h)
-    records that line as `shared-line`.
+    records that line as `shared-line`. Two row entries are compared without
+    the box of a witness unit both are placed by (`_compared_regions`).
     """
-    placed = [
-        (entry["n"], entry["region_boxes_px"], region_area(entry["region_boxes_px"]))
-        for entry in entries
-        if entry["region_boxes_px"]
-    ]
+    placed = [entry for entry in entries if entry["region_boxes_px"]]
     findings = []
-    for index, (n, region, area) in enumerate(placed):
-        for other_n, other, other_area in placed[index + 1 :]:
+    for index, entry in enumerate(placed):
+        for other_entry in placed[index + 1 :]:
+            region, other = _compared_regions(entry, other_entry)
+            if not region or not other:
+                continue
             shared = _shared_area(region, other)
-            smaller = min(area, other_area)
+            smaller = min(region_area(region), region_area(other))
             if shared * BASIS_POINTS > policy.max_shared_share_bp * smaller:
                 findings.append(
                     {
                         "code": DUPLICATE_REGION,
-                        "ns": sorted((n, other_n)),
+                        "ns": sorted((entry["n"], other_entry["n"])),
                         "shared_px": shared,
                         "smaller_region_px": smaller,
                     }
@@ -601,8 +679,163 @@ def duplicate_regions(
     return sorted(findings, key=lambda finding: finding["ns"])
 
 
-def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[str, Any]:
+def _row_shared_units(entry: Mapping[str, Any]) -> Mapping[str, Box]:
+    """The shared units placing a row entry; none for any other kind."""
+    if entry["entry_kind"] not in page_types.ROW_KINDS:
+        return {}
+    return entry.get("placing_shared") or {}
+
+
+def _compared_regions(
+    entry: Mapping[str, Any], other: Mapping[str, Any]
+) -> tuple[list[Box], list[Box]]:
+    """Two entries' regions as rule (h) compares them.
+
+    Two row entries placed by one witness unit both cite (a whole table a witness
+    gave as one unit) are compared without that unit's box: it is the table they
+    are rows of, not a claim of one row's ink. Each keeps every other box it
+    places, so two rows naming the same line are still a duplicate; a row that the
+    shared unit alone places has nothing left to compare, and is no duplicate of
+    another row (`rows-share-unit` records them). Every other pair is compared
+    whole.
+    """
+    common = set(_row_shared_units(entry)) & set(_row_shared_units(other))
+    if not common:
+        return list(entry["region_boxes_px"]), list(other["region_boxes_px"])
+    dropped = [entry["placing_shared"][identifier] for identifier in sorted(common)]
+    return (
+        [box for box in entry["region_boxes_px"] if box not in dropped],
+        [box for box in other["region_boxes_px"] if box not in dropped],
+    )
+
+
+def rows_sharing_units(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """`rows-share-unit` for each shared witness unit that places two or more row entries."""
+    rows: dict[str, list[int]] = {}
+    for entry in entries:
+        for identifier in _row_shared_units(entry):
+            rows.setdefault(identifier, []).append(entry["n"])
+    return [
+        {"code": ROWS_SHARE_UNIT, "id": identifier, "ns": sorted(ns)}
+        for identifier, ns in sorted(rows.items(), key=lambda item: id_key(item[0]))
+        if len(ns) > 1
+    ]
+
+
+def _range_ids(cite: str) -> list[str]:
+    match = _RANGE.fullmatch(cite)
+    letter, first, last = match[1], int(match[2]), int(match[4])
+    return [f"{letter}{number}" for number in range(first, last + 1)]
+
+
+def _covered_detection_ranges(
+    cited_ids: list[str],
+    problems: list[dict[str, Any]],
+    candidates: Mapping[str, Box | None],
+    policy: PageAccountingPolicy,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Read the detection ranges of one entry that can name no ink it did not read.
+
+    `expand_cites` refuses every range over Surya lines or blocks, because their
+    numbering follows the detector rather than the page's columns. Two kinds
+    cannot name unread ink, and are read here: a range of blocks, since a block
+    places nothing (`placement_boxes`), and a range of lines each of which lies
+    inside (`is_inside`) the boxes of the witness units the same entry cites,
+    since those units already claim that ink for the entry. Any other detection
+    range stays `detection-range`, contributing no id. Returns the entry's ids
+    and its remaining problems.
+    """
+    own_units = [
+        candidates[identifier]
+        for identifier in cited_ids
+        if identifier[0] not in DETECTION_LETTERS and candidates[identifier] is not None
+    ]
+    ids = list(cited_ids)
+    kept: list[dict[str, Any]] = []
+    for problem in problems:
+        cite = problem.get("cite")
+        if problem["code"] != DETECTION_RANGE or not isinstance(cite, str):
+            kept.append(problem)
+            continue
+        span = _range_ids(cite)
+        if any(identifier not in candidates for identifier in (span[0], span[-1])):
+            kept.append(problem)
+            continue
+        boxes = [candidates[identifier] for identifier in span]
+        blocks = all(box is None for box in boxes)
+        lines_read = all(
+            box is not None and own_units and is_inside(box, own_units, policy) for box in boxes
+        )
+        if blocks or lines_read:
+            ids.extend(span)
+        else:
+            kept.append(problem)
+    return list(dict.fromkeys(ids)), kept
+
+
+def _shared_units(
+    cited: Sequence[Sequence[str]], candidates: Mapping[str, Box | None]
+) -> frozenset[str]:
+    """The placing witness units more than one entry of an answer cites."""
+    counts = Counter(
+        identifier
+        for ids in cited
+        for identifier in set(ids)
+        if identifier[0] not in DETECTION_LETTERS and candidates.get(identifier) is not None
+    )
+    return frozenset(identifier for identifier, count in counts.items() if count > 1)
+
+
+def _placing_ids(
+    cited_ids: Sequence[str],
+    shared: frozenset[str],
+    candidates: Mapping[str, Box | None],
+    policy: PageAccountingPolicy | None,
+) -> list[str]:
+    """The cited ids that place an entry: a shared unit it reads a part of places it not.
+
+    A witness unit several entries cite (a whole index table, or two acts the
+    witness ran together) cannot say which part of its box is whose. It lends
+    no area to an entry whose own placing ids (its lines and the units no other
+    entry cites) all lie inside it (`is_inside`): that entry claims a part of
+    the unit, and is placed by that part. A shared unit an entry cites beside
+    ink of its own elsewhere on the page, or an entry with no placing id of its
+    own, keeps the unit's box: that is two entries claiming the same ink, and
+    rule (h) holds them as duplicates. Without a policy every cited id places.
+    """
+    if policy is None:
+        return list(cited_ids)
+    own = [
+        candidates[identifier]
+        for identifier in cited_ids
+        if identifier not in shared and candidates.get(identifier) is not None
+    ]
+    if not own:
+        return list(cited_ids)
+    return [
+        identifier
+        for identifier in cited_ids
+        if identifier not in shared
+        or not all(is_inside(box, [candidates[identifier]], policy) for box in own)
+    ]
+
+
+def validate_answer(
+    answer: Any,
+    candidates: Mapping[str, Box | None],
+    *,
+    policy: PageAccountingPolicy | None = None,
+) -> dict[str, Any]:
     """Read a parsed page answer against its feed's candidates, repairing nothing.
+
+    With `policy` (every reading the pipeline measures), a detection range that
+    can name no unread ink is read (`_covered_detection_ranges`); without it,
+    every detection range is `detection-range`.
+
+    Each entry's `kind` is its act class (`common.page_types.act_class`): `act`
+    for an act or instrument, `other` for every other kind, so every rule and
+    record after the answer reads one census of acts whichever grammar the answer
+    is in; `entry_kind` is the kind as the answer named it.
 
     `candidates` is `feed_candidates(feed, policy)`. The answer's grammar is
     `common.page_answer.grammar_problems`'s; an answer outside it has no entries
@@ -629,14 +862,26 @@ def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[s
         }
     problems: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []
-    for raw in answer["acts"]:
+    expanded = []
+    for raw in answer["entries"]:
         cited_ids, cite_problems = expand_cites(raw["cites"], candidates)
+        if policy is not None:
+            cited_ids, cite_problems = _covered_detection_ranges(
+                cited_ids, cite_problems, candidates, policy
+            )
         problems.extend({**problem, "n": raw["n"]} for problem in cite_problems)
-        boxes = region_boxes(cited_ids, candidates)
+        expanded.append((raw, cited_ids))
+    shared = _shared_units([cited_ids for _raw, cited_ids in expanded], candidates)
+    for raw, cited_ids in expanded:
+        placing = _placing_ids(cited_ids, shared, candidates, policy)
+        boxes = region_boxes(placing, candidates)
         entries.append(
             {
                 "n": raw["n"],
-                "kind": raw["kind"],
+                "kind": page_types.act_class(raw["kind"]),
+                "entry_kind": raw["kind"],
+                # The shared witness units that place this entry, each with its box.
+                "placing_shared": {i: candidates[i] for i in placing if i in shared},
                 "label": raw.get("label"),
                 "cites": list(raw["cites"]),
                 "cited_ids": cited_ids,
@@ -1445,7 +1690,7 @@ def page_accounting(
     reask: Mapping[str, Any] | None = None,
     attempt: int = FIRST_READING,
 ) -> dict[str, Any]:
-    """The `page-accounting.v2` payload for one page reading, or for a reading and its re-ask.
+    """The `page-accounting.v3` payload for one page reading, or for a reading and its re-ask.
 
     `attempt` is the ordinal of the whole-page reading accounted: 1 for a first
     reading (`answer_basis` "attempt-1"), or an operator re-read's, 3 or more
@@ -1530,13 +1775,18 @@ def page_accounting(
     rules: dict[str, dict[str, Any]] = {}
     answered = parse_state == PARSED and reading.get("answer") is not None
     validated = (
-        validate_answer(reading["answer"], candidates)
+        validate_answer(reading["answer"], candidates, policy=policy)
         if answered
         else {"entries": [], "set_aside": {}, "problems": []}
     )
     entries = sorted(validated["entries"], key=lambda entry: entry["n"])
     set_aside = validated["set_aside"]
     problems = validated["problems"]
+    typed = _page_type_context(
+        reading["answer"] if answered and not problems else None,
+        feed,
+        None if records is None else len(records),
+    )
     combined = None
     if reask is not None:
         if not answered:
@@ -1631,6 +1881,7 @@ def page_accounting(
             entries,
             reask,
             attempt,
+            typed,
         )
 
     # (b) every cited id exists, and every entry cites a boxed id.
@@ -1699,6 +1950,7 @@ def page_accounting(
             for row in line_rows
             if len(row["inside"]) > 1
         ]
+        + rows_sharing_units(entries)
     )
     rules["i"] = _detection_rule(record_rows, detector, capped, entries, unboxed_records)
     rules["j"] = _reask_rule(combined, entries, units, policy, reask)
@@ -1714,6 +1966,7 @@ def page_accounting(
         entries,
         reask,
         attempt,
+        typed,
     )
 
 
@@ -1751,7 +2004,10 @@ def _witness_text_rule(
     entries is what catches a unit that merged two records while only one was
     read: the other record's formula would otherwise find itself in a
     neighbouring entry's reading. A unit is held (`witness-text-not-read`,
-    naming every reason) when:
+    naming every reason; `witness-short-unit-not-read` instead for a unit of
+    at most `short_unit_characters` normalized characters that some entry
+    cites: a signature or initials read differently is a dissent about a few
+    letters, and the sealed `[flags]` may make it a review flag) when:
 
     - `unread-run`: a run of its text longer than `max_unread_characters` is unread;
     - `unread-share`: its unread text exceeds `max_unread_share_bp` of it;
@@ -1836,10 +2092,13 @@ def _witness_text_rule(
             }
         )
         if reasons:
+            # A short unit some entry cites and reads differently is a dissent
+            # about a few letters; an uncited one nobody read at all.
+            short = len(witness) <= policy.short_unit_characters and identifier in cited_by
             findings.append(
                 _located(
                     {
-                        "code": WITNESS_TEXT_NOT_READ,
+                        "code": WITNESS_SHORT_UNIT_NOT_READ if short else WITNESS_TEXT_NOT_READ,
                         "id": identifier,
                         "reasons": reasons,
                         "unread_characters": coverage.unread_run,
@@ -1910,7 +2169,8 @@ def _detection_rule(
     recorded: a detector record that merged two entries the Perlector read apart.
     A detector that found no record at all below its cap on a page whose
     reading establishes acts disagrees with the whole reading:
-    `no-detector-record-on-act-page`, held, naming the act entries. Its
+    `no-detector-record-on-act-page`, naming the act entries. It holds unless the
+    sealed `[flags]` table names it, which the committed policy does. Its
     record reader's page testimony there is that the page holds nothing.
 
     Without the detector's records for the page, or when the detector reached
@@ -2178,14 +2438,31 @@ def _record(
     entries: list[dict[str, Any]],
     reask: Mapping[str, Any] | None,
     attempt: int = FIRST_READING,
+    typed: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    holds = sorted(
+    typed = typed if typed is not None else _page_type_context(None, feed, None)
+    # A rule the page type switches off (`common.page_types.applicability`) is still
+    # measured; its findings are recorded, neither held nor flagged.
+    not_applied = {
+        rule for rule, verdict in typed["applicability"].items() if not verdict["applies"]
+    }
+    found = {
+        finding["code"]
+        for name, rule in rules.items()
+        if name not in not_applied
+        for finding in rule["findings"]
+        if finding["code"] in HOLD_CODES
+    }
+    holds = sorted(found - policy.flag_codes)
+    flags = sorted(found & policy.flag_codes)
+    recorded = sorted(
         {
             finding["code"]
-            for rule in rules.values()
-            for finding in rule["findings"]
+            for name in sorted(not_applied)
+            for finding in rules[name]["findings"]
             if finding["code"] in HOLD_CODES
         }
+        - found
     )
     return {
         "schema": SCHEMA,
@@ -2202,15 +2479,57 @@ def _record(
                 "reading_attempt": entry.get("reading_attempt", attempt),
                 "reading_n": entry.get("reading_n", entry["n"]),
                 "kind": entry["kind"],
+                "entry_kind": entry["entry_kind"],
                 "cited_ids": sorted(entry["cited_ids"], key=id_key),
                 "union_box_px": entry["union_box_px"],
             }
             for entry in entries
         ],
-        "rules": {name: rules[name] for name in RULES},
+        "rules": {name: _flagged_status(rules[name], policy) for name in RULES},
         "units": unit_rows,
         "lines": line_rows,
         "records": record_rows,
         "holds": holds,
+        # Findings the sealed `[flags]` make review flags: recorded, reported by
+        # the Recensor and the flagged export, holding nothing.
+        "flags": flags,
+        "page_type": {
+            **typed,
+            "kinds": page_types.kind_agreement(
+                typed["stated"], [entry["entry_kind"] for entry in entries]
+            ),
+            "recorded_not_held": recorded,
+        },
         "policy_sha256": policy.sha256,
     }
+
+
+def _page_type_context(
+    answer: Mapping[str, Any] | None, feed: Mapping[str, Any], record_count: int | None
+) -> dict[str, Any]:
+    """The page type a valid answer states, the model-free facts beside it, and which
+    rules apply (`common.page_types`). No valid answer states no type, and every rule
+    applies."""
+    page_type, writing = stated_page_type(answer)
+    facts = page_types.type_facts(feed, record_count)
+    return {
+        "stated": page_type,
+        "writing": writing,
+        "facts": facts,
+        "agreement": page_types.type_agreement(page_type, writing, facts),
+        "applicability": page_types.applicability(page_type, writing),
+    }
+
+
+def _flagged_status(rule: dict[str, Any], policy: PageAccountingPolicy) -> dict[str, Any]:
+    """A rule whose every held finding is a review flag under the policy is `flag`, not `hold`.
+
+    A not-measured finding is never a flag by default (it says the check did not
+    run), and a rule with one held finding outside the flags still holds.
+    """
+    if rule["status"] not in (HOLD, NOT_MEASURED):
+        return rule
+    found = {finding["code"] for finding in rule["findings"] if finding["code"] in HOLD_CODES}
+    if found and found <= policy.flag_codes:
+        return {**rule, "status": FLAG}
+    return rule

@@ -5,7 +5,9 @@ its own ``smart_resize`` against the row's ``min_pixels``/``max_pixels``.  A
 row whose ``max_model_len`` cannot hold image + prompt + answer makes vLLM
 answer HTTP 400 before generating anything, on a card that bills by the hour.
 This module computes the exact count and refuses locally instead; it never
-downscales, clamps or reserves.
+downscales an image or shrinks a request to fit. The answer reserve it charges
+(:func:`page_answer_bound`) is an estimate that decides admission only, clamped to
+the page cap, and it never bounds the reply.
 
 :func:`smart_resize` is a rewrite of the published formula (source named in
 :data:`SMART_RESIZE_SOURCE`); the token count is the processor's own
@@ -559,9 +561,16 @@ def _rate_bound_tokens(characters: int) -> int:
 # prose at the measured rate (`PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS` with its
 # margin), carried to it (`PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED`).
 # The carried rate is sealed against the page builder's own digest, so editing
-# the builder expires it.
+# the builder expires it. Re-sealed 2026-10-10 for the recipe aliases
+# (`page_prompt.RECIPE_ALIASES`): a table of recipe names only, no wording, so every
+# rendered prompt is byte-identical (cold73: 73/73) and the rate carries unchanged.
+# Re-sealed again for the page-type and entry-kind instruction (`[feed] page_types`):
+# 442 more prose tokens on the dense test page, charged at the same carried rate, which
+# was measured on this builder's English prose and is not re-measured here.
+# Re-sealed again when the `acts`-grammar wording was removed: the page-type
+# instruction is now the only one, its text unchanged, so the rate carries unchanged.
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
-    "e8e3e2232ae481228b541bc02225b74027f9ff8c5a6475b0f8b329ebc31b7e74"
+    "09a99d131b109b8729638c36a03df5ed2fe777a4b1185350f472c5cd9f2cc4b5"
 )
 # Chat-template cost: one turn plus each image, charged at the most a
 # page request sends -- the page render and its overlay (`[feed] page_overlay`).
@@ -573,7 +582,7 @@ PERLECTOR_PAGE_PROMPT_OVERHEAD_TOKENS: Final = (
 # The page answer's reserve. The answer transcribes the same ink the witnesses
 # read, so its text is estimated at the page's longest witness text, each act
 # entry adds its JSON scaffold -- this skeleton, one entry with an empty text, a
-# three-word label and five cites -- and each Surya line shown adds one cite of
+# short label and five cites -- and each Surya line shown adds one cite of
 # its own, since lines are cited one by one, never by a range. All are
 # estimated at the carried rate. The
 # reserve decides admission only: it is the estimate or the page cap, whichever
@@ -588,7 +597,10 @@ PAGE_ANSWER_ENTRY_SKELETON: Final = (
     '"cites": ["A99", "B99", "C99", "D100-D199", "S99"], "text": "", '
     '"continues_from_previous_page": false, "continues_to_next_page": false}, '
 )
-PAGE_ANSWER_WRAPPER: Final = '{"acts": [], "set_aside": []}'
+# The answer's wrapper, with the longest page type and writing.
+PAGE_ANSWER_WRAPPER: Final = (
+    '{"page_type": "register-acts", "writing": "handwritten", "entries": [], "set_aside": []}'
+)
 PAGE_ANSWER_LINE_CITE: Final = '"L999", '
 
 
@@ -950,6 +962,11 @@ MEASURED_RECORD_ANSWER_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
 # * Churro, 25,000: `DEFAULT_OCR_MAX_TOKENS` in the vendor's own `src/churro_ocr/providers/specs.py:77` at
 #   v0.3.0 (`stanford-oval/Churro` 4abb173); the paper (arXiv:2509.19768,
 #   section B.2) says only "chosen to allow generation of all gold outputs".
+# * dots.mocr (`attestator_4`, seated only on the pages a routing rule names),
+#   16,384: the `max_completion_tokens` of the vendor's own command line
+#   (`dots_mocr/parser.py` at `rednote-hilab/dots.mocr` 23f3e56). Its prompt has
+#   no measured token count yet (`MEASURED_PROMPT_TOKENS`), so a served request
+#   for it is refused by name until one is measured with its tokenizer.
 #
 # The Perlector is a stock base model with no vendor bound;
 # `operations/serving/chat_request.py` sends none.
@@ -958,6 +975,7 @@ DECLARED_ANSWER_BOUND_TOKENS: Final[Mapping[str, int]] = MappingProxyType(
         "attestator_1": 12_384,
         "attestator_2": 1_024,
         "attestator_3": 25_000,
+        "attestator_4": 16_384,
     }
 )
 

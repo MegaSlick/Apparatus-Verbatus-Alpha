@@ -214,7 +214,7 @@ def test_the_re_ask_shows_the_first_entries_without_their_text(recovers):
     real = page_prompt.page_reask_prompt("unproven-real-perlector", feed, shown)
     assert real == fixture_text + "\n" + page_prompt.page_reask_instruction(feed)
     first = _reading(root, 1, 1)["payload"]["answer"]
-    for act in first["acts"]:
+    for act in first["entries"]:
         assert act["text"] not in real
     assert "Cite only the ids just above" in real
     order = (
@@ -342,7 +342,12 @@ def test_a_recovered_act_after_one_that_continues_is_not_an_off_edge_continuatio
 
 def test_a_page_first_read_as_blank_is_recovered_whole(tmp_path):
     root = _tree(tmp_path, "blank-then-recovered")[0]
-    assert _reading(root, 1, 1)["payload"]["answer"] == {"acts": [], "set_aside": []}
+    assert _reading(root, 1, 1)["payload"]["answer"] == {
+        "page_type": "register-acts",
+        "writing": "handwritten",
+        "entries": [],
+        "set_aside": [],
+    }
     last = _accounting(root, 1, 2)["payload"]
     assert last["holds"] == ["unaccounted-witness-unit"]
     assert [f["id"] for f in last["rules"]["c"]["findings"]] == ["C1", "C2"]
@@ -537,7 +542,7 @@ def test_a_re_ask_citing_an_id_it_was_not_asked_about_is_held_whole(
     tree = _copy(recovers, tmp_path)
     shutil.rmtree(tree[0] / "r" / "4_perlector")
     answer = json.loads(REASK_ROWS[("reask-recovers", 1)]["answer"])
-    answer["acts"][0]["cites"] = ["A2", "A1"]
+    answer["entries"][0]["cites"] = ["A2", "A1"]
     monkeypatch.setattr(
         page_path,
         "fixture_reask_answer",
@@ -557,13 +562,13 @@ def test_a_re_ask_citing_an_id_it_was_not_asked_about_is_held_whole(
 
 def _first_act_only() -> ScriptedAnswer:
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"] = [{**answer["acts"][0], "continues_to_next_page": False}]
+    answer["entries"] = [{**answer["entries"][0], "continues_to_next_page": False}]
     return _scripted(answer)
 
 
 def _page_two() -> ScriptedAnswer:
     answer = json.loads(PAGE_ANSWERS[2])
-    answer["acts"][0]["continues_from_previous_page"] = False
+    answer["entries"][0]["continues_from_previous_page"] = False
     return _scripted(answer)
 
 

@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 import pytest
 
+from common import page_types
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
@@ -282,16 +283,29 @@ def test_the_page_review_scenario_holds_the_unplaced_entry_naming_every_reason(r
     assert held["hold_codes"] == [
         "reading-unplaced",
         "record-not-read",
-        "residual-ink",
         "truncation-not-classified",
         "unaccounted-witness-unit",
-        "unread-ink",
         "unread-line",
     ]
+    # The two ink checks are review flags under the committed `[flags]`: measured,
+    # named, holding nothing more.
+    assert held["flag_codes"] == ["residual-ink", "unread-ink"]
+    assert held["review_priority"] == 1
     assert held["page_coverage"]["flagged_pages"] == [2]
     for code in ("reading-unplaced", "truncation-not-classified", "unread-ink", "unread-line"):
         assert code in held["reason"]
+    assert "flagged for review, not held" in held["reason"]
     assert "ink outside every reading region" in held["reason"]
+    summary = json.loads(
+        (tree.root / RUN_ID / "run-health" / "recensor-review-summary.json").read_text("utf-8")
+    )
+    assert summary["held_pages"] == [2] and summary["flagged_pages"] == []
+    assert summary["by_code"]["unread-ink"] == {"as": "flag", "pages": 1, "units": 1}
+    assert summary["by_code"]["reading-unplaced"] == {"as": "hold", "pages": 1, "units": 1}
+    assert [row["act_key"] for row in summary["queue"]] == ["p2:1"]
+    assert summary["by_page_type"] == {
+        "register-acts": {"pages": 2, "held_pages": 1, "flagged_pages": 0, "clean_pages": 1}
+    }
     receipt = tree.receipt()
     assert receipt["recensor_status"] == "partial"
     assert receipt["reasons"] == [
@@ -322,12 +336,9 @@ def test_an_unread_page_is_one_held_unit_and_its_break_is_one_sided(tmp_path):
     assert unread["outcome"] == "held-for-review"
     payload = unread["payload"]
     assert payload["unit_class"] == "page-unread"
-    assert payload["hold_codes"] == [
-        "not-json",
-        "page-answer-incomplete",
-        "page-unread",
-        "residual-ink",
-    ]
+    assert payload["hold_codes"] == ["not-json", "page-answer-incomplete", "page-unread"]
+    # The Recensor's residual-ink check is a review flag under the committed `[flags]`.
+    assert payload["flag_codes"] == ["residual-ink"] and payload["review_priority"] == 1
     assert payload["perlectio_ref"] is None and payload["act_region_ref"] is None
     assert payload["continuation"] == {
         "continues_from_previous_page": None,
@@ -362,7 +373,8 @@ def test_a_page_read_as_blank_with_ink_and_witness_text_is_not_confirmed(tmp_pat
     assert review["outcome"] == "held-for-review" and payload["unit_class"] == "page-blank"
     rows = {row["act_key"]: row for row in reading_acts(tree.context())}
     assert PAGE_BLANK_HOLD in rows["p2:blank"]["hold_codes"]
-    assert payload["hold_codes"] == sorted({*rows["p2:blank"]["hold_codes"], "residual-ink"})
+    assert payload["hold_codes"] == rows["p2:blank"]["hold_codes"]
+    assert payload["flag_codes"] == sorted({*rows["p2:blank"]["flag_codes"], "residual-ink"})
     assert payload["release"] is None
     confirmation = payload["confirmation"]
     assert confirmation["confirms"] == "page-blank" and confirmation["confirmed"] is False
@@ -377,7 +389,8 @@ def test_a_page_read_as_blank_with_ink_and_witness_text_is_not_confirmed(tmp_pat
     # DAI's record on the page was set aside, not read: rule (i) holds, a failure too.
     assert confirmation["rules"]["i"] == "hold"
     assert (
-        "page accounting rule (i) is hold, not not-applicable or pass" in confirmation["failures"]
+        "page accounting rule (i) is hold, not flag or not-applicable or pass"
+        in confirmation["failures"]
     )
     assert "the page is not confirmed to hold no act" in payload["reason"]
 
@@ -605,6 +618,7 @@ def _row(**overrides) -> dict[str, Any]:
         "perlectio_ref": {"relative_path": "perlectio", "sha256": "c" * 64},
         "accounting_ref": {"relative_path": "accounting", "sha256": "d" * 64},
         "hold_codes": [],
+        "flag_codes": [],
         "continues_from_previous_page": False,
         "continues_to_next_page": False,
         "reading_attempt": 1,
@@ -670,6 +684,46 @@ def test_the_configured_count_is_the_sealed_page_roster_not_the_chairs_that_test
     )
 
 
+def test_a_routed_witness_counts_toward_the_floor_on_its_own_pages_only():
+    """dots.mocr seated by `[witness_routing]` on a page: four chairs, floor still 3.
+
+    The page's roster is the floor's denominator (`page_witness_chairs`): a
+    routed page counts the routed chair like any witness, so it fills a seat
+    DAI leaves empty; an unrouted page counts the three as it always did.
+    """
+    routed = {"chandra", "dai", "churro", "dots"}
+    # DAI not run (its detector found nothing and stated no cap): dots fills its seat.
+    filled = _coverage(
+        _testimonium("chandra", truncated=False),
+        _testimonium("dai", "not-run"),
+        _testimonium("churro", truncated=False),
+        _testimonium("dots", truncated=False),
+        floor=3,
+        chairs=routed,
+    )
+    assert (filled["configured"], filled["under_witnessed"]) == (4, False)
+    # dots.mocr cut off as well: two readings of four is under the floor.
+    short = _coverage(
+        _testimonium("chandra", truncated=False),
+        _testimonium("dai", "not-run"),
+        _testimonium("churro", truncated=False),
+        _testimonium("dots", "failed"),
+        floor=3,
+        chairs=routed,
+    )
+    assert (short["configured"], short["under_witnessed"]) == (4, True)
+    assert short["shortfalls"]["failed"] == 1
+    # An unrouted page's roster leaves dots out: three of three, as before.
+    act_page = _coverage(
+        _testimonium("chandra", truncated=False),
+        _testimonium("dai", truncated=False),
+        _testimonium("churro", truncated=False),
+        floor=3,
+        chairs={"chandra", "dai", "churro"},
+    )
+    assert (act_page["configured"], act_page["under_witnessed"]) == (3, False)
+
+
 def test_blankness_is_measured_from_the_retained_text_not_the_health_report():
     assert page_review.retained_text_blank(_testimonium("a", text=" \n\t")) is True
     assert page_review.retained_text_blank(_testimonium("a", text="ink", blank=True)) is False
@@ -710,13 +764,17 @@ def test_a_blank_page_meeting_every_condition_is_confirmed_and_released():
 @pytest.mark.parametrize(
     ("accounting", "records", "failure"),
     [
-        (_without("d", "not-measured"), BLANK_WITNESSES, "rule (d) is not-measured, not pass"),
-        (_without("e", "hold"), BLANK_WITNESSES, "rule (e) is hold, not pass"),
-        (_without("f", "hold"), BLANK_WITNESSES, "rule (f) is hold, not pass"),
+        (
+            _without("d", "not-measured"),
+            BLANK_WITNESSES,
+            "rule (d) is not-measured, not flag or pass",
+        ),
+        (_without("e", "hold"), BLANK_WITNESSES, "rule (e) is hold, not flag or pass"),
+        (_without("f", "hold"), BLANK_WITNESSES, "rule (f) is hold, not flag or pass"),
         (
             _without("i", "not-measured"),
             BLANK_WITNESSES,
-            "rule (i) is not-measured, not not-applicable or pass",
+            "rule (i) is not-measured, not flag or not-applicable or pass",
         ),
         ({**PASSING, "lines": [{"id": "L1"}]}, BLANK_WITNESSES, "Surya detected 1 line(s)"),
         (
@@ -793,7 +851,9 @@ def test_a_page_of_only_other_readings_stays_held_on_any_rule_not_passing(rule, 
     unconfirmed = page_review.confirmation(
         _without(rule, status), witnesses, blank=False, census=frozenset()
     )
-    assert unconfirmed["failures"] == [f"page accounting rule ({rule}) is {status}, not pass"]
+    assert unconfirmed["failures"] == [
+        f"page accounting rule ({rule}) is {status}, not flag or pass"
+    ]
     outcome, payload = page_review.review_of(
         row,
         coverage=_coverage(*witnesses),
@@ -802,6 +862,67 @@ def test_a_page_of_only_other_readings_stays_held_on_any_rule_not_passing(rule, 
         confirmed=unconfirmed,
     )
     assert outcome == "held-for-review" and payload["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
+
+
+def _typed(accounting: dict, page_type: str, writing: str) -> dict:
+    """`accounting` with the page type block the page accounting records for a stated type."""
+    return {
+        **accounting,
+        "page_type": {"applicability": page_types.applicability(page_type, writing)},
+    }
+
+
+@pytest.mark.parametrize("status", ["hold", "not-measured", "not-applicable"])
+def test_a_page_of_other_entries_is_confirmed_when_its_type_switches_rule_i_off(status):
+    """Rule (i) does not apply to an index page: whatever its status, it confirms."""
+    row = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD], disposition="held")
+    witnesses = [_testimonium("a"), _testimonium("b")]
+    confirmed = page_review.confirmation(
+        _typed(_without("i", status), "index", "typed"),
+        witnesses,
+        blank=False,
+        census=frozenset(),
+    )
+    assert confirmed["confirmed"] is True and confirmed["failures"] == []
+    assert confirmed["rules"]["i"] == status
+    outcome, payload = page_review.review_of(
+        row,
+        coverage=_coverage(*witnesses),
+        page_coverage=CLEAN,
+        assessment=None,
+        confirmed=confirmed,
+    )
+    assert outcome == "accepted" and payload["release"]["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
+    assert "rule (i) does not apply to the page's stated type" in payload["release"]["reason"]
+
+
+@pytest.mark.parametrize(("rule", "status"), [("d", "hold"), ("e", "hold"), ("f", "not-measured")])
+def test_a_typed_page_of_other_entries_still_needs_every_rule_that_applies(rule, status):
+    unconfirmed = page_review.confirmation(
+        _typed(_without(rule, status), "index", "typed"),
+        [_testimonium("a"), _testimonium("b")],
+        blank=False,
+        census=frozenset(),
+    )
+    assert unconfirmed["failures"] == [
+        f"page accounting rule ({rule}) is {status}, not flag or pass"
+    ]
+
+
+@pytest.mark.parametrize(
+    "accounting",
+    [
+        _without("i", "hold"),
+        _typed(_without("i", "hold"), "register-acts", "handwritten"),
+        _typed(_without("i", "hold"), "register-acts", "mixed"),
+    ],
+    ids=["untyped", "handwritten-acts", "mixed-acts"],
+)
+def test_rule_i_still_holds_a_page_of_other_entries_where_it_applies(accounting):
+    unconfirmed = page_review.confirmation(
+        accounting, [_testimonium("a"), _testimonium("b")], blank=False, census=frozenset()
+    )
+    assert unconfirmed["failures"] == ["page accounting rule (i) is hold, not flag or pass"]
 
 
 def test_a_refused_pages_row_is_not_a_counted_unit():
@@ -1268,3 +1389,58 @@ def test_the_reviews_and_the_receipt_measure_residual_ink_once(happy, tmp_path, 
     first = once(context, regions={1: []})
     first[1]["regions"][1] = ["changed"]
     assert once(context, regions={1: []}) == {1: {"regions": {1: []}}}
+
+
+def test_a_flagged_finding_of_this_stage_is_recorded_and_holds_nothing():
+    """Residual ink under the sealed flags: named, prioritised, and the unit is accepted."""
+    witnesses = [_testimonium("a", truncated=False)]
+    flagged_ink = {**CLEAN, "flagged_pages": [1]}
+    outcome, payload = page_review.review_of(
+        _row(flag_codes=["unread-ink"]),
+        coverage=_coverage(*witnesses, floor=1),
+        page_coverage=flagged_ink,
+        assessment=None,
+        confirmed=None,
+        flag_codes=frozenset({"residual-ink", "unread-ink"}),
+    )
+    assert outcome == "accepted" and payload["hold_codes"] == []
+    assert payload["flag_codes"] == ["residual-ink", "unread-ink"]
+    assert payload["review_priority"] == 1
+    assert "flagged for review, not held" in payload["reason"]
+    assert "ink outside every reading region" in payload["reason"]
+    # Without the flag the same finding holds, as before.
+    held, strict = page_review.review_of(
+        _row(),
+        coverage=_coverage(*witnesses, floor=1),
+        page_coverage=flagged_ink,
+        assessment=None,
+        confirmed=None,
+    )
+    assert held == "held-for-review" and strict["hold_codes"] == ["residual-ink"]
+    assert strict["flag_codes"] == [] and strict["review_priority"] == 1
+    # A clean unit has no priority: nothing to review.
+    _accepted, clean = page_review.review_of(
+        _row(),
+        coverage=_coverage(*witnesses, floor=1),
+        page_coverage=CLEAN,
+        assessment=None,
+        confirmed=None,
+    )
+    assert clean["review_priority"] is None and clean["flag_codes"] == []
+
+
+def test_a_no_act_page_is_confirmed_over_a_flagged_rule():
+    """A rule whose every finding is a review flag confirms a page of other entries."""
+    flagged = {**PASSING, "rules": {**PASSING["rules"], "f": {"status": "flag"}}}
+    confirmed = page_review.confirmation(
+        flagged, [_testimonium("a")], blank=False, census=frozenset()
+    )
+    assert confirmed["confirmed"] is True and confirmed["failures"] == []
+
+
+def test_the_review_summary_counts_a_page_by_the_type_its_accounting_records():
+    named = {"payload": {"page_type": {"stated": "index", "writing": "typed"}}}
+    assert page_review.page_type_of(named) == "index"
+    # An answer that named a type but failed validation: the accounting states none.
+    held = {"payload": {"page_type": {"stated": None, "writing": None}}}
+    assert page_review.page_type_of(held) == page_review.UNTYPED_PAGE

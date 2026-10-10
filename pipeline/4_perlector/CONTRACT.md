@@ -17,8 +17,11 @@ repository's `bounds` `{x, y, w, h}` in sealed-page pixels.
 ## Inputs
 
 - Every sealed Exemplar page; a page the Exemplar refused still gets a `page-reading`.
-- Each page's current page Testimonium per chair of the sealed roster's page
-  witnesses. A roster chair missing beside others that testified refuses the pass.
+- Each page's current page Testimonium per chair of the page's roster: the sealed
+  roster's page witnesses, less a routed witness its rule does not route to the page
+  (Attestatores CONTRACT, "Witness routing"), so an act page's feed is the one it was
+  without the routed chair. A roster chair missing beside others that testified
+  refuses the pass.
   A page no witness testified to is not refused: it is fed with no witness row and
   held `no-witness-testimony`. Each witness's units are re-derived from the bytes its
   Testimonium retains, never taken from fields the record merely states.
@@ -26,8 +29,8 @@ repository's `bounds` `{x, y, w, h}` in sealed-page pixels.
   census and its detections must agree exactly, or the pass refuses by name. A run
   with no Surya census shows none and says so on the feed.
 - The Ink Map's runs for each page.
-- Sealed configuration: `perlector-protocol` (the `[feed]` switches, the page render
-  size, the truncation floor), `decoding` (the Perlector's sampling row, page
+- Sealed configuration: `perlector-protocol` (the `[feed]` switches, among them
+  `page_types`, the page render size, the truncation floor), `decoding` (the Perlector's sampling row, page
   answer cap and repetition-loop guard), `page-accounting`, `alignment` (the dissent step budget), `recovery`
   (whether a page may be re-asked) and the serving catalogue. `perlector-audit` is
   sealed and recorded on every reading as not run.
@@ -36,7 +39,7 @@ The sealed serving row picks the reader. A `kind = "vllm"` row for the Perlector
 reads live; any other row reads the synthetic fixture's declared answers, which prove
 wiring only. A real submission on a row that is not live is refused before anything is
 published. An absent Perlector chair reads nothing: every page is `not-run`
-(`chair-absent`). `--act` is refused: the Perlector names its own acts.
+(`chair-absent`). The command line takes no act selection: the Perlector names its own acts.
 
 ## Records, per page, in publication order
 
@@ -51,6 +54,48 @@ the answer measure the output reserve is sized on, the rendered prompt (null whe
 nothing is asked) and `feed_digest`. It defines every id a reading may cite. Its
 inputs are every page witness's Testimonium (hidden ones included, since the
 accounting measures them), every Surya record, the render and the sealed page.
+
+## Page types and entry kinds
+
+The reading names its page's type and each entry's kind (`common/page_types.py`; the
+answer's `entries` shape below; the `[feed]` switch `page_types = "named"` is required):
+
+- page types: `register-acts`, `index`, `table`, `ledger`, `instrument`, `prose`,
+  `blank`, with `writing` one of `handwritten`, `typed`, `printed`, `mixed`;
+- entry kinds: `act`, `index-row`, `table-row`, `ledger-entry`, `instrument`,
+  `paragraph`, `other`.
+
+Each kind has an act class: `act` for an act or instrument, `other` for every other
+kind. Every record after the answer -- act-region, Perlectio, page accounting entries,
+the page-read denominator, the Recensor and the Coniector -- carries the class as its
+`kind`, so an index row is never counted, paired across a page break or reconstructed
+as an act; the kind the reading named travels beside it as `entry_kind`.
+
+What the page type changes, all recorded on the page accounting's `page_type`:
+
+- **Rule (i), the record detector**, applies only on a page whose type is not stated
+  (no valid answer stated one) and on `handwritten` or `mixed` `register-acts`. On every other stated page it is
+  still measured and recorded, but its findings are listed in
+  `page_type.recorded_not_held` instead of `holds` or `flags`.
+- **Rule (h), duplicate regions**: two entries of a row kind (`index-row`,
+  `table-row`, `ledger-entry`) placed by one witness unit they both cite -- a whole
+  table a witness gave as one unit -- are compared without that unit's box, and the
+  unit and its rows are recorded `rows-share-unit`. Two rows naming the same line are
+  still a duplicate.
+- **The truncation length signal** judges only `act` and `instrument` entries, the
+  kinds it was measured on; on any other kind of an `entries` answer it is not judged
+  and the measure records `length_exempt_kind`. The engine's stop word and the other
+  two signals still decide.
+- **A model-free cross-check** sets the stated type beside what the detectors found:
+  `page_type.facts` (`surya_table_blocks`, `witness_table_units` per chair,
+  `detector_records`) and `page_type.agreement`, one `{check, agrees, detail}` per check
+  (`table-evidence`; `detector-records` on handwritten register acts, index and table
+  pages), plus `page_type.kinds`, the entry kinds unexpected on the stated type. These
+  are facts only: none holds here, and whether a disagreement flags or holds a page is
+  the review configuration's decision.
+
+Whether a check that applies holds a page or only flags it is the sealed `[flags]`
+table of `config/page_accounting.toml`; the page type decides only which checks apply.
 
 **`reader-sent`** (subject `page_id`, live only), published before the call leaves:
 
@@ -73,11 +118,12 @@ differ from an unbatched one in low-order bits.
  feed_ref, request_digest, engine_call | null, sampling | null, capacity | null,
  finish_reason, stop_reason, parse_state, answer | null, problems: [{code, detail}],
  failure | null, disposition: "read" | "held", reask: null | {...},
- operator_reread?: {...}, audit, provenance}
+ operator_reread?: {...}, answer_repairs?: [{code, keys, detail}], audit, provenance}
 ```
 
 - `parse_state`: `parsed` (`answer` is the object exactly as given); `malformed` (not
-  the answer grammar); `cut-off` (the engine stopped at the output cap; never
+  the answer grammar, `common/page_answer.py`: either the `entries` shape `{page_type,
+  writing, entries, set_aside}` or a re-ask's `{entries, set_aside}`); `cut-off` (the engine stopped at the output cap; never
   parsed); `repetition-loop` (the reply repeated the same line or block of lines
   over and over and the call was stopped; never parsed, `stop_reason`
   `repetition-loop`, `finish_reason` the engine's word if one had arrived, as a
@@ -85,11 +131,31 @@ differ from an unbatched one in low-order bits.
   nothing sent, nothing trimmed); `call-failed` (an engine or transport failure,
   `failure` naming what was observed and its retained bytes as inputs); `not-run`
   (nothing asked: `page-not-sealed`, `chair-absent`, `no-witness-testimony` or
-  `nothing-to-show`, every reason that applies).
+  `nothing-to-show`, every reason that applies; on a replay's re-ask, `not-replayed`,
+  see "A replay").
 - `disposition` is `read` only for `parsed` with no problem. Any problem holds the
-  whole answer with it: an id the feed does not define, a range over Surya ids, an id
+  whole answer with it: an id the feed does not define, a range over Surya ids that
+  could name ink the entry did not read (a range of lines is read only when every line
+  lies inside the witness units the same entry cites, and a range of blocks, which place
+  nothing, is read; `common/page_accounting.py`, `_covered_detection_ranges`), an id
   both cited and set aside, a set-aside without a reason, a missing finish reason. No
-  answer is repaired, trimmed or split.
+  answer is trimmed or split.
+- A continuation flag set on an entry that is not at its page's edge (only the first
+  entry of the act class, an `act` or `instrument`, may continue from the page before,
+  only the last onto the page after, and any other entry only as the answer's first or
+  last entry) is not a problem of
+  the answer: the page keeps every entry, and the flag stays on its entry's Perlectio
+  exactly as given. It is on no page break, so it joins nothing, and the Recensor
+  holds that `act` entry `continuation-off-page-edge` or notes it on an `other` entry
+  (`pipeline/5_recensor/CONTRACT.md`). A re-ask may still set no flag at all.
+- One repair is made, and recorded: a reply that is not JSON only because some of the
+  grammar's own keys are written bare (`{entries: [`) is parsed after quoting those keys
+  outside strings and nothing else (`common.page_answer.parse_page_answer_repaired`).
+  The reading then carries `answer_repairs`, one `{code: "unquoted-keys-quoted", keys,
+  detail}`; a reading that needed no repair carries no such field. The repaired text
+  must be one JSON value with no other decode problem, or the reply stays `malformed`
+  (`not-json`) as it came, and the repaired answer meets the grammar and the feed like
+  any other. The raw response blob is never changed.
 - The envelope outcome is the disposition, except `call-failed`, whose outcome is
   `failed` so that the run-level hard-failure cap counts it.
 - `engine_call` (live only) is `{call_record_ref, raw_response_ref, response_sha256,
@@ -121,11 +187,22 @@ differ from an unbatched one in low-order bits.
 
 **`page-accounting`** (subject `page_id`, the reading's own attempt), published for
 every page with a feed, after its reading and before any act record:
-`page-accounting.v2` from `common/page_accounting.py` under the sealed policy. It
+`page-accounting.v3` from `common/page_accounting.py` under the sealed policy. It
 measures the reading against every witness unit, every Surya line, every detector
 record and the page's ink, rule by rule, and lists its `holds`; outcome `held` when
-there are any. Its inputs are the feed, the reading, every page witness's Testimonium
-and every detection and ink record it measured.
+there are any. A finding whose code the policy's `[flags] codes` names is a review
+flag: listed in `flags` instead, recorded and reported but holding nothing, and a rule
+whose every finding is one has status `flag`. A rule the page type switches off is
+still measured, and its findings are listed in `page_type.recorded_not_held`, neither
+held nor flagged. Rule (e) names a cited witness unit of at
+most `short_unit_characters` normalized characters read differently
+`witness-short-unit-not-read` (a signature or initials: a dissent about a few letters),
+and any other unit `witness-text-not-read`. Its `entries` carry `kind` (the act class)
+and `entry_kind`, and its `page_type` block `{stated, writing, facts,
+agreement, applicability, kinds, recorded_not_held}` says what the reading stated and
+which rules applied ("Page types and entry kinds" above). Its inputs are the feed, the
+reading, every page witness's Testimonium and every detection and ink record it
+measured.
 
 Then, per entry of a `read` answer, in answer order, two records. Each names the
 page's last accounting as `page_accounting_ref` and carries its holds as
@@ -156,11 +233,14 @@ act `no-autopsia`.
 
 ```
 {schema: "perlectio.v3", page_id, page_ordinal, act_region_ref, page_reading_ref,
- page_accounting_ref, feed_ref, n, kind, label, text, uncertain_spans, gaps,
- uncertainty_assessment, dissent, truncation | null, autopsia,
+ page_accounting_ref, feed_ref, n, kind, entry_kind, label, text, uncertain_spans,
+ gaps, uncertainty_assessment, dissent, truncation | null, autopsia,
  continues_from_previous_page, continues_to_next_page, holds, page_holds,
  engine_call, provenance, reading_attempt?, reading_n?}
 ```
+
+- `kind` is the entry's act class; `entry_kind` is the kind the answer named, and its
+  class is `kind`.
 
 - `text` is the entry's text with the reader's doubt marks split out: `[[?]]` is a
   zero-width gap, `[[reading|other]]` an uncertain span with its alternatives. The
@@ -308,7 +388,38 @@ The re-read is also accounted against the page's evidence like any reading.
 - The engine's `stop` and `length` are the reading's own words; anything else is a
   `call-failed` reading with its retained bytes named.
 
+## A replay
+
+A replay run (`common/replay.py`, made by `operations/replay/replay.py`) reads a saved
+run's pages again with the current code and calls no model. Its `run.json` carries
+`replay` (`run-replay.v1`: the source run's id, its authority's self-hash and commit,
+the stages it imports, `replies: "recorded"`), and its `repository_commit` is the
+code that replayed. It holds the source's Door, Exemplar, Ink map, Designator and
+Attestatores records byte for byte, under the source's run id, and never runs those
+stages. This stage then runs as in a live pass, through a real `ChairClient`, but the
+chair's handle answers each request with the reply the source run retained for the
+same request bytes (`operations/serving/replay.py`), so each call record, reply and
+receipt is the source's own. The client keeps no bytes the source did not keep.
+
+- A first reading or an operator re-read whose request the source did not send in
+  exactly these bytes and get answered refuses the pass: its page could not be read.
+- A re-ask the source did not send in exactly these bytes is not asked: its
+  `page-reading` (attempt 2) is `not-run` with one problem, `not-replayed`, and no
+  request digest, call or receipt; the accounting holds it `reask-unread` and the
+  page stands on its first reading. The Recensor accepts that state only in a
+  replay run.
+- A source re-ask the current plan does not make is not read.
+
 ## Consumer obligations
+
+- Count acts by `kind == "act"` only. An entry of a row kind
+  (`entry_kind` `index-row`, `table-row` or `ledger-entry`) is a row, never an act:
+  `common.page_types.row_record` gives its `rows.jsonl` line (`armarium-row.v1`:
+  `act_key, act_id, page_id, page_ordinal, page_type, n, entry_kind, label, text,
+  uncertain_spans, gaps, holds`, and `review` when the caller passes one), the page
+  type read from the entry's page accounting (`page_type.stated`). Every Perlectio
+  carries `entry_kind`; only an entry of a row kind has a row. The Armarium does not
+  write `rows.jsonl` yet (see *Not built* below and the Armarium's contract).
 
 - Recompute every attempt id from (subject, operation, ordinal), and require
   ordinals 1..N without a gap: a gap is an attempt that is no longer there.
@@ -331,6 +442,11 @@ its seal leaves none, and the successor refuses the missing boundary.
 ## Not built
 
 - Live serving has been proven only against the serving fakes, not on a card.
+- `rows.jsonl` is not written. `row_record` defines a line, but no sealed format or
+  writer exists in the Armarium, so index, table and ledger rows reach the export as
+  `other.jsonl` readings of kind `other`. `entry_kind`, `page_type` and `writing` stay
+  on the Perlector's records; the Archetypus and Armarium records carry only the act
+  class `kind`.
 - Pass C, the audit that would flag and re-prove spans of a reading, is recorded as
   not run on every reading.
 - A truncated or unknown entry is held, never re-read automatically; a person can ask

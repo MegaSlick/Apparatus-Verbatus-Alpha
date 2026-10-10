@@ -2,10 +2,13 @@
 
 import io
 import json
+import signal
 import socket
 import sys
+import time
 from pathlib import Path
 
+import pytest
 from PIL import Image, ImageDraw
 
 from operations.bakeoff import arms as A
@@ -225,3 +228,54 @@ def test_record_dicts_from_an_old_cache_still_order_and_crop():
     units = A.page_units(A.ARMS["dai"], _png(400, 300), ordered)
     assert [u["unit"] for u in units] == ["record-0", "record-1"]
     assert units[0]["bounds"] == {"x": 0, "y": 0, "w": 199, "h": 300}
+
+
+def test_a_label_is_refused_under_another_checkpoint_or_recipe(tmp_path):
+    pages, out = tmp_path / "pages", tmp_path / "cache"
+    _pages(pages, 1)
+    argv = [
+        "run", "--model", "churro", "--pages", str(pages), "--out", str(out),
+        "--port", str(_free_port()), "--startup-timeout", "60",
+        "--vllm-cmd", sys.executable, str(FAKE), "--weights", _weights(tmp_path, "churro"),
+    ]  # fmt: skip
+    assert W.main(argv) == 0
+    cached = out / "churro" / "p000.json"
+    assert json.loads(cached.read_text())["recipe"] is None
+    assert W.main(argv) == 0  # the same setup resumes
+    with pytest.raises(SystemExit, match="cached under another setup .*revision"):
+        W.main([*argv, "--revision", "b" * 40])
+    # A page cached before recipes were recorded was served with none: fine for a run with
+    # none, a conflict for a run that selects a (quantized) recipe.
+    assert W.cache_conflict(cached, {"repo": "x/y", "revision": "z", "recipe": "r"}) == [
+        "recipe", "repo", "revision"
+    ]  # fmt: skip
+    record = json.loads(cached.read_text())
+    del record["recipe"]
+    cached.write_text(json.dumps(record))
+    same = {"repo": record["repo"], "revision": record["revision"]}
+    assert W.cache_conflict(cached, {**same, "recipe": None}) == []
+    assert W.cache_conflict(cached, {**same, "recipe": "fp8"}) == ["recipe"]
+
+
+def test_a_stale_handoff_never_signals_an_unrelated_process(tmp_path):
+    import subprocess
+
+    argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+    process = subprocess.Popen(argv, start_new_session=True)
+    try:
+        # Just after the fork the child still shows the parent's command line; a server
+        # named in a hand-off file has long since started, so wait for the same here.
+        deadline = time.monotonic() + 10
+        cmdline = Path(f"/proc/{process.pid}/cmdline")
+        while cmdline.read_bytes().rstrip(b"\0").split(b"\0") != [a.encode() for a in argv]:
+            assert time.monotonic() < deadline, "the child never started"
+            time.sleep(0.01)
+        stale = {"url": "http://127.0.0.1:1", "argv": ["vllm", "serve", "x"], "pid": process.pid}
+        W.Server.adopted(stale).stop()
+        assert process.poll() is None  # the pid is alive but is not the recorded server
+        W.Server.adopted({**stale, "argv": argv}).stop()
+        process.wait(timeout=10)  # well short of the child's 60 s sleep
+        assert process.returncode == -signal.SIGTERM
+    finally:
+        if process.poll() is None:
+            process.kill()

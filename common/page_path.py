@@ -35,7 +35,15 @@ import re
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
-from common import dissent, page_accounting, page_answer, page_edges, page_render, truncation
+from common import (
+    dissent,
+    page_accounting,
+    page_answer,
+    page_edges,
+    page_render,
+    page_types,
+    truncation,
+)
 from common import reading_annotations as annotations
 from common.alignment import bracket_marker_view
 from common.background import (
@@ -94,6 +102,7 @@ PERLECTIO_FIELDS: Final = frozenset(
         "feed_ref",
         "n",
         "kind",
+        "entry_kind",
         "label",
         "text",
         "uncertain_spans",
@@ -121,6 +130,9 @@ PAGE_READ_OPERATION: Final = "page-read"
 READING_ORDINALS: Final = (page_edges.FIRST_READING, page_edges.REASK_READING)
 # The `page-reading` field only an operator re-read carries (`operator_reread_record`).
 OPERATOR_REREAD_FIELD: Final = "operator_reread"
+# The `page-reading` field only a reading whose reply was repaired before parsing
+# carries (`page_answer.parse_page_answer_repaired`).
+ANSWER_REPAIRS_FIELD: Final = "answer_repairs"
 ACT_REGION_OPERATION: Final = "reading-region"
 PERLECTIO_OPERATION: Final = "perlegere"
 
@@ -659,11 +671,14 @@ def read_reply(
     feed: Mapping[str, Any],
     accounting_policy: page_accounting.PageAccountingPolicy,
     named: list[str] | None = None,
-) -> tuple[str, Any, list[dict[str, Any]]]:
-    """`(parse_state, answer, problems)` for a reply the engine finished or was cut on,
-    or the client stopped on a repetition loop.
+) -> tuple[str, Any, list[dict[str, Any]], list[dict[str, Any]]]:
+    """`(parse_state, answer, problems, repairs)` for a reply the engine finished or was cut
+    on, or the client stopped on a repetition loop.
 
     `named` is `None` for a first reading, and a re-ask's named ids for its reply.
+    `repairs` is the page answer's one repair when it was applied
+    (`page_answer.parse_page_answer_repaired`), else empty; a cut-off or looping
+    reply is never parsed, so never repaired.
     """
     if stop_reason == REPETITION_LOOP:
         return (
@@ -676,6 +691,7 @@ def read_reply(
                     "over, and was stopped; the answer is held whole",
                 }
             ],
+            [],
         )
     if stop_reason == "length":
         return (
@@ -687,11 +703,12 @@ def read_reply(
                     "detail": "the engine stopped at the output cap; the answer is held whole",
                 }
             ],
+            [],
         )
-    state, answer, problems = page_answer.parse_page_answer(content)
+    state, answer, problems, repairs = page_answer.parse_page_answer_repaired(content)
     if state == PARSED:
         problems = answer_problems(answer, feed, stop_reason, accounting_policy, named)
-    return state, answer, problems
+    return state, answer, problems, repairs
 
 
 # --- the answer -----------------------------------------------------------------
@@ -710,7 +727,7 @@ def _validated(
     """The answer read against every feed id, or a re-ask's against the ids it names."""
     candidates = page_accounting.feed_candidates(feed, accounting_policy)
     if named is None:
-        return page_accounting.validate_answer(answer, candidates)
+        return page_accounting.validate_answer(answer, candidates, policy=accounting_policy)
     return page_accounting.validate_reask_answer(answer, candidates, named)
 
 
@@ -746,7 +763,10 @@ def answer_entries(
     accounting_policy: page_accounting.PageAccountingPolicy,
     named: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Each entry of a valid answer: the entry, its expanded ids, region and region holds."""
+    """Each entry of a valid answer: the entry, its expanded ids, region and region holds.
+
+    The entry's `kind` is its act class; `entry_kind` is the kind the answer named.
+    """
     validated = _validated(answer, feed, accounting_policy, named)
     shared = {
         n
@@ -754,14 +774,16 @@ def answer_entries(
         for n in finding["ns"]
     }
     entries = []
-    for act, entry in zip(answer["acts"], validated["entries"], strict=True):
+    for raw, entry in zip(answer["entries"], validated["entries"], strict=True):
         union = entry["union_box_px"]
         holds = [] if union is not None else [UNPLACED]
         if entry["n"] in shared:
             holds.append(DUPLICATE_REGION)
         entries.append(
             {
-                "act": act,
+                # The entry as given, its kind its act class (`common.page_types`).
+                "act": {**raw, "kind": entry["kind"]},
+                "entry_kind": entry["entry_kind"],
                 "cited_ids": entry["cited_ids"],
                 "region_boxes_px": entry["region_boxes_px"],
                 "union_box_px": union,
@@ -833,6 +855,7 @@ def entry_plans(
         reading_holds = list(region_holds)
         if assessment["state"] == annotations.ASSESSMENT_MALFORMED:
             reading_holds.append(DOUBT_MARKS_MALFORMED)
+        entry_kind = entry["entry_kind"]
         record = (
             truncation.classify(
                 text,
@@ -840,6 +863,9 @@ def entry_plans(
                 page_pixels=page_pixels,
                 truncation_policy=truncation_policy,
                 stop_reason=stop_reason,
+                length_exempt_kind=None
+                if page_types.length_signal_applies(entry_kind)
+                else entry_kind,
             )
             if union is not None
             else None
@@ -870,6 +896,7 @@ def entry_plans(
                 "reading_attempt": attempt,
                 "n": first_count + act["n"],
                 "reading_n": act["n"],
+                "entry_kind": entry_kind,
                 "act_class": act_class,
                 "cited_ids": list(entry["cited_ids"]),
                 "region_boxes_px": list(entry["region_boxes_px"]),
@@ -1029,6 +1056,21 @@ def declared_page_witness_chairs(context) -> set[str]:
     }
 
 
+def page_witness_chairs(context, page_id: str, declared: set[str] | None = None) -> set[str]:
+    """One page's page witnesses: the sealed roster's, less a routed chair not routed to it.
+
+    `declared` is `declared_page_witness_chairs(context)`, read once by a
+    caller that walks many pages. A run that routes no witness
+    (`common/witness_routing.py`) gets the sealed roster for every page.
+    """
+    # `witness_routing` reads this module.
+    from common.witness_routing import page_roster
+
+    if declared is None:
+        declared = declared_page_witness_chairs(context)
+    return page_roster(context, page_id, declared)
+
+
 def require_page_roster(page_id: str, records: list[dict], page_chairs: set[str]) -> None:
     """A page some witness testified to carries every configured page witness and no other."""
     present = {record["payload"]["chair"] for record in records}
@@ -1133,7 +1175,8 @@ def page_feed_of(
     Stage 4 builds and publishes the feed from this, and the page-read
     denominator builds it again from the same sealed inputs and requires the
     sealed feed to equal it. `current` is each chair's latest page Testimonium
-    of the page, `page_chairs` `declared_page_witness_chairs`, `surya_census`
+    of the page, `page_chairs` `declared_page_witness_chairs` (narrowed here to
+    the page's own roster, `page_witness_chairs`), `surya_census`
     `sealed_surya_census`, `serving_recipe` the Perlector chair's or `None`
     when it is absent. `retain` stores the page render (stage 4's
     `context.retain`) or, for a reader, checks the render is already retained.
@@ -1143,6 +1186,8 @@ def page_feed_of(
     # The serving package reads `common.stage`, which reads this module.
     from common import page_feed
 
+    # A routed witness the page is not routed to is no part of this page's roster.
+    page_chairs = page_witness_chairs(context, page_id, page_chairs)
     no_testimony = not current
     witnesses = [] if no_testimony else page_witnesses(context, page_id, current, page_chairs)
     feed = page_feed.build_page_feed(
@@ -1343,6 +1388,7 @@ def expected_perlectio(
         "feed_ref": refs["feed_ref"],
         "n": plan["n"],
         "kind": act["kind"],
+        "entry_kind": plan["entry_kind"],
         "label": act.get("label"),
         "text": plan["text"],
         "uncertain_spans": assessment["uncertain_spans"],
@@ -1366,8 +1412,14 @@ RECOVERED_FIELDS: Final = frozenset({"reading_attempt", "reading_n"})
 
 def is_perlectio_field_set(payload: Mapping[str, Any]) -> bool:
     """True when `payload` holds exactly a first reading's Perlectio fields, or those
-    and `RECOVERED_FIELDS` with the re-ask's `reading_attempt`."""
+    and `RECOVERED_FIELDS` with the re-ask's `reading_attempt`, and its `entry_kind`
+    is an entry kind whose act class is its `kind`."""
     fields = set(payload)
+    if "entry_kind" in fields and (
+        payload["entry_kind"] not in page_types.ENTRY_KINDS
+        or page_types.act_class(payload["entry_kind"]) != payload.get("kind")
+    ):
+        return False
     if fields == PERLECTIO_FIELDS:
         return True
     return (

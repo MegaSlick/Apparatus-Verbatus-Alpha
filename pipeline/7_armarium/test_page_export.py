@@ -36,7 +36,7 @@ from armarium_export import (
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
-from common.contracts.stages import ARCHETYPUS, ARMARIUM
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, RECENSOR
 from common.page_accounting import load_page_accounting_policy
 from common.page_review import held_by_recensor
 from common.runtree.store import RunTree
@@ -331,7 +331,19 @@ def test_a_held_reading_is_a_review_item_with_its_reasons(page_review, tmp_path)
     assert items["p2:1"]["category"] == "held-for-review"
     assert "reading-unplaced" in items["p2:1"]["reason"]
     assert claims["page_accounting"]["held_pages"] == [2]
-    assert "unread-ink" in claims["page_accounting"]["pages"][1]["hold_codes"]
+    # The ink threshold is a review flag under the committed `[flags]`: rule (f) says
+    # `flag`, the page is held by its other codes, and the flagged layer carries the
+    # reading's text with both lists.
+    page_two = claims["page_accounting"]["pages"][1]
+    assert "unread-ink" not in page_two["hold_codes"] and page_two["rules"]["f"] == "flag"
+    flagged = _jsonl(bundle["members"], "flagged.jsonl")
+    assert list(flagged) == ["p2:1"]
+    assert flagged["p2:1"]["status"] == "not-established"
+    assert flagged["p2:1"]["flag_codes"] == ["residual-ink", "unread-ink"]
+    assert "reading-unplaced" in flagged["p2:1"]["hold_codes"]
+    assert flagged["p2:1"]["text_label"] == "model reading, not established"
+    assert isinstance(flagged["p2:1"]["text"], str) and flagged["p2:1"]["text"]
+    assert flagged["p2:1"]["review_priority"] == 1
     assert claims["status"] == "partial"
     assert "p2:1" not in bundle["established"]
 
@@ -716,6 +728,45 @@ def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(tmp_p
     assert sorted(_jsonl(bundle["members"], "other.jsonl")) == ["p2:1"]
 
 
+def test_a_typed_index_page_holding_a_detector_record_is_confirmed_and_counts_no_act(tmp_path):
+    # Page 1 handwritten register acts read as an act and an instrument; page 2 a
+    # typed index whose one row holds the record detector's record there. Rule (i)
+    # does not apply to an index page, so the row is confirmed, not held on it.
+    root, options = build_page_tree(tmp_path, "page-typed-index")
+    _recense(root, options, "page-typed-index")
+    tree = RunTree(root, RUN_ID)
+    reviews = {
+        record["payload"]["act_key"]: record
+        for record in (
+            tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+            for entry in tree.build_manifest(RECENSOR)["artifacts"]
+            if entry["kind"] == "review"
+        )
+    }
+    row = reviews["p2:1"]
+    assert row["outcome"] == "accepted", row["payload"]["reason"]
+    confirmation = row["payload"]["confirmation"]
+    assert confirmation["confirmed"] is True and confirmation["rules"]["i"] == "hold"
+    assert (
+        "rule (i) does not apply to the page's stated type" in (row["payload"]["release"]["reason"])
+    )
+    result = _after_recensor(root, options, "page-typed-index")
+    assert result.returncode == 0, result.stderr
+    bundle = _bundle(root, tmp_path / "clean")
+    manifest, members = bundle["manifest"], bundle["members"]
+    assert manifest["claims"]["status"] == "complete"
+    partition = manifest["claims"]["act_partition"]
+    assert (partition["expected_count"], partition["counted"]) == (2, 2)
+    assert sorted(_jsonl(members, "acts.jsonl")) == ["p1:1", "p1:2"]
+    assert sorted(_jsonl(members, "other.jsonl")) == ["p2:1"]
+    established = bundle["established"]
+    assert (established["p1:2"]["kind"], established["p2:1"]["kind"]) == ("act", "other")
+    [page_two] = [
+        page for page in manifest["claims"]["page_accounting"]["pages"] if page["ordinal"] == 2
+    ]
+    assert page_two["hold_codes"] == [] and page_two["rules"]["i"] == "hold"
+
+
 def test_a_link_whose_flags_disagree_is_a_join_that_reconstructs_nothing(tmp_path):
     root, options = build_page_tree(tmp_path, "page-flags-disagree")
     result = _export(root, options, "page-flags-disagree")
@@ -988,7 +1039,7 @@ def _reask_recovers_clean_rows() -> dict[str, list[dict]]:
             continue
         if row["page_ordinal"] == 1:
             answer = json.loads(row["answer"])
-            for entry in answer["acts"]:
+            for entry in answer["entries"]:
                 entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith("C")]
             row = {**row, "answer": json.dumps(answer, separators=(",", ":"))}
         answers.append(renamed(row))

@@ -83,13 +83,19 @@ checks each act against.
 
 **Attestatores** — the witnesses. Every witness reads every sealed page: a whole-page
 reader reads the page image, and a record reader reads the crops of the records its
-detector found on the page. Each produces one **Testimonium** per page:
+detector found on the page. The one exception is a witness the roster *routes*
+(`[witness_routing]`): it reads only the pages its rule sends it, decided from the
+Designator's evidence before any witness reads, and on any other page it is no part
+of the page's roster. dots.mocr, a layout reader that reads index lists and tables
+row by row, can be seated this way on pages Surya tags a table or the record detector
+finds no record on; no committed roster seats it. Each produces one **Testimonium** per page:
 **unverified, of uncertain and unequal quality, and never final.** Always retained;
 never authoritative. Each witness sits in a chair, with model and revision pinned in the
 model roster; the Testimonium carries the resolved identity that produced it.
 
 **Perlector** — *perlegere*, to read through to the end. Reads each sealed page whole,
-in one call, names the acts on it, and establishes their text from the ink, using the
+in one call, names the page's type and the entries on it, each of its kind (an act, an
+index row, a table row and so on), and establishes their text from the ink, using the
 testimonia as clues that sharpen its own reading, never as options to choose between.
 What the call is shown is the page's feed: the page image, each witness's page broken
 into its own units, and the detected lines and blocks, each with an id. The Perlector
@@ -103,7 +109,10 @@ page image cannot establish text from the ink, and every act it reads is held.
 
 Every page reading is then measured by the **page accounting**, a model-free check that
 every witness unit, detected line, detector record, witness's text and the page's ink
-is accounted for. Anything it cannot account for, or cannot measure, holds the page.
+is accounted for. Anything it cannot account for, or cannot measure, holds the page,
+except that a check built for one page type (the record detector's, for handwritten
+register acts) is recorded and does not hold on a page of another type. The stated
+page type is set beside detection facts that bear on it, as a recorded cross-check.
 
 **A page that cannot be read is not an empty page.** The cases are kept apart:
 
@@ -179,6 +188,12 @@ standing for a page that has none — and asks whether:
 A unit is accepted only when nothing holds it. Otherwise it is held for review with
 every reason named. The Recensor may confirm a page blank or confirm that it holds no
 act, and it links material across a page break when both sides agree.
+
+A check the lead has judged not yet calibrated for the corpus is a **review flag**
+rather than a hold (`[flags]` in `config/page_accounting.toml`): measured and recorded
+like a hold, reported per page and per unit, carried with the reading's text in the
+Armarium's flagged export beside the strict established export, but holding nothing.
+Taking a code out of that list makes it hold again.
 
 **It recovers coverage, not quality.** A suspected fabrication or a poor reading may be
 flagged for review. It may never be re-rolled until it looks better. A witness model's
@@ -277,9 +292,12 @@ High-level and binding. Detailed schemas and interface contracts are in each sta
    acts.
 9. A witness's reading is never itself an output. Showing testimony as testimony is not
    a second text.
-10. No code repairs, rewrites or re-rolls what a model returned. Each model is asked
-    properly — complete input, in its documented format, with a way to mark what it
-    cannot read — and its answer is recorded as given and flagged if it looks wrong.
+10. No code repairs, rewrites or re-rolls what a model returned, with one exception:
+    a page answer whose only fault is bare JSON keys is parsed with those keys quoted,
+    the repair recorded and the reply's bytes kept as sent
+    (`pipeline/4_perlector/CONTRACT.md`). Each model is asked properly — complete
+    input, in its documented format, with a way to mark what it cannot read — and its
+    answer is recorded as given and flagged if it looks wrong.
 11. Every stored reading carries the identity and revision of the model that produced
     it, the image region it read and the transforms applied to that image.
     Configuration protects future runs; the record protects the past.

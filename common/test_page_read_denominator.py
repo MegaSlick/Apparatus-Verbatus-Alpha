@@ -212,7 +212,7 @@ def _fixture_says(monkeypatch, ordinal: int, answer: str, stop_reason: str | Non
 def _read_as(root: Path, ordinal: int, content: str, stop_reason: str | None) -> Callable:
     """A forge making page `ordinal`'s reading what stage 4 reads from `content`."""
     feed = _one(root, "page-feed", ordinal)[1]["payload"]
-    state, answer, problems = page_path.read_reply(
+    state, answer, problems, _repairs = page_path.read_reply(
         content, stop_reason, feed, load_page_accounting_policy()
     )
     read = state == "parsed" and not problems
@@ -241,8 +241,9 @@ def _drop_act_records(root: Path, ordinal: int) -> None:
 def _reaccount(tree: tuple[Path, dict[str, Path], str], ordinal: int) -> list[str]:
     """Measure page `ordinal`'s accounting again, as the denominator does, and carry it on.
 
-    The page's act records take the new holds, as stage 4 would have written
-    them after measuring the forged reading. Returns the page's holds.
+    The page's act records take the new holds, and its Perlectios the entry kind and
+    truncation planned from the forged reading, as stage 4 would have written them.
+    Returns the page's holds.
     """
     root = tree[0]
     _rewitness(root)
@@ -283,9 +284,14 @@ def _reaccount(tree: tuple[Path, dict[str, Path], str], ordinal: int) -> list[st
     path, accounting = _one(root, "page-accounting", ordinal)
     accounting.update(payload=measured, inputs=inputs, outcome="held" if holds else "read")
     _write(path, accounting)
+    planned = {plan["n"]: plan for plan in plans}
     for kind in ("act-region", "perlectio"):
         for path, record in _records(root, kind):
             if record["payload"]["page_ordinal"] == ordinal:
+                if kind == "perlectio" and record["payload"]["n"] in planned:
+                    plan = planned[record["payload"]["n"]]
+                    record["payload"]["entry_kind"] = plan["entry_kind"]
+                    record["payload"]["truncation"] = plan["truncation"]
                 record["payload"]["page_holds"] = holds
                 own = record["payload"]["holds"]
                 record["outcome"] = "held" if own or holds else "read"
@@ -392,10 +398,12 @@ def test_an_unplaced_entry_is_counted_and_held_by_the_recomputed_accounting(revi
         "record-not-read",
         "truncation-not-classified",
         "unaccounted-witness-unit",
-        "unread-ink",
         "unread-line",
     ]
+    # The ink threshold is a review flag under the committed `[flags]`: recorded, not held.
+    assert unplaced["flag_codes"] == ["unread-ink"]
     assert {act["disposition"] for act in acts[:2]} == {"read"}
+    assert {tuple(act["flag_codes"]) for act in acts[:2]} == {()}
 
 
 def test_a_page_read_without_its_image_holds_every_entry_no_autopsia(tmp_path):
@@ -464,6 +472,7 @@ def test_a_page_whose_answer_was_not_read_is_one_held_page_unread_row(
         "perlectio_ref": None,
         "accounting_ref": pages[2]["accounting_ref"],
         "hold_codes": sorted({*reply_codes, "page-unread", *page_holds}),
+        "flag_codes": [],
         "continues_from_previous_page": None,
         "continues_to_next_page": None,
         "reading_attempt": None,
@@ -480,7 +489,7 @@ def test_a_read_answer_naming_no_act_is_one_held_page_blank_row(happy_tree, tmp_
     ids += [line["id"] for line in feed["payload"]["surya"]["lines"]]
     ids += [block["id"] for block in feed["payload"]["surya"]["blocks"]]
     answer = {
-        "acts": [],
+        "entries": [],
         "set_aside": [{"id": identifier, "reason": "blank paper"} for identifier in ids],
     }
     _fixture_says(monkeypatch, 2, json.dumps(answer))
@@ -502,7 +511,7 @@ def test_a_read_page_naming_only_other_entries_is_held_until_confirmed(
 
     def other(record):
         payload = record["payload"]
-        for entry in payload["answer"]["acts"] if "answer" in payload else [payload]:
+        for entry in payload["answer"]["entries"] if "answer" in payload else [payload]:
             entry["kind"] = "other"
 
     for kind in ("page-reading", "act-region", "perlectio"):
@@ -532,7 +541,7 @@ def test_a_page_with_one_act_and_one_other_entry_is_not_held_for_naming_no_act(
     def second_is_other(record):
         payload = record["payload"]
         if "answer" in payload:
-            payload["answer"]["acts"][1]["kind"] = "other"
+            payload["answer"]["entries"][1]["kind"] = "other"
         elif payload["n"] == 2:
             payload["kind"] = "other"
 
@@ -1069,7 +1078,7 @@ def test_a_reading_whose_answer_drops_an_entry_its_reply_gave_is_refused(happy_t
     root = tree[0]
     for kind in ("perlectio", "act-region"):
         _one(root, kind, 1, 2)[0].unlink()
-    _forge(root, "page-reading", 1, None, lambda r: r["payload"]["answer"]["acts"].pop())
+    _forge(root, "page-reading", 1, None, lambda r: r["payload"]["answer"]["entries"].pop())
     _reaccount(tree, 1)
     with pytest.raises(FatalAccounting, match=r"not what its reply gives \(answer\)"):
         reading_acts(_context(tree))

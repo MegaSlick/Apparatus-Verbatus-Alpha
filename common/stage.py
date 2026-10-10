@@ -69,7 +69,6 @@ from common.contracts.outcomes import (
 )
 from common.contracts.serving import (
     CHAIR_STREAM_CALL_RECORD_SCHEMA,
-    RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS,
     SERVING_CONFIG_INPUTS_FIELDS,
     SERVING_CONFIG_INPUTS_SCHEMA,
     SERVING_LAUNCH_AUDIT_SCHEMA,
@@ -111,6 +110,7 @@ from common.imaging import dimensions
 from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH, load_page_accounting_policy
 from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH, load_reconstruction_policy
 from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH, load_recovery_policy
+from common.replay import not_replayed_problem, refuse_imported_stage, replay_of
 from common.residual_ink import ink_map_config_digest
 from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, load_review_policy
 from common.runtree.store import PublishResult, RunTree, _inode_identity
@@ -441,6 +441,7 @@ class StageContext:
         "_recovery_policy",
         "sealed",
         "page_read_denominator",
+        "exemplar_pages",
         "serving_reader",
     )
 
@@ -488,6 +489,9 @@ class StageContext:
         self.page_read_denominator: (
             tuple[dict[int, dict[str, Any]], list[dict[str, Any]]] | None
         ) = None
+        # The Exemplar's pages by ordinal, once a stage after it has asked: the
+        # Exemplar is sealed before any later stage starts, so they are read once.
+        self.exemplar_pages: dict[int, str] | None = None
         # Read back a live page call; `None` refuses one (`ServingReader`).
         self.serving_reader = serving_reader
 
@@ -760,11 +764,6 @@ class StageContext:
             ) from error
         if canonical != payload or not isinstance(audit, dict):
             raise SchemaRefusal("serving launch audit is not a canonical JSON object")
-        if audit.get("schema") in RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS:
-            raise SchemaRefusal(
-                f"serving launch audit was written as {audit['schema']}, which this build no "
-                "longer reads; re-run"
-            )
         if audit.get("schema") != SERVING_LAUNCH_AUDIT_SCHEMA:
             raise SchemaRefusal("serving launch audit has the wrong or missing schema")
         if not isinstance(audit.get("chair"), str) or not audit["chair"].strip():
@@ -1479,12 +1478,6 @@ def load_fixture(fixture_root: str) -> dict[str, Any]:
         fixture = tomllib.load(handle)
     if not fixture.get("page"):
         raise ContractError(f"{path} declares no pages")
-    if "page_witness_chairs" in fixture:
-        raise ContractError(
-            f"{path} declares page_witness_chairs, a key retired to the models configuration's "
-            "witness_scope. A stale fixture carrying it would be silently ignored rather "
-            "than honoured; remove the key so the sealed roster is the only source of scope."
-        )
     return fixture
 
 
@@ -2033,8 +2026,8 @@ def _sealed_page_rectangle(context, page_id: str, ordinal: int, what: str) -> di
 #
 # A run counts the acts the Perlector established on each page it read whole.
 # The records are the Perlector's page path (`pipeline/4_perlector/CONTRACT.md`,
-# "Page reading"); what each says that decides the count or a hold -- the
-# feed, the reading's answer and problems, the accounting, each entry's
+# "Records, per page, in publication order"); what each says that decides the count
+# or a hold -- the feed, the reading's answer and problems, the accounting, each entry's
 # act-region and Perlectio, its dissent included -- is recomputed here from
 # the sealed evidence with stage 4's own derivations (`common/page_path.py`),
 # never trusted. The run tree binds every record read to this run's
@@ -2090,6 +2083,7 @@ READING_ACT_FIELDS: Final = frozenset(
         "perlectio_ref",
         "accounting_ref",
         "hold_codes",
+        "flag_codes",
         "continues_from_previous_page",
         "continues_to_next_page",
         "reading_attempt",
@@ -2243,6 +2237,14 @@ class _PageReadRecords:
                 page_path.PERLECTIO_KIND,
             )
         }
+        self._by_subject = {
+            kind: _grouped(records, lambda record: record.get("subject_id"))
+            for kind, records in self.by_kind.items()
+        }
+        self._on_page = {
+            kind: _grouped(records, lambda record: _payload_of(record).get("page_id"))
+            for kind, records in self.by_kind.items()
+        }
         for record in self.by_kind[page_path.PERLECTIO_KIND]:
             schema = _payload_of(record).get("schema")
             if schema != page_path.PERLECTIO_SCHEMA:
@@ -2292,12 +2294,10 @@ class _PageReadRecords:
         return self._decisions
 
     def by_subject(self, kind: str, subject: str) -> list[dict[str, Any]]:
-        return [record for record in self.by_kind[kind] if record.get("subject_id") == subject]
+        return list(self._by_subject[kind].get(subject, ()))
 
     def on_page(self, kind: str, page_id: str) -> list[dict[str, Any]]:
-        return [
-            record for record in self.by_kind[kind] if _payload_of(record).get("page_id") == page_id
-        ]
+        return list(self._on_page[kind].get(page_id, ()))
 
     def ref(self, record: Mapping[str, Any]) -> dict[str, str]:
         path = self.tree.artifact_path(PERLECTOR, record["kind"], record["artifact_id"])
@@ -2317,6 +2317,25 @@ class _PageReadRecords:
                         f"Perlector {kind} {record.get('artifact_id')!r} names page {page!r}, "
                         "which this run's Exemplar never published"
                     )
+
+
+def _grouped(
+    records: list[dict[str, Any]], key: Callable[[dict[str, Any]], Any]
+) -> dict[Any, list[dict[str, Any]]]:
+    """`records` grouped by `key`, each group in record order.
+
+    A record whose key cannot be hashed, as a malformed list or object, is
+    left out: no subject or page id a caller asks about can equal it.
+    """
+    groups: dict[Any, list[dict[str, Any]]] = {}
+    for record in records:
+        value = key(record)
+        try:
+            group = groups.setdefault(value, [])
+        except TypeError:
+            continue
+        group.append(record)
+    return groups
 
 
 def _one(records: list[dict[str, Any]], what: str, attempt: str) -> dict[str, Any]:
@@ -2418,6 +2437,7 @@ def _refused_page_row(
         "perlectio_ref": None,
         "accounting_ref": None,
         "hold_codes": [],
+        "flag_codes": [],
         "continues_from_previous_page": None,
         "continues_to_next_page": None,
         "reading_attempt": None,
@@ -2538,7 +2558,8 @@ def _verify_page_reading(
     )
     trigger_ref = index.ref(first_accounting)
     by_reading = {page_edges.FIRST_READING: (payload, reading_ref)}
-    accounting_ref, page_holds, act_plans, reask_ref = trigger_ref, trigger["holds"], plans, None
+    accounting_ref, act_plans, reask_ref = trigger_ref, plans, None
+    page_holds, page_flags = trigger["holds"], trigger["flags"]
     if named:
         second, reask_ref, reask_plans = _verify_reask(
             context,
@@ -2570,7 +2591,8 @@ def _verify_page_reading(
             f"{what}'s re-ask accounting does not restate its first reading's entries exactly",
         )
         act_plans = page_path.reask_act_plans(combined, plans, reask_plans, what)
-        accounting_ref, page_holds = index.ref(last), combined["holds"]
+        accounting_ref = index.ref(last)
+        page_holds, page_flags = combined["holds"], combined["flags"]
         by_reading[page_edges.REASK_READING] = (second, reask_ref)
     superseded: list[dict[str, str]] = []
     if rereads:
@@ -2586,7 +2608,7 @@ def _verify_page_reading(
             counted=act_plans,
             measure=measure,
         )
-        payload, reading_ref, act_plans, last, page_holds, superseded = current
+        payload, reading_ref, act_plans, last, page_holds, page_flags, superseded = current
         codes = _problem_codes(payload.get("problems"), f"{what}'s current page reading")
         accounting_ref, reask_ref, named = index.ref(last), None, None
         by_reading = {payload["attempt_ordinal"]: (payload, reading_ref)}
@@ -2614,7 +2636,9 @@ def _verify_page_reading(
             and not _current_on_page(index, page_path.PERLECTIO_KIND, page_id, old),
             f"{what} has no act entry to count, yet the Perlector published act records for it",
         )
-        return row, [_page_row(context, ordinal, page_id, payload, codes, page_holds, refs)]
+        return row, [
+            _page_row(context, ordinal, page_id, payload, codes, page_holds, page_flags, refs)
+        ]
     acts = _verify_entries(
         context,
         index,
@@ -2626,6 +2650,7 @@ def _verify_page_reading(
         page_holds,
         feed,
         witnesses,
+        page_flags=page_flags,
         superseded=old,
     )
     return row, acts
@@ -2752,7 +2777,15 @@ def _verify_rereads(
             plans=plans,
             attempt=attempt,
         )
-        current = (payload, reference, plans, accounting, measured["holds"], list(supersedes))
+        current = (
+            payload,
+            reference,
+            plans,
+            accounting,
+            measured["holds"],
+            measured["flags"],
+            list(supersedes),
+        )
         supersedes.append(reference)
     _require(current is not None, f"{what} has no operator re-read to stand on")
     return current
@@ -2893,7 +2926,14 @@ def _refs_by_path(references: Any, what: str) -> list[dict[str, str]]:
 
 
 # The fields a reading derives from what the engine said, or from why it was not asked.
-_REPLY_FIELDS: Final = ("parse_state", "answer", "problems", "finish_reason", "stop_reason")
+_REPLY_FIELDS: Final = (
+    "parse_state",
+    "answer",
+    "problems",
+    "finish_reason",
+    "stop_reason",
+    page_path.ANSWER_REPAIRS_FIELD,
+)
 _REPLY_STATES: Final = frozenset(
     {page_path.PARSED, page_path.MALFORMED, page_path.CUT_OFF, page_path.REPETITION_LOOP}
 )
@@ -2910,7 +2950,7 @@ def _verify_reply(
     *,
     named: list[str] | None = None,
 ) -> None:
-    """The reading's parse state, answer, problems and finish, derived again, never trusted.
+    """The reading's parse state, answer, problems, finish and repair, derived again, never trusted.
 
     A fixture run's operator re-read is answered with the page's declared
     answer, as its first reading is.
@@ -2926,8 +2966,9 @@ def _verify_reply(
     state = payload["parse_state"]
     engine_call = payload.get("engine_call")
     failure = payload.get("failure")
+    replayed = replay_of(context.run) is not None
     _require(
-        named is None or state != page_path.NOT_RUN,
+        named is None or state != page_path.NOT_RUN or replayed,
         f"{what} is recorded as not run; a planned re-ask is always asked",
     )
     if state == page_path.NOT_RUN:
@@ -2935,13 +2976,17 @@ def _verify_reply(
         derived: dict[str, Any] = {
             "parse_state": state,
             "answer": None,
-            "problems": page_path.not_run_problems(
+            # A replay asks a re-ask only when its source run sent that very request.
+            "problems": [not_replayed_problem(context.run)]
+            if named is not None
+            else page_path.not_run_problems(
                 feed,
                 chair_present=isinstance(chair, ChairIdentity),
                 no_testimony=not index.testimonia.get(page_id),
             ),
             "finish_reason": None,
             "stop_reason": None,
+            page_path.ANSWER_REPAIRS_FIELD: None,
         }
         _require(
             engine_call is None and failure is None and payload.get("request_digest") is None,
@@ -2965,6 +3010,7 @@ def _verify_reply(
             else [{"code": failure.get("code"), "detail": failure.get("detail")}],
             "finish_reason": None,
             "stop_reason": None,
+            page_path.ANSWER_REPAIRS_FIELD: None,
         }
     else:
         _require(
@@ -2997,7 +3043,7 @@ def _verify_reply(
                 )
                 content, finish = row["answer"], row.get("stop_reason", "stop")
                 stop = finish
-            parse_state, answer, problems = page_path.read_reply(
+            parse_state, answer, problems, repairs = page_path.read_reply(
                 content, stop, feed, index.accounting_policy, named
             )
         except (ContractError, KeyError, TypeError, ValueError, OSError) as error:
@@ -3008,6 +3054,8 @@ def _verify_reply(
             "problems": problems,
             "finish_reason": finish,
             "stop_reason": stop,
+            # Present only when the one repair was made (`page_answer`).
+            page_path.ANSWER_REPAIRS_FIELD: repairs or None,
         }
     mismatched = sorted(name for name in _REPLY_FIELDS if payload.get(name) != derived[name])
     _require(
@@ -3368,6 +3416,7 @@ def _page_row(
     payload: Mapping[str, Any],
     problem_codes: list[str],
     page_holds: list[str],
+    page_flags: list[str],
     refs: dict[str, dict[str, str]],
 ) -> dict[str, Any]:
     """The one row that stands for a page with no act entry, over the page rectangle."""
@@ -3389,6 +3438,7 @@ def _page_row(
         "perlectio_ref": None,
         "accounting_ref": refs["accounting_ref"],
         "hold_codes": sorted(codes | set(page_holds)),
+        "flag_codes": sorted(set(page_flags)),
         "continues_from_previous_page": None,
         "continues_to_next_page": None,
         "reading_attempt": None,
@@ -3415,6 +3465,7 @@ def _verify_entries(
     feed: Mapping[str, Any],
     witnesses: list[dict[str, Any]],
     *,
+    page_flags: list[str] = (),
     superseded: set[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Each entry the page's last accounting counts, proven against its act-region and Perlectio.
@@ -3573,6 +3624,8 @@ def _verify_entries(
                 "perlectio_ref": index.ref(perlectio),
                 "accounting_ref": refs["accounting_ref"],
                 "hold_codes": hold_codes,
+                # The page's review flags: measured, recorded, holding nothing.
+                "flag_codes": sorted(set(page_flags)),
                 "continues_from_previous_page": act["continues_from_previous_page"],
                 "continues_to_next_page": act["continues_to_next_page"],
                 "reading_attempt": plan["reading_attempt"],
@@ -3709,6 +3762,7 @@ def open_context(
     if tree is None:
         tree = RunTree(Path(args.run_root), args.run_id)
         run = tree.read_run()
+    refuse_imported_stage(run, stage)
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
     # Compared separately: an equal `config_digest` proves the bytes, not that
@@ -3796,6 +3850,7 @@ def _open_real_context(
     versions, and re-binding those would refuse a sound run after a library
     upgrade.  The sealed map is rechecked name by name instead.
     """
+    refuse_imported_stage(run, stage)
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
     registry = _open_registry(args, registry_factory)
@@ -3978,7 +4033,14 @@ def exemplar_page_ids(context) -> dict[int, str]:
     container page's full identity.  Says which page an ordinal names, not
     that its bytes are sound. Every submitted ordinal has exactly one page, so
     no submitted page is silently absent from what a stage reads or counts.
+    Verified once per context; each caller gets a copy.
     """
+    if context.exemplar_pages is None:
+        context.exemplar_pages = _verify_exemplar_page_ids(context)
+    return dict(context.exemplar_pages)
+
+
+def _verify_exemplar_page_ids(context) -> dict[int, str]:
     submitted = {
         row.get("ordinal")
         for row in context.run.get("source_manifest", [])

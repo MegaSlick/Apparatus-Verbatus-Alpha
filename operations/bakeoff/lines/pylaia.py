@@ -161,7 +161,9 @@ class PylaiaRecogniser:
             "utf-8",
         )
         argv = [str(self.decoder), "--config", str(config)]
-        done, seconds = harness.subprocess_page(argv, self.log, self.runner)
+        done, seconds = harness.subprocess_page(
+            argv, self.log, self.runner, harness.thread_env(self.args.threads)
+        )
         predictions = parse_predictions(done.stdout) if done.returncode == 0 else {}
         share = seconds / len(rows)
         units = []

@@ -16,7 +16,8 @@ nothing to read, or a Surya detection repeating another, is set aside, so the
 instruction never invites a choice between witnesses.
 
 A builder is registered per serving recipe, and a recipe with none refuses
-rather than borrowing another's template. The rendered text reads only the feed fields that describe what is
+rather than borrowing another's template; a recipe that only serves the same
+model another way (`RECIPE_ALIASES`) is declared to take its base recipe's. The rendered text reads only the feed fields that describe what is
 shown -- never `prompt`, `feed_digest`, `unit_kind` or `findings` -- so the
 same bytes are rebuilt from a sealed feed.
 
@@ -73,13 +74,48 @@ DOUBT_SENTENCE: Final = (
     "Where ink cannot be read, write [[?]] in its place. Where a reading is uncertain, "
     "write it as [[reading]], or as [[reading|other|other]] to add other possible readings. "
 )
-# The answer's shape with placeholders only, so it suggests no reading.
+# The answer's shape with placeholders only, so it suggests no reading
+# (`common.page_types`): the page's type and how it is written, then the entries.
 ANSWER_FORM: Final = (
-    '{"acts": [{"n": 1, "kind": "<act or other>", "label": "<a few words>", '
+    '{"page_type": "<page type>", "writing": "<how the page is written>", '
+    '"entries": [{"n": 1, "kind": "<entry kind>", "label": "<a few words>", '
     '"cites": ["<id>", "<first unit id>-<last unit id>"], "text": "<the entry\'s text>", '
     '"continues_from_previous_page": false, "continues_to_next_page": false}], '
     '"set_aside": [{"id": "<id>", "reason": "<short reason>"}]}'
 )
+# A re-ask reads ids inside a page already typed, so it names no page type.
+REASK_ANSWER_FORM: Final = (
+    '{"entries": [{"n": 1, "kind": "<entry kind>", "label": "<a few words>", '
+    '"cites": ["<id>", "<first unit id>-<last unit id>"], "text": "<the entry\'s text>", '
+    '"continues_from_previous_page": false, "continues_to_next_page": false}], '
+    '"set_aside": [{"id": "<id>", "reason": "<short reason>"}]}'
+)
+# What each page type and entry kind is, as the reader is told.
+PAGE_TYPE_SENTENCE: Final = (
+    "First name the page's type, page_type: "
+    '"register-acts" for a parish or civil register of acts (baptisms, marriages, burials '
+    "and other registered acts); "
+    '"index" for an index or table of names that points to acts elsewhere; '
+    '"table" for a list or census-like table of rows, such as a family or wage list; '
+    '"ledger" for accounts or a journal of dated entries with amounts; '
+    '"instrument" for a notarial act, a contract, an engagement or a filled-in form; '
+    '"prose" for a letter, a note, an attestation or other running text; '
+    '"blank" for a page with no writing. '
+    'Name how the page is written, writing: "handwritten", "typed", "printed" or "mixed". '
+)
+ENTRY_KIND_SENTENCE: Final = (
+    "Give each entry a kind: "
+    '"act" for one registered act, such as a baptism, a marriage or a burial, with its '
+    "margin note and its signatures; "
+    '"index-row" for one row of an index; '
+    '"table-row" for one row of a table or list; '
+    '"ledger-entry" for one entry of accounts; '
+    '"instrument" for one notarial act or contract, whole; '
+    '"paragraph" for one paragraph of running text; '
+    '"other" for every other text on the page, such as a heading, a page number or a '
+    "marginal note that is not an entry. "
+)
+
 # The repetition finding that says a witness's answer repeats itself.
 REPEATING: Final = "post-hoc-repetition"
 
@@ -281,11 +317,11 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
         )
     parts.append(
         "Establish all the text written on the page, entry by entry, in the order it is "
-        "written, numbered n = 1, 2, 3 and so on. An act is one register entry, such as a "
-        'baptism, a marriage or a burial: give it kind "act". Every other text on the page, '
-        "such as a heading, a page number or a marginal note that is not an entry, is read "
-        'too, as an entry of kind "other". '
+        "written, numbered n = 1, 2, 3 and so on. "
     )
+    parts.append(PAGE_TYPE_SENTENCE)
+    parts.append(ENTRY_KIND_SENTENCE)
+    parts.append("Every text on the page is read, whatever its kind. ")
     covers = "its ink covers" if shown["image"] else "it is read from"
     ranges = []
     if shown["witnesses"]:
@@ -347,9 +383,9 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
             + ', with a short reason, such as "empty" or "not text". '
         )
     parts.append(
-        "Set continues_from_previous_page to true only on the first entry, when it began on an "
-        "earlier page, and continues_to_next_page to true only on the last entry, when it runs "
-        "onto the next page; every other value of both is false. "
+        "Set continues_from_previous_page to true only on the first act or instrument, when "
+        "it began on an earlier page, and continues_to_next_page to true only on the last act "
+        "or instrument, when it runs onto the next page; every other value of both is false. "
         "Answer with one JSON object and nothing else, with no code fence, in this form: "
         + ANSWER_FORM
     )
@@ -366,6 +402,21 @@ def _unproven_real_perlector_page_v0(feed: dict[str, Any]) -> list[list[_Part]]:
     return [*_feed_parts(feed), _fixed(page_reading_instruction(feed))]
 
 
+# Serving recipes that serve the Perlector's own model another way -- smaller weights,
+# speculative decoding, an FP8 KV cache (config/serving_recipes_real_variants.toml) --
+# and deliberately send the same prompt: each takes the page and re-ask builders of the
+# recipe it varies, so a Perlector chair can point at it. The evidence still names the
+# recipe asked for (`serving_recipe`); its rendered text is the base recipe's, byte for
+# byte.
+RECIPE_ALIASES: Final[dict[str, str]] = {
+    "unproven-real-perlector-fp8": "unproven-real-perlector",
+    "unproven-real-perlector-fp8-mtp3": "unproven-real-perlector",
+    "unproven-real-perlector-fp8-mtp1": "unproven-real-perlector",
+    "unproven-real-perlector-fp8-kvfp8": "unproven-real-perlector",
+    "unproven-real-perlector-nvfp4": "unproven-real-perlector",
+    "unproven-real-perlector-nvfp4-mtp3": "unproven-real-perlector",
+}
+
 _Build = Callable[[dict[str, Any]], list[list[_Part]]]
 _Render = Callable[[dict[str, Any]], str]
 # Each recipe's builder and the instruction it sends, `None` where it sends none.
@@ -376,7 +427,7 @@ _BUILDERS: Final[dict[str, tuple[_Build, _Render | None]]] = {
 
 
 def _builder_for(serving_recipe: str) -> tuple[_Build, _Render | None]:
-    entry = _BUILDERS.get(serving_recipe)
+    entry = _BUILDERS.get(RECIPE_ALIASES.get(serving_recipe, serving_recipe))
     if entry is None:
         raise ValueError(
             f"no declared page prompt builder is registered for serving recipe "
@@ -465,7 +516,8 @@ def page_reask_instruction(feed: dict[str, Any]) -> str:
     entry is, what to give for it and how to cite, as the page's instruction
     says them, limited to the ids the re-ask names.
     """
-    image = _shown(feed)["image"]
+    shown = _shown(feed)
+    image = shown["image"]
     parts = ["The ids just above were not accounted for by the entries already read. "]
     if image:
         parts.append(
@@ -479,9 +531,7 @@ def page_reask_instruction(feed: dict[str, Any]) -> str:
             "wrong or incomplete. "
         )
     parts.append(
-        "An act is one register entry, such as a baptism, a marriage or a burial: give it "
-        'kind "act". Any other text, such as a heading, a page number or a marginal note '
-        'that is not an entry, is an entry of kind "other". For each entry you find at these '
+        ENTRY_KIND_SENTENCE + "For each entry you find at these "
         "ids give: n, numbered 1, 2, 3 and so on; kind; label, if you wish, a few words "
         "naming the entry, at most 80 characters; cites, the ids just above that "
         + ("its ink covers" if image else "it is read from")
@@ -509,7 +559,7 @@ def page_reask_instruction(feed: dict[str, Any]) -> str:
         )
     parts.append(
         "Answer with one JSON object and nothing else, with no code fence, in this form: "
-        + ANSWER_FORM
+        + REASK_ANSWER_FORM
     )
     return "".join(parts)
 
@@ -536,7 +586,7 @@ _REASK_BUILDERS: Final[dict[str, tuple[_ReaskBuild, _Render | None]]] = {
 
 
 def _reask_builder_for(serving_recipe: str) -> tuple[_ReaskBuild, _Render | None]:
-    entry = _REASK_BUILDERS.get(serving_recipe)
+    entry = _REASK_BUILDERS.get(RECIPE_ALIASES.get(serving_recipe, serving_recipe))
     if entry is None:
         raise ValueError(
             f"no declared page re-ask builder is registered for serving recipe "

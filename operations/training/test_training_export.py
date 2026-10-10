@@ -1,0 +1,623 @@
+"""The training exporter on synthetic pages, feeds and gold (never a real page or text)."""
+
+import hashlib
+import json
+
+import pytest
+
+from common import page_prompt
+from common.page_answer import parse_page_answer
+from common.page_types import ENTRY_KINDS
+from operations.bakeoff import fed_arm as F
+from operations.bakeoff import mutations as M
+from operations.bakeoff.gold import parse_gold
+from operations.bakeoff.test_bakeoff_fed_arm import make_run_tree
+from operations.bakeoff.test_bakeoff_fed_score import GOLD
+from operations.training import export as E
+
+TEXT = "Le dix mai mil huit cent Richer Lalonde"
+PAGES = ((TEXT, TEXT), ("Le onze juin", "Le onze juin"), ("Le douze mai", "Le douze mai"))
+TEXTS = {"p001": TEXT, "p002": "Le onze [[juin|juillet]]", "p003": "Le douze mai"}
+
+
+def _refs(tree, texts=TEXTS, status="fool's gold"):
+    refs = {}
+    for stem, text in texts.items():
+        ref = E.reference_from_gold_for(
+            parse_gold(GOLD.format(stem=stem, status=status, text=text), stem), None
+        )
+        M.statuses_from_agreement(ref, tree.by_stem()[stem].feed)
+        refs[stem] = ref
+    return refs
+
+
+def _examples(out):
+    return [json.loads(line) for line in (out / "train.jsonl").read_text().splitlines()]
+
+
+def test_held_out_list_parsing_and_sibling_halves(tmp_path):
+    listing = tmp_path / "held.txt"
+    listing.write_text("# frozen\nVolume_1_00030_1L.tif  # one half\n\np002\n")
+    held = E.read_held_out(listing)
+    assert held == {"Volume_1_00030_1L", "p002"}
+    assert E.is_held_out("Volume_1_00030_2R", held)  # the other half of the same original
+    assert E.is_held_out("p002", held) and not E.is_held_out("p003", held)
+    assert E.original_of("X_00030_2R") == "X_00030" and E.original_of("p002") == "p002"
+
+
+def test_export_honours_the_held_out_list_and_reuses_the_perlector_prompt(tmp_path):
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    refs = _refs(tree)
+    out = tmp_path / "out"
+    manifest = E.export(tree, refs, {"p002"}, out, seed=1, variants_per_page=5, blinded_share=0.0)
+    assert manifest["pages"] == 2 and manifest["held_out_excluded"] == ["p002"]
+    examples = _examples(out)
+    assert len(examples) == 10 and {e["page"] for e in examples} == {"p001", "p003"}
+    sidecars = [json.loads(line) for line in (out / "planted.jsonl").read_text().splitlines()]
+    assert [s["id"] for s in sidecars] == [e["id"] for e in examples]
+    for example, sidecar in zip(examples, sidecars, strict=True):
+        assert example["schema"] == E.SCHEMA and example["images"] == [
+            f"images/{example['page']}.png"
+        ]
+        assert (out / example["images"][0]).is_file()
+        user, assistant = example["messages"]
+        assert user["role"] == "user" and user["content"][0] == {"type": "image"}
+        # The prompt is the Perlector's own rendering of the shown feed, byte for byte.
+        feed = sidecar_feed(out, example, sidecar)
+        expected = page_prompt.build_page_prompt(feed["prompt"]["serving_recipe"], feed)
+        assert user["content"][1]["text"] == expected
+        body, text = F.build_body(feed, b"png", model_name="x", sampling=F.GREEDY, seed=0,
+                                  max_tokens=1, stream=False)  # fmt: skip
+        assert text == expected
+        if example["scenario"] == "honest":
+            assert example["prompt_matches_run"] is True
+        else:
+            assert example["prompt_matches_run"] is None
+        assert example["chat_template_kwargs"] == {"enable_thinking": False}
+        state, answer, problems = parse_page_answer(assistant["content"])
+        assert state == "parsed", problems
+        assert example["witness_regime"] == "named"
+    assert manifest["honest_prompts_identical_to_run"] == manifest["honest_prompts_checked"] > 0
+    assert manifest["tokens"]["prompt_tokens_bound"]["max"] > 0
+    assert manifest["vote_check"]["all"]["spans"] >= manifest["vote_check"]["honest"]["spans"]
+
+
+def sidecar_feed(out, example, sidecar, held=frozenset({"p002"})):
+    """Rebuild the shown feed from the honest run feed and the sidecar is not possible for
+    every scenario; the exporter does not store feeds, so the test regenerates it."""
+    tree = F.load_run_tree(out.parent / "run")
+    page = tree.by_stem()[example["page"]]
+    refs = _refs(tree)
+    m = M.mutate(page.feed, refs[page.stem], sidecar["scenario"], seed=sidecar["seed"],
+                 turn=sidecar["turn"], stem=page.stem,
+                 donors=M.donor_acts({k: v for k, v in refs.items() if not E.is_held_out(k, held)},
+                                     page.stem))  # fmt: skip
+    if any(c["kind"] == "blinded" for c in sidecar["changes"]):
+        M.blind_labels(m, sidecar["seed"])
+    return m.feed
+
+
+def test_loss_spans_follow_word_status_and_tile_the_answer(tmp_path):
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    refs = _refs(tree)
+    ref = refs["p001"]
+    ref.words[6].status = "checked"  # Richer
+    ref.words[7].status = "draft"  # Lalonde
+    feed = tree.pages[1].feed
+    answer = E.build_answer(ref, feed, [])
+    answer_json = json.dumps(answer, ensure_ascii=False)
+    spans = E.loss_spans(answer_json, answer, ref, E.CITES_WEIGHT)
+    assert spans[0][0] == 0 and spans[-1][1] == len(answer_json)
+    assert all(a[1] == b[0] for a, b in zip(spans, spans[1:], strict=False))
+    weighted = {answer_json[s:e]: w for s, e, w in spans if w != 1.0}
+    assert "Richer" not in weighted  # a checked word carries 1.0, like the scaffold
+    assert weighted["Lalonde"] == 0.3 and weighted["dix"] == 0.7
+    assert weighted[json.dumps(answer["entries"][0]["cites"])] == E.CITES_WEIGHT
+    # A doubtful reading is unresolved: weight 0 (p002 has [[juin|juillet]]).
+    ref2 = refs["p002"]
+    answer2 = E.build_answer(ref2, tree.pages[2].feed, [])
+    j2 = json.dumps(answer2, ensure_ascii=False)
+    weights2 = {j2[s:e]: w for s, e, w in E.loss_spans(j2, answer2, ref2, 1.0)}
+    assert weights2["juin"] == 0.0 and weights2["onze"] == 0.7
+    # Escapes inside the JSON string do not shift the word offsets.
+    ref3 = M.Reference("x", "silver", [{"kind": "act", "label": None, "text": 'dit "Le Roi"\nfils',
+                                        "continues_from_previous_page": False,
+                                        "continues_to_next_page": False}])  # fmt: skip
+    for t in ("dit", '"Le', 'Roi"', "fils"):
+        ref3.words.append(M.RefWord(t, "checked", "word", 0))
+    answer3 = {"entries": [{"n": 1, "kind": "act", "cites": [], "text": ref3.entries[0]["text"],
+                         "continues_from_previous_page": False, "continues_to_next_page": False}],
+               "set_aside": []}  # fmt: skip
+    j3 = json.dumps(answer3, ensure_ascii=False)
+    words = [
+        j3[s:e]
+        for s, e, w in E.loss_spans(j3, answer3, ref3, 1.0)
+        if w == 1.0 and j3[s:e] in ("dit", '\\"Le', 'Roi\\"', "fils")
+    ]
+    assert words == ["dit", '\\"Le', 'Roi\\"', "fils"]
+
+
+def test_build_answer_cites_every_shown_id_or_sets_it_aside(tmp_path):
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    refs = _refs(tree)
+    page = tree.pages[1]
+    m = M.mutate(page.feed, refs["p001"], "invented-act", seed=0, donors=["Le deux juin mil huit"])
+    answer = E.build_answer(refs["p001"], m.feed, m.set_aside_ids)
+    shown = {u["id"] for r in m.feed["witnesses"] for u in r["units"]}
+    shown |= {line["id"] for line in m.feed["surya"]["lines"]} | {
+        b["id"] for b in m.feed["surya"]["blocks"]
+    }
+    cited = {c for e in answer["entries"] for c in e["cites"]}
+    aside = {s["id"] for s in answer["set_aside"]}
+    assert cited | aside == shown and not cited & aside
+    assert set(m.set_aside_ids) <= aside
+    assert {s["reason"] for s in answer["set_aside"] if s["id"] in m.set_aside_ids} == {
+        "not on the page"
+    }
+    assert (
+        answer["entries"][0]["cites"][:2] == ["A1", "C1"] and "L1" in answer["entries"][0]["cites"]
+    )
+    # "Folio 1" matches no entry: set aside, never cited as the act's text.
+    assert "A2" in aside
+    # A reference that brings its own cites keeps them and weighs them fully.
+    own = M.Reference("p001", "silver", [{"kind": "act", "label": "b", "text": TEXT, "cites": ["A1", "L1"],
+                                          "continues_from_previous_page": False,
+                                          "continues_to_next_page": True}],
+                      page_type="register-acts", writing="handwritten")  # fmt: skip
+    answer = E.build_answer(own, page.feed, [])
+    assert (
+        answer["entries"][0]["cites"] == ["A1", "L1"]
+        and answer["entries"][0]["continues_to_next_page"]
+    )
+
+
+def test_reference_json_loader():
+    record = {
+        "schema": E.REFERENCE_SCHEMA, "stem": "p001", "status_label": "silver",
+        "entries": [{"kind": "act", "text": "Le dix mai",
+                     "words": [{"text": "Le", "status": "checked"}, {"text": "dix", "status": "agreed"},
+                               {"text": "mai", "status": "unresolved", "cls": "date"}]},
+                    {"kind": "other", "label": "heading", "text": "Baptêmes 1841"}],
+    }  # fmt: skip
+    ref = E.reference_from_json(record)
+    assert [w.status for w in ref.words] == ["checked", "agreed", "unresolved", "draft", "draft"]
+    assert [w.cls for w in ref.words] == ["word", "number", "date", "name", "date"]
+    assert ref.entries[1]["kind"] == "other" and ref.entries[1]["cites"] is None
+    bad = {
+        **record,
+        "entries": [{"kind": "act", "text": "x", "words": [{"text": "x", "status": "sure"}]}],
+    }
+    with pytest.raises(SystemExit):
+        E.reference_from_json(bad)
+    with pytest.raises(SystemExit):
+        E.reference_from_json({**record, "schema": "other"})
+    checked = E.reference_from_json({**record, "status_label": "lead-checked",
+                                     "entries": [{"kind": "act", "text": "Le dix"}]})  # fmt: skip
+    assert {w.status for w in checked.words} == {"checked"}
+
+
+def test_cli_end_to_end_with_mix_and_blinding(tmp_path):
+    tree = make_run_tree(tmp_path / "run", pages=PAGES)
+    gold = tmp_path / "gold"
+    gold.mkdir()
+    for stem, text in TEXTS.items():
+        (gold / f"{stem}.txt").write_text(GOLD.format(stem=stem, status="fool's gold", text=text))
+    held = tmp_path / "held.txt"
+    held.write_text("p003\n")
+    out = tmp_path / "out"
+    argv = ["--run-tree", str(tree), "--gold", str(gold), "--gold-glob", "*.txt", "--held-out", str(held),
+            "--out", str(out), "--seed", "7", "--variants-per-page", "6",
+            "--mix", "honest=1,plant-1=1,permute=1", "--blinded-share", "1.0"]  # fmt: skip
+    assert E.main(argv) == 0
+    manifest = json.loads((out / "manifest.json").read_text())
+    assert (
+        manifest["pages"] == 2
+        and manifest["examples"] == 12
+        and manifest["held_out_excluded"] == ["p003"]
+    )
+    assert set(manifest["by_scenario"]) <= {"honest", "plant-1", "permute"}
+    assert manifest["blinded_examples"] == 12 and manifest["honest_prompts_checked"] == 0
+    examples = _examples(out)
+    assert all(e["witness_regime"] == "blinded" for e in examples)
+    assert all("witness-" in e["messages"][0]["content"][1]["text"] for e in examples)
+    assert manifest["planted"].get("sites", 0) == sum(e["planted_sites"] for e in examples) > 0
+    with pytest.raises(SystemExit):
+        E.parse_mix("honest=1,no-such=2")
+    assert E.parse_mix(None) == M.DEFAULT_MIX and sum(M.DEFAULT_MIX.values()) == 100
+
+
+SECRET = "Le vingt mai mil huit cent Secret Heldout fils de Pierre Heldout"
+
+
+def test_donor_acts_never_come_from_held_out_pages_or_sibling_halves(tmp_path):
+    # C7 P1: invented acts and injections borrowed text from every reference, held-out
+    # pages included. p001's only possible donors here are held out (p002_1L) or its own
+    # sibling half (p001_2R is not a donor for p001_1L).
+    pages = ((TEXT, TEXT), (SECRET, SECRET), (SECRET, SECRET))
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=pages))
+    stems = {1: "p001_1L", 2: "p002_1L", 3: "p001_2R"}
+    for ordinal, stem in stems.items():
+        tree.pages[ordinal].stem = stem
+    texts = {"p001_1L": TEXT, "p002_1L": SECRET, "p001_2R": SECRET.replace("Secret", "Sibling")}
+    refs = {}
+    for stem, text in texts.items():
+        refs[stem] = E.reference_from_gold_for(
+            parse_gold(GOLD.format(stem=stem, status="fool's gold", text=text), stem), None
+        )
+    assert M.donor_acts(refs, "p001_1L") == [" ".join(SECRET.split())]  # only p002_1L's act
+    out = tmp_path / "out"
+    E.export(tree, refs, {"p002_1L"}, out, seed=0, variants_per_page=8, blinded_share=0.0,
+             mix={"invented-act": 1, "injection": 1}, pages=[tree.pages[1]])  # fmt: skip
+    examples = _examples(out)
+    assert examples and {e["scenario"] for e in examples} <= {"invented-act", "injection"}
+    for example in examples:
+        prompt = example["messages"][0]["content"][1]["text"]
+        assert "Heldout" not in prompt and "Sibling" not in prompt
+
+
+def test_targets_keep_unread_ink_and_uncertain_readings(tmp_path):
+    # C7 P1: the assistant target was the scoring text, so `[[?]]` vanished and
+    # `[[juin|juillet]]` became a plain `juin`. The target now keeps the doubt grammar;
+    # the readings inside carry the unresolved weight (0) and the mark syntax a draft's.
+    pages = ((TEXT, TEXT), ("Le onze juin", "Le onze juin"), ("Le douze mai", "Le douze mai"))
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=pages))
+    texts = {**TEXTS, "p002": "Le onze [[?]] [[juin|juillet]]", "p003": "[[?]]"}
+    refs = _refs(tree, texts)
+    answer = E.build_answer(refs["p002"], tree.pages[2].feed, [])
+    assert answer["entries"][0]["text"] == "Le onze [[?]] [[juin|juillet]]"
+    j = json.dumps(answer, ensure_ascii=False)
+    state, parsed, problems = parse_page_answer(j)
+    assert state == "parsed", problems
+    # The reading scores exactly as the reference's scored words.
+    from operations.bakeoff import score as S
+
+    assert (
+        S.tokens(S.normalise_output("perlector", F.reading_text(parsed))) == refs["p002"].tokens()
+    )
+    weights = {j[s:e]: w for s, e, w in E.loss_spans(j, answer, refs["p002"], E.CITES_WEIGHT)}
+    assert weights["juin"] == 0.0 and weights["onze"] == 0.7
+    assert weights["[[?]]"] == weights["[["] == weights["|juillet]]"] == E.WEIGHTS["draft"]
+    # A gap-only act is still an act in the target.
+    gap = E.build_answer(refs["p003"], tree.pages[3].feed, [])
+    assert [e["text"] for e in gap["entries"]] == ["[[?]]"]
+    # A lead-checked reference weighs the mark syntax fully.
+    refs["p002"].status_label = "lead-checked"
+    weights = {j[s:e]: w for s, e, w in E.loss_spans(j, answer, refs["p002"], 1.0)}
+    assert weights["[[?]]"] == 1.0
+
+
+def _own_cites_ref(cites):
+    ref = M.Reference("p001", "silver", page_type="register-acts", writing="handwritten")
+    ref.entries.append({"kind": "act", "label": None, "text": TEXT, "cites": cites,
+                        "continues_from_previous_page": False, "continues_to_next_page": False})  # fmt: skip
+    for token in M.reference_words(TEXT):
+        ref.words.append(M.RefWord(token[0], "checked", "word", 0))
+    return ref
+
+
+def test_reference_cites_are_remapped_to_the_shown_feed_and_validated(tmp_path):
+    # C7 P2: a reference's own cites were copied unchanged, so after a permutation the
+    # target cited `A1` although no A1 was shown (at weight 1.0).
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    feed = tree.pages[1].feed  # A1 A2 | B empty | C1, Surya L1 S1
+    ref = _own_cites_ref(["A1", "C1", "L1"])
+    for scenario, seed in (("permute", 0), ("permute", 3), ("drop-one", 0), ("merged-entries", 0),
+                           ("invented-act", 0), ("blind", 0), ("honest", 0)):  # fmt: skip
+        m = M.mutate(feed, ref, scenario, seed=seed, donors=["Le deux juin mil huit cent un"])
+        shown = E.shown_ids(m.feed)
+        answer = E.build_answer(ref, m.feed, m.set_aside_ids, id_map=m.id_map)
+        cites = answer["entries"][0]["cites"]
+        aside = {s["id"] for s in answer["set_aside"]}
+        assert set(cites) <= shown, (scenario, cites, shown)
+        assert set(cites) | aside == shown and not set(cites) & aside, scenario
+        expected = {m.id_map[u] for u in ("A1", "C1") if m.id_map[u]} | {"L1"}
+        assert set(cites) == expected, scenario
+    # A permutation may change only the order (letters kept); the page sha that seeds it
+    # differs across machines, so look for a seed whose permutation renames letters.
+    for seed in range(20):
+        permuted = M.mutate(feed, ref, "permute", seed=seed)
+        if permuted.id_map["A1"] != "A1" or permuted.id_map["C1"] != "C1":
+            break
+    else:
+        raise AssertionError("no seed in 0..19 renamed a witness letter")
+    dropped = M.mutate(feed, ref, "drop-one", turn=0)
+    assert dropped.id_map["A1"] is None and dropped.id_map["C1"] == "B1"
+    merged = M.mutate(feed, ref, "merged-entries", seed=0)
+    assert merged.id_map["A1"] == merged.id_map["A2"] == "A1"
+    # An id that is neither a source unit nor shown, or cites on some entries only: refused.
+    with pytest.raises(E.ExampleRefused):
+        E.build_answer(
+            _own_cites_ref(["Z9"]), feed, [], id_map=M.mutate(feed, ref, "honest").id_map
+        )
+    mixed = _own_cites_ref(["A1"])
+    mixed.entries.append({**mixed.entries[0], "cites": None})
+    with pytest.raises(E.ExampleRefused):
+        E.build_answer(mixed, feed, [])
+    # The exporter refuses such an example and counts it instead of writing it.
+    manifest = E.export(tree, {"p001": _own_cites_ref(["Z9"])}, set(), tmp_path / "out",
+                        variants_per_page=3, blinded_share=0.0, pages=[tree.pages[1]])  # fmt: skip
+    assert manifest["examples"] == 0 and len(manifest["refused"]) == 3
+
+
+def test_a_page_whose_prompt_no_longer_rebuilds_stops_the_export(tmp_path):
+    # C7: an honest prompt mismatch was recorded and the export went on; blinded and
+    # mutated examples were never checked. The source feed is now checked first.
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    refs = _refs(tree)
+    tree.pages[3].feed["prompt"]["rendered_sha256"] = "0" * 64  # the run sent another prompt
+    with pytest.raises(SystemExit, match="p003"):
+        E.export(tree, refs, set(), tmp_path / "out", variants_per_page=2)
+    manifest = E.export(tree, refs, set(), tmp_path / "out2", variants_per_page=2,
+                        allow_prompt_mismatch=True)  # fmt: skip
+    assert manifest["prompt_mismatch_excluded"] == ["p003"] and manifest["pages"] == 2
+    assert {e["page"] for e in _examples(tmp_path / "out2")} == {"p001", "p002"}
+    assert all(e["source_prompt_matches_run"] for e in _examples(tmp_path / "out2"))
+
+
+# --- R3: every image of the request, the whole request checked, the reference bound ----
+
+
+def test_overlay_examples_carry_the_render_and_the_overlay_as_the_pipeline_sends(tmp_path):
+    # R3: the exporter sent the render alone; the pipeline (common/page_path.py) sends
+    # the render, then the overlay. Every example now carries both, in that order.
+    from common import page_path
+
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES, overlay=True))
+    refs = _refs(tree)
+    out = tmp_path / "out"
+    mix = {"honest": 2, "plant-1": 1, "drop-one": 1, "permute": 1}
+    manifest = E.export(tree, refs, set(), out, seed=3, variants_per_page=6, mix=mix,
+                        blinded_share=0.3)  # fmt: skip
+    examples = _examples(out)
+    assert examples and manifest["examples_by_image_count"] == {"2": len(examples)}
+    honest_named = [e for e in examples if e["scenario"] == "honest" and
+                    e["witness_regime"] == "named"]  # fmt: skip
+    assert honest_named
+    for e in examples:
+        page = tree.by_stem()[e["page"]]
+        user = e["messages"][0]["content"]
+        assert [b["type"] for b in user] == ["image", "image", "text"]
+        assert len(e["images"]) == len(e["image_sha256s"]) == 2
+        assert e["images"][0] == f"images/{e['page']}.png"
+        for path, digest in zip(e["images"], e["image_sha256s"], strict=True):
+            assert hashlib.sha256((out / path).read_bytes()).hexdigest() == digest
+        assert e["image_sha256s"][0] == page.feed["page_render"]["image_sha256"]
+        assert e["request_digest"] == page_path.request_digest(user[2]["text"], e["image_sha256s"])
+    for e in honest_named:
+        page = tree.by_stem()[e["page"]]
+        # Byte for byte what the run recorded: the text and both images' digests.
+        assert e["image_sha256s"] == page_path.request_image_sha256s(page.feed)
+        assert e["request_digest"] == page.reading["request_digest"]
+        assert e["request_matches_run"] is True and e["prompt_matches_run"] is True
+    assert manifest["honest_requests_checked"] == len(honest_named)
+    assert manifest["honest_requests_identical_to_run"] == len(honest_named)
+    # A changed feed has its overlay drawn from the rows it shows (as fed_arm sends it).
+    changed = [e for e in examples if e["scenario"] in ("drop-one", "plant-1")]
+    assert any(
+        e["image_sha256s"][1] != tree.by_stem()[e["page"]].feed["overlay"]["image_sha256"]
+        for e in changed
+    )
+
+
+def test_an_honest_example_whose_request_differs_from_the_run_stops_the_export(
+    tmp_path, monkeypatch
+):
+    # R3: the request (text and every image) of an honest, named example must be the run's.
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES, overlay=True))
+    refs = _refs(tree)
+    real = E.example_request
+
+    def render_only(tree_, page, feed):  # the old exporter: the overlay left out
+        images, shown, prompt = real(tree_, page, feed)
+        return images[:1], {**shown, "overlay": None}, prompt
+
+    monkeypatch.setattr(E, "example_request", render_only)
+    with pytest.raises(SystemExit, match="honest example's request differs"):
+        E.export(tree, refs, set(), tmp_path / "out", variants_per_page=4,
+                 mix={"honest": 1}, blinded_share=0.0)  # fmt: skip
+
+
+def test_the_source_request_is_checked_not_the_builder_code_digest(tmp_path):
+    # R3: a page whose recorded request digest differs stops the export before any
+    # variant; a builder code digest that moved while the bytes sent did not (R2's
+    # recipe aliases) does not: on cold73 that stopped every page.
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES, overlay=True))
+    refs = _refs(tree)
+    for page in tree.pages.values():
+        page.feed["prompt"]["builder_sha256"] = "0" * 64
+    manifest = E.export(tree, refs, set(), tmp_path / "ok", variants_per_page=2)
+    assert manifest["pages"] == 3 and not manifest["prompt_mismatch_excluded"]
+    tree.pages[2].reading["request_digest"] = "f" * 64
+    with pytest.raises(SystemExit, match=r"p002 \(reading_digest\)"):
+        E.export(tree, refs, set(), tmp_path / "out", variants_per_page=2)
+
+
+def test_each_example_is_bound_to_the_reference_it_was_planted_from(tmp_path, monkeypatch):
+    # R3: the mutation names the whole reference; the target must be built from it.
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    refs = _refs(tree)
+    out = tmp_path / "out"
+    E.export(tree, refs, set(), out, variants_per_page=4, blinded_share=0.0)
+    sidecars = [json.loads(line) for line in (out / "planted.jsonl").read_text().splitlines()]
+    for e, side in zip(_examples(out), sidecars, strict=True):
+        ref = refs[e["page"]]
+        assert e["reference_record_sha256"] == side["reference_record_sha256"] == ref.digest()
+        assert e["reference_sha256"] == side["reference_sha256"]
+    real = M.mutate
+
+    def planted_elsewhere(*args, **kwargs):
+        m = real(*args, **kwargs)
+        m.reference_record_sha256 = "0" * 64  # planted from another version of the reference
+        return m
+
+    monkeypatch.setattr(M, "mutate", planted_elsewhere)
+    with pytest.raises(SystemExit, match="reference changed between planting and the target"):
+        E.export(tree, refs, set(), tmp_path / "out2", variants_per_page=1)
+
+
+# --- the target is the page answer the prompt asks for -----------------------------------
+
+
+def _gold_page(stem, text, category="acts-19c", form="handwritten"):
+    return parse_gold(
+        GOLD.format(stem=stem, status="fool's gold", text=text)
+        .replace("CATEGORY: acts-19c", f"CATEGORY: {category}")
+        .replace("FORM: handwritten", f"FORM: {form}"),
+        stem,
+    )
+
+
+def _shown_ids(feed):
+    return E.shown_ids(feed)
+
+
+def test_the_target_is_the_answer_the_prompt_asks_for(tmp_path):
+    named_tree = F.load_run_tree(make_run_tree(tmp_path / "named", pages=PAGES))
+    refs = _refs(named_tree)  # gold: acts-19c, handwritten
+    feed = named_tree.pages[1].feed
+    answer = E.build_answer(refs["p001"], feed, [])
+    prompt = page_prompt.build_page_prompt(feed["prompt"]["serving_recipe"], feed)
+    assert page_prompt.ANSWER_FORM in prompt
+    assert list(answer) == ["page_type", "writing", "entries", "set_aside"]
+    assert (answer["page_type"], answer["writing"]) == ("register-acts", "handwritten")
+    assert {e["kind"] for e in answer["entries"]} <= set(ENTRY_KINDS) and "acts" not in answer
+    state, parsed, problems = parse_page_answer(json.dumps(answer))
+    assert state == "parsed" and not problems
+    # The loss spans tile the entries answer too.
+    answer_json = json.dumps(answer, ensure_ascii=False)
+    spans = E.loss_spans(answer_json, answer, refs["p001"], E.CITES_WEIGHT)
+    assert spans[0][0] == 0 and spans[-1][1] == len(answer_json)
+    assert all(a[1] == b[0] for a, b in zip(spans, spans[1:], strict=False))
+
+
+def test_gold_page_type_writing_and_kinds_for_a_named_feed(tmp_path):
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    feed = tree.pages[1].feed
+    rows = "=== HEADINGS ===\nIndex\n=== ROWS ===\nLalonde | 12\nRicher | 14"
+    page = _gold_page("p001", f"Le dix mai\n{rows}", category="index", form="printed form")
+    ref = E.reference_from_gold_for(page, None)
+    assert (ref.page_type, ref.writing) == ("index", "printed")
+    assert [e["kind"] for e in ref.entries] == ["act", "other", "index-row", "index-row"]
+    answer = E.build_answer(ref, feed, [])
+    assert [e["kind"] for e in answer["entries"]][2:] == ["index-row"] * 2
+    assert parse_page_answer(json.dumps(answer))[0] == "parsed"
+    contract = E.reference_from_gold_for(_gold_page("p001", "Le dix", "contract", "typed"), None)
+    assert (contract.page_type, contract.writing) == ("instrument", "typed")
+    assert contract.entries[0]["kind"] == "instrument"
+    forced = E.reference_from_gold_for(page, "table-row")
+    assert [e["kind"] for e in forced.entries][2:] == ["table-row"] * 2
+    # What the header does not settle is refused, with the reason, not guessed.
+    for category, form in (("non-register", "typed"), ("acts-19c", "")):
+        unsure = E.reference_from_gold_for(_gold_page("p001", "Le dix", category, form), None)
+        assert unsure.page_type is None or unsure.writing is None
+        with pytest.raises(E.ExampleRefused, match="does not settle"):
+            E.build_answer(unsure, feed, [])
+
+
+def test_export_with_a_named_feed_writes_prompt_grammar_targets(tmp_path):
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    refs = _refs(tree)
+    refs["p003"] = E.reference_from_gold_for(
+        _gold_page("p003", "Le douze mai", "non-register"), None
+    )
+    out = tmp_path / "out"
+    manifest = E.export(tree, refs, set(), out, seed=3, variants_per_page=4, blinded_share=0.0)
+    assert manifest["refused"] and {r["id"].split("#")[0] for r in manifest["refused"]} == {"p003"}
+    assert "does not settle" in manifest["refused"][0]["reason"]
+    examples = _examples(out)
+    assert examples and {e["page"] for e in examples} == {"p001", "p002"}
+    for example in examples:
+        state, parsed, problems = parse_page_answer(example["messages"][1]["content"])
+        assert state == "parsed", problems
+        assert list(parsed) == ["page_type", "writing", "entries", "set_aside"]
+        assert page_prompt.ANSWER_FORM in example["messages"][0]["content"][-1]["text"]
+
+
+def test_reference_json_validates_kinds_page_type_and_writing():
+    base = {
+        "schema": E.REFERENCE_SCHEMA, "stem": "p001", "page_type": "index", "writing": "typed",
+        "entries": [{"kind": "index-row", "text": "Lalonde 12"}],
+    }  # fmt: skip
+    ref = E.reference_from_json(base)
+    assert (ref.page_type, ref.writing) == ("index", "typed")
+    for bad in (
+        {**base, "entries": [{"kind": "heading", "text": "x"}]},
+        {**base, "page_type": "letter"},
+        {**base, "writing": "scribbled"},
+        {k: v for k, v in base.items() if k != "writing"},
+    ):
+        with pytest.raises(SystemExit):
+            E.reference_from_json(bad)
+    old = E.reference_from_json({**{k: v for k, v in base.items() if k not in ("page_type", "writing")},
+                                 "schema": "training-reference.v1"})  # fmt: skip
+    assert old.page_type is None and old.typing_problem
+
+
+def test_a_reference_with_no_entries_sets_every_shown_id_aside(tmp_path):
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    feed = tree.pages[1].feed
+    blank = M.Reference("p001", "fool's gold", page_type="blank", writing="handwritten")
+    assert blank.blank and not blank.entries
+    typed = E.reference_from_gold_for(_gold_page("p001", "[[?]]", "blank"), None)
+    assert (typed.page_type, typed.writing) == ("blank", "handwritten")
+    full = E.reference_from_gold_for(_gold_page("p001", "Le dix", "blank"), None)
+    assert full.page_type is None  # a blank page whose gold has text is not typed blank
+    answer = E.build_answer(blank, feed, [])
+    assert answer["entries"] == []
+    assert {s["id"] for s in answer["set_aside"]} == _shown_ids(feed)
+    assert all(s["reason"].strip() for s in answer["set_aside"])
+    assert parse_page_answer(json.dumps(answer))[0] == "parsed"
+    m = M.mutate(feed, blank, "blank-chatty", seed=0, donors=["Le deux juin mil huit cent un"])
+    answer = E.build_answer(blank, m.feed, m.set_aside_ids)
+    assert {s["id"] for s in answer["set_aside"]} == _shown_ids(m.feed)
+    assert {s["reason"] for s in answer["set_aside"] if s["id"] in m.set_aside_ids} == {
+        "not on the page"
+    }
+
+
+def test_a_pages_examples_do_not_depend_on_which_other_pages_are_exported(tmp_path):
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    refs = _refs(tree)
+    mix = {"drop-one": 1, "plant-1": 1, "injection": 1}
+    runs = {}
+    for name, pages in (("all", None), ("last", [tree.by_stem()["p003"]])):
+        out = tmp_path / name
+        E.export(tree, refs, set(), out, seed=5, variants_per_page=6, mix=mix, pages=pages)
+        runs[name] = {e["id"]: e for e in _examples(out)}
+    assert runs["last"]
+    for example_id, example in runs["last"].items():
+        assert runs["all"][example_id]["messages"] == example["messages"]
+        assert runs["all"][example_id]["request_digest"] == example["request_digest"]
+
+
+def test_out_inside_the_repository_is_refused_unless_gitignored(tmp_path):
+    for inside in (E.REPOSITORY / "operations" / "x", E.REPOSITORY / "out", E.REPOSITORY):
+        with pytest.raises(SystemExit, match="inside the repository"):
+            E.refuse_out_in_repository(inside)
+    for allowed in ("private", "workbench", "scriptorium"):
+        E.refuse_out_in_repository(E.REPOSITORY / allowed / "export")
+    E.refuse_out_in_repository(tmp_path / "out")
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    target = E.REPOSITORY / "operations" / "training" / "never-written"
+    with pytest.raises(SystemExit):
+        E.export(tree, _refs(tree), set(), target)
+    assert not target.exists()
+
+
+def test_row_kind_must_be_an_entry_kind(tmp_path):
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    with pytest.raises(SystemExit, match="not an entry kind"):
+        E.load_references(tree, tmp_path, "*.txt", None, "row")
+    with pytest.raises(SystemExit):
+        E.main(["--run-tree", "x", "--gold", "x", "--held-out", "x", "--out", "x",
+                "--row-kind", "row"])  # fmt: skip
+
+
+def test_held_out_names_keep_their_dots(tmp_path):
+    listing = tmp_path / "held.txt"
+    listing.write_text(
+        "Vol.1.v2_00030_1L.tif\nVol.1.v2_00031_1L\nplain.JPG  # image\nPages/Prepped/X_1L.tif\n"
+    )
+    held = E.read_held_out(listing)
+    assert held == {"Vol.1.v2_00030_1L", "Vol.1.v2_00031_1L", "plain", "X_1L"}
+    assert E.is_held_out("X_1L", held) and E.is_held_out("X_2R", held)

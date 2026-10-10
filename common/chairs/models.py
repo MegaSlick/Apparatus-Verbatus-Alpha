@@ -213,11 +213,17 @@ class ServingReceipt:
 
 @dataclass(frozen=True, slots=True)
 class WitnessFloorStatus:
-    """The count that makes explicit absences visible against the witness floor."""
+    """The count that makes explicit absences visible against the witness floor.
+
+    `configured_roles` are the witnesses every page is read by. A routed chair
+    reads only the pages its rule sends it, so it is listed in `routed_roles`
+    and never counted: an act page must meet the floor without it.
+    """
 
     floor: int
     configured_roles: tuple[str, ...]
     absent_roles: tuple[str, ...]
+    routed_roles: tuple[str, ...] = ()
 
     @property
     def configured_count(self) -> int:
@@ -242,6 +248,10 @@ class ModelsConfig:
     #: Which framing each witness chair is asked in, by role; an absent chair
     #: gets its adapter's default. Sealed with the roster, not chosen in a stage.
     witness_framings: Mapping[str, str] = field(default_factory=dict)
+    #: Witness chairs that read only the pages a rule routes to them, by role,
+    #: and the rule's name (`common/witness_routing.py`). Empty: every witness
+    #: reads every page.
+    witness_routing: Mapping[str, str] = field(default_factory=dict)
     model_root: str | None = None
     source_path: Path | None = field(default=None, compare=False, repr=False)
 
@@ -249,6 +259,7 @@ class ModelsConfig:
         object.__setattr__(self, "chairs", MappingProxyType(dict(self.chairs)))
         object.__setattr__(self, "adapter_recipes", MappingProxyType(dict(self.adapter_recipes)))
         object.__setattr__(self, "witness_framings", MappingProxyType(dict(self.witness_framings)))
+        object.__setattr__(self, "witness_routing", MappingProxyType(dict(self.witness_routing)))
 
     def to_record(self) -> dict[str, object]:
         chairs: dict[str, object] = {}
@@ -263,6 +274,10 @@ class ModelsConfig:
         # Omitted when empty, or every run's `config_digest` would move.
         if self.witness_framings:
             record["witness_framings"] = dict(sorted(self.witness_framings.items()))
+        # Omitted when empty for the same reason: a run that routes nothing seals
+        # no routing key.
+        if self.witness_routing:
+            record["witness_routing"] = dict(sorted(self.witness_routing.items()))
         return record
 
     @property
@@ -285,19 +300,26 @@ class ModelsConfig:
         return tuple(sorted(role for role in self.chairs if is_witness_role(role)))
 
     def witness_floor_status(self) -> WitnessFloorStatus:
-        """Count configured Attestator chairs; explicit absences create a deficit."""
+        """Count the configured Attestator chairs that read every page.
+
+        Explicit absences create a deficit; a routed chair is set apart, not counted.
+        """
 
         configured: list[str] = []
         absent: list[str] = []
+        routed: list[str] = []
         for role, value in self.chairs.items():
             if not is_witness_role(role):
                 continue
             if isinstance(value, AbsentChair):
                 absent.append(role)
+            elif role in self.witness_routing:
+                routed.append(role)
             else:
                 configured.append(role)
         return WitnessFloorStatus(
             floor=self.witness_floor,
             configured_roles=tuple(sorted(configured)),
             absent_roles=tuple(sorted(absent)),
+            routed_roles=tuple(sorted(routed)),
         )

@@ -385,6 +385,34 @@ and Armarium. Coniector has already run when the selection includes it
 selection through Coniector, the operator can decide and resume from Recensor off the
 pod.
 
+- **`--stop-after-coniector`** (off by default) ends the selection at the Coniector, the
+  last stage that needs the card, so the GPU pod is released instead of paying for the
+  Recensor's CPU work (25 min at 0% GPU on a $2.49/h card on the 2026-10-09 cold run).
+  No selection becomes `--from door --to coniector`, `--models big` becomes `--from
+  perlector --to coniector`, and a `--from`/`--to` range past the Coniector ends there;
+  a selection that already ends earlier is unchanged, and one that starts after the
+  Coniector is refused before the bootstrap (it would run nothing on the card). The run
+  then ends `selection-complete` and returns at once, so the pod closes. The report
+  records the flag (`plan.stop_after_coniector`). As any range it is the orchestrator's
+  `semi` mode: a stage that holds before the Coniector stops the run there. Then fetch
+  the tree and run Recensor through Armarium on the Mac, as below.
+
+**Recensor on the Mac, from the fetched tree.** The Recensor, Archetypus and Armarium
+serve no chair; on the Mac the Recensor of the 73-page cold run took about 27 minutes of
+CPU. Fetch the run, then run the tail with the same sealed configuration
+(`operations/operator/README.md`, "Finish a pod run on this computer"):
+
+```sh
+verbatus fetch-run --run-id <id> --into <local root> --network-volume DATACENTER:VOLUME_ID
+.venv/bin/python pipeline/orchestrator/run.py --run-id <id> --run-root <local root> \
+  --models-config config/models-real.toml \
+  --serving-recipes-config config/serving_recipes_real.toml \
+  --mechanics-qualification --from recensor --to armarium
+```
+
+Add `--corpus-register` if the run sealed one. A run held at the Recensor is reviewed and
+decided there (`verbatus review`, `verbatus decide`) and the same range is run again.
+
 - **`--mechanics-qualification`** is needed for any real-roster run today. Every row in
   `config/serving_recipes_real.toml` is `preflight_state = "unproven"`; PREFLIGHT may serve
   one to qualify it, but the stages refuse it by name, from the first stage that serves a
@@ -530,7 +558,7 @@ in the launch record's `balance_notification`, not refused.
 `pod_run --notify` adds a fourth, the one question among them: a run on the pod that
 stops with more of its pages held than its sealed review policy allows, or exports past
 that stop on a person's advance, sends the systemic alarm as a `decision`
-(`notify_systemic`), the line `verbatus run --notify` sends for a run on this computer.
+(`notify_systemic`), the line `verbatus --notify run ...` sends for a run on this computer.
 `pod_run` reads the alarm from its invocation's stop record (`systemic`) and records the
 line and the notification outcome in its run report. If the orchestrator ran but left no
 usable stop record (`read_stop_record`), whether it sounded the alarm is unknown. The
@@ -853,7 +881,7 @@ outside the repository, but also leaves it in the shell's history; prefer the va
    ```
 
    The first seals the folder and copies it to a local folder only, which a local
-   `verbatus --state-dir private/verbatus-state run` can check at the Door for free
+   `verbatus --state-dir private/verbatus-state run --run-id <id>` can check at the Door for free
    (`operations/operator/README.md`, "`run`, `export` and holds"); the second writes
    `submission/` and `submission-manifest.json` at the volume root. A second sealed set on
    the same volume needs its own `--prefix` (`--prefix spreads` writes `spreads/` and
@@ -1026,6 +1054,9 @@ cd $R && setsid nohup $R/.venv/bin/python -m operations.pod.pod_run \
   card with `--container-disk-in-gb 100`), and the big pod adds `--from perlector --to
   coniector` ([`pod_run.py`](#pod_runpy-running-the-pipeline-on-a-pod)). Recensor onward
   runs off the GPU, on the Mac or a CPU pod, from the fetched tree.
+- **One card, released after the Coniector.** Add `--stop-after-coniector` before `--`:
+  the run ends at the Coniector and the pod closes; then fetch the tree and run Recensor
+  through Armarium on the Mac ([above](#pod_runpy-running-the-pipeline-on-a-pod)).
 - The file names carry the run id so a second run on the same volume cannot overwrite
   them. A second pod on the same run id may reuse these exact paths: the journal records
   which pod wrote it, so the same pod resumes it, while another pod (a replacement for a

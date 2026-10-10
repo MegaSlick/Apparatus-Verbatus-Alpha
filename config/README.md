@@ -15,6 +15,7 @@ The knobs. One question per file, each answerable without reading code.
 | `pod_placement.toml` | planning-only GPU resource tiers, dtype floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | the default serving catalogue: fixture rows only, used unless `--serving-recipes-config` selects another file |
 | `serving_recipes_real.toml` | locked but unproven vLLM profiles for the real chairs, the CPU rows of the Designator's two detectors (the record detector in-process, Surya as a subprocess), and explicit `unsupported` rows where no engine fits; selected with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
+| `serving_recipes_real_variants.toml` | unproven alternative vLLM shapes for a real chair that no roster selects yet (the Perlector on the official FP8 checkpoint, with MTP speculation or an FP8 KV cache, and on NVIDIA's mixed NVFP4/FP8 checkpoint for Blackwell cards); read by recipe name (the bake-off's `--recipe`), never as a run catalogue |
 | `formats.toml` | which Armarium export projections are written, whether verified pixels are embedded, and whether rows carry the run's lot |
 | `perlector_protocol.toml` | what one whole-page reading is shown (`[feed]`), the page render's edges (`[page_context]`), and the truncation instrument's length floor and legibility gate (`[truncation]`) |
 | `alignment.toml` | the step budget of the Perlector's dissent comparisons |
@@ -22,10 +23,26 @@ The knobs. One question per file, each answerable without reading code.
 | `designator_geometry.toml` | the crop policy for the record detector (`secondary_proposer`): the Designator cuts every detector record's crop under it, and the record reader reads those crops |
 | `ink_map.toml` | the ink measurement's policy: background inference, the page-spanning bound and connectivity radius, and the outside-coverage audit's gates |
 | `perlector_audit.toml` | the Perlector audit's round cap; every page reading records the audit as not run |
-| `page_accounting.toml` | the page accounting's policy: when a box counts as inside the reading regions (`[inside]`), how much witness text a reading may leave unaccounted for or set aside (`[witness_text]`), the text alignment's anchors and bounds (`[alignment]`), what makes a unit's text distinctive (`[identity]`), and when two entries claim one region or a unit's box is too large for its text (`[region]`) |
+| `page_accounting.toml` | the page accounting's policy: when a box counts as inside the reading regions (`[inside]`), how much witness text a reading may leave unaccounted for or set aside (`[witness_text]`), the text alignment's anchors and bounds (`[alignment]`), what makes a unit's text distinctive (`[identity]`), when two entries claim one region or a unit's box is too large for its text (`[region]`), how much of a reading may be doubtful or unread (`[doubt]`), and which review-flag codes record a finding without holding the page, with the length of a short witness unit (`[flags]`) |
 | `reconstruction.toml` | whether the Coniector runs, whether the submitted pages are consecutive leaves of one register, and the bounds past which a departure is not applied |
 | `triage_modes.toml` | the three triage modes (`manual`, `semi`, `auto`) and their review thresholds |
 | `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's whole-page output cap and repetition-loop guard, and the reconstructor's answer cap; and Chandra's native recipe |
+
+A roster may seat a witness on some pages only with a `[witness_routing]` table
+(`attestator_4 = "index-and-table.v1"`: dots.mocr on pages Surya tags a table or the
+record detector finds no record on; `pipeline/3_attestatores/CONTRACT.md`, "Witness
+routing"). Neither committed roster has one, so routing is off and no run changes. To
+seat dots.mocr on the real roster, all of these are needed together: a fetched,
+verified `dots-studio/dots.mocr` at `e539fbb52280393adc081b289ec597430a0f9031` with its
+digest manifest and an `[chairs.attestator_4]` row (`witness_adapter =
+"dots-mocr.v1"`, `witness_scope = "page"`) plus the `[witness_routing]` line in
+`models-real.toml`; an `attestator_4` entry in the required-artifact list of the pod bootstrap's MODEL_STORE step (`REQUIRED_ARTIFACTS` in `common/chairs/model_store.py`), which fetches and verifies only the chairs listed there; an `attestator_4` row at every tier in `serving_recipes_real.toml`
+(vLLM with `trust_remote_code`, room for 16,384 answer tokens); a
+`[chair_decoding.attestator_4]` row in `decoding.toml` (temperature 0.1, top_p 1.0,
+the vendor command line's); and the prompt's token count measured with the pinned
+tokenizer in `common/request_capacity.py`. Until the last exists a served dots.mocr
+request is refused by name. The root `conftest.py` (`dots_models_config`) builds the fixture
+version of this roster for the tests.
 
 Beside the rosters:
 
@@ -142,6 +159,15 @@ tier and a reason, and the serving manager refuses to launch one. Every row in
 `operations/serving/config.py::verify_recipes_cover_chairs` reconciles a catalogue with
 its roster and `pod_placement.toml` offline, so a chair, recipe or tier nothing could
 resolve fails in the test suite rather than on a pod.
+
+A `vllm` row may add three engine options, each absent unless stated and each limited to
+reviewed values: `quantization` (`"fp8"`, or `"modelopt_mixed"` for a ModelOpt
+mixed-precision checkpoint; the verified snapshot's `config.json` must declare the method
+vLLM maps that name from: `quant_method` `fp8`, or `modelopt` with `quant_algo`
+`MIXED_PRECISION`), `kv_cache_dtype` (`"fp8"`) and `speculative_config` (a table of
+`method = "mtp"` and `num_speculative_tokens`, 1 to 8). They follow every other flag on
+the command line, so a row without them launches exactly as before, and they count as
+launch fields for a shared service.
 
 `pod_placement.toml`'s `pixel_cap` caps a longest edge in pixels, while a serving
 profile's `max_pixels` is a total pixel count passed to vLLM; the two are never compared

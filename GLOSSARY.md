@@ -14,15 +14,27 @@ what the project exists to recover.
 
 ## Everyday words with a specific meaning
 
-**act** — one unit of body text, usually a register entry (a baptism, marriage or
-burial). Registers also hold index rows, letters and notes, so the term is kept
-deliberately loose: a narrow definition would exclude material, and a missed act is worse
-than a poorly read one.
+**act** — one registered act: a baptism, marriage, burial or other act entered in a
+parish or civil register, with its margin note and signatures. A notarial act or
+contract (an *instrument*) counts as an act for "never lose an act". Index rows, table
+rows, ledger entries and paragraphs of running text are entries of their own kind, read
+and accounted for like acts but never counted as acts.
 
-**entry kind `other`** — an entry of a page reading that is text but not an act: a
-heading, a page number, a marginal note that is not an entry. It is read, placed and
-accounted for like an act but is not counted as one, and a page whose entries are all
-`other` is held until the Recensor confirms it holds no act.
+**page type** — what kind of document a page is, as the Perlector names it:
+`register-acts`, `index`, `table`, `ledger`, `instrument`, `prose` or `blank`. It decides
+which checks apply to the page; detection facts (Surya's and the witnesses' `Table`
+labels, the record detector's count) are recorded beside it as a cross-check.
+
+**entry kind** — what one entry of a page reading is: `act`, `index-row`, `table-row`,
+`ledger-entry`, `instrument`, `paragraph` or `other`. An `act` or `instrument` is of the
+act class; every other kind is of the `other` class, which is what later records call
+the entry's `kind`. Rows of an index, table or ledger are exported as rows, not acts.
+
+**entry kind `other`** — an entry of a page reading that is text but no entry of the
+page's own kind: a heading, a page number, a marginal note that is not an entry. Every
+entry of the `other` class is read, placed and accounted for like an act but is not
+counted as one, and a page whose entries are all of that class is held until the
+Recensor confirms it holds no act.
 
 **page** — one image from the source.
 
@@ -33,9 +45,19 @@ record's crop for a record reader, or an act's reading region.
 reads the page image, a record reader reads the crops of the records its detector found
 on the page. Its report is evidence, not an answer.
 
+**witness routing** — seating a witness on some pages only. A models roster's
+`[witness_routing]` names the chair and its rule; the one rule, `index-and-table.v1`,
+sends dots.mocr a page when Surya tags a `Table` block on it or the record detector
+finds no record on it. The decision is read from the Designator's records before any
+witness reads the page, sealed per page and summarised in
+`run-health/witness-routing.json`. On a page not routed to it the chair is not part of
+the page's roster at all. No committed roster routes anything.
+
 **witness floor** — how many configured witnesses must have read a page, without
-truncation, for a unit on it to be accepted. Set as `witness_floor` in the model roster
-and checked by the Recensor; a page below it is held `under-witnessed`.
+truncation, for a unit on it to be accepted. A witness that returned a genuinely empty
+reading counts as having read it (`pipeline/5_recensor/CONTRACT.md`, "The witness floor"). Set as `witness_floor` in the model roster
+and checked by the Recensor; a page below it is held `under-witnessed`. It counts the
+page's own roster: a routed witness counts on the pages routed to it and nowhere else.
 
 **chair** — a named role in the pipeline that one model fills. The binding lives in a
 model roster under `config/`: `models.toml` holds small local stand-ins and
@@ -46,6 +68,7 @@ chairs:
 | Chair | Role |
 |---|---|
 | `attestator_1`, `attestator_2`, `attestator_3` | the witnesses (Attestatores) |
+| `attestator_4` | a routed witness (dots.mocr), seated only by a `[witness_routing]` table; the fixture roster has it, the committed real roster does not |
 | `secondary_proposer` | the record detector: the Designator's detector of register records, whose crops the record reader reads |
 | `designator_surya` | Surya, the Designator's line and layout detector |
 | `perlector` | the reader |
@@ -85,6 +108,11 @@ Recensor reviews each and a person decides about held ones (`--unit p1:2`).
 
 **held** — kept back for human review: not established or exported until a person
 decides, and never silently dropped or passed as done.
+
+**flagged** — marked for human review without being held: a finding the sealed policy
+names as a review flag is measured and recorded like a hold, reported, and carried with
+the reading's text in the flagged export, but the reading is established and exported
+as read. A flag is a question for a person; a hold is a stop.
 
 **override** — a person's decision (`release`) that sends a held reading to export as
 the model read it, its own holds included. It is labelled "released by operator" with

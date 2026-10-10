@@ -1,9 +1,10 @@
 # Attestatores — contract
 
 The Attestatores retains one immutable `kind="page-testimonium"` for every page
-the Exemplar sealed and every configured page witness chair, on every attempted
-read. The schedule is the sealed pages: no act list decides what a witness is
-shown. It does not merge, rank, select, or turn a Testimonium into established
+the Exemplar sealed and every configured page witness chair of that page's roster,
+on every attempted read. The schedule is the sealed pages: no act list decides what
+a witness is shown. A page's roster is every configured page witness, unless the
+roster routes one (below). It does not merge, rank, select, or turn a Testimonium into established
 text. A missing artifact is never a witness outcome.
 
 ## Stage-completion seal
@@ -31,6 +32,83 @@ decides whether a page is read.
 `page_subject` answers "which page is ordinal N" on every route, from
 `common.stage.exemplar_page_ids` over the Exemplar's own `page` artifacts. The
 pages witnessed are those whose Exemplar `page` record is `sealed`.
+
+## Witness routing
+
+A models roster may seat a witness on some pages only: `[witness_routing]` names the
+chair and its rule (`common/chairs/config.py`). Absent, which is every committed
+roster, every configured witness reads every sealed page, nothing below is written,
+and a run that routes nothing seals no routing record.
+
+The one rule, `index-and-table.v1` (`common/witness_routing.py`), routes a page to
+the chair when Surya's layout tags a block on it `Table` (`surya-table`), when the
+record detector found no record on it (`zero-detector-records`), or both (`both`).
+Both signals are read from the Designator's sealed `surya-page`, `surya-block` and
+`detector-page` records, before any witness reads the page, so the decision never
+depends on a witness or on the Perlector's page type. A roster that routes a
+witness must configure both Designator chairs, may not route every witness, must
+leave at least `witness_floor` configured witnesses reading every page, and names
+only configured witness chairs; any other is refused when it loads. The preflight's
+floor check counts only the witnesses that read every page.
+
+**The record.** Before the first witness is asked, the pass publishes one
+`kind="witness-routing"` per sealed page (subject the page id, outcome `recorded`,
+schema `witness-routing.v1`): `page_id`, `page_ordinal`, `rule`, `routed_chairs`,
+`routed`, `signal` (null when not routed), `surya_table_blocks` (the Table blocks'
+subjects) and `detector_record_count`, bound as inputs to the census, the Table
+blocks and the detector census it was read from. A resume makes the same records
+from the same evidence. The tally re-derives every one and holds when a sealed page
+has none. `run-health/witness-routing.json` (`witness-routing-summary.v1`) lists
+each page's decision and counts pages by signal; it is a report for a person,
+rebuilt on every pass.
+
+**What it changes.** On a page the rule does not route, the routed chair has no
+Testimonium, is not shown to the Perlector and is not counted against the witness
+floor: the page is read, shown and counted as it is without the chair. On a routed
+page it is one more page witness, held to every rule a witness is, and counts toward
+the floor like any other (Recensor CONTRACT, "The witness floor"). Every reader of a
+page's roster takes it from `common.page_testimonia.page_witness_chairs`.
+
+## dots.mocr
+
+dots.mocr (`dots-studio/dots.mocr` at `e539fbb`, adapter `dots-mocr.v1`) is a layout
+reader whose vendor prompt asks for every layout element's box, category and text;
+it reads index lists and tables row by row. It is meant to be seated by routing
+alone, on index and table pages, and no committed roster seats it.
+
+**What it is asked.** The vendor's own request (`dots_mocr/model/inference.py` at
+`rednote-hilab/dots.mocr` `23f3e56`): one user turn, the image first, then one text
+part carrying the vendor's image placeholder and `prompt_layout_all_en`, whose
+SHA-256 is the one the bake-off recorded on every request to the real model; no
+system turn. Its sampling row is the vendor command line's (temperature 0.1, top_p
+1.0) and its answer bound 16,384 tokens, reserved whole like Churro's.
+
+**What it is shown.** The sealed page itself (`presented.kind = "page"`); the
+model's processor converts and resizes it. The vendor's command line first
+re-renders the page through PyMuPDF at 200 dpi, which no sealed-page transform can
+replay; this is the vendor's own `--no_fitz_preprocess` path, and not the one the
+bake-off scored.
+
+**Its grammar** (`common/dots_layout.py`, parser `layout-json`, text view
+`dots-layout-text.v1`): a JSON list of cells `{bbox, category, text}` in reading
+order. An answer that is not UTF-8, not JSON (a loop cut at the bound) or not a list
+of objects is retained and not parsed, never salvaged as the vendor's cleaner would;
+the attempt is `failed`. A cell with a malformed box, an unknown category or text
+that is not a string is kept with the grammar's finding. The text view is the
+bake-off's: a Table's HTML one line per row, a Formula's LaTeX without `$$`,
+Markdown marks removed, a Picture contributing nothing. Each cell's box, in the
+pixels of the image the processor made (Qwen2-VL's `smart_resize`, a 28-pixel grid
+between 3,136 and 11,289,600 pixels), is mapped back to the sealed page, low edges
+floored and far edges ceiled (`dots-smart-resize-floor-ceil.v1`); a box outside that
+image places nothing. Each cell with text is one page-feed unit, `layout-block`,
+labelled with its category.
+
+**Fixture posture.** `[[dots_page_response]]` rows declare an answer in the vendor
+grammar (`raw_json`, `transport_stop_reason` `stop` or `length`), captured and read
+exactly as a served answer is; they are read only by a roster that seats a dots.mocr
+chair. **Live posture.** Its prompt has no measured token count yet
+(`common/request_capacity.py`), so a served request is refused by name as a capacity
+refusal, never sent, until one is measured with the pinned tokenizer.
 
 ## Two postures, chosen by the sealed catalogue
 
@@ -399,3 +477,10 @@ manifest after a seal holds until `RunTree.write_manifest("attestatores")`
 re-derives it from the immutable attempts. Over a folder whose attempts are
 gone, that step discards the last record that they existed; read the manifest
 first.
+
+## Not built
+
+- Witnesses do not use the Perlector's streamed loop detector. A witness reply is read
+  to its end and scanned afterwards for repetition; it is not abandoned at the first
+  looping line as the Perlector's is (`common/repetition_loop.py`, the guard in
+  `config/decoding.toml`).

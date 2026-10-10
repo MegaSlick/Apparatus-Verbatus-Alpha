@@ -37,6 +37,7 @@ from common.imaging import (
     triage_mode_transform,
     triage_operations,
 )
+from common.replay import run_holds
 from common.runtree.store import RunTree
 
 # The one name for a triage derivative's kind. The Door writes it, and this
@@ -62,7 +63,7 @@ def verify_sealed_page_pixels(
     ordinal = source.get("ordinal")
     if not isinstance(ordinal, int) or isinstance(ordinal, bool):
         raise ContractError("a submitted source has no integer ordinal for its sealed page")
-    if page.get("run_id") != tree.run_id or page.get("stage") != EXEMPLAR:
+    if not tree.holds_run_id(page.get("run_id"), EXEMPLAR) or page.get("stage") != EXEMPLAR:
         raise ContractError("a sealed page belongs to a different Exemplar run")
     if page.get("config_digest") != run.get("config_digest"):
         raise ContractError("a sealed page is bound to a different run configuration")
@@ -245,7 +246,7 @@ def verify_refused_page_evidence(
     if (
         not isinstance(ordinal, int)
         or isinstance(ordinal, bool)
-        or page.get("run_id") != tree.run_id
+        or not tree.holds_run_id(page.get("run_id"), EXEMPLAR)
         or page.get("stage") != EXEMPLAR
         or page.get("kind") != "page"
         or page.get("outcome") != "refused"
@@ -276,7 +277,7 @@ def verify_refused_page_evidence(
     except (SchemaRefusal, UnicodeDecodeError, ValueError, TypeError) as error:
         raise ContractError("a refused page's Door admission is not a valid artifact") from error
     if (
-        admission.get("run_id") != tree.run_id
+        not tree.holds_run_id(admission.get("run_id"), DOOR)
         or admission.get("stage") != DOOR
         or admission.get("kind") != "admission"
         or admission.get("outcome") != "refused"
@@ -323,7 +324,7 @@ def verify_exemplar_corpus_seal(
         raise ContractError("the Exemplar carries no single derived corpus seal")
     seal = tree.read_artifact(EXEMPLAR, "seal", expected_id)
     if (
-        seal.get("run_id") != tree.run_id
+        not tree.holds_run_id(seal.get("run_id"), EXEMPLAR)
         or seal.get("stage") != EXEMPLAR
         or seal.get("kind") != "seal"
         or seal.get("outcome") != "sealed"
@@ -665,7 +666,7 @@ def _verify_admission(
     page_rendered: Any,
 ) -> None:
     if (
-        admission.get("run_id") != run.get("run_id")
+        not run_holds(run, admission.get("run_id"), DOOR)
         or admission.get("stage") != DOOR
         or admission.get("kind") != "admission"
         or admission.get("outcome") != "admitted"
@@ -941,11 +942,11 @@ def verify_triage_derivative(
 def _renderer_drift(contract: dict[str, Any]) -> str:
     """Name a library difference when one is the likelier cause of a pixel mismatch.
 
-    The recorded library versions are not compared against the running host; the
-    byte comparison is the property. A host whose imaging libraries render the
-    part differently (an upgrade, or another platform's arithmetic) therefore
-    refuses the page, and since that message alone points an operator at forgery,
-    it names the versions that differ.
+    The byte comparison is the property that refuses a page; the recorded library
+    versions are compared against the running host only to word the refusal. A host
+    whose imaging libraries render the part differently (an upgrade, or another
+    platform's arithmetic) refuses the page, and since that message alone points an
+    operator at forgery, it names the versions that differ.
     """
     fields = ("renderer_version", "pillow_heif_version", "libheif_version")
     try:

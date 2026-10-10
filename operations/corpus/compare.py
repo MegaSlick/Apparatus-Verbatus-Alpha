@@ -28,7 +28,7 @@ integers, so intersection and union areas are integers and every comparison is a
 exact `Fraction`, never a float — nothing here is a canonical artifact until the
 final record is built, and that record stores areas, not the ratio, because
 `common.contracts.canonical` refuses floats outright. The assignment itself is
-an exact maximum-weight bipartite matching (`_best_assignment`, Kuhn-Munkres /
+an exact maximum-weight bipartite matching (`_max_weight_assignment`, Kuhn-Munkres /
 Hungarian algorithm, `O(size**3)` over `Fraction` weights, never a float) —
 polynomial in the number of eligible acts, so it is exact for every page size
 this corpus actually has, not only a small one; `MAX_ACTS_PER_PAGE` is a sanity
@@ -476,6 +476,9 @@ class ReadOnlyRunTree:
     def has_artifact(self, stage: str, kind: str, artifact_id: str) -> bool:
         return self._tree.has_artifact(stage, kind, artifact_id)
 
+    def holds_run_id(self, run_id: Any, stage: Any) -> bool:
+        return self._tree.holds_run_id(run_id, stage)
+
     def manifest_agrees_with_disk(self, stage: str) -> bool:
         return self._tree.manifest_agrees_with_disk(stage)
 
@@ -499,6 +502,12 @@ class ReadOnlyRunTree:
 
     def recensor_partition_receipt_path(self) -> str:
         return self._tree.recensor_partition_receipt_path()
+
+    def recensor_review_summary_path(self) -> str:
+        return self._tree.recensor_review_summary_path()
+
+    def witness_routing_summary_path(self) -> str:
+        return self._tree.witness_routing_summary_path()
 
     def serving_log_path(self, stage: str) -> str:
         return self._tree.serving_log_path(stage)
@@ -524,7 +533,11 @@ class ReadOnlyRunTree:
     write_run_receipt = _refused_write
     write_approval_record = _refused_write
     write_recensor_partition_receipt = _refused_write
+    write_recensor_review_summary = _refused_write
+    write_witness_routing_summary = _refused_write
     note_launch_audit = _refused_write
+    # Makes a new run; a read-only wrapper never does.
+    create_replay = _refused_write
 
 
 # --- The comparison record ---------------------------------------------------
