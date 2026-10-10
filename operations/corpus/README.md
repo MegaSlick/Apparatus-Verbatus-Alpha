@@ -185,7 +185,8 @@ and digest-named images under `pages/` is also accepted for local synthetic test
   not read, or whose units carry no box, gives every record an empty hypothesis by name,
   and so does a witness shown on another page of the run that this page's feed does not
   show (`witness-not-in-feed`), so the denominator is every record on every page for
-  every witness;
+  every witness of that page's roster. A routed witness belongs to the roster only of
+  the pages its sealed `witness-routing` decision routed to it;
   `scoreable_cer_*` is the rate over the records a unit lay on. With no `--page-id` it
   scores every admitted page the run sealed and lists the rest under
   `reference_pages_outside_run`. `--basis page-testimonium` with one or more

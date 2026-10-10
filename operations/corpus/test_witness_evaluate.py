@@ -9,6 +9,7 @@ import pytest
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash, verify_self_hash
 from common.contracts.stages import ATTESTATORES
 from common.runtree.store import RunTree
+from conftest import dots_models_config, dots_serving_recipes, run_orchestrator
 from operations.corpus import CorpusRefusal
 from operations.corpus.compare import (
     ReadOnlyRunTree,
@@ -30,7 +31,9 @@ from operations.corpus.witness_evaluate import (
     evaluate_page_feed_run,
     evaluate_run,
     main,
+    page_feeds,
     page_health_counts,
+    page_rosters,
     page_witness_index,
     sealed_page_bindings,
     witness_reading,
@@ -678,6 +681,42 @@ def test_a_ledger_page_the_run_did_not_seal_is_counted_not_scored(
             reference_pages_path=pages_path,
             page_ids=["page-elsewhere"],
         )
+
+
+@pytest.fixture(scope="module")
+def routed_run(tmp_path_factory) -> RunTree:
+    """dots.mocr (`attestator_4`) routed to page 2, a table page; page 1 is an act page."""
+    base = tmp_path_factory.mktemp("routed-runs")
+    completed = run_orchestrator(
+        base / "runs",
+        "r",
+        "dots-table",
+        models_config=dots_models_config(base / "models"),
+        serving_recipes_config=dots_serving_recipes(base),
+    )
+    # The fixture's pages carry an act across their break, so the run is partial.
+    assert completed.returncode == 3, completed.stderr
+    return RunTree(base / "runs", "r")
+
+
+def test_a_routed_witness_is_scored_only_on_the_pages_routed_to_it(
+    routed_run: RunTree, tmp_path: Path
+):
+    read_only = ReadOnlyRunTree(routed_run)
+    base = ["attestator_1", "attestator_2", "attestator_3"]
+    assert page_rosters(read_only, page_feeds(read_only)) == {
+        1: base,
+        2: [*base, "attestator_4"],
+    }
+    reference = _fixture_reference_for_page_one(routed_run)
+    ledger_path, pages_path = _write_inputs(tmp_path, routed_run, reference)
+
+    report = evaluate_page_feed_run(
+        tree=routed_run, ledger_path=ledger_path, reference_pages_path=pages_path
+    )
+
+    assert report["witnesses"] == base
+    assert not any(row["reason"] == "witness-not-in-feed" for row in report["pages"][0]["rows"])
 
 
 def test_a_witness_the_feed_does_not_show_is_charged_on_that_page():
