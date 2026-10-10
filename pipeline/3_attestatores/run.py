@@ -67,7 +67,7 @@ from common.page_path import (  # noqa: E402
     PAGE_FEED_KIND,
     PAGE_TESTIMONIUM_KIND,
     empty_detector_page,
-    refs_by_path,  # noqa: E402
+    refs_by_path,
 )
 from common.page_testimonia import (  # noqa: E402
     BLANK_TESTIMONY_HEALTH,

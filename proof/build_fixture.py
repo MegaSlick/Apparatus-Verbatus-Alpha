@@ -852,9 +852,10 @@ SURYA_BLOCKS = tuple(
 
 
 # Page 2 tagged a table: one `Table` block over a2's continuation, after its `Text`
-# block, in the scenarios that route dots.mocr to page 2 by Surya's tag.
+# block, in the scenarios that route dots.mocr to page 2 by Surya's tag. Kept apart
+# from SURYA_BLOCKS, which every scenario reads.
 _PAGE_TWO_TEXT_BLOCK = next(row for row in SURYA_BLOCKS if row["page_ordinal"] == 2)
-SURYA_BLOCKS += tuple(
+SCENARIO_SURYA_BLOCKS = tuple(
     {
         "scenario": scenario,
         **_PAGE_TWO_TEXT_BLOCK,
@@ -1127,7 +1128,7 @@ def build_skeleton_fixture(rendered: dict[int, bytes]) -> str:
         lines += ["", "[[surya_line]]"]
         lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
 
-    for row in SURYA_BLOCKS:
+    for row in SURYA_BLOCKS + SCENARIO_SURYA_BLOCKS:
         lines += ["", "[[surya_block]]"]
         lines += [f"{key} = {toml_value(value)}" for key, value in row.items()]
 
