@@ -107,7 +107,7 @@ class RecordChairRequest:
     presented: Mapping[str, Any]
     prompt: Mapping[str, Any]
     capacity: Mapping[str, Any]
-    generation_accounting: Mapping[str, Any] | None
+    generation_accounting: Mapping[str, Any]
 
 
 def _data_uri(image_bytes: bytes) -> str:
@@ -493,7 +493,7 @@ def dai_model_view(
     presented: Mapping[str, Any],
     prompt: Mapping[str, Any],
     generation_declared: Mapping[str, Any],
-    generation_accounting: Mapping[str, Any] | None = None,
+    generation_accounting: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Build DAI's closed model view (`feeding.dai_model_view`) for this record.
 
@@ -526,9 +526,7 @@ def dai_model_view(
         generation_config_ref=context.retain(
             json.dumps(dict(generation_declared), sort_keys=True).encode("utf-8")
         ),
-        generation_accounting=(
-            None if generation_accounting is None else dict(generation_accounting)
-        ),
+        generation_accounting=dict(generation_accounting),
     )
 
 
@@ -646,7 +644,7 @@ def live_attempt_from_response(
     prompt: Mapping[str, Any],
     generation_declared: Mapping[str, Any],
     parser: str,
-    generation_accounting: Mapping[str, Any] | None = None,
+    generation_accounting: Mapping[str, Any],
 ) -> Attempt:
     """Derive one DAI record reading's `Attempt` from its retained response.
 

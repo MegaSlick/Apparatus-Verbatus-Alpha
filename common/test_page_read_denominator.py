@@ -241,8 +241,9 @@ def _drop_act_records(root: Path, ordinal: int) -> None:
 def _reaccount(tree: tuple[Path, dict[str, Path], str], ordinal: int) -> list[str]:
     """Measure page `ordinal`'s accounting again, as the denominator does, and carry it on.
 
-    The page's act records take the new holds, as stage 4 would have written
-    them after measuring the forged reading. Returns the page's holds.
+    The page's act records take the new holds, and its Perlectios the entry kind and
+    truncation planned from the forged reading, as stage 4 would have written them.
+    Returns the page's holds.
     """
     root = tree[0]
     _rewitness(root)
@@ -283,9 +284,14 @@ def _reaccount(tree: tuple[Path, dict[str, Path], str], ordinal: int) -> list[st
     path, accounting = _one(root, "page-accounting", ordinal)
     accounting.update(payload=measured, inputs=inputs, outcome="held" if holds else "read")
     _write(path, accounting)
+    planned = {plan["n"]: plan for plan in plans}
     for kind in ("act-region", "perlectio"):
         for path, record in _records(root, kind):
             if record["payload"]["page_ordinal"] == ordinal:
+                if kind == "perlectio" and record["payload"]["n"] in planned:
+                    plan = planned[record["payload"]["n"]]
+                    record["payload"]["entry_kind"] = plan["entry_kind"]
+                    record["payload"]["truncation"] = plan["truncation"]
                 record["payload"]["page_holds"] = holds
                 own = record["payload"]["holds"]
                 record["outcome"] = "held" if own or holds else "read"
@@ -483,7 +489,7 @@ def test_a_read_answer_naming_no_act_is_one_held_page_blank_row(happy_tree, tmp_
     ids += [line["id"] for line in feed["payload"]["surya"]["lines"]]
     ids += [block["id"] for block in feed["payload"]["surya"]["blocks"]]
     answer = {
-        "acts": [],
+        "entries": [],
         "set_aside": [{"id": identifier, "reason": "blank paper"} for identifier in ids],
     }
     _fixture_says(monkeypatch, 2, json.dumps(answer))
@@ -505,7 +511,7 @@ def test_a_read_page_naming_only_other_entries_is_held_until_confirmed(
 
     def other(record):
         payload = record["payload"]
-        for entry in payload["answer"]["acts"] if "answer" in payload else [payload]:
+        for entry in payload["answer"]["entries"] if "answer" in payload else [payload]:
             entry["kind"] = "other"
 
     for kind in ("page-reading", "act-region", "perlectio"):
@@ -535,7 +541,7 @@ def test_a_page_with_one_act_and_one_other_entry_is_not_held_for_naming_no_act(
     def second_is_other(record):
         payload = record["payload"]
         if "answer" in payload:
-            payload["answer"]["acts"][1]["kind"] = "other"
+            payload["answer"]["entries"][1]["kind"] = "other"
         elif payload["n"] == 2:
             payload["kind"] = "other"
 
@@ -1072,7 +1078,7 @@ def test_a_reading_whose_answer_drops_an_entry_its_reply_gave_is_refused(happy_t
     root = tree[0]
     for kind in ("perlectio", "act-region"):
         _one(root, kind, 1, 2)[0].unlink()
-    _forge(root, "page-reading", 1, None, lambda r: r["payload"]["answer"]["acts"].pop())
+    _forge(root, "page-reading", 1, None, lambda r: r["payload"]["answer"]["entries"].pop())
     _reaccount(tree, 1)
     with pytest.raises(FatalAccounting, match=r"not what its reply gives \(answer\)"):
         reading_acts(_context(tree))

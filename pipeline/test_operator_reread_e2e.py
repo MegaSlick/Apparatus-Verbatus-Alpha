@@ -196,7 +196,7 @@ def test_a_second_re_read_supersedes_the_first_and_is_counted_alone(reading_held
     """
     tree = _copy(reading_held, tmp_path)
     held_answer = json.loads(PAGE_ANSWERS[1])
-    held_answer["acts"][1]["cites"] = ["A1", "B1", "C1", "A2", "B2", "C2"]
+    held_answer["entries"][1]["cites"] = ["A1", "B1", "C1", "A2", "B2", "C2"]
     _ask_again(tree)
     assert _read_again(tree, tmp_path / "reader-3", json.dumps(held_answer)) == EXIT_COMPLETE
     assert _recense(tree) == EXIT_HELD

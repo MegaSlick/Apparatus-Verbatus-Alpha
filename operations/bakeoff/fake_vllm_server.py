@@ -22,7 +22,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PERLECTOR_ANSWER = {
-    "acts": [
+    "page_type": "register-acts",
+    "writing": "handwritten",
+    "entries": [
         {
             "n": 1,
             "kind": "act",
@@ -38,7 +40,8 @@ PERLECTOR_ANSWER = {
 
 
 BARE_KEY_ANSWER = (
-    '{\nacts: [{n: 1, kind: "act", label: null, cites: ["A1"], text: "Le dix mai", '
+    '{\npage_type: "register-acts", writing: "handwritten", '
+    'entries: [{n: 1, kind: "act", label: null, cites: ["A1"], text: "Le dix mai", '
     "continues_from_previous_page: false, continues_to_next_page: false}],\n set_aside: []}"
 )
 
@@ -64,7 +67,10 @@ def answer(body: dict) -> str:
         if "BARE-TEST" in joined:
             return BARE_KEY_ANSWER
         if "LOOP-TEST" in joined:
-            return '{"acts": [{"n": 1, "kind": "act", "text": "' + "same row\\n" * 200
+            return (
+                '{"page_type": "register-acts", "writing": "handwritten", "entries": [{"n": 1, "kind": "act", "text": "'
+                + "same row\\n" * 200
+            )
         return json.dumps(PERLECTOR_ANSWER, ensure_ascii=False)
     if "LOOP" in joined:
         return "Le dix mai\n" * 1000

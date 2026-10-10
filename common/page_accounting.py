@@ -53,8 +53,6 @@ from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 from common.imaging import Bounds
 from common.page_answer import (
-    answer_entry_list,
-    answer_grammar,
     grammar_problems,
     stated_page_type,
 )
@@ -214,14 +212,6 @@ _PROBLEM_RULE: Final = {UNKNOWN_ID: "b"}
 # regions (`pipeline/5_recensor/page_review.py`); its code is named here so the
 # one sealed list decides both.
 RESIDUAL_INK: Final = "residual-ink"
-DEFAULT_FLAG_CODES: Final = frozenset(
-    {NO_RECORD_ON_ACT_PAGE, UNREAD_INK, RESIDUAL_INK, WITNESS_SHORT_UNIT_NOT_READ}
-)
-# How many normalized characters a witness unit may have and still be a short
-# unit for rule (e): a signature, initials or a lone surname, not an index row
-# or a one-line burial (on the 2026-10-09 run the units read differently were 1
-# to 15 characters). Starting value; to be measured on the proof run.
-DEFAULT_SHORT_UNIT_CHARACTERS: Final = 15
 # Only a page-level finding may be a flag. `duplicate-region`, `reading-incomplete`
 # and `reading-unplaced` are also entry holds (`page_path.entry_plans`), which no
 # flag lifts, so naming one would flag the page and still hold its entries: refused
@@ -307,12 +297,9 @@ class PageAccountingPolicy:
     max_page_doubt_share_bp: int
     sha256: str
     # `[flags]`: the hold codes that are review flags (recorded, not held) and
-    # the length under which rule (e)'s unit is a short unit. A file without the
-    # table seals the code's defaults (`DEFAULT_FLAG_CODES`,
-    # `DEFAULT_SHORT_UNIT_CHARACTERS`), so a run sealed before the table existed
-    # replays under them.
-    flag_codes: frozenset[str] = DEFAULT_FLAG_CODES
-    short_unit_characters: int = DEFAULT_SHORT_UNIT_CHARACTERS
+    # the length under which rule (e)'s unit is a short unit.
+    flag_codes: frozenset[str]
+    short_unit_characters: int
 
 
 FLAGS_TABLE: Final = "flags"
@@ -367,7 +354,9 @@ def load_page_accounting_policy(
 ) -> PageAccountingPolicy:
     """Read the closed, sealed page-accounting configuration."""
     record, digest = read_sealed_toml(path, "page accounting configuration")
-    flags = _flags_policy(record.pop(FLAGS_TABLE, None))
+    if FLAGS_TABLE not in record:
+        raise ContractError("page accounting configuration has no [flags] table")
+    flags = _flags_policy(record.pop(FLAGS_TABLE))
     if set(record) != set(_POLICY_TABLES) or any(
         not isinstance(record[table], dict) or set(record[table]) != set(fields)
         for table, fields in _POLICY_TABLES.items()
@@ -390,9 +379,7 @@ def load_page_accounting_policy(
 
 
 def _flags_policy(table: Any) -> dict[str, Any]:
-    """The `[flags]` table checked, or the code's defaults when the file has none."""
-    if table is None:
-        return {}
+    """The `[flags]` table checked."""
     if not isinstance(table, dict) or set(table) != _FLAGS_FIELDS:
         raise ContractError(
             "page accounting [flags] must hold exactly codes and short_unit_characters"
@@ -693,9 +680,8 @@ def duplicate_regions(
 
 
 def _row_shared_units(entry: Mapping[str, Any]) -> Mapping[str, Box]:
-    """The shared units placing a row entry; none for any other kind, or a reading of
-    the `acts` grammar, whose kinds are act classes."""
-    if entry.get("entry_kind") not in page_types.ROW_KINDS:
+    """The shared units placing a row entry; none for any other kind."""
+    if entry["entry_kind"] not in page_types.ROW_KINDS:
         return {}
     return entry.get("placing_shared") or {}
 
@@ -711,7 +697,7 @@ def _compared_regions(
     places, so two rows naming the same line are still a duplicate; a row that the
     shared unit alone places has nothing left to compare, and is no duplicate of
     another row (`rows-share-unit` records them). Every other pair is compared
-    whole, as before page types.
+    whole.
     """
     common = set(_row_shared_units(entry)) & set(_row_shared_units(other))
     if not common:
@@ -877,7 +863,7 @@ def validate_answer(
     problems: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []
     expanded = []
-    for raw in answer_entry_list(answer):
+    for raw in answer["entries"]:
         cited_ids, cite_problems = expand_cites(raw["cites"], candidates)
         if policy is not None:
             cited_ids, cite_problems = _covered_detection_ranges(
@@ -2493,7 +2479,7 @@ def _record(
                 "reading_attempt": entry.get("reading_attempt", attempt),
                 "reading_n": entry.get("reading_n", entry["n"]),
                 "kind": entry["kind"],
-                "entry_kind": entry.get("entry_kind", entry["kind"]),
+                "entry_kind": entry["entry_kind"],
                 "cited_ids": sorted(entry["cited_ids"], key=id_key),
                 "union_box_px": entry["union_box_px"],
             }
@@ -2510,7 +2496,7 @@ def _record(
         "page_type": {
             **typed,
             "kinds": page_types.kind_agreement(
-                typed["stated"], [entry.get("entry_kind", entry["kind"]) for entry in entries]
+                typed["stated"], [entry["entry_kind"] for entry in entries]
             ),
             "recorded_not_held": recorded,
         },
@@ -2522,12 +2508,11 @@ def _page_type_context(
     answer: Mapping[str, Any] | None, feed: Mapping[str, Any], record_count: int | None
 ) -> dict[str, Any]:
     """The page type a valid answer states, the model-free facts beside it, and which
-    rules apply (`common.page_types`). An answer in the `acts` grammar, or none, states
-    no type, and every rule applies."""
+    rules apply (`common.page_types`). No valid answer states no type, and every rule
+    applies."""
     page_type, writing = stated_page_type(answer)
     facts = page_types.type_facts(feed, record_count)
     return {
-        "grammar": None if answer is None else answer_grammar(answer),
         "stated": page_type,
         "writing": writing,
         "facts": facts,

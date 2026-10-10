@@ -29,11 +29,9 @@ and pinned by digest, and the vendor's harness is not.
   RGB. Both steps are recorded on the presentation as
   `churro-prepare-ocr-image.v1` with its `colour_mode`, so the exact image the
   chair saw re-derives from the Exemplar.
-* **Read** through the vendor's `HistoricalDocument` grammar. Three answers
-  parse: the grammar itself, the plain reading-order text the paper-era harness
-  expected, and a bare `<output>` envelope, kept so retained history still reads
-  and carrying a finding that says a shape nobody asked for arrived. A
-  well-formed XML body rooted at anything else reaches the capture as
+* **Read** through the vendor's `HistoricalDocument` grammar. Two answers
+  parse: the grammar itself and the plain reading-order text the paper-era
+  harness expected. A well-formed XML body rooted at anything else reaches the capture as
   `unrecognized-shape` naming which root it was; a body that offers the grammar
   and will not parse is `failed`, its bytes retained under their digest.
 

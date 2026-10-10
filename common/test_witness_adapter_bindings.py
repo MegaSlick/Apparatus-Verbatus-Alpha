@@ -463,15 +463,3 @@ def test_reducing_a_roster_cannot_reuse_one_run_id_silently(tmp_path):
         if path.is_file()
     }
     assert after == before
-
-
-def test_a_stale_fixture_still_declaring_page_witness_chairs_is_refused_not_ignored(tmp_path):
-    """A retired scope key must refuse rather than look authoritative when ignored."""
-    original = (ROOT / "proof" / "skeleton_fixture.toml").read_text()
-    marker = 'fixture_id = "synthetic-two-page-v0"\n'
-    assert marker in original
-    stale = original.replace(marker, marker + 'page_witness_chairs = ["attestator_1"]\n', 1)
-    (tmp_path / "skeleton_fixture.toml").write_text(stale)
-
-    with pytest.raises(ContractError, match="page_witness_chairs"):
-        load_fixture(str(tmp_path))

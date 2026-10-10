@@ -17,8 +17,6 @@ SERVING_CONFIG_INPUTS_FIELDS: Final = frozenset(
 # sampling fields `generation_sent` carries (`common.decoding`).
 # The serving manager's operational record of one launch, kept beside its receipt.
 SERVING_LAUNCH_AUDIT_SCHEMA: Final = "serving-launch-audit.v2"
-# Audits written before the adapter fields left the record; refused by name.
-RETIRED_SERVING_LAUNCH_AUDIT_SCHEMAS: Final = frozenset({"serving-launch-audit.v1"})
 
 CHAIR_CALL_RECORD_SCHEMA: Final = "chair-call-record.v4"
 CHAIR_CALL_RECORD_FIELDS: Final = frozenset(
@@ -93,23 +91,18 @@ CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_FIELDS: Final = CHAIR_TRANSPORT_FAILURE_RE
     frozenset({"stream"})
 )
 CHAIR_STREAM_SCHEMA: Final = "chair-stream.v1"
-CHAIR_STREAM_FIELDS: Final = frozenset({"schema", "loop_guard", "stopped"})
-# Call-record schemas written before every call carried its engine-effective
-# sampling, or its usage reconciliation. A reader refuses one by name rather
-# than as an unknown record.
-RETIRED_CALL_RECORD_SCHEMAS: Final = frozenset(
+# Every schema a retained call record or transport failure may be written under.
+CALL_RECORD_SCHEMAS: Final = frozenset(
     {
-        "chair-call-record.v1",
-        "chair-call-record.v2",
-        "chair-call-record.v3",
-        "chair-transport-failure.v1",
-        "chair-transport-failure.v2",
-        "chandra-native-call-record.v1",
-        "chandra-native-call-record.v2",
-        "chandra-native-transport-failure.v1",
-        "chandra-native-transport-failure.v2",
+        CHAIR_CALL_RECORD_SCHEMA,
+        CHAIR_TRANSPORT_FAILURE_RECORD_SCHEMA,
+        CHAIR_STREAM_CALL_RECORD_SCHEMA,
+        CHAIR_STREAM_TRANSPORT_FAILURE_RECORD_SCHEMA,
+        CHANDRA_NATIVE_CALL_RECORD_SCHEMA,
+        CHANDRA_NATIVE_TRANSPORT_FAILURE_RECORD_SCHEMA,
     }
 )
+CHAIR_STREAM_FIELDS: Final = frozenset({"schema", "loop_guard", "stopped"})
 CHAIR_TRANSPORT_PROBLEM_SCHEMA: Final = "chair-transport-problem.v1"
 CHAIR_TRANSPORT_PROBLEM_FIELDS: Final = frozenset(
     {

@@ -97,9 +97,7 @@ blocks in `<p>`. So the text view is ours, named, and stated in full:
 
 `page_text` is `join_delivered_texts` over the block texts -- a newline between delivered (non-empty) texts and nowhere else -- and
 `spans` locates each block in it, empty blocks as a zero-width span. A
-`Blank-Page` block's text is kept like any other block's. A record naming a
-view in `RETIRED_LAYOUT_TEXT_VIEWS` is refused by that name rather than re-read
-under this view, because its text differs from what this view reads.
+`Blank-Page` block's text is kept like any other block's.
 """
 
 from __future__ import annotations
@@ -264,9 +262,6 @@ BBOX_SCALE: Final = 1000
 # The named rule this module's `page_text` and `spans` are produced by. It is
 # ours, not the vendor's; see the module docstring for the rule in full.
 LAYOUT_TEXT_VIEW: Final = "chandra-layout-text.v2"
-# Views a retained record may name but this build no longer produces: a record
-# read under one is refused by that name, never re-derived under the current view.
-RETIRED_LAYOUT_TEXT_VIEWS: Final = frozenset({"chandra-layout-text.v1"})
 
 # Operational ceilings on bytes crossing the native model boundary: the byte bound matches the repository's
 # RunPod response ceiling, and the block bound is a chosen ceiling rather than

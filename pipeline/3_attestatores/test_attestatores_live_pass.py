@@ -107,14 +107,15 @@ CHANDRA_BODY = CHANDRA_PAGE_ONE
 # for produces. It is retained and refused by name (`no-layout-blocks`), never
 # read.
 CHANDRA_UNRECOGNIZED_BODY = "A real Chandra markdown body, with no layout block in it."
-# Churro's retired `<output>` envelope. The chair is no longer asked for it and
-# the vendor grammar reads it as retained history, with a finding that says so;
-# most of this module scripts it because the fixture's declared rows carry this
-# envelope.
+# Churro's answers in its `HistoricalDocument` grammar, one `Line` per line.
 CHURRO_PAGE_ONE = (
-    "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+    "<HistoricalDocument><Page><Body><Line>SYNTHETIC ACT ONE alpha beta</Line>"
+    "<Line>SYNTHETIC ACT TWO delta epsiIon zeta eta</Line></Body></Page></HistoricalDocument>"
 )
-CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+CHURRO_PAGE_TWO = (
+    "<HistoricalDocument><Page><Body><Line>SYNTHETIC ACT TWO delta epsiIon zeta eta</Line>"
+    "</Body></Page></HistoricalDocument>"
+)
 # Churro's answer in the vendor's own `HistoricalDocument` grammar -- the shape
 # `churro.prompt` actually asks for. It carries no geometry, because the grammar
 # has no coordinate vocabulary anywhere, which is why this chair's `observed` is
@@ -2151,9 +2152,9 @@ def test_a_pass_whose_page_record_never_arrives_holds(live_run, tmp_path, monkey
     assert run_attestatores(live_run, run_root, factory=world.factory) == attestatores.EXIT_HELD
 
 
-def test_a_resumed_terminal_refuses_a_capture_read_under_a_retired_text_view():
+def test_a_resumed_terminal_refuses_a_capture_read_under_another_text_view():
     """The one place a resumed live pass reuses a sealed capture refuses one read
-    under a view this build no longer produces, by name, before its bytes are
+    under a view this build does not produce, by name, before its bytes are
     reused."""
     reference = {"relative_path": "3_attestatores/blobs/sha256/" + "a" * 64, "sha256": "a" * 64}
     capture = {
@@ -2169,11 +2170,11 @@ def test_a_resumed_terminal_refuses_a_capture_read_under_a_retired_text_view():
     }
 
     def refuse_read(relative_path):
-        raise AssertionError(f"a retired capture's bytes must not be reused: {relative_path}")
+        raise AssertionError(f"another view's capture bytes must not be reused: {relative_path}")
 
     evidence = dict.fromkeys(attestatores.chandra_native._CHANDRA_RESULT_FIELDS)
     evidence["native_capture"] = capture
-    refusal = "the retired text view chandra-layout-text.v1.*re-run the submission from the Door"
+    refusal = "names text view 'chandra-layout-text.v1'.*re-run the submission from the Door"
     with pytest.raises(SchemaRefusal, match=refusal):
         attestatores.chandra_native._attempt_from_evidence_record(
             SimpleNamespace(tree=SimpleNamespace(read_bytes=refuse_read)), evidence
@@ -2226,29 +2227,9 @@ def test_a_served_churro_reads_the_vendor_grammar_and_reports_no_geometry(live_r
     assert [box["bounds_source"] for box in page_one["observed"]] == ["presented"]
     capture = page_one["native_capture"]
     assert capture["parse"]["parser"] == "xml"
-    # No `retired-output-envelope` here: this body is the grammar itself.
     assert capture["findings"] == []
     # And the vendor pin travels with the reading.
     assert capture["vendor_identity"]["repository"] == "github.com/stanford-oval/Churro"
-
-
-def test_the_retired_envelope_still_reads_and_says_it_is_history(live_run, tmp_path):
-    """A body in the `<output>` envelope is a shape this chair is no longer asked
-    for, and the capture carries `retired-output-envelope` so its arrival is
-    visible. It still parses and retains -- throwing a page of ink away over an
-    envelope would be exactly the loss this pipeline refuses -- and carries no
-    coordinates, so its only observation is the `presented` echo."""
-    run_root = fresh_tree(live_run, tmp_path)
-    world = LiveWorld(live_run, tmp_path)
-    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
-
-    tree = RunTree(run_root, RUN_ID)
-    payload = page_records(tree)[(1, "attestator_3")]["payload"]
-    assert payload["payload"] == (
-        "SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
-    )
-    assert [box["bounds_source"] for box in payload["observed"]] == ["presented"]
-    assert payload["native_capture"]["findings"] == [{"kind": "retired-output-envelope"}]
 
 
 def _call_world(
@@ -2316,7 +2297,9 @@ def test_a_tallied_call_is_held_to_its_chair_s_row_and_seed(chair, field):
             attestatores.verify_page_call_sampling(
                 context, retained({**call, "generation_sent": moved}), chair
             )
-    with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
+    with pytest.raises(
+        SchemaRefusal, match="has schema .chair-call-record.v2., not one this build writes"
+    ):
         attestatores.verify_page_call_sampling(
             context, retained({**call, "schema": "chair-call-record.v2"}), chair
         )

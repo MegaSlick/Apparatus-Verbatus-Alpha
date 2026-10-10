@@ -40,9 +40,9 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
     assert spec.prompt()["system"] == (
         "Transcribe the entirety of this historical document to XML format."
     )
-    # All three legal answer shapes parse to text through the one grammar: the
-    # vendor's own document, the plain reading-order text the paper-era harness
-    # expected, and the retired `<output>` envelope kept as retained history.
+    # Both legal answer shapes parse to text through the one grammar: the
+    # vendor's own document and the plain reading-order text the paper-era
+    # harness expected.
     assert (
         adapters.churro.parse(
             b"<HistoricalDocument><Page><Body><Line>text</Line></Body></Page></HistoricalDocument>"
@@ -50,7 +50,6 @@ def test_every_declared_adapter_has_a_runnable_fixture_shape():
         == "text"
     )
     assert adapters.churro.parse(b"plain reading") == "plain reading"
-    assert adapters.churro.parse(b"<output>text</output>") == "text"
     # Bound by identity, not by "is not None": the point of the slot is which
     # function answers there, and a rebinding to a different one is exactly the
     # change a later adapter unit must not make silently. Churro's slot binds
@@ -104,7 +103,7 @@ def test_no_runnable_adapter_lets_a_caller_relabel_its_retention(name):
             _DaiContext(tree=SimpleNamespace(put_blob=lambda _stage, payload: None)),
             adapter="another.v1",
             view={"kind": "fixture"},
-            raw_response=b"<output>text</output>",
+            raw_response=b"<HistoricalDocument><Page><Body><Line>text</Line></Body></Page></HistoricalDocument>",
             transport_stop_reason="complete",
         )
 
@@ -127,12 +126,14 @@ def test_retention_is_bound_to_the_resolved_adapter_and_cannot_be_relabeled(name
     retained = spec.retain(
         _DaiContext(tree=SimpleNamespace(put_blob=put_blob)),
         view={"kind": "fixture"},
-        raw_response=b"<output>text</output>",
+        raw_response=b"<HistoricalDocument><Page><Body><Line>text</Line></Body></Page></HistoricalDocument>",
         transport_stop_reason="complete",
     )
 
     assert retained["adapter"] == name
-    assert blobs == [b"<output>text</output>"]
+    assert blobs == [
+        b"<HistoricalDocument><Page><Body><Line>text</Line></Body></Page></HistoricalDocument>"
+    ]
 
 
 class _Published:
@@ -408,7 +409,13 @@ def test_the_registry_binds_the_native_intake_contract_seams():
     ]
     churro_spec = adapters.resolve_runnable_adapter("churro.v1")
     assert churro_spec.observe(presented, "retained text") == echo
-    assert churro_spec.observe(presented, b"<output>retained text</output>") == echo
+    assert (
+        churro_spec.observe(
+            presented,
+            b"<HistoricalDocument><Page><Body><Line>retained text</Line></Body></Page></HistoricalDocument>",
+        )
+        == echo
+    )
     assert (
         churro_spec.observe(
             presented,

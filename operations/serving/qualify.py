@@ -59,8 +59,8 @@ QUALIFICATION_PURPOSE = "preflight-qualification"
 UNSERVED_KINDS = frozenset({"subprocess", "in-process"})
 # What a smoke receipt says its chair read (`smoke.py` writes `smoke_page`).
 # Every served chair reads the golden page, except the DAI chair, whose smoke
-# reads the pinned RecordGold record (`recordgold_smoke.py`). A receipt from
-# before the field existed read the golden page.
+# reads the pinned RecordGold record (`recordgold_smoke.py`). A receipt that
+# names neither is refused.
 GOLDEN_PAGE = "golden-page"
 RECORDGOLD_PAGE = "recordgold-record"
 
@@ -208,7 +208,7 @@ def qualification_candidates(
             raise QualificationRefusal(
                 f"chair {role!r} tier {tier!r} is not one unproven vLLM profile"
             )
-        smoke_page = smoke.get("smoke_page", GOLDEN_PAGE)
+        smoke_page = smoke.get("smoke_page")
         recordgold: tuple[RecordGoldSmokeRecord, str] | None = None
         if smoke_page == RECORDGOLD_PAGE:
             # Only the chair whose adapter is DAI's reads the record; every

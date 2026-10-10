@@ -33,7 +33,7 @@ must rebuild the run's (prompt text, render and overlay digests, the reading's
 `request_digest`; the builder's code digest is not compared, since a recipe alias moves it
 without changing a byte sent); a page that does not stops the export, naming the page and
 what differs, unless `--allow-prompt-mismatch` leaves such pages out (listed in the
-manifest's `prompt_mismatch_excluded`). An honest, named example's request digest must
+manifest's `prompt_mismatch_excluded`). An honest example's request digest must
 equal the run's recorded one, or the export stops. `chat_template_kwargs` records
 thinking off. A real run tree's stage seals are proven first, as the fed arm does.
 
@@ -43,16 +43,14 @@ entries, doubt marks, statuses, classes); the exporter builds the target only fr
 same reference, writes both digests into each example and its `planted.jsonl` line, and
 the scorer judges planted sites only against a reference with the same digests.
 
-**The answer is the reference in the grammar the prompt asks for** (`common.page_answer`).
-When the feed's `page_types` switch is "named" (the protocol's setting), that is
+**The answer is the reference as a page answer** (`common.page_answer`):
 `{"page_type", "writing", "entries", "set_aside"}` with each entry's kind one of the seven
-entry kinds (`common.page_types`); otherwise the older `{"acts", "set_aside"}`, byte for
-byte as before, with each kind folded to `act` or `other`. A gold page's type comes from
+entry kinds (`common.page_types`). A gold page's type comes from
 its CATEGORY (`acts-*` register-acts, `index`, `list` table, `ledger`, `contract`
 instrument, `blank` and `near-blank` blank when the gold has no text) and its writing
 from its FORM; its rows take the kind of that type (`index-row`, `table-row`,
 `ledger-entry`) and its acts the kind `instrument` on an instrument page. A page the
-header does not settle (`non-register`, a missing FORM) is refused for a named feed, and
+header does not settle (`non-register`, a missing FORM) is refused, and
 the manifest's `refused` says why. The entries in order with `n`, `kind`, `label`, `cites`, `text` and both continuation flags,
 and `set_aside` for the planted units (an invented act, an injection: reason "not on the
 page") and for shown units whose text matches no entry. Cites are rebuilt from the shown
@@ -64,8 +62,7 @@ records `id_map`, source unit id to shown id), a cite to a unit no longer shown 
 dropped, every remaining cite must be a shown id, and every shown id not cited is set
 aside. A reference with no entries cites nothing: every shown id is set aside, a
 planted one as "not on the page" and every other as "empty". An example that fails this is not written; the manifest's `refused` lists it.
-`--row-kind` overrides the kind of a gold page's rows (default: by page type in the
-entries grammar, `other` in the acts grammar).
+`--row-kind` overrides the kind of a gold page's rows (default: by page type).
 
 **Loss weights** are a separate field, `loss_spans`: `[start, end, weight]` character
 spans that tile the assistant text. Each word carries its reference status's weight:
@@ -92,8 +89,8 @@ records from the silver tooling, `--reference <dir>`, one JSON per page stem:
               "words": [{"text": "Le", "status": "checked", "cls": "word"}, ...]}]}
 ```
 
-`page_type` and `writing` come together and are needed for a feed that names them (v1
-records, which have neither, still train the acts grammar); every `kind` is an entry kind.
+`page_type` and `writing` come together and are required (a v1 record has neither, so
+its examples are refused); every `kind` is an entry kind.
 `words` is optional (then every word is `checked` for a `lead-checked` page, `draft`
 otherwise); `cites` is optional (then they are rebuilt); `cls` is optional (then the
 heuristic classifier decides). A reference found here wins over a gold file of the same

@@ -13,6 +13,13 @@ from common.contracts.stages import ATTESTATORES
 from common.runtree.store import RunTree
 from conftest import run_through
 
+
+def _document(text: str) -> str:
+    """The fixture's Churro answer for `text`: one `Line` per line of the grammar."""
+    lines = "".join(f"<Line>{line}</Line>" for line in text.split("\n"))
+    return f"<HistoricalDocument><Page><Body>{lines}</Body></Page></HistoricalDocument>"
+
+
 HEADER = "[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]"
 
 
@@ -59,10 +66,8 @@ def test_a_captured_page_reading_parses_and_keeps_its_raw_bytes(native_run):
     assert payload["payload"] == capture["parse"]["text"]
     assert payload["payload"].startswith(HEADER)
     raw = native_run.read_bytes(capture["raw_response_ref"]["relative_path"])
-    assert raw == f"<output>{payload['payload']}</output>".encode()
-    # The fixture's declared rows carry this envelope; the vendor grammar reads
-    # it and says on the record that it arrived in a shape nobody asked for.
-    assert capture["findings"] == [{"kind": "retired-output-envelope"}]
+    assert raw == _document(payload["payload"]).encode()
+    assert capture["findings"] == []
     assert capture["raw_response_ref"] in record["inputs"]
     assert payload["content_health"]["recordable"] is True
     assert payload["content_health"]["truncated"] is False
@@ -79,7 +84,7 @@ def test_a_truncated_capture_is_visible_and_is_never_completed_or_retried(trunca
     assert health["truncation_basis"] == "trusted-response-boundary"
     assert payload["native_capture"]["transport_stop_reason"] == "length"
     raw = truncation_run.read_bytes(payload["native_capture"]["raw_response_ref"]["relative_path"])
-    assert raw.decode() == f"<output>{payload['payload']}</output>"
+    assert raw.decode() == _document(payload["payload"])
     assert payload["attempt_ordinal"] == 1
 
 
@@ -139,7 +144,7 @@ def test_the_pinned_happy_run_captures_through_churro_without_moving_a_reading(h
         assert capture["parse"]["state"] == "parsed"
         assert capture["transport_stop_reason"] == "eos"
         raw = happy_run.read_bytes(capture["raw_response_ref"]["relative_path"])
-        assert raw == f"<output>{payload['payload']}</output>".encode()
+        assert raw == _document(payload["payload"]).encode()
 
     assert records[(1, "attestator_1")]["payload"]["payload"] == (
         "SYNTHETIC ACT ONE alpha beta gamma\nSYNTHETIC ACT TWO delta epsilon zeta eta"

@@ -421,7 +421,7 @@ words are graphemic-v1 tokens aligned by unit-cost edit script, as `roster.py` d
 Per page group (act pages split by form) and for the hard pages:
 
 - **reading**: CER median on parsed pages, and on all pages with an unparsed answer read
-  as empty; act recall (gold acts matched by a `kind: act` entry at CER <= 0.5) and pages
+  as empty; act recall (gold acts matched by an act or instrument entry at CER <= 0.5) and pages
   with the exact act count; row recall and surname recall on index and table pages;
   inserted words per gold word; false text on pages with no gold text;
 - **answer health**: parsed and malformed (by reason), pages repaired before parsing, errors, finish reasons,
@@ -454,11 +454,7 @@ Per page group (act pages split by form) and for the hard pages:
 `scorecard.md` and `scorecard.json` go to `--out`. Every heading says **vs fool's gold
 (ballpark, not accuracy)** while any scored gold page's STATUS says fool's gold; only an
 explicit checked status (`gold (<who> <date>)` or `lead-checked`) on every scored page,
-in both compared sets, drops the label. On the cold run's own readings it reproduces the
-follow column of the 2026-10-09 witness-hints note (handwritten acts: 8,769 gold words,
-only Chandra right followed 440 of 582, only DAI 82 of 234, only Churro 378 of 657); its
-resisted, copied and vote figures differ from that note by design (absent witnesses
-apart, one-to-one copies, plurality vote with ties apart).
+in both compared sets, drops the label.
 
 ## The trap generator (`mutations.py`)
 

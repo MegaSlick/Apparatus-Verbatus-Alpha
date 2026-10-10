@@ -74,21 +74,14 @@ def test_follow_resist_copy_and_vote_on_one_page(tmp_path):
     assert card["hard_acts"]["pages"] == 1
 
 
-def test_an_answer_naming_page_types_scores_as_its_acts_shape(tmp_path):
-    # The same reading in the `entries` grammar the protocol's `page_types = "named"`
-    # asks for: its text and its act entries score exactly as the `acts` shape's do,
-    # an instrument counting as an act and an index row not.
+def test_act_entries_are_counted_by_their_act_class(tmp_path):
+    # An instrument counts as an act and an index row does not.
     tree = F.load_run_tree(make_run_tree(tmp_path / "run"))
     answers = C.answers_from_run_tree(tree)
     gold = {
         "p001": parse_gold(GOLD.format(stem="p001", status="x", text="Le dix mai mil huit"), "p001")
     }
-    before = C.scorecard(answers, gold, hard={"p001"})
-    for answer in answers.values():
-        acts = answer.answer.pop("acts")
-        answer.answer.update(page_type="register-acts", writing="handwritten", entries=acts)
     assert F.reading_text(answers["p001"].answer) == "Le dix mai mil"
-    assert C.scorecard(answers, gold, hard={"p001"}) == before
     for kind, counted in (("instrument", 1), ("index-row", 0)):
         for answer in answers.values():
             answer.answer["entries"][0]["kind"] = kind

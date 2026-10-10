@@ -2863,7 +2863,7 @@ def test_reuse_refuses_a_run_sealed_under_another_seal_method(tmp_path):
     record["self_hash"] = self_hash(record)
     run_file.write_bytes(canonical_bytes(record))
 
-    with pytest.raises(IncompatibleReuse, match="raw-bytes"):
+    with pytest.raises(IncompatibleReuse, match="no recorded method"):
         make_run(tmp_path, sealed_config_digests=sealed)
 
 

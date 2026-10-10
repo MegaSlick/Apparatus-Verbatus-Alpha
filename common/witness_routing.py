@@ -2,8 +2,8 @@
 
 A run's models configuration may seat a witness chair on some pages only
 (`[witness_routing]`, `common/chairs/config.py`). Absent, every configured
-witness reads every sealed page and nothing here runs; such a run seals
-exactly what it sealed before routing existed.
+witness reads every sealed page and nothing here runs; a run that routes
+nothing seals no routing key.
 
 The one rule, `index-and-table.v1`, routes a page to the chair when the
 Designator's own page evidence says the page is an index list or a table:

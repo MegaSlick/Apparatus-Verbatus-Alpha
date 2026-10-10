@@ -1,7 +1,7 @@
 """Page types and entry kinds: what a page is, what each of its entries is, and what follows.
 
-A page reading names its page's type and each entry's kind (`common.page_answer`, the
-`entries` grammar). Both are closed lists:
+A page reading names its page's type and each entry's kind (`common.page_answer`).
+Both are closed lists:
 
     page types   register-acts, index, table, ledger, instrument, prose, blank
     entry kinds  act, index-row, table-row, ledger-entry, instrument, paragraph, other
@@ -15,15 +15,14 @@ an *act class*, the two-valued `kind` every record after the answer carries:
     act_class(kind) == "act"    for act and instrument
     act_class(kind) == "other"  for every other kind
 
-and the records keep the kind itself as `entry_kind` where the answer named one. The
+and the records keep the kind itself as `entry_kind`. The
 class is what the act census, the page breaks, the record-detector rule and the
 Coniector read; the kind is what the length signal and the duplicate rule read, and what
 the export writes.
 
-An answer in the older `acts` grammar names neither: its kinds are `act` and `other`
-already, and its page type is not stated (`None`). Every check then applies exactly as
-it did before page types existed; nothing here relaxes a check on a page whose type the
-reading did not state.
+A page with no valid answer (unread, malformed, or failing validation) has no stated
+type (`None`). Every check then applies; nothing here relaxes a check on a page whose
+type no valid answer stated.
 
 Which checks apply to a page of a stated type is `applicability`; the page accounting
 records it with the type, and a check that does not apply keeps its findings on the
@@ -92,7 +91,8 @@ EXPECTED_KINDS: Final[Mapping[str, frozenset[str]]] = {
     BLANK: frozenset(),
 }
 
-# Not stated: an answer in the `acts` grammar.
+# Not stated: no valid answer stated a type (an unread page, a malformed reply or an
+# answer that failed validation).
 NOT_STATED: Final = None
 
 
@@ -124,13 +124,13 @@ RECORD_DETECTOR_RULE: Final = "i"
 def applicability(page_type: str | None, writing: str | None) -> dict[str, dict[str, Any]]:
     """`{rule: {"applies": bool, "reason": str}}` for the rules a page type can switch off.
 
-    Only rule (i) depends on the page type today: it applies on a page whose type is not
-    stated (as before page types) and on handwritten or mixed register-acts; on every
+    Only rule (i) depends on the page type today: it applies on a page whose type no
+    valid answer stated and on handwritten or mixed register-acts; on every
     other stated page it does not apply, and its findings are recorded, not held. Every
     other rule applies to every page; whether one holds or flags is review configuration.
     """
     if page_type is NOT_STATED:
-        applies, reason = True, "page type not stated: every check applies"
+        applies, reason = True, "no valid answer stated a type: every check applies"
     elif page_type == REGISTER_ACTS and writing in HAND_WRITINGS:
         applies, reason = True, f"{writing} register acts: the record detector's own page type"
     elif page_type == REGISTER_ACTS:
@@ -269,7 +269,7 @@ def row_record(
     give. `review` is what the review made of it (`{outcome, hold_codes}`) when the
     caller exports one, else absent.
     """
-    entry_kind = perlectio.get("entry_kind")
+    entry_kind = perlectio["entry_kind"]
     if entry_kind not in ROW_KINDS:
         return None
     row: dict[str, Any] = {
@@ -290,8 +290,3 @@ def row_record(
     if review is not None:
         row["review"] = {"outcome": review["outcome"], "hold_codes": list(review["hold_codes"])}
     return row
-
-
-def entry_kind_of(perlectio: Mapping[str, Any]) -> str:
-    """An entry's kind: as the reading named it, or its act class for an `acts`-grammar reading."""
-    return perlectio.get("entry_kind", perlectio["kind"])

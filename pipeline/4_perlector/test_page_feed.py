@@ -313,19 +313,6 @@ def test_the_shipped_protocol_shows_every_feed_input():
     }
 
 
-def test_a_protocol_sealed_before_page_types_reads_with_the_acts_grammar(tmp_path):
-    # A table without the switch is valid and means "off", so a saved run's protocol
-    # still loads and its pages are asked exactly as before.
-    path = _write(tmp_path, 'page_types = "named"\n', "")
-    sealed, _digest = protocol.load(path)
-    assert "page_types" not in sealed["feed"]
-    old = feed_for(_Blobs(), page_types="off")
-    del old["switches"]["page_types"]
-    instruction = page_prompt.page_reading_instruction(old)
-    assert instruction == page_prompt.page_reading_instruction(feed_for(_Blobs(), page_types="off"))
-    assert set(json.loads(instruction.split("in this form: ", 1)[1])) == {"acts", "set_aside"}
-
-
 def _write(tmp_path, old: str, new: str):
     shipped = (ROOT / "config" / "perlector_protocol.toml").read_text(encoding="utf-8")
     assert old in shipped
@@ -339,6 +326,8 @@ def _write(tmp_path, old: str, new: str):
     [
         ('page_overlay = "off"', 'page_overlay = "off"\ncrops = "off"', "closed schema"),
         ('page_types = "named"', 'page_types = "guessed"', "page_types"),
+        ('page_types = "named"', 'page_types = "off"', "page_types"),
+        ('page_types = "named"\n', "", "closed schema"),
         ('page_image = "legible"', 'page_image = "tiny"', "page_image"),
         ('witness_units = "own"', 'witness_units = "lines"', "witness_units"),
         ("surya_lines = true", 'surya_lines = "yes"', "surya_lines"),
@@ -485,27 +474,27 @@ def test_a_chandra_capture_recorded_unrecognized_whose_bytes_now_parse_is_refuse
 
 
 @pytest.mark.parametrize(
-    ("witness", "retired"),
+    ("witness", "other"),
     [
         (0, "chandra-layout-text.v1"),
         (2, "churro-historical-document-text.v1"),
     ],
 )
-def test_a_capture_read_under_a_retired_text_view_is_refused_by_name(witness, retired):
+def test_a_capture_read_under_another_text_view_is_refused_by_name(witness, other):
     blobs = _Blobs()
     rows = witnesses(blobs)
     capture = rows[witness]["testimonium"]["payload"]["native_capture"]
-    capture["text_view"] = retired
+    capture["text_view"] = other
     with pytest.raises(
         SchemaRefusal,
-        match=f"the retired text view {retired}.*re-run the submission from the Door",
+        match=f"names text view '{other}'.*re-run the submission from the Door",
     ):
         page_witness_units._checked_capture(capture, capture["adapter"], blobs.read_bytes)
-    with pytest.raises(SchemaRefusal, match=f"the retired text view {retired}"):
+    with pytest.raises(SchemaRefusal, match=f"names text view '{other}'"):
         feed_for(blobs, rows=rows)
 
 
-def test_the_perlector_refuses_a_page_capture_read_under_a_retired_text_view():
+def test_the_perlector_refuses_a_page_capture_read_under_another_text_view():
     blobs = _Blobs()
     record = churro_testimonium(blobs, CHURRO_XML)
     capture = record["payload"]["native_capture"]
@@ -520,9 +509,7 @@ def test_the_perlector_refuses_a_page_capture_read_under_a_retired_text_view():
         context, "act act-1", "attestator_3", testimonium, capture
     )
     capture["text_view"] = "churro-historical-document-text.v1"
-    with pytest.raises(
-        SchemaRefusal, match="the retired text view churro-historical-document-text.v1"
-    ):
+    with pytest.raises(SchemaRefusal, match="names text view 'churro-historical-document-text.v1'"):
         page_testimonia.verify_page_native_capture(
             context, "act act-1", "attestator_3", testimonium, capture
         )
@@ -764,12 +751,6 @@ def test_the_page_instruction_states_the_doubt_marks_word_for_word():
     for feed in (feed_for(_Blobs()), feed_for(_Blobs(), render=None, page_image="off")):
         example = page_prompt.page_reading_instruction(feed).split("in this form: ", 1)[1]
         assert set(json.loads(example)) == {"page_type", "writing", "entries", "set_aside"}
-    for feed in (
-        feed_for(_Blobs(), page_types="off"),
-        feed_for(_Blobs(), render=None, page_image="off", page_types="off"),
-    ):
-        example = page_prompt.page_reading_instruction(feed).split("in this form: ", 1)[1]
-        assert set(json.loads(example)) == {"acts", "set_aside"}
 
 
 def test_the_prompt_evidence_names_the_builder_the_instruction_and_the_bytes():
@@ -861,19 +842,17 @@ def _dense_page(blobs: _Blobs, *, characters: int = 12_000, acts: int = 20, line
     [
         # 4,960 image + 46,773 prompt (every witness string and every id, box and
         # coordinate row at one token per byte; 442 of it the page-type and
-        # entry-kind instruction) + 7,319 answer (6,903 for the witness text and
+        # entry-kind instruction) + 7,345 answer (6,929 for the witness text and
         # entries, and one cite for each of Surya's 120 lines).
-        ({}, 59_052),
+        ({}, 59_078),
         # Without Surya's 140 rows, whose lines the answer no longer cites either.
-        ({"surya_lines": False, "surya_blocks": False}, 55_403),
+        ({"surya_lines": False, "surya_blocks": False}, 55_429),
         # One line per witness, Surya still shown.
-        ({"witness_units": "flat"}, 55_745),
+        ({"witness_units": "flat"}, 55_771),
         # The overlay's second image costs another 4,960 tokens.
-        ({"page_overlay": "boxes"}, 64_078),
-        # The `acts` grammar of a protocol sealed before page types.
-        ({"page_types": "off"}, 58_610),
+        ({"page_overlay": "boxes"}, 64_104),
     ],
-    ids=["default", "no-surya", "flat", "overlay", "acts-grammar"],
+    ids=["default", "no-surya", "flat", "overlay"],
 )
 def test_a_dense_page_is_refused_at_32k_and_fits_65k(change, need):
     blobs = _Blobs()
@@ -1246,14 +1225,9 @@ def test_the_reading_names_the_page_type_and_each_entrys_kind():
     example = json.loads(reask.split("in this form: ", 1)[1])
     assert set(example) == {"entries", "set_aside"}
     assert '"index-row"' in reask
-    off = page_prompt.page_reask_instruction(feed_for(_Blobs(), page_types="off"))
-    assert set(json.loads(off.split("in this form: ", 1)[1])) == {"acts", "set_aside"}
 
 
 def test_non_act_text_is_read_as_other_and_set_aside_is_for_ink_not_read():
-    off = page_prompt.page_reading_instruction(feed_for(_Blobs(), page_types="off"))
-    assert "a page number or a marginal note that is not an entry, is read too" in off
-    assert 'kind "other"' in off
     instruction = page_prompt.page_reading_instruction(feed_for(_Blobs()))
     assert '"other" for every other text on the page' in instruction
     assert "printed page number" not in instruction
@@ -1278,7 +1252,7 @@ def test_non_act_text_is_read_as_other_and_set_aside_is_for_ink_not_read():
 
 def test_the_answer_form_holds_placeholders_and_no_reading():
     example = json.loads(page_prompt.ANSWER_FORM)
-    (act,) = example["acts"]
+    (act,) = example["entries"]
     for value in (act["kind"], act["label"], act["text"], *act["cites"]):
         assert value.startswith("<") and value.endswith(">")
     assert example["set_aside"] == [{"id": "<id>", "reason": "<short reason>"}]

@@ -102,6 +102,7 @@ PERLECTIO_FIELDS: Final = frozenset(
         "feed_ref",
         "n",
         "kind",
+        "entry_kind",
         "label",
         "text",
         "uncertain_spans",
@@ -764,8 +765,7 @@ def answer_entries(
 ) -> list[dict[str, Any]]:
     """Each entry of a valid answer: the entry, its expanded ids, region and region holds.
 
-    The entry's `kind` is its act class; `entry_kind` is the kind an answer in the
-    `entries` grammar named, `None` for one in the `acts` grammar.
+    The entry's `kind` is its act class; `entry_kind` is the kind the answer named.
     """
     validated = _validated(answer, feed, accounting_policy, named)
     shared = {
@@ -773,9 +773,8 @@ def answer_entries(
         for finding in page_accounting.duplicate_regions(validated["entries"], accounting_policy)
         for n in finding["ns"]
     }
-    named_kinds = page_answer.answer_grammar(answer) == page_answer.ENTRIES_GRAMMAR
     entries = []
-    for raw, entry in zip(page_answer.answer_entry_list(answer), validated["entries"], strict=True):
+    for raw, entry in zip(answer["entries"], validated["entries"], strict=True):
         union = entry["union_box_px"]
         holds = [] if union is not None else [UNPLACED]
         if entry["n"] in shared:
@@ -784,7 +783,7 @@ def answer_entries(
             {
                 # The entry as given, its kind its act class (`common.page_types`).
                 "act": {**raw, "kind": entry["kind"]},
-                "entry_kind": entry["entry_kind"] if named_kinds else None,
+                "entry_kind": entry["entry_kind"],
                 "cited_ids": entry["cited_ids"],
                 "region_boxes_px": entry["region_boxes_px"],
                 "union_box_px": union,
@@ -865,7 +864,7 @@ def entry_plans(
                 truncation_policy=truncation_policy,
                 stop_reason=stop_reason,
                 length_exempt_kind=None
-                if entry_kind is None or page_types.length_signal_applies(entry_kind)
+                if page_types.length_signal_applies(entry_kind)
                 else entry_kind,
             )
             if union is not None
@@ -1389,6 +1388,7 @@ def expected_perlectio(
         "feed_ref": refs["feed_ref"],
         "n": plan["n"],
         "kind": act["kind"],
+        "entry_kind": plan["entry_kind"],
         "label": act.get("label"),
         "text": plan["text"],
         "uncertain_spans": assessment["uncertain_spans"],
@@ -1403,7 +1403,6 @@ def expected_perlectio(
         "engine_call": reading["engine_call"],
         "provenance": reading["provenance"],
         **recovered_fields(plan),
-        **named_kind_fields(plan),
     }
 
 
@@ -1411,27 +1410,16 @@ def expected_perlectio(
 RECOVERED_FIELDS: Final = frozenset({"reading_attempt", "reading_n"})
 
 
-# What a Perlectio of an entry read in the `entries` grammar holds beyond `PERLECTIO_FIELDS`.
-NAMED_KIND_FIELDS: Final = frozenset({"entry_kind"})
-
-
-def named_kind_fields(plan: Mapping[str, Any]) -> dict[str, str]:
-    """`entry_kind` for an entry whose answer named its kind (`common.page_types`), else
-    nothing: a reading in the `acts` grammar keeps the Perlectio it always had."""
-    return {} if plan.get("entry_kind") is None else {"entry_kind": plan["entry_kind"]}
-
-
 def is_perlectio_field_set(payload: Mapping[str, Any]) -> bool:
     """True when `payload` holds exactly a first reading's Perlectio fields, or those
-    and `RECOVERED_FIELDS` with the re-ask's `reading_attempt`, either with or without
-    `NAMED_KIND_FIELDS`."""
+    and `RECOVERED_FIELDS` with the re-ask's `reading_attempt`, and its `entry_kind`
+    is an entry kind whose act class is its `kind`."""
     fields = set(payload)
-    if NAMED_KIND_FIELDS <= fields:
-        if payload["entry_kind"] not in page_types.ENTRY_KINDS or (
-            page_types.act_class(payload["entry_kind"]) != payload.get("kind")
-        ):
-            return False
-        fields -= NAMED_KIND_FIELDS
+    if "entry_kind" in fields and (
+        payload["entry_kind"] not in page_types.ENTRY_KINDS
+        or page_types.act_class(payload["entry_kind"]) != payload.get("kind")
+    ):
+        return False
     if fields == PERLECTIO_FIELDS:
         return True
     return (

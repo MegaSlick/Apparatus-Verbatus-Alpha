@@ -179,7 +179,7 @@ def page(
         "record_census": {"detection_count": records, "max_det": 300, "max_det_reached": False},
     }
     answer = {
-        "acts": [
+        "entries": [
             {
                 "n": k + 1,
                 "kind": "act",
@@ -233,7 +233,7 @@ def codes(record: dict, rule: str) -> list[str]:
 
 
 def acts(case: dict) -> list[dict]:
-    return case["reading"]["answer"]["acts"]
+    return case["reading"]["answer"]["entries"]
 
 
 def witness(case: dict, letter: str) -> dict:
@@ -1157,7 +1157,7 @@ def test_a_dense_page_is_measured_within_the_sealed_budget():
         reading={
             "parse_state": "parsed",
             "finish_reason": "stop",
-            "answer": {"acts": readings, "set_aside": []},
+            "answer": {"entries": readings, "set_aside": []},
         },
         entry_truncation={k + 1: "complete" for k in range(20)},
         ink=None,
@@ -1433,7 +1433,7 @@ def _detector_found_nothing(case: dict) -> None:
         "max_det_reached": False,
     }
     witness(case, "B").update(units=[], outcome="genuinely-empty", blank=True)
-    for entry in case["reading"]["answer"]["acts"]:
+    for entry in case["reading"]["answer"]["entries"]:
         entry["cites"] = [cite for cite in entry["cites"] if not cite.startswith("B")]
 
 
@@ -1617,14 +1617,14 @@ def grammar_codes(answer) -> list[str]:
 def test_an_answer_outside_the_one_grammar_is_named_by_it():
     """The grammar is `common.page_answer`'s, label rule included: no second reading."""
     assert grammar_codes([]) == ["not-object"]
-    assert grammar_codes({"acts": [], "set_aside": [], "extra": 1}) == ["top-fields"]
-    assert grammar_codes({"acts": [_entry(1, ["A1"]), _entry(3, ["A2"])], "set_aside": []}) == [
+    assert grammar_codes({"entries": [], "set_aside": [], "extra": 1}) == ["top-fields"]
+    assert grammar_codes({"entries": [_entry(1, ["A1"]), _entry(3, ["A2"])], "set_aside": []}) == [
         "n-not-contiguous"
     ]
     assert (
         grammar_codes(
             {
-                "acts": [
+                "entries": [
                     _entry(1, ["A1"]),
                     _entry(2, ["L1"], continues_from_previous_page=True),
                     _entry(3, ["L5"], continues_to_next_page=True),
@@ -1634,40 +1634,42 @@ def test_an_answer_outside_the_one_grammar_is_named_by_it():
         )
         == []
     )
-    assert grammar_codes({"acts": [_entry(1, ["A1"], extra=1)], "set_aside": []}) == [
+    assert grammar_codes({"entries": [_entry(1, ["A1"], extra=1)], "set_aside": []}) == [
         "act-field-unknown"
     ]
-    assert grammar_codes({"acts": [_entry(1, ["A1"], label="x" * 81)], "set_aside": []}) == [
+    assert grammar_codes({"entries": [_entry(1, ["A1"], label="x" * 81)], "set_aside": []}) == [
         "label-invalid"
     ]
     # A blank label is outside the grammar here exactly as it is for the page answer.
-    assert grammar_codes({"acts": [_entry(1, ["A1"], label="  ")], "set_aside": []}) == [
+    assert grammar_codes({"entries": [_entry(1, ["A1"], label="  ")], "set_aside": []}) == [
         "label-invalid"
     ]
-    validated = validate_answer({"acts": [_entry(1, ["A1"], extra=1)], "set_aside": []}, CANDIDATES)
+    validated = validate_answer(
+        {"entries": [_entry(1, ["A1"], extra=1)], "set_aside": []}, CANDIDATES
+    )
     assert validated["entries"] == [] and validated["set_aside"] == {}
 
 
 def test_validation_names_every_problem():
     assert problem_codes(
-        {"acts": [_entry(1, ["A1"])], "set_aside": [{"id": "A1", "reason": "r"}]}
+        {"entries": [_entry(1, ["A1"])], "set_aside": [{"id": "A1", "reason": "r"}]}
     ) == ["cited-and-set-aside"]
     assert problem_codes(
         {
-            "acts": [_entry(1, ["A1"])],
+            "entries": [_entry(1, ["A1"])],
             "set_aside": [{"id": "A2-A3", "reason": "r"}, {"id": "A2", "reason": "r"}],
         }
     ) == ["set-aside-twice"]
     assert problem_codes(
-        {"acts": [_entry(1, ["A1"])], "set_aside": [{"id": "L1", "reason": ""}]}
+        {"entries": [_entry(1, ["A1"])], "set_aside": [{"id": "L1", "reason": ""}]}
     ) == ["set-aside-without-reason"]
     # Two entries on one region are the accounting's rule (h), not an answer problem.
-    assert problem_codes({"acts": [_entry(1, ["A1"]), _entry(2, ["A1"])], "set_aside": []}) == []
+    assert problem_codes({"entries": [_entry(1, ["A1"]), _entry(2, ["A1"])], "set_aside": []}) == []
 
 
 def test_edge_continuation_flags_and_an_unplaced_entry_are_valid():
     answer = {
-        "acts": [
+        "entries": [
             _entry(1, ["A1"], continues_from_previous_page=True),
             _entry(2, ["C1"]),
             _entry(3, ["L5"], continues_to_next_page=True),
@@ -1686,7 +1688,7 @@ def test_edge_continuation_flags_and_an_unplaced_entry_are_valid():
 
 
 def test_the_union_box_bounds_every_cited_box_unpadded():
-    answer = {"acts": [_entry(1, ["L4", "L2", "L3", "C1", "L2"])], "set_aside": []}
+    answer = {"entries": [_entry(1, ["L4", "L2", "L3", "C1", "L2"])], "set_aside": []}
     validated = validate_answer(answer, CANDIDATES)
 
     [entry] = validated["entries"]
@@ -1816,7 +1818,7 @@ def two_columns(
         },
     }
     answer = {
-        "acts": [
+        "entries": [
             {
                 "n": n,
                 "kind": "act",
@@ -1938,7 +1940,7 @@ def _doubt_plans(*texts: str) -> list[dict]:
     """The entry plans of a two-column page read as `texts`, one line each."""
     case = two_columns([[f"L{n}"] for n in range(1, len(texts) + 1)])
     answer = copy.deepcopy(case["reading"]["answer"])
-    for act, text in zip(answer["acts"], texts, strict=True):
+    for act, text in zip(answer["entries"], texts, strict=True):
         act["text"] = text
     return page_path.entry_plans(
         answer,
@@ -2316,21 +2318,19 @@ def test_an_entry_citing_another_entrys_units_beside_its_own_ink_is_still_a_dupl
 
 
 def test_the_committed_file_seals_the_lead_s_review_flags(tmp_path: Path):
-    """The committed `[flags]` table is the lead's four codes, and a file with no table seals
-    the same four (the code's defaults), so a run sealed before the table existed replays
-    under them."""
-    assert SEALED.flag_codes == page_accounting_module.DEFAULT_FLAG_CODES
-    silent = tmp_path / "silent.toml"
-    silent.write_text(_without_flags_table(), encoding="utf-8")
-    assert load_page_accounting_policy(silent).flag_codes == SEALED.flag_codes
-    assert load_page_accounting_policy(silent).sha256 != SEALED.sha256
+    """The committed `[flags]` table is the lead's four codes, and a file with no table is
+    refused."""
     assert SEALED.flag_codes == {
         "no-detector-record-on-act-page",
         "unread-ink",
         "residual-ink",
         "witness-short-unit-not-read",
     }
-    assert SEALED.short_unit_characters == page_accounting_module.DEFAULT_SHORT_UNIT_CHARACTERS
+    assert SEALED.short_unit_characters == 15
+    silent = tmp_path / "silent.toml"
+    silent.write_text(_without_flags_table(), encoding="utf-8")
+    with pytest.raises(ContractError, match=r"no \[flags\] table"):
+        load_page_accounting_policy(silent)
 
 
 def _without_flags_table() -> str:

@@ -153,7 +153,7 @@ def test_a_dots_capture_re_derives_from_its_raw_answer_alone():
         verify_native_capture_bytes(capture, _raw([{"bbox": [1, 2, 3, 4], "category": "Text"}]))
     with pytest.raises(SchemaRefusal, match="prompt"):
         validate_native_capture({**capture, "view": {"prompt": {"user": "another prompt"}}})
-    assert CAPTURE_TEXT_VIEWS[(dots_layout.ADAPTER, dots_layout.PARSER)][0] == "dots-layout-text.v1"
+    assert CAPTURE_TEXT_VIEWS[(dots_layout.ADAPTER, dots_layout.PARSER)] == "dots-layout-text.v1"
 
 
 def test_a_cut_off_answer_names_the_parse_failure_as_its_stop_reason():

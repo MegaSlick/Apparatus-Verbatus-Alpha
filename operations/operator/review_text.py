@@ -209,22 +209,20 @@ def _uncertainty_lines(
     state = assessment.get("state") if assessment is not None else None
     counted = f"{len(spans)} uncertain span(s), {len(gaps)} gap(s)"
     if assessment is None:
-        # Two different facts: a reading sealed before the doubt report was
-        # part of the record, and a `not-run` record, which is no reading at
-        # all. A `not-run` payload carries no text either, which is what
-        # separates them here.
+        # Only a `not-run` record, which is no reading at all, has no doubt
+        # report; every reading that ran carries one.
         if outcome != "not-run" and not isinstance(text, str):
             raise ProjectionShapeError(
                 f"{label}.text", None, text, expected="a string on a reading that ran"
             )
-        lines = [
-            "    doubts: not recorded — this act was not read"
-            if text is None
-            else (
-                "    doubts: not recorded — this reading was sealed before the reader's doubt "
-                "report was part of the record"
+        if outcome != "not-run" or text is not None:
+            raise ProjectionShapeError(
+                f"{label}.{assessment_key}",
+                None,
+                assessment,
+                expected="the reader's doubt report on a reading that ran",
             )
-        ]
+        lines = ["    doubts: not recorded — this act was not read"]
         if spans or gaps:
             lines.append(f"      published beside that absence: {counted}")
     elif state == "assessed":

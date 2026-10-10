@@ -57,8 +57,8 @@ accounting measures them), every Surya record, the render and the sealed page.
 
 ## Page types and entry kinds
 
-With the `[feed]` switch `page_types = "named"` the reading names its page's type
-and each entry's kind (`common/page_types.py`; the answer's `entries` shape below):
+The reading names its page's type and each entry's kind (`common/page_types.py`; the
+answer's `entries` shape below; the `[feed]` switch `page_types = "named"` is required):
 
 - page types: `register-acts`, `index`, `table`, `ledger`, `instrument`, `prose`,
   `blank`, with `writing` one of `handwritten`, `typed`, `printed`, `mixed`;
@@ -69,15 +69,12 @@ Each kind has an act class: `act` for an act or instrument, `other` for every ot
 kind. Every record after the answer -- act-region, Perlectio, page accounting entries,
 the page-read denominator, the Recensor and the Coniector -- carries the class as its
 `kind`, so an index row is never counted, paired across a page break or reconstructed
-as an act; the kind the reading named travels beside it as `entry_kind`. A table
-without the switch is `off`: the reading is asked for the older `acts` shape, its kinds
-are already act classes, and nothing below changes for it. So the saved answers of a run
-sealed before page types replay as they were read (`operations/replay/`).
+as an act; the kind the reading named travels beside it as `entry_kind`.
 
 What the page type changes, all recorded on the page accounting's `page_type`:
 
 - **Rule (i), the record detector**, applies only on a page whose type is not stated
-  and on `handwritten` or `mixed` `register-acts`. On every other stated page it is
+  (no valid answer stated one) and on `handwritten` or `mixed` `register-acts`. On every other stated page it is
   still measured and recorded, but its findings are listed in
   `page_type.recorded_not_held` instead of `holds` or `flags`.
 - **Rule (h), duplicate regions**: two entries of a row kind (`index-row`,
@@ -126,8 +123,7 @@ differ from an unbatched one in low-order bits.
 
 - `parse_state`: `parsed` (`answer` is the object exactly as given); `malformed` (not
   the answer grammar, `common/page_answer.py`: either the `entries` shape `{page_type,
-  writing, entries, set_aside}`, a re-ask's `{entries, set_aside}`, or the older `acts`
-  shape `{acts, set_aside}` whose kinds are `act` and `other` only); `cut-off` (the engine stopped at the output cap; never
+  writing, entries, set_aside}` or a re-ask's `{entries, set_aside}`); `cut-off` (the engine stopped at the output cap; never
   parsed); `repetition-loop` (the reply repeated the same line or block of lines
   over and over and the call was stopped; never parsed, `stop_reason`
   `repetition-loop`, `finish_reason` the engine's word if one had arrived, as a
@@ -153,7 +149,7 @@ differ from an unbatched one in low-order bits.
   holds that `act` entry `continuation-off-page-edge` or notes it on an `other` entry
   (`pipeline/5_recensor/CONTRACT.md`). A re-ask may still set no flag at all.
 - One repair is made, and recorded: a reply that is not JSON only because some of the
-  grammar's own keys are written bare (`{acts: [`) is parsed after quoting those keys
+  grammar's own keys are written bare (`{entries: [`) is parsed after quoting those keys
   outside strings and nothing else (`common.page_answer.parse_page_answer_repaired`).
   The reading then carries `answer_repairs`, one `{code: "unquoted-keys-quoted", keys,
   detail}`; a reading that needed no repair carries no such field. The repaired text
@@ -202,7 +198,7 @@ held nor flagged. Rule (e) names a cited witness unit of at
 most `short_unit_characters` normalized characters read differently
 `witness-short-unit-not-read` (a signature or initials: a dissent about a few letters),
 and any other unit `witness-text-not-read`. Its `entries` carry `kind` (the act class)
-and `entry_kind`, and its `page_type` block `{grammar, stated, writing, facts,
+and `entry_kind`, and its `page_type` block `{stated, writing, facts,
 agreement, applicability, kinds, recorded_not_held}` says what the reading stated and
 which rules applied ("Page types and entry kinds" above). Its inputs are the feed, the
 reading, every page witness's Testimonium and every detection and ink record it
@@ -237,14 +233,14 @@ act `no-autopsia`.
 
 ```
 {schema: "perlectio.v3", page_id, page_ordinal, act_region_ref, page_reading_ref,
- page_accounting_ref, feed_ref, n, kind, label, text, uncertain_spans, gaps,
- uncertainty_assessment, dissent, truncation | null, autopsia,
+ page_accounting_ref, feed_ref, n, kind, entry_kind, label, text, uncertain_spans,
+ gaps, uncertainty_assessment, dissent, truncation | null, autopsia,
  continues_from_previous_page, continues_to_next_page, holds, page_holds,
- engine_call, provenance, reading_attempt?, reading_n?, entry_kind?}
+ engine_call, provenance, reading_attempt?, reading_n?}
 ```
 
-- `kind` is the entry's act class; `entry_kind` is present exactly when the answer
-  named the kind (the `entries` shape), and its class is `kind`.
+- `kind` is the entry's act class; `entry_kind` is the kind the answer named, and its
+  class is `kind`.
 
 - `text` is the entry's text with the reader's doubt marks split out: `[[?]]` is a
   zero-width gap, `[[reading|other]]` an uncertain span with its alternatives. The
@@ -421,9 +417,9 @@ receipt is the source's own. The client keeps no bytes the source did not keep.
   `common.page_types.row_record` gives its `rows.jsonl` line (`armarium-row.v1`:
   `act_key, act_id, page_id, page_ordinal, page_type, n, entry_kind, label, text,
   uncertain_spans, gaps, holds`, and `review` when the caller passes one), the page
-  type read from the entry's page accounting (`page_type.stated`). A Perlectio with
-  no `entry_kind` is of an `acts` answer and has no row. The Armarium does not write
-  `rows.jsonl` yet (see *Not built* below and the Armarium's contract).
+  type read from the entry's page accounting (`page_type.stated`). Every Perlectio
+  carries `entry_kind`; only an entry of a row kind has a row. The Armarium does not
+  write `rows.jsonl` yet (see *Not built* below and the Armarium's contract).
 
 - Recompute every attempt id from (subject, operation, ordinal), and require
   ordinals 1..N without a gap: a gap is an attempt that is no longer there.

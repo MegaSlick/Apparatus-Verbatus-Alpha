@@ -563,10 +563,15 @@ def test_the_public_page_seam_actually_reaches_the_retained_response_check():
         )
 
 
+def _churro_document(text: str) -> bytes:
+    """`text` as one `Line` of Churro's `HistoricalDocument` grammar."""
+    return f"<HistoricalDocument><Page><Body><Line>{text}</Line></Body></Page></HistoricalDocument>".encode()
+
+
 def _page_with_churro_capture() -> dict:
     value = payload()
     text = value["payload"]
-    digest = digest_bytes(f"<output>{text}</output>".encode())
+    digest = digest_bytes(_churro_document(text))
     value.update(
         {
             "chair": "attestator_1",
@@ -599,10 +604,7 @@ def _page_with_churro_capture() -> dict:
                 },
                 "transport_stop_reason": "eos",
                 "stop_reason": "eos",
-                # A bare `<output>` body is the retired framing's envelope, and
-                # the vendor grammar reads it as retained history while saying
-                # so: a shape nobody asked for is visible rather than silent.
-                "findings": [{"kind": "retired-output-envelope"}],
+                "findings": [],
                 "parse": {"state": "parsed", "parser": "xml", "text": text},
                 "text_view": "churro-historical-document-text.v2",
             },
@@ -727,7 +729,7 @@ def test_a_cut_off_empty_churro_capture_is_recordable_but_not_a_reported_absence
 
 def test_churro_capture_derivation_is_checked_against_its_authoritative_raw_bytes():
     value = _page_with_churro_capture()
-    raw = f"<output>{value['payload']}</output>".encode()
+    raw = _churro_document(value["payload"])
     assert verify_native_capture_bytes(value["native_capture"], raw) is value["native_capture"]
 
     value["native_capture"]["parse"]["text"] = "a coherently resealed false projection"
@@ -1195,24 +1197,19 @@ def test_a_plain_reading_is_the_shape_the_paper_era_harness_expected_and_still_p
     assert result["shape"] == "plain-text"
 
 
-def test_the_retired_output_envelope_still_reads_and_says_that_it_is_retired():
-    """Retained history parses; a shape nobody asked for is visible."""
-    result = parse_churro_response(b"<output>plain reading</output>")
-    assert result["state"] == "parsed"
-    assert result["shape"] == "output-element"
-    assert result["text"] == "plain reading"
-    assert result["findings"] == [{"kind": "retired-output-envelope"}]
-
-
 def test_a_well_formed_body_rooted_elsewhere_is_an_unrecognized_shape_not_a_failure():
     """The parser ran, read the whole response, and could name no shape it knows.
 
     A well-formed body rooted elsewhere is an unrecognized shape, named in the
     reason, not unparseable bytes.
     """
-    result = parse_churro_response(b"<transcription>x</transcription>")
-    assert result["state"] == "unrecognized-shape"
-    assert "transcription" in result["reason"]
+    for body, root in (
+        (b"<transcription>x</transcription>", "transcription"),
+        (b"<output>x</output>", "output"),
+    ):
+        result = parse_churro_response(body)
+        assert result["state"] == "unrecognized-shape"
+        assert repr(root) in result["reason"]
 
 
 def test_a_body_that_offers_the_grammar_and_will_not_parse_is_failed_with_its_reason():
@@ -1287,19 +1284,19 @@ def test_the_grammars_findings_travel_on_the_capture_beside_the_repetition_scans
 
     A capture used to be allowed at most one finding, because the only producer
     was the tail-cycle scan. The grammar reports facts of its own -- an echo
-    trimmed, a stray character escaped, ink outside every section, a retired
-    envelope -- and each is a fact about this response the page text alone
-    cannot show.
+    trimmed, a stray character escaped, ink outside every section -- and each is
+    a fact about this response the page text alone cannot show.
     """
-    derived = derive_churro_capture(b"<output>plain reading</output>", "eos", parser="xml")
-    assert derived["findings"] == [{"kind": "retired-output-envelope"}]
+    body = b"<HistoricalDocument><Page>stray<Body><Line>plain reading</Line></Body></Page></HistoricalDocument>"
+    derived = derive_churro_capture(body, "eos", parser="xml")
+    assert derived["findings"] == [{"kind": "page-text-outside-sections", "page_ordinal": 1}]
 
 
 def test_a_capture_may_carry_several_grammar_findings_but_only_one_repetition():
     capture = _native_capture()
     capture["parse"] = {"state": "parsed", "parser": "xml", "text": "x"}
     capture["findings"] = [
-        {"kind": "retired-output-envelope"},
+        {"kind": "stray-markup-escaped", "characters": 1},
         {"kind": "prompt-echo-trimmed", "characters": 12},
         {
             "kind": "post-hoc-repetition",
@@ -1394,7 +1391,7 @@ def test_an_oversized_body_is_refused_before_the_parser_and_before_the_scan():
     ("body", "state", "stop_reason"),
     [
         (_DOCUMENT, "parsed", "eos"),
-        (b"<output>trained</output>", "parsed", "eos"),
+        (_churro_document("trained"), "parsed", "eos"),
         ("une transcription simple".encode("utf-8"), "parsed", "eos"),
         (
             b"<transcription>x</transcription>",
@@ -2173,7 +2170,7 @@ def test_a_capture_carrying_a_malformed_vendor_pin_is_refused_at_the_capture_sea
 
 def test_the_vendor_pin_travels_through_the_byte_level_re_derivation_unchanged():
     """The pin sits beside the capture, not inside what re-derives from the bytes."""
-    body = b"<output>plain reading</output>"
+    body = _churro_document("plain reading")
     digest = digest_bytes(body)
     capture = _native_capture()
     capture["raw_response_ref"] = {
@@ -2188,52 +2185,32 @@ def test_the_vendor_pin_travels_through_the_byte_level_re_derivation_unchanged()
 
 
 @pytest.mark.parametrize(
-    ("adapter", "parser", "retired"),
-    [
-        ("churro.v1", "xml", "churro-historical-document-text.v1"),
-        ("chandra.v1", "html", "chandra-layout-text.v1"),
-    ],
-)
-def test_a_capture_read_under_an_older_parser_is_refused_by_name(adapter, parser, retired):
-    """The parser changed what it reads from the same bytes, so an older capture is
-    retired at a named boundary instead of failing a generic re-derivation."""
-    value = _native_capture()
-    if adapter == "chandra.v1":
-        value.update(
-            adapter=adapter, view={}, parse={"state": "parsed", "parser": parser, "text": ""}
-        )
-    value["text_view"] = retired
-    assert validate_native_capture(value) is value
-    with pytest.raises(
-        SchemaRefusal,
-        match=f"was read under the retired text view {retired}, which this build no longer "
-        "reads;.*re-run the submission from the Door",
-    ):
-        verify_native_capture_bytes(value, b"")
-    del value["text_view"]
-    with pytest.raises(
-        SchemaRefusal, match="records no text view;.*re-run the submission from the Door"
-    ):
-        verify_native_capture_bytes(value, b"")
-
-
-@pytest.mark.parametrize(
-    ("adapter", "parser", "unknown"),
+    ("adapter", "parser", "other"),
     [
         ("churro.v1", "xml", "churro-historical-document-text.v9"),
         ("chandra.v1", "html", "chandra-layout-text.v9"),
+        ("churro.v1", "xml", None),
+        ("chandra.v1", "html", None),
     ],
 )
-def test_a_capture_naming_an_unknown_text_view_is_refused_with_its_remedy(adapter, parser, unknown):
+def test_a_capture_not_naming_the_current_text_view_is_refused_with_its_remedy(
+    adapter, parser, other
+):
+    """The view names what this build's parser reads from the same bytes, so a capture
+    naming another, or none, is refused at a named boundary instead of failing a generic
+    re-derivation."""
     value = _native_capture()
     if adapter == "chandra.v1":
         value.update(
             adapter=adapter, view={}, parse={"state": "parsed", "parser": parser, "text": ""}
         )
-    value["text_view"] = unknown
+    if other is None:
+        value.pop("text_view", None)
+    else:
+        value["text_view"] = other
     with pytest.raises(
         SchemaRefusal,
-        match=f"names unknown text view '{unknown}', not .*; re-run the submission from the Door",
+        match=f"names text view {other!r}, not .*; re-run the submission from the Door",
     ):
         verify_native_capture_bytes(value, b"")
 
@@ -2254,7 +2231,9 @@ def test_a_capture_naming_an_unknown_text_view_is_refused_with_its_remedy(adapte
         ),
     ],
 )
-def test_a_retired_capture_is_refused_whatever_its_parse_state(adapter, parse, stop_reason):
+def test_a_capture_under_another_view_is_refused_whatever_its_parse_state(
+    adapter, parse, stop_reason
+):
     value = _native_capture()
     if adapter == "chandra.v1":
         value.update(adapter=adapter, view={})
@@ -2263,7 +2242,7 @@ def test_a_retired_capture_is_refused_whatever_its_parse_state(adapter, parse, s
         "chandra.v1": "chandra-layout-text.v1",
         "churro.v1": "churro-historical-document-text.v1",
     }[adapter]
-    with pytest.raises(SchemaRefusal, match="the retired text view"):
+    with pytest.raises(SchemaRefusal, match="names text view"):
         validate_capture_text_view(validate_native_capture(value))
 
 

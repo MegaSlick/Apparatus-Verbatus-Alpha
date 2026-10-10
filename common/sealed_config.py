@@ -98,10 +98,11 @@ def require_sealed_config(
 
 def require_seal_method(run: Mapping[str, Any], owner: str) -> None:
     """Refuse a run whose configuration seals were taken under another method."""
-    recorded = run.get(SEAL_METHOD_FIELD, "raw-bytes")
+    recorded = run.get(SEAL_METHOD_FIELD)
     if recorded != SEAL_METHOD:
+        method = "no recorded method" if recorded is None else f"the {recorded!r} method"
         raise IncompatibleReuse(
-            f"{owner} sealed its configurations by the {recorded!r} method and this code "
-            f"seals by {SEAL_METHOD!r}, so every sealed digest would read as changed. A run "
-            "cannot resume across a seal-method change; start a new run"
+            f"{owner} sealed its configurations by {method} and this code seals by "
+            f"{SEAL_METHOD!r}, so every sealed digest would read as changed. A run cannot "
+            "resume across a seal-method change; start a new run"
         )

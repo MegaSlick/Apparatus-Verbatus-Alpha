@@ -1314,10 +1314,10 @@ def systemic_review_basis(context) -> dict | None:
     The Armarium runs over a held Recensor only on a person's advance, which
     may pass a systemic share; the share is measured here as the orchestrator's
     alarm measured it (`common.page_review.held_share`), so the export names
-    it as a reason. None too for a run that sealed no review policy.
+    it as a reason.
     """
     share = held_share(context.tree, context.sealed_config_digests, context.args.review_config)
-    if share is None or not share["systemic"]:
+    if not share["systemic"]:
         return None
     return {key: share[key] for key in ("held_pages", "pages", "max_held_page_share")}
 

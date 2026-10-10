@@ -155,7 +155,7 @@ def page(
         },
     }
     answer = {
-        "acts": [
+        "entries": [
             {
                 "n": n,
                 "kind": "act",

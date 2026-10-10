@@ -931,7 +931,7 @@ def test_entries_on_one_region_are_held_and_keep_their_own_ids():
         "continues_from_previous_page": False,
         "continues_to_next_page": False,
     }
-    answer = {"acts": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
+    answer = {"entries": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
     entries = page_path.answer_entries(answer, feed, load_page_accounting_policy())
     assert [entry["holds"] for entry in entries] == [["duplicate-region"]] * 2
     assert [entry["union_box_px"] for entry in entries] == [box, box]
@@ -958,10 +958,10 @@ def test_entries_on_one_region_do_not_hold_the_reading_whole_but_an_unknown_id_d
         "continues_from_previous_page": False,
         "continues_to_next_page": False,
     }
-    answer = {"acts": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
+    answer = {"entries": [{**entry, "n": 1}, {**entry, "n": 2}], "set_aside": []}
     policy = load_page_accounting_policy()
     assert page_path.answer_problems(answer, feed, "stop", policy) == []
-    answer["acts"][1]["cites"] = ["Q7"]
+    answer["entries"][1]["cites"] = ["Q7"]
     assert [p["code"] for p in page_path.answer_problems(answer, feed, "stop", policy)] == [
         "unknown-id"
     ]
@@ -1297,7 +1297,7 @@ def test_two_pages_in_flight_publish_what_one_at_a_time_does(live_chain, tmp_pat
             ),
             "malformed",
         ),
-        (ScriptedAnswer(content='{"acts": [{"n": 1', finish_reason="length"), "cut-off"),
+        (ScriptedAnswer(content='{"entries": [{"n": 1', finish_reason="length"), "cut-off"),
         (ScriptedAnswer(content="{}", finish_reason="eos_token"), "call-failed"),
     ],
     ids=["malformed", "cut-off", "unrecognized-stop"],
@@ -1322,9 +1322,11 @@ def test_an_answer_that_cannot_stand_is_held_whole_with_no_act_record(
 
 
 def _bare_keys(answer: str) -> str:
-    """`answer` with every grammar key written bare, as Qwen3.8 once replied (`{\nacts: [`)."""
+    """`answer` with every grammar key written bare, such as `{\nentries: [`."""
     for key in (
-        "acts",
+        "page_type",
+        "writing",
+        "entries",
         "set_aside",
         "n",
         "kind",
@@ -1347,7 +1349,7 @@ def test_a_stray_flag_keeps_the_page_and_bare_keys_are_quoted_and_recorded(
     stage reading both pages again from those bytes finds the same. Synthetic text."""
     root = live_tree.root
     stray = json.loads(PAGE_ANSWERS[1])
-    stray["acts"][1]["continues_from_previous_page"] = True
+    stray["entries"][1]["continues_from_previous_page"] = True
     bare = _bare_keys(PAGE_ANSWERS[2])
     assert page_answer.parse_page_answer(bare)[0] == "malformed"
     _endpoint, exit_code = _read_pages(
@@ -1365,7 +1367,7 @@ def test_a_stray_flag_keeps_the_page_and_bare_keys_are_quoted_and_recorded(
     assert second["answer"] == json.loads(PAGE_ANSWERS[2])
     assert [repair["code"] for repair in second["answer_repairs"]] == ["unquoted-keys-quoted"]
     raw = (root / "r" / second["engine_call"]["raw_response_ref"]["relative_path"]).read_bytes()
-    assert b"acts:" in raw and b'"acts":' not in raw
+    assert b"entries:" in raw and b'"entries":' not in raw
     perlectios = {
         (r["payload"]["page_ordinal"], r["payload"]["n"]): r["payload"]
         for r in _records(root, "perlectio")
@@ -1383,7 +1385,7 @@ def test_a_looping_reply_is_stopped_and_held_whole_and_read_again_from_its_bytes
     repeat, held `repetition-loop` (never parsed, never a cut-off), and a later stage
     reading the page again finds the same loop in the retained bytes. Synthetic text."""
     root = live_tree.root
-    head = '{"acts": [{"n": 1, "kind": "other", "label": "index", "cites": ["A1"], "text": "\n'
+    head = '{"entries": [{"n": 1, "kind": "other", "label": "index", "cites": ["A1"], "text": "\n'
     looped = ScriptedAnswer(
         content=head + "Tremblay, Jean f. 12\n" * 300 + '"}], "set_aside": []}',
         finish_reason="length",
@@ -1489,7 +1491,7 @@ def test_an_answer_citing_an_id_the_feed_never_showed_is_held_with_its_answer(
 ):
     root = live_tree.root
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][0]["cites"] = ["A1", "Q7"]
+    answer["entries"][0]["cites"] = ["A1", "Q7"]
     scripted = _scripted(answer)
     _endpoint, exit_code = _read_pages(live_tree, tmp_path, monkeypatch, scripted, scripted)
     assert exit_code == 0
@@ -1502,7 +1504,7 @@ def test_an_answer_citing_an_id_the_feed_never_showed_is_held_with_its_answer(
 def test_a_real_act_set_aside_is_published_but_its_page_holds(live_tree, tmp_path, monkeypatch):
     root = live_tree.root
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"] = answer["acts"][:1]
+    answer["entries"] = answer["entries"][:1]
     answer["set_aside"] = [
         {"id": "A2", "reason": "not an entry"},
         {"id": "B2", "reason": "not an entry"},
@@ -1512,7 +1514,7 @@ def test_a_real_act_set_aside_is_published_but_its_page_holds(live_tree, tmp_pat
     # published, before page 2's.
     reask = _scripted(
         {
-            "acts": [],
+            "entries": [],
             "set_aside": [{"id": f"L{line}", "reason": "not an entry"} for line in range(5, 10)],
         }
     )
@@ -1536,7 +1538,7 @@ def test_a_page_held_by_rule_e_holds_every_act_record_on_it(live_tree, tmp_path,
     holds the page, and both its act records carry that code and are held."""
     root = live_tree.root
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][0]["text"] = "Le deux mai a été inhumé Jean Roy, âgé de trois jours"
+    answer["entries"][0]["text"] = "Le deux mai a été inhumé Jean Roy, âgé de trois jours"
     _endpoint, exit_code = _read_pages(
         live_tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1]
     )
@@ -1561,7 +1563,7 @@ def test_a_page_held_by_rule_e_holds_every_act_record_on_it(live_tree, tmp_path,
 def test_an_entry_with_no_readable_text_is_held_by_its_own_code(live_tree, tmp_path, monkeypatch):
     root = live_tree.root
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][1]["text"] = "  [[?]]  "
+    answer["entries"][1]["text"] = "  [[?]]  "
     _endpoint, exit_code = _read_pages(
         live_tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1]
     )
@@ -2031,8 +2033,8 @@ def test_under_flat_witnesses_the_accounting_measures_the_regions_the_stage_cut(
     unread by both readings of the page."""
     tree = _live_chain(tmp_path / "flat", feed={"witness_units": "flat"}, reask=0)
     answer = json.loads(PAGE_ANSWERS[1])
-    answer["acts"][0]["cites"] = ["A1", "B1", "L1"]
-    answer["acts"][1]["cites"] = ["A2", "B2", "L5", "L6", "L7", "L8", "L9"]
+    answer["entries"][0]["cites"] = ["A1", "B1", "L1"]
+    answer["entries"][1]["cites"] = ["A2", "B2", "L5", "L6", "L7", "L8", "L9"]
     _endpoint, exit_code = _read_pages(
         tree, tmp_path, monkeypatch, _scripted(answer), _answers()[1]
     )

@@ -14,8 +14,8 @@ from common.chandra_native_retry import (
 )
 from common.contracts.errors import ContractError
 from common.contracts.serving import (
+    CALL_RECORD_SCHEMAS,
     CALLER_GENERATION_FIELDS,
-    RETIRED_CALL_RECORD_SCHEMAS,
     WIRE_DECIMAL_FIELDS,
     WIRE_DECIMAL_SCHEMA,
 )
@@ -124,19 +124,7 @@ def _validate_decoding_policy(policy: Any) -> None:
     """
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")
-    schema = policy.get("schema")
-    if isinstance(schema, str) and schema in {
-        "decoding.v1",
-        "decoding.v2",
-        "decoding.v3",
-        "decoding.v4",
-        "decoding.v5",
-        "decoding.v6",
-        "decoding.v7",
-        "decoding.v8",
-    }:
-        raise ContractError(f"sealed under {schema}, which this build no longer reads; re-run")
-    if schema != "decoding.v9":
+    if policy.get("schema") != "decoding.v9":
         raise ContractError("decoding configuration has an unsupported schema")
     expected_sections = {
         "schema",
@@ -352,16 +340,6 @@ def decoded_wire_decimals(value: object) -> object:
     return value
 
 
-def refuse_retired_call_record(
-    schema: object, *, subject: str, error_type: type[Exception] = ContractError
-) -> None:
-    """Refuse a call record written under a retired schema, by that schema's name."""
-    if isinstance(schema, str) and schema in RETIRED_CALL_RECORD_SCHEMAS:
-        raise error_type(
-            f"{subject} was written as {schema}, which this build no longer reads; re-run"
-        )
-
-
 def verify_call_sampling(
     call: Mapping[str, Any],
     policy: Mapping[str, Any],
@@ -378,7 +356,10 @@ def verify_call_sampling(
     `expected_seed` is the seed the call sent: the serving receipt's. A Chandra
     native request sends none, and its reader says so with `None`.
     """
-    refuse_retired_call_record(call.get("schema"), subject=f"a {chair} call record")
+    if call.get("schema") not in CALL_RECORD_SCHEMAS:
+        raise ContractError(
+            f"a {chair} call record has schema {call.get('schema')!r}, not one this build writes"
+        )
     expected = chair_attempt_decoding(policy, chair, attempt_ordinal)
     sent = call.get("generation_sent")
     if not isinstance(sent, Mapping):

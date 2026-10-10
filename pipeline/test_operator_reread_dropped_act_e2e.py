@@ -41,10 +41,10 @@ def _without_act_two(how: str) -> str:
     """Page 1's answer with its second act dropped in the way `how` names."""
     answer = json.loads(PAGE_ANSWERS[1])
     if how == "other":
-        answer["acts"][1]["kind"] = "other"
+        answer["entries"][1]["kind"] = "other"
         return json.dumps(answer)
-    first, dropped = answer["acts"]
-    answer["acts"] = [first]
+    first, dropped = answer["entries"]
+    answer["entries"] = [first]
     if how == "set-aside":
         answer["set_aside"] = [{"id": i, "reason": "not an act"} for i in dropped["cites"]]
     elif how.startswith("merged"):
@@ -89,7 +89,7 @@ def test_a_re_read_that_drops_an_act_holds_its_page_for_review(
     assert _read_again(tree, tmp_path / "reader", _without_act_two(how)) == EXIT_COMPLETE
 
     current = _page_readings(tree.root)[3]
-    acts = [e for e in current["payload"]["answer"]["acts"] if e["kind"] == "act"]
+    acts = [e for e in current["payload"]["answer"]["entries"] if e["kind"] == "act"]
     assert len(acts) == 1
     holds = set(_accounting_holds(tree.root, current))
     assert expected <= holds

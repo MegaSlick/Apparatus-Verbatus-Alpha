@@ -500,19 +500,15 @@ def test_plain_text_is_returned_exactly_as_it_decoded():
     assert record["view"] == CHURRO_TEXT_VIEW
 
 
-def test_a_bare_output_envelope_is_accepted_as_retired_history_and_says_so():
-    record = _parse("<output>L'an mil sept cent</output>")
-    assert record["shape"] == "output-element"
-    assert record["text"] == "L'an mil sept cent"
-    assert record["findings"] == [{"kind": "retired-output-envelope"}]
-    assert _parse("<output></output>")["text"] == ""
-
-
-def test_an_output_element_that_is_not_bare_is_an_unrecognized_shape():
-    for document in ("<output lang='fr'>x</output>", "<output><Line>x</Line></output>"):
+def test_an_output_element_is_an_unrecognized_shape():
+    for document in (
+        "<output>L'an mil sept cent</output>",
+        "<output lang='fr'>x</output>",
+        "<output><Line>x</Line></output>",
+    ):
         record = _parse(document)
         assert record["state"] == "unrecognized-shape"
-        assert "output" in record["reason"]
+        assert "'output'" in record["reason"]
 
 
 def test_well_formed_xml_under_another_root_is_unrecognized_not_failed():
@@ -663,10 +659,9 @@ def test_the_declared_vocabulary_is_what_the_records_use():
     assert CHURRO_TEXT_VIEW == "churro-historical-document-text.v2"
     assert CHURRO_PARSER == "xml"
     assert PARSE_STATES == {"parsed", "failed", "unrecognized-shape"}
-    assert DOCUMENT_SHAPES == {"historical-document", "plain-text", "output-element"}
+    assert DOCUMENT_SHAPES == {"historical-document", "plain-text"}
     assert DOCUMENT_FINDING_KINDS == {
         "prompt-echo-trimmed",
-        "retired-output-envelope",
         "stray-markup-escaped",
         "page-text-outside-sections",
         "document-text-outside-pages",

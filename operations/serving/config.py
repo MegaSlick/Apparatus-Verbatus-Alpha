@@ -151,8 +151,8 @@ _PROFILE_FIELDS = {
 # without them is launched exactly as written.
 #
 # `quantization`, `kv_cache_dtype` and `speculative_config` are optional engine
-# options, absent on every row that predates them, so those rows, their digests
-# and their argv are unchanged. Each takes only the values listed below, all
+# options, absent on a row that does not set them, so that row's digest and
+# argv carry nothing for them. Each takes only the values listed below, all
 # read from vLLM 0.30.0's own argument parser and configuration
 # (`vllm/engine/arg_utils.py`, `vllm/config/{model,cache,speculative}.py` at
 # tag v0.30.0); a new value is a reviewed edit here, never a free string.

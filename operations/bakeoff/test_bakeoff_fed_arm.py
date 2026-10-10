@@ -67,6 +67,7 @@ def _feed(ordinal: int, image_path: str, png: bytes, first: str, third: str) -> 
         "switches": {
             "page_image": "legible",
             "page_overlay": "off",
+            "page_types": "named",
             "surya_blocks": True,
             "surya_lines": True,
             "witness_coordinates": True,
@@ -163,7 +164,11 @@ def make_run_tree(
             },
             "parse_state": "parsed",
             "problems": [],
-            "answer": {"acts": [{"n": 1, "kind": "act", "text": first, "cites": ["A1"]}]},
+            "answer": {
+                "page_type": "register-acts",
+                "writing": "handwritten",
+                "entries": [{"n": 1, "kind": "act", "text": first, "cites": ["A1"]}],
+            },
             "finish_reason": "stop",
             "stop_reason": "stop",
             "failure": None,
@@ -379,13 +384,6 @@ def test_a_label_refuses_pages_cached_under_another_setup(tree, tmp_path):
     (other / "config.json").write_text("{}")
     with pytest.raises(SystemExit, match="another setup"):
         F.main(_run_argv(other, out, "x", *base))
-    # A cache written before setups were recorded is refused too.
-    path = out / "x" / "p001.json"
-    record = json.loads(path.read_text())
-    record.pop("setup"), record.pop("setup_sha256")
-    path.write_text(json.dumps(record))
-    with pytest.raises(SystemExit, match="before setups were recorded"):
-        F.main(_run_argv(tree, out, "x", *base))
 
 
 def test_a_changed_mutation_under_the_same_label_is_refused(tree, tmp_path):
@@ -652,7 +650,9 @@ def test_a_bare_key_reply_is_parsed_as_the_pipeline_parses_it(tmp_path):
     bare = json.loads((out / "bare" / "p002.json").read_text())
     assert bare["parse_state"] == "parsed" and bare["parse_problems"] == []
     assert bare["repaired"] is True and bare["text"] == "Le dix mai"
-    assert [(r["code"], r["keys"]) for r in bare["answer_repairs"]] == [("unquoted-keys-quoted", 9)]
+    assert [(r["code"], r["keys"]) for r in bare["answer_repairs"]] == [
+        ("unquoted-keys-quoted", 11)
+    ]
     # The unrepaired grammar would have called it malformed; a loop-stopped or cut-off
     # reply is never repaired.
     from common import page_answer
@@ -666,3 +666,10 @@ def test_a_bare_key_reply_is_parsed_as_the_pipeline_parses_it(tmp_path):
                 {"loop_stop": None, "finish_reason": "length"}):  # fmt: skip
         state, _, _, repairs = F.parse_reply({"content": content, **cut})
         assert state == "malformed" and repairs == []
+
+
+def test_a_cached_page_with_no_recorded_setup_is_refused_by_name(tmp_path):
+    cached = tmp_path / "p001.json"
+    cached.write_text(json.dumps({"setup_sha256": "0" * 64}), "utf-8")
+    with pytest.raises(SystemExit, match="another setup .*use a new --label"):
+        F.cached_state(cached, {"model_name": "m"}, "r" * 64, "s" * 64)

@@ -296,23 +296,21 @@ def test_churro_reads_the_vendor_grammar_without_discarding_the_raw_response():
 
 
 def test_the_grammars_own_findings_reach_the_capture_beside_the_repetition_scan():
-    """A shape nobody asked for is visible on the record rather than silent.
-
-    The retired `<output>` envelope still reads, so retained history parses --
-    and it says, as a finding, that it arrived in a framing this chair no longer
-    sends.
-    """
+    """Ink the grammar left outside every section is visible on the record, not silent."""
     tree = _Tree()
     record = retain_model_view(
         _Context(tree=tree),
         adapter="churro.v1",
         view=_churro_view(),
-        raw_response=b"<output>retained history</output>",
+        raw_response=(
+            b"<HistoricalDocument><Page>stray<Body><Line>retained</Line></Body></Page>"
+            b"</HistoricalDocument>"
+        ),
         transport_stop_reason="eos",
         parser="xml",
     )
-    assert record["parse"]["text"] == "retained history"
-    assert record["findings"] == [{"kind": "retired-output-envelope"}]
+    assert record["parse"]["text"] == "retained"
+    assert record["findings"] == [{"kind": "page-text-outside-sections", "page_ordinal": 1}]
 
 
 def test_a_body_that_offers_the_grammar_and_will_not_parse_is_a_retained_failure():
@@ -334,7 +332,10 @@ def test_a_body_that_offers_the_grammar_and_will_not_parse_is_a_retained_failure
 
 def test_churro_parse_normalization_is_harmless_because_raw_bytes_are_retained():
     tree = _Tree()
-    raw = b"<output>line one\r\nRen&#233;</output>"
+    raw = (
+        b"<HistoricalDocument><Page><Body><Line>line one\r\n</Line><Line>Ren&#233;</Line>"
+        b"</Body></Page></HistoricalDocument>"
+    )
     record = retain_model_view(
         _Context(tree=tree),
         adapter="churro.v1",
@@ -349,7 +350,7 @@ def test_churro_parse_normalization_is_harmless_because_raw_bytes_are_retained()
 
 def test_an_oversized_churro_response_is_retained_but_never_parsed_or_scanned():
     tree = _Tree()
-    raw = b"<output>" + b"x" * CHURRO_MAX_RESPONSE_BYTES + b"</output>"
+    raw = b"<HistoricalDocument>" + b"x" * CHURRO_MAX_RESPONSE_BYTES + b"</HistoricalDocument>"
 
     record = retain_model_view(
         _Context(tree=tree),
@@ -462,7 +463,7 @@ def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation(
                     "scenario": "churro-native",
                     "page_ordinal": 1,
                     "chair": "attestator_1",
-                    "raw_xml": "<output>first act\nsecond act</output>",
+                    "raw_xml": "<HistoricalDocument><Page><Body><Line>first act</Line><Line>second act</Line></Body></Page></HistoricalDocument>",
                     "transport_stop_reason": "length",
                 }
             ]
@@ -484,7 +485,7 @@ def test_churro_page_capture_is_full_page_xml_and_surfaces_transport_truncation(
         "text": "first act\nsecond act",
     }
     assert tree.blobs[capture["raw_response_ref"]["relative_path"]] == (
-        b"<output>first act\nsecond act</output>"
+        b"<HistoricalDocument><Page><Body><Line>first act</Line><Line>second act</Line></Body></Page></HistoricalDocument>"
     )
     assert tree.put_calls == 1, "one declared response must cross capture exactly once"
 
@@ -601,7 +602,9 @@ def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
             context, context.fixture["churro_page_response"][0], "attestator_1", "churro.v1"
         )
 
-    cut, _ = _capture("<output></output>", "length")
+    cut, _ = _capture(
+        "<HistoricalDocument><Page><Body></Body></Page></HistoricalDocument>", "length"
+    )
     assert cut.outcome == "failed"
     assert cut.native_payload == ""
     assert cut.health == {
@@ -617,13 +620,18 @@ def test_a_cut_off_empty_response_is_not_a_confirmed_blank_page():
     assert "not a confirmed blank page" in cut.reason
 
     # A normally completed empty response is evidence of reported absence.
-    finished, _ = _capture("<output></output>", "eos")
+    finished, _ = _capture(
+        "<HistoricalDocument><Page><Body></Body></Page></HistoricalDocument>", "eos"
+    )
     assert finished.outcome == "genuinely-empty"
     assert finished.native_payload == ""
     assert finished.health["recordable"] is True
     assert finished.health["truncated"] is False
 
-    partial, _ = _capture("<output>half an act and then</output>", "length")
+    partial, _ = _capture(
+        "<HistoricalDocument><Page><Body><Line>half an act and then</Line></Body></Page></HistoricalDocument>",
+        "length",
+    )
     assert partial.outcome == "read"
     assert partial.native_payload == "half an act and then"
     assert partial.health["truncated"] is True
@@ -644,7 +652,7 @@ def test_a_declared_response_no_page_chair_could_be_asked_for_is_refused():
                         "scenario": "churro-native",
                         "page_ordinal": page_ordinal,
                         "chair": chair,
-                        "raw_xml": "<output>x</output>",
+                        "raw_xml": "<HistoricalDocument><Page><Body><Line>x</Line></Body></Page></HistoricalDocument>",
                         "transport_stop_reason": "eos",
                     }
                 ],
@@ -688,14 +696,14 @@ def test_churro_declaration_preflight_allows_one_default_overridden_by_one_scena
         {
             "page_ordinal": 1,
             "chair": "attestator_1",
-            "raw_xml": "<output>default</output>",
+            "raw_xml": "<HistoricalDocument><Page><Body><Line>default</Line></Body></Page></HistoricalDocument>",
             "transport_stop_reason": "eos",
         },
         {
             "scenario": "churro-native",
             "page_ordinal": 1,
             "chair": "attestator_1",
-            "raw_xml": "<output>scoped</output>",
+            "raw_xml": "<HistoricalDocument><Page><Body><Line>scoped</Line></Body></Page></HistoricalDocument>",
             "transport_stop_reason": "eos",
         },
     ]
@@ -728,7 +736,7 @@ def test_churro_declaration_preflight_names_malformed_transport_facts_even_for_a
     row = {
         "page_ordinal": 1,
         "chair": "attestator_3",
-        "raw_xml": "<output>x</output>",
+        "raw_xml": "<HistoricalDocument><Page><Body><Line>x</Line></Body></Page></HistoricalDocument>",
         "transport_stop_reason": "eos",
     }
     mutate(row)
@@ -756,7 +764,7 @@ def test_churro_declarations_are_checked_in_the_no_write_attempt_preflight():
                 {
                     "page_ordinal": 1,
                     "chair": "attestator_1",
-                    "raw_xml": "<output>x</output>",
+                    "raw_xml": "<HistoricalDocument><Page><Body><Line>x</Line></Body></Page></HistoricalDocument>",
                     "transport_stop_reason": "eos",
                 }
             ],
@@ -773,14 +781,14 @@ def test_one_scenarios_declared_response_is_not_another_scenarios_default():
             "scenario": "churro-native",
             "page_ordinal": 1,
             "chair": "attestator_1",
-            "raw_xml": "<output>other scenario</output>",
+            "raw_xml": "<HistoricalDocument><Page><Body><Line>other scenario</Line></Body></Page></HistoricalDocument>",
             "transport_stop_reason": "eos",
         },
         {
             "scenario": "churro-native-two",
             "page_ordinal": 1,
             "chair": "attestator_1",
-            "raw_xml": "<output>a third scenario</output>",
+            "raw_xml": "<HistoricalDocument><Page><Body><Line>a third scenario</Line></Body></Page></HistoricalDocument>",
             "transport_stop_reason": "eos",
         },
     ]
@@ -799,7 +807,7 @@ def test_one_scenarios_declared_response_is_not_another_scenarios_default():
         {
             "page_ordinal": 1,
             "chair": "attestator_1",
-            "raw_xml": "<output>the default</output>",
+            "raw_xml": "<HistoricalDocument><Page><Body><Line>the default</Line></Body></Page></HistoricalDocument>",
             "transport_stop_reason": "eos",
         }
     )
@@ -896,6 +904,7 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     assert DAI_MAX_WIDTH_PX == 1_500
     assert view["transform"]["target_width_px"] == 1_500
@@ -908,7 +917,7 @@ def test_dai_retains_resize_and_manifest_references_not_carried_prompt_bytes():
     assert set(view["prompts"]["system"]) == {"relative_path", "sha256"}
 
 
-def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_readable():
+def test_dai_model_view_retains_the_auto_generation_ledger():
     kwargs = {
         "source_image_ref": _ref("designator/crops/a.png"),
         "model_image_ref": _ref("attestatores/model-views/a.jpg", "b" * 64),
@@ -918,10 +927,6 @@ def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_reada
         "query_prompt_ref": _ref("models/dai/query.txt"),
         "generation_config_ref": _ref("models/dai/generation_config.json"),
     }
-    legacy = dai_model_view(**kwargs)
-    assert legacy["adapter"] == "dai-atr.v1"
-    assert validate_dai_model_view(legacy) is legacy
-
     ledger = dai_generation_accounting()
     current = dai_model_view(**kwargs, generation_accounting=ledger)
     assert current["adapter"] == "dai-atr.v2"
@@ -944,6 +949,10 @@ def test_dai_v2_model_view_retains_the_auto_generation_ledger_and_v1_stays_reada
     assert ledger["vendor_do_sample"] is carried_generation["do_sample"]
     assert validate_dai_generation_accounting(ledger) is ledger
     assert validate_dai_model_view(current) is current
+    without_ledger = {k: v for k, v in current.items() if k != "generation_accounting"}
+    for view in (without_ledger, {**without_ledger, "adapter": "dai-atr.v1"}):
+        with pytest.raises(SchemaRefusal, match="closed adapter schema"):
+            validate_dai_model_view(view)
 
     forged = {**ledger, "vendor_keys_without_request_field": []}
     with pytest.raises(SchemaRefusal, match="generation accounting differs"):
@@ -1013,6 +1022,7 @@ def test_every_dai_ceiling_seals_where_it_came_from():
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     limits = view["image_limits"]
     # Width only: the model card states no height or area ceiling.
@@ -1051,6 +1061,7 @@ def test_dai_resize_applies_only_the_model_cards_width_ceiling(
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     target = (view["transform"]["target_width_px"], view["transform"]["target_height_px"])
     assert target == expected
@@ -1068,6 +1079,7 @@ def test_dai_identity_view_requires_the_exact_source_image_reference():
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     assert view["transform"]["kind"] == "identity"
     assert view["model_image_ref"] == source
@@ -1080,6 +1092,7 @@ def test_dai_identity_view_requires_the_exact_source_image_reference():
             system_prompt_ref=_ref("models/dai/system.txt"),
             query_prompt_ref=_ref("models/dai/query.txt"),
             generation_config_ref=_ref("models/dai/generation_config.json"),
+            generation_accounting=dai_generation_accounting(),
         )
 
 
@@ -1104,6 +1117,7 @@ def test_dai_identity_view_accepts_one_image_under_two_stage_owned_paths():
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     assert view["transform"]["kind"] == "identity"
     # Both references survive verbatim: the record shows the one set of bytes
@@ -1127,6 +1141,7 @@ def test_dai_model_view_refuses_reference_paths_that_escape_the_run_tree(unsafe_
             system_prompt_ref=_ref("models/dai/system.txt"),
             query_prompt_ref=_ref("models/dai/query.txt"),
             generation_config_ref=_ref("models/dai/generation_config.json"),
+            generation_accounting=dai_generation_accounting(),
         )
 
 
@@ -1140,6 +1155,7 @@ def test_dai_retention_refuses_an_image_limits_digest_that_was_not_compared():
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     valid = retain_model_view(
         _Context(tree=_Tree()),
@@ -1176,6 +1192,7 @@ def test_dai_model_view_refuses_rehashed_limits_that_change_the_sealed_ceiling()
         system_prompt_ref=_ref("models/dai/system.txt"),
         query_prompt_ref=_ref("models/dai/query.txt"),
         generation_config_ref=_ref("models/dai/generation_config.json"),
+        generation_accounting=dai_generation_accounting(),
     )
     view["image_limits"]["max_width_px"] += 1
     view["image_limits_sha256"] = digest_of(view["image_limits"])
@@ -1189,7 +1206,7 @@ def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending(
     with pytest.raises(SchemaRefusal, match="does not run for adapter"):
         retain_model_view(
             _Context(tree=tree),
-            adapter="dai-atr.v1",
+            adapter="dai-atr.v2",
             view={},
             raw_response=b"native DAI text",
             transport_stop_reason="eos",
@@ -1198,7 +1215,7 @@ def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending(
     assert tree.blobs == {}
     unparsed = retain_model_view(
         _Context(tree=tree),
-        adapter="dai-atr.v1",
+        adapter="dai-atr.v2",
         view={},
         raw_response=b"native DAI text",
         transport_stop_reason="eos",

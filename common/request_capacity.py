@@ -567,8 +567,10 @@ def _rate_bound_tokens(characters: int) -> int:
 # Re-sealed again for the page-type and entry-kind instruction (`[feed] page_types`):
 # 442 more prose tokens on the dense test page, charged at the same carried rate, which
 # was measured on this builder's English prose and is not re-measured here.
+# Re-sealed again when the `acts`-grammar wording was removed: the page-type
+# instruction is now the only one, its text unchanged, so the rate carries unchanged.
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
-    "4dd2e4a5ac81daa87eee01cd08b850a49cc21edd508000f3c7998439a1b16dfd"
+    "09a99d131b109b8729638c36a03df5ed2fe777a4b1185350f472c5cd9f2cc4b5"
 )
 # Chat-template cost: one turn plus each image, charged at the most a
 # page request sends -- the page render and its overlay (`[feed] page_overlay`).
@@ -595,7 +597,10 @@ PAGE_ANSWER_ENTRY_SKELETON: Final = (
     '"cites": ["A99", "B99", "C99", "D100-D199", "S99"], "text": "", '
     '"continues_from_previous_page": false, "continues_to_next_page": false}, '
 )
-PAGE_ANSWER_WRAPPER: Final = '{"acts": [], "set_aside": []}'
+# The answer's wrapper, with the longest page type and writing.
+PAGE_ANSWER_WRAPPER: Final = (
+    '{"page_type": "register-acts", "writing": "handwritten", "entries": [], "set_aside": []}'
+)
 PAGE_ANSWER_LINE_CITE: Final = '"L999", '
 
 

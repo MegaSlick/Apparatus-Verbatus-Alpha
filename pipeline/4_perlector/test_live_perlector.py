@@ -733,7 +733,9 @@ def test_an_engine_call_off_its_sealed_row_or_retired_is_refused(live_run):
     root, _catalogue = live_run
     tree = RunTree(root, "r")
     context, retired = _engine_call_world(tree, seed=7, schema="chair-call-record.v2")
-    with pytest.raises(SchemaRefusal, match="written as chair-call-record.v2"):
+    with pytest.raises(
+        SchemaRefusal, match="has schema .chair-call-record.v2., not one this build writes"
+    ):
         live_calls.engine_call_inputs(context, retired)
 
 
@@ -1245,11 +1247,7 @@ def test_a_live_answer_naming_its_page_type_flows_into_every_page_record(
     }
     for record in _artifacts(root, "page-accounting"):
         typed = record["payload"]["page_type"]
-        assert (typed["grammar"], typed["stated"], typed["writing"]) == (
-            "entries",
-            "index",
-            "typed",
-        )
+        assert (typed["stated"], typed["writing"]) == ("index", "typed")
         assert typed["applicability"]["i"]["applies"] is False
         assert typed["kinds"] == {"agrees": False, "unexpected_kinds": ["act"]}
         kinds = [e["entry_kind"] for e in record["payload"]["entries"]]

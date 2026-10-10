@@ -74,16 +74,9 @@ DOUBT_SENTENCE: Final = (
     "Where ink cannot be read, write [[?]] in its place. Where a reading is uncertain, "
     "write it as [[reading]], or as [[reading|other|other]] to add other possible readings. "
 )
-# The answer's shape with placeholders only, so it suggests no reading.
-ANSWER_FORM: Final = (
-    '{"acts": [{"n": 1, "kind": "<act or other>", "label": "<a few words>", '
-    '"cites": ["<id>", "<first unit id>-<last unit id>"], "text": "<the entry\'s text>", '
-    '"continues_from_previous_page": false, "continues_to_next_page": false}], '
-    '"set_aside": [{"id": "<id>", "reason": "<short reason>"}]}'
-)
-# The answer's shape when the feed's `page_types` switch is "named"
+# The answer's shape with placeholders only, so it suggests no reading
 # (`common.page_types`): the page's type and how it is written, then the entries.
-ANSWER_FORM_NAMED: Final = (
+ANSWER_FORM: Final = (
     '{"page_type": "<page type>", "writing": "<how the page is written>", '
     '"entries": [{"n": 1, "kind": "<entry kind>", "label": "<a few words>", '
     '"cites": ["<id>", "<first unit id>-<last unit id>"], "text": "<the entry\'s text>", '
@@ -91,7 +84,7 @@ ANSWER_FORM_NAMED: Final = (
     '"set_aside": [{"id": "<id>", "reason": "<short reason>"}]}'
 )
 # A re-ask reads ids inside a page already typed, so it names no page type.
-REASK_ANSWER_FORM_NAMED: Final = (
+REASK_ANSWER_FORM: Final = (
     '{"entries": [{"n": 1, "kind": "<entry kind>", "label": "<a few words>", '
     '"cites": ["<id>", "<first unit id>-<last unit id>"], "text": "<the entry\'s text>", '
     '"continues_from_previous_page": false, "continues_to_next_page": false}], '
@@ -159,8 +152,6 @@ def _shown(feed: dict[str, Any]) -> dict[str, bool]:
         "witness_boxes": any(unit["box_1000"] is not None for row in rows for unit in row["units"]),
         "lines": surya is not None and bool(surya["lines"]),
         "blocks": surya is not None and bool(surya["blocks"]),
-        # An absent switch is a protocol sealed before page types: the `acts` grammar.
-        "page_types": feed["switches"].get("page_types") == "named",
     }
 
 
@@ -324,22 +315,13 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
             "No page image is shown. The reading is made from what was reported of this page: "
             f"{_listed(clues)} above. Any of them may be wrong or incomplete. "
         )
-    if shown["page_types"]:
-        parts.append(
-            "Establish all the text written on the page, entry by entry, in the order it is "
-            "written, numbered n = 1, 2, 3 and so on. "
-        )
-        parts.append(PAGE_TYPE_SENTENCE)
-        parts.append(ENTRY_KIND_SENTENCE)
-        parts.append("Every text on the page is read, whatever its kind. ")
-    else:
-        parts.append(
-            "Establish all the text written on the page, entry by entry, in the order it is "
-            "written, numbered n = 1, 2, 3 and so on. An act is one register entry, such as a "
-            'baptism, a marriage or a burial: give it kind "act". Every other text on the page, '
-            "such as a heading, a page number or a marginal note that is not an entry, is read "
-            'too, as an entry of kind "other". '
-        )
+    parts.append(
+        "Establish all the text written on the page, entry by entry, in the order it is "
+        "written, numbered n = 1, 2, 3 and so on. "
+    )
+    parts.append(PAGE_TYPE_SENTENCE)
+    parts.append(ENTRY_KIND_SENTENCE)
+    parts.append("Every text on the page is read, whatever its kind. ")
     covers = "its ink covers" if shown["image"] else "it is read from"
     ranges = []
     if shown["witnesses"]:
@@ -400,19 +382,10 @@ def page_reading_instruction(feed: dict[str, Any]) -> str:
             )
             + ', with a short reason, such as "empty" or "not text". '
         )
-    if shown["page_types"]:
-        parts.append(
-            "Set continues_from_previous_page to true only on the first act or instrument, when "
-            "it began on an earlier page, and continues_to_next_page to true only on the last act "
-            "or instrument, when it runs onto the next page; every other value of both is false. "
-            "Answer with one JSON object and nothing else, with no code fence, in this form: "
-            + ANSWER_FORM_NAMED
-        )
-        return "".join(parts)
     parts.append(
-        "Set continues_from_previous_page to true only on the first entry, when it began on an "
-        "earlier page, and continues_to_next_page to true only on the last entry, when it runs "
-        "onto the next page; every other value of both is false. "
+        "Set continues_from_previous_page to true only on the first act or instrument, when "
+        "it began on an earlier page, and continues_to_next_page to true only on the last act "
+        "or instrument, when it runs onto the next page; every other value of both is false. "
         "Answer with one JSON object and nothing else, with no code fence, in this form: "
         + ANSWER_FORM
     )
@@ -558,14 +531,7 @@ def page_reask_instruction(feed: dict[str, Any]) -> str:
             "wrong or incomplete. "
         )
     parts.append(
-        (
-            ENTRY_KIND_SENTENCE
-            if shown["page_types"]
-            else "An act is one register entry, such as a baptism, a marriage or a burial: give "
-            'it kind "act". Any other text, such as a heading, a page number or a marginal note '
-            'that is not an entry, is an entry of kind "other". '
-        )
-        + "For each entry you find at these "
+        ENTRY_KIND_SENTENCE + "For each entry you find at these "
         "ids give: n, numbered 1, 2, 3 and so on; kind; label, if you wish, a few words "
         "naming the entry, at most 80 characters; cites, the ids just above that "
         + ("its ink covers" if image else "it is read from")
@@ -593,7 +559,7 @@ def page_reask_instruction(feed: dict[str, Any]) -> str:
         )
     parts.append(
         "Answer with one JSON object and nothing else, with no code fence, in this form: "
-        + (REASK_ANSWER_FORM_NAMED if shown["page_types"] else ANSWER_FORM)
+        + REASK_ANSWER_FORM
     )
     return "".join(parts)
 

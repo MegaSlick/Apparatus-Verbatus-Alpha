@@ -43,18 +43,12 @@ namespace and its own extractor strips the prefix before comparing.
 
 `parse_churro_document` returns one of three parse states, and no other:
 
-* `parsed` -- with `shape` naming which of the three legal answer shapes was
-  read: `historical-document`, `plain-text`, or `output-element`.
+* `parsed` -- with `shape` naming which of the two legal answer shapes was
+  read: `historical-document` or `plain-text`.
 * `unrecognized-shape` -- well-formed XML this parser can name no shape for.
   The parser ran and read the whole response; it is not a parse failure, and
   the bytes stay retained under their own digest.
 * `failed` -- the bytes could not be read as the response they were offered as.
-
-`output-element` is Churro's *retired* framing: a bare `<output>text</output>`
-envelope, which the prompt this pipeline now sends never asks for.  It is
-accepted so that retained history still parses, and it carries the finding
-`retired-output-envelope` so that a live response arriving in a shape nobody
-asked for is visible rather than silent.
 
 ## Departures from the vendor's own flattener, and why each
 
@@ -102,9 +96,8 @@ line become one space and the line's ends are trimmed; a boundary with no
 whitespace at all in the source stays joined with no space, because in XML that
 is what it means.  Whitespace here is *ASCII* whitespace and nothing else: a
 non-breaking space, or any other Unicode space a model writes, is a character
-it wrote and stays exactly where it is.  Plain-text and `output-element`
-answers are returned exactly
-as they decoded, with no collapsing at all -- there is no markup there whose
+it wrote and stays exactly where it is.  Plain-text answers are returned
+exactly as they decoded, with no collapsing at all -- there is no markup there whose
 serialisation could have introduced whitespace the model did not write.
 
 ## The byte ceiling lives with its owner
@@ -131,18 +124,14 @@ class _DocumentTooDeep(Exception):
 
 
 # The named rule that projects retained Churro bytes into the `payload` text.
-# One rule, three shapes: whichever shape the response took, this is the view
+# One rule, two shapes: whichever shape the response took, this is the view
 # whose name a record carries.
 CHURRO_TEXT_VIEW: Final = "churro-historical-document-text.v2"
-# Views a retained capture may name but this build no longer produces: a capture
-# read under one is refused by that name, never re-derived under the current view.
-RETIRED_CHURRO_TEXT_VIEWS: Final = frozenset({"churro-historical-document-text.v1"})
 # The parser word for this adapter, as `feeding._RUNNABLE_PARSERS` and the
 # capture contract spell it.
 CHURRO_PARSER: Final = "xml"
 
 DOCUMENT_ROOT_ELEMENT: Final = "HistoricalDocument"
-OUTPUT_ROOT_ELEMENT: Final = "output"
 PAGE_ELEMENT: Final = "Page"
 # The document's description of itself, outside the transcription and not text
 # a reader is missing.
@@ -157,7 +146,7 @@ MARKED_SPAN_KINDS: Final = frozenset(
     {"Addition", "Deletion", "Illegible", "Gap", "InterlinearNote", "Description"}
 )
 
-DOCUMENT_SHAPES: Final = frozenset({"historical-document", "plain-text", "output-element"})
+DOCUMENT_SHAPES: Final = frozenset({"historical-document", "plain-text"})
 # How deep a response's element nesting may be before the walk refuses it.
 # `xml.etree`'s own parser is iterative and will happily build a tree thousands
 # of elements deep; this flattener is recursive, so without a declared bound a
@@ -178,7 +167,6 @@ PARSE_STATES: Final = frozenset({"parsed", "failed", "unrecognized-shape"})
 DOCUMENT_FINDING_KINDS: Final = frozenset(
     {
         "prompt-echo-trimmed",
-        "retired-output-envelope",
         "stray-markup-escaped",
         "page-text-outside-sections",
         "document-text-outside-pages",
@@ -592,7 +580,7 @@ def parse_churro_document(
     given, is the caller's own retained-parsing ceiling; this module declares
     none of its own (see the module docstring).
 
-    The three legal shapes are told apart by parsing first, not by guessing
+    The two legal shapes are told apart by parsing first, not by guessing
     from the first character.  A response that parses is classified by its root
     element; a response that does not parse is `failed` only if it offered the
     grammar at all -- otherwise it is the plain reading-order text the paper-era
@@ -681,13 +669,10 @@ def parse_churro_document(
             marked_spans=flattened["marked_spans"],
             pages=flattened["pages"],
         )
-    if name == OUTPUT_ROOT_ELEMENT and not root.attrib and not list(root):
-        findings.append({"kind": "retired-output-envelope"})
-        return _parsed("output-element", root.text or "", response_bytes, findings)
     return _base("unrecognized-shape", response_bytes, findings) | {
         "reason": (
-            f"Churro response is well-formed XML rooted at {name!r}, which is neither the "
-            f"{DOCUMENT_ROOT_ELEMENT} grammar nor a bare <{OUTPUT_ROOT_ELEMENT}> element"
+            f"Churro response is well-formed XML rooted at {name!r}, not the "
+            f"{DOCUMENT_ROOT_ELEMENT} grammar"
         )
     }
 
@@ -828,8 +813,7 @@ def validate_churro_document_parse(value: Any) -> dict[str, Any]:
         raise SchemaRefusal("a parsed Churro document has no page count")
     if not isinstance(value["sections"], list) or not isinstance(value["marked_spans"], list):
         raise SchemaRefusal("a parsed Churro document's sections and spans are not lists")
-    # Only the grammar carries page structure. A plain-text or `<output>`
-    # answer that claimed sections, spans or a page count would be asserting a
+    # Only the grammar carries page structure. A plain-text answer that claimed sections, spans or a page count would be asserting a
     # structure nobody read out of it.
     if value["shape"] != "historical-document" and (
         value["sections"] or value["marked_spans"] or value["pages"]

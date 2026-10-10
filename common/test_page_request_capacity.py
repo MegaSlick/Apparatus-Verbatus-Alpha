@@ -109,7 +109,7 @@ def test_the_answer_reserve_is_the_longest_witness_text_plus_each_entrys_scaffol
     assert page_answer_bound(
         longest_witness_characters=12_000, act_entries=20, surya_lines=0, page_max_tokens=12288
     ) == (expected, False)
-    assert expected == 6903
+    assert expected == 6929
 
 
 def test_each_shown_surya_line_is_reserved_one_cite_of_its_own():
@@ -124,7 +124,7 @@ def test_each_shown_surya_line_is_reserved_one_cite_of_its_own():
     assert page_answer_bound(
         longest_witness_characters=12_000, act_entries=20, surya_lines=120, page_max_tokens=12288
     ) == (expected, False)
-    assert expected > 6903
+    assert expected > 6929
 
 
 def test_a_page_with_no_witness_text_reserves_the_whole_cap():
@@ -154,12 +154,12 @@ def test_a_dense_page_is_sent_the_cap_or_the_context_left_whichever_is_smaller()
     record = admitted["capacity"]
     assert record["fits"]
     assert record["prompt_tokens_basis"] == PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED
-    assert record["answer_budget"] == 6903
+    assert record["answer_budget"] == 6929
     left = 32768 - record["image_prompt_tokens"] - record["prompt_tokens"]
     assert admitted["max_tokens"] == min(12288, left) == left
     assert admitted["answer_reserve"] == {
         **MEASURE,
-        "tokens": 6903,
+        "tokens": 6929,
         "reserve_clamped": False,
         "page_max_tokens": 12288,
     }
@@ -261,7 +261,7 @@ def test_a_re_ask_reserves_its_answer_on_its_named_units_text_or_the_whole_cap_w
     row = SimpleNamespace(**{**vars(ROW), "max_model_len": 8192})
     admitted = _admit(row, text="x" * 4000, measure=named)
     assert admitted["capacity"]["fits"] is True
-    assert admitted["answer_reserve"]["tokens"] == admitted["capacity"]["answer_budget"] == 440
+    assert admitted["answer_reserve"]["tokens"] == admitted["capacity"]["answer_budget"] == 465
     with pytest.raises(RequestCapacityRefusal, match="held whole") as refusal:
         _admit(row, text="x" * 4000, measure=lines_only)
     assert refusal.value.capacity["fits"] is False

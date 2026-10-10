@@ -15,10 +15,12 @@ Long-running commands (`watch`, `fetch`, anything over a minute) run in the back
 (Bash `run_in_background`, or the `long-running-work` skill) and the session reads their
 output file; a foreground `sleep`, `tail -f` or `watch` blocks the session.
 
-## 0. Decisions the lead has already made (2026-10-08) — do not ask again
+## 0. Decisions for the 2026-10-09 bake-off (sections 1–8) — do not ask again
 
-These are the lead's written approvals for 2026-10-09; they count as the in-session
-approval for every paid create below.
+The lead set these in the session for 2026-10-09; they cover every paid create in
+sections 1–8 on that day. A session running sections 1–8 on another day sets that day's
+budget with the lead before its first paid create, and the "approved 2026-10-08, §0"
+notes below then stand for that budget. Section 9 sets its own.
 
 | Question | Answer |
 |---|---|
@@ -452,14 +454,14 @@ which failed and how, what it cost, and that both pods are confirmed gone.
 Question: does a smaller or faster build of the Perlector's model (FP8, FP8 with MTP,
 NVFP4, optionally Qwen3.5-27B) read pages as well as the bf16 build that the pipeline
 serves? One fresh pipeline run supplies the requests; every build is sent those same
-requests and scored at home. **This costs money and needs the lead's approval before the
-first pod: section 0's approvals cover 2026-10-09 only.** The queue alone plans 6.5 hours
-on the 96 GB card (`queue_runner run --dry-run` prints it), on top of the fresh run.
+requests and scored at home. **This costs money: the session that runs it sets the budget
+with the lead; the figures here are estimates.** The queue alone plans 6.5 hours on the
+96 GB card (`queue_runner run --dry-run` prints it), on top of the fresh run.
 
 1. **Fresh run.** Create and set up a 96 GB pod as in 4.2, but with a guard window long
    enough for the whole day: the fresh run, the 6.5-hour queue, the downloads and the
-   fetch, about 10 hours (`pod_start_command.sh 10 <sha>`). The lead approves the window
-   with the spend; the 6-hour window of 4.2 would delete the pod partway through the queue.
+   fetch, about 10 hours (`pod_start_command.sh 10 <sha>`; the session sets the window with
+   the budget). The 6-hour window of 4.2 would delete the pod partway through the queue.
    Then `pod_run --from door --to perlector` with the Perlector served bf16
    (`operations/pod/README.md`, "`pod_run.py`"). Do not use an older run: its requests
    were served under other settings. Keep the whole run folder intact, named by

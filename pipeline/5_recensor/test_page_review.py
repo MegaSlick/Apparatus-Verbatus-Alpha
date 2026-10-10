@@ -304,7 +304,7 @@ def test_the_page_review_scenario_holds_the_unplaced_entry_naming_every_reason(r
     assert summary["by_code"]["reading-unplaced"] == {"as": "hold", "pages": 1, "units": 1}
     assert [row["act_key"] for row in summary["queue"]] == ["p2:1"]
     assert summary["by_page_type"] == {
-        "untyped": {"pages": 2, "held_pages": 1, "flagged_pages": 0, "clean_pages": 1}
+        "register-acts": {"pages": 2, "held_pages": 1, "flagged_pages": 0, "clean_pages": 1}
     }
     receipt = tree.receipt()
     assert receipt["recensor_status"] == "partial"
@@ -1438,13 +1438,9 @@ def test_a_no_act_page_is_confirmed_over_a_flagged_rule():
     assert confirmed["confirmed"] is True and confirmed["failures"] == []
 
 
-def test_the_review_summary_counts_a_page_by_the_type_its_reading_names():
-    named = {
-        "payload": {
-            "answer": {"page_type": "index", "writing": "typed", "entries": [], "set_aside": []}
-        }
-    }
+def test_the_review_summary_counts_a_page_by_the_type_its_accounting_records():
+    named = {"payload": {"page_type": {"stated": "index", "writing": "typed"}}}
     assert page_review.page_type_of(named) == "index"
-    old = {"payload": {"answer": {"acts": [], "set_aside": []}}}
-    assert page_review.page_type_of(old) == page_review.UNTYPED_PAGE
-    assert page_review.page_type_of({"payload": {"answer": None}}) == page_review.UNTYPED_PAGE
+    # An answer that named a type but failed validation: the accounting states none.
+    held = {"payload": {"page_type": {"stated": None, "writing": None}}}
+    assert page_review.page_type_of(held) == page_review.UNTYPED_PAGE

@@ -99,14 +99,14 @@ def _read_page(ordinal, raw):
     assert (state, problems) == ("parsed", [])
     return [
         {**entry(ordinal, act["n"], kind=act["kind"]), "act_id": f"a{ordinal}.{act['n']}", **act}
-        for act in answer["acts"]
+        for act in answer["entries"]
     ]
 
 
 def _answer(*entries):
     return json.dumps(
         {
-            "acts": [
+            "entries": [
                 {"n": n, "kind": kind, "cites": [], "text": "x"}
                 | {"continues_from_previous_page": start, "continues_to_next_page": end}
                 for n, (kind, start, end) in enumerate(entries, 1)

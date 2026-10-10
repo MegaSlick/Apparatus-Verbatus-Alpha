@@ -275,7 +275,7 @@ class ModelsConfig:
         if self.witness_framings:
             record["witness_framings"] = dict(sorted(self.witness_framings.items()))
         # Omitted when empty for the same reason: a run that routes nothing seals
-        # exactly what it sealed before routing existed.
+        # no routing key.
         if self.witness_routing:
             record["witness_routing"] = dict(sorted(self.witness_routing.items()))
         return record

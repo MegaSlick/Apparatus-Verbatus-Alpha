@@ -697,7 +697,13 @@ def test_a_shortened_line_says_it_was_shortened_and_how_long_the_text_is():
                 "act_key": "a1",
                 "category": "held-for-review",
                 "crops": [],
-                "row": {"reading": {"outcome": "read", "text": long_text}},
+                "row": {
+                    "reading": {
+                        "outcome": "read",
+                        "text": long_text,
+                        "uncertainty_assessment": {"state": "assessed", "problem": None},
+                    }
+                },
             }
         ],
     }
@@ -915,16 +921,12 @@ def test_an_identical_pair_is_one_line_with_the_count_and_no_claim_about_its_sou
         assert "instrument" not in text, state
 
 
-def test_a_reading_sealed_before_the_doubt_contract_says_so_rather_than_nothing():
-    """Absent is a fact about the record's age, and prints; malformed is a fault.
-
-    Flattened together, both printed as no doubt line at all -- the pre-F2
-    silence restored on the one surface a person reads.
-    """
-    absent = "\n".join(
+def test_a_reading_with_no_doubt_report_is_refused_like_a_malformed_one():
+    """Every reading that ran carries the reader's doubt report: absent or malformed is a
+    fault of the record, refused by field, never printed as no doubt at all."""
+    with pytest.raises(review_text.ProjectionShapeError) as absent:
         review_text.render(_delivered_act({"uncertain_spans": [], "gaps": [], "assessment": None}))
-    )
-    assert "doubts: not recorded — this reading was sealed before the reader's doubt" in absent
+    assert absent.value.field == "acts[].row.uncertainty.assessment"
 
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render(
@@ -955,14 +957,9 @@ def _reading_act(reading: dict) -> dict:
     }
 
 
-def test_a_delivered_act_with_no_uncertainty_layer_still_says_so():
-    """An absent or damaged layer printed nothing at all after the export.
-
-    Indistinguishable, to the person reviewing the act, from a reader that found
-    no doubt -- the precise silence this change exists to remove, and on the
-    half of the screen the act reaches last.
-    """
-    absent = "\n".join(
+def test_a_delivered_act_with_no_uncertainty_layer_is_refused():
+    """An absent or damaged layer is refused, never printed as a reader that found no doubt."""
+    with pytest.raises(review_text.ProjectionShapeError) as absent:
         review_text.render(
             {
                 "run_id": "r",
@@ -977,8 +974,7 @@ def test_a_delivered_act_with_no_uncertainty_layer_still_says_so():
                 ],
             }
         )
-    )
-    assert "doubts: not recorded" in absent
+    assert absent.value.field == "acts[].row.uncertainty.assessment"
 
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render(
@@ -1295,8 +1291,9 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
     its own cases: it is the path a person meets while a run is still stopped,
     which is what this screen is for.
     """
-    absent = "\n".join(review_text.render(_reading_act({"outcome": "read", "text": "alpha beta"})))
-    assert "doubts: not recorded — this reading was sealed before" in absent
+    with pytest.raises(review_text.ProjectionShapeError) as absent:
+        review_text.render(_reading_act({"outcome": "read", "text": "alpha beta"}))
+    assert absent.value.field == "acts[].row.reading.uncertainty_assessment"
 
     assessed = "\n".join(
         review_text.render(
@@ -1339,9 +1336,9 @@ def test_a_malformed_layer_beside_a_missing_assessment_is_still_refused():
     assert refused.value.index is None
 
 
-def test_spans_published_without_an_assessment_are_still_shown():
-    """And the valid entries such a record does carry are printed, not swallowed."""
-    text = "\n".join(
+def test_spans_published_without_an_assessment_are_refused():
+    """A reading that publishes spans but no doubt report is a damaged record."""
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render(
             _delivered_act(
                 {
@@ -1353,11 +1350,7 @@ def test_spans_published_without_an_assessment_are_still_shown():
                 }
             )
         )
-    )
-
-    assert "doubts: not recorded — this reading was sealed before" in text
-    assert "published beside that absence: 1 uncertain span(s), 0 gap(s)" in text
-    assert "[0, 5) 'alpha' confidence low" in text
+    assert refused.value.field == "acts[].row.uncertainty.assessment"
 
 
 def test_a_gaps_offsets_are_checked_before_it_is_printed_as_a_position():
@@ -1434,19 +1427,19 @@ def test_a_delivered_export_row_without_a_witness_basis_is_refused_not_recovered
     assert review._normalised_act_row(delivered, export_ref, [], delivered=False) == delivered
 
 
-def test_an_act_that_was_never_read_is_not_told_its_reading_predates_a_contract():
+def test_an_act_that_was_never_read_says_so_and_a_reading_without_doubts_is_refused():
     """`not-run` is no reading at all: held before the Perlector, no chair, over capacity.
 
-    Those records carry no text either, which is what separates them from a
-    reading sealed before the doubt report was part of the record.
+    Those records carry no text and no doubt report; a reading that ran carries both.
     """
     not_run = "\n".join(
         review_text.render(_reading_act({"outcome": "not-run", "reason": "no chair configured"}))
     )
     assert "doubts: not recorded — this act was not read" in not_run
 
-    sealed = "\n".join(review_text.render(_reading_act({"outcome": "read", "text": "alpha beta"})))
-    assert "doubts: not recorded — this reading was sealed before" in sealed
+    with pytest.raises(review_text.ProjectionShapeError) as refused:
+        review_text.render(_reading_act({"outcome": "read", "text": "alpha beta"}))
+    assert refused.value.field == "acts[].row.reading.uncertainty_assessment"
 
     # A reading that ran and carries no text is a damaged record, not an act
     # that was never read: refused by field, never printed as the unread line.
