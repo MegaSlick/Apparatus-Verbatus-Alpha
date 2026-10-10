@@ -742,7 +742,14 @@ def sealed_routing(tree: ReadOnlyRunTree) -> dict[str, dict[str, Any]]:
             continue
         payload = tree.read_artifact(ATTESTATORES, ROUTING_KIND, entry["artifact_id"])["payload"]
         page_id = payload.get("page_id")
-        if payload.get("schema") != ROUTING_SCHEMA or not isinstance(payload.get("routed"), bool):
+        chairs = payload.get("routed_chairs")
+        if (
+            payload.get("schema") != ROUTING_SCHEMA
+            or not isinstance(payload.get("routed"), bool)
+            or not isinstance(page_id, str)
+            or not isinstance(chairs, list)
+            or not all(isinstance(chair, str) for chair in chairs)
+        ):
             raise Refusal(
                 f"malformed-record: witness-routing record {entry['artifact_id']!r} is not a "
                 f"{ROUTING_SCHEMA} record"
