@@ -258,7 +258,8 @@ before launching.
 `--sync-to` puts the end-of-day copy on the global volume, `--own-disk` says the cache
 is on a disk that dies with the pod, and `--keep-pod` keeps the pod at the end so the
 results come home over SSH from that disk (step 6) before the session deletes it; the
-global-volume copy is the safety net. On the network-volume fallback, use `--keep-pod`
+global-volume copy is the safety net. With both, the queue does not read that copy back
+on the pod (slow on a network disk): `fetch` in step 6 is the check. On the network-volume fallback, use `--keep-pod`
 alone.
 
 Launch, with the phone topic on stdin and the pod id checked first (the queue cannot end
@@ -296,8 +297,8 @@ On the Mac, in the background (it runs for hours; read its output file):
 ```
 
 It prints a line per change and exits 0 when the queue writes `DONE.json` (with
-`--keep-pod` the expected last line says the copy verified and the pod is `kept (end_pod
-= none)`), 1 on failure. `watch --ntfy --queue witness-24gb` follows the phone pings
+`--keep-pod` the expected last line says the copy is verified `at home by fetch` and the
+pod is `kept (end_pod = none)`), 1 on failure. `watch --ntfy --queue witness-24gb` follows the phone pings
 instead. Do nothing else on the pod: no `pgrep`, no `nvidia-smi` loops, no second launch.
 
 | You see | Do |

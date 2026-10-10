@@ -241,7 +241,14 @@ that run) from the command line, so one manifest serves
 a network volume and the global-volume route (`RUNBOOK.md` 2.1), where the cache sits on
 the pod's own disk and the copy goes to object storage: there `rsync -rt` may be refused
 (no times, no rename), so the copy falls back to `rsync -r --inplace`, then to a plain
-Python copy, and the sha256 compare is what proves it either way.
+Python copy, and the sha256 compare is what proves it either way. With `--own-disk
+--keep-pod` the copy is still made but not read back on the pod: reading 35,408 small
+files back from a network disk outlasted the copy itself on 2026-10-09. `DONE.json` then
+carries the digests of the cache on the pod's own disk with `"verified": null` and
+`"verify": "at home, by fetch"`, and `fetch` from that disk checks every file against
+them before the session deletes the pod; the copy on the volume stays the unchecked
+safety net. Without `--keep-pod` the pod ends itself, so the copy is checked on the pod
+as before.
 SIGTERM stops every arm, pings and exits 143 without ending the pod. Arms never see
 `RUNPOD_API_KEY` or `NTFY_TOPIC`; `watch` warns once when the status has not changed (or
 cannot be read) for 10 min by the Mac's own clock. `status.json` names the GPU lane's arm
