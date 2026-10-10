@@ -52,9 +52,12 @@ check what it uploads.
 - Work on a branch, never on `main`. Stage only the files you changed; never skip the
   commit hooks, which catch credentials before they leave the machine.
 - A fresh clone runs no hooks until `sh .githooks/install.sh` has run in it.
-- Push and open pull requests freely for the session's goal. Merge your own pull request
-  when it is up to date with `main`, CI is green on that head and review threads are
-  resolved; report the number and head commit.
+- One pull request per session goal, not one per small step: agents' branches merge into
+  the session's branch, and the session opens a single pull request for the lot.
+- Every pull request is reviewed. Give it the `review-ok` label when you open it, and
+  mark it ready for review (CodeRabbit skips drafts and unlabelled pull requests).
+- Merge your own pull request when it is up to date with `main`, CI is green on that
+  head and review threads are resolved; report the number and head commit.
 - Agents that write code use their own worktree and branch
   (`git worktree add -b work/<topic> ../verbatus-worktrees/<topic> origin/main`), and
   leave pushing and merging to the session.
