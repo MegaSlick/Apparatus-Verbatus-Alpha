@@ -5,7 +5,7 @@ command and nothing else from the managed runtime. This is the hand route's
 create: one `podFindAndDeployOnDemand` mutation over the same transport the
 balance observer uses, then the pod's answer checked against what was asked.
 
-    START=$(sh operations/pod/pod_start_command.sh off <sha>) &&
+    START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&
     .venv/bin/python -m operations.pod.create_pod --name verbatus-bakeoff-w \\
       --gpu "NVIDIA A40" --image runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404 \\
       --container-disk-gb 100 --disk-gb 100 --min-vcpu 16 --cuda 13.0 \\
