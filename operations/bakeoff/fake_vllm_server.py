@@ -2,12 +2,13 @@
 
 Run as `python fake_vllm_server.py serve <weights> ... --port N --served-model-name M`.
 It answers `/v1/models` and `/v1/chat/completions` in vLLM's OpenAI shape, choosing a
-synthetic answer by the prompt it is sent, and refuses a request without an image. A
-request with `"stream": true` is answered as server-sent events, one line per chunk.
-Two prompts stand for a misbehaving page: one containing `LOOP` repeats one line a
-thousand times, one containing `HANG` waits 30 s before answering. With
-`FAKE_VLLM_LAUNCHES` set, each start appends a line to that file, so a test can count
-model loads.
+synthetic answer by the prompt it is sent, and refuses a request without an image (except
+a Perlector page prompt that says no image is shown). A request with `"stream": true` is
+answered as server-sent events, one line per chunk, with a final usage chunk and `[DONE]`.
+A Perlector prompt containing `LOOP-TEST` is answered with one line over and over; for
+other prompts, one containing `LOOP` repeats one line a thousand times and one containing
+`HANG` waits 30 s before answering. With `FAKE_VLLM_LAUNCHES` set, each start appends a
+line to that file, so a test can count model loads.
 """
 
 from __future__ import annotations
@@ -17,6 +18,21 @@ import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PERLECTOR_ANSWER = {
+    "acts": [
+        {
+            "n": 1,
+            "kind": "act",
+            "label": "synthetic",
+            "cites": ["A1"],
+            "text": "Le dix mai",
+            "continues_from_previous_page": False,
+            "continues_to_next_page": False,
+        }
+    ],
+    "set_aside": [],
+}
 
 
 def _flag(name: str) -> str:
@@ -34,6 +50,10 @@ def answer(body: dict) -> str:
         if part.get("type") == "text"
     ]
     joined = " ".join(texts)
+    if "witness regime:" in joined:  # the Perlector's page prompt (common/page_prompt.py)
+        if "LOOP-TEST" in joined:
+            return '{"acts": [{"n": 1, "kind": "act", "text": "' + "same row\\n" * 200
+        return json.dumps(PERLECTOR_ANSWER, ensure_ascii=False)
     if "LOOP" in joined:
         return "Le dix mai\n" * 1000
     if "HANG" in joined:
@@ -77,7 +97,11 @@ class Handler(BaseHTTPRequestHandler):
         chunks.append({"delta": {}, "finish_reason": "stop"})
         try:
             for chunk in chunks:
-                event = {"model": SERVED, "choices": [{"index": 0, **chunk}]}
+                event = {
+                    "model": SERVED,
+                    "object": "chat.completion.chunk",
+                    "choices": [{"index": 0, **chunk}],
+                }
                 self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
                 self.wfile.flush()
             usage = {"prompt_tokens": 100, "completion_tokens": len(pieces), "total_tokens": 0}
@@ -99,7 +123,8 @@ class Handler(BaseHTTPRequestHandler):
             for message in body["messages"]
             for part in (message["content"] if isinstance(message["content"], list) else [])
         )
-        if body.get("model") != SERVED or not has_image:
+        text_only_ok = "page image: not shown." in json.dumps(body["messages"])
+        if body.get("model") != SERVED or not (has_image or text_only_ok):
             self._send(400, {"error": "wrong model or no image"})
             return
         content = answer(body)
