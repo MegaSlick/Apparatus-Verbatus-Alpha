@@ -704,8 +704,8 @@ class Queue:
             max_workers=max(1, len(manifest.arms)), thread_name_prefix="cpu-arm"
         )
         self.started: set[int] = set()
-        # Each arm's last outcome: ok, ok-with-failures, smoke-ok, failed, skipped, deferred,
-        # hard-stopped.
+        # Each arm's last outcome: ok, ok-with-failures, smoke-ok, smoke-failed, failed,
+        # skipped, deferred, hard-stopped.
         self.outcome: dict[str, str] = {}
         self.budget: int | None = None
         self.hard_stopped = False

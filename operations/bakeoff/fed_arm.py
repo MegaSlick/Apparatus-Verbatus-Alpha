@@ -95,7 +95,8 @@ from operations.bakeoff import witness_run as W
 SCHEMA = "bakeoff-fed-page.v1"
 ARM = A.Arm("qwen-fed", "perlector", None, "page", "generic-80gb-plus")
 RECIPE = "unproven-real-perlector"  # the recorded feeds' serving recipe
-MAX_TOKENS = 12_288  # config/perlector_protocol.toml page_max_tokens, as the run sent it
+# config/decoding.toml [perlector_generation] page_max_tokens, as the run sent it
+MAX_TOKENS = 12_288
 GREEDY = {"temperature": 0.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0}
 IMAGE_MODES = ("clear", "none", "blur", "blank", "swap")
 # The bake-off arm each chair of the 2026-10 roster is (config/models-real.toml).
