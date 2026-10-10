@@ -100,8 +100,9 @@ def checkout_commit() -> str:
 
 def _clone(source: Path, target: Path) -> None:
     """Copy a directory tree, as a copy-on-write clone where the filesystem offers one."""
-    if sys.platform == "darwin":
-        cloned = subprocess.run(["cp", "-cR", str(source), str(target)], capture_output=True)
+    # The system's own cp: a GNU cp earlier on PATH has no clone flag.
+    if sys.platform == "darwin" and Path("/bin/cp").exists():
+        cloned = subprocess.run(["/bin/cp", "-cR", str(source), str(target)], capture_output=True)
         if cloned.returncode == 0:
             return
         shutil.rmtree(target, ignore_errors=True)
