@@ -104,7 +104,7 @@ def reask_plan(
     # Each entry's region is the list of its placing boxes; "inside" reads their union.
     regions = [
         box
-        for entry in validate_answer(reading["answer"], candidates)["entries"]
+        for entry in validate_answer(reading["answer"], candidates, policy=policy)["entries"]
         for box in entry["region_boxes_px"]
     ]
     found: set[tuple[str, str]] = set()

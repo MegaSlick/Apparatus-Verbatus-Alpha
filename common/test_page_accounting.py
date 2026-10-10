@@ -2011,8 +2011,12 @@ def test_unanchorable_or_wholly_unread_entries_count_as_unread_on_the_page():
 
 
 def test_interleaved_blocks_are_cited_one_by_one_and_lend_no_area():
+    # A block range is read (a block places nothing), and lends no area: the
+    # entry is unplaced and every line stays unread.
     record = account(two_columns([["S1-S3"]]))
-    assert problem_codes_of(record) == ["detection-range"]
+    assert problem_codes_of(record) == []
+    assert codes(record, "b") == ["reading-unplaced"]
+    assert unread_lines(record) == COLUMN_ONE + COLUMN_TWO
 
     # Blocks S1 and S3 hold column 1; cited one by one they place nothing, so
     # column 1 is read by its lines and column 2 stays unread.
@@ -2242,3 +2246,58 @@ def test_the_stage_reads_the_policy_only_under_the_run_seal(tmp_path: Path):
     )
     with pytest.raises(ContractError, match="page-accounting configuration changed"):
         require_page_accounting_policy(_Context({"page-accounting": POLICY.sha256}), edited)
+
+
+def test_a_line_range_inside_the_entrys_own_units_is_read():
+    """The lines of record 1 lie inside its units A1 and B1, so citing them as a range
+    names no ink the entry's units do not already claim."""
+    case = page()
+    acts(case)[0]["cites"] = ["A1", "B1", "C1", "L1-L3"]
+
+    record = account(case)
+
+    assert problem_codes_of(record) == []
+    assert record["rules"]["d"]["status"] == "pass"
+    assert record["entries"][0]["cited_ids"] == ["A1", "B1", "C1", "L1", "L2", "L3"]
+
+
+def test_a_line_range_reaching_past_the_entrys_own_units_holds_the_reading_whole():
+    case = page()
+    acts(case)[0]["cites"] = ["A1", "B1", "C1", "L1-L4"]
+
+    record = account(case)
+
+    assert problem_codes_of(record) == ["detection-range"]
+    assert "page-answer-incomplete" in record["holds"]
+
+
+def test_a_line_range_with_no_unit_of_its_own_holds_the_reading_whole():
+    case = page()
+    acts(case)[0]["cites"] = ["L1-L3"]
+
+    assert problem_codes_of(account(case)) == ["detection-range"]
+
+
+def test_a_unit_holding_several_entries_places_none_of_those_reading_a_part_of_it():
+    """One witness unit over two records (a whole index table): each entry cites it
+    beside its own lines and units, all inside it, and is placed by those alone."""
+    case = page()
+    table = bx(100, 100, 900, 800)
+    case["feed"]["witnesses"][0]["units"][0]["box_px"] = table
+    acts(case)[0]["cites"] = ["A1", "B1", "C1", "L1", "L2", "L3"]
+    acts(case)[1]["cites"] = ["A1", "B2", "C2", "L4", "L5", "L6"]
+
+    record = account(case)
+
+    assert duplicates(record) == []
+    entries = {entry["n"]: entry for entry in record["entries"]}
+    assert entries[1]["union_box_px"] == band(0)
+    assert entries[2]["union_box_px"] == band(1)
+
+
+def test_an_entry_citing_another_entrys_units_beside_its_own_ink_is_still_a_duplicate():
+    """Entry 2 claims record 1's units as well as its own: two claims on the same ink."""
+    case = page()
+    acts(case)[1]["cites"] = ["A1", "B1", "C1", "A2", "B2", "C2"]
+
+    assert duplicates(account(case)) == [[1, 2]]
