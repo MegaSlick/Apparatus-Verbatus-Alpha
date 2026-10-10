@@ -80,14 +80,16 @@ def test_export_honours_the_held_out_list_and_reuses_the_perlector_prompt(tmp_pa
     assert manifest["vote_check"]["all"]["spans"] >= manifest["vote_check"]["honest"]["spans"]
 
 
-def sidecar_feed(out, example, sidecar):
+def sidecar_feed(out, example, sidecar, held=frozenset({"p002"})):
     """Rebuild the shown feed from the honest run feed and the sidecar is not possible for
     every scenario; the exporter does not store feeds, so the test regenerates it."""
     tree = F.load_run_tree(out.parent / "run")
     page = tree.by_stem()[example["page"]]
     refs = _refs(tree)
     m = M.mutate(page.feed, refs[page.stem], sidecar["scenario"], seed=sidecar["seed"],
-                 turn=sidecar["turn"], stem=page.stem, donors=M.donor_acts(refs, page.stem))  # fmt: skip
+                 turn=sidecar["turn"], stem=page.stem,
+                 donors=M.donor_acts({k: v for k, v in refs.items() if not E.is_held_out(k, held)},
+                                     page.stem))  # fmt: skip
     if any(c["kind"] == "blinded" for c in sidecar["changes"]):
         M.blind_labels(m, sidecar["seed"])
     return m.feed
@@ -216,3 +218,32 @@ def test_cli_end_to_end_with_mix_and_blinding(tmp_path):
     with pytest.raises(SystemExit):
         E.parse_mix("honest=1,no-such=2")
     assert E.parse_mix(None) == M.DEFAULT_MIX and sum(M.DEFAULT_MIX.values()) == 100
+
+
+SECRET = "Le vingt mai mil huit cent Secret Heldout fils de Pierre Heldout"
+
+
+def test_donor_acts_never_come_from_held_out_pages_or_sibling_halves(tmp_path):
+    # C7 P1: invented acts and injections borrowed text from every reference, held-out
+    # pages included. p001's only possible donors here are held out (p002_1L) or its own
+    # sibling half (p001_2R is not a donor for p001_1L).
+    pages = ((TEXT, TEXT), (SECRET, SECRET), (SECRET, SECRET))
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=pages))
+    stems = {1: "p001_1L", 2: "p002_1L", 3: "p001_2R"}
+    for ordinal, stem in stems.items():
+        tree.pages[ordinal].stem = stem
+    texts = {"p001_1L": TEXT, "p002_1L": SECRET, "p001_2R": SECRET.replace("Secret", "Sibling")}
+    refs = {}
+    for stem, text in texts.items():
+        refs[stem] = M.reference_from_gold(
+            parse_gold(GOLD.format(stem=stem, status="fool's gold", text=text), stem)
+        )
+    assert M.donor_acts(refs, "p001_1L") == [" ".join(SECRET.split())]  # only p002_1L's act
+    out = tmp_path / "out"
+    E.export(tree, refs, {"p002_1L"}, out, seed=0, variants_per_page=8, blinded_share=0.0,
+             mix={"invented-act": 1, "injection": 1}, pages=[tree.pages[1]])  # fmt: skip
+    examples = _examples(out)
+    assert examples and {e["scenario"] for e in examples} <= {"invented-act", "injection"}
+    for example in examples:
+        prompt = example["messages"][0]["content"][1]["text"]
+        assert "Heldout" not in prompt and "Sibling" not in prompt

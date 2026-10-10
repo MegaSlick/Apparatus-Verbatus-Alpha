@@ -946,11 +946,24 @@ def references_from_gold_dir(
     return out
 
 
+_HALF = re.compile(r"_(\d[LR])$")
+
+
+def original_of(stem: str) -> str:
+    """The original image's stem: `X_1L` and `X_2R` are the two halves of `X`."""
+    return _HALF.sub("", stem)
+
+
 def donor_acts(refs: dict[str, Reference], exclude: str, limit: int = 40) -> list[str]:
-    """Other pages' act texts of a sentence or more, for invented acts."""
+    """Other pages' act texts of a sentence or more, for invented acts.
+
+    Never the page itself nor the other half of the same original (its text can be on
+    the page). The caller filters `refs` to pages it may show: the exporter passes only
+    pages off the held-out list, so a held-out transcription never reaches a prompt.
+    """
     out = []
     for stem, ref in sorted(refs.items()):
-        if stem == exclude:
+        if original_of(stem) == original_of(exclude):
             continue
         for e in ref.entries:
             if e["kind"] == "act" and 8 <= len(e["text"].split()) <= 120:

@@ -60,15 +60,10 @@ WEIGHTS = {"checked": 1.0, "agreed": 0.7, "draft": 0.3, "unresolved": 0.0}
 CITES_WEIGHT = 0.3  # cites rebuilt from geometry are a draft, not a checked fact
 UNIT_OVERLAP = 0.5  # share of a unit's words found in an entry's text to cite it
 _WORD = re.compile(r"\S+")
-_HALF = re.compile(r"_(\d[LR])$")
-
 
 # --- held-out pages --------------------------------------------------------------------
 
-
-def original_of(stem: str) -> str:
-    """The original image's stem: `X_1L` and `X_2R` are the two halves of `X`."""
-    return _HALF.sub("", stem)
+original_of = M.original_of  # `X_1L` and `X_2R` are the two halves of `X`
 
 
 def read_held_out(path: Path) -> set[str]:
@@ -344,6 +339,9 @@ def export(
     chosen = pages or [tree.pages[o] for o in sorted(tree.pages)]
     kept = [p for p in chosen if p.stem in refs and not is_held_out(p.stem, held)]
     excluded = sorted(p.stem for p in chosen if p.stem in refs and is_held_out(p.stem, held))
+    # Invented acts and injections borrow other pages' text: only from pages that may be
+    # trained on, never a held-out page or its sibling half.
+    donor_refs = {stem: r for stem, r in refs.items() if not is_held_out(stem, held)}
     counts: Counter = Counter()
     turns: Counter = Counter()
     planted_by: Counter = Counter()
@@ -373,7 +371,7 @@ def export(
                 turns[scenario] += 1
                 mutation = M.mutate(
                     page.feed, ref, scenario, seed=seed, turn=turn, stem=page.stem,
-                    donors=M.donor_acts(refs, page.stem),
+                    donors=M.donor_acts(donor_refs, page.stem),
                 )  # fmt: skip
                 blinded = rng.random() < blinded_share and mutation.feed["witnesses"]
                 if blinded:
