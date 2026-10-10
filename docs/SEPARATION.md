@@ -87,6 +87,7 @@ for a script to read.
 | `operations/serving/` | PRODUCT | |
 | `operations/submit/` | PRODUCT | |
 | `operations/test_http_deadline.py` | PRODUCT | |
+| `operations/training/` | HARNESS | Perlector training-data exporter (images + messages JSONL, loss spans) |
 | `operations/triage/` | PRODUCT | |
 | `pagekit/` | PRODUCT | becomes its own Apache-2.0 repository at beta |
 | `pagekit/cleanroom/` | HISTORY | the clean-room record; travels with pagekit as provenance |
