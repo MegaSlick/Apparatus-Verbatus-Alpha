@@ -62,6 +62,8 @@ from operations.bakeoff.witness_run import (
 
 QUEUE_SCHEMA = "bakeoff-queue.v1"
 STATUS_SCHEMA = "bakeoff-queue-status.v1"
+# Arm outcomes whose answers a dependent arm may build on.
+DEPENDENCY_MET = frozenset({"ok", "ok-with-failures", "smoke-ok"})
 DONE_SCHEMA = "bakeoff-queue-done.v1"
 CUTS = ("never", "overrun", "behind-schedule", "install-failed")
 END_ACTIONS = ("delete", "none")
@@ -702,7 +704,8 @@ class Queue:
             max_workers=max(1, len(manifest.arms)), thread_name_prefix="cpu-arm"
         )
         self.started: set[int] = set()
-        # Each arm's last outcome: ok, smoke-ok, failed, skipped, deferred, hard-stopped.
+        # Each arm's last outcome: ok, ok-with-failures, smoke-ok, failed, skipped, deferred,
+        # hard-stopped.
         self.outcome: dict[str, str] = {}
         self.budget: int | None = None
         self.hard_stopped = False
@@ -1015,7 +1018,7 @@ class Queue:
         found = []
         for name in arm.after:
             state = self.outcome.get(name)
-            if state in ("ok", "smoke-ok"):
+            if state in DEPENDENCY_MET:
                 continue
             if state is None:
                 found.append(("wait", None))
@@ -1087,17 +1090,41 @@ class Queue:
             return "failed"
         return "ok" if any(cached_ok(path) for path in paths) else "useless"
 
-    def _smoke_useless(self, arm: ArmSpec, t0: float) -> None:
-        failed = self._failed_pages(arm)
-        what = (
-            f"smoke gave no answer: all {len(failed)} smoke page(s) failed terminally "
-            f"({', '.join(sorted({r for f in failed for r in f['reasons']}))}); "
-            "full run not started, not retried at the same settings"
-        )
+    def _run_status(self, arm: ArmSpec) -> str:
+        """A finished run's outcome: "failed" when no page gave an answer (every page ran
+        into a timeout or a loop, and sending them again at the same settings would repeat
+        it), "ok-with-failures" when some pages failed that way, else "ok"."""
+        folder = self.m.out / arm.records
+        if not any(cached_ok(folder / f"{p.stem}.json") for p in self.page_list):
+            return "failed"
+        return "ok-with-failures" if self._failed_pages(arm) else "ok"
+
+    def _no_answers(self, arm: ArmSpec, t0: float, what: str) -> None:
+        """Record the arm failed, not retried: its dependents must not run on nothing."""
         self._error(f"{arm.name}: {what}")
         self._event("queue-arm-error", arm=arm.name, detail=what)
         self.ping(f"error:{arm.name}", "milestone", f"arm failed: {arm.name} {what}")
         self._record(arm, "failed", t0)
+
+    def _smoke_useless(self, arm: ArmSpec, t0: float) -> None:
+        failed = self._failed_pages(arm)
+        self._no_answers(
+            arm,
+            t0,
+            f"smoke gave no answer: all {len(failed)} smoke page(s) failed terminally "
+            f"({', '.join(sorted({r for f in failed for r in f['reasons']}))}); "
+            "full run not started, not retried at the same settings",
+        )
+
+    def _run_useless(self, arm: ArmSpec, t0: float) -> None:
+        failed = self._failed_pages(arm)
+        self._no_answers(
+            arm,
+            t0,
+            f"run gave no answer: all {len(failed)} page(s) failed terminally "
+            f"({', '.join(sorted({r for f in failed for r in f['reasons']}))}); "
+            "not retried at the same settings",
+        )
 
     def _failed_pages(self, arm: ArmSpec) -> list[dict[str, Any]]:
         failed = []
@@ -1131,7 +1158,7 @@ class Queue:
                 }
             )
         self._event("queue-arm-end", arm=arm.name, status=status, pages=pages, failed=failed)
-        if status in ("ok", "smoke-ok"):
+        if status in DEPENDENCY_MET:
             reasons: dict[str, int] = {}
             for entry in failed:
                 for reason in entry["reasons"]:
@@ -1230,7 +1257,11 @@ class Queue:
         elif code != 0 or not self._pages_ok(arm, self.page_list):
             self._arm_error(arm, f"run incomplete (exit {code})")
         else:
-            self._record(arm, "ok", t0)
+            status = self._run_status(arm)
+            if status == "failed":
+                self._run_useless(arm, t0)
+            else:
+                self._record(arm, status, t0)
 
     def _retry_arm(self, arm: ArmSpec, lane: str = "gpu", threads: int | None = None) -> None:
         """The arm's one retry, in its own lane; a CPU arm's `--threads` becomes `threads`."""
@@ -1271,7 +1302,7 @@ class Queue:
             if self.hard_stopped:
                 self._record(arm, "hard-stopped", t0)
             elif code == 0 and self._pages_ok(arm, self.page_list):
-                self._record(arm, "ok", t0)
+                self._record(arm, self._run_status(arm), t0)
             else:
                 self._record(arm, "failed", t0)
         except Exception as failure:  # noqa: BLE001 -- reported, never dropped

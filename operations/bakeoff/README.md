@@ -191,7 +191,9 @@ batch, memory and engine settings: `failure.settings` and `settings_sha256`); ch
 settings, such as another `--guard` or a longer `--request-timeout`, send it again. A smoke
 must still give at least one answer: when every smoke page failed that way the arm is
 recorded failed, its full run is not started and it is not retried (the same settings
-would repeat it). Time boxes never kill work: an overrun is pinged once,
+would repeat it). The same holds for the full run: an arm with no answered page is
+`failed` (not retried, its dependents skipped), and one with some failed pages ends
+`ok-with-failures`, which its dependents may build on. Time boxes never kill work: an overrun is pinged once,
 and the `cut` rule only skips later arms (`overrun`, `behind-schedule`, `install-failed`;
 `never` always runs).
 

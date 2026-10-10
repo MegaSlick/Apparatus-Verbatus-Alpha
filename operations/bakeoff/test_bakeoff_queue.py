@@ -1314,3 +1314,51 @@ def test_a_terminal_page_is_resent_when_its_timeout_or_concurrency_changes(bench
     events = [e["event"] for e in _events(bench["out"])]
     assert events.count("page-not-retried") == 1
     assert events.count("requests-start") == 3
+
+
+def test_an_arm_whose_every_page_failed_terminally_is_failed_and_blocks_its_dependents(bench):
+    """A full run whose pages all ran into a timeout or a loop settles every page but gave
+    no answer: it was recorded ok with 0 pages and its dependents ran on nothing."""
+    arms = [
+        _vendor_arm(bench, "qv", "LOOP: transcribe"),
+        _cpu_arm(bench, "child", gpu=False, after=["qv"]),
+    ]
+    queue = Recording(
+        _manifest(bench, arms, end_pod="none"),
+        notifier=FakeNotifier(),
+        environ=bench["env"],
+        poll_seconds=0.05,
+    )
+    queue._smoke_verdict = lambda arm, pages: "ok"  # as if the smoke pages had answered
+    queue.run()
+    status = json.loads((bench["out"] / "status.json").read_text())
+    qv = next(a for a in status["finished_arms"] if a["label"] == "qv")
+    assert qv["status"] == "failed" and qv["pages"] == 0 and len(qv["failed_pages"]) == 3
+    assert any("run gave no answer" in e for e in status["errors"])
+    assert [s["arm"] for s in status["skipped"]] == ["child"]
+    assert queue.outcome["qv"] == "failed"
+    assert not [e for e in _events(bench["out"]) if e["event"] == "queue-arm-retry"]
+
+
+def test_an_arm_with_some_terminal_failures_is_ok_with_failures(tmp_path):
+    out = tmp_path / "out"
+    (out / "a").mkdir(parents=True)
+    terminal = {"error": "loop", "failure": {"terminal": True, "reasons": ["repetition-loop"]}}
+    (out / "a" / "p0.json").write_text(json.dumps({"error": None}))
+    (out / "a" / "p1.json").write_text(json.dumps(terminal))
+
+    class Q_:
+        m = type("M", (), {"out": out})()
+        page_list = [tmp_path / "p0.tif", tmp_path / "p1.tif"]
+        _run_status = Q.Queue._run_status
+        _failed_pages = Q.Queue._failed_pages
+
+    arm = type("Arm", (), {"records": "a"})()
+    assert Q_()._run_status(arm) == "ok-with-failures"
+    (out / "a" / "p1.json").write_text(json.dumps({"error": None}))
+    assert Q_()._run_status(arm) == "ok"
+    (out / "a" / "p0.json").write_text(json.dumps(terminal))
+    (out / "a" / "p1.json").write_text(json.dumps(terminal))
+    assert Q_()._run_status(arm) == "failed"
+    # A dependent may build on an arm that answered some pages, not on one that answered none.
+    assert "ok-with-failures" in Q.DEPENDENCY_MET and "failed" not in Q.DEPENDENCY_MET
