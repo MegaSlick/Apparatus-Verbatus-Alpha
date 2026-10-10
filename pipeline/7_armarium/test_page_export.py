@@ -36,7 +36,7 @@ from armarium_export import (
 
 from common.contracts.canonical import canonical_bytes, digest_bytes, self_hash
 from common.contracts.errors import FatalAccounting, SchemaRefusal
-from common.contracts.stages import ARCHETYPUS, ARMARIUM
+from common.contracts.stages import ARCHETYPUS, ARMARIUM, RECENSOR
 from common.page_accounting import load_page_accounting_policy
 from common.page_review import held_by_recensor
 from common.runtree.store import RunTree
@@ -726,6 +726,45 @@ def test_a_confirmed_no_act_page_delivers_its_other_readings_and_completes(tmp_p
     assert manifest["claims"]["other_readings"]["by_category"] == {"delivered": 1}
     assert bundle["established"]["p2:1"]["kind"] == "other"
     assert sorted(_jsonl(bundle["members"], "other.jsonl")) == ["p2:1"]
+
+
+def test_a_typed_index_page_holding_a_detector_record_is_confirmed_and_counts_no_act(tmp_path):
+    # Page 1 handwritten register acts read as an act and an instrument; page 2 a
+    # typed index whose one row holds the record detector's record there. Rule (i)
+    # does not apply to an index page, so the row is confirmed, not held on it.
+    root, options = build_page_tree(tmp_path, "page-typed-index")
+    _recense(root, options, "page-typed-index")
+    tree = RunTree(root, RUN_ID)
+    reviews = {
+        record["payload"]["act_key"]: record
+        for record in (
+            tree.read_artifact(RECENSOR, "review", entry["artifact_id"])
+            for entry in tree.build_manifest(RECENSOR)["artifacts"]
+            if entry["kind"] == "review"
+        )
+    }
+    row = reviews["p2:1"]
+    assert row["outcome"] == "accepted", row["payload"]["reason"]
+    confirmation = row["payload"]["confirmation"]
+    assert confirmation["confirmed"] is True and confirmation["rules"]["i"] == "hold"
+    assert (
+        "rule (i) does not apply to the page's stated type" in (row["payload"]["release"]["reason"])
+    )
+    result = _after_recensor(root, options, "page-typed-index")
+    assert result.returncode == 0, result.stderr
+    bundle = _bundle(root, tmp_path / "clean")
+    manifest, members = bundle["manifest"], bundle["members"]
+    assert manifest["claims"]["status"] == "complete"
+    partition = manifest["claims"]["act_partition"]
+    assert (partition["expected_count"], partition["counted"]) == (2, 2)
+    assert sorted(_jsonl(members, "acts.jsonl")) == ["p1:1", "p1:2"]
+    assert sorted(_jsonl(members, "other.jsonl")) == ["p2:1"]
+    established = bundle["established"]
+    assert (established["p1:2"]["kind"], established["p2:1"]["kind"]) == ("act", "other")
+    [page_two] = [
+        page for page in manifest["claims"]["page_accounting"]["pages"] if page["ordinal"] == 2
+    ]
+    assert page_two["hold_codes"] == [] and page_two["rules"]["i"] == "hold"
 
 
 def test_a_link_whose_flags_disagree_is_a_join_that_reconstructs_nothing(tmp_path):

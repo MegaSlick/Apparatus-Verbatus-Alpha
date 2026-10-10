@@ -20,6 +20,7 @@ from typing import Any, Callable
 
 import pytest
 
+from common import page_types
 from common.contracts.canonical import canonical_bytes, self_hash
 from common.contracts.errors import FatalAccounting
 from common.contracts.identities import artifact_id
@@ -861,6 +862,67 @@ def test_a_page_of_only_other_readings_stays_held_on_any_rule_not_passing(rule, 
         confirmed=unconfirmed,
     )
     assert outcome == "held-for-review" and payload["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
+
+
+def _typed(accounting: dict, page_type: str, writing: str) -> dict:
+    """`accounting` with the page type block the page accounting records for a stated type."""
+    return {
+        **accounting,
+        "page_type": {"applicability": page_types.applicability(page_type, writing)},
+    }
+
+
+@pytest.mark.parametrize("status", ["hold", "not-measured", "not-applicable"])
+def test_a_page_of_other_entries_is_confirmed_when_its_type_switches_rule_i_off(status):
+    """Rule (i) does not apply to an index page: whatever its status, it confirms."""
+    row = _row(kind="other", hold_codes=[NO_ACT_ON_PAGE_HOLD], disposition="held")
+    witnesses = [_testimonium("a"), _testimonium("b")]
+    confirmed = page_review.confirmation(
+        _typed(_without("i", status), "index", "typed"),
+        witnesses,
+        blank=False,
+        census=frozenset(),
+    )
+    assert confirmed["confirmed"] is True and confirmed["failures"] == []
+    assert confirmed["rules"]["i"] == status
+    outcome, payload = page_review.review_of(
+        row,
+        coverage=_coverage(*witnesses),
+        page_coverage=CLEAN,
+        assessment=None,
+        confirmed=confirmed,
+    )
+    assert outcome == "accepted" and payload["release"]["hold_codes"] == [NO_ACT_ON_PAGE_HOLD]
+    assert "rule (i) does not apply to the page's stated type" in payload["release"]["reason"]
+
+
+@pytest.mark.parametrize(("rule", "status"), [("d", "hold"), ("e", "hold"), ("f", "not-measured")])
+def test_a_typed_page_of_other_entries_still_needs_every_rule_that_applies(rule, status):
+    unconfirmed = page_review.confirmation(
+        _typed(_without(rule, status), "index", "typed"),
+        [_testimonium("a"), _testimonium("b")],
+        blank=False,
+        census=frozenset(),
+    )
+    assert unconfirmed["failures"] == [
+        f"page accounting rule ({rule}) is {status}, not flag or pass"
+    ]
+
+
+@pytest.mark.parametrize(
+    "accounting",
+    [
+        _without("i", "hold"),
+        _typed(_without("i", "hold"), "register-acts", "handwritten"),
+        _typed(_without("i", "hold"), "register-acts", "mixed"),
+    ],
+    ids=["untyped", "handwritten-acts", "mixed-acts"],
+)
+def test_rule_i_still_holds_a_page_of_other_entries_where_it_applies(accounting):
+    unconfirmed = page_review.confirmation(
+        accounting, [_testimonium("a"), _testimonium("b")], blank=False, census=frozenset()
+    )
+    assert unconfirmed["failures"] == ["page accounting rule (i) is hold, not flag or pass"]
 
 
 def test_a_refused_pages_row_is_not_a_counted_unit():

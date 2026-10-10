@@ -347,9 +347,13 @@ def _unbroken(pages: dict[int, Any] | None = None) -> dict[int, Any]:
 # `page-review-other`: page-review's unplaced entry read as `other`, with no
 # act running onto it. `page-unbroken`, `page-other-unbroken` and
 # `page-no-act-unbroken`: their base with no act running across the page
-# break. `page-flags-disagree`: page 1's last act says it runs on and page 2's
-# first says it does not. `page-runs-past-end`: nothing runs across the break,
-# but page 2's act says it runs on past the run's last page.
+# break. `page-typed-index`: page types named, page 1 handwritten register acts
+# read as an act and an instrument, page 2 a typed index whose one row holds the
+# record detector's record there, so rule (i), which does not apply to an index
+# page, records it and holds nothing. `page-flags-disagree`: page 1's last act
+# says it runs on and page 2's first says it does not. `page-runs-past-end`:
+# nothing runs across the break, but page 2's act says it runs on past the run's
+# last page.
 def _citing(answer: dict, *, add: tuple[str, ...] = (), drop: tuple[str, ...] = ()) -> dict:
     """`answer` with its one entry citing `add` too and none of `drop`."""
     (entry,) = answer["entries"]
@@ -366,6 +370,30 @@ def _citing_no_churro_unit(answer: dict) -> dict:
             for entry in answer["entries"]
         ],
     }
+
+
+def _typed(page_type: str, writing: str, kinds: tuple[str, ...]):
+    """A reader of `answer` with the page type stated, the kinds given entry by entry,
+    and nothing running across the page break."""
+
+    def answer(base: dict) -> dict:
+        entries = [
+            {
+                **entry,
+                "kind": kind,
+                "continues_from_previous_page": False,
+                "continues_to_next_page": False,
+            }
+            for entry, kind in zip(base["entries"], kinds, strict=True)
+        ]
+        return {
+            "page_type": page_type,
+            "writing": writing,
+            "entries": entries,
+            "set_aside": base["set_aside"],
+        }
+
+    return answer
 
 
 PAGE_ANSWER_VARIANTS = {
@@ -394,6 +422,13 @@ PAGE_ANSWER_VARIANTS = {
     "page-unbroken": ("happy", _unbroken()),
     "page-other-unbroken": ("page-other", _unbroken()),
     "page-no-act-unbroken": ("page-no-act", _unbroken()),
+    "page-typed-index": (
+        "happy",
+        {
+            1: _typed("register-acts", "handwritten", ("act", "instrument")),
+            2: _typed("index", "typed", ("index-row",)),
+        },
+    ),
     "page-flags-disagree": (
         "happy",
         {2: lambda answer: _with_entry(answer, 1, continues_from_previous_page=False)},

@@ -26,18 +26,20 @@ reviews:
   poem: false
 
   auto_review:
-    # Outsider lock: no pull request is reviewed automatically. A pull request is reviewed
-    # once it carries the maintainer-only label `review-ok`, which only people with triage
-    # or write access can add; the lead adds it to an outsider's pull request to allow a
-    # review, and the lead's own sessions add it to theirs. A pull request's own copy of
-    # this file applies to it, so an outsider can lift the lock for their pull request; the
-    # cost is review allowance only, because GitHub holds every outside pull request's CI
-    # until the lead approves it.
-    enabled: false
+    # Outsider lock: only a pull request carrying the maintainer-only label `review-ok` is
+    # reviewed automatically. Only people with triage or write access can add it; the lead
+    # adds it to an outsider's pull request to allow a review, and the lead's own sessions
+    # add it to theirs. Keep `enabled: true`: with `enabled: false` and the same label,
+    # labelled pull requests were not reviewed here (pull request 347). A pull request's own
+    # copy of this file applies to it, so an outsider can lift the lock for their pull
+    # request; the cost is review allowance only, because GitHub holds every outside pull
+    # request's CI until the lead approves it. Drafts are not reviewed until marked ready.
+    enabled: true
     labels: ["review-ok"]
+    drafts: false
+    # Every push to a labelled pull request is reviewed; 0 means never pause.
     auto_incremental_review: true
-    # Counts reviewed commits. After two, CodeRabbit pauses until asked to review again.
-    auto_pause_after_reviewed_commits: 2
+    auto_pause_after_reviewed_commits: 0
 
   pre_merge_checks:
     # Every check stays `warning`, so no check can block the lead's merge button.
