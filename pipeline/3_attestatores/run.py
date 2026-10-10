@@ -269,7 +269,7 @@ def _fixture_native_observations(
 
 
 #: Adapters whose fixture rows may declare `raw_response` bytes;
-#: `_fixture_raw_response_attempt` refuses any other adapter, since fixture bytes
+#: `_fixture_chandra_attempt` refuses any other adapter, since fixture bytes
 #: may not be attributed to a model that never produced them.
 FIXTURE_NATIVE_RESPONSE_ADAPTERS: Final = frozenset({"chandra.v1"})
 

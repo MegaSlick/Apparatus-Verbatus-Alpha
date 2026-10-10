@@ -942,11 +942,11 @@ def verify_triage_derivative(
 def _renderer_drift(contract: dict[str, Any]) -> str:
     """Name a library difference when one is the likelier cause of a pixel mismatch.
 
-    The recorded library versions are not compared against the running host; the
-    byte comparison is the property. A host whose imaging libraries render the
-    part differently (an upgrade, or another platform's arithmetic) therefore
-    refuses the page, and since that message alone points an operator at forgery,
-    it names the versions that differ.
+    The byte comparison is the property that refuses a page; the recorded library
+    versions are compared against the running host only to word the refusal. A host
+    whose imaging libraries render the part differently (an upgrade, or another
+    platform's arithmetic) refuses the page, and since that message alone points an
+    operator at forgery, it names the versions that differ.
     """
     fields = ("renderer_version", "pillow_heif_version", "libheif_version")
     try:
