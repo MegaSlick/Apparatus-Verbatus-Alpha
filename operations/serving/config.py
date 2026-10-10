@@ -149,13 +149,57 @@ _PROFILE_FIELDS = {
 # from the row's own notes. A row carrying both can be widened past its
 # `max_num_seqs` on a card with room (`operations/serving/capacity.py`); a row
 # without them is launched exactly as written.
+#
+# `quantization`, `kv_cache_dtype` and `speculative_config` are optional engine
+# options, absent on every row that predates them, so those rows, their digests
+# and their argv are unchanged. Each takes only the values listed below, all
+# read from vLLM 0.30.0's own argument parser and configuration
+# (`vllm/engine/arg_utils.py`, `vllm/config/{model,cache,speculative}.py` at
+# tag v0.30.0); a new value is a reviewed edit here, never a free string.
 _OPTIONAL_PROFILE_FIELDS = {
     "patch_size",
     "merge_size",
     "shares_service_with",
     "weights_gib",
     "kv_gib_per_seq",
+    "quantization",
+    "kv_cache_dtype",
+    "speculative_config",
 }
+# `--quantization`: vLLM compares it with the checkpoint's own
+# `quantization_config.quant_method` and refuses a mismatch; on a checkpoint
+# with no quantization config it would quantize the bf16 weights itself at load,
+# a different model under the same repository pin. `manager.assert_quantization`
+# therefore requires the verified snapshot to declare the same method.
+#
+# Each value maps to what the checkpoint's own `config.json`
+# `quantization_config` must say: its `quant_method` and, where vLLM picks the
+# method from it, its `quant_algo`. vLLM's name is not always the checkpoint's:
+# a ModelOpt checkpoint says `quant_method: "modelopt"` and vLLM 0.30.0 turns
+# `quant_algo: "MIXED_PRECISION"` into its `modelopt_mixed` method (per-layer
+# FP8 / NVFP4, `ModelOptMixedPrecisionConfig.override_quantization_method` in
+# `vllm/model_executor/layers/quantization/modelopt.py`); `--quantization
+# modelopt_mixed` on such a checkpoint is accepted, on any other refused
+# (`vllm/config/model.py::_verify_quantization`).
+QUANTIZATION_CHECKPOINT_DECLARATIONS: Mapping[str, tuple[str, str | None]] = MappingProxyType(
+    {
+        "fp8": ("fp8", None),
+        "modelopt_mixed": ("modelopt", "MIXED_PRECISION"),
+    }
+)
+QUANTIZATION_VALUES = frozenset(QUANTIZATION_CHECKPOINT_DECLARATIONS)
+# `--kv-cache-dtype`: `fp8` is vLLM's e4m3 KV cache on CUDA.
+KV_CACHE_DTYPE_VALUES = frozenset({"fp8"})
+# `--speculative-config`: only the checkpoint's own multi-token-prediction head.
+# vLLM 0.30.0 aliases the per-family names (`qwen3_5_mtp`, ...) to `mtp`, and
+# for a Qwen3.5/3.8 checkpoint it reads the head's depth from
+# `text_config.mtp_num_hidden_layers`; `num_speculative_tokens` is stated
+# because the vLLM recipe for Qwen3.8-27B says startup fails without it.
+# Speculation verified by the full model changes speed, not output; vLLM
+# refuses `min_p` > 0 and `logit_bias` under it, which no chair sends.
+SPECULATIVE_METHODS = frozenset({"mtp"})
+_SPECULATIVE_FIELDS = frozenset({"method", "num_speculative_tokens"})
+MAX_SPECULATIVE_TOKENS = 8
 # What shapes the running service, as distinct from how a caller waits for it or
 # times its requests. Two rows sharing one service must agree on every one: the
 # argv, the readiness probe the service was proven ready with, and the package
@@ -181,6 +225,9 @@ LAUNCH_FIELDS = (
     "trust_remote_code",
     "generation_config",
     "readiness_probe",
+    "quantization",
+    "kv_cache_dtype",
+    "speculative_config",
 )
 _PREFLIGHT_DIGEST_FIELD = "preflight_digest"
 _PREFLIGHT_IDENTITY_FIELD = "preflight_identity_digest"
@@ -374,10 +421,28 @@ class ServingProfile:
     # The chair whose running service this row may take over (see the module
     # docstring); ``None`` for a row that always starts its own.
     shares_service_with: str | None = None
+    # Optional engine options (see `_OPTIONAL_PROFILE_FIELDS`); ``None`` means
+    # the row does not pass the flag, and vLLM's default applies as before.
+    quantization: str | None = None
+    kv_cache_dtype: str | None = None
+    speculative_config: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self, "required_packages", MappingProxyType(dict(self.required_packages))
+        )
+        if self.speculative_config is not None:
+            object.__setattr__(
+                self, "speculative_config", MappingProxyType(dict(self.speculative_config))
+            )
+
+    def engine_option_argv(self) -> tuple[str, ...]:
+        """The optional engine flags this row passes; empty for a row without them."""
+
+        return engine_option_argv(
+            quantization=self.quantization,
+            kv_cache_dtype=self.kv_cache_dtype,
+            speculative_config=self.speculative_config,
         )
 
     @property
@@ -726,6 +791,9 @@ def _parse_profile(
         raise ServingConfigurationError(
             f"serving profile {profile_name} names its own chair in shares_service_with"
         )
+    quantization = _optional_choice(raw, "quantization", QUANTIZATION_VALUES)
+    kv_cache_dtype = _optional_choice(raw, "kv_cache_dtype", KV_CACHE_DTYPE_VALUES)
+    speculative_config = _optional_speculative_config(raw)
     return ServingProfile(
         recipe=recipe,
         chair=chair,
@@ -759,7 +827,72 @@ def _parse_profile(
         preflight_identity_digest=preflight_identity_digest,
         kind="vllm",
         shares_service_with=shares_service_with,
+        quantization=quantization,
+        kv_cache_dtype=kv_cache_dtype,
+        speculative_config=speculative_config,
     )
+
+
+def engine_option_argv(
+    *,
+    quantization: str | None,
+    kv_cache_dtype: str | None,
+    speculative_config: Mapping[str, object] | None,
+) -> tuple[str, ...]:
+    """Render the optional engine flags, in one fixed order, for any launcher.
+
+    The serving manager and the bake-off's own launcher both call this, so a row
+    is launched with the same flags whichever of them starts it. Nothing is
+    rendered for an absent field.
+    """
+
+    argv: list[str] = []
+    if quantization is not None:
+        argv += ["--quantization", quantization]
+    if kv_cache_dtype is not None:
+        argv += ["--kv-cache-dtype", kv_cache_dtype]
+    if speculative_config is not None:
+        argv += [
+            "--speculative-config",
+            json.dumps(dict(speculative_config), sort_keys=True, separators=(",", ":")),
+        ]
+    return tuple(argv)
+
+
+def _optional_choice(raw: Mapping[str, Any], field: str, allowed: frozenset[str]) -> str | None:
+    if field not in raw:
+        return None
+    value = _text(raw[field], field)
+    if value not in allowed:
+        raise ServingConfigurationError(
+            f"{field} must be one of {sorted(allowed)}, not {value!r}; a new engine option "
+            "is a reviewed edit to operations/serving/config.py"
+        )
+    return value
+
+
+def _optional_speculative_config(raw: Mapping[str, Any]) -> dict[str, object] | None:
+    if "speculative_config" not in raw:
+        return None
+    value = raw["speculative_config"]
+    if not isinstance(value, dict) or set(value) != _SPECULATIVE_FIELDS:
+        raise ServingConfigurationError(
+            f"speculative_config must be a table of exactly {sorted(_SPECULATIVE_FIELDS)}"
+        )
+    method = _text(value["method"], "speculative_config.method")
+    if method not in SPECULATIVE_METHODS:
+        raise ServingConfigurationError(
+            f"speculative_config.method must be one of {sorted(SPECULATIVE_METHODS)}, "
+            f"not {method!r}"
+        )
+    tokens = _positive_int(
+        value["num_speculative_tokens"], "speculative_config.num_speculative_tokens"
+    )
+    if tokens > MAX_SPECULATIVE_TOKENS:
+        raise ServingConfigurationError(
+            f"speculative_config.num_speculative_tokens must be at most {MAX_SPECULATIVE_TOKENS}"
+        )
+    return {"method": method, "num_speculative_tokens": tokens}
 
 
 def _parse_fixture_profile(raw: Mapping[str, Any]) -> FixtureProfile:

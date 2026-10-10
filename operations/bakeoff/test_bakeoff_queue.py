@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from operations.bakeoff import queue_runner as Q
+from operations.bakeoff import witness_run as W
 from operations.bakeoff.test_bakeoff_runner import FAKE, _free_port, _pages
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,7 +31,7 @@ p = argparse.ArgumentParser()
 p.add_argument("--pages"); p.add_argument("--out"); p.add_argument("--label")
 p.add_argument("--limit", type=int); p.add_argument("--sleep", type=float, default=0)
 p.add_argument("--fail", action="store_true"); p.add_argument("--fail-once")
-p.add_argument("--pid-file"); p.add_argument("--folder")
+p.add_argument("--pid-file"); p.add_argument("--folder"); p.add_argument("--threads")
 p.add_argument("--meet", nargs=2, help="write the first file, then wait for the second")
 a = p.parse_args()
 if a.pid_file:
@@ -226,8 +227,11 @@ def test_full_queue_smoke_then_run_overlap_retry_sync_and_guard_release(bench):
     assert all(m.startswith("test-queue: ") for m in messages)
     assert sum("started (" in m for m in messages) == 6
     assert sum("ok:" in m for m in messages) == 5
-    assert notifier.sent[-1][0] == "done" and "guard" in notifier.sent[-1][1]
-    assert [k for k, m in notifier.sent if "broken" in m] == ["milestone", "decision", "decision"]
+    assert notifier.sent[-1][0] == "queue-done" and "guard" in notifier.sent[-1][1]
+    # The queue handles a failed arm itself: milestones, never a decision.
+    assert [k for k, m in notifier.sent if "broken" in m] == ["milestone"] * 3
+    assert sum("arm failed: broken" in m for _, m in notifier.sent) == 2
+    assert "decision" not in [k for k, _ in notifier.sent]
     assert len(status["pings"]) == len(set(status["pings"]))
 
     # The copy, its digests and DONE.json, identical in both places.
@@ -551,7 +555,8 @@ def test_own_disk_refuses_to_end_the_pod_when_a_digest_differs(bench, monkeypatc
     status = json.loads((bench["out"] / "status.json").read_text())
     assert status["state"] == "failed" and status["end_action"].startswith("NOT ended")
     kinds = [k for k, _ in notifier.sent]
-    assert kinds.count("decision") == 2 and kinds[-1] == "done"
+    # The pod kept on its own disk is the one thing the queue cannot settle by itself.
+    assert kinds.count("decision") == 1 and kinds[-1] == "queue-done"
 
 
 def test_without_a_live_guard_pod_delete_is_called(bench):
@@ -1038,7 +1043,9 @@ def test_the_command_line_moves_the_copy_to_the_global_mount(bench):
         Q.override_manifest(manifest, str(bench["out"] / "inside"), False)
 
 
-@pytest.mark.parametrize("name", ["witness-24gb.toml", "reader-96gb.toml"])
+@pytest.mark.parametrize(
+    "name", ["witness-24gb.toml", "reader-96gb.toml", "perlector-fp8-96gb.toml"]
+)
 def test_the_bakeoff_manifests_validate_on_the_global_route(name, capsys):
     argv = [
         "--manifest",
@@ -1059,3 +1066,251 @@ def test_keep_pod_makes_the_run_end_with_the_pod_kept(bench, capsys):
     argv = ["--manifest", str(EXAMPLES / "witness-24gb.toml"), "--keep-pod", "--own-disk"]
     assert Q.main(["run", *argv, "--dry-run"]) == 0
     assert "end pod: none" in capsys.readouterr().out
+
+
+def _vendor_arm(bench, label, prompt_text):
+    prompt = bench["tmp"] / f"{label}-prompt.txt"
+    prompt.write_text(prompt_text)
+    arm = _witness_arm(bench, "qwen-vendor", label)
+    arm["command"] += ["--repo", "Qwen/Qwen3.8-27B", "--prompt-file", str(prompt)]
+    return arm
+
+
+def test_a_smoke_whose_every_page_looped_does_not_start_the_full_run(bench):
+    """C7: terminal failures are kept and never resent, but a smoke with no answer at
+    all is a failed smoke: the full run would repeat it at the same settings."""
+    notifier = FakeNotifier()
+    queue = Recording(
+        _manifest(bench, [_vendor_arm(bench, "qv", "LOOP: transcribe")], end_pod="none"),
+        notifier=notifier,
+        environ=bench["env"],
+        poll_seconds=0.05,
+    )
+    queue.run()  # the queue ends; the arm is what is checked
+    status = json.loads((bench["out"] / "status.json").read_text())
+    (arm,) = status["finished_arms"]
+    assert arm["status"] == "failed" and arm["pages"] == 0
+    assert arm["failed_pages"] == [
+        {"page": f"p{i:03d}", "reasons": ["repetition-loop"]} for i in range(2)
+    ]
+    phases = [(s["arm"], s["phase"]) for s in queue.seen]
+    assert ("qv", "run") not in phases and ("qv", "retry") not in phases
+    assert not (bench["out"] / "qv" / "p002.json").exists()  # never sent
+    assert any("smoke gave no answer" in e for e in status["errors"])
+
+
+def test_smoke_verdict_needs_one_answer_and_keeps_terminal_pages(tmp_path):
+    folder = tmp_path / "out" / "a"
+    folder.mkdir(parents=True)
+    pages = [tmp_path / "p0.tif", tmp_path / "p1.tif"]
+    terminal = {"error": "loop", "failure": {"terminal": True, "reasons": ["repetition-loop"]}}
+
+    class Q_:
+        m = type("M", (), {"out": tmp_path / "out"})()
+        _smoke_verdict = Q.Queue._smoke_verdict
+
+    arm = type("Arm", (), {"records": "a"})()
+    (folder / "p0.json").write_text(json.dumps(terminal))
+    assert Q_()._smoke_verdict(arm, pages) == "failed"  # p1 never written
+    (folder / "p1.json").write_text(json.dumps(terminal))
+    assert Q_()._smoke_verdict(arm, pages) == "useless"
+    (folder / "p1.json").write_text(json.dumps({"error": None}))
+    assert Q_()._smoke_verdict(arm, pages) == "ok"  # one looping page does not stop the arm
+    (folder / "p1.json").write_text(json.dumps({"error": "HTTP 500"}))
+    assert Q_()._smoke_verdict(arm, pages) == "failed"
+
+
+def test_cpu_retries_stay_within_the_thread_budget_together(bench):
+    """C7: two 10-thread CPU arms retried under a 12-thread budget run one after the other,
+    not both at 10 threads at once."""
+    tmp = bench["tmp"]
+    arms = [
+        _cpu_arm(bench, name, "--sleep", "0.5", "--fail-once", str(tmp / f"{name}-once"),
+                 "--threads", "10", gpu=False)
+        for name in ("c1", "c2")
+    ]  # fmt: skip
+    queue = Recording(
+        _manifest(bench, arms, end_pod="none", cpu_threads=12),
+        notifier=FakeNotifier(),
+        environ=bench["env"],
+        poll_seconds=0.05,
+    )
+    assert queue.run() == 0
+    assert all(len(s["cpu_arms"]) <= 1 for s in queue.seen)
+    events = _events(bench["out"])
+    retries = [e for e in events if e["event"] == "queue-arm-retry"]
+    assert sorted(e["arm"] for e in retries) == ["c1", "c2"]
+    assert all(e["threads"] == 10 for e in retries)
+    ends = {e["arm"]: e["t"] for e in events if e["event"] == "queue-arm-end"}
+    starts = {
+        e["arm"]: e["t"]
+        for e in events
+        if e["event"] == "queue-command-start" and e["phase"] == "retry"
+    }
+    first, second = sorted(starts, key=starts.get)
+    assert starts[second] >= ends[first]
+
+
+def test_cpu_retries_run_in_the_cpu_lane_with_its_whole_thread_share(bench):
+    tmp = bench["tmp"]
+    arms = [
+        _cpu_arm(bench, "g", "--sleep", "1", "--fail-once", str(tmp / "g-once")),
+        *(
+            _cpu_arm(bench, name, "--fail-once", str(tmp / f"{name}-once"), "--threads", "2",
+                     gpu=False)
+            for name in ("c1", "c2")
+        ),
+    ]  # fmt: skip
+    queue = Recording(
+        _manifest(bench, arms, end_pod="none", cpu_threads=12),
+        notifier=FakeNotifier(),
+        environ=bench["env"],
+        poll_seconds=0.05,
+    )
+    assert queue.run() == 0
+    status = json.loads((bench["out"] / "status.json").read_text())
+    assert {a["label"]: a["status"] for a in status["finished_arms"]} == dict.fromkeys(
+        ("g", "c1", "c2"), "ok"
+    )
+    events = _events(bench["out"])
+    retries = {e["arm"]: e for e in events if e["event"] == "queue-arm-retry"}
+    assert retries["g"]["lane"] == "gpu" and retries["g"]["threads"] is None
+    for name in ("c1", "c2"):
+        assert retries[name]["lane"] == f"cpu:{name}" and retries[name]["threads"] == 6
+        argv = next(
+            e["argv"]
+            for e in events
+            if e["event"] == "queue-command-start" and e["arm"] == name and e["phase"] == "retry"
+        )
+        assert argv[argv.index("--threads") + 1] == "6"
+    # The CPU retries ran beside the card's retry, not after it.
+    g_end = next(e["t"] for e in events if e["event"] == "queue-arm-end" and e["arm"] == "g")
+    c_starts = [
+        e["t"]
+        for e in events
+        if e["event"] == "queue-command-start" and e["phase"] == "retry" and e["arm"] != "g"
+    ]
+    assert c_starts and max(c_starts) < g_end
+    assert any(
+        {c["arm"] for c in s["cpu_arms"]} == {"c1", "c2"} and s["phase"] == "retry"
+        for s in queue.seen
+    )
+
+
+def test_with_threads_sets_only_the_threads_value():
+    assert Q.with_threads(("x", "--threads", "4", "--y"), 9) == ("x", "--threads", "9", "--y")
+    assert Q.with_threads(("x", "--threads=4"), 9) == ("x", "--threads=9")
+    assert Q.with_threads(("x",), 9) == ("x",)
+    assert Q.with_threads(("x", "--threads", "4"), None) == ("x", "--threads", "4")
+
+
+def test_each_witness_arm_loads_its_model_once_for_smoke_and_run(bench):
+    """The smoke's server is kept and the full run takes it over: one launch per arm,
+    where smoke and run each used to start their own."""
+    launches = bench["tmp"] / "launches.txt"
+    env = {**bench["env"], "FAKE_VLLM_LAUNCHES": str(launches)}
+    arms = [_witness_arm(bench, "chandra", "chandra"), _witness_arm(bench, "churro", "churro")]
+    queue = Q.Queue(
+        _manifest(bench, arms, end_pod="none"),
+        notifier=FakeNotifier(),
+        environ=env,
+        poll_seconds=0.05,
+    )
+    assert queue.run() == 0
+    status = json.loads((bench["out"] / "status.json").read_text())
+    assert {a["label"]: a["status"] for a in status["finished_arms"]} == {
+        "chandra": "ok",
+        "churro": "ok",
+    }
+    pids = launches.read_text().split()
+    assert len(pids) == 2  # was 4: a smoke server and a run server per arm
+    events = _events(bench["out"])
+    for name in ("chandra", "churro"):
+        mine = [e["event"] for e in events if e.get("model") == name]
+        assert mine.count("server-start") == 1 and mine.count("server-kept") == 1
+        assert mine.count("server-adopted") == 1 and mine.count("server-stopped") == 1
+        assert not (bench["out"] / name / "server-handoff.json").exists()
+    for pid in map(int, pids):  # every server is gone at the end
+        deadline = time.monotonic() + 10
+        while W._pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not W._pid_alive(pid)
+
+
+def test_a_kept_server_no_run_takes_over_is_stopped(bench):
+    """A smoke that passes its server on, then a run that never adopts it (its smoke page
+    failed here): the queue stops the server itself."""
+    launches = bench["tmp"] / "launches.txt"
+    env = {**bench["env"], "FAKE_VLLM_LAUNCHES": str(launches)}
+    arm = _witness_arm(bench, "chandra", "chandra")
+    queue = Q.Queue(
+        _manifest(bench, [arm], end_pod="none"),
+        notifier=FakeNotifier(),
+        environ=env,
+        poll_seconds=0.05,
+    )
+    queue._smoke_verdict = lambda a, pages: "failed"
+    assert queue.run() == 0
+    events = _events(bench["out"])
+    # The retry's smoke finds its pages cached and starts nothing, so nothing else is kept.
+    assert [e["event"] for e in events].count("queue-server-released") == 1
+    pids = launches.read_text().split()
+    assert len(pids) == 1
+    for pid in map(int, pids):
+        deadline = time.monotonic() + 10
+        while W._pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not W._pid_alive(pid)
+
+
+def test_witness_commands_may_not_carry_the_server_hand_off(bench):
+    arm = _witness_arm(bench, "chandra", "chandra")
+    arm["command"] += ["--keep-server", "/tmp/x"]
+    with pytest.raises(Q.ManifestError, match="--keep-server"):
+        _manifest(bench, [arm])
+
+
+def test_own_disk_with_a_kept_pod_leaves_the_copy_check_to_fetch(bench, monkeypatch):
+    def no_read_back(*_args):
+        raise AssertionError("the copy on the volume was read back on the pod")
+
+    monkeypatch.setattr(Q, "compare_digests", no_read_back)
+    notifier = FakeNotifier()
+    queue = _queue_with_cache(bench, notifier, lambda argv: 0, own_disk=True, end_pod="none")
+    assert queue.finish() == 0
+    done = json.loads((bench["out"] / "DONE.json").read_text())
+    assert done["verified"] is None and done["verify"] == "at home, by fetch"
+    assert done["files"] == 3 and "a/p000.json" in done["digests"]
+    assert any("copy made: 3 files; verify at home" in m for _, m in notifier.sent)
+    assert "decision" not in [k for k, _ in notifier.sent]
+    status = json.loads((bench["out"] / "status.json").read_text())
+    assert status["state"] == "done" and status["end_action"] == "kept (end_pod = none)"
+
+    # At home, fetch checks every file against those digests (here: the cache itself).
+    monkeypatch.undo()
+    lines: list[str] = []
+    assert Q.verify_fetched(bench["out"], say=lines.append) == 0
+    assert lines == ["verified 3 of 3 files against DONE.json"]
+
+
+def test_own_disk_without_keep_pod_still_checks_the_copy_on_the_pod(bench):
+    queue = _queue_with_cache(bench, FakeNotifier(), lambda argv: 0, own_disk=True)
+    queue.sync()
+    done = json.loads((bench["out"] / "DONE.json").read_text())
+    assert done["verified"] is True and done["verify"] == "on the pod"
+
+
+def test_a_terminal_page_is_resent_when_its_timeout_or_concurrency_changes(bench):
+    """C7: "the same settings" include the request timeout, concurrency and the server's
+    batch settings, so a page that failed under them is sent again once they change."""
+    argv = _vendor_arm(bench, "qv", "LOOP: transcribe")["command"][3:]
+    argv = [*argv, "--limit", "1"]
+    assert W.main(argv) == 0
+    record = json.loads((bench["out"] / "qv" / "p000.json").read_text())
+    assert record["failure"]["settings"]["request_timeout"] == 1800
+    assert W.main(argv) == 0  # the same settings: not resent
+    assert W.main([*argv, "--request-timeout", "900"]) == 0  # another timeout: resent
+    assert W.main([*argv, "--request-timeout", "900", "--concurrency", "1"]) == 0  # resent
+    events = [e["event"] for e in _events(bench["out"])]
+    assert events.count("page-not-retried") == 1
+    assert events.count("requests-start") == 3

@@ -52,6 +52,13 @@ whether a register was required, and, when either run records them, the ingress,
 render settings, sealed configuration digests and seal method. That is a different
 run wearing an old name.
 
+A replay run (`common/replay.py`) carries one more bound field, `replay`, naming
+the run it replays. It is the source's authority under a new run id, with the
+replaying code's `repository_commit`, and it holds the source's Door, Exemplar, Ink
+map, Designator and Attestatores records as they were sealed, under the source's run
+id: `RunTree.holds_run_id` accepts that id for those stages and no other. A replay run
+is created only new (`RunTree.create_replay`), never into an existing directory.
+
 It deliberately does not predeclare acts. Pages are given; acts are discovered, and
 the Perlector's whole-page reading names them.
 

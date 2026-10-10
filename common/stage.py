@@ -111,6 +111,7 @@ from common.imaging import dimensions
 from common.page_accounting import DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH, load_page_accounting_policy
 from common.reconstruction import DEFAULT_RECONSTRUCTION_CONFIG_PATH, load_reconstruction_policy
 from common.recovery import DEFAULT_RECOVERY_CONFIG_PATH, load_recovery_policy
+from common.replay import not_replayed_problem, refuse_imported_stage, replay_of
 from common.residual_ink import ink_map_config_digest
 from common.review_policy import DEFAULT_REVIEW_CONFIG_PATH, load_review_policy
 from common.runtree.store import PublishResult, RunTree, _inode_identity
@@ -2933,8 +2934,9 @@ def _verify_reply(
     state = payload["parse_state"]
     engine_call = payload.get("engine_call")
     failure = payload.get("failure")
+    replayed = replay_of(context.run) is not None
     _require(
-        named is None or state != page_path.NOT_RUN,
+        named is None or state != page_path.NOT_RUN or replayed,
         f"{what} is recorded as not run; a planned re-ask is always asked",
     )
     if state == page_path.NOT_RUN:
@@ -2942,7 +2944,10 @@ def _verify_reply(
         derived: dict[str, Any] = {
             "parse_state": state,
             "answer": None,
-            "problems": page_path.not_run_problems(
+            # A replay asks a re-ask only when its source run sent that very request.
+            "problems": [not_replayed_problem(context.run)]
+            if named is not None
+            else page_path.not_run_problems(
                 feed,
                 chair_present=isinstance(chair, ChairIdentity),
                 no_testimony=not index.testimonia.get(page_id),
@@ -3720,6 +3725,7 @@ def open_context(
     if tree is None:
         tree = RunTree(Path(args.run_root), args.run_id)
         run = tree.read_run()
+    refuse_imported_stage(run, stage)
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
     # Compared separately: an equal `config_digest` proves the bytes, not that
@@ -3807,6 +3813,7 @@ def _open_real_context(
     versions, and re-binding those would refuse a sound run after a library
     upgrade.  The sealed map is rechecked name by name instead.
     """
+    refuse_imported_stage(run, stage)
     verify_snapshot_is_current(run, args.corpus_register)
     read_snapshot(tree, run)
     registry = _open_registry(args, registry_factory)

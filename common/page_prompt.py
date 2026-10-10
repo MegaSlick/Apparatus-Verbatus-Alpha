@@ -16,7 +16,8 @@ nothing to read, or a Surya detection repeating another, is set aside, so the
 instruction never invites a choice between witnesses.
 
 A builder is registered per serving recipe, and a recipe with none refuses
-rather than borrowing another's template. The rendered text reads only the feed fields that describe what is
+rather than borrowing another's template; a recipe that only serves the same
+model another way (`RECIPE_ALIASES`) is declared to take its base recipe's. The rendered text reads only the feed fields that describe what is
 shown -- never `prompt`, `feed_digest`, `unit_kind` or `findings` -- so the
 same bytes are rebuilt from a sealed feed.
 
@@ -428,6 +429,21 @@ def _unproven_real_perlector_page_v0(feed: dict[str, Any]) -> list[list[_Part]]:
     return [*_feed_parts(feed), _fixed(page_reading_instruction(feed))]
 
 
+# Serving recipes that serve the Perlector's own model another way -- smaller weights,
+# speculative decoding, an FP8 KV cache (config/serving_recipes_real_variants.toml) --
+# and deliberately send the same prompt: each takes the page and re-ask builders of the
+# recipe it varies, so a Perlector chair can point at it. The evidence still names the
+# recipe asked for (`serving_recipe`); its rendered text is the base recipe's, byte for
+# byte. The NVFP4 rows arrive with branch work/serving-nvfp4.
+RECIPE_ALIASES: Final[dict[str, str]] = {
+    "unproven-real-perlector-fp8": "unproven-real-perlector",
+    "unproven-real-perlector-fp8-mtp3": "unproven-real-perlector",
+    "unproven-real-perlector-fp8-mtp1": "unproven-real-perlector",
+    "unproven-real-perlector-fp8-kvfp8": "unproven-real-perlector",
+    "unproven-real-perlector-nvfp4": "unproven-real-perlector",
+    "unproven-real-perlector-nvfp4-mtp3": "unproven-real-perlector",
+}
+
 _Build = Callable[[dict[str, Any]], list[list[_Part]]]
 _Render = Callable[[dict[str, Any]], str]
 # Each recipe's builder and the instruction it sends, `None` where it sends none.
@@ -438,7 +454,7 @@ _BUILDERS: Final[dict[str, tuple[_Build, _Render | None]]] = {
 
 
 def _builder_for(serving_recipe: str) -> tuple[_Build, _Render | None]:
-    entry = _BUILDERS.get(serving_recipe)
+    entry = _BUILDERS.get(RECIPE_ALIASES.get(serving_recipe, serving_recipe))
     if entry is None:
         raise ValueError(
             f"no declared page prompt builder is registered for serving recipe "
@@ -604,7 +620,7 @@ _REASK_BUILDERS: Final[dict[str, tuple[_ReaskBuild, _Render | None]]] = {
 
 
 def _reask_builder_for(serving_recipe: str) -> tuple[_ReaskBuild, _Render | None]:
-    entry = _REASK_BUILDERS.get(serving_recipe)
+    entry = _REASK_BUILDERS.get(RECIPE_ALIASES.get(serving_recipe, serving_recipe))
     if entry is None:
         raise ValueError(
             f"no declared page re-ask builder is registered for serving recipe "

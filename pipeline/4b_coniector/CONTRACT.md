@@ -72,7 +72,11 @@ prompt showed; `serving_mode`; the admitted `capacity`; the live
 chair and the receipt of what served it. Outcome `answered` when parsed, else
 `not-answered`. A reply cut at the output cap is never read. A call not asked
 names one reason: `chair-absent`, `request-over-capacity` (with its capacity
-record) or `call-failed` (with the retained bytes).
+record), `call-failed` (with the retained bytes) or, in a replay run
+(`pipeline/4_perlector/CONTRACT.md`, "A replay"), `not-replayed`: its source run never
+sent this call in these bytes, so no recorded reply answers it, and it names no
+capacity, failure or receipt. In a replay every other call is answered with the
+source's retained reply through the same client.
 
 `reconstruction` (subject the act's `act_id`, or a join's first piece), schema
 `coniector-reconstruction.v1`, one per subject act and one per chain: `{unit
