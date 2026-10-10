@@ -32,12 +32,12 @@ def _png(width: int, height: int) -> bytes:
     return buffer.getvalue()
 
 
-def _request(repo: str, width: int = 400, height: int = 300):
+def _request(repo: str, width: int = 400, height: int = 300, guard: str | None = None):
     arm = A.ARMS["qwen-vendor"]
     row = A.arm_row(arm, A.serving_row(arm.chair, arm.default_tier), repo)
     unit = A.page_units(arm, _png(width, height))[0]
     return row, *A.build_request(
-        arm, unit, row=row, served_name="m", max_model_len=65_536, repo=repo
+        arm, unit, row=row, served_name="m", max_model_len=65_536, repo=repo, guard=guard
     )
 
 
@@ -51,13 +51,52 @@ def test_each_family_sends_its_vendor_preset(repo):
     assert "[[?]]" in text["text"] and "abbreviations" in text["text"]
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     assert {k: body[k] for k in NON_THINKING} == NON_THINKING and body["seed"] == 0
-    assert "max_tokens" not in body and record["max_tokens"] is None
-    assert record["max_tokens_basis"].startswith("omitted: no reply cap")
+    # The Perlector's guards by default: its page cap, and a stream its loop detector reads.
+    assert body["max_tokens"] == 12_288 and record["max_tokens"] == 12_288
+    assert record["max_tokens_basis"].startswith("perlector guard: page cap 12288")
+    assert body["stream"] is True and record["guard"]["name"] == "perlector"
+    assert record["guard"]["loop_guard"] == {
+        "loop_line_repeats": 30,
+        "loop_block_repeats": 10,
+        "loop_block_max_lines": 8,
+    }
     assert (row["min_pixels"], row["max_pixels"]) == (65_536, 16_777_216)
     preset = record["vendor_preset"]
     assert preset["repo"] == repo and preset["family"] == FAMILIES[repo]
     assert preset["prompt"] == A.QWEN_VENDOR_PROMPT and preset["max_pixels"] == 16_777_216
     assert record["sampling"]["presence_penalty"] == 1.5
+
+
+def test_the_raw_vendor_request_is_still_a_declared_choice():
+    _, body, record = _request("Qwen/Qwen3.8-27B", guard="none")
+    assert "max_tokens" not in body and "stream" not in body and record["max_tokens"] is None
+    assert record["max_tokens_basis"].startswith("omitted: no reply cap")
+    assert record["guard"] == {"name": "none"}
+    with pytest.raises(SystemExit, match="unknown guard"):
+        _request("Qwen/Qwen3.8-27B", guard="loose")
+
+
+def test_the_guard_cap_never_passes_the_room_the_prompt_leaves():
+    arm = A.ARMS["qwen-vendor"]
+    row = A.arm_row(arm, A.serving_row(arm.chair, arm.default_tier), "Qwen/Qwen3.8-27B")
+    unit = A.page_units(arm, _png(400, 300))[0]
+    body, record = A.build_request(
+        arm, unit, row=row, served_name="m", max_model_len=5_000, repo="Qwen/Qwen3.8-27B"
+    )
+    room = 5_000 - (record["image_tokens_estimate"] + len(A.QWEN_VENDOR_PROMPT) + 128)
+    assert body["max_tokens"] == room < 12_288
+
+
+def test_witness_arms_keep_their_own_bounds_unless_asked():
+    arm = A.ARMS["chandra"]
+    row = A.serving_row(arm.chair, arm.default_tier)
+    unit = {"unit": "page", "bounds": {}, "png": _png(4000, 6000)}
+    body, record = A.build_request(arm, unit, row=row, served_name="m", max_model_len=18_000)
+    assert "max_tokens" not in body and "stream" not in body and record["guard"]["name"] == "none"
+    body, record = A.build_request(
+        arm, unit, row=row, served_name="m", max_model_len=18_000, guard="perlector"
+    )
+    assert 0 < body["max_tokens"] <= 12_288 and body["stream"] is True
 
 
 def test_vendor_pixels_reach_the_server_and_the_estimate():
@@ -81,6 +120,7 @@ def test_the_plain_arm_is_unchanged():
     body, record = A.build_request(arm, unit, row=row, served_name="m", max_model_len=65_536)
     assert body["temperature"] == 0.0 and body["max_tokens"] == A.QWEN_BLIND_MAX_TOKENS
     assert "vendor_preset" not in record
+    assert record["max_tokens_basis"] == "declared-bound" and body["stream"] is True
 
 
 def test_an_unknown_repo_is_refused():
@@ -107,7 +147,9 @@ def test_one_page_end_to_end(tmp_path):
     request = record["units"][0]["request"]
     assert request["vendor_preset"]["family"] == "qwen3.5"
     assert request["sampling"]["chat_template_kwargs"] == {"enable_thinking": False}
-    assert request["sampling"]["top_k"] == 20 and request["max_tokens"] is None
+    assert request["sampling"]["top_k"] == 20 and request["max_tokens"] == 12_288
+    assert record["guard"] == "perlector" and record["stops"] == []
+    assert record["units"][0]["finish_reason"] == "stop" and record["units"][0]["stop"] is None
     argv_sent = record["server"]["argv"]
     pixels = json.loads(argv_sent[argv_sent.index("--mm-processor-kwargs") + 1])
     assert pixels["max_pixels"] == 16_777_216
@@ -131,3 +173,77 @@ def test_a_prompt_file_is_not_credited_to_the_cookbook():
     )  # fmt: skip
     assert record["vendor_preset"]["prompt"] == "Transcribe."
     assert record["vendor_preset"]["prompt_source"] == "--prompt-file"
+
+
+def _vendor_argv(pages, out, weights, prompt, *extra):
+    return [
+        "run", "--model", "qwen-vendor", "--label", "qv", "--repo", "Qwen/Qwen3.8-27B",
+        "--weights", str(weights), "--pages", str(pages), "--out", str(out),
+        "--port", str(_free_port()), "--max-num-seqs", "2", "--startup-timeout", "60",
+        "--vllm-cmd", sys.executable, str(FAKE), "--prompt-file", str(prompt), *extra,
+    ]  # fmt: skip
+
+
+def test_a_looping_page_is_stopped_by_the_perlector_loop_detector(tmp_path):
+    pages, out, weights = tmp_path / "pages", tmp_path / "cache", tmp_path / "w"
+    _pages(pages, 1)
+    weights.mkdir()
+    (weights / "config.json").write_text("{}")
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("LOOP: transcribe")
+    assert W.main(_vendor_argv(pages, out, weights, prompt)) == 0
+    record = json.loads((out / "qv" / "p000.json").read_text())
+    unit = record["units"][0]
+    assert unit["stop"] == W.REPETITION_LOOP and unit["loop_stop"]["kind"] == "line"
+    assert unit["loop_stop"]["repeats"] == 30 and unit["text"].count("Le dix mai") < 100
+    assert record["loop"] and record["stops"] == [W.REPETITION_LOOP]
+    assert record["error"].startswith("repetition-loop: line")
+
+    # The raw vendor arm reads the same page to its end: no detector, no cap.
+    out2 = tmp_path / "raw"
+    assert W.main(_vendor_argv(pages, out2, weights, prompt, "--guard", "none")) == 0
+    raw = json.loads((out2 / "qv" / "p000.json").read_text())
+    assert raw["error"] is None and raw["units"][0]["text"].count("Le dix mai") == 1000
+    assert raw["units"][0]["request"]["guard"] == {"name": "none"}
+
+
+def test_a_request_past_its_timeout_is_recorded_as_a_timeout(tmp_path):
+    pages, out, weights = tmp_path / "pages", tmp_path / "cache", tmp_path / "w"
+    _pages(pages, 1)
+    weights.mkdir()
+    (weights / "config.json").write_text("{}")
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("HANG: transcribe")
+    argv = _vendor_argv(pages, out, weights, prompt, "--request-timeout", "1")
+    assert W.main(argv) == 0
+    unit = json.loads((out / "qv" / "p000.json").read_text())["units"][0]
+    assert unit["stop"] == W.REQUEST_TIMEOUT and unit["error"] == "request-timeout after 1 s"
+
+
+def test_a_page_stopped_by_a_loop_is_not_sent_again_at_the_same_settings(tmp_path):
+    pages, out, weights = tmp_path / "pages", tmp_path / "cache", tmp_path / "w"
+    _pages(pages, 2)
+    weights.mkdir()
+    (weights / "config.json").write_text("{}")
+    prompt = tmp_path / "prompt.txt"
+    prompt.write_text("LOOP: transcribe")
+    launches = tmp_path / "launches.txt"
+    env = {"FAKE_VLLM_LAUNCHES": str(launches)}
+    with pytest.MonkeyPatch.context() as patch:
+        for name, value in env.items():
+            patch.setenv(name, value)
+        assert W.main(_vendor_argv(pages, out, weights, prompt)) == 0
+        record = json.loads((out / "qv" / "p000.json").read_text())
+        assert record["failure"]["terminal"] and record["failure"]["reasons"] == ["repetition-loop"]
+        assert not W.cached_ok(out / "qv" / "p000.json") and W.settled(out / "qv" / "p000.json")
+
+        # Same settings: nothing is sent and no server is started.
+        assert W.main(_vendor_argv(pages, out, weights, prompt)) == 0
+        events = [json.loads(x) for x in (out / "events.jsonl").read_text().splitlines()]
+        assert [e["page"] for e in events if e["event"] == "page-not-retried"] == ["p000", "p001"]
+        assert len(launches.read_text().splitlines()) == 1
+
+        # Other settings (the raw vendor request): the page is sent again and read.
+        assert W.main(_vendor_argv(pages, out, weights, prompt, "--guard", "none")) == 0
+        assert W.cached_ok(out / "qv" / "p000.json")
+        assert len(launches.read_text().splitlines()) == 2

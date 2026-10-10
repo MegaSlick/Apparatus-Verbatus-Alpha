@@ -125,7 +125,7 @@ def test_waiting_event_fails_when_delivery_is_not_confirmed(notify_repo, status,
 
 
 @pytest.mark.full
-@pytest.mark.parametrize("event", ["milestone", "decision", "done"])
+@pytest.mark.parametrize("event", ["milestone", "decision", "done", "queue-done"])
 def test_every_event_reports_a_failed_delivery_honestly(notify_repo, event):
     script, env = notify_repo
     env["FAKE_STATUS"] = "503"
@@ -437,3 +437,10 @@ def test_the_client_bounds_the_script_with_its_timeout(monkeypatch):
     client.run(["sh"])
 
     assert seen["timeout"] == client.NOTIFY_TIMEOUT_SECONDS
+
+
+def test_a_finished_queue_is_not_a_finished_session(notify_repo):
+    script, env = notify_repo
+    assert run(script, env, "queue-done", "q: queue finished").returncode == 0
+    body = json.loads(Path(env["FAKE_BODY"]).read_text(encoding="utf-8"))
+    assert body["title"] == "Queue finished" and body["priority"] == 3

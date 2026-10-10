@@ -14,7 +14,7 @@ from typing import Callable, Final, Mapping, Sequence
 NOTIFY_SCRIPT: Final = Path(__file__).with_name("notify.sh")
 NOTIFY_TIMEOUT_SECONDS: Final = 10.0
 SUPPRESSED_MARKER: Final = "NOTIFY_SUPPRESSED"
-EVENTS: Final = frozenset({"milestone", "decision", "done"})
+EVENTS: Final = frozenset({"milestone", "decision", "done", "queue-done"})
 _DETAIL_LIMIT: Final = 160
 
 

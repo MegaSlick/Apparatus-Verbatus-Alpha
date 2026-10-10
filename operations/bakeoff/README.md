@@ -35,6 +35,18 @@ flight (`--concurrency`), so vLLM's queue is never empty.
 restricts what a reader may emit to Latin-script, digit and punctuation tokens of the
 served tokenizer (`allowed_tokens.py`); each request record names the set and its digest.
 
+**The guard (`--guard`).** Each arm declares one. `perlector`, the default for the reader
+arms (`qwen-blind`, `qwen-vendor`), gives them the Perlector's two guards: a request that
+would go out with no reply cap gets the Perlector's page cap (`page_max_tokens`, 12,288,
+in `[perlector_generation]` of `config/decoding.toml`, or the context the prompt leaves,
+whichever is smaller), and every reply is streamed through the Perlector's loop detector
+(`common/repetition_loop.py`: the same line 30 times, or the same block of 2 to 8 lines 10
+times, abandons it). `none`, the default for the witness arms, sends the vendor's request
+unchanged; pass `--guard none` to a reader arm for the raw vendor behaviour, or `--guard
+perlector` to a witness arm to guard it too. Each request record names its guard
+(`guard`), and each page record says which guard ran (`guard`) and why any request was cut
+short (`stops`: `repetition-loop` or `request-timeout`).
+
 ## What a cached page holds
 
 `<out>/<model>/<page stem>.json`: model, repo, revision, weights path, the server's
@@ -159,8 +171,22 @@ How it scores:
 `queue_runner.py` runs one pod's whole day from a manifest (`queue/example-*.toml`,
 schema `bakeoff-queue.v1`) and ends the pod itself, so no laptop has to notice when a job
 ends. Each arm runs a smoke of `smoke_pages` pages (`--limit N` appended), then the full
-run. A failed arm (one whose program cannot even start included) is retried once at the
-end, smoke first, then reported. Time boxes never kill work: an overrun is pinged once,
+run. A GPU `witness_run` arm loads its model once: its smoke runs with `--keep-server
+<out>/<arm>/server-handoff.json` and leaves its vLLM server up, and its full run, with
+`--adopt-server` on the same file, takes that server over when it is the same command
+and still answers (otherwise it stops it and starts its own). A kept server no run took
+over (a failed smoke, a hard stop, SIGTERM) is stopped by the queue. The native arms
+still load twice. A failed arm (one whose program cannot even start included) is retried once at the
+end, smoke first, then reported. Retries keep their lanes: GPU arms one at a time on the
+card, CPU arms beside them in the CPU lane, all at once, each with an equal part of the
+lane's whole `cpu_threads` (never less than its own; the command's `--threads` is
+rewritten), so a retried CPU arm no longer runs alone on its first share while the rest
+of the CPUs sit idle. A page that ran to the request timeout or was stopped by the loop
+detector is recorded as failed with its reason (`failure` in the page record,
+`failed_pages` in the arm's `finished_arms` entry and its end ping) and counts as settled:
+it never makes its arm "incomplete", and witness_run never sends it again under the same
+settings (same checkpoint and request records, `failure.settings_sha256`); changed
+settings, such as another `--guard`, send it again. Time boxes never kill work: an overrun is pinged once,
 and the `cut` rule only skips later arms (`overrun`, `behind-schedule`, `install-failed`;
 `never` always runs).
 
@@ -204,7 +230,12 @@ snapshot fetch it once. No repository is gated; no token is needed.
 older `witness_run fetch` and the native arms' `fetch` write into `<store>/hf/` outside
 the store's record; on a store, use `weights fetch` instead. `hard_stop_min`, off unless set, stops the arm in flight and ends
 the day early. `status.json` beside the cache is rewritten every 30 s; the queue's events
-join `events.jsonl`; each milestone pings the phone once.
+join `events.jsonl`; each milestone pings the phone once. The phone hears `Milestone` for
+the queue's own progress, including an arm the queue retries or reports itself (`arm
+failed: ...`); `Needs a decision` only when the queue cannot go on by itself (no pages,
+stopped by SIGTERM, a pod it could not or would not end); and `Queue finished` (the
+`queue-done` event, `operations/notify/README.md`) once at the end, which is not the end
+of the session.
 
 At the end it copies the cache to `sync_to` (`rsync -rt`), compares every file's sha256,
 writes `DONE.json` (digests and summary) to both, pings, and ends the pod: with a guard
@@ -217,7 +248,14 @@ that run) from the command line, so one manifest serves
 a network volume and the global-volume route (`RUNBOOK.md` 2.1), where the cache sits on
 the pod's own disk and the copy goes to object storage: there `rsync -rt` may be refused
 (no times, no rename), so the copy falls back to `rsync -r --inplace`, then to a plain
-Python copy, and the sha256 compare is what proves it either way.
+Python copy, and the sha256 compare is what proves it either way. With `--own-disk
+--keep-pod` the copy is still made but not read back on the pod: reading 35,408 small
+files back from a network disk outlasted the copy itself on 2026-10-09. `DONE.json` then
+carries the digests of the cache on the pod's own disk with `"verified": null` and
+`"verify": "at home, by fetch"`, and `fetch` from that disk checks every file against
+them before the session deletes the pod; the copy on the volume stays the unchecked
+safety net. Without `--keep-pod` the pod ends itself, so the copy is checked on the pod
+as before.
 SIGTERM stops every arm, pings and exits 143 without ending the pod. Arms never see
 `RUNPOD_API_KEY` or `NTFY_TOPIC`; `watch` warns once when the status has not changed (or
 cannot be read) for 10 min by the Mac's own clock. `status.json` names the GPU lane's arm
@@ -249,8 +287,11 @@ The same Qwen readers as `qwen-blind`, sent the way Qwen documents a page readin
 Qwen3-VL OCR cookbook's plain-text instruction around the project's verbatim rules, no
 system prompt, the model card's non-thinking sampling (temperature 0.7, top_p 0.8,
 top_k 20, presence_penalty 1.5), thinking off, the checkpoint's own pixel bounds
-(65,536 to 16,777,216 pixels, served through `--mm-processor-kwargs`), and no reply cap
-(`max_tokens` left out, so vLLM answers up to the context's remainder). `--repo` picks
+(65,536 to 16,777,216 pixels, served through `--mm-processor-kwargs`). The vendor
+declares no reply cap; by default the arm runs under the Perlector's guard (above), so a
+looping page stops in seconds instead of holding the card to the 1,800 s request
+timeout, as one page did twice on 2026-10-09. `--guard none` sends no cap and runs no
+detector (`max_tokens` left out, vLLM answers up to the context's remainder). `--repo` picks
 the family preset (`arms.VENDOR_PRESETS`; Qwen3.8 and Qwen3.5 today) and every request
 record carries it under `vendor_preset`. A page can reach about 16,400 image tokens, so
 pass `--max-num-batched-tokens 16384`:

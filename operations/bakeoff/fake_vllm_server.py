@@ -3,16 +3,20 @@
 Run as `python fake_vllm_server.py serve <weights> ... --port N --served-model-name M`.
 It answers `/v1/models` and `/v1/chat/completions` in vLLM's OpenAI shape, choosing a
 synthetic answer by the prompt it is sent, and refuses a request without an image (except
-a Perlector page prompt that says no image is shown). `"stream": true` is answered as
-server-sent events, a few characters a chunk, with a final usage chunk and `[DONE]`. A
-Perlector prompt containing `LOOP-TEST` is answered with one line over and over, so a
-client's repetition-loop guard can be tested.
+a Perlector page prompt that says no image is shown). A request with `"stream": true` is
+answered as server-sent events, one line per chunk, with a final usage chunk and `[DONE]`.
+A Perlector prompt containing `LOOP-TEST` is answered with one line over and over; for
+other prompts, one containing `LOOP` repeats one line a thousand times and one containing
+`HANG` waits 30 s before answering. With `FAKE_VLLM_LAUNCHES` set, each start appends a
+line to that file, so a test can count model loads.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PERLECTOR_ANSWER = {
@@ -50,6 +54,10 @@ def answer(body: dict) -> str:
         if "LOOP-TEST" in joined:
             return '{"acts": [{"n": 1, "kind": "act", "text": "' + "same row\\n" * 200
         return json.dumps(PERLECTOR_ANSWER, ensure_ascii=False)
+    if "LOOP" in joined:
+        return "Le dix mai\n" * 1000
+    if "HANG" in joined:
+        time.sleep(30)
     if joined.startswith("OCR this image"):
         return '<div data-bbox="10 10 990 990" data-label="Text"><p>Le dix mai</p></div>'
     if "Please output the layout information" in joined:  # dots.mocr's layout prompt
@@ -83,20 +91,24 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        chunks = [content[i : i + 7] for i in range(0, len(content), 7)]
-        events = [{"choices": [{"index": 0, "delta": {"content": c}}]} for c in chunks]
-        events.append({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
-        events.append(
-            {"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": len(chunks)}}
-        )
+        pieces = [line + "\n" for line in content.split("\n")]
+        pieces[-1] = pieces[-1][:-1]
+        chunks = [{"delta": {"content": piece}, "finish_reason": None} for piece in pieces]
+        chunks.append({"delta": {}, "finish_reason": "stop"})
         try:
-            for event in events:
-                payload = {"model": SERVED, "object": "chat.completion.chunk", **event}
-                self.wfile.write(b"data: " + json.dumps(payload).encode("utf-8") + b"\n\n")
+            for chunk in chunks:
+                event = {
+                    "model": SERVED,
+                    "object": "chat.completion.chunk",
+                    "choices": [{"index": 0, **chunk}],
+                }
+                self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
                 self.wfile.flush()
+            usage = {"prompt_tokens": 100, "completion_tokens": len(pieces), "total_tokens": 0}
+            self.wfile.write(f"data: {json.dumps({'choices': [], 'usage': usage})}\n\n".encode())
             self.wfile.write(b"data: [DONE]\n\n")
-        except (BrokenPipeError, ConnectionResetError):  # the client stopped reading
-            pass
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # the client abandoned the reply, as on a loop
 
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/v1/models":
@@ -135,4 +147,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if os.environ.get("FAKE_VLLM_LAUNCHES"):
+        with open(os.environ["FAKE_VLLM_LAUNCHES"], "a", encoding="utf-8") as launches:
+            launches.write(f"{os.getpid()}\n")
     ThreadingHTTPServer(("127.0.0.1", int(_flag("--port"))), Handler).serve_forever()
