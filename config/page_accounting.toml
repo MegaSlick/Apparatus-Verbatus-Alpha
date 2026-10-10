@@ -148,7 +148,7 @@ max_shared_share_bp = 5000
 max_unit_area_per_character_bp = 100
 
 [doubt]
-# PROVISIONAL and UNMEASURED: the lead decides both values. They stop a reading
+# PROVISIONAL and UNMEASURED. These values stop a reading
 # from passing quietly by marking everything doubtful. A reading's doubt share is
 # its doubtful or unread share: non-whitespace characters inside an uncertain
 # span, with each zero-width gap counted as one unread character
@@ -163,7 +163,7 @@ max_act_doubt_share_bp = 2000
 max_page_doubt_share_bp = 3000
 
 [flags]
-# Review flags (the lead's choice, 2026-10-09). A finding whose code is named here
+# Review flags. A finding whose code is named here
 # is measured and recorded exactly as a hold is, counted and reported by the
 # Recensor (`run-health/recensor-review-summary.json`) and carried with the
 # reading's text in the Armarium's flagged export (`flagged.jsonl`), but it holds
@@ -187,7 +187,7 @@ codes = [
 # still be a short unit for rule (e): a signature, initials or a lone surname, not
 # an index row or a one-line burial. A cited short unit read differently is
 # `witness-short-unit-not-read` (a dissent about a few letters); an uncited one,
-# or a longer one, keeps `witness-text-not-read`, which holds. On the 2026-10-09
-# run the units read differently were 1 to 15 characters. Starting value; to be
+# or a longer one, keeps `witness-text-not-read`, which holds. On one real run
+# the units read differently were 1 to 15 characters. Starting value; to be
 # measured on the proof run.
 short_unit_characters = 15

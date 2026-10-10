@@ -6,8 +6,8 @@ state = "configured"
 currency = "USD"
 
 # Decimal strings, never TOML numbers: a float does not keep money exact.
-# $3.00 is the lead's hourly ceiling (2026-10-09): it admits the RTX PRO 6000 ($2.49/h on
-# 2026-10-08) beside a volume. Approved, not a target: do not be wasteful. Two hours at
+# $3.00 is the hourly ceiling: it admits the RTX PRO 6000 (about $2.49/h) beside a
+# volume. A ceiling, not a target. Two hours at
 # the ceiling is $6.00, the estimate ceiling and the budget's soft maximum cost below.
 max_hourly_usd = "3.00"
 max_estimated_metered_cost_usd = "6.00"
@@ -25,9 +25,9 @@ shutdown_deadline_seconds = 900
 # The verifier's accepted maximum; not a measured RunPod value.
 billing_cutoff_margin_seconds = 3600
 
-# The lead's switches, both off. pod_budget = "on" arms the budget below: the guard's
+# Two switches, both off. pod_budget = "on" arms the budget below: the guard's
 # deadline at the soft maximum and the backstop at the hard maximum. Off, a pod gets no
-# deadline unless the lead gives one hours, and the four maximums bind nothing.
+# deadline unless one is given in hours, and the four maximums bind nothing.
 # ladder_delete = "on" lets the guard delete a pod idle for two hours, once its run tree
 # is backed up; off, the guard only warns.
 pod_budget = "off"
@@ -36,7 +36,7 @@ ladder_delete = "off"
 # A pod's budget when pod_budget = "on": soft and hard maximums in time from creation and
 # in metered cost, whichever is reached first. The guard's deadline sits at the soft
 # maximum, so hard_lifetime_seconds and max_estimated_metered_cost_usd may not pass it.
-# From the soft to the hard maximum is an extension only the lead makes.
+# Going from the soft to the hard maximum is a manual extension.
 soft_max_seconds = 7200
 soft_max_cost_usd = "6.00"
 hard_max_seconds = 10800
