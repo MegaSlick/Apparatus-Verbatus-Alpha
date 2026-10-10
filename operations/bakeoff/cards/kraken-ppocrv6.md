@@ -7,7 +7,7 @@ synthetic page, on the CPU; the Mac install and the GPU path are untested)
   `10.5281/zenodo.21788409`), published 2026-08-04, by Benjamin Kiessling (Inria).
 - File: `medium.safetensors`, 63,779,644 bytes (64 MB), Zenodo MD5
   `e3411a453ce3b9e9efae3f8631d85762`, SHA-256
-  `15313b51ace64cbfa81f8f6ef25ad64f04e5a6fb7f7823e67b107527bc081ac9` (measured here).
+  `15313b51ace64cbfa81f8f6ef25ad64f04e5a6fb7f7823e67b107527bc081ac9` (measured).
   The arm's `revision` field records `medium.safetensors@sha256:<that digest>`.
 - Licence: Apache-2.0 (Zenodo metadata and the README front matter): use, modify and
   redistribute, with notice.
@@ -95,6 +95,6 @@ Real register pages; the Mac (arm64) install; the GPU path. The Mac runs first:
   or `... run --lines surya --lines-dir SURYA_DOCS ...`.
 
 ## Sources
-- https://zenodo.org/api/records/21788410 and its `README.md` (read 2026-10-08)
+- https://zenodo.org/api/records/21788410 and its `README.md`
 - kraken 7.1.1 wheel from PyPI: `kraken/kraken.py`, `kraken/tasks/recognition.py`,
   `kraken/tasks/segmentation.py`, `kraken/configs/base.py`, `kraken/templates/alto`

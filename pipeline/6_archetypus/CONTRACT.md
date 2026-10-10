@@ -1,4 +1,4 @@
-# Archetypus — contract
+# Archetypus: contract
 
 The Archetypus is the only stage that calls one machine reading established. It is not
 a correction, a witness consensus or a truth claim. For each counted reading whose
@@ -16,20 +16,12 @@ reading.
 
 ## Stage-completion seal
 
-Before this producer's final manifest it publishes one `decode-environment` and
-one `stage-seal`, or reuses both on a byte-identical retry. The seal witnesses
-this pass's disk inventory and blob contents, and binds the exact decode-environment
-bytes, run `config_digest` and `register_digest`, and `(kind, outcome)` census. An exit
-held after publishing stage evidence seals it (holds remain in its census); a
-pass that never reaches its seal does not seal, whether it was held or refused
-before publishing stage evidence or closed fatally after publishing it, so the
-successor correctly refuses the missing boundary.
-
-Seals are compared as the set the stored inventory names, on both sides of the
-boundary: the producer refuses to re-seal, and the successor refuses to read,
-when any named seal is no longer on disk. Ordinals are the contiguous run 1..N,
-so removing the latest leaves a prefix that still looks whole, and the earlier
-statement would then answer for a boundary it never witnessed.
+Before its final manifest the stage publishes one `decode-environment` and one `stage-seal`
+(or reuses both on a byte-identical retry), binding the pass's disk inventory and blob
+contents, the decode-environment bytes, the run's `config_digest` and `register_digest`, and
+the `(kind, outcome)` census. A held exit after publishing evidence seals it; a pass that never
+reaches its seal does not, so the successor refuses the missing boundary. Seals are compared as
+the set the stored inventory names; a missing named seal refuses on both sides.
 
 ## Input boundary
 

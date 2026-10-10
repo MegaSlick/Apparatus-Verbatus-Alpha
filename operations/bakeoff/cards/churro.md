@@ -63,7 +63,7 @@ User turn: the image alone. (The paper harness class `ocr/systems/finetuned_ocr.
 
 - VRAM: weights 7.5 GB; fits a 24 GB card (the repository's 24 GB serving row). At `--gpu-memory-utilization 0.9` the rest goes to KV cache.
 - CPU: image preparation per page (PIL), light.
-- Seconds per page: about 5-8 s/page throughput at concurrency 64 and about 2 min median latency, by the first A40 run of our `churro` arm (2026-10-08). The native arm's 20,000-token context caps a looping page at roughly 15,000 to 19,000 output tokens instead of 25,000, so its tail should be shorter.
+- Seconds per page: about 5-8 s/page throughput at concurrency 64 and about 2 min median latency, measured on an A40 with our `churro` arm. The native arm's 20,000-token context caps a looping page at roughly 15,000 to 19,000 output tokens instead of 25,000, so its tail should be shorter.
 
 ## Known failure modes
 
