@@ -107,14 +107,15 @@ CHANDRA_BODY = CHANDRA_PAGE_ONE
 # for produces. It is retained and refused by name (`no-layout-blocks`), never
 # read.
 CHANDRA_UNRECOGNIZED_BODY = "A real Chandra markdown body, with no layout block in it."
-# Churro's retired `<output>` envelope. The chair is no longer asked for it and
-# the vendor grammar reads it as retained history, with a finding that says so;
-# most of this module scripts it because the fixture's declared rows carry this
-# envelope.
+# Churro's answers in its `HistoricalDocument` grammar, one `Line` per line.
 CHURRO_PAGE_ONE = (
-    "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+    "<HistoricalDocument><Page><Body><Line>SYNTHETIC ACT ONE alpha beta</Line>"
+    "<Line>SYNTHETIC ACT TWO delta epsiIon zeta eta</Line></Body></Page></HistoricalDocument>"
 )
-CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+CHURRO_PAGE_TWO = (
+    "<HistoricalDocument><Page><Body><Line>SYNTHETIC ACT TWO delta epsiIon zeta eta</Line>"
+    "</Body></Page></HistoricalDocument>"
+)
 # Churro's answer in the vendor's own `HistoricalDocument` grammar -- the shape
 # `churro.prompt` actually asks for. It carries no geometry, because the grammar
 # has no coordinate vocabulary anywhere, which is why this chair's `observed` is
@@ -2226,29 +2227,9 @@ def test_a_served_churro_reads_the_vendor_grammar_and_reports_no_geometry(live_r
     assert [box["bounds_source"] for box in page_one["observed"]] == ["presented"]
     capture = page_one["native_capture"]
     assert capture["parse"]["parser"] == "xml"
-    # No `retired-output-envelope` here: this body is the grammar itself.
     assert capture["findings"] == []
     # And the vendor pin travels with the reading.
     assert capture["vendor_identity"]["repository"] == "github.com/stanford-oval/Churro"
-
-
-def test_the_retired_envelope_still_reads_and_says_it_is_history(live_run, tmp_path):
-    """A body in the `<output>` envelope is a shape this chair is no longer asked
-    for, and the capture carries `retired-output-envelope` so its arrival is
-    visible. It still parses and retains -- throwing a page of ink away over an
-    envelope would be exactly the loss this pipeline refuses -- and carries no
-    coordinates, so its only observation is the `presented` echo."""
-    run_root = fresh_tree(live_run, tmp_path)
-    world = LiveWorld(live_run, tmp_path)
-    assert run_attestatores(live_run, run_root, factory=world.factory) == 0
-
-    tree = RunTree(run_root, RUN_ID)
-    payload = page_records(tree)[(1, "attestator_3")]["payload"]
-    assert payload["payload"] == (
-        "SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta"
-    )
-    assert [box["bounds_source"] for box in payload["observed"]] == ["presented"]
-    assert payload["native_capture"]["findings"] == [{"kind": "retired-output-envelope"}]
 
 
 def _call_world(

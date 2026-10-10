@@ -306,7 +306,10 @@ def test_the_base_churro_response_per_page_matches_its_reading(skeleton):
         joined = "\n".join(
             TESTIMONY[act_key][row["chair"]] for act_key in page_acts[row["page_ordinal"]]
         )
-        assert row["raw_xml"] == f"<output>{joined}</output>"
+        lines = "".join(f"<Line>{line}</Line>" for line in joined.split("\n"))
+        assert row["raw_xml"] == (
+            f"<HistoricalDocument><Page><Body>{lines}</Body></Page></HistoricalDocument>"
+        )
         assert row["transport_stop_reason"] == "eos"
 
 
@@ -326,12 +329,12 @@ def test_the_churro_scenarios_declare_success_visible_truncation_and_parse_failu
     assert set(rows) == {(1, "attestator_3"), (2, "attestator_3")}
     header = "[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]"
     complete = rows[(1, "attestator_3")]
-    assert complete["raw_xml"].startswith(f"<output>{header}")
-    assert complete["raw_xml"].endswith("</output>")
+    assert complete["raw_xml"].startswith(f"<HistoricalDocument><Page><Body><Line>{header}</Line>")
+    assert complete["raw_xml"].endswith("</Line></Body></Page></HistoricalDocument>")
     assert complete["transport_stop_reason"] == "eos"
     assert header not in "".join(act["text"] for act in ACTS)
     malformed = rows[(2, "attestator_3")]
-    assert not malformed["raw_xml"].endswith("</output>")
+    assert not malformed["raw_xml"].endswith("</HistoricalDocument>")
     assert malformed["transport_stop_reason"] == "length"
     truncation_rows = {
         (row["page_ordinal"], row["chair"]): row
@@ -340,7 +343,7 @@ def test_the_churro_scenarios_declare_success_visible_truncation_and_parse_failu
     }
     assert set(truncation_rows) == {(1, "attestator_3"), (2, "attestator_3")}
     truncated = truncation_rows[(2, "attestator_3")]
-    assert truncated["raw_xml"].endswith("</output>")
+    assert truncated["raw_xml"].endswith("</HistoricalDocument>")
     assert truncated["transport_stop_reason"] == "length"
 
 

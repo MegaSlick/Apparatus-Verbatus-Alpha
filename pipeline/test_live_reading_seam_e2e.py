@@ -94,11 +94,10 @@ TAIL_FROM_RECENSOR = (
 # adapters parse: Chandra answers in its vendor's own layout grammar
 # (`common/chandra_layout.py`) -- top-level divs carrying a `data-bbox`
 # normalized 0-1000, which convert, on this fixture's 200x260 pages, to the
-# sealed proposal rectangles of `a1`, `a2` and a2's page-2 continuation; Churro
-# speaks its `<output>` envelope once per page; DAI answers plain text once per
-# record its detector found. Churro answers its own closed contract on page 1 and
-# the retired `<output>` envelope on page 2, so two of its three legal shapes
-# cross this seam.
+# sealed proposal rectangles of `a1`, `a2` and a2's page-2 continuation; DAI
+# answers plain text once per record its detector found. Churro answers its own
+# closed contract on page 1 and plain reading-order text on page 2, so both of
+# its legal shapes cross this seam.
 CHANDRA_PAGE_ONE = (
     '<div data-bbox="100 77 900 385" data-label="Text">'
     "SYNTHETIC ACT ONE alpha beta gamma</div>\n"
@@ -124,12 +123,10 @@ CHURRO_PAGE_ONE = (
     "<Line>SYNTHETIC ACT TWO delta epsilon zeta eta</Line>"
     "</Body></Page></HistoricalDocument>"
 )
-# Page 2 stays in the RETIRED `<output>` envelope, deliberately: it is a shape
-# this chair is no longer asked for, the grammar still reads it as retained
-# history, and the capture says so with `retired-output-envelope`. So this
-# module covers two of Churro's three legal shapes across its two pages,
-# exactly as it already does for Chandra's two forms.
-CHURRO_PAGE_TWO = "<output>SYNTHETIC ACT TWO delta epsilon zeta eta</output>"
+# Page 2 is plain reading-order text, Churro's other legal shape, so this module
+# covers both of Churro's shapes across its two pages, as it does Chandra's two
+# forms.
+CHURRO_PAGE_TWO = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 DAI_ACT_ONE = "SYNTHETIC ACT ONE alpha beta gamma"
 DAI_ACT_TWO = "SYNTHETIC ACT TWO delta epsilon zeta eta"
 DAI_CONTINUATION = "zeta eta"

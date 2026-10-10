@@ -171,20 +171,20 @@ format_capabilities = "provider supplied a non-object capability declaration"
 [[churro_page_response]]
 page_ordinal = 1
 chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+raw_xml = "<HistoricalDocument><Page><Body><Line>SYNTHETIC ACT ONE alpha beta</Line><Line>SYNTHETIC ACT TWO delta epsiIon zeta eta</Line></Body></Page></HistoricalDocument>"
 transport_stop_reason = "eos"
 
 [[churro_page_response]]
 page_ordinal = 2
 chair = "attestator_3"
-raw_xml = "<output>SYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+raw_xml = "<HistoricalDocument><Page><Body><Line>SYNTHETIC ACT TWO delta epsiIon zeta eta</Line></Body></Page></HistoricalDocument>"
 transport_stop_reason = "eos"
 
 [[churro_page_response]]
 scenario = "churro-native"
 page_ordinal = 1
 chair = "attestator_3"
-raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+raw_xml = "<HistoricalDocument><Page><Body><Line>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]</Line><Line>SYNTHETIC ACT ONE alpha beta</Line><Line>SYNTHETIC ACT TWO delta epsiIon zeta eta</Line></Body></Page></HistoricalDocument>"
 transport_stop_reason = "eos"
 
 [[churro_page_response]]
@@ -198,14 +198,14 @@ transport_stop_reason = "length"
 scenario = "churro-truncation"
 page_ordinal = 1
 chair = "attestator_3"
-raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT ONE alpha beta\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+raw_xml = "<HistoricalDocument><Page><Body><Line>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]</Line><Line>SYNTHETIC ACT ONE alpha beta</Line><Line>SYNTHETIC ACT TWO delta epsiIon zeta eta</Line></Body></Page></HistoricalDocument>"
 transport_stop_reason = "eos"
 
 [[churro_page_response]]
 scenario = "churro-truncation"
 page_ordinal = 2
 chair = "attestator_3"
-raw_xml = "<output>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]\nSYNTHETIC ACT TWO delta epsiIon zeta eta</output>"
+raw_xml = "<HistoricalDocument><Page><Body><Line>[FOLIO RUBRIC 7 -- page furniture, belongs to no entry]</Line><Line>SYNTHETIC ACT TWO delta epsiIon zeta eta</Line></Body></Page></HistoricalDocument>"
 transport_stop_reason = "length"
 
 [[dots_page_response]]

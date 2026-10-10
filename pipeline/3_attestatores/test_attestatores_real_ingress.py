@@ -360,9 +360,13 @@ def _scripts() -> dict[str, list[ScriptedAnswer]]:
         ],
         "attestator_3": [
             ScriptedAnswer(
-                content="<output>REAL ACT ONE\nREAL ACT TWO</output>", finish_reason="stop"
+                content="<HistoricalDocument><Page><Body><Line>REAL ACT ONE</Line><Line>REAL ACT TWO</Line></Body></Page></HistoricalDocument>",
+                finish_reason="stop",
             ),
-            ScriptedAnswer(content="<output>REAL ACT THREE</output>", finish_reason="stop"),
+            ScriptedAnswer(
+                content="<HistoricalDocument><Page><Body><Line>REAL ACT THREE</Line></Body></Page></HistoricalDocument>",
+                finish_reason="stop",
+            ),
         ],
     }
 

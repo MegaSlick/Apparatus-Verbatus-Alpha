@@ -870,7 +870,10 @@ def test_the_resolved_framing_is_written_onto_the_capture(tmp_path: Path):
 
     response, _, _ = _read_one(
         tmp_path,
-        script=ScriptedAnswer(content="<output>read</output>", finish_reason="stop"),
+        script=ScriptedAnswer(
+            content="<HistoricalDocument><Page><Body><Line>read</Line></Body></Page></HistoricalDocument>",
+            finish_reason="stop",
+        ),
     )
     adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
     attempt = live_witness.captured_page_attempt(
@@ -1718,7 +1721,11 @@ def test_a_live_record_says_which_kind_of_bytes_it_retained(tmp_path: Path):
 
 def test_captured_page_attempt_read_on_a_complete_stop(tmp_path: Path):
     response, _, blob_store = _read_one(
-        tmp_path, script=ScriptedAnswer(content="<output>page text</output>", finish_reason="stop")
+        tmp_path,
+        script=ScriptedAnswer(
+            content="<HistoricalDocument><Page><Body><Line>page text</Line></Body></Page></HistoricalDocument>",
+            finish_reason="stop",
+        ),
     )
     adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "page text"}})
 
@@ -1741,7 +1748,11 @@ def test_both_live_retention_call_sites_declare_the_served_posture(tmp_path: Pat
     live sites are pinned here, the whole page and the DAI record.
     """
     response, _, _ = _read_one(
-        tmp_path, script=ScriptedAnswer(content="<output>page text</output>", finish_reason="stop")
+        tmp_path,
+        script=ScriptedAnswer(
+            content="<HistoricalDocument><Page><Body><Line>page text</Line></Body></Page></HistoricalDocument>",
+            finish_reason="stop",
+        ),
     )
     page_adapter = _stub_adapter(retain_result={"parse": {"state": "parsed", "text": "page text"}})
     live_witness.captured_page_attempt(
@@ -1856,32 +1867,6 @@ def test_captured_page_attempt_real_churro_adapter_round_trip(tmp_path: Path):
     assert attempt.native_capture["parse"]["parser"] == "xml"
     assert attempt.native_capture["findings"] == []
     assert attempt.observation_payload == body.encode("utf-8")
-    assert blob_store.has(response.response_sha256)
-
-
-def test_captured_page_attempt_real_churro_adapter_still_reads_the_retired_envelope(
-    tmp_path: Path,
-):
-    """Retained history parses, and says on the record that it is history.
-
-    A bare `<output>` body is the framing this chair no longer sends. It still
-    reads -- throwing a page of ink away over an envelope would be exactly the
-    loss this pipeline refuses -- and the capture carries `retired-output-envelope` so a
-    shape nobody asked for is visible rather than silent.
-    """
-    response, _, blob_store = _read_one(
-        tmp_path,
-        script=ScriptedAnswer(content="<output>real churro text</output>", finish_reason="stop"),
-    )
-    adapter = witness_adapters.resolve_runnable_adapter("churro.v1")
-
-    attempt = live_witness.captured_page_attempt(
-        _Context(tree=_FakeTree()), 1, "attestator_2", "churro.v1", adapter, response
-    )
-
-    assert attempt.outcome == "read"
-    assert attempt.native_payload == "real churro text"
-    assert attempt.native_capture["findings"] == [{"kind": "retired-output-envelope"}]
     assert blob_store.has(response.response_sha256)
 
 

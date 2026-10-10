@@ -566,10 +566,12 @@ _PAGE_ACTS = {1: ("a1", "a2"), 2: ("a2",)}
 
 
 def churro_xml(text: str) -> str:
-    """Frame fixture text as Churro XML; it is not a measured model response."""
+    """Frame fixture text in Churro's `HistoricalDocument` grammar, one `Line` per line;
+    it is not a measured model response."""
     if "<" in text or ">" in text or "&" in text:
         raise ValueError("a declared Churro response text must not need XML escaping")
-    return f"<output>{text}</output>"
+    lines = "".join(f"<Line>{line}</Line>" for line in text.split("\n"))
+    return f"<HistoricalDocument><Page><Body>{lines}</Body></Page></HistoricalDocument>"
 
 
 def _joined_page_text(page_ordinal: int, chair: str) -> str:
