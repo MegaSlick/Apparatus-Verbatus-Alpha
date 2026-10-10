@@ -19,14 +19,17 @@ reading -- a reading of the neighbouring record is not a reading of this one.
 Rule (e) passes readings at 30% error; the proof asks more.
 
 A failure (lost or merged) is caught when a held finding of the page's
-accounting is located on it: names a placed region that overlaps it, carries a
-box that overlaps it, or names a unit cited by such a region. Two weaker
-catches are reported beside it and not credited: page-wide (a held finding
-that names no region, box or unit: an incomplete answer, unread ink, a
-measurement not taken) and unplaced-only (one that reaches the record only
-through an unplaced region, which may be anywhere). A failure with no located
-catch is uncaught, and a page with no accounting is `unchecked`, its own
-failure, never held and caught.
+accounting -- one whose code is among its `holds` -- is located on it: names a
+placed region that overlaps it, carries a box that overlaps it, or names a unit
+cited by such a region. Three weaker catches are reported beside it and not
+credited: page-wide (a held finding that names no region, box or unit: an
+incomplete answer, unread ink, a measurement not taken), unplaced-only (one that
+reaches the record only through an unplaced region, which may be anywhere) and
+flagged (a located review flag, which holds nothing, so the reading is
+delivered as read). A finding of a rule the page type switched off is neither
+held nor flagged and catches nothing. A failure with no located catch is
+uncaught, and a page with no accounting is `unchecked`, its own failure, never
+held and caught.
 
 Beside that: records under one witness unit or detector record that also
 covers another record, how often `merged-detection` fired on regions that
@@ -75,7 +78,6 @@ from common.contracts.errors import ContractError
 from common.contracts.stages import PERLECTOR
 from common.page_accounting import (
     DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH,
-    HOLD_CODES,
     MERGED_DETECTION,
     REASK_DUPLICATE,
     SEALED_CONFIG_NAME,
@@ -105,7 +107,7 @@ from .local_admission import load_local_admission_ledger, validate_local_admissi
 from .normalization import GRAPHEMIC_V1, within_text_bounds
 from .scoring import TEXT_OUT_OF_BOUNDS
 
-SCHEMA: Final = "exactly-once-report.v4"
+SCHEMA: Final = "exactly-once-report.v5"
 GATE_EXACTLY_ONCE_BP: Final = 9_500
 # A gold record's text is read when its character error rate against the best
 # holding act's reading is at most this (basis points): stricter than the
@@ -525,20 +527,31 @@ def _read_in(record: Mapping[str, Any], others: Sequence[Mapping[str, Any]], rea
     )
 
 
-def _findings(accounting: Mapping[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+def _findings(
+    accounting: Mapping[str, Any], codes: Collection[str]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Each rule's findings whose code is among `codes`, by rule name.
+
+    `codes` is the page accounting's own `holds` or `flags`, so a finding the
+    sealed policy makes a review flag, or one of a rule the page type switched
+    off, is never taken for a hold.
+    """
     return [
         (name, finding)
         for name, rule in sorted(accounting["rules"].items())
         for finding in rule["findings"]
-        if finding["code"] in HOLD_CODES
+        if finding["code"] in codes
     ]
 
 
 def _caught_by(
-    page: Mapping[str, Any], box: Mapping[str, int]
+    page: Mapping[str, Any], box: Mapping[str, int], listed: str = "holds"
 ) -> tuple[list[str], list[str], list[str]]:
     """The rules whose held findings are located on a gold record, hold the whole
     page, or reach it only through an unplaced region.
+
+    A held finding is one whose code is among the accounting's `holds`; with
+    `listed="flags"` the same is measured over its review flags.
 
     A finding is located on the record when it names a placed region
     overlapping it, carries a box overlapping it, or names a unit cited by such
@@ -555,7 +568,7 @@ def _caught_by(
     located: set[str] = set()
     page_wide: set[str] = set()
     unplaced_only: set[str] = set()
-    for name, finding in _findings(page["accounting"]):
+    for name, finding in _findings(page["accounting"], page["accounting"][listed]):
         ns = [finding["n"]] if "n" in finding else []
         for key in ("ns", "inside", "compared_with"):
             ns += finding.get(key, [])
@@ -619,6 +632,7 @@ def _score_records(
                     "caught_by": [],
                     "caught_page_wide_by": [],
                     "caught_unplaced_only_by": [],
+                    "flagged_by": [],
                     "merge_classes": [],
                 }
             )
@@ -673,6 +687,9 @@ def _score_records(
         located, page_wide, unplaced_only = (
             _caught_by(page, box) if outcome in FAILURES and not unchecked else ([], [], [])
         )
+        # A review flag located on the failure is reported, never credited: it
+        # holds nothing, so the reading is delivered as it was read.
+        flagged = _caught_by(page, box, "flags")[0] if outcome in FAILURES and not unchecked else []
         rows.append(
             {
                 "record_id": record["record_id"],
@@ -684,6 +701,7 @@ def _score_records(
                 "caught_by": located,
                 "caught_page_wide_by": page_wide,
                 "caught_unplaced_only_by": unplaced_only,
+                "flagged_by": flagged,
                 "merge_classes": merge_classes,
             }
         )
@@ -792,7 +810,7 @@ def exactly_once_report(
     sealed_page_sha256s: Collection[str],
     seconds_per_page: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
-    """The `exactly-once-report.v4` body for page records against gold records.
+    """The `exactly-once-report.v5` body for page records against gold records.
 
     `pages` as `load_page_records` returns them; `gold` as `gold_records`
     returns them; `sealed_policy_sha256` the page-accounting digest the run
@@ -964,6 +982,9 @@ def exactly_once_report(
                     ).items()
                 )
             ),
+            "failures_flagged_by_rule": dict(
+                sorted(Counter(rule for row in failures for rule in row["flagged_by"]).items())
+            ),
             "uncaught_record_ids": [row["record_id"] for row in uncaught],
             "by_merge_class": dict(sorted(merge_split.items())),
         },
@@ -1059,7 +1080,8 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"{records['by_act_regions']}; text: {records['by_text']}",
         f"failures caught (located) by rule: {records['failures_caught_by_rule']}; "
         f"not credited: page-wide {records['failures_caught_page_wide_by_rule']}, "
-        f"unplaced-only {records['failures_caught_unplaced_only_by_rule']}",
+        f"unplaced-only {records['failures_caught_unplaced_only_by_rule']}, "
+        f"flagged only {records['failures_flagged_by_rule']}",
         f"by merge class: {records['by_merge_class']}",
         f"scope: {report['scope']}",
         f"re-ask: {report['reask']['pages_reasked']} page(s), "

@@ -102,7 +102,10 @@ A `page-blank` row (`page-blank-unconfirmed`) and an entry of a page whose entri
 all `other` (`no-act-on-page-unconfirmed`) are confirmed only when the page
 accounting's rules (d), (e) and (f) pass. A page of `other` entries also needs rule
 (i) to pass, so no detector record lies in an `other` region; with no record detector
-(`not-applicable`) or none measured it stays held. A blank page needs rule (i) to pass
+(`not-applicable`) or none measured it stays held. A rule the page accounting records
+as not applying to the page's stated type (`page_type.applicability`, rule (i) on every
+typed page but handwritten or mixed register acts) confirms whatever its status, since
+its findings hold nothing there; an untyped page has no such rule. A blank page needs rule (i) to pass
 or not apply, no detected Surya line, and every witness that read the page to have
 retained blank text. DAI's census counts as a blank witness, but at least one blank
 witness must be one that read the page's text, so a page no witness read as blank text
