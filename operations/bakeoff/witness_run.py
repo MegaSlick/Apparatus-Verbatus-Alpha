@@ -118,9 +118,17 @@ def settled(path: Path) -> bool:
     return cached_ok(path) or terminal_failure(path) is not None
 
 
-def settings_digest(repo: str | None, revision: str | None, requests: list[dict]) -> str:
-    """What a page was sent under: the checkpoint and every request record."""
-    value = {"repo": repo, "revision": revision, "requests": requests}
+def settings_digest(
+    repo: str | None,
+    revision: str | None,
+    requests: list[dict],
+    serving: dict[str, Any] | None = None,
+) -> str:
+    """What a page was sent under: the checkpoint, every request record, and the serving
+    conditions a timeout depends on (`serving`: the request timeout, how many requests
+    were in flight, the server's batch and memory settings and engine options), so a page
+    that timed out is sent again once any of them changes."""
+    value = {"repo": repo, "revision": revision, "requests": requests, "serving": serving}
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8")
     ).hexdigest()
@@ -243,6 +251,27 @@ def _stop_error(stop: str, timeout: float, loop: dict[str, Any] | None) -> str:
     return f"{REPETITION_LOOP}: {loop['kind']} of {loop['block_lines']} line(s) x{loop['repeats']}"
 
 
+def _socket_of(response: Any) -> Any:
+    """The socket under an `http.client` response, or None."""
+    return getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+
+
+def read_chunk(response: Any, deadline: float, timeout: float) -> bytes:
+    """One read of a streamed reply that never waits past `deadline` (`time.monotonic`).
+
+    The socket's timeout is the time left, at most `timeout`, so a reply that trickles
+    in or stalls near the end is cut at the deadline, not one socket timeout after it;
+    `TimeoutError` when no time is left.
+    """
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("the request's total deadline passed")
+    sock = _socket_of(response)
+    if sock is not None:
+        sock.settimeout(min(timeout, left))
+    return response.read1(1 << 16) if hasattr(response, "read1") else response.read(1 << 16)
+
+
 def _decoded(raw: bytes) -> tuple[str | None, str | None]:
     try:
         return raw.decode("utf-8"), None
@@ -311,7 +340,7 @@ def _post_stream(
         with urllib.request.urlopen(request, timeout=timeout) as response:
             status = response.status
             while stop is None and not ended:
-                chunk = response.read1(1 << 16)
+                chunk = read_chunk(response, deadline, timeout)
                 if not chunk:
                     break
                 raw += chunk
@@ -500,7 +529,9 @@ class ModelJob:
                 for unit in A.page_units(self.arm, png, records)
             ]
             failure = terminal_failure(cached)
-            digest = settings_digest(self.repo, self.revision, [r for _, r in requests])
+            digest = settings_digest(
+                self.repo, self.revision, [r for _, r in requests], self.serving_settings()
+            )
             if failure is not None and failure.get("settings_sha256") == digest:
                 event(
                     self.args.out,
@@ -668,9 +699,26 @@ class ModelJob:
         return {
             "terminal": True,
             "reasons": sorted({u["stop"] for u in failed}),
+            "settings": self.serving_settings(),
             "settings_sha256": settings_digest(
-                self.repo, self.revision, [u["request"] for u in units]
+                self.repo, self.revision, [u["request"] for u in units], self.serving_settings()
             ),
+        }
+
+    def serving_settings(self) -> dict[str, Any]:
+        """The serving conditions a timeout depends on, beside the requests themselves."""
+        return {
+            "request_timeout": self.args.request_timeout,
+            "concurrency": self.args.concurrency or 2 * self.args.max_num_seqs,
+            "max_num_seqs": self.args.max_num_seqs,
+            "max_model_len": self.max_model_len,
+            "max_num_batched_tokens": self.args.max_num_batched_tokens
+            or self.row.get("max_num_batched_tokens"),
+            "gpu_memory_utilization": self.args.gpu_memory_utilization,
+            "recipe": self.recipe,
+            "engine": {
+                k: self.row.get(k) for k in ("quantization", "kv_cache_dtype", "speculative_config")
+            },
         }
 
 
