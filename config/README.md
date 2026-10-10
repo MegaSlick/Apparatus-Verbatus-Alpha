@@ -15,6 +15,7 @@ The knobs. One question per file, each answerable without reading code.
 | `pod_placement.toml` | planning-only GPU resource tiers, dtype floors, and the reviewed price sheet for the cards this project rents |
 | `serving_recipes.toml` | the default serving catalogue: fixture rows only, used unless `--serving-recipes-config` selects another file |
 | `serving_recipes_real.toml` | locked but unproven vLLM profiles for the real chairs, the CPU rows of the Designator's two detectors (the record detector in-process, Surya as a subprocess), and explicit `unsupported` rows where no engine fits; selected with `--models-config config/models-real.toml --serving-recipes-config config/serving_recipes_real.toml` |
+| `serving_recipes_real_variants.toml` | unproven alternative vLLM shapes for a real chair that no roster selects yet (the Perlector on the official FP8 checkpoint, with MTP speculation or an FP8 KV cache, and on NVIDIA's mixed NVFP4/FP8 checkpoint for Blackwell cards); read by recipe name (the bake-off's `--recipe`), never as a run catalogue |
 | `formats.toml` | which Armarium export projections are written, whether verified pixels are embedded, and whether rows carry the run's lot |
 | `perlector_protocol.toml` | what one whole-page reading is shown (`[feed]`), the page render's edges (`[page_context]`), and the truncation instrument's length floor and legibility gate (`[truncation]`) |
 | `alignment.toml` | the step budget of the Perlector's dissent comparisons |
@@ -142,6 +143,15 @@ tier and a reason, and the serving manager refuses to launch one. Every row in
 `operations/serving/config.py::verify_recipes_cover_chairs` reconciles a catalogue with
 its roster and `pod_placement.toml` offline, so a chair, recipe or tier nothing could
 resolve fails in the test suite rather than on a pod.
+
+A `vllm` row may add three engine options, each absent unless stated and each limited to
+reviewed values: `quantization` (`"fp8"`, or `"modelopt_mixed"` for a ModelOpt
+mixed-precision checkpoint; the verified snapshot's `config.json` must declare the method
+vLLM maps that name from: `quant_method` `fp8`, or `modelopt` with `quant_algo`
+`MIXED_PRECISION`), `kv_cache_dtype` (`"fp8"`) and `speculative_config` (a table of
+`method = "mtp"` and `num_speculative_tokens`, 1 to 8). They follow every other flag on
+the command line, so a row without them launches exactly as before, and they count as
+launch fields for a shared service.
 
 `pod_placement.toml`'s `pixel_cap` caps a longest edge in pixels, while a serving
 profile's `max_pixels` is a total pixel count passed to vLLM; the two are never compared
