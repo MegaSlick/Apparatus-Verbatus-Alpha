@@ -14,9 +14,11 @@
 # weight_pins.json `qwen3.8-27b-nvfp4`). They come after the bf16 repeat so that, if the day
 # runs late, the FP8 arms and the noise floor are kept and NVFP4 is what is cut.
 #
-# When the fed-witness arm (`qwen-fed`, the Perlector's own prompt with witnesses) lands, the
-# same arms run it by changing `--model qwen-vendor` to `--model qwen-fed`; `--recipe` and the
-# weights stay as written.
+# The fed-witness arm (`qwen-fed`, the Perlector's own prompt with witnesses) is its own
+# module, not a witness_run model: `operations.bakeoff.fed_arm run --run-tree <cold73 tree>
+# --label ... --model-name ... --weights <the same snapshot> --recipe <the same row>
+# --revision <the same pin>`. Its cache refuses a label reused under another checkpoint,
+# recipe, seed, token cap or run tree, and it refuses a quantized row on bf16 weights.
 schema = "bakeoff-queue.v1"
 name = "perlector-fp8-96gb"
 pages = "/workspace/private/bakeoff-pages"

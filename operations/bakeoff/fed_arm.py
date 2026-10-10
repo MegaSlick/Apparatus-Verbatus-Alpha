@@ -7,13 +7,20 @@
 A sealed run tree already holds everything a Perlector page reading was shown: the
 `page-feed` record of every page (each witness's units as the reader saw them, Surya's
 lines and blocks, the switches) and the page render it sent (`4_perlector/blobs/`).
+A pipeline run tree (one with `run.json`) is used only after its Exemplar and
+Perlector stage seals verify (`verify_seals`), and every reference followed -- a
+reading's feed, its call record, the render -- is checked against its recorded digest.
 `prompts` rebuilds every page's prompt with `common.page_prompt.build_page_prompt` and
 checks it against the digests the run recorded (`prompt.rendered_sha256`,
-`instruction_sha256`, `builder_sha256`), and rebuilds the whole request body with
+`instruction_sha256`; `builder_sha256` is reported apart), rebuilds the request's images
+as stage 4 sends them (the render, then the overlay when the feed draws one), checks
+them and the reading's `request_digest`, and rebuilds the whole request body with
 `operations.serving.http.request_body` and checks it against the request digest of the
-run's own call record, so what this arm sends is provably what the pipeline sent.
+run's own call record, so what this arm sends is provably what the pipeline sent. It
+also reports where this checkout's Perlector sampling or loop guard differs from the
+run's sealed `config/decoding.toml` (`run` refuses then, unless `--accept-new-config`).
 
-`run` sends that request -- the render first, then the rebuilt text, one user turn,
+`run` sends that request -- the render (and overlay) first, then the rebuilt text, one user turn,
 thinking off, `max_tokens` 12,288, streamed under the Perlector's sealed repetition-loop
 guard (`common.repetition_loop`) -- to whatever model a vLLM server serves under
 `--model-name`: the base, a LoRA adapter's name or a merged checkpoint. Sampling is
@@ -43,11 +50,17 @@ instruction stay what the pipeline would build for that feed:
   count copied planted errors. The other feed variants apply on top of it.
 
 Each page is cached at `<out>/<label>/<page stem>.json` (schema `bakeoff-fed-page.v1`):
-the variant, the feed as shown, the prompt evidence and whether it matches the run's,
-the request digest, the reply's content, finish reason, usage, any loop stop, the
-grammar's parse (`common.page_answer`) and the reading's text. A page cached without an
-error is skipped next time; a label already holding another variant or model is refused.
-The streamed reply's raw bytes sit beside it as `<page stem>.sse.gz`.
+the setup (`setup_of`: the run tree by content, served name, `--repo`/`--revision`/
+`--recipe` of the checkpoint behind it, sampling, seed, token cap, stream mode, loop
+guard, variant, decoding digest, the page's mutation identity), the feed as shown, the
+prompt evidence and whether it matches the run's, the request digest and image digests,
+the reply's content, finish reason, usage, any loop stop, the grammar's parse
+(`common.page_answer`) and the reading's text. A label holds one setup: a page cached
+under another, or whose request bytes now differ, is refused, never mixed in. A page
+cached without an error is skipped next time; one that ran into the request timeout
+(cut at a real total deadline) is a terminal failure, not resent at the same request,
+timeout and concurrency. The streamed reply's raw bytes sit beside it as
+`<page stem>.sse.gz`.
 
 Scoring: `operations/bakeoff/fed_score.py`. An experiment tool outside the pipeline's
 custody: it publishes nothing into the run tree and reads it only.
@@ -92,6 +105,10 @@ def _payload(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text("utf-8"))["payload"]
 
 
+def _sha(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
 @dataclass
 class Page:
     ordinal: int
@@ -105,43 +122,149 @@ class Page:
 class RunTree:
     root: Path
     pages: dict[int, Page] = field(default_factory=dict)
+    # What the tree is, by content (so a copy at another path is the same tree):
+    # run id, run.json's digest, the digest of every feed and page record, and
+    # whether its stage seals were verified (`identity()`).
+    sealed: bool = False
+    run_id: str | None = None
+    run_sha256: str | None = None
+    records_sha256: str | None = None
+    decoding_sha256: str | None = None  # the run's sealed config/decoding.toml digest
 
     def blob(self, relative: str) -> bytes:
         return (self.root / relative).read_bytes()
 
+    def verified_blob(self, ref: dict[str, Any], what: str) -> bytes:
+        """`ref`'s bytes, refused unless they match its recorded sha256."""
+        data = self.blob(ref["relative_path"])
+        if not isinstance(ref.get("sha256"), str) or _sha(data) != ref["sha256"]:
+            raise SystemExit(
+                f"{self.root}: {what} {ref['relative_path']} does not match its recorded digest"
+            )
+        return data
+
+    def render(self, page: Page) -> bytes | None:
+        """The page render the feed records, digest-checked."""
+        render = page.feed["page_render"]
+        if render is None:
+            return None
+        ref = {"relative_path": render["image_path"], "sha256": render["image_sha256"]}
+        return self.verified_blob(ref, f"page {page.stem}'s render")
+
     def by_stem(self) -> dict[str, Page]:
         return {p.stem: p for p in self.pages.values()}
 
+    def identity(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "run_sha256": self.run_sha256,
+            "records_sha256": self.records_sha256,
+            "sealed": self.sealed,
+        }
 
-def load_run_tree(root: Path) -> RunTree:
-    """Every page's feed, stem, first reading and call record from a sealed run tree."""
+
+# The stage seals a fed page reads under, as (producer, the reader that proves it):
+# the Exemplar's page records (the stems) and the Perlector's feeds, renders,
+# readings and call records.
+SEALS = (("exemplar", "ink-map"), ("perlector", "recensor"))
+
+
+def is_real_run(root: Path) -> bool:
+    """A pipeline run tree (it has the run authority, `run.json`), whose seals are proven
+    before use; a synthetic test tree has none, and its pages are cached as unsealed."""
+    return (Path(root) / "run.json").is_file()
+
+
+def verify_seals(root: Path) -> None:
+    """Prove the run's stage seals as the pipeline's own readers prove them, or refuse.
+
+    A seal names every artifact and blob its stage wrote by digest, so a feed,
+    render or call record changed or swapped after the run fails here.
+    """
+    from common.contracts.errors import ContractError
+    from common.runtree.store import RunTree as Store
+    from common.stage import verify_stage_seal
+
+    try:
+        store = Store(root.parent, root.name)
+        for producer, reader in SEALS:
+            verify_stage_seal(store, producer, reader)
+    except (ContractError, OSError, ValueError, KeyError) as error:
+        raise SystemExit(
+            f"{root}: the run tree's stage seals do not verify ({error}); a fed page is "
+            "sent only from a run whose stage seals prove it"
+        ) from error
+
+
+def load_run_tree(root: Path, *, sealed: bool = False) -> RunTree:
+    """Every page's feed, stem, first reading and call record from a run tree.
+
+    With `sealed`, the tree's Exemplar and Perlector stage seals are proven first
+    (`verify_seals`). Either way every reference followed is digest-checked (a
+    reading's feed, its call record), and each feed must name the page the
+    Exemplar's record of its ordinal names.
+    """
     root = Path(root)
-    stems = {}
+    if sealed:
+        verify_seals(root)
+    records = []
+    stems, page_ids = {}, {}
     for path in sorted((root / "1_exemplar/artifacts/page").glob("*.json")):
-        page = _payload(path)
+        data = path.read_bytes()
+        records.append((f"1_exemplar/artifacts/page/{path.name}", _sha(data)))
+        envelope = json.loads(data)
+        page = envelope["payload"]
         stems[page["ordinal"]] = Path(page["declared_path"]).stem
-    feeds: dict[str, dict[str, Any]] = {}
+        page_ids[page["ordinal"]] = envelope.get("subject_id")
+    feeds: dict[str, tuple[dict[str, Any], str]] = {}
     for path in sorted((root / "4_perlector/artifacts/page-feed").glob("*.json")):
-        feeds[f"4_perlector/artifacts/page-feed/{path.name}"] = _payload(path)
+        data = path.read_bytes()
+        relative = f"4_perlector/artifacts/page-feed/{path.name}"
+        records.append((relative, _sha(data)))
+        feeds[relative] = (json.loads(data)["payload"], _sha(data))
     if not feeds:
         raise SystemExit(f"no page-feed records under {root}/4_perlector/artifacts/page-feed")
-    tree = RunTree(root)
-    for feed in feeds.values():
+    tree = RunTree(root, sealed=sealed)
+    tree.records_sha256 = _sha(json.dumps(sorted(records)).encode())
+    run_json = root / "run.json"
+    if run_json.is_file():
+        data = run_json.read_bytes()
+        tree.run_sha256 = _sha(data)
+        authority = json.loads(data)
+        tree.run_id = authority.get("run_id")
+        tree.decoding_sha256 = (authority.get("sealed_config_digests") or {}).get("decoding")
+    tree.run_id = tree.run_id or root.name
+    for feed, _ in feeds.values():
         ordinal = feed["page_ordinal"]
         if ordinal in tree.pages:
             raise SystemExit(f"two page feeds for page {ordinal} in {root}")
+        if page_ids.get(ordinal) is not None and page_ids[ordinal] != feed["page_id"]:
+            raise SystemExit(
+                f"{root}: the feed for page {ordinal} names page {feed['page_id']}, "
+                f"the Exemplar's record names {page_ids[ordinal]}"
+            )
         tree.pages[ordinal] = Page(ordinal, stems.get(ordinal, f"page-{ordinal:04d}"), feed)
     for path in sorted((root / "4_perlector/artifacts/page-reading").glob("*.json")):
         reading = _payload(path)
         page = tree.pages.get(reading["page_ordinal"])
         if page is None or reading["attempt_ordinal"] != 1:
             continue
-        if feeds.get(reading["feed_ref"]["relative_path"]) is not page.feed:
+        ref = reading["feed_ref"]
+        found = feeds.get(ref["relative_path"])
+        if found is None or found[0] is not page.feed:
             continue
+        if ref.get("sha256") != found[1]:
+            raise SystemExit(
+                f"{root}: page {page.ordinal}'s reading names its feed with digest "
+                f"{ref.get('sha256')}, the feed on disk is {found[1]}"
+            )
+        if reading.get("page_id", page.feed["page_id"]) != page.feed["page_id"]:
+            raise SystemExit(f"{root}: page {page.ordinal}'s reading names another page")
         page.reading = reading
         call = reading.get("engine_call")
         if call:
-            page.call = json.loads(tree.blob(call["call_record_ref"]["relative_path"]))
+            data = tree.verified_blob(call["call_record_ref"], f"page {page.ordinal}'s call record")
+            page.call = json.loads(data)
     return tree
 
 
@@ -268,17 +391,52 @@ def witness_row_from_cache(
     return row
 
 
-def load_mutation(variant: Variant, stem: str) -> dict[str, Any] | None:
-    """The page's witness-mutation record under `variant.mutations`, or None."""
+# The feed fields a witness mutation never changes (it changes the witness rows and,
+# for a blinded feed, the regime): they must be the source feed's own, so a mutation
+# made from another run's or another page's feed is refused.
+MUTATION_FIXED = ("page_id", "page_ordinal", "page_size", "page_render", "surya", "feed_digest")
+
+
+def load_mutation(
+    variant: Variant, stem: str, source: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
+    """The page's witness-mutation record under `variant.mutations`, or None.
+
+    The record must be this page's and made from this feed: its page stem and
+    ordinal, its page digest (the render's), and the feed fields a mutation keeps
+    (`MUTATION_FIXED`, including the original `feed_digest`) are checked against
+    `source`, the run's sealed feed. Its file digest is kept as `_record_sha256`
+    (the mutation's identity in the cache).
+    """
     if not variant.mutations:
         return None
     path = Path(variant.mutations) / f"{stem}.json"
     if not path.is_file():
         raise SystemExit(f"--mutations {variant.mutations}: no record for page {stem!r}")
-    record = json.loads(path.read_text("utf-8"))
+    data = path.read_bytes()
+    record = json.loads(data)
     if record.get("schema") != "witness-mutation.v1":
         raise SystemExit(f"{path} is not a witness-mutation.v1 record")
-    return record
+    if source is not None:
+        render = source.get("page_render") or {}
+        expected_sha = (
+            render.get("image_sha256") or source.get("page_id") or str(source.get("page_ordinal"))
+        )  # mutations.page_sha's rule
+        problems = []
+        if record.get("page") != stem:
+            problems.append(f"page {record.get('page')!r}")
+        if record.get("page_ordinal") != source["page_ordinal"]:
+            problems.append(f"page ordinal {record.get('page_ordinal')}")
+        if record.get("page_sha") != expected_sha:
+            problems.append("page digest")
+        feed = record.get("feed") or {}
+        problems += [f"feed {k}" for k in MUTATION_FIXED if feed.get(k) != source.get(k)]
+        if problems:
+            raise SystemExit(
+                f"{path} was not made from this run's feed for page {stem}: "
+                f"{', '.join(problems)} differ"
+            )
+    return {**record, "_record_sha256": _sha(data)}
 
 
 def apply_variant(
@@ -294,6 +452,8 @@ def apply_variant(
     if not variant.feed_changed:
         return feed
     feed = copy.deepcopy(mutation["feed"] if mutation else feed)
+    if variant.image == "none":
+        feed["overlay"] = None  # drawn on the render, so gone with it
     rows = feed["witnesses"]
     labels = [r["witness_label"] for r in rows]
     unknown = [label for label in variant.drop if label not in labels]
@@ -330,22 +490,21 @@ def apply_variant(
     feed["witnesses"] = rows
     if variant.image == "none":
         feed["page_render"] = None
-        feed["switches"] = {**feed["switches"], "page_image": "off"}
+        feed["switches"] = {**feed["switches"], "page_image": "off", "page_overlay": "off"}
     return feed
 
 
 def page_image(tree: RunTree, page: Page, variant: Variant) -> bytes | None:
-    """The render this variant sends, or None."""
+    """The render this variant sends, or None (digest-checked against its feed)."""
     if variant.image == "none":
         return None
     if variant.image == "swap":
         ordinals = sorted(o for o, p in tree.pages.items() if p.feed["page_render"])
         other = ordinals[(ordinals.index(page.ordinal) + 1) % len(ordinals)]
-        return tree.blob(tree.pages[other].feed["page_render"]["image_path"])
-    render = page.feed["page_render"]
-    if render is None:
+        return tree.render(tree.pages[other])
+    png = tree.render(page)
+    if png is None:
         return None
-    png = tree.blob(render["image_path"])
     if variant.image == "clear":
         return png
     from PIL import Image, ImageFilter
@@ -361,21 +520,61 @@ def page_image(tree: RunTree, page: Page, variant: Variant) -> bytes | None:
     return out.getvalue()
 
 
+def request_images(
+    tree: RunTree, page: Page, feed: dict[str, Any], variant: Variant
+) -> tuple[list[bytes], dict[str, Any]]:
+    """(the images this variant sends, in the pipeline's order, the feed as shown).
+
+    As stage 4 sends them (`common.page_path.request_images`): the render, then the
+    overlay when the feed draws one. The run's own overlay is redrawn and checked
+    against its recorded digest (`page_overlay.overlay_image`); when the variant
+    changes the rows or the render, the overlay is drawn afresh from the shown feed
+    on the render as sent, and the shown feed's `overlay` record says so.
+    """
+    from common import page_overlay
+
+    render = page_image(tree, page, variant)
+    images = [] if render is None else [render]
+    if render is None or feed.get("overlay") is None:
+        return images, feed
+    if feed is page.feed and variant.image == "clear":
+        images.append(page_overlay.overlay_image(feed, tree.blob))
+        return images, feed
+    plan = page_overlay.overlay_plan(feed)
+    png = page_overlay.draw_page_overlay(render, plan)
+    feed = {
+        **feed,
+        "overlay": {
+            **plan,
+            "source_image_sha256": _sha(render),
+            "renderer_sha256": page_overlay.RENDERER_SHA256,
+            "image_sha256": _sha(png),
+        },
+    }
+    images.append(png)
+    return images, feed
+
+
 # --- the request --------------------------------------------------------------------
 
 
-def sealed_sampling() -> dict[str, int | float]:
-    from common.decoding import chair_decoding, load_decoding_policy
+def decoding_policy() -> tuple[dict[str, Any], str]:
+    """This checkout's sealed decoding policy (config/decoding.toml) and its digest."""
+    from common.decoding import load_decoding_policy
 
-    policy, _ = load_decoding_policy(A.ROOT / "config" / "decoding.toml")
-    return chair_decoding(policy, "perlector")
+    return load_decoding_policy(A.ROOT / "config" / "decoding.toml")
+
+
+def sealed_sampling() -> dict[str, int | float]:
+    from common.decoding import chair_decoding
+
+    return chair_decoding(decoding_policy()[0], "perlector")
 
 
 def loop_guard() -> dict[str, int]:
-    from common.decoding import load_decoding_policy, perlector_loop_guard
+    from common.decoding import perlector_loop_guard
 
-    policy, _ = load_decoding_policy(A.ROOT / "config" / "decoding.toml")
-    return perlector_loop_guard(policy)
+    return perlector_loop_guard(decoding_policy()[0])
 
 
 def sampling_for(name: str) -> dict[str, int | float]:
@@ -387,8 +586,50 @@ def sampling_for(name: str) -> dict[str, int | float]:
     raise SystemExit(f"unknown sampling {name!r}: greedy or sealed")
 
 
+def _wire(value: Any) -> Any:
+    """A call record's wire-decimal value as the number it sent."""
+    if isinstance(value, dict) and value.get("schema") == "wire-decimal.v1":
+        return float(value["decimal"])
+    return value
+
+
+def config_differences(tree: RunTree) -> list[str]:
+    """Where this checkout's Perlector sampling and loop guard differ from the run's.
+
+    The run's sealed `config/decoding.toml` digest (run.json `sealed_config_digests`)
+    against this checkout's, then each recorded call's sent sampling and loop guard
+    against what this checkout would send. Empty when they agree.
+    """
+    found = []
+    _, digest = decoding_policy()
+    if tree.decoding_sha256 is not None and tree.decoding_sha256 != digest:
+        found.append(
+            f"config/decoding.toml is {digest[:12]}, the run sealed {tree.decoding_sha256[:12]}"
+        )
+    sealed, guard = sealed_sampling(), loop_guard()
+    for ordinal in sorted(tree.pages):
+        call = tree.pages[ordinal].call
+        if not call:
+            continue
+        sent = {k: _wire(v) for k, v in (call.get("sampling_effective") or {}).items()}
+        if sent and sent != {k: float(v) if isinstance(v, float) else v for k, v in sealed.items()}:
+            found.append(f"page {ordinal}: the run sent sampling {sent}, this checkout {sealed}")
+        recorded = (call.get("stream") or {}).get("loop_guard")
+        if recorded is not None and recorded != guard:
+            found.append(f"page {ordinal}: the run's loop guard {recorded}, this checkout {guard}")
+    return found
+
+
+PROMPT_TEXT_FIELDS = ("serving_recipe", "rendered_sha256", "instruction_sha256")
+
+
 def prompt_check(feed: dict[str, Any]) -> dict[str, Any]:
-    """The rebuilt prompt's evidence beside the run's, field by field."""
+    """The rebuilt prompt's evidence beside the run's, field by field.
+
+    `identical`: every field, the builder's code digest included. `text_identical`:
+    the recipe, the rendered text and the instruction -- the bytes the model is sent
+    -- whatever else changed in the builder's module (a recipe alias, say).
+    """
     from common import page_prompt
 
     recipe = feed["prompt"]["serving_recipe"]
@@ -398,12 +639,13 @@ def prompt_check(feed: dict[str, Any]) -> dict[str, Any]:
         "rebuilt": rebuilt,
         "matches": {k: rebuilt[k] == sealed.get(k) for k in rebuilt},
         "identical": rebuilt == sealed,
+        "text_identical": all(rebuilt[k] == sealed.get(k) for k in PROMPT_TEXT_FIELDS),
     }
 
 
 def build_body(
     feed: dict[str, Any],
-    image: bytes | None,
+    images: list[bytes] | bytes | None,
     *,
     model_name: str,
     sampling: dict[str, int | float],
@@ -411,16 +653,21 @@ def build_body(
     max_tokens: int,
     stream: bool,
 ) -> tuple[bytes, str]:
-    """(the request body as the pipeline renders it, the prompt text)."""
+    """(the request body as the pipeline renders it, the prompt text).
+
+    `images` are the request's images in order (`request_images`: the render, then
+    the overlay); a single image or None is accepted as the render alone.
+    """
     from common import page_prompt
     from operations.serving.chat_request import image_content_blocks
     from operations.serving.http import request_body
 
+    if images is None:
+        images = []
+    elif isinstance(images, (bytes, bytearray)):
+        images = [bytes(images)]
     text = page_prompt.build_page_prompt(feed["prompt"]["serving_recipe"], feed)
-    content = [
-        *image_content_blocks([image] if image is not None else []),
-        {"type": "text", "text": text},
-    ]
+    content = [*image_content_blocks(list(images)), {"type": "text", "text": text}]
     payload = {
         "max_tokens": max_tokens,
         "chat_template_kwargs": {"enable_thinking": False},
@@ -437,44 +684,81 @@ def build_body(
     return body, text
 
 
+def request_check(tree: RunTree, page: Page) -> dict[str, Any]:
+    """The page's whole request rebuilt as the run sent it, against what the run recorded.
+
+    The images (render, then overlay) against the call record's `image_sha256s` and the
+    feed's own digests (`page_path.request_image_sha256s`); the reading's
+    `request_digest` (text and image digests, `page_path.request_digest`); and the
+    whole body -- served name, seed, token cap, sealed sampling, stream mode, every
+    image byte and the text -- against the call's `request_sha256`. `None` fields
+    where the run recorded nothing to compare.
+    """
+    from common import page_path
+
+    images, _ = request_images(tree, page, page.feed, Variant())
+    digests = [_sha(image) for image in images]
+    out: dict[str, Any] = {
+        "images": digests == page_path.request_image_sha256s(page.feed),
+        "reading_digest": None,
+        "call_images": None,
+        "request": None,
+    }
+    text = None
+    if page.reading is not None and page.reading.get("request_digest"):
+        from common import page_prompt
+
+        text = page_prompt.build_page_prompt(page.feed["prompt"]["serving_recipe"], page.feed)
+        out["reading_digest"] = (
+            page_path.request_digest(text, digests) == page.reading["request_digest"]
+        )
+    if page.call is not None:
+        sent = page.call["generation_sent"]
+        out["call_images"] = digests == page.call["image_sha256s"]
+        body, _ = build_body(
+            page.feed,
+            images,
+            model_name=page.call["served_model_id"],
+            sampling=sealed_sampling(),
+            seed=sent["seed"],
+            max_tokens=sent["max_tokens"],
+            stream=page.call.get("stream") is not None,
+        )
+        out["request"] = _sha(body) == page.call["request_sha256"]
+    out["identical"] = all(v is not False for v in out.values())
+    return out
+
+
 def verify_prompts(tree: RunTree) -> dict[str, Any]:
-    """Rebuild every page's prompt and request; compare with what the run recorded."""
-    sealed = sealed_sampling()
+    """Rebuild every page's prompt and whole request; compare with what the run recorded."""
     rows = []
     for ordinal in sorted(tree.pages):
         page = tree.pages[ordinal]
         check = prompt_check(page.feed)
-        row = {"page": ordinal, "stem": page.stem, **check["matches"], "prompt": check["identical"]}
-        row["request"] = None
-        if page.call is not None:
-            sent = page.call["generation_sent"]
-            image = (
-                tree.blob(page.feed["page_render"]["image_path"])
-                if page.feed["page_render"]
-                else None
-            )
-            images_ok = (
-                [hashlib.sha256(image).hexdigest()] == page.call["image_sha256s"]
-                if image
-                else not page.call["image_sha256s"]
-            )
-            body, _ = build_body(
-                page.feed,
-                image,
-                model_name=page.call["served_model_id"],
-                sampling=sealed,
-                seed=sent["seed"],
-                max_tokens=sent["max_tokens"],
-                stream=page.call.get("stream") is not None,
-            )
-            row["image"] = images_ok
-            row["request"] = hashlib.sha256(body).hexdigest() == page.call["request_sha256"]
+        row = {
+            "page": ordinal,
+            "stem": page.stem,
+            **check["matches"],
+            "prompt": check["text_identical"],
+            "builder": check["identical"],
+        }
+        request = request_check(tree, page)
+        row.update(
+            images=request["images"] and request["call_images"] is not False,
+            reading_digest=request["reading_digest"],
+            request=request["request"],
+        )
         rows.append(row)
     return {
         "pages": len(rows),
         "prompts_identical": sum(r["prompt"] for r in rows),
+        "builder_identical": sum(r["builder"] for r in rows),
+        "images_identical": sum(r["images"] for r in rows),
+        "reading_digests_identical": sum(bool(r["reading_digest"]) for r in rows),
+        "reading_digests_checked": sum(r["reading_digest"] is not None for r in rows),
         "requests_checked": sum(r["request"] is not None for r in rows),
         "requests_identical": sum(bool(r["request"]) for r in rows),
+        "config": config_differences(tree),
         "rows": rows,
     }
 
@@ -483,7 +767,8 @@ def verify_prompts(tree: RunTree) -> dict[str, Any]:
 
 
 def _stream(url: str, body: bytes, timeout: float, guard: dict[str, int]) -> dict[str, Any]:
-    """POST a streamed request; stop reading at the first repetition loop."""
+    """POST a streamed request; stop reading at the first repetition loop, or when
+    `timeout` seconds have passed in all (`W.read_chunk`: never one socket wait past it)."""
     from common.repetition_loop import LoopScanner
     from operations.serving.http import SSE_DONE, sse_data, sse_events, stream_chunk_content
 
@@ -491,8 +776,9 @@ def _stream(url: str, body: bytes, timeout: float, guard: dict[str, int]) -> dic
         url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"}
     )
     started = time.monotonic()
+    deadline = started + timeout
     raw = bytearray()
-    out: dict[str, Any] = {"http_status": None, "error": None, "loop_stop": None}
+    out: dict[str, Any] = {"http_status": None, "error": None, "loop_stop": None, "stop": None}
     content: list[str] = []
     finish, usage, pending = None, None, b""
     scanner = LoopScanner(guard)
@@ -500,9 +786,7 @@ def _stream(url: str, body: bytes, timeout: float, guard: dict[str, int]) -> dic
         with urllib.request.urlopen(request, timeout=timeout) as response:
             out["http_status"] = response.status
             while True:
-                chunk = (
-                    response.read1(65536) if hasattr(response, "read1") else response.read(65536)
-                )
+                chunk = W.read_chunk(response, deadline, timeout)
                 if not chunk:
                     break
                 raw.extend(chunk)
@@ -532,11 +816,16 @@ def _stream(url: str, body: bytes, timeout: float, guard: dict[str, int]) -> dic
                 if stop:
                     out["loop_stop"] = scanner.finding
                     break
+                if time.monotonic() > deadline:
+                    raise TimeoutError("the request's total deadline passed")
     except urllib.error.HTTPError as failure:
         out.update(http_status=failure.code, error=f"HTTP {failure.code}")
         raw.extend(failure.read())
     except (OSError, urllib.error.URLError) as failure:
-        out["error"] = f"{type(failure).__name__}: {failure}"
+        if W._timed_out(failure):
+            out.update(stop=W.REQUEST_TIMEOUT, error=f"{W.REQUEST_TIMEOUT} after {timeout:g} s")
+        else:
+            out["error"] = f"{type(failure).__name__}: {failure}"
     out.update(
         content="".join(content),
         finish_reason="repetition-loop" if out["loop_stop"] else finish,
@@ -557,6 +846,7 @@ def _whole(url: str, body: bytes, timeout: float) -> dict[str, Any]:
         "http_status": result["http_status"],
         "error": result["error"],
         "loop_stop": None,
+        "stop": result.get("stop"),
         "content": result["text"] or "",
         "finish_reason": result["finish_reason"],
         "engine_finish_reason": result["finish_reason"],
@@ -575,26 +865,128 @@ def reading_text(answer: dict[str, Any] | None) -> str:
     )
 
 
+# --- the cache's identity -------------------------------------------------------------
+
+
+def setup_of(
+    args: argparse.Namespace, tree: RunTree, variant: Variant, guard: dict[str, int]
+) -> dict[str, Any]:
+    """Everything a label's answers depend on beyond each page's own request bytes.
+
+    The run tree (by content), the checkpoint behind the served name (`--repo`,
+    `--revision`, `--recipe`), sampling, seed, token cap, stream mode and loop guard,
+    the variant, and this checkout's decoding policy digest. A label holds one setup:
+    a page cached under another is refused, never mixed in.
+    """
+    stream = not args.no_stream
+    return {
+        "run": tree.identity(),
+        "model_name": args.model_name,
+        "repo": args.repo,
+        "revision": args.revision,
+        "recipe": args.recipe,
+        "sampling_name": args.sampling,
+        "sampling": sampling_for(args.sampling),
+        "seed": args.seed,
+        "max_tokens": args.max_tokens,
+        "stream": stream,
+        "loop_guard": guard if stream else None,
+        "variant": variant.record(),
+        "decoding_sha256": decoding_policy()[1],
+    }
+
+
+def _digest(value: Any) -> str:
+    return _sha(json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8"))
+
+
+def mutation_identity(mutation: dict[str, Any] | None) -> dict[str, Any] | None:
+    if mutation is None:
+        return None
+    keys = ("_record_sha256", "scenario", "seed", "turn", "page_sha", "reference_sha256")
+    return {k: mutation.get(k) for k in keys}
+
+
+def serving_of(args: argparse.Namespace) -> dict[str, Any]:
+    """The serving conditions a timeout depends on (as `witness_run`'s)."""
+    return {
+        "request_timeout": args.request_timeout,
+        "concurrency": args.concurrency,
+        "server_url": bool(args.server_url),
+        "max_num_seqs": None if args.server_url else args.max_num_seqs,
+        "max_model_len": None if args.server_url else args.max_model_len,
+        "max_num_batched_tokens": None if args.server_url else args.max_num_batched_tokens,
+        "gpu_memory_utilization": None if args.server_url else args.gpu_memory_utilization,
+    }
+
+
+def cached_state(path: Path, setup: dict[str, Any], request_sha: str, settings_sha: str) -> str:
+    """What to do with a page: "send", "done" (answered), or "failed" (a terminal
+    failure at these very settings: sending it again would repeat it).
+
+    A page cached under another setup, or whose request bytes differ from what this
+    setup sends now (another feed, mutation, image or builder), is refused.
+    """
+    try:
+        old = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return "send"
+    if old.get("setup_sha256") != _digest(setup):
+        raise SystemExit(
+            f"{path} was cached under another setup "
+            f"({_setup_difference(old.get('setup'), setup)} differ); use a new --label"
+        )
+    if (old.get("request") or {}).get("sha256") != request_sha:
+        raise SystemExit(
+            f"{path}: this page's request now differs from the cached one (its feed, "
+            "mutation, images or prompt changed); use a new --label"
+        )
+    if old.get("error") is None:
+        return "done"
+    failure = old.get("failure") or {}
+    if failure.get("terminal") and failure.get("settings_sha256") == settings_sha:
+        return "failed"
+    return "send"
+
+
+def _setup_difference(old: Any, new: dict[str, Any]) -> str:
+    if not isinstance(old, dict):
+        return "it was written before setups were recorded; its setup and this one"
+    return ", ".join(sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k)))
+
+
 def page_record(
     page: Page, feed: dict[str, Any], variant: Variant, args: argparse.Namespace,
-    body: bytes, image: bytes | None, result: dict[str, Any],
-    mutation: dict[str, Any] | None = None,
+    body: bytes, images: list[bytes], result: dict[str, Any],
+    mutation: dict[str, Any] | None = None, *, setup: dict[str, Any] | None = None,
+    settings_sha: str | None = None,
 ) -> dict[str, Any]:  # fmt: skip
     from common.page_answer import parse_page_answer
 
     check = prompt_check(feed)
-    sent_sha = hashlib.sha256(body).hexdigest()
+    sent_sha = _sha(body)
     recorded = page.call["request_sha256"] if page.call else None
     if result["error"] is None:
         state, answer, problems = parse_page_answer(result["content"])
     else:
         state, answer, problems = None, None, []
+    failure = None
+    if result.get("stop") in W.TERMINAL_STOPS:
+        failure = {
+            "terminal": True,
+            "reasons": [result["stop"]],
+            "settings": serving_of(args),
+            "settings_sha256": settings_sha,
+        }
+    digests = [_sha(image) for image in images]
     return {
         "schema": SCHEMA,
         "arm": ARM.name,
         "label": args.label,
         "model_name": args.model_name,
         "sampling_name": args.sampling,
+        "setup": setup,
+        "setup_sha256": None if setup is None else _digest(setup),
         "run_tree": str(args.run_tree),
         "run_id": (page.reading or {}).get("provenance", {}).get("run_id")
         or Path(args.run_tree).name,
@@ -608,6 +1000,7 @@ def page_record(
         "prompt": {
             **check["rebuilt"],
             "matches_run": check["identical"],
+            "text_matches_run": check["text_identical"],
             "feed_changed": variant.feed_changed,
         },
         "request": {
@@ -617,7 +1010,8 @@ def page_record(
             "seed": args.seed,
             "stream": not args.no_stream,
             "sampling": sampling_for(args.sampling),
-            "image_sha256": None if image is None else hashlib.sha256(image).hexdigest(),
+            "image_sha256": digests[0] if digests else None,
+            "image_sha256s": digests,
             "image_mode": variant.image,
         },
         "http_status": result["http_status"],
@@ -627,13 +1021,14 @@ def page_record(
         "loop_stop": result["loop_stop"],
         "usage": result["usage"],
         "seconds": result["seconds"],
-        "raw_sha256": hashlib.sha256(result["raw"]).hexdigest(),
+        "raw_sha256": _sha(result["raw"]),
         "raw_bytes": len(result["raw"]),
         "parse_state": state,
         "parse_problems": problems,
         "answer": answer,
         "text": reading_text(answer),
         "error": result["error"],
+        "failure": failure,
         "written": W.now(),
     }
 
@@ -657,50 +1052,96 @@ def _pick(tree: RunTree, pages: str | None, limit: int | None) -> list[Page]:
     return chosen[: limit or None]
 
 
-def _same_setup(path: Path, variant: Variant, args: argparse.Namespace) -> None:
-    try:
-        old = json.loads(path.read_text("utf-8"))
-    except (OSError, ValueError):
+def assert_quantization(row: dict[str, Any], weights: Path) -> None:
+    """Refuse a quantized recipe on a snapshot whose config.json does not declare it.
+
+    The serving manager's guard (`operations/serving/manager.py::assert_quantization`)
+    on the snapshot this arm launches, so `--recipe unproven-real-perlector-fp8` with
+    bf16 `--weights` is refused rather than quantized at load. (Branch
+    work/serving-nvfp4 adds the same wrapper to `arms.py` for `witness_run`.)
+    """
+    if row.get("quantization") is None:
         return
-    mine = (variant.record(), args.model_name, args.sampling)
-    theirs = (old.get("variant"), old.get("model_name"), old.get("sampling_name"))
-    if mine != theirs:
-        raise SystemExit(
-            f"{path.parent} already holds another setup {theirs}; use a new --label for {mine}"
-        )
+    from types import SimpleNamespace
+
+    from operations.serving.errors import ServingConfigurationError
+    from operations.serving.manager import assert_quantization as guard
+
+    profile = SimpleNamespace(
+        quantization=row["quantization"],
+        chair=row.get("chair"),
+        recipe=row.get("recipe"),
+        tier=row.get("tier"),
+    )
+    try:
+        guard(SimpleNamespace(root=Path(weights)), profile)
+    except ServingConfigurationError as error:
+        raise SystemExit(str(error)) from error
+
+
+def _prepare(
+    args: argparse.Namespace, tree: RunTree, variant: Variant, setup: dict[str, Any]
+) -> list[tuple]:
+    """Each page's shown feed, images and body; the pages still to send."""
+    todo = []
+    config_new = bool(config_differences(tree))
+    folder = args.out / args.label
+    for page in _pick(tree, args.pages, args.limit):
+        mutation = load_mutation(variant, page.stem, page.feed)
+        feed = apply_variant(page.feed, variant, _load_added(variant, page.stem), mutation)
+        if not variant.feed_changed and not args.accept_new_builder:
+            check = request_check(tree, page)
+            # An accepted new config changes the body's sampling, nothing else.
+            skip = ("identical", "request") if config_new else ("identical",)
+            problems = [k for k, v in check.items() if v is False and k not in skip]
+            if not prompt_check(feed)["text_identical"]:
+                problems.insert(0, "prompt text")
+            if problems:
+                raise SystemExit(
+                    f"page {page.ordinal}: the rebuilt request differs from the run's "
+                    f"({', '.join(problems)}); the builder or images changed since the run. "
+                    "Pass --accept-new-builder to send it anyway"
+                )
+        images, feed = request_images(tree, page, feed, variant)
+        body, _ = build_body(
+            feed, images, model_name=args.model_name, sampling=sampling_for(args.sampling),
+            seed=args.seed, max_tokens=args.max_tokens, stream=not args.no_stream,
+        )  # fmt: skip
+        page_setup = {**setup, "page": {"mutation": mutation_identity(mutation)}}
+        settings_sha = W.settings_digest(
+            args.repo, args.revision,
+            [{"setup_sha256": _digest(page_setup), "request_sha256": _sha(body)}],
+            serving_of(args),
+        )  # fmt: skip
+        state = cached_state(folder / f"{page.stem}.json", page_setup, _sha(body), settings_sha)
+        if state == "failed":
+            W.event(args.out, "page-not-retried", model=args.label, page=page.stem)
+        if state != "send":
+            continue
+        todo.append((page, feed, images, body, mutation, page_setup, settings_sha))
+    return todo
 
 
 def run(args: argparse.Namespace) -> int:
-    tree = load_run_tree(args.run_tree)
+    tree = load_run_tree(args.run_tree, sealed=is_real_run(args.run_tree))
+    differences = config_differences(tree)
+    if differences and not args.accept_new_config:
+        raise SystemExit(
+            "this checkout's Perlector decoding differs from the run's sealed one: "
+            + "; ".join(differences[:3])
+            + ". Run from the run's commit, or pass --accept-new-config to send this "
+            "checkout's (recorded in the cache's setup)"
+        )
     variant = variant_from_args(args)
-    sampling = sampling_for(args.sampling)
     guard = loop_guard()
+    setup = setup_of(args, tree, variant, guard)
+    setup["accepted"] = {
+        "new_builder": bool(args.accept_new_builder),
+        "new_config": bool(differences),
+    }
     folder = args.out / args.label
     folder.mkdir(parents=True, exist_ok=True)
-    pages = _pick(tree, args.pages, args.limit)
-    todo = []
-    for page in pages:
-        path = folder / f"{page.stem}.json"
-        _same_setup(path, variant, args)
-        if W.cached_ok(path):
-            continue
-        mutation = load_mutation(variant, page.stem)
-        feed = apply_variant(page.feed, variant, _load_added(variant, page.stem), mutation)
-        if (
-            not variant.feed_changed
-            and not prompt_check(feed)["identical"]
-            and not args.accept_new_builder
-        ):
-            raise SystemExit(
-                f"page {page.ordinal}: the rebuilt prompt differs from the run's recorded digests "
-                "(the builder changed since the run); pass --accept-new-builder to send it anyway"
-            )
-        image = page_image(tree, page, variant)
-        body, _ = build_body(
-            feed, image, model_name=args.model_name, sampling=sampling, seed=args.seed,
-            max_tokens=args.max_tokens, stream=not args.no_stream,
-        )  # fmt: skip
-        todo.append((page, feed, image, body, mutation))
+    todo = _prepare(args, tree, variant, setup)
     if not todo:
         W.event(args.out, "nothing-to-do", model=args.label)
         return 0
@@ -708,7 +1149,8 @@ def run(args: argparse.Namespace) -> int:
     url = (args.server_url or "").rstrip("/")
     if not url:
         weights = A.resolve_weights(ARM, args.weights, None, None)
-        row = A.serving_row(ARM.chair, args.tier or ARM.default_tier)
+        row = A.serving_row(ARM.chair, args.tier or ARM.default_tier, args.recipe)
+        assert_quantization(row, weights)
         argv = A.server_argv(
             row, weights, port=args.port, served_name=args.model_name,
             gpu_memory_utilization=args.gpu_memory_utilization, max_num_seqs=args.max_num_seqs,
@@ -724,24 +1166,29 @@ def run(args: argparse.Namespace) -> int:
             raise
         W.event(args.out, "server-ready", model=args.label)
         url = server.url
-    errors = 0
+    errors = failed = 0
     started = time.monotonic()
     try:
         W.event(args.out, "requests-start", model=args.label, pages=len(todo))
 
         def send(item):
-            page, feed, image, body, mutation = item
+            body = item[3]
             if args.no_stream:
-                result = _whole(url, body, args.request_timeout)
-            else:
-                result = _stream(url, body, args.request_timeout, guard)
-            return page, feed, image, body, mutation, result
+                return item, _whole(url, body, args.request_timeout)
+            return item, _stream(url, body, args.request_timeout, guard)
 
         with ThreadPoolExecutor(max_workers=max(1, args.concurrency)) as pool:
             for future in as_completed([pool.submit(send, item) for item in todo]):
-                page, feed, image, body, mutation, result = future.result()
-                record = page_record(page, feed, variant, args, body, image, result, mutation)
-                errors += record["error"] is not None
+                item, result = future.result()
+                page, feed, images, body, mutation, page_setup, settings_sha = item
+                record = page_record(
+                    page, feed, variant, args, body, images, result, mutation,
+                    setup=page_setup, settings_sha=settings_sha,
+                )  # fmt: skip
+                if record["failure"] is not None:
+                    failed += 1
+                elif record["error"] is not None:
+                    errors += 1
                 with gzip.open(folder / f"{page.stem}.sse.gz", "wb") as handle:
                     handle.write(result["raw"])
                 W.write_json(folder / f"{page.stem}.json", record)
@@ -752,8 +1199,10 @@ def run(args: argparse.Namespace) -> int:
     summary = {
         "model": args.label,
         "model_name": args.model_name,
+        "setup": setup,
         "pages": len(todo),
         "errors": errors,
+        "terminal_failures": failed,
         "wall_seconds": round(time.monotonic() - started, 3),
         "concurrency": args.concurrency,
         "variant": variant.record(),
@@ -761,6 +1210,8 @@ def run(args: argparse.Namespace) -> int:
     }
     W.write_json(folder / "run.json", summary)
     W.event(args.out, "requests-done", model=args.label, wall_seconds=summary["wall_seconds"])
+    # A terminal failure (timeout) is recorded and not resent at these settings, as
+    # witness_run does; only other errors fail the run.
     return 1 if errors else 0
 
 
@@ -827,6 +1278,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     r.add_argument("--limit", type=int)
     r.add_argument("--concurrency", type=int, default=16)
     r.add_argument("--accept-new-builder", action="store_true")
+    r.add_argument(
+        "--accept-new-config",
+        action="store_true",
+        help="send this checkout's decoding settings where they differ from the run's sealed ones",
+    )
+    r.add_argument(
+        "--revision",
+        help="the checkpoint revision served under --model-name, part of the cache's identity; "
+        "required with --recipe or --repo, else the Perlector chair's pinned bf16 revision",
+    )
+    r.add_argument("--repo", help="the checkpoint's repository (default: the Perlector chair's)")
+    r.add_argument("--recipe", help="a serving recipe for --weights (serving_recipes_real*.toml)")
     r.add_argument("--server-url", help="a running server (vLLM's OpenAI API)")
     r.add_argument("--weights", type=Path, help="start vLLM on this snapshot instead")
     r.add_argument("--vllm-cmd", nargs="+", help="command prefix before 'serve'")
@@ -842,17 +1305,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.command == "run" and not args.server_url and not args.weights:
         parser.error("run needs --server-url or --weights")
+    if args.command == "run":
+        if args.revision is None and (args.recipe or args.repo):
+            parser.error("--recipe and --repo name another checkpoint: say its --revision")
+        if args.revision is None:
+            identity = A.chair_identity(ARM.chair)
+            args.repo, args.revision = identity.get("repo"), identity.get("revision")
     return args
 
 
 def prompts(args: argparse.Namespace) -> int:
-    tree = load_run_tree(args.run_tree)
+    tree = load_run_tree(args.run_tree, sealed=is_real_run(args.run_tree))
     if args.show is not None:
         from common import page_prompt
 
         variant = variant_from_args(args)
         page = tree.pages[args.show]
-        mutation = load_mutation(variant, page.stem)
+        mutation = load_mutation(variant, page.stem, page.feed)
         feed = apply_variant(page.feed, variant, _load_added(variant, page.stem), mutation)
         print(page_prompt.build_page_prompt(feed["prompt"]["serving_recipe"], feed))
         return 0
@@ -860,16 +1329,27 @@ def prompts(args: argparse.Namespace) -> int:
     if args.json:
         W.write_json(args.json, report)
     print(
-        f"pages {report['pages']}: prompts byte-identical {report['prompts_identical']}; "
-        f"requests byte-identical {report['requests_identical']} of {report['requests_checked']} "
-        "with a recorded call"
+        f"pages {report['pages']} (seals {'verified' if tree.sealed else 'NOT checked'}): "
+        f"prompt text byte-identical {report['prompts_identical']}; "
+        f"images (render and overlay) identical {report['images_identical']}; "
+        f"reading request digests {report['reading_digests_identical']} of "
+        f"{report['reading_digests_checked']}; whole requests byte-identical "
+        f"{report['requests_identical']} of {report['requests_checked']} with a recorded call; "
+        f"builder code unchanged on {report['builder_identical']}"
     )
+    for line in report["config"]:
+        print(f"  config differs: {line}")
     for row in report["rows"]:
-        if not row["prompt"] or row["request"] is False:
+        if (
+            not row["prompt"]
+            or not row["images"]
+            or False in (row["request"], row["reading_digest"])
+        ):
             print(f"  differs: page {row['page']} {row['stem']}: {row}")
-    ok = report["prompts_identical"] == report["pages"]
+    ok = report["prompts_identical"] == report["images_identical"] == report["pages"]
     ok = ok and report["requests_identical"] == report["requests_checked"]
-    return 0 if ok else 1
+    ok = ok and report["reading_digests_identical"] == report["reading_digests_checked"]
+    return 0 if ok and not report["config"] else 1
 
 
 def main(argv: list[str] | None = None) -> int:

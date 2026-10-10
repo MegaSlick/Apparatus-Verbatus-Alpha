@@ -178,15 +178,20 @@ and still answers (otherwise it stops it and starts its own). A kept server no r
 over (a failed smoke, a hard stop, SIGTERM) is stopped by the queue. The native arms
 still load twice. A failed arm (one whose program cannot even start included) is retried once at the
 end, smoke first, then reported. Retries keep their lanes: GPU arms one at a time on the
-card, CPU arms beside them in the CPU lane, all at once, each with an equal part of the
-lane's whole `cpu_threads` (never less than its own; the command's `--threads` is
-rewritten), so a retried CPU arm no longer runs alone on its first share while the rest
-of the CPUs sit idle. A page that ran to the request timeout or was stopped by the loop
+card, CPU arms beside them in the CPU lane, each with an equal part of the lane's whole
+`cpu_threads` (never less than its own; the command's `--threads` is rewritten), started
+while the retries already running leave room for it in that budget, so a retried CPU arm
+no longer runs alone on its first share while the rest of the CPUs sit idle, nor do
+retries together exceed the budget. A page that ran to the request timeout or was stopped by the loop
 detector is recorded as failed with its reason (`failure` in the page record,
 `failed_pages` in the arm's `finished_arms` entry and its end ping) and counts as settled:
 it never makes its arm "incomplete", and witness_run never sends it again under the same
-settings (same checkpoint and request records, `failure.settings_sha256`); changed
-settings, such as another `--guard`, send it again. Time boxes never kill work: an overrun is pinged once,
+settings (same checkpoint and request records, request timeout, concurrency and server
+batch, memory and engine settings: `failure.settings` and `settings_sha256`); changed
+settings, such as another `--guard` or a longer `--request-timeout`, send it again. A smoke
+must still give at least one answer: when every smoke page failed that way the arm is
+recorded failed, its full run is not started and it is not retried (the same settings
+would repeat it). Time boxes never kill work: an overrun is pinged once,
 and the `cut` rule only skips later arms (`overrun`, `behind-schedule`, `install-failed`;
 `never` always runs).
 
@@ -311,24 +316,36 @@ The arms above read a page alone. `fed_arm.py` sends a reader the Perlector's wh
 request, witnesses included, so a base model, a LoRA adapter or a merged checkpoint can be
 judged in the Perlector's seat without running the pipeline. It reads a sealed run tree
 (stages 1-4 done; for example the cold run extracted from its tar) and never writes to it.
+A pipeline run tree (one with `run.json`) is used only once its Exemplar and Perlector
+stage seals verify, and every feed, call record and render it reads is digest-checked.
 
 What it sends is the run's own request. For every page it takes the `page-feed` record and
 the render the run retained (`4_perlector/blobs/`), rebuilds the prompt with
 `common.page_prompt.build_page_prompt`, and rebuilds the whole body with
-`operations.serving.http.request_body`: the render, then the text, one user turn,
-thinking off, `max_tokens` 12,288, streamed, with the seed the receipt names. `prompts`
-checks both against what the run recorded (the feed's `prompt` digests and the call
-record's `request_sha256`) and exits 1 on any difference:
+`operations.serving.http.request_body`: the render, then the overlay when the feed draws
+one, then the text, one user turn, thinking off, `max_tokens` 12,288, streamed, with the
+seed the receipt names. `prompts` checks them against what the run recorded (the feed's
+prompt text digests, the image digests, the reading's `request_digest` and the call
+record's `request_sha256`), and that this checkout's Perlector sampling and loop guard
+are the run's sealed ones, and exits 1 on any difference. The builder's code digest is
+reported apart: a change to `common/page_prompt.py` that leaves the text identical (a
+recipe alias) does not stop a replay.
 
 ```sh
 .venv/bin/python -m operations.bakeoff.fed_arm prompts --run-tree <run tree>
-# pages 73: prompts byte-identical 73; requests byte-identical 73 of 73 with a recorded call
+# pages 73 (seals verified): prompt text byte-identical 73; images (render and overlay)
+# identical 73; reading request digests 73 of 73; whole requests byte-identical 73 of 73 ...
 ```
 
 `run` sends every page to a server: `--server-url` for one already up (a base model, or
 vLLM serving LoRA adapters under their own names), or `--weights` to start vLLM on a
 snapshot with the Perlector's serving row (the same server options as `witness_run`).
-`--model-name` is the served name the requests ask for; `--label` names the cache folder.
+`--recipe` serves a variant row (`config/serving_recipes_real_variants.toml`: FP8, MTP,
+FP8 KV cache), and a quantized row is refused on a snapshot whose `config.json` does not
+declare that quantization. `--model-name` is the served name the requests ask for;
+`--revision` (and `--repo`) name the checkpoint behind it -- required with `--recipe` or
+`--repo`, otherwise the Perlector chair's pinned bf16 revision; `--label` names the cache
+folder.
 
 ```sh
 .venv/bin/python -m operations.bakeoff.fed_arm run --run-tree $V/runs/cold73-2026-10-09 \
@@ -342,8 +359,12 @@ Perlector's row; with the run's served name and an unchanged feed the request is
 run's own, byte for byte, which is the noise-floor repeat). The reply streams under the
 Perlector's sealed repetition-loop guard (`config/decoding.toml`), and a reply stopped
 by it has `finish_reason` `repetition-loop`; `--no-stream` sends one plain request with
-no guard. A prompt that no longer matches the run's digests on an unchanged feed (the
-builder has changed since) is refused unless `--accept-new-builder`.
+no guard. A request that no longer matches the run's on an unchanged feed (prompt text,
+images or reading digest; the builder has changed since) is refused unless
+`--accept-new-builder`; a checkout whose decoding settings differ from the run's sealed
+ones is refused unless `--accept-new-config`. The stream is cut at a real total deadline
+(`--request-timeout`); a page that hits it is a terminal failure, kept and not resent
+under the same request, timeout and concurrency.
 
 Variants change the feed before the prompt is rendered, so the text and the instruction
 are what the pipeline would build for that feed:
@@ -359,14 +380,16 @@ are what the pipeline would build for that feed:
 
 `prompts --show <ordinal>` with the same options prints that page's variant prompt.
 
-Each page is `<out>/<label>/<page stem>.json` (schema `bakeoff-fed-page.v1`): the variant,
-the feed as shown, the prompt digests and whether they match the run's, the request
-digest and whether it matches the run's, the sampling, the image digest, the reply's
+Each page is `<out>/<label>/<page stem>.json` (schema `bakeoff-fed-page.v1`): its setup
+(the run tree by content, served name, checkpoint revision and recipe, sampling, seed,
+token cap, stream mode, loop guard, variant, mutation identity), the variant, the feed as
+shown, the prompt digests and whether they match the run's, the request
+digest and whether it matches the run's, the sampling, the image digests, the reply's
 content, finish reason, usage, loop stop and seconds, the answer grammar's verdict
 (`common.page_answer`: parsed or malformed, and why), the answer and its text. The raw
 stream is beside it as `<page stem>.sse.gz`. A page cached without an error is skipped
-next time; a label that holds another variant, model or sampling is refused. The page
-accounting (holds) is not run here.
+next time; a label holds one setup, so a page cached under another (or whose request
+bytes now differ) is refused, never mixed in. The page accounting (holds) is not run here.
 
 ## The Perlector scorecard
 

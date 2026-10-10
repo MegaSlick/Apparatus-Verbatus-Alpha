@@ -1077,6 +1077,28 @@ class Queue:
         would repeat (a request timeout or a loop stop); such a page is never retried."""
         return all(settled(self.m.out / arm.records / f"{p.stem}.json") for p in pages)
 
+    def _smoke_verdict(self, arm: ArmSpec, pages: list[Path]) -> str:
+        """ "ok" when every smoke page settled and at least one gave an answer; "useless"
+        when every page settled but none answered (each ran into a timeout or a loop: the
+        full run would repeat that at the same settings, so it is not started, and the
+        arm is not retried); "failed" otherwise (an ordinary error, retried at the end)."""
+        paths = [self.m.out / arm.records / f"{p.stem}.json" for p in pages]
+        if not all(settled(path) for path in paths):
+            return "failed"
+        return "ok" if any(cached_ok(path) for path in paths) else "useless"
+
+    def _smoke_useless(self, arm: ArmSpec, t0: float) -> None:
+        failed = self._failed_pages(arm)
+        what = (
+            f"smoke gave no answer: all {len(failed)} smoke page(s) failed terminally "
+            f"({', '.join(sorted({r for f in failed for r in f['reasons']}))}); "
+            "full run not started, not retried at the same settings"
+        )
+        self._error(f"{arm.name}: {what}")
+        self._event("queue-arm-error", arm=arm.name, detail=what)
+        self.ping(f"error:{arm.name}", "milestone", f"arm failed: {arm.name} {what}")
+        self._record(arm, "failed", t0)
+
     def _failed_pages(self, arm: ArmSpec) -> list[dict[str, Any]]:
         failed = []
         for page in self.page_list:
@@ -1192,7 +1214,11 @@ class Queue:
         if self.hard_stopped:
             self._record(arm, "hard-stopped", t0)
             return
-        if code != 0 or not self._pages_ok(arm, smoke_pages):
+        verdict = self._smoke_verdict(arm, smoke_pages)
+        if code == 0 and verdict == "useless":
+            self._smoke_useless(arm, t0)
+            return
+        if code != 0 or verdict != "ok":
             self._arm_error(arm, f"smoke failed (exit {code})")
             return
         if self.smoke_only:
@@ -1237,7 +1263,8 @@ class Queue:
             # The smoke again first (cached pages are skipped, so a passed smoke costs nothing).
             smoke, full = self._phase_commands(arm, command)
             code = self._run_watched(index, arm, lane, "retry", smoke)
-            if code == 0 and self._pages_ok(arm, self.page_list[: self.m.smoke_pages]):
+            verdict = self._smoke_verdict(arm, self.page_list[: self.m.smoke_pages])
+            if code == 0 and verdict == "ok":
                 code = self._run_watched(index, arm, lane, "retry", full)
             elif code == 0:
                 code = -1
@@ -1257,7 +1284,8 @@ class Queue:
 
     def _retry_threads(self, arm: ArmSpec, cpu_retries: int) -> int | None:
         """A CPU retry's share: the lane's whole budget split among the CPU retries, never
-        less than the arm's own; None (the arm's own setting) when there is no budget."""
+        less than the arm's own; None (the arm's own setting) when there is no budget.
+        `_run_retries` starts a retry only while the shares running fit the budget."""
         if arm.gpu or self.budget is None:
             return None
         return max(arm.threads, self.budget // max(1, cpu_retries))
@@ -1269,9 +1297,11 @@ class Queue:
         pending = sorted(self.retry, key=self.m.arms.index)
         cpu_retries = sum(1 for arm in pending if not arm.gpu)
         running: dict[Future, ArmSpec] = {}
+        shares: dict[Future, int] = {}  # each running CPU retry's threads
         while pending or running:
             for future in [f for f in running if f.done()]:
                 running.pop(future)
+                shares.pop(future, None)
                 future.result()
             busy = list(running.values())
             unsettled = {a.name for a in pending} | {a.name for a in busy}
@@ -1296,14 +1326,22 @@ class Queue:
                 elif not arm.gpu and self.budget is None and any(not a.gpu for a in busy):
                     continue
                 else:
+                    threads = self._retry_threads(arm, cpu_retries)
+                    if (
+                        not arm.gpu
+                        and threads is not None
+                        and not _fits(threads, list(shares.values()), self.budget)
+                    ):
+                        continue  # the budget is spent; it starts when a retry ends
                     pending.remove(arm)
                     busy.append(arm)
                     if arm.gpu:
                         future = self.gpu_pool.submit(self._retry_arm, arm, "gpu", None)
                     else:
-                        threads = self._retry_threads(arm, cpu_retries)
                         lane = f"cpu:{arm.name}"
                         future = self.cpu_pool.submit(self._retry_arm, arm, lane, threads)
+                        if threads is not None:
+                            shares[future] = threads
                     running[future] = arm
             if running:
                 wait(list(running), timeout=self.poll_seconds, return_when=FIRST_COMPLETED)
