@@ -1,59 +1,49 @@
 """RunPod's own API — the only module in this package that knows it.
 
 Two REST routes live here side by side, behind one seam: `RunPodV2Provider`
-(the default, `live_runpod_provider`) and `RunPodProvider` (v1, kept until the
-first live run under v2 is green, then deleted in its own commit).
+(the default, `live_runpod_provider`) and `RunPodProvider` (v1).
 `operations/pod/V2_MIGRATION.md` maps one to the other field by field and
-records the documentation pages each field and refusal below rests on.
+names the documentation pages each field and refusal below rests on.
 
-**REST v2** (`https://api.runpod.io/v2`), source pages read online:
-- `api-reference-v2/pods/create-a-pod` (2026-09-02) — `CreatePodRequest`: no
+**REST v2** (`https://api.runpod.io/v2`), from RunPod's published pages:
+- `api-reference-v2/pods/create-a-pod` — `CreatePodRequest`: no
   `interruptible`, bid or rental-type field.
-- `https://api.runpod.io/v2/openapi.json` (2026-09-02) — confirms no
-  rental-type field anywhere in the schema.
-- `api-reference-v2/pods/list-pods` (2026-09-24) — paginated
-  (`cursor`/`limit`, `nextCursor` null on the last page); pagination is new
-  since the 2026-09-02 reading, so the list is followed to its last page.
-- `api-reference-v2/pods/terminate-a-pod` (2026-09-02) — `204`/`404`/`409`
+- `https://api.runpod.io/v2/openapi.json` — confirms no rental-type field
+  anywhere in the schema.
+- `api-reference-v2/pods/list-pods` — paginated (`cursor`/`limit`,
+  `nextCursor` null on the last page), so the list is followed to its last page.
+- `api-reference-v2/pods/terminate-a-pod` — `204`/`404`/`409`
   ("Pod belongs to a cluster and cannot be terminated via the pod
   endpoints.").
-- `api-reference-v2/billing/get-pod-billing-history` (2026-09-02) — records
+- `api-reference-v2/billing/get-pod-billing-history` — records
   wrapped in `{"records": [...], "metadata": {...}}`.
-- `api-reference-v2/migrate-from-v1` (2026-09-02) — maps no field for
-  `interruptible`.
-- `docs.runpod.io/pods/pricing` (2026-09-02) — only "On-demand" and "Savings
-  plans"; no "spot" or "interruptible".
-- `api-reference/pods/POST/pods` (v1, 2026-09-02) — still documents
-  `interruptible`, so spot pods still exist and no v2 page says what a
-  create without the field produces. **That is why `V2_ON_DEMAND_BASIS` is
-  unset and a v2 create refuses** (`RunPodV2Provider`).
+- `api-reference-v2/migrate-from-v1` — maps no field for `interruptible`.
+- `docs.runpod.io/pods/pricing` — only "On-demand" and "Savings plans";
+  no "spot" or "interruptible".
+- `api-reference/pods/POST/pods` (v1) — still documents `interruptible`,
+  so spot pods still exist and no v2 page says what a create without the
+  field produces. **That is why `V2_ON_DEMAND_BASIS` is unset and a v2
+  create refuses** (`RunPodV2Provider`).
 
-`operations/pod/V2_MIGRATION.md` records the full page-by-page reading;
-this list is the terse form kept beside the code it settles.
-
-**REST v1** (`https://rest.runpod.io/v1`), read online 2026-08-09 and
-re-checked 2026-09-02: `api-reference/pods/POST/pods` carries `interruptible`
-(default `false`); RunPod retires the route on 2026-11-15
-(`V2_MIGRATION.md`). `GET /pods` and the billing endpoint each return a bare
-JSON array rather than v2's envelope. The `runpod` PyPI package is not used:
-it wraps the deprecating GraphQL API.
+**REST v1** (`https://rest.runpod.io/v1`): `api-reference/pods/POST/pods`
+carries `interruptible` (default `false`); RunPod retires the route on
+2026-11-15. `GET /pods` and the billing endpoint each return a bare JSON
+array rather than v2's envelope. The `runpod` PyPI package is not used: it
+wraps the deprecating GraphQL API.
 
 **Not the vendor SDK, a plain injected HTTP transport.** Every call goes
 through `HttpTransport`, so the whole adapter is exercised offline against an
-in-memory fake. **No live RunPod call has been made from this module, on
-either route** — every field name here comes from published documentation,
-never an observed response, so exact GPU id strings and post-DELETE timing
-are confirmed at the first authorised live run, not here.
+in-memory fake. Field names come from published documentation, not observed
+responses, so exact GPU id strings and post-DELETE timing are not settled here.
 
 **Account balance is GraphQL**, not REST: only `myself { clientBalance
 currentSpendPerHr }` publishes it, sent with the key as an `api_key` query
 parameter (GraphQL documents no header form, so every error string and
 fixture record here scrubs the query). Neither field's documentation names a
-currency; `BALANCE_CURRENCY` records a documented reading from the billing
-pages instead, and the first authorised live run checks it against the
-console. GraphQL itself is deprecated, retiring in early 2027 in favour of
-v2 -- a sunset of this observer's own, distinct from the REST v1 route's:
-v2 publishes no balance, so this observer is not retired by that migration.
+currency; `BALANCE_CURRENCY` records a reading from the billing pages instead,
+to be checked against the console. GraphQL itself is retiring in early 2027 in
+favour of v2, separately from REST v1; v2 publishes no balance, so this
+observer stays on GraphQL.
 
 **Credential:** supplied to `UrllibRunPodTransport` explicitly at
 construction. Nothing here reads a credential from a tracked file
@@ -141,9 +131,8 @@ V2_ON_DEMAND_BASIS: Final[str | None] = None
 REST v2 has no ``interruptible`` field on create and no rental-type field on the
 pod (module docstring), so the adapter cannot request on-demand or read it
 back. While this is ``None``, `RunPodV2Provider.create` refuses before any POST
-and every v2 pod record carries no runtime contract. Setting it is the project
-lead's decision, and it is set only in a reviewed commit that names the page or
-vendor answer that settles it."""
+and every v2 pod record carries no runtime contract. Set it only together with
+the documentation page or vendor answer that settles it."""
 
 V2_ON_DEMAND_REFUSAL: Final = (
     "RunPod REST v2 cannot show that a pod is on-demand: its create body has no "
@@ -219,7 +208,7 @@ POD_CREATE_MUTATION = (
 )
 """The one create that can attach a **global volume** (RunPod's object storage).
 
-Validated against the live schema on 2026-10-08 without creating anything:
+Validated against the live schema without creating anything:
 `PodFindAndDeployOnDemandInput.objectMounts: [PodObjectMountInput!]`, whose
 two fields are `objectStoreId: ID!` and `mountPath: String!`, and the pod
 reports them back as `objectStores { objectStoreId mountPath }`. REST v1,
@@ -1350,8 +1339,8 @@ def pod_create_input(
     network volume instead, and one of the two is required so the guard has a
     disk. `objectMounts` carries the global volume. Only the fields given are
     sent, so the account's defaults apply to the rest. `minVcpuCount`,
-    `dataCenterId`, `allowedCudaVersions`, `supportPublicIp` and `startSsh` were
-    schema-validated on 2026-10-08 beside `objectMounts`.
+    `dataCenterId`, `allowedCudaVersions`, `supportPublicIp` and `startSsh` are
+    schema-validated beside `objectMounts`.
     """
 
     if (network_volume_id is None) == (persistent_disk_gb is None):
@@ -1386,7 +1375,7 @@ def pod_create_input(
         payload["dataCenterId"] = data_center_id
     if allowed_cuda_versions:
         # The host's driver must serve the image's CUDA: a cu1300 image on a 12.8 host
-        # fails every vLLM chair (observed 2026-10-06).
+        # fails every vLLM chair.
         payload["allowedCudaVersions"] = list(allowed_cuda_versions)
     return payload
 
@@ -1661,8 +1650,8 @@ class RunPodV2Provider(_RunPodAdapter):
         an id the catalogue does not list, a card not offered on Secure cloud,
         or a Secure list price other than the reviewed one -- and an empty
         tuple when every row agrees. It changes nothing: the sheet stays the
-        sealed authority, and a finding is for the project lead to review
-        before the first paid create under v2 (the README's checklist).
+        sealed authority, and a disagreement is resolved by a person before a
+        paid create under v2.
         """
 
         response = self.transport.request("GET", "/catalog/gpus")

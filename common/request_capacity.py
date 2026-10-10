@@ -561,14 +561,9 @@ def _rate_bound_tokens(characters: int) -> int:
 # prose at the measured rate (`PERLECTOR_BOUND_TOKENS_PER_10K_CHARACTERS` with its
 # margin), carried to it (`PROMPT_TOKENS_REPORTED_BYTES_FIXED_CARRIED`).
 # The carried rate is sealed against the page builder's own digest, so editing
-# the builder expires it. Re-sealed 2026-10-10 for the recipe aliases
-# (`page_prompt.RECIPE_ALIASES`): a table of recipe names only, no wording, so every
-# rendered prompt is byte-identical (cold73: 73/73) and the rate carries unchanged.
-# Re-sealed again for the page-type and entry-kind instruction (`[feed] page_types`):
-# 442 more prose tokens on the dense test page, charged at the same carried rate, which
-# was measured on this builder's English prose and is not re-measured here.
-# Re-sealed again when the `acts`-grammar wording was removed: the page-type
-# instruction is now the only one, its text unchanged, so the rate carries unchanged.
+# the builder expires it. The rate was measured on the builder's English prose;
+# a change that adds no new kind of wording (a table of recipe names, another
+# instruction in the same prose) re-seals the digest and keeps the rate.
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
     "09a99d131b109b8729638c36a03df5ed2fe777a4b1185350f472c5cd9f2cc4b5"
 )

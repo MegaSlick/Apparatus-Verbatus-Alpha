@@ -1,5 +1,5 @@
 """The Perlector's variant serving recipes (FP8, MTP, FP8 KV cache) take the base recipe's
-page and re-ask prompts, so a chair can point at one (review C7, 2026-10-09).
+page and re-ask prompts, so a chair can point at one.
 
 Synthetic feed only; no model, no network.
 """
