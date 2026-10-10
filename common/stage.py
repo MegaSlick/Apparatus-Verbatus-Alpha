@@ -442,6 +442,7 @@ class StageContext:
         "_recovery_policy",
         "sealed",
         "page_read_denominator",
+        "exemplar_pages",
         "serving_reader",
     )
 
@@ -489,6 +490,9 @@ class StageContext:
         self.page_read_denominator: (
             tuple[dict[int, dict[str, Any]], list[dict[str, Any]]] | None
         ) = None
+        # The Exemplar's pages by ordinal, once a stage after it has asked: the
+        # Exemplar is sealed before any later stage starts, so they are read once.
+        self.exemplar_pages: dict[int, str] | None = None
         # Read back a live page call; `None` refuses one (`ServingReader`).
         self.serving_reader = serving_reader
 
@@ -4041,7 +4045,14 @@ def exemplar_page_ids(context) -> dict[int, str]:
     container page's full identity.  Says which page an ordinal names, not
     that its bytes are sound. Every submitted ordinal has exactly one page, so
     no submitted page is silently absent from what a stage reads or counts.
+    Verified once per context; each caller gets a copy.
     """
+    if context.exemplar_pages is None:
+        context.exemplar_pages = _verify_exemplar_page_ids(context)
+    return dict(context.exemplar_pages)
+
+
+def _verify_exemplar_page_ids(context) -> dict[int, str]:
     submitted = {
         row.get("ordinal")
         for row in context.run.get("source_manifest", [])

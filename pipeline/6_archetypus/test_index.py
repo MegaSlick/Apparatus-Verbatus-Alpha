@@ -56,6 +56,7 @@ class _Context:
         self.perlector_protocol_config_path = ROOT / "config" / "perlector_protocol.toml"
         self.page_accounting_config_path = ROOT / "config" / "page_accounting.toml"
         self.page_read_denominator = None
+        self.exemplar_pages = None
 
     def require_sealed_config(self, name: str, observed_sha256: str) -> None:
         require_sealed_config(run_sealed_config_digests(self.run), name, observed_sha256)
