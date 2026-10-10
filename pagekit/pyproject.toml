@@ -1,7 +1,7 @@
 # For pagekit's own repository once it splits out. The parent project neither reads
 # nor installs this file; pagekit runs there as a top-level folder.
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
