@@ -1218,3 +1218,33 @@ def test_witness_commands_may_not_carry_the_server_hand_off(bench):
     arm["command"] += ["--keep-server", "/tmp/x"]
     with pytest.raises(Q.ManifestError, match="--keep-server"):
         _manifest(bench, [arm])
+
+
+def test_own_disk_with_a_kept_pod_leaves_the_copy_check_to_fetch(bench, monkeypatch):
+    def no_read_back(*_args):
+        raise AssertionError("the copy on the volume was read back on the pod")
+
+    monkeypatch.setattr(Q, "compare_digests", no_read_back)
+    notifier = FakeNotifier()
+    queue = _queue_with_cache(bench, notifier, lambda argv: 0, own_disk=True, end_pod="none")
+    assert queue.finish() == 0
+    done = json.loads((bench["out"] / "DONE.json").read_text())
+    assert done["verified"] is None and done["verify"] == "at home, by fetch"
+    assert done["files"] == 3 and "a/p000.json" in done["digests"]
+    assert any("copy made: 3 files; verify at home" in m for _, m in notifier.sent)
+    assert "decision" not in [k for k, _ in notifier.sent]
+    status = json.loads((bench["out"] / "status.json").read_text())
+    assert status["state"] == "done" and status["end_action"] == "kept (end_pod = none)"
+
+    # At home, fetch checks every file against those digests (here: the cache itself).
+    monkeypatch.undo()
+    lines: list[str] = []
+    assert Q.verify_fetched(bench["out"], say=lines.append) == 0
+    assert lines == ["verified 3 of 3 files against DONE.json"]
+
+
+def test_own_disk_without_keep_pod_still_checks_the_copy_on_the_pod(bench):
+    queue = _queue_with_cache(bench, FakeNotifier(), lambda argv: 0, own_disk=True)
+    queue.sync()
+    done = json.loads((bench["out"] / "DONE.json").read_text())
+    assert done["verified"] is True and done["verify"] == "on the pod"

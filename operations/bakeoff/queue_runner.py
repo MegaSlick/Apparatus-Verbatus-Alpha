@@ -21,7 +21,9 @@ first. The next arm's install and preparation run while the current arm's comman
 `status.json` beside the cache is rewritten every 30 s and at every change, the queue's
 events join the arms' `events.jsonl`, and the lead's phone hears of each milestone once.
 At the end the cache is copied to `sync_to`, every file's sha256 is compared, `DONE.json`
-is written to both, and the pod is ended through its guard (or `pod_delete.sh`).
+is written to both, and the pod is ended through its guard (or `pod_delete.sh`). With
+`--own-disk --keep-pod` the copy is not read back on the pod: `fetch` checks every file
+against `DONE.json` at home.
 """
 
 from __future__ import annotations
@@ -1430,6 +1432,12 @@ class Queue:
             "finished_arms": list(self.finished),
         }
 
+    def verify_at_home(self) -> bool:
+        """An own-disk cache whose pod is kept: `fetch` copies it home from that disk and
+        checks every file against DONE.json, so the copy on the volume is not read back
+        here (35,408 small files on a network disk took longer than the whole copy)."""
+        return self.m.own_disk and self.m.end_pod == "none"
+
     def sync(self) -> dict[str, Any]:
         """Copy out to sync_to, compare every digest, and write DONE.json to both."""
         with self.lock:
@@ -1444,14 +1452,19 @@ class Queue:
         for pool in (*self.ready_pools.values(), self.gpu_pool, self.cpu_pool):
             pool.shutdown(wait=True, cancel_futures=True)
         method, mismatched = None, []
+        at_home = self.verify_at_home()
         try:
             method = copy_tree(self.m.out, self.m.sync_to)
             digests = tree_digests(self.m.out)
-            mismatched = compare_digests(digests, self.m.sync_to)
+            if not at_home:
+                mismatched = compare_digests(digests, self.m.sync_to)
             failure = None
         except (OSError, subprocess.CalledProcessError) as error:
             digests, failure = {}, f"{type(error).__name__}: {error}"
-        verified = failure is None and not mismatched
+        # None: not checked on the pod; `fetch` checks every file at home.
+        verified: bool | None = failure is None and not mismatched
+        if at_home and failure is None:
+            verified = None
         done = {
             "schema": DONE_SCHEMA,
             "queue": self.m.name,
@@ -1459,6 +1472,7 @@ class Queue:
             "finished": iso(time.time()),
             "copy": method,
             "verified": verified,
+            "verify": "at home, by fetch" if at_home else "on the pod",
             "mismatched": mismatched,
             "failure": failure,
             "files": len(digests),
@@ -1472,7 +1486,9 @@ class Queue:
             except OSError as error:
                 self._error(f"DONE.json not written to {folder}: {error}")
         self._event("queue-sync", verified=verified, files=len(digests), mismatched=mismatched)
-        if verified:
+        if verified is None:
+            self.ping("sync", "milestone", f"copy made: {len(digests)} files; verify at home")
+        elif verified:
             self.ping("sync", "milestone", f"copy verified: {len(digests)} files")
         else:
             self._error(f"copy not verified: {failure or f'{len(mismatched)} files differ'}")
@@ -1662,7 +1678,8 @@ def watch_ssh(
             verified = (done or {}).get("verified")
             files = (done or {}).get("files")
             action = (status or {}).get("end_action")
-            say(f"queue done: copy verified {verified}, {files} files; pod {action}")
+            checked = "at home by fetch" if verified is None and done else verified
+            say(f"queue done: copy verified {checked}, {files} files; pod {action}")
             return 0
         sleep(interval)
 
@@ -1738,7 +1755,7 @@ def verify_fetched(into: Path, say: Callable[[str], None] = print) -> int:
     for relative in bad:
         say(f"MISMATCH {relative}")
     say(f"verified {len(digests) - len(bad)} of {len(digests)} files against DONE.json")
-    if not done.get("verified"):
+    if done.get("verified") is False:
         say("note: the pod's own copy check did not pass (DONE.json verified = false)")
     return 1 if bad else 0
 
