@@ -37,6 +37,7 @@ from common.page_feed import SCHEMA as PAGE_FEED_SCHEMA
 from common.page_path import PAGE_FEED_KIND
 from common.runtree.store import RunTree
 from common.stage import latest_attempt
+from common.witness_routing import ROUTING_KIND, ROUTING_SCHEMA
 
 from . import CorpusRefusal
 from .cache import write_new_file
@@ -643,7 +644,7 @@ def evaluate_feed_page(
     (`_unit_record`), joined in the witness's own order. A record no unit lies
     on is an empty hypothesis (`no-unit-on-record`); a witness that did not
     read, or whose units carry no box, gives every record an empty hypothesis
-    by name. A witness in `roster` (those shown on any page of the run) that
+    by name. A witness in `roster` (the page's own, `page_rosters`) that
     this feed does not show -- a page fed with no testimony, say -- gives every
     record an empty hypothesis too (`witness-not-in-feed`). Every row is kept,
     so the denominator is every record on the page for every witness.
@@ -733,6 +734,66 @@ def page_feeds(tree: ReadOnlyRunTree) -> dict[int, dict[str, Any]]:
     return feeds
 
 
+def sealed_routing(tree: ReadOnlyRunTree) -> dict[str, dict[str, Any]]:
+    """Each page's sealed `witness-routing` decision, by page id; empty when the run routes none."""
+    decisions: dict[str, dict[str, Any]] = {}
+    for entry in tree.build_manifest(ATTESTATORES)["artifacts"]:
+        if entry["kind"] != ROUTING_KIND:
+            continue
+        payload = tree.read_artifact(ATTESTATORES, ROUTING_KIND, entry["artifact_id"])["payload"]
+        page_id = payload.get("page_id")
+        if payload.get("schema") != ROUTING_SCHEMA or not isinstance(payload.get("routed"), bool):
+            raise Refusal(
+                f"malformed-record: witness-routing record {entry['artifact_id']!r} is not a "
+                f"{ROUTING_SCHEMA} record"
+            )
+        if decisions.setdefault(page_id, payload) != payload:
+            raise Refusal(f"malformed-record: two witness-routing decisions for page {page_id!r}")
+    return decisions
+
+
+def _feed_chair(tree: ReadOnlyRunTree, witness: Mapping[str, Any]) -> str:
+    """The chair behind a feed row; a blinded feed names it only through its Testimonium."""
+    if witness.get("chair"):
+        return witness["chair"]
+    testimonium = tree.read_artifact_reference(
+        witness["testimonium_ref"], stage=ATTESTATORES, kind=PAGE_TESTIMONIUM
+    )
+    return testimonium["payload"]["chair"]
+
+
+def page_rosters(
+    tree: ReadOnlyRunTree, feeds: Mapping[int, Mapping[str, Any]]
+) -> dict[int, list[str]]:
+    """Each page's witness roster, by page ordinal, as the names its feed shows them by.
+
+    Every witness shown on any page of the run, less a routed chair on a page
+    its sealed `witness-routing` decision did not route to it: that chair was
+    never part of the page's roster, so its absence there is no miss.
+    """
+    chairs: dict[str, str] = {}
+    for feed in feeds.values():
+        for witness in feed.get("witnesses") or []:
+            name = _witness_name(witness)
+            if name not in chairs:
+                chairs[name] = _feed_chair(tree, witness)
+    routing = sealed_routing(tree)
+    rosters: dict[int, list[str]] = {}
+    for ordinal, feed in feeds.items():
+        if not routing:
+            rosters[ordinal] = sorted(chairs)
+            continue
+        decision = routing.get(feed["page_id"])
+        if decision is None:
+            raise Refusal(
+                f"malformed-record: page {feed['page_id']!r} has no sealed witness-routing "
+                "decision in a run that routes a witness"
+            )
+        off = set() if decision["routed"] else set(decision["routed_chairs"])
+        rosters[ordinal] = sorted(name for name, chair in chairs.items() if chair not in off)
+    return rosters
+
+
 def evaluate_page_feed_run(
     *,
     tree: RunTree,
@@ -805,11 +866,10 @@ def evaluate_page_feed_run(
             )
         scored.append((page, feeds[ordinal]))
         reference_records += len(page["acts"])
-    shown = sorted(
-        {_witness_name(w) for feed in feeds.values() for w in feed.get("witnesses") or []}
-    )
+    rosters = page_rosters(read_only, feeds)
     reports = [
-        evaluate_feed_page(reference_page=page, feed=feed, roster=shown) for page, feed in scored
+        evaluate_feed_page(reference_page=page, feed=feed, roster=rosters[feed["page_ordinal"]])
+        for page, feed in scored
     ]
     names = tuple(sorted({row["chair"] for report in reports for row in report["rows"]}))
     rows = [row for report in reports for row in report["rows"]]
