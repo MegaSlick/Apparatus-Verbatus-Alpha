@@ -2245,6 +2245,14 @@ class _PageReadRecords:
                 page_path.PERLECTIO_KIND,
             )
         }
+        self._by_subject = {
+            kind: _grouped(records, lambda record: record.get("subject_id"))
+            for kind, records in self.by_kind.items()
+        }
+        self._on_page = {
+            kind: _grouped(records, lambda record: _payload_of(record).get("page_id"))
+            for kind, records in self.by_kind.items()
+        }
         for record in self.by_kind[page_path.PERLECTIO_KIND]:
             schema = _payload_of(record).get("schema")
             if schema != page_path.PERLECTIO_SCHEMA:
@@ -2294,12 +2302,10 @@ class _PageReadRecords:
         return self._decisions
 
     def by_subject(self, kind: str, subject: str) -> list[dict[str, Any]]:
-        return [record for record in self.by_kind[kind] if record.get("subject_id") == subject]
+        return list(self._by_subject[kind].get(subject, ()))
 
     def on_page(self, kind: str, page_id: str) -> list[dict[str, Any]]:
-        return [
-            record for record in self.by_kind[kind] if _payload_of(record).get("page_id") == page_id
-        ]
+        return list(self._on_page[kind].get(page_id, ()))
 
     def ref(self, record: Mapping[str, Any]) -> dict[str, str]:
         path = self.tree.artifact_path(PERLECTOR, record["kind"], record["artifact_id"])
@@ -2319,6 +2325,25 @@ class _PageReadRecords:
                         f"Perlector {kind} {record.get('artifact_id')!r} names page {page!r}, "
                         "which this run's Exemplar never published"
                     )
+
+
+def _grouped(
+    records: list[dict[str, Any]], key: Callable[[dict[str, Any]], Any]
+) -> dict[Any, list[dict[str, Any]]]:
+    """`records` grouped by `key`, each group in record order.
+
+    A record whose key cannot be hashed, as a malformed list or object, is
+    left out: no subject or page id a caller asks about can equal it.
+    """
+    groups: dict[Any, list[dict[str, Any]]] = {}
+    for record in records:
+        value = key(record)
+        try:
+            group = groups.setdefault(value, [])
+        except TypeError:
+            continue
+        group.append(record)
+    return groups
 
 
 def _one(records: list[dict[str, Any]], what: str, attempt: str) -> dict[str, Any]:
