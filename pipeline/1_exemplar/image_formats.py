@@ -342,9 +342,8 @@ _JPEG_SOF_MARKERS: Final = frozenset(
 _JPEG_PROGRESSIVE_MARKERS: Final = frozenset({0xC2, 0xC6, 0xCA, 0xCE})
 _JPEG_ARITHMETIC_MARKERS: Final = frozenset({0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF})
 # Lossless frames code DC coefficients only and legally define no AC table at all.
-# Demanding one of them would refuse a conforming file — a page nobody reads, for a
-# check that was never owed, which is the exact regression a widened validator has
-# to avoid being.
+# Demanding one of them would refuse a conforming file: a page nobody reads, for a
+# check that was never owed.
 _JPEG_LOSSLESS_MARKERS: Final = frozenset({0xC3, 0xC7, 0xCB, 0xCF})
 
 

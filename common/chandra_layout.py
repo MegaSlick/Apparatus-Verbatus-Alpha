@@ -363,11 +363,11 @@ def _quoted(value: str | None) -> dict[str, Any]:
 
 # Matched with `fullmatch`, and anchorless on purpose. `re.match` against
 # `r"^[+-]?[0-9]+$"` accepts `"7\n"`, because Python's `$` also matches just
-# before a final newline -- so a component carrying a line break would have
-# been read as a number by a rule whose refusal says it is not a plain decimal
-# integer. `int("7\n")` is 7, so nothing was ever misread; the claim in the
-# record was simply false, and a check that does not enforce what it states is
-# not an honest measurement.
+# before a final newline -- so a component carrying a line break would be
+# read as a number by a rule whose refusal says it is not a plain decimal
+# integer. `int("7\n")` is 7, so the value would be right but the record's
+# claim false, and a check that does not enforce what it states is not an
+# honest measurement.
 #
 # The digit count is bounded too. A valid component is at most four digits
 # (`BBOX_SCALE` is 1000), so a cap of 16 is already generous headroom; without

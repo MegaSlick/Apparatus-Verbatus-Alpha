@@ -56,11 +56,10 @@ def test_nfc_and_whitespace_are_applied_equally_to_reference_and_hypothesis():
 def test_each_historical_distinction_separately_remains_an_error(
     reference, hypothesis, distinction
 ):
-    """One combined assertion could not tell which distinction had regressed.
+    """Each distinction is checked on its own, with the others held equal.
 
     `score_text("A, é", "a e")` differs in all three at once, so folding any
-    single one away left the rate above zero and the test green. Each is now
-    isolated, with the others held equal.
+    single one away would leave the rate above zero and a combined test green.
     """
 
     assert score_text(reference, hypothesis, profile=GRAPHEMIC_V1).cer.rate > 0, distinction

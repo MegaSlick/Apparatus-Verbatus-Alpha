@@ -234,7 +234,7 @@ def test_an_honest_act_at_the_calibrated_median_low_tail_is_not_flagged():
 
 
 def test_all_three_computed_signals_agreeing_suspicious_is_truncated_not_unknown():
-    """The all-suspicious case the design note names explicitly: a split vote
+    """The all-suspicious case: a split vote
     holds as `unknown`, but unanimous suspicion is confident enough to call
     `truncated` outright -- even when the engine claims it stopped normally,
     which is the direction that matters. An engine's `stop` never forces

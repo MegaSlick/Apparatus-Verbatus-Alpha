@@ -9,9 +9,8 @@
 # Nothing here changes a row of the run catalogue, its digest or its argv.
 #
 # Every row is `unproven`: a complete launch shape, not a claim that it started,
-# fitted or answered on real silicon. They exist for the post-bake-off Perlector
-# test (workbench design notes A5, A9, S0c, 2026-10-09): the same Qwen3.8-27B
-# reader, served smaller or faster, compared page by page with the bf16 row.
+# fitted or answered on real silicon. They serve the same Qwen3.8-27B reader
+# smaller or faster, to compare page by page with the bf16 row.
 #
 # Each row differs from the bf16 Perlector row (`unproven-real-perlector`,
 # generic-80gb-plus) only in `recipe`, `served_model_id`, `weights_gib`,
@@ -58,8 +57,8 @@
 # FP8 weights fit, but that tier's `context_cap` is 32,768 (config/
 # pod_placement.toml) while the Perlector's planning page needs 65,536
 # (`max_model_len`, serving_recipes_real.toml). Every cold73 page fitted in
-# under 26,000 tokens, but the cap and the planning size are the lead's to
-# change, not a variant's; see the S0c design note.
+# under 26,000 tokens, but the cap and the planning size are not a variant's
+# to change.
 schema = "serving-recipes.v1"
 
 # Official FP8 weights, otherwise the bf16 row.
@@ -225,7 +224,7 @@ readiness_probe = { kind = "chat-completions", request_json = "{\"messages\":[{\
 # tokenizer.json, vocab and merges are identical), `generation_config.json` (same
 # values; the rows use `generation_config = "vllm"` anyway) and a new
 # `processor_config.json` whose image processor matches preprocessor_config.json
-# apart from naming the non-"Fast" class. The bake-off sends `min_pixels` /
+# apart from naming the non-"Fast" class. The launcher sends `min_pixels` /
 # `max_pixels` itself; each page's prompt token count against the bf16 cache shows
 # whether the image geometry carried over. KV cache stays bf16 (the card's
 # example adds an fp8 KV cache; that would be a second change).

@@ -1386,8 +1386,7 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
             f"{value['transport_stop_reason']!r}"
         )
     view = value["view"]
-    # `framing` names which declared framing was asked; optional so earlier
-    # records stay valid.
+    # `framing` names which declared framing was asked; it may be absent.
     if set(view) - {"framing"} != {"prompt", "generation"}:
         raise SchemaRefusal(
             "a Churro page capture does not retain exactly its prompt and generation view"

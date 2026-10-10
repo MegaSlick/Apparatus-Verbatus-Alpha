@@ -1028,10 +1028,10 @@ class ServingManager:
         """After a taken-over service stopped, leave its lease to whoever still holds it.
 
         This manager never held that lease: the launching manager's descriptor
-        went to the service's processes, and only they can let it go. On
-        2026-10-08 one of them still held it after the
-        whole process group had exited and the endpoint was gone, and failing
-        here cost the Coniector its seal although its service was stopped. The
+        went to the service's processes, and only they can let it go. One of
+        them can still hold it after the whole process group has exited and
+        the endpoint is gone; failing here would cost the stage its seal
+        although its service stopped. The
         group and the endpoint are what this stop verifies; the lease stays
         the gate every later start must pass, so while such a process lives
         no server can start on the card. Its holders are named on stderr.

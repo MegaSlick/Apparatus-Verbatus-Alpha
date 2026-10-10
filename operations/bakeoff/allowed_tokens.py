@@ -5,8 +5,7 @@ vLLM 0.30.0 accepts `allowed_token_ids` on a chat request
 token at sampling, including the verification step of speculative decoding
 (`vllm/v1/sample/rejection_sampler.py`). The point, for a reader that
 transcribes French and Latin registers into JSON: a token that cannot be emitted
-cannot be silently substituted for a rare name piece (Qwen3.8-27B discussion
-#175, design note A5 section 4). It changes what the model may write, so it is
+cannot be silently substituted for a rare name piece. It changes what the model may write, so it is
 never on by default; an arm that uses it says so in every request record.
 
 A set is computed from the served snapshot's own `tokenizer.json` by a fixed

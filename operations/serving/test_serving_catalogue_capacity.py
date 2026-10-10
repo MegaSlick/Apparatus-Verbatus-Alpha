@@ -239,10 +239,10 @@ def test_no_shipped_row_exceeds_its_tiers_context_cap():
 
 
 def test_the_measured_failures_this_change_answers_are_still_failures_at_the_old_numbers():
-    """The counterfactual, against the numbers the catalogue used to ship.
+    """The counterfactual, against the earlier, too-large catalogue numbers.
 
-    Kept because the fix is a config change: without this, a later edit could
-    put the old contexts back and nothing would notice until a card was rented.
+    The guard is a config value, so without this a later edit could put those
+    contexts back and nothing would notice until a card was rented.
     """
 
     old = {
@@ -288,7 +288,7 @@ def test_measured_witness_rows_have_a_600s_startup_budget() -> None:
     ]
 
 
-# F005/F052: `operations/serving/preflight.py` only refuses a row's
+# `operations/serving/preflight.py` only refuses a row's
 # `gpu_memory_utilization` above its tier's `engine_memory_fraction` ceiling
 # (config/pod_placement.toml) -- nothing checks a row against the VRAM floor
 # this project's own arithmetic already computed for it, so a too-low value

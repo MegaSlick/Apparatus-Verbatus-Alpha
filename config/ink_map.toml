@@ -33,7 +33,7 @@
 #                          floored at background.PRIMARY_MARGIN. Not a bound: it
 #                          refuses nothing and decides no outcome, it sets the
 #                          level every ink count on the page is taken at. A fixed
-#                          offset was wrong here because a photographed leaf's
+#                          offset does not work because a photographed leaf's
 #                          paper is a population dozens of levels wide and a fixed
 #                          offset lands inside it; the distance between the page's
 #                          two modes is the scale that offset was missing. Held

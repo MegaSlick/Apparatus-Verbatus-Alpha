@@ -1,7 +1,7 @@
 """The two-controller armer, and a report channel that cannot say "not yet" by mistake.
 
-`arming.FailClosedControllerArmer` refuses every launch because no runtime
-handshake existed.  This module is that handshake: it starts the durable laptop
+`arming.FailClosedControllerArmer` refuses every launch.  This module is the
+runtime handshake that can arm one: it starts the durable laptop
 supervisor (`supervise.py`) as a real process, then waits for the pod's own
 timer to publish its first durable report where the laptop can read it, and
 turns the two observations into the exact receipt
@@ -24,9 +24,9 @@ returning and the pod's timer writing its first report lie two entirely
 different delays: the provider scheduling the pod and pulling an image that is
 commonly several gigabytes on a cold host, and then the volume's network view
 catching up with an object the running pod wrote.  Only the second is what
-`CONTROLLER_ARMING_TIMEOUT_SECONDS` was ever reasoning about, and running both
-out of that one budget meant a pod that pulled for six minutes was terminated
-for a report it was a minute away from writing.  So the armer waits for the
+`CONTROLLER_ARMING_TIMEOUT_SECONDS` bounds; running both out of that one budget
+would terminate a pod that pulled for six minutes for a report it was a minute
+away from writing.  So the armer waits for the
 container first, on its own generous `CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS`
 bound and an optional `ContainerLivenessProbe`, and starts the channel bound
 only when that wait ends.  **Both durations are recorded** -- in the arming
@@ -36,9 +36,8 @@ covering both is a number about neither.
 
 The container wait never refuses on its own.  Its signal is optional and
 documented rather than observed; "no start was reported" is therefore not
-evidence that no start happened, and the thing that decides
-whether a pod is armed stays what it always was -- a report this pod wrote,
-read back through the channel.
+evidence that no start happened, and what decides whether a pod is armed is
+a report this pod wrote, read back through the channel.
 
 **Raising the bounds for a short-lived drill.**  Both bounds are constructor
 keywords (``timeout_seconds``, ``container_timeout_seconds``), so the untracked
@@ -108,9 +107,6 @@ performs the identical read and never arms, for the first authorized boot.
   delivery must never change a decision.
 - SSH or exec into the pod to read the report: a second transport and credential for a fact
   the volume already holds.
-- Keep `arming.FailClosedControllerArmer` past the first boot: that boot could never be green.
-- Do the RunPod v2 migration in the same change: it is separate work and would hide under
-  controller work.
 """
 
 from __future__ import annotations

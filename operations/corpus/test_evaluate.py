@@ -494,7 +494,7 @@ def test_a_real_partial_export_is_scored_from_its_own_records_with_the_held_act_
     assert check["state"] in ("matches-checkout", "differs-from-checkout", "no-checkout-found")
     if check["checkout_head"] is not None:
         # Any honest abbreviation of the head reads as a match, not just the
-        # three lengths this module first thought of (round 2 item 3).
+        # three most common lengths.
         for length in (7, 10, 12, 40):
             abbreviated = evaluate_run(
                 sealed_run, [reference], code_ref=check["checkout_head"][:length]
@@ -710,8 +710,7 @@ def test_a_comparison_refusal_travels_under_this_modules_name(sealed_run):
     A reference page declaring a frame smaller than the one the run sealed its
     acts in makes `compare_page` refuse `region-outside-page` -- a real
     disagreement between the two sides, and a name outside
-    `EVALUATION_REFUSAL_REASONS`. Round 2 item 11 settles that a delegated
-    refusal travels under the caller's own name, with the delegate's text kept
+    `EVALUATION_REFUSAL_REASONS`. A delegated refusal travels under the caller's own name, with the delegate's text kept
     in the detail.
     """
     tree = sealed_run
@@ -771,7 +770,7 @@ def test_naming_a_ledger_is_a_check_not_a_caption(sealed_run):
 
 
 def test_a_reference_page_that_does_not_validate_is_refused_under_this_modules_name(sealed_run):
-    """Round 2 item 11: a delegated refusal travels under the caller's vocabulary."""
+    """A delegated refusal travels under the caller's vocabulary."""
     reference = json.loads(json.dumps(_fixture_reference_for_page_one(sealed_run)))
     reference["acts"][0]["text"] = " "
     with pytest.raises(CorpusRefusal, match="^reference-page-invalid:") as refused:

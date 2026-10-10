@@ -1327,7 +1327,7 @@ def test_the_pre_export_reading_path_prints_every_state_the_same_way():
 
 
 def test_a_malformed_layer_beside_a_missing_assessment_is_still_refused():
-    """The absence line used to return before the layers were looked at."""
+    """The layers are checked even when the assessment is missing."""
     with pytest.raises(review_text.ProjectionShapeError) as refused:
         review_text.render(
             _delivered_act({"assessment": None, "uncertain_spans": "not a list", "gaps": []})

@@ -274,9 +274,8 @@ def test_vote_check_counts_wrong_majorities(tmp_path):
 
 
 def test_vote_check_and_the_scorecard_share_one_vote(tmp_path):
-    # C7: gold "mai", witnesses mai / mars / juin. vote_check called the vote right (tie
-    # to the first shown) while the scorecard credited a reader of "mai" with beating
-    # it. Both now call it a tie, reported apart.
+    # Gold "mai", witnesses mai / mars / juin: vote_check and the scorecard both call
+    # it a tie, reported apart.
     feed = _three(_tree(tmp_path).pages[1].feed, second="Le dix mars")
     feed["witnesses"][0]["units"] = feed["witnesses"][0]["units"][:1]
     feed["witnesses"][0]["units"][0]["text"] = "Le dix mai"
@@ -297,8 +296,7 @@ def test_vote_check_and_the_scorecard_share_one_vote(tmp_path):
 
 
 def test_name_swap_and_normalised_record_one_site_per_position(tmp_path):
-    # C7: name-swap recorded each swapped position once per witness (two positions over
-    # three witnesses became six sites, each k=3); plant-3 records one site per position.
+    # Name-swap and plant-3 record one site per swapped position, not one per witness.
     feed = _three(_tree(tmp_path).pages[1].feed)
     ref = _ref(feed=feed)
     swap = M.mutate(feed, ref, "name-swap", seed=0)
@@ -411,7 +409,7 @@ def test_planted_copies_judges_each_site():
 
 
 def test_reference_keeps_doubt_marks_and_tracks_doubt_by_position(tmp_path):
-    # C7 P1/P2: the entry text is the diplomatic target (marks kept); a gap-only act is
+    # The entry text is the diplomatic target (marks kept); a gap-only act is
     # still an entry; the certain first "Marie" stays certain and the doubtful second one
     # is the unresolved word, so agreement can never make it plantable.
     ref = _ref("Le [[?]] [[juin|juillet]] mil huit")
@@ -438,7 +436,8 @@ def test_reference_keeps_doubt_marks_and_tracks_doubt_by_position(tmp_path):
 
 
 def test_planted_sites_are_bound_to_the_scored_reference():
-    # C7: any in-range index was judged, so a revised gold scored another word.
+    # A planted site is judged only against the reference it was planted in, so a
+    # revised gold does not score another word.
     digest = C.reference_digest(("le", "dix", "mai"))
     held = {"reference_sha256": digest, "reference_record_sha256": "r" * 64}
     rows = [{"page": "p001", "parsed": True, "reader_right": [True, True, False],
@@ -460,8 +459,9 @@ def test_planted_sites_are_bound_to_the_scored_reference():
 
 
 def test_planted_sites_are_bound_to_the_whole_reference(tmp_path):
-    # R3: R1 bound sites to the scored words; two references with the same words but
-    # another doubt mark (so other statuses, other plantable words) now differ too.
+    # Sites are bound to the whole reference, not only the scored words: two references
+    # with the same words but another doubt mark (other statuses, other plantable
+    # words) differ.
     tree = _tree(tmp_path)
     feed = tree.pages[1].feed
     plain = _ref(TEXT, feed)
@@ -497,7 +497,7 @@ def test_planted_sites_are_bound_to_the_whole_reference(tmp_path):
 
 
 def test_fed_arm_and_scorer_refuse_a_mutation_planted_from_another_reference(tmp_path):
-    # R3: the gold changed (a doubt mark added) after the mutations were planted; the
+    # The gold changed (a doubt mark added) after the mutations were planted; the
     # scored words are the same. fed_arm --gold refuses before sending; the scorer
     # judges no site.
     tree = make_run_tree(tmp_path / "run", pages=((TEXT, TEXT),))

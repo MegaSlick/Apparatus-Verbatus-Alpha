@@ -20,7 +20,7 @@ end_pod = "delete"
 # hard_stop_min = 300            # the lead's cap for the day; off unless set
 cpu_threads = "auto"             # the pod's CPUs less 2 for the GPU lane, shared by CPU arms
 
-# --- the three baselines as on 2026-10-08 (our vLLM adapters) ---------------------
+# --- the three baselines (our vLLM adapters) ---------------------------------------
 
 # Its box includes the first fetch onto an empty volume (10.6 GB through the store).
 [[arms]]
@@ -44,7 +44,7 @@ command = [".venv/bin/python", "-m", "operations.bakeoff.witness_run", "run", "-
   "--store-root", "/workspace/private/model-store", "--detector-threads", "4"]
 
 # DAI twice more: the detector at a lower confidence and a larger image, then the same
-# with the whole page shown when no record is found (handback/DAI-integration-report.md).
+# with the whole page shown when no record is found.
 [[arms]]
 name = "dai-conf10"
 time_box_min = 10

@@ -1,4 +1,4 @@
-"""Counterfactual witness feeds: the trap generator (training plan, Stage 0 item 2).
+"""Counterfactual witness feeds: the trap generator.
 
     python -m operations.bakeoff.mutations --run-tree RUN --gold DIR --gold-glob '*/Prepped/*.txt' \\
         --scenario plant-1 --out DIR [--seed N] [--pages STEMS]
@@ -35,7 +35,7 @@ the planted form, class, the witnesses and unit ids) and structural changes (`ch
 which `fed_arm run --mutations DIR` sends and `fed_score` reads to count planted-error
 copies. The record names the reference it was planted from by two digests,
 `reference_sha256` (the scored words) and `reference_record_sha256` (the whole reference,
-`reference_record_digest`); the exporter, the fed arm and the scorer check them. `vote_check` reports the "voting must lose" rule of A7a: on name, date and number
+`reference_record_digest`); the exporter, the fed arm and the scorer check them. `vote_check` reports the "voting must lose" rule: on name, date and number
 spans a majority-vote reader should be wrong 25-35% of the time across a dataset.
 
 The reference is the page's gold or silver text (`Reference`): entries with text, and one

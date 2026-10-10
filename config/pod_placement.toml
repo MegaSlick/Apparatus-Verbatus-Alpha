@@ -11,7 +11,7 @@
 # hourly_usd figures are RunPod Secure on-demand prices checked 2026-08-05; the
 # gpu_type_id strings come from RunPod's documentation, so confirm the exact
 # accepted string in the console before a live launch. Nothing here chooses a
-# card: that is the project lead's call.
+# card.
 #
 # UNITS. `context_cap` is tokens. `batch_size` is concurrent sequences.
 # `planned_batch_ceiling` is concurrent sequences too: the most a capacity plan

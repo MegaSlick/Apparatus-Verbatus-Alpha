@@ -18,8 +18,7 @@ schema-sufficiency demonstration, in `pipeline/6_archetypus/test_annotations.py`
 What this does **not** itself prove: that every *packaged* literal-text format
 (text-bundle, acts-database, jsonl, csv) carries the same characters. All four ship
 today as members inside the single `export` artifact kind, so a guard keyed on
-artifact *kind* would never see a new one land (F090) — this module's own guard
-used to be keyed that way and could not fire. The guard below instead reads the
+artifact *kind* would never see a new one land. The guard below instead reads the
 packaged manifest's own `formats.formats` list, which does grow the moment a
 format is added or removed, and the cross-format identity claim itself is proven
 by `pipeline/7_armarium/armarium_export.py::_compare_literal_projections`, built
@@ -105,8 +104,8 @@ def test_every_delivered_export_text_hashes_to_its_archetypus_record(tmp_path, s
     tree = RunTree(root, "r")
     # A sanity check on the artifact *kinds* the Armarium publishes -- stable by
     # design, since every literal-text format ships as a member inside the one
-    # `export` kind rather than as a kind of its own (F090: this shape is
-    # exactly why a kind-keyed guard can never see a new format arrive).
+    # `export` kind rather than as a kind of its own (which is why a kind-keyed
+    # guard can never see a new format arrive).
     all_kinds = {entry["kind"] for entry in tree.build_manifest(ARMARIUM)["artifacts"]}
     boundary_kinds = {"decode-environment", "stage-seal"}
     assert all_kinds & boundary_kinds == boundary_kinds

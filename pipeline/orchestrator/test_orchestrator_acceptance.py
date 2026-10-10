@@ -307,13 +307,10 @@ def _orchestrator_namespace_fields(tmp_path: Path) -> dict:
         page_accounting_config=ROOT / "config" / "page_accounting.toml",
         reconstruction_config=ROOT / "config" / "reconstruction.toml",
         ink_map_config=ROOT / "config" / "ink_map.toml",
-        # `config/armarium_formats.toml` until now, which is a file that has
-        # never existed: the Armarium's formats policy is `config/formats.toml`
-        # (`common/armarium_formats.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH`, which
-        # is what `--formats-config` actually defaults to). Harmless while these
-        # mocked tests only assert argv presence, and wrong the moment one of
-        # them reads the file -- a stand-in that mirrors the argv surface must
-        # name the surface's own path.
+        # The Armarium's formats policy is `config/formats.toml`
+        # (`common/armarium_formats.DEFAULT_ARMARIUM_FORMATS_CONFIG_PATH`, what
+        # `--formats-config` defaults to): a stand-in that mirrors the argv
+        # surface names the surface's own path.
         formats_config=ROOT / "config" / "formats.toml",
         recovery_config=ROOT / "config" / "recovery.toml",
         hard_failure_config=ROOT / "config" / "hard_failure.toml",
@@ -605,7 +602,7 @@ def test_orchestrator_upload_credentials_are_the_transfers_own(
 def test_orchestrator_and_surface_strip_every_provider_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """F016: a stage subprocess decodes attacker-supplied material, so both
+    """A stage subprocess decodes attacker-supplied material, so both
     `stage_environment` builders must refuse every provider credential except
     the transfer's own two S3 keys -- RUNPOD_API_KEY (pod creation, i.e.
     money), HF_TOKEN, AWS_*, and anything else shaped like a secret -- the
@@ -1836,7 +1833,7 @@ def test_the_config_digest_still_binds_the_scenario_as_well_as_the_chairs(happy_
     assert run_config_bindings(config, altered, "happy")["config_digest"] != happy
 
 
-# --- the commit and the clock the tree could not carry (F098) ------------------
+# --- the commit and the clock the tree could not carry ------------------------
 
 
 COMMIT = "a1b2c3d4" * 5
@@ -1933,10 +1930,9 @@ def test_a_stage_timing_journal_records_every_invocation_outside_the_run_tree(
 def test_a_short_revision_is_refused_on_a_run_that_does_not_start_at_the_door(tmp_path):
     """Every selected sequence validates it, not only the one that opens at the Door.
 
-    `repository_commit` used to be reached from the Door's own argv build and
-    from the timing journal, so a manual or semi run starting later -- with no
-    journal configured, nothing else reads it -- could accept a malformed
-    revision and go on to execute stages.
+    A manual or semi run that starts after the Door, with no timing journal
+    configured, must not accept a malformed `repository_commit` and go on to
+    execute stages.
     """
 
     root = tmp_path / "runs"

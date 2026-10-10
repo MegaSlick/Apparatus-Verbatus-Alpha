@@ -1,4 +1,4 @@
-"""Synthetic-store tests for R1 acquisition; no network or real weights are used."""
+"""Synthetic-store tests for model acquisition; no network or real weights are used."""
 
 import copy
 import hashlib
@@ -136,7 +136,7 @@ def test_store_refuses_a_pinned_licence_whose_bytes_are_gone(tmp_path):
         verify_store(tmp_path)
 
 
-# --- S1: publish-once custody (evidence is never overwritten) -----
+# --- publish-once custody (evidence is never overwritten) -----
 
 
 def test_publication_reuses_identical_bytes_silently(tmp_path):
@@ -216,7 +216,7 @@ def test_promote_verified_snapshot_refuses_a_pending_shaped_entry_by_name(tmp_pa
         promote_verified_snapshot(tmp_path, entry)
 
 
-# --- S5: a canonical writer closes the "hand-authored JSON" gap -----------------
+# --- a canonical writer, never hand-authored JSON ----------------------------
 
 
 def test_write_download_record_round_trips_through_load_download_record(tmp_path):
@@ -405,7 +405,7 @@ def test_v1_active_record_refuses_writers_before_publication(tmp_path):
     assert set((tmp_path / "records").iterdir()) == archives
 
 
-# --- S3: symlink escape is refused in both directions ---------------------------
+# --- symlink escape is refused in both directions ---------------------------
 
 
 @pytest.mark.hostile_local
