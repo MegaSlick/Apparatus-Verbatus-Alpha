@@ -795,15 +795,19 @@ The single-resident GPU lock is `/tmp/verbatus-pod-gpu.lock` on container-local 
 
 ## The pod CLI
 
-`python -m operations.pod.cli` has `create`, `adopt` and `close`. **It has never started,
-inspected or billed a live pod**: every adapter test uses an in-memory transport, and the
-RunPod field names come from RunPod's documentation (cited in `provider_runpod.py`). Before
-its first live run, work through the [first live-run checklist](#first-live-run-checklist).
+`python -m operations.pod.cli` has `create`, `adopt` and `close`, built around a lease, a
+laptop supervisor and a pod-side timer. **It has never started, inspected or billed a live
+pod**: every adapter test uses an in-memory transport, and the RunPod field names come from
+RunPod's documentation (cited in `provider_runpod.py`). Its first live run follows
+[the boot plan](#the-boot-plan-boot-a-the-drill-before-boot-b).
 
 Create and adopt need explicit untracked provider and controller-armer factories plus a
 request file, so the repository holds no credential or provider default. They print price
-and ceilings and prompt for a typed phrase; EOF is a refusal. **Do not invoke a factory that
-could contact a provider without the lead's current-session permission.**
+and ceilings and prompt for a typed phrase (derived from the preview and a single-use
+challenge; an operational guard, not the lead's permission); EOF is a refusal. **Do not
+invoke a factory that could contact a provider without the lead's current-session
+permission.** A request must make the provider-neutral timer the primary command, with a
+mandatory bootstrap command and a durable report path on the volume.
 
 | Exit | Meaning |
 |---|---|
@@ -811,199 +815,117 @@ could contact a provider without the lead's current-session permission.**
 | 2 | a refusal naming no pod, lease or close |
 | 3 | anything that observed or touched a real pod, wrote a lease or attempted a close: go and look |
 
-A request must make the provider-neutral timer the primary command, with a provider-owned
-timer factory, a mandatory bootstrap command and a durable report path on the volume.
+- **`close --lease <id>`** closes one live lease through `supervise.close_lease_now`;
+  anything short of verified is `UNVERIFIED CLOSE`, exit 3. It needs no armer or phrase. It
+  refuses before any terminate an id that is not 32 lowercase hex characters, a lease this
+  account does not hold, a lease file whose `lease_id` differs from its name, and a lease a
+  live supervisor holds. Failures before the provider is reached are `CLOSE NOT ATTEMPTED:`,
+  exit 3. `--provider-name` is a label, not proof of account, so a pod reported absent before
+  any terminate refuses (a wrong-account factory would see a genuine absence). `--spend` is
+  required.
+- **`--record-fixture PATH`** appends every provider exchange as JSON lines (0600, fsynced,
+  never truncated), with credential-shaped values and the launch token replaced
+  (`verbatim: false`), so a drill leaves a replayable fixture. A provider without
+  `record_exchanges` refuses the flag by name before any preview, except under `close`.
 
-### `close --lease <id>`
+### Guards on spending (`spend.py`)
 
-Closes one live lease through `supervise.close_lease_now`; anything short of verified is
-`UNVERIFIED CLOSE`, exit 3. It needs no armer or phrase, because it stops spending. It
-refuses before any terminate: an id that is not 32 lowercase hex characters; a lease this
-account does not hold; a lease file whose `lease_id` differs from its name; a lease a live
-supervisor holds. Failures before the provider is reached (a bad `--provider-factory`, an
-unreadable `--spend`) are `CLOSE NOT ATTEMPTED:`, exit 3. `--provider-name` is a label, not
-proof of account, so a pod reported absent before any terminate refuses (a wrong-account
-factory would see a genuine absence). `--spend` is required.
+- **Ceilings** cover pod plus volume, hourly and over the hard lifetime, and apply again to
+  the price the provider actually returned: a pod created above it is closed at once.
+- **Card allowlist.** Create refuses a `gpu_type` not in `config/pod_placement.toml`, or one
+  whose reviewed price exceeds `max_hourly_usd` net of the volume rate (`refused-card`).
+  `adopt` is not gated: refusing an existing pod would leave it billing unguarded.
+- **Spend policy.** Paid paths refuse unless `config/spend.toml` is a configured policy the
+  lead reviewed; `billing_cutoff_margin_seconds` must lie in 0–3600.
+- **Balance floor.** `account_balance_floor_usd` is tested against the observed balance net of
+  this action's cost and every liability in the lease root, at the create and adopt gates
+  only. An unavailable source, or an observation older than 60 s or future-dated, refuses.
+  `account_balance_alert_usd` sends a warning between floor and alert line (at most once per
+  fifteen minutes).
+- **One live pod.** Create and adopt serialize under one lock and refuse
+  (`refused-active-lease`) while any lease in the root is short of `closed-verified`. Use one
+  lease root per provider account.
 
-### `--record-fixture PATH`
+### Leases and the two controllers
 
-Appends every provider exchange as JSON lines (0600, fsynced, never truncated) so a drill
-leaves a replayable fixture. Credential-shaped values and the launch token are replaced and
-the record says `verbatim: false`. A provider without `record_exchanges` (the fake) refuses
-the flag by name before any preview, except under `close`, which records it and still
-closes.
+A lease is written before create and recovered by exact launch token after a restart. A
+launch is green only when the laptop supervisor has started **and** a pod-timer
+acknowledgement is durably bound to the exact lease, pod and hard deadline; one that cannot
+arm both closes its own pod. Closing a pod never touches the volume (there is no
+volume-delete operation). Billing capture at close is retried 3 times, 15 s apart; "not
+posted yet" reports `pending-reconciliation`.
+
+- **`supervise.py`** (`python -m operations.pod.supervise`) supervises one lease from the
+  laptop. Ownership is a kernel `fcntl.flock` on `supervisors/supervisor-<lease>.lock`, not a
+  pid. Every tick re-reads `provider.status()` and closes on any word but `RUNNING`, except
+  `PROVISIONING`/`STARTING` while arming or up to 600 s after; `ERROR` closes at once. An
+  unanswering provider is not a reason to close. It is a long-lived process while a pod
+  bills: arrange to learn promptly if it dies.
+- **`controller_armer.py`**: `ChannelControllerArmer.arm` starts the supervisor first, hands
+  it the launch's owner token through a 0600 identity file (never argv), and heartbeats the
+  lease while polling for the pod timer's report, which travels through the volume and is read
+  through RunPod's S3 view (`None` only when proven absent). `ObservingControllerArmer` never
+  arms, so its launch closes the pod at once.
+- **The pod timer** (`pod_timer.py`) closes the pod at the hard deadline. It can be destroyed
+  by its own DELETE, so final verification belongs to the laptop. If it fails before a
+  provider-backed timer exists, the pod goes `EXITED` and bills volume disk at double rate
+  until the supervisor (or `close --lease`) closes it. `<stem>-terminating.json` tells "never
+  tried" from "destroyed mid-verification"; the laptop's close record is authoritative.
 
 ### Provider adapters
 
-`provider.py` is the seven-verb provider seam; `provider_runpod.py` holds the RunPod
-adapters behind one `HttpTransport`. `fake_provider.py` has a fixed price sheet, crash
-recovery and injected failures.
+`provider.py` is the seven-verb provider seam; `provider_runpod.py` holds the RunPod adapters
+behind one `HttpTransport`; `fake_provider.py` is the offline stand-in.
 
-- **`RunPodV2Provider`** (`api.runpod.io/v2`) is the default. RunPod retires v1 on
-  2026-11-15.
-- **`RunPodProvider`** (`rest.runpod.io/v1`) stays selectable until a live run under v2 is
-  green. `provider_runpod.live_runpod_provider(key, pod_price=..., volume_price=...,
-  route=...)` picks one (`route` defaults to `"v2"`). Each adapter refuses a transport
-  pointed at the other's root.
-- **A v2 create is refused by name before any POST** until the lead records a basis in
-  `provider_runpod.V2_ON_DEMAND_BASIS`: v2 has no `interruptible` field, and the runtime
-  needs an on-demand pod proven before it spends. Paid creates go through v1. Every other
-  v2 verb works.
-- The pod-side timer uses the route that created its pod: each create adds
-  `VERBATUS_RUNPOD_ROUTE` to the pod's `env`.
-- Under v2 the start command is sent as `args` in exec form
-  (`{"entrypoint": [interpreter], "cmd": [rest of argv]}`) so the image's ENTRYPOINT cannot
-  wrap the timer; anything else read back is refused. `PROVISIONING`/`STARTING` are waited
-  on; `ERROR` closes at once. `402`, `400` and `422` on create are named refusals, never
-  retried. `409` on terminate (a cluster pod) is `TerminateRefused` and reported
-  `failed-shutdown` with the console remedy. The pod list includes cluster pods and is
-  followed to its last page; an incomplete list refuses.
-- **Account balance.** `GraphQLBalanceObserver` reads `myself { clientBalance
-  currentSpendPerHr }` with the key as the `api_key` query parameter, scrubbed from every
-  error and fixture. It refuses any malformed, redirected, erroring, non-numeric, negative
-  or credential-bearing answer. The currency (USD) is documented, not observed. RunPod
-  documents the GraphQL route as retiring in early 2027, and no v2 endpoint reports a
-  balance.
-
-### `spend.py`: prices, ceilings and the typed phrase
-
-- **The phrase** is derived from the preview (action, subject, both hourly rates, and a
-  single-use challenge). It is an operational guard, not the lead's permission, and does
-  not stop a script.
-- **Ceilings** cover pod plus volume, hourly and over the hard lifetime, and apply again to
-  the price the provider actually returned: a pod created above it is closed at once.
-- **Card allowlist.** Create refuses a `gpu_type` not in the placement table, or a row whose
-  reviewed price exceeds `max_hourly_usd` net of the volume rate (`refused-card`). `adopt`
-  is not gated: refusing an existing pod would leave it billing unguarded.
-- **Spend policy.** Paid paths refuse unless `config/spend.toml` is a configured policy the
-  lead reviewed. `billing_cutoff_margin_seconds` must lie in 0–3600.
-- **Balance floor.** `account_balance_floor_usd` is tested against the observed balance net
-  of this action's cost and every liability in the lease root. An unavailable source, or an
-  observation older than 60 s or future-dated, refuses. The balance is read only at the
-  create and adopt gates.
-- **One live pod.** Create and adopt serialize under one lock and refuse
-  (`refused-active-lease`) while any lease in the root is short of `closed-verified`.
-- **Alerts.** `account_balance_alert_usd` sends a warning when a reading is above the floor
-  but below the alert line (suppressed for fifteen minutes; two safe readings re-arm it).
-- **Use one lease root per provider account**: separate roots cannot see each other's
-  liabilities.
-
-### Shutdown, leases and the two controllers
-
-`shutdown.py`'s only green result is the verified close above. Billing capture is retried 3
-times, 15 s apart; an adapter that can tell "not posted yet" reports
-`pending-reconciliation`. `lease.py`, `controllers.py`, `arming.py` and `pod_timer.py`
-implement a lease written before create, restart recovery by exact launch token, the laptop
-supervisor, the mandatory bootstrap, and an independent pod-side hard-lifetime timer. A
-launch is green only when the laptop supervisor has started **and** a pod-timer
-acknowledgement is durably bound to the exact lease, pod and hard deadline.
-
-- **Fail closed.** A launch that cannot arm both controllers closes its own pod. An active
-  lease with no receipt is closed by the supervisor once its launch owner stops
-  heartbeating.
-- **Closing a pod never touches the volume.** There is no volume-delete operation; the close
-  report states the volume's ongoing price.
-
-**`supervise.py`** (`python -m operations.pod.supervise`) runs the laptop supervisor for one
-lease. Ownership is a kernel `fcntl.flock` on `supervisors/supervisor-<lease>.lock`, not a
-pid (a pid can be reused after a reboot). Every tick re-reads `provider.status()` and closes
-on any word other than `RUNNING`, except `PROVISIONING`/`STARTING` while a launch is still
-arming, or for up to 600 s after arming; `ERROR` closes at once. A provider that cannot
-answer is not a reason to close. Exit status follows the CLI. Starting it means a long-lived
-process while a pod bills: arrange to learn promptly if it dies. The operator's `status`
-shows a supervisor block per open lease.
-
-**`controller_armer.py`**: `ChannelControllerArmer.arm` starts the laptop supervisor first
-(so a launcher that dies mid-poll still leaves a guard), hands it this launch's owner token
-through the identity file (0600, never in argv), and heartbeats the lease while polling for
-the pod timer's report. The report travels through the mounted volume and is read through
-RunPod's S3 view; `TimerReportChannel.read` returns `None` only when the object is proven
-absent. `ObservingControllerArmer` runs the same procedure but never arms, so the launch
-closes its pod at once; Boot A uses it.
-
-**The pod timer.** A pod-side process can be destroyed by its own DELETE, so final
-verification belongs to the laptop. If `pod_timer.py` fails before a provider-backed timer
-exists, nothing on the pod can terminate it; the pod goes `EXITED` and bills volume disk at
-double rate until the laptop supervisor (or `close --lease`) closes it. The pod-side report
-is usually truncated (`close: null`); `<stem>-terminating.json` tells "never tried" from
-"destroyed mid-verification". **The laptop-side close record is authoritative.**
-
-### `boot_a_request.py`
-
-```sh
-python -m operations.pod.boot_a_request --spend config/spend.toml --placement config/pod_placement.toml
-```
-
-Renders the plain-language request the lead reads before the drill: the cheapest reviewed
-card and rate, the hard lifetime (900 s or the policy ceiling), ceilings, full-lifetime cost,
-the exact command with `--record-fixture`, and the request JSON with `--image`,
-`--volume-id`, `--repository-commit` and `--hard-deadline` marked unsupplied. An
-unconfigured policy renders a refusal, exit 2. The text authorizes nothing.
+- **`RunPodV2Provider`** (`api.runpod.io/v2`) is the default; **`RunPodProvider`**
+  (`rest.runpod.io/v1`) stays selectable until a live v2 run is green. RunPod retires v1 on
+  2026-11-15. `provider_runpod.live_runpod_provider(key, pod_price=..., volume_price=...,
+  route=...)` picks one. Each create adds `VERBATUS_RUNPOD_ROUTE` to the pod's `env`, so the
+  pod timer uses the same route.
+- **A v2 create is refused by name** until the lead records a basis in
+  `provider_runpod.V2_ON_DEMAND_BASIS`, since v2 has no `interruptible` field; paid creates go
+  through v1. Every other v2 verb works.
+- Under v2 the start command is sent as exec-form `args` (`{"entrypoint": [...], "cmd":
+  [...]}`), so the image's ENTRYPOINT cannot wrap the timer. `402`, `400` and `422` on create
+  are named refusals; `409` on terminate (a cluster pod) is `TerminateRefused`. The pod list
+  includes cluster pods and is followed to its last page.
+- **Balance.** `GraphQLBalanceObserver` reads `myself { clientBalance currentSpendPerHr }`
+  with the key as a query parameter, scrubbed from every error and fixture. USD is documented,
+  not observed. RunPod documents GraphQL as retiring in early 2027, and no v2 endpoint reports
+  a balance.
 
 ### The boot plan: Boot A, the drill, before Boot B
 
-The first live run of the pod CLI is split in two, because the acknowledgement channel is
-the one thing no offline test can measure.
+The first live run of the pod CLI is split in two, because the acknowledgement channel is the
+one thing no offline test can measure. Each boot needs separate in-session permission, the GPU
+class and the S3 keys in the launching shell.
 
-- **Boot A** uses the cheapest card, a hard lifetime around 900 s, `ObservingControllerArmer`,
-  `bootstrap_main --hold-only` and `--record-fixture`. It closes its pod at once and learns
-  four facts: does the pod-written object appear in the S3 view, under which key, after how
-  long, and does the pod-scoped key hold delete and billing rights. The arming wait is two
-  waits, recorded separately (`pod-arming-drill.v2`): container start
-  (`CONTROLLER_CONTAINER_START_TIMEOUT_SECONDS`, 600 s) then the channel
-  (`CONTROLLER_ARMING_TIMEOUT_SECONDS`, 300 s). The defaults sum to the whole 900 s, leaving
-  nothing for the close, so pass smaller bounds (for example 300/300) or authorize a longer
-  lifetime; `boot_a_request.py` prints the sum.
-- **Boot B** uses `ChannelControllerArmer` with bounds from Boot A, then materializes,
-  preflights and runs the checklist. `boot_b_request.py` builds a real `PodCreateRequest`
-  before printing; its start command nests `pod_run`'s argv and, after `--`,
-  `bootstrap_main`'s, and the gate binds the launch token into both.
+- **Boot A** renders its request with `python -m operations.pod.boot_a_request --spend
+  config/spend.toml --placement config/pod_placement.toml` (cheapest card, a 900 s lifetime,
+  ceilings, cost, the exact command; it authorizes nothing). It uses `ObservingControllerArmer`,
+  `bootstrap_main --hold-only` and `--record-fixture`, closes its pod at once, and learns four
+  facts: does the pod-written object appear in the S3 view, under which key, after how long,
+  and does the pod-scoped key hold delete and billing rights. The arming wait is two waits
+  (`pod-arming-drill.v2`): container start (600 s) then the channel (300 s). They sum to the
+  whole 900 s, so pass smaller bounds (for example 300/300) or authorize a longer lifetime.
+- **Boot B** (`boot_b_request.py`) uses `ChannelControllerArmer` with Boot A's bounds, then
+  runs the bootstrap and preflight. Its start command nests `pod_run`'s argv and, after `--`,
+  `bootstrap_main`'s, with the launch token bound into both.
 
-Each boot needs separate in-session permission, the GPU class, and the S3 keys in the
-launching shell.
-
-### First live-run checklist
-
-Not an authorization. Record the pod id, timestamps and provider responses, and mark each
-item **verified**, **unverified** or **not run**; nothing unchecked is reported as a pass.
-
-- [ ] Record the lead's authorization, workload, ceilings, balance floor and observation,
-  liabilities and lease root.
-- [ ] Confirm the pod-scoped API key holds delete and billing rights for this pod, and that
-  the routes the timer calls accept it. Record whether any pod-side TTL exists on create.
-- [ ] Before the first v2 create, run the free `RunPodV2Provider.cross_check_catalogue` over
-  `config/pod_placement.toml` and give findings to the lead.
-- [ ] Before early 2027, confirm whether REST v2 offers an account balance.
-- [ ] Exercise a pod that fails field validation and cannot be auto-terminated.
-- [ ] Verify create accepts the real GPU id, attaches the volume at the requested path, and
-  returns what the contract check reads (under v2, record exactly how `args` comes back).
-- [ ] Under v2, record every `status` word and its duration, and whether `cost` is non-zero
-  while `PROVISIONING`.
-- [ ] Verify launch-token recovery after a deliberately lost create response, and the pod
-  list's paging.
-- [ ] Rerun the checksummed transfer end to end (RunPod's S3 drops custom metadata, so the
-  adapter hashes target bytes).
-- [ ] Verify the volume mount, the token-bound report, restart survival and hard-link
-  publication.
-- [ ] Settle how the pod-side timer gets `RUNPOD_API_KEY` (and `HF_TOKEN`) without the
-  repository supplying it. Record the route, never the value.
-- [ ] Read an `EXITED` pod's console log before closing it; it may be the only evidence.
-- [ ] Run Boot A before Boot B and record its four facts.
-- [ ] Record the balance the observer read beside the console's figure.
-- [ ] Prove supervisor, armer, channel and bootstrap together, and the timer-startup
-  backstop.
-- [ ] Run the real preflight; qualify rows with `python -m operations.serving.qualify`.
-  Record `CUDA_COMPAT`, sync time, free disk before and after and `.venv` size (they replace
-  `models.DEFAULT_CONTAINER_DISK_GB`, `bootstrap.UV_CACHE_REQUIRED_BYTES` and
-  `REPOSITORY_VENV_REQUIRED_BYTES`).
-- [ ] Fetch the run with `--launch-receipt` and check what arrived.
-- [ ] Verify shutdown: GET-404, list absence, and non-empty exact-pod billing rows from
-  creation through the cutoff; record whether v2's `metadata.query` is present. Confirm no
-  volume was deleted.
+Before and during those boots, record and verify (marking each verified, unverified or not
+run): the pod-scoped key's delete and billing rights; `RunPodV2Provider.cross_check_catalogue`
+over the placement table before a v2 create; every v2 `status` word and whether `cost` is
+non-zero while `PROVISIONING`; exactly how `args` comes back; launch-token recovery after a
+lost create response; the pod list's paging; the checksummed transfer end to end; the volume
+mount, restart survival and hard-link publication; how the pod timer gets `RUNPOD_API_KEY`
+without the repository supplying it; an `EXITED` pod's console log before closing it; the real
+preflight with free disk before and after and `.venv` size (to replace
+`models.DEFAULT_CONTAINER_DISK_GB`, `bootstrap.UV_CACHE_REQUIRED_BYTES` and
+`REPOSITORY_VENV_REQUIRED_BYTES`); and the close's GET-404, list absence and billing rows.
 
 ### Open items
 
-The code cites these IDs. Each closes on its named condition.
+The code cites these IDs.
 
 | # | Item | Closes when |
 |---|---|---|

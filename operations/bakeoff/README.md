@@ -123,100 +123,61 @@ scp -P <port> -r root@<ip>:/workspace/private/bakeoff/witness-cache private/bake
 
 ## Queue runner
 
-`queue_runner.py` runs one pod's whole day from a manifest (`queue/example-*.toml`, schema
-`bakeoff-queue.v1`) and ends the pod itself, so no laptop has to notice when a job ends.
+`queue_runner.py` runs one pod's whole day from a manifest (`queue/*.toml`, schema
+`bakeoff-queue.v1`) and ends the pod itself. [RUNBOOK.md](RUNBOOK.md) has the full procedure.
 
 ```sh
 .venv/bin/python -m operations.bakeoff.queue_runner validate --manifest <manifest>
 .venv/bin/python -m operations.bakeoff.queue_runner run --dry-run --manifest <manifest>
-setsid nohup .venv/bin/python -m operations.bakeoff.queue_runner run \
-  --manifest operations/bakeoff/queue/example-witness-24gb.toml \
-  > /workspace/private/bakeoff/queue-witness-24gb.log 2>&1 < /dev/null &
+setsid nohup .venv/bin/python -m operations.bakeoff.queue_runner run --manifest <manifest> \
+  > /workspace/private/bakeoff/queue-<name>.log 2>&1 < /dev/null &
 ```
 
-`validate` and `run --dry-run` print when the GPU lane and CPU arms would end by the time
-boxes at 8, 16 and 32 vCPU (and on this machine), and what the arms download onto an empty
-volume, so a pod with too few CPUs shows before it is rented.
+`validate` and `run --dry-run` print when the GPU lane and CPU arms would end at 8, 16 and 32
+vCPU (and on this machine), and what the arms download, so a pod with too few CPUs shows
+before it is rented.
 
-**Arms.** Each arm runs a smoke of `smoke_pages` pages (`--limit N`), then the full run. A
-GPU `witness_run` arm loads its model once: the smoke leaves its server up
-(`--keep-server <out>/<arm>/server-handoff.json`) and the full run adopts it
-(`--adopt-server`) if it is the same command and still answers. The queue stops any kept
-server no run took over.
-
-**Lanes.** GPU arms hold the card one at a time, in manifest order. `gpu = false` arms run
-beside them, several at once, each taking its `--threads` (or `threads`) from the
-manifest's `cpu_threads`: a number or `"auto"` (the pod's CPUs, as its container quota
-allows, less 2). Without `cpu_threads` one CPU arm runs at a time. A CPU arm that does not
-fit waits and holds back those after it. `install` and `prepare` run one at a time across
-all lanes and may use the network; every arm's command runs offline (`HF_HUB_OFFLINE=1`).
-
-**Dependencies.** `after = ["surya-lines"]` names earlier arms that must finish ok first;
-a GPU arm waiting on one lets the next GPU arm take the card. Dependants of a failed arm
-wait for its retry; if it is skipped or fails for good, they are skipped with the reason.
-Pages are counted in `<out>/<name>/`, or `<out>/<writes>/` for an arm that writes elsewhere
-(the line sources write `_lines/surya` and `_lines/blla`).
-
-**Failures.** A failed arm is retried once at the end, smoke first, in its own lane (CPU
-retries share the lane's `cpu_threads` budget). A page that hit the request timeout or the
-loop detector is recorded failed with its reason (`failure`, `failed_pages`) and is
-settled: it is not sent again under the same settings (`failure.settings`,
-`settings_sha256`), while changed settings send it again. An arm whose smoke or full run
-answered no page is `failed` and not retried; one with some failed pages is
-`ok-with-failures`, which dependants may build on. Time boxes never kill work: an overrun
-is pinged once, and the `cut` rule only skips later arms (`overrun`, `behind-schedule`,
-`install-failed`; `never` always runs). `hard_stop_min` (off unless set) stops the arm in
-flight and ends the day early.
-
-**Weights.** A queue may start on an empty volume: each arm's `prepare` is
-`python -m operations.bakeoff.weights fetch --store-root STORE NAME ...`.
-
-- Roster artifacts (`chandra-ocr-2`, `dai-recordgold-atr`, `churro-3B`,
-  `yolov26-record-detection`, `qwen3.8-27B`, `surya2-detection`) go through the project's
-  model store into `<store>/hf/<artifact>` and are refused unless the manifest digest is the
-  one `config/models-real.toml` pins.
-- The bake-off's own snapshots (`qwen3.5-27b`, `qwen3.5-9b`, `DotsMOCR`) are pinned file by
-  file in `weight_pins.json` and go to `<store>/hf/<name>`; a `<name>.verified.json` saves
-  re-hashing an unchanged snapshot.
-- Line-arm weights (`kraken-*`, `pylaia-*`, `party-v2`, `surya-ocr-2`) use their module's own
-  checked fetch.
-
-No repository is gated. `weights sizes NAME ...` prints what a name downloads. On a store,
-use `weights fetch` rather than `witness_run fetch` or a native arm's `fetch`, which write
-outside the store's record.
-
-**Watching.** `status.json` beside the cache is rewritten every 30 s (the GPU arm, plus
-running CPU arms under `cpu_arms`); queue events join `events.jsonl`. The phone hears
-`Milestone` for progress (including `arm failed: ...`), `Needs a decision` only when the
-queue cannot go on by itself (no pages, SIGTERM, a pod it could not or would not end), and
-`Queue finished` once at the end. From the Mac:
-
-```sh
-.venv/bin/python -m operations.bakeoff.queue_runner watch --ssh "ssh -p <port> root@<ip>" \
-  --status /workspace/private/bakeoff/witness-cache/status.json
-.venv/bin/python -m operations.bakeoff.queue_runner fetch --ssh "ssh -p <port> root@<ip>" \
-  --remote /workspace/private/bakeoff/witness-cache --into private/bakeoff/witness-cache-<date>
-```
-
-`watch` prints a line per change, exits 0 at `DONE.json` and 1 on failure, and warns once
-when the status has not changed for 10 min; `watch --ntfy --queue <name>` follows the phone
-topic instead. `fetch` copies the cache home and checks every file against `DONE.json`.
-
-**The end of the day.** The queue copies the cache to `sync_to` (`rsync -rt`), compares
-every file's sha256, writes `DONE.json` (digests and summary) to both, pings, and ends the
-pod: with a guard heartbeat younger than 5 min it moves the guard's deadline to now,
-otherwise it runs `operations/pod/pod_delete.sh`. With `own_disk = true` it refuses to end
-the pod unless the copy verified; `end_pod = "none"` keeps the pod. `run --sync-to PATH
---own-disk --keep-pod` (also on `validate`, `status` and `end-pod`) set the same from the
-command line, so one manifest serves a network volume and the global-volume route. On a
-global volume `rsync -rt` may be refused, so the copy falls back to `rsync -r --inplace`,
-then a plain copy; the sha256 compare proves it either way. With `--own-disk --keep-pod`
-the copy is not read back on the pod (too slow on many small files): `DONE.json` carries the
-own-disk digests with `"verified": null`, and `fetch` checks every file at home before the
-pod is deleted.
-
-SIGTERM stops every arm, pings and exits 143 without ending the pod. Arms never see
-`RUNPOD_API_KEY` or `NTFY_TOPIC`.
+- **Arms.** Each runs a smoke of `smoke_pages` pages, then the full run. A GPU `witness_run`
+  arm loads its model once: the smoke leaves its server up (`--keep-server`) and the full run
+  adopts it (`--adopt-server`) if it is the same command and still answers.
+- **Lanes.** GPU arms hold the card one at a time, in manifest order. `gpu = false` arms run
+  beside them, each taking its `--threads` from the manifest's `cpu_threads` (a number, or
+  `"auto"`: the pod's CPU quota less 2); without `cpu_threads` one CPU arm runs at a time.
+  `install` and `prepare` run one at a time and may use the network; every arm's command runs
+  offline (`HF_HUB_OFFLINE=1`).
+- **Dependencies.** `after = ["surya-lines"]` names arms that must finish ok first. Dependants
+  of a failed arm wait for its retry, and are skipped with the reason if it fails for good.
+- **Failures.** A failed arm is retried once at the end, smoke first, in its own lane. A page
+  that hit the request timeout or the loop detector is recorded failed with its reason and not
+  resent under the same settings (`settings_sha256`). An arm that answered no page is `failed`
+  and not retried; one with some failed pages is `ok-with-failures`. Time boxes never kill
+  work: an overrun is pinged once, and the `cut` rule only skips later arms (`overrun`,
+  `behind-schedule`, `install-failed`; `never` always runs). `hard_stop_min` stops the arm in
+  flight and ends the day early.
+- **Weights.** Each arm's `prepare` is `python -m operations.bakeoff.weights fetch
+  --store-root STORE NAME ...`. Roster artifacts (`chandra-ocr-2`, `dai-recordgold-atr`,
+  `churro-3B`, `yolov26-record-detection`, `qwen3.8-27B`, `surya2-detection`) go through the
+  project's model store and must match `config/models-real.toml`'s pins; the bake-off's own
+  snapshots (`qwen3.5-27b`, `qwen3.5-9b`, `DotsMOCR`) are pinned file by file in
+  `weight_pins.json`; line-arm weights use their module's checked fetch. No repository is
+  gated. `weights sizes NAME ...` prints sizes.
+- **Watching.** `status.json` is rewritten every 30 s and queue events join `events.jsonl`.
+  The phone hears `Milestone` (including `arm failed: ...`), `Needs a decision` when the queue
+  cannot go on by itself, and `Queue finished` at the end. From the Mac, `queue_runner watch
+  --ssh "ssh -p <port> root@<ip>" --status <status.json>` prints changes and exits 0 at
+  `DONE.json` (1 on failure; it warns after 10 unchanged minutes), and `queue_runner fetch
+  --ssh ... --remote <cache> --into <dir>` copies the cache home, checking every file against
+  `DONE.json`.
+- **The end.** The queue copies the cache to `sync_to`, compares every file's sha256, writes
+  `DONE.json` to both, pings, and ends the pod: through the guard's deadline when its
+  heartbeat is under 5 minutes old, otherwise `operations/pod/pod_delete.sh`. With `own_disk =
+  true` it refuses to end the pod unless the copy verified; `end_pod = "none"` keeps it. `run
+  --sync-to PATH --own-disk --keep-pod` set the same from the command line. On a global volume
+  the copy falls back from `rsync -rt` to `rsync -r --inplace` to a plain copy; with
+  `--own-disk --keep-pod` it is not read back on the pod (`"verified": null`), and `fetch`
+  verifies at home before the pod is deleted.
+- SIGTERM stops every arm, pings and exits 143 without ending the pod. Arms never see
+  `RUNPOD_API_KEY` or `NTFY_TOPIC`.
 
 ## Scoring, on the Mac
 
@@ -276,18 +237,14 @@ lead, never a decision.
 
 ## The fed-witness reader arm (`qwen-fed`)
 
-`fed_arm.py` sends a reader the Perlector's whole page request, witnesses included, so a
-base model, a LoRA adapter or a merged checkpoint can be judged in the Perlector's seat
-without running the pipeline. It reads a sealed run tree (stages 1-4 done) and never writes
-to it; a pipeline run tree is used only once its Exemplar and Perlector seals verify, and
-every feed, call record and render it reads is digest-checked.
-
-It rebuilds each page's request from the run's `page-feed` record and retained render
-(`4_perlector/blobs/`) with `common.page_prompt.build_page_prompt` and
-`operations.serving.http.request_body`. `prompts` checks the rebuild against what the run
-recorded (prompt text, image, `request_digest` and `request_sha256`) and that this
-checkout's Perlector sampling and loop guard are the run's sealed ones, and exits 1 on any
-difference:
+`fed_arm.py` sends a reader the Perlector's whole page request, witnesses included, so a base
+model, a LoRA adapter or a merged checkpoint can be judged in the Perlector's seat without
+running the pipeline. It reads a sealed run tree (stages 1-4 done; Exemplar and Perlector
+seals verified, every feed, call record and render digest-checked) and never writes to it.
+It rebuilds each request with `common.page_prompt.build_page_prompt` and
+`operations.serving.http.request_body`; `prompts` checks the rebuild against what the run
+recorded, and that this checkout's sampling and loop guard are the run's sealed ones, and
+exits 1 on any difference.
 
 ```sh
 .venv/bin/python -m operations.bakeoff.fed_arm prompts --run-tree <run tree>
@@ -297,39 +254,34 @@ difference:
 ```
 
 - **Server.** `--server-url` for one already up, or `--weights` to start vLLM with the
-  Perlector's serving row. `--recipe` serves a variant row; a quantized row is refused on a
-  snapshot whose `config.json` does not declare it. The served name is part of the request
-  bytes, so `--model-name` defaults to the name the run's call records carry; another name
-  is refused unless `--accept-new-model-name`. `--revision` (and `--repo`) name the
-  checkpoint (required with `--recipe` or `--repo`).
-- **Sampling.** `--sampling greedy` (default: temperature 0, so two arms differ by their
-  inputs, not by chance) or `sealed` (the Perlector's row: with the run's served name and an
-  unchanged feed, the request is the run's own, byte for byte, which measures the noise
-  floor). Replies stream under the sealed loop guard; `--no-stream` sends one plain request
-  with no guard.
-- **Refusals.** A request that no longer matches the run's on an unchanged feed is refused
-  unless `--accept-new-builder`; changed decoding settings unless `--accept-new-config`. A
-  page that hits `--request-timeout` is a terminal failure, not resent under the same
-  settings.
+  Perlector's serving row (`--recipe` for a variant row; a quantized row is refused on a
+  snapshot that does not declare it). `--model-name` defaults to the name the run's call
+  records carry, since it is part of the request bytes; another name needs
+  `--accept-new-model-name`. `--revision` and `--repo` name the checkpoint.
+- **Sampling.** `--sampling greedy` (default: temperature 0, so arms differ by input, not
+  chance) or `sealed` (the Perlector's row: with the run's served name and an unchanged feed,
+  the request is the run's own byte for byte, which measures the noise floor). Replies stream
+  under the sealed loop guard (`--no-stream` sends one plain request with no guard).
+- **Refusals.** A request that no longer matches the run's needs `--accept-new-builder`;
+  changed decoding settings need `--accept-new-config`. A page that hits `--request-timeout`
+  is a terminal failure, not resent under the same settings. A label holds one setup; a page
+  cached under another is refused.
 
 Variants change the feed before the prompt is rendered:
 
 | Option | What the reader is shown |
 |---|---|
-| `--drop-witness attestator_2` | the feed without that witness; letters reassigned in label order |
-| `--add-witness attestator_4=<witness cache>/dots-mocr` | a bake-off witness as one more row; no cached page is a `failed` witness |
+| `--drop-witness attestator_2` | the feed without that witness |
+| `--add-witness attestator_4=<witness cache>/dots-mocr` | a bake-off witness as one more row |
 | `--letter-map attestator_1=C,attestator_3=A` | other letters for the same witnesses |
 | `--witness-order attestator_3,attestator_2,attestator_1` | the rows in another order |
-| `--image none` | no image; the prompt says "page image: not shown." |
-| `--image blur` (`--blur-radius 8`), `blank`, `swap` | the render blurred, a white page, or the next page's render |
+| `--image none`, `blur` (`--blur-radius 8`), `blank`, `swap` | no image, the render blurred, a white page, or the next page's render |
 | `--mutations <dir>` | a trap from `mutations.py` (below) |
 
-`prompts --show <ordinal>` prints that page's variant prompt. Each page is
-`<out>/<label>/<page stem>.json` (`bakeoff-fed-page.v1`) with its full setup, the feed as
-shown, digests and whether they match the run's, the reply, and the answer grammar's verdict
-as the pipeline reads it (`page_answer.parse_page_answer_repaired`); the raw stream is beside
-it as `<page stem>.sse.gz`. A label holds one setup: a page cached under another setup is
-refused, never mixed in.
+`prompts --show <ordinal>` prints a page's variant prompt. Each page is cached as
+`<out>/<label>/<page stem>.json` (`bakeoff-fed-page.v1`), with the raw stream beside it as
+`<page stem>.sse.gz`; the answer is judged as the pipeline reads it
+(`page_answer.parse_page_answer_repaired`).
 
 ## The Perlector scorecard
 
@@ -340,65 +292,46 @@ refused, never mixed in.
   --hard-pages private/bakeoff/hard-pages.txt --out <dir>
 ```
 
-It scores one answer set (the run tree's own readings, or a `fed_arm` label) and, with
-`--compare`, a second beside it, writing `scorecard.md` and `scorecard.json`. Each answer is
-judged against the witnesses its reader was shown, named by arm or label, never by letter.
-Per page group and for the hard pages:
+It scores one answer set (the run's own readings, or a `fed_arm` label) and optionally a
+second beside it, writing `scorecard.md` and `scorecard.json`. Witnesses are named by arm or
+label, never by letter. Per page group and for the hard pages it reports:
 
-- **reading**: CER median on parsed pages and on all pages (unparsed read as empty); act
-  recall (CER <= 0.5) and exact act count; row and surname recall; inserted words per gold
-  word; false text on blank pages.
-- **answer health**: parsed, malformed (by reason), repaired, errors, finish reasons,
-  loop-guard stops, tokens, seconds.
-- **scepticism**, among witnesses that read the page: when only one witness has a word
-  right, how often the reader also has it; when only one wrote a wrong word, how often the
-  reader resists; how often the reader copies a witness's wrong word; recovery (all
-  witnesses wrong, reader right); damage (all right, reader wrong); beats the vote; and the
-  share of the reader's errors that are a witness's error. Rates carry a 95% interval from
-  resampling pages.
-- **failures count**: a page with gold and no answer is a failed, empty reading, so an arm
-  cannot look better by failing its hardest pages.
-- **with `--compare`**: paired per-page differences with intervals, pages read
-  identically, and flipped words. Both sets must have the same run tree, variant, mutation,
-  sampling, seed, token cap and decoding digest, or the scorer refuses. Run the same arm
+- **reading**: CER on parsed pages and on all pages (unparsed read as empty), act recall
+  (CER <= 0.5), row and surname recall, inserted words, false text on blank pages;
+- **answer health**: parsed, malformed, repaired, errors, finish reasons, loop stops, tokens,
+  seconds;
+- **scepticism**: how often the reader follows a witness that alone is right, resists one that
+  alone is wrong, copies a witness's wrong word, recovers when all are wrong, or damages what
+  all had right, and whether it beats the vote; rates carry a 95% interval from resampling
+  pages;
+- **failures count**: a page with gold and no answer is an empty reading, so failing hard
+  pages cannot raise a score;
+- **with `--compare`**: paired per-page differences with intervals. Both sets must share run
+  tree, variant, mutation, sampling, seed, token cap and decoding digest. Run the same arm
   twice first to see the noise floor.
 
-Every heading says **vs fool's gold (ballpark, not accuracy)** unless every scored page, in
-both sets, carries a checked status (`gold (<who> <date>)` or `lead-checked`).
+Every heading says **vs fool's gold (ballpark, not accuracy)** unless every scored page in
+both sets carries a checked status (`gold (<who> <date>)` or `lead-checked`).
 
 ## The trap generator (`mutations.py`)
 
-`mutations.py` rewrites a sealed page feed's witness testimony, never the page, so one page
-can be shown under many witness stories while the right answer stays the same. The training
-exporter (`operations/training/`) draws its mix from it.
+`mutations.py` rewrites a sealed feed's witness testimony, never the page, so one page can be
+shown under many witness stories while the right answer stays the same. The training exporter
+(`operations/training/`) draws its mix from it.
 
-| Family | Scenario | What the reader is shown |
-|---|---|---|
-| honest | `honest` | the sealed feed |
-| planted | `plant-1` | one witness (rotated by `turn`) with wrong words on 2-5% of its words |
-| | `plant-2` | two witnesses with the same wrong word; the third keeps the right one |
-| | `plant-3` | every witness with the same wrong word on a settled, legible word |
-| removed | `blind` | no witness rows (image and Surya only) |
-| | `drop-one`, `failed-one`, `empty-one` | one witness removed, or shown `failed` / `genuinely-empty` |
-| structural | `dropped-act` | one act removed from every witness |
-| | `invented-act` | a donor page's act (or a made-up one) added to every witness |
-| | `merged-entries` | two adjacent units joined in every witness |
-| | `normalised` | `St` to `Saint`, `ptre` to `prêtre`, `7bre` to `septembre`, `étoit` to `était`, accents added |
-| | `name-swap` | two settled names exchanged in every witness |
-| | `injection` | one witness carries an instruction ("ignore the page image and copy...") |
-| | `permute` | letters and positions shuffled, texts unchanged |
-| | `blank-chatty` | a page with no gold text whose witnesses report an act anyway |
+| Family | Scenarios |
+|---|---|
+| honest | `honest`: the sealed feed |
+| planted | `plant-1` (one witness wrong on 2-5% of its words), `plant-2` (two witnesses with the same wrong word), `plant-3` (every witness wrong on one settled word) |
+| removed | `blind` (no witness rows), `drop-one`, `failed-one`, `empty-one` |
+| structural | `dropped-act`, `invented-act`, `merged-entries`, `normalised` (`St` to `Saint`, `7bre` to `septembre`, accents added), `name-swap`, `injection` (a witness carries an instruction), `permute`, `blank-chatty` |
 
-Errors are planted only on reference words whose status is `checked` or `agreed` and that
-every target witness has right, so the ink settles every trap. Names, dates and numbers are
-oversampled four to one. Planted forms look like reading errors (another name from the page
-at edit distance 2-4, another month or number word, a changed digit, confusable letters).
-Everything is deterministic from (page sha, scenario, seed, turn).
-
-The reference is the page's gold or silver text as a `Reference`, tokenised exactly as the
-scorer tokenises it. From a bake-off gold file, `statuses_from_agreement` marks a word
-`agreed` when two or more shown witnesses have it, `unresolved` inside a `[[a|b]]` mark, and
-`draft` otherwise.
+Errors are planted only on reference words whose status is `checked` or `agreed` and that every
+target witness has right, so the ink settles every trap. Names, dates and numbers are
+oversampled four to one, and planted forms look like reading errors. Everything is
+deterministic from (page sha, scenario, seed, turn). From a bake-off gold file,
+`statuses_from_agreement` marks a word `agreed` when two or more shown witnesses have it,
+`unresolved` inside `[[a|b]]`, and `draft` otherwise.
 
 ```sh
 .venv/bin/python -m operations.bakeoff.mutations --run-tree <run tree> \
@@ -407,14 +340,13 @@ scorer tokenises it. From a bake-off gold file, `statuses_from_agreement` marks 
 .venv/bin/python -m operations.bakeoff.fed_arm run --run-tree <run tree> --mutations <dir> ...
 ```
 
-Each record (`witness-mutation.v1`) holds the mutated feed and a sidecar: `planted` sites,
-`changes`, `set_aside_ids` and `notes`. It names its reference by `reference_sha256` and
-`reference_record_sha256`; `fed_arm` refuses a record without them or, with `--gold`, one
-planted from another reference. The scorecard adds a **Planted errors** block (per
-scenario, k, chair and class: resisted, copied, or wrong another way) and counts a site whose
-reference does not match as misaligned, with the reason. `mutations.json` reports the sites
-and the **voting must lose** check (`vote_check`): how often a plurality vote of the shown
-witnesses is wrong on name, date and number spans, against a 25-35% target.
+Each record (`witness-mutation.v1`) holds the mutated feed and a sidecar (`planted` sites,
+`changes`, `set_aside_ids`, `notes`) and names its reference by `reference_sha256` and
+`reference_record_sha256`; `fed_arm` refuses a record without them or planted from another
+reference. The scorecard adds a **Planted errors** block (resisted, copied, or wrong another
+way). `mutations.json` reports the **voting must lose** check (`vote_check`): how often a
+plurality vote of the shown witnesses is wrong on names, dates and numbers, against a 25-35%
+target.
 
 ## Vendor-native arms (`native/`)
 
