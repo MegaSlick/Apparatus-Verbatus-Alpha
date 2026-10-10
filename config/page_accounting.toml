@@ -172,12 +172,10 @@ max_page_doubt_share_bp = 3000
 # reading that establishes acts, the two ink thresholds (`[coverage_audit]` in
 # `config/ink_map.toml` says `calibrated_for_this_corpus = false`), and a short
 # witness unit read differently.
-# To make one hold again, take its code out of this list; `codes = []` is the
-# pipeline exactly as strict as before the flags existed. Only a page-level hold
-# code may be named (`common/page_accounting.py`, `FLAGGABLE_CODES`); a code that
-# is also an entry hold is refused rather than half-applied. A file with no
-# `[flags]` table seals the same four codes, so a run sealed before the table
-# existed replays under them.
+# To make one hold again, take its code out of this list; `codes = []` holds
+# every code. Only a page-level hold code may be named
+# (`common/page_accounting.py`, `FLAGGABLE_CODES`); a code that is also an entry
+# hold is refused rather than half-applied. The table is required.
 codes = [
   "no-detector-record-on-act-page",
   "unread-ink",

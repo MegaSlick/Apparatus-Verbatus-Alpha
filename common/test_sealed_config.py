@@ -101,7 +101,7 @@ def test_a_config_read_is_bounded_before_any_toml_work(tmp_path):
         read_sealed_toml(oversized, "test policy")
 
 
-def test_a_run_sealed_under_raw_bytes_is_refused_as_a_method_change(tmp_path):
+def test_a_run_recording_no_seal_method_is_refused_as_a_method_change(tmp_path):
     models = ChairRegistry.from_toml(CONFIG / "models.toml").config
     bindings = run_config_bindings(models, {"fixture": "none"}, "test")
     arguments = {
@@ -118,7 +118,7 @@ def test_a_run_sealed_under_raw_bytes_is_refused_as_a_method_change(tmp_path):
     run["self_hash"] = self_hash(run)
     tree.resolve("run.json").write_bytes(canonical_bytes(run))
 
-    with pytest.raises(IncompatibleReuse, match="'raw-bytes' method.*seal-method change"):
+    with pytest.raises(IncompatibleReuse, match="no recorded method.*seal-method change"):
         RunTree.create(tmp_path, "old-seal", **arguments)
     with pytest.raises(IncompatibleReuse, match="seal-method change"):
         run_sealed_config_digests(tree.read_run())

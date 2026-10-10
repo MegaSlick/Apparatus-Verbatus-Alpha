@@ -211,14 +211,6 @@ _PROBLEM_RULE: Final = {UNKNOWN_ID: "b"}
 # regions (`pipeline/5_recensor/page_review.py`); its code is named here so the
 # one sealed list decides both.
 RESIDUAL_INK: Final = "residual-ink"
-DEFAULT_FLAG_CODES: Final = frozenset(
-    {NO_RECORD_ON_ACT_PAGE, UNREAD_INK, RESIDUAL_INK, WITNESS_SHORT_UNIT_NOT_READ}
-)
-# How many normalized characters a witness unit may have and still be a short
-# unit for rule (e): a signature, initials or a lone surname, not an index row
-# or a one-line burial (on the 2026-10-09 run the units read differently were 1
-# to 15 characters). Starting value; to be measured on the proof run.
-DEFAULT_SHORT_UNIT_CHARACTERS: Final = 15
 # Only a page-level finding may be a flag. `duplicate-region` and
 # `reading-incomplete` are also entry holds (`page_path.entry_plans`), which no
 # flag lifts, so naming one would flag the page and still hold its entries: refused
@@ -302,12 +294,9 @@ class PageAccountingPolicy:
     max_page_doubt_share_bp: int
     sha256: str
     # `[flags]`: the hold codes that are review flags (recorded, not held) and
-    # the length under which rule (e)'s unit is a short unit. A file without the
-    # table seals the code's defaults (`DEFAULT_FLAG_CODES`,
-    # `DEFAULT_SHORT_UNIT_CHARACTERS`), so a run sealed before the table existed
-    # replays under them.
-    flag_codes: frozenset[str] = DEFAULT_FLAG_CODES
-    short_unit_characters: int = DEFAULT_SHORT_UNIT_CHARACTERS
+    # the length under which rule (e)'s unit is a short unit.
+    flag_codes: frozenset[str]
+    short_unit_characters: int
 
 
 FLAGS_TABLE: Final = "flags"
@@ -362,7 +351,9 @@ def load_page_accounting_policy(
 ) -> PageAccountingPolicy:
     """Read the closed, sealed page-accounting configuration."""
     record, digest = read_sealed_toml(path, "page accounting configuration")
-    flags = _flags_policy(record.pop(FLAGS_TABLE, None))
+    if FLAGS_TABLE not in record:
+        raise ContractError("page accounting configuration has no [flags] table")
+    flags = _flags_policy(record.pop(FLAGS_TABLE))
     if set(record) != set(_POLICY_TABLES) or any(
         not isinstance(record[table], dict) or set(record[table]) != set(fields)
         for table, fields in _POLICY_TABLES.items()
@@ -385,9 +376,7 @@ def load_page_accounting_policy(
 
 
 def _flags_policy(table: Any) -> dict[str, Any]:
-    """The `[flags]` table checked, or the code's defaults when the file has none."""
-    if table is None:
-        return {}
+    """The `[flags]` table checked."""
     if not isinstance(table, dict) or set(table) != _FLAGS_FIELDS:
         raise ContractError(
             "page accounting [flags] must hold exactly codes and short_unit_characters"

@@ -1388,18 +1388,11 @@ def report_systemic_share(args) -> None:
     """Print the systemic alarm line when the run's held share is above its sealed limit.
 
     The line (`common.review_policy.alarm_line`) is what the operator's
-    notification carries, and the stop record names it (`_record_stop`). A run
-    that sealed no review policy says the share was not checked.
+    notification carries, and the stop record names it (`_record_stop`).
     """
     tree = _run_tree(args)
     share = held_share(tree, run_sealed_config_digests(tree.read_run()), args.review_config)
-    if share is None:
-        print(
-            f"run {args.run_id}: this run sealed no review policy, so whether its held share "
-            "is systemic was not checked",
-            flush=True,
-        )
-    elif share["systemic"]:
+    if share["systemic"]:
         args.systemic_line = alarm_line(args.run_id, share["held_pages"], share["pages"], share)
         print(args.systemic_line, flush=True)
 

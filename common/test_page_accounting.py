@@ -2318,21 +2318,19 @@ def test_an_entry_citing_another_entrys_units_beside_its_own_ink_is_still_a_dupl
 
 
 def test_the_committed_file_seals_the_lead_s_review_flags(tmp_path: Path):
-    """The committed `[flags]` table is the lead's four codes, and a file with no table seals
-    the same four (the code's defaults), so a run sealed before the table existed replays
-    under them."""
-    assert SEALED.flag_codes == page_accounting_module.DEFAULT_FLAG_CODES
-    silent = tmp_path / "silent.toml"
-    silent.write_text(_without_flags_table(), encoding="utf-8")
-    assert load_page_accounting_policy(silent).flag_codes == SEALED.flag_codes
-    assert load_page_accounting_policy(silent).sha256 != SEALED.sha256
+    """The committed `[flags]` table is the lead's four codes, and a file with no table is
+    refused."""
     assert SEALED.flag_codes == {
         "no-detector-record-on-act-page",
         "unread-ink",
         "residual-ink",
         "witness-short-unit-not-read",
     }
-    assert SEALED.short_unit_characters == page_accounting_module.DEFAULT_SHORT_UNIT_CHARACTERS
+    assert SEALED.short_unit_characters == 15
+    silent = tmp_path / "silent.toml"
+    silent.write_text(_without_flags_table(), encoding="utf-8")
+    with pytest.raises(ContractError, match=r"no \[flags\] table"):
+        load_page_accounting_policy(silent)
 
 
 def _without_flags_table() -> str:
