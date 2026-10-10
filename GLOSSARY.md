@@ -54,7 +54,8 @@ witness reads the page, sealed per page and summarised in
 the page's roster at all. No committed roster routes anything.
 
 **witness floor** — how many configured witnesses must have read a page, without
-truncation, for a unit on it to be accepted. Set as `witness_floor` in the model roster
+truncation, for a unit on it to be accepted. A witness that returned a genuinely empty
+reading counts as having read it (`pipeline/5_recensor/CONTRACT.md`, "The witness floor"). Set as `witness_floor` in the model roster
 and checked by the Recensor; a page below it is held `under-witnessed`. It counts the
 page's own roster: a routed witness counts on the pages routed to it and nowhere else.
 
@@ -67,6 +68,7 @@ chairs:
 | Chair | Role |
 |---|---|
 | `attestator_1`, `attestator_2`, `attestator_3` | the witnesses (Attestatores) |
+| `attestator_4` | a routed witness (dots.mocr), seated only by a `[witness_routing]` table; the fixture roster has it, the committed real roster does not |
 | `secondary_proposer` | the record detector: the Designator's detector of register records, whose crops the record reader reads |
 | `designator_surya` | Surya, the Designator's line and layout detector |
 | `perlector` | the reader |

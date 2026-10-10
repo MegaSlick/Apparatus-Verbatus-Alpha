@@ -1,24 +1,25 @@
-"""Create one guarded pod on the hand route with a global volume attached.
+"""Create one guarded pod on the hand route, on its own disk or a network volume.
 
 The hand route (`operations/pod/README.md`) starts a pod with the guard's start
-command and nothing else from the managed runtime. `runpodctl`, the connector
-and REST cannot attach a RunPod global volume, so this is the hand route's
+command and nothing else from the managed runtime. This is the hand route's
 create: one `podFindAndDeployOnDemand` mutation over the same transport the
 balance observer uses, then the pod's answer checked against what was asked.
 
-    START=$(sh operations/pod/pod_start_command.sh off <sha>) &&
+    START=$(sh operations/pod/pod_start_command.sh <hours> <sha>) &&
     .venv/bin/python -m operations.pod.create_pod --name verbatus-bakeoff-w \\
       --gpu "NVIDIA A40" --image runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404 \\
       --container-disk-gb 100 --disk-gb 100 --min-vcpu 16 --cuda 13.0 \\
-      --global-volume <id> --global-mount /workspace/global --start-command "$START"
+      --start-command "$START"
 
 The account key is read from the shell variable `runpodctl` uses
 (`provider_runpod.ACCOUNT_KEY_ENVIRONMENT`), else from runpodctl's own config
 file (`provider_runpod.RUNPODCTL_CONFIG`); never a command line, never printed. Nothing is a
-default: the global volume, its mount and the disk are named every time. The
+default: the disk is named every time, and a global volume only with its mount. The
 pod's own disk (`--disk-gb`, deleted with the pod) or a network volume
 (`--network-volume`) sits at /workspace/private, where the guard keeps its
-records; the global volume is object storage and holds results only.
+records. A global volume (`--global-volume` with `--global-mount`) is object storage
+and holds results only; RunPod's API does not attach one today
+(`operations/pod/RUNPOD.md`), so this exits 3 when it is asked for.
 
 Exit 0 when the pod reports every mount asked for; 2 when nothing was created;
 3 when a pod was created but does not report the mounts: its id is printed,

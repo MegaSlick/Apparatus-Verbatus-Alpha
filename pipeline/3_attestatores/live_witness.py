@@ -207,9 +207,10 @@ def request_capacity_or_refuse(
     asked at (``"page"`` or ``"record"``): Chandra reserves a dense page's
     answer, DAI one record's answer, since reserving a page's would refuse
     ordinary record crops.
-    Churro is the exception: its whole vendor answer bound is reserved, so a
-    row that cannot hold it refuses the page rather than letting the engine
-    stop the answer short of what the vendor's own pipeline allows.
+    Churro and dots.mocr are the exception: each one's whole vendor answer bound
+    is reserved, so a row that cannot hold it refuses the page rather than
+    letting the engine stop the answer short of what the vendor's own pipeline
+    allows.
 
     Never a silent downscale: the alternative is showing the model fewer
     pixels than the render config argues are needed to read the ink, which is
@@ -708,12 +709,13 @@ def captured_page_attempt(
     """The live twin of `run.py::captured_churro_page_attempt`, generalized.
 
     Takes an already-retained `ChairResponse` instead of a fixture row, and
-    keeps every branch that function has. Runs for both page-scoped adapters:
+    keeps every branch that function has. Runs for the three page-scoped adapters:
     Chandra reads the vendor's layout grammar (`common/chandra_layout.py`), a
     body with no top-level block landing on `unrecognized-shape`; Churro reads
-    `HistoricalDocument` (`common/churro_document.py`). Both carry their bytes
-    forward as ``observation_payload`` for `run.py` to derive page geometry
-    from, though Churro's own grammar reports none.
+    `HistoricalDocument` (`common/churro_document.py`); dots.mocr reads its JSON
+    layout cells (`dots_layout`). All carry their bytes forward as
+    ``observation_payload`` for `run.py` to derive page geometry from, though
+    Churro's own grammar reports none.
 
     ``page_ordinal`` and ``chair`` are unread here; accepted only to keep this
     call site self-describing.
@@ -766,11 +768,11 @@ def captured_page_attempt(
         transport_stop_reason=transport_stop_reason,
         parse_failure_reason=native_parse_refusal,
         # Unconditional, on purpose: this dispatch has already refused every
-        # adapter but the two page-scoped ones, so a membership test here
-        # would only be a second, quieter copy of that list -- and a third
+        # adapter but the page-scoped ones, so a membership test here
+        # would only be a second, quieter copy of that list -- and a further
         # page chair added above and forgotten here would then silently
-        # derive no geometry. Both page-scoped adapters derive
-        # their block geometry in `run.py` from these same bytes rather than
+        # derive no geometry. Every page-scoped adapter derives
+        # its block geometry in `run.py` from these same bytes rather than
         # from the parsed text (Churro reports none, but the bytes still
         # travel the same way as Chandra's).
         observation_payload=response.content.encode("utf-8"),

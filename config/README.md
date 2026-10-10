@@ -23,7 +23,7 @@ The knobs. One question per file, each answerable without reading code.
 | `designator_geometry.toml` | the crop policy for the record detector (`secondary_proposer`): the Designator cuts every detector record's crop under it, and the record reader reads those crops |
 | `ink_map.toml` | the ink measurement's policy: background inference, the page-spanning bound and connectivity radius, and the outside-coverage audit's gates |
 | `perlector_audit.toml` | the Perlector audit's round cap; every page reading records the audit as not run |
-| `page_accounting.toml` | the page accounting's policy: when a box counts as inside the reading regions (`[inside]`), how much witness text a reading may leave unaccounted for or set aside (`[witness_text]`), the text alignment's anchors and bounds (`[alignment]`), what makes a unit's text distinctive (`[identity]`), and when two entries claim one region or a unit's box is too large for its text (`[region]`) |
+| `page_accounting.toml` | the page accounting's policy: when a box counts as inside the reading regions (`[inside]`), how much witness text a reading may leave unaccounted for or set aside (`[witness_text]`), the text alignment's anchors and bounds (`[alignment]`), what makes a unit's text distinctive (`[identity]`), when two entries claim one region or a unit's box is too large for its text (`[region]`), how much of a reading may be doubtful or unread (`[doubt]`), and which review-flag codes record a finding without holding the page, with the length of a short witness unit (`[flags]`) |
 | `reconstruction.toml` | whether the Coniector runs, whether the submitted pages are consecutive leaves of one register, and the bounds past which a departure is not applied |
 | `triage_modes.toml` | the three triage modes (`manual`, `semi`, `auto`) and their review thresholds |
 | `decoding.toml` | each reading chair's sampling values as its makers recommend them, with source and revision; the Perlector's whole-page output cap and repetition-loop guard, and the reconstructor's answer cap; and Chandra's native recipe |
@@ -36,7 +36,7 @@ seat dots.mocr on the real roster, all of these are needed together: a fetched,
 verified `dots-studio/dots.mocr` at `e539fbb52280393adc081b289ec597430a0f9031` with its
 digest manifest and an `[chairs.attestator_4]` row (`witness_adapter =
 "dots-mocr.v1"`, `witness_scope = "page"`) plus the `[witness_routing]` line in
-`models-real.toml`; an `attestator_4` row at every tier in `serving_recipes_real.toml`
+`models-real.toml`; an `attestator_4` entry in the required-artifact list of the pod bootstrap's MODEL_STORE step (`REQUIRED_ARTIFACTS` in `common/chairs/model_store.py`), which fetches and verifies only the chairs listed there; an `attestator_4` row at every tier in `serving_recipes_real.toml`
 (vLLM with `trust_remote_code`, room for 16,384 answer tokens); a
 `[chair_decoding.attestator_4]` row in `decoding.toml` (temperature 0.1, top_p 1.0,
 the vendor command line's); and the prompt's token count measured with the pinned

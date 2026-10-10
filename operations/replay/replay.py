@@ -45,7 +45,10 @@ from common.runtree.store import RECEIPTS_DIR, RunTree  # noqa: E402
 from common.stage import verify_stage_seal  # noqa: E402
 
 ORCHESTRATOR = ROOT / "pipeline" / "orchestrator" / "run.py"
-# Chosen by this program; a caller naming them would replay into some other run.
+# Refused in the orchestrator arguments. This program sets the run folder, the run id
+# and the stage range itself (`--run-root`, `--run-id`, `--from`, `--to`), takes
+# `--repository-commit` as its own option, and forbids the rest, which choose a
+# different stage selection or submit new input to a run that replays a saved one.
 _OWN_FLAGS = (
     "--run-root",
     "--run-id",
