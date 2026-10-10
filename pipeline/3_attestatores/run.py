@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import chandra  # noqa: E402
 import chandra_native  # noqa: E402
+import dots  # noqa: E402
 import feeding  # noqa: E402
 import live_witness  # noqa: E402
 import witness_adapters  # noqa: E402
@@ -35,6 +36,7 @@ from retained import (  # noqa: E402
     validate_retained_response_blob,
 )
 
+from common import dots_layout  # noqa: E402
 from common.chairs.models import AbsentChair, ChairIdentity  # noqa: E402
 from common.chairs.registry import ChairRegistry  # noqa: E402
 from common.contracts.canonical import digest_bytes, is_sha256  # noqa: E402
@@ -65,11 +67,13 @@ from common.page_path import (  # noqa: E402
     PAGE_FEED_KIND,
     PAGE_TESTIMONIUM_KIND,
     empty_detector_page,
+    refs_by_path,  # noqa: E402
 )
 from common.page_testimonia import (  # noqa: E402
     BLANK_TESTIMONY_HEALTH,
     NO_DETECTOR_RECORD_REASON,
     declared_page_witness_chairs,
+    page_witness_chairs,
     validate_page_testimonium_record,
     verify_page_native_capture,
 )
@@ -90,6 +94,13 @@ from common.stage import (  # noqa: E402
     stage_parser,
     validate_serving_provenance,
     verify_retained_call_sampling,
+)
+from common.witness_routing import (  # noqa: E402
+    ROUTING_KIND,
+    page_routing,
+    routed_chairs,
+    routing_summary,
+    validate_routing_record,
 )
 from operations.serving.assembly import (  # noqa: E402
     bound_serving_recipes,
@@ -264,7 +275,11 @@ FIXTURE_NATIVE_RESPONSE_ADAPTERS: Final = frozenset({"chandra.v1"})
 
 
 def _derives_partition_from_response(resolved: Any, live: bool) -> bool:
-    """Use response geometry live, or for fixture adapters that permit it."""
+    """Use response geometry live, or for fixture adapters that permit it.
+
+    dots.mocr's fixture rows are answers in its own vendor grammar, so their
+    geometry is read exactly as a served answer's is.
+    """
     if not isinstance(resolved, ChairIdentity):
         return False
     # Unguarded on purpose: an adapter with no runnable binding must be refused,
@@ -272,7 +287,11 @@ def _derives_partition_from_response(resolved: Any, live: bool) -> bool:
     adapter = witness_adapters.resolve_runnable_adapter(resolved.witness_adapter)
     if not adapter.takes_page_size:
         return False
-    return live or resolved.witness_adapter in FIXTURE_NATIVE_RESPONSE_ADAPTERS
+    return (
+        live
+        or resolved.witness_adapter in FIXTURE_NATIVE_RESPONSE_ADAPTERS
+        or resolved.witness_adapter == dots.ADAPTER
+    )
 
 
 def _partition_geometry(observed: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -810,6 +829,104 @@ def captured_churro_page_attempt(
     )
 
 
+_DOTS_CUTOFF_STOP_REASONS: Final = frozenset({"length"})
+_DOTS_STOP_REASONS: Final = frozenset({"stop"}) | _DOTS_CUTOFF_STOP_REASONS
+
+
+def dots_page_response_bytes(row: dict[str, Any]) -> tuple[bytes, str]:
+    """One declared dots.mocr answer's exact UTF-8 bytes and its engine stop word."""
+    raw = row.get("raw_json")
+    if not isinstance(raw, str):
+        raise SchemaRefusal("a dots.mocr page response declares no raw_json text")
+    try:
+        raw_bytes = raw.encode("utf-8", "strict")
+    except UnicodeEncodeError as error:
+        raise SchemaRefusal(f"a dots.mocr page response is not UTF-8 text: {error}") from error
+    stop = row.get("transport_stop_reason")
+    if stop not in _DOTS_STOP_REASONS:
+        raise SchemaRefusal(
+            f"a dots.mocr page response declares transport_stop_reason {stop!r}; the engine's "
+            f"words are {sorted(_DOTS_STOP_REASONS)}"
+        )
+    return raw_bytes, stop
+
+
+def captured_dots_page_attempt(context, row: dict[str, Any]) -> Attempt:
+    """Capture one declared dots.mocr answer as a served one is captured; never repair it.
+
+    The fixture declares the answer in the vendor's own grammar, so the capture,
+    the page text and the geometry are read exactly as a live answer's are
+    (`live_witness._live_attempt_from_capture`'s three-way split).
+    """
+    raw, stop = dots_page_response_bytes(row)
+    adapter = witness_adapters.resolve_runnable_adapter(dots.ADAPTER)
+    capture = adapter.retain(
+        context,
+        view=feeding_view_for_dots(),
+        raw_response=raw,
+        transport_stop_reason=stop,
+        parser=dots_layout.PARSER,
+    )
+    capabilities = witness_adapters.declared_format_capabilities(adapter)
+    parsed = capture["parse"]
+    cut_off = stop in _DOTS_CUTOFF_STOP_REASONS
+    base = {
+        "native_capture": capture,
+        "raw_response_ref": dict(capture["raw_response_ref"]),
+        "observation_payload": raw,
+    }
+    if parsed["state"] == "parsed" and not (cut_off and parsed["text"] == ""):
+        text = parsed["text"]
+        return Attempt(
+            "genuinely-empty" if text == "" else "read",
+            text,
+            None,
+            capabilities,
+            content_health(text, completed=not cut_off),
+            None,
+            **base,
+        )
+    if parsed["state"] == "parsed":
+        return Attempt(
+            "failed",
+            "",
+            None,
+            capabilities,
+            content_health("", completed=False),
+            (
+                f"dots.mocr answer parsed empty after the provider stopped it at its bound "
+                f"(transport_stop_reason {stop!r}); a cut-off answer is not a confirmed blank "
+                "page"
+            ),
+            **base,
+        )
+    parse_refusal = native_parse_refusal(parsed)
+    cut_note = (
+        f"the provider stopped the response at its bound (transport_stop_reason {stop!r}) and "
+        if cut_off
+        else ""
+    )
+    basis = (
+        f"response cut off by the provider ({stop!r}); {parse_refusal}"
+        if cut_off
+        else parse_refusal
+    )
+    return Attempt(
+        "failed",
+        None,
+        None,
+        capabilities,
+        unrecordable_health(basis),
+        f"dots.mocr response retained but not usable: {cut_note}{parse_refusal}",
+        **base,
+    )
+
+
+def feeding_view_for_dots() -> dict[str, Any]:
+    """The model view a dots.mocr capture retains, in both postures."""
+    return {"prompt": dots.prompt(), "generation": dots.generation()}
+
+
 def _renumbered_onto(observed: list[dict[str, Any]], items) -> None:
     for item in items:
         observed.append({**item, "ordinal": len(observed)})
@@ -826,6 +943,7 @@ def _renumbered_onto(observed: list[dict[str, Any]], items) -> None:
 PAGE_RESPONSE_TABLES: Final = (
     "testimony",
     "churro_page_response",
+    "dots_page_response",
     "witness_empty",
     "witness_failure",
     "witness_not_run",
@@ -842,6 +960,7 @@ _DECLARATION_KEYS: Final = frozenset({"scenario", "page_ordinal", "chair", "atte
 _DECLARATION_FIELDS: Final = {
     "testimony": _DECLARATION_KEYS
     | {"payload", "raw_responses", "witness_reported", "format_capabilities"},
+    "dots_page_response": _DECLARATION_KEYS | {"raw_json", "transport_stop_reason"},
     "witness_empty": _DECLARATION_KEYS,
     "witness_failure": _DECLARATION_KEYS,
     "witness_not_run": _DECLARATION_KEYS,
@@ -860,7 +979,15 @@ def validate_declared_page_responses(context, page_chairs: set[str]) -> None:
         page.get("ordinal") for page in context.fixture.get("page", []) if isinstance(page, dict)
     }
     configured = context.registry.config.chairs
+    seats_dots = any(
+        getattr(identity, "witness_adapter", None) == dots.ADAPTER
+        for identity in configured.values()
+    )
     for table in PAGE_RESPONSE_TABLES:
+        if table == "dots_page_response" and not seats_dots:
+            # Declarations for a roster that seats dots.mocr: this roster seats
+            # no such chair, so no pass of it could read them.
+            continue
         for number, row in enumerate(context.fixture.get(table, []), start=1):
             if not isinstance(row, dict):
                 raise SchemaRefusal(f"fixture [[{table}]] row {number} is not a table")
@@ -881,6 +1008,22 @@ def validate_declared_page_responses(context, page_chairs: set[str]) -> None:
             chair = row.get("chair")
             if isinstance(configured.get(chair), AbsentChair):
                 continue
+            if table == "dots_page_response":
+                dots_page_response_bytes(row)
+                if getattr(configured.get(chair), "witness_adapter", None) != dots.ADAPTER:
+                    raise SchemaRefusal(
+                        f"fixture [[{table}]] row {number} names chair {chair!r}, whose "
+                        f"configured adapter is not {dots.ADAPTER!r}; fixture bytes may not be "
+                        "attributed to a different model boundary"
+                    )
+            elif chair in configured and (
+                getattr(configured.get(chair), "witness_adapter", None) == dots.ADAPTER
+                and table == "testimony"
+            ):
+                raise SchemaRefusal(
+                    f"fixture [[testimony]] row {number} names the dots.mocr chair {chair!r}; "
+                    "its answers are declared in its own grammar, as [[dots_page_response]]"
+                )
             if chair not in page_chairs or reads_detector_records(configured.get(chair)):
                 raise SchemaRefusal(
                     f"fixture [[{table}]] row {number} names chair {chair!r}, which this run "
@@ -1016,6 +1159,8 @@ def fixture_page_attempt(
     if declared is None:
         return not_run_attempt("no response is declared for this configured chair on this page")
     table, row = declared
+    if table == "dots_page_response":
+        return captured_dots_page_attempt(context, row)
     if table == "churro_page_response":
         attempt, capture = captured_churro_page_attempt(
             context, row, chair, resolved.witness_adapter
@@ -1249,6 +1394,11 @@ def publish_page_testimonium(
         )
     attempted = attempt.outcome in ATTEMPTED_WITNESS_OUTCOMES
     page_subject_id = page_subject(context, page_ordinal, page_ids=page_ids)
+    if chair not in page_witness_chairs(context, page_subject_id, page_chairs):
+        raise FatalAccounting(
+            f"chair {chair!r} is routed to pages its rule names, and page {page_ordinal} is not "
+            "one; a page record for it would seat it on a page it was never to read"
+        )
     page_attempt = attempt_id(page_subject_id, f"read:{chair}", ordinal)
     presented: dict[str, Any] = {}
     adapter = None
@@ -1340,6 +1490,53 @@ def page_witness_roster(context) -> list[str]:
     """
     page_chairs = declared_page_witness_chairs(context)
     return [chair for chair in context.witness_chairs if chair in page_chairs]
+
+
+def page_rosters(context, pages: list[tuple[int, str]]) -> dict[str, list[str]]:
+    """Each sealed page's own page witnesses, in roster order.
+
+    The sealed roster for every page, unless the run routes a witness
+    (`common/witness_routing.py`): then a routed chair sits only on the pages
+    its rule routes to it, decided from the Designator's sealed evidence.
+    """
+    roster = page_witness_roster(context)
+    declared = set(roster)
+    return {
+        page_id: [
+            chair for chair in roster if chair in page_witness_chairs(context, page_id, declared)
+        ]
+        for _ordinal, page_id in pages
+    }
+
+
+def publish_witness_routing(context, pages: list[tuple[int, str]]) -> list[dict[str, Any]]:
+    """Seal each page's routing decision, and the run-health summary of them all.
+
+    Nothing is written on a run that routes no witness. A resumed pass makes
+    the same records from the same sealed evidence, so the publish boundary
+    reuses them. The summary is a report for a person, rebuilt on every pass.
+    """
+    if not routed_chairs(context):
+        return []
+    decisions = []
+    for _ordinal, page_id in pages:
+        decision, refs = page_routing(context, page_id)
+        context.publish(
+            kind=ROUTING_KIND,
+            subject_id=page_id,
+            outcome="recorded",
+            inputs=refs_by_path(refs),
+            payload=decision,
+        )
+        decisions.append(decision)
+    context.tree.write_witness_routing_summary(
+        {
+            "run_id": context.tree.run_id,
+            "config_digest": context.config_digest,
+            **routing_summary(decisions),
+        }
+    )
+    return decisions
 
 
 PageHistory = dict[tuple[str, str], list[dict[str, Any]]]
@@ -1458,15 +1655,19 @@ def preflight(
     response; a live pass and a record reader resolve as they read.
     """
     roster = page_witness_roster(context)
+    rosters = page_rosters(context, pages)
     if fixture:
         validate_declared_page_responses(context, set(roster))
     appending = [
         page_id
         for _page_ordinal, page_id in pages
-        if any((_current_ordinal(history, page_id, chair) or 0) < ordinal for chair in roster)
+        if any(
+            (_current_ordinal(history, page_id, chair) or 0) < ordinal for chair in rosters[page_id]
+        )
     ]
-    for page_id, chair in ((page_id, chair) for _o, page_id in pages for chair in roster):
-        require_appendable_ordinal(history, page_id, chair, ordinal)
+    for _page_ordinal, page_id in pages:
+        for chair in rosters[page_id]:
+            require_appendable_ordinal(history, page_id, chair, ordinal)
     if bound := sorted(witness_bound_pages(context).intersection(appending)):
         raise ContractError(
             f"page(s) {bound} were already shown to the Perlector with their witnesses, so their "
@@ -1482,6 +1683,8 @@ def preflight(
         if reads_detector_records(resolved):
             continue
         for page_ordinal, page_id in pages:
+            if chair not in rosters[page_id]:
+                continue
             attempt = fixture_page_attempt(context, page_ordinal, chair, resolved, ordinal)
             _refuse_write_collision(history, page_id, chair, ordinal, attempt)
             planned[(page_ordinal, chair)] = attempt
@@ -1548,8 +1751,22 @@ def attempt_tally(
                 )
             verify_page_call_sampling(context, payload, chair)
             by_pair.setdefault((record["subject_id"], chair), []).append(record)
+        routings = [entry for entry in rebuilt["artifacts"] if entry["kind"] == ROUTING_KIND]
+        for entry in routings:
+            validate_routing_record(
+                context, tree.read_artifact(ATTESTATORES, ROUTING_KIND, entry["artifact_id"])
+            )
         if pages is not None:
-            expected = {(page_id, chair) for _ordinal, page_id in pages for chair in roster}
+            rosters = page_rosters(context, pages)
+            expected = {
+                (page_id, chair) for _ordinal, page_id in pages for chair in rosters[page_id]
+            }
+            routed_pages = {entry["subject_id"] for entry in routings}
+            if routed_chairs(context) and routed_pages != {page_id for _o, page_id in pages}:
+                raise SchemaRefusal(
+                    "the Attestatores did not seal one witness-routing decision for every "
+                    "sealed page"
+                )
             if set(by_pair) != expected:
                 raise SchemaRefusal(
                     "the rebuilt Testimonium inventory does not account for every sealed "
@@ -2467,12 +2684,13 @@ def fixture_pass(
         return recorded
     detector = detector_units_by_page(context)
     sealed = _sealed_page_testimonia(context, ordinal)
+    rosters = page_rosters(context, pages)
     for chair in detector_chairs:
         resolved = context.registry.resolve(chair)
         settled, to_read = detector_pages_to_read(
             context,
             chair=chair,
-            pages=pages,
+            pages=[(o, page_id) for o, page_id in pages if chair in rosters[page_id]],
             ordinal=ordinal,
             sealed=sealed,
             detector=detector,
@@ -2521,14 +2739,17 @@ def live_pass(
     ]
     detector = detector_units_by_page(context) if detector_chairs else ({}, {})
     sealed = _sealed_page_testimonia(context, ordinal)
+    rosters = page_rosters(context, pages)
     recorded = 0
     to_read: dict[str, list[int]] = {}
     for chair in roster:
+        # A routed chair reads only the pages its rule routes to it.
+        chair_pages = [(o, page_id) for o, page_id in pages if chair in rosters[page_id]]
         if chair in detector_chairs:
             settled, to_read[chair] = detector_pages_to_read(
                 context,
                 chair=chair,
-                pages=pages,
+                pages=chair_pages,
                 ordinal=ordinal,
                 sealed=sealed,
                 detector=detector,
@@ -2536,9 +2757,11 @@ def live_pass(
             )
         else:
             to_read[chair] = [
-                page_ordinal for page_ordinal, _ in pages if (page_ordinal, chair) not in sealed
+                page_ordinal
+                for page_ordinal, _ in chair_pages
+                if (page_ordinal, chair) not in sealed
             ]
-            settled = len(pages) - len(to_read[chair])
+            settled = len(chair_pages) - len(to_read[chair])
         recorded += settled
 
     # `None` for an adapter with a single framing.
@@ -2696,6 +2919,8 @@ def main(registry_factory=ChairRegistry.from_toml, serving_factory=None) -> int:
             raise
         print(f"Attestatores refused this pass: {error}", file=sys.stderr)
         return EXIT_HELD
+    # Each page's routing decision is sealed before any witness reads it.
+    publish_witness_routing(context, pages)
     if live_chairs:
         refuse_unread_fixture_declarations(context, live_chairs)
         recorded = live_pass(

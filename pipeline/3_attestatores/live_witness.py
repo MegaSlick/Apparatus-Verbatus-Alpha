@@ -65,10 +65,12 @@ import json
 from dataclasses import dataclass
 from typing import Any, Callable, Final, Mapping
 
+import dots
 import feeding
 import witness_adapters
 from attempt import Attempt, content_health, unrecordable_health
 
+from common import dots_layout
 from common.chair_wire import chandra_wire_fields
 from common.contracts.envelope import read_verified
 from common.contracts.errors import SchemaRefusal
@@ -165,6 +167,7 @@ _ADAPTER_CHAIRS: Mapping[str, str] = {
     "chandra.v1": "attestator_1",
     "dai.v1": "attestator_2",
     "churro.v1": "attestator_3",
+    dots.ADAPTER: "attestator_4",
 }
 
 
@@ -226,7 +229,13 @@ def request_capacity_or_refuse(
             f"a witness request was checked at scope {scope!r}; the scopes are {sorted(budgets)}"
         )
     budget = budgets[scope]
-    answer = DECLARED_ANSWER_BOUND_TOKENS[chair] if adapter_name == "churro.v1" else budget(chair)
+    # Churro and dots.mocr reserve their vendor's whole answer bound: a row that
+    # cannot hold it refuses the page rather than stop the answer short.
+    answer = (
+        DECLARED_ANSWER_BOUND_TOKENS[chair]
+        if adapter_name in {"churro.v1", dots.ADAPTER}
+        else budget(chair)
+    )
     return refuse_unless_it_fits(
         profile,
         [dimensions(image) for image in image_bytes_list],
@@ -296,7 +305,7 @@ def generation_bound_sent(chair: str, capacity: Mapping[str, Any]) -> dict[str, 
 
 #: The adapters this seam builds a page request for and captures a page
 #: response from.
-_PAGE_SCOPED_ADAPTERS: Final = frozenset({"churro.v1", "chandra.v1"})
+_PAGE_SCOPED_ADAPTERS: Final = frozenset({"churro.v1", "chandra.v1", dots.ADAPTER})
 
 
 def _framed_prompt(adapter: Any, framing: str | None) -> Mapping[str, Any]:
@@ -394,6 +403,9 @@ def page_chair_request(
     elif adapter_name == "chandra.v1":
         generation_declared = dict(feeding.chandra_generation())
         wire_fields = chandra_wire_fields()
+    elif adapter_name == dots.ADAPTER:
+        generation_declared = dots.generation()
+        wire_fields = {}
     else:
         raise SchemaRefusal(
             f"page-scoped adapter {adapter_name!r} has no declared generation view at this "
@@ -718,6 +730,9 @@ def captured_page_attempt(
     elif adapter_name == "chandra.v1":
         generation_declared = dict(feeding.chandra_generation())
         parser = "html"  # The vendor layout grammar; "json" is fixture-only.
+    elif adapter_name == dots.ADAPTER:
+        generation_declared = dots.generation()
+        parser = dots_layout.PARSER  # Its one grammar, JSON layout cells.
     else:
         raise SchemaRefusal(
             f"captured_page_attempt has no capture recipe for adapter {adapter_name!r}; "

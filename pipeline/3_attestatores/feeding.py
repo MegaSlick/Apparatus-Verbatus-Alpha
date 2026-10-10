@@ -9,7 +9,7 @@ from __future__ import annotations
 from types import MappingProxyType
 from typing import Any, Final, Mapping
 
-from common import chandra_layout
+from common import chandra_layout, dots_layout
 from common.contracts.canonical import digest_of, is_sha256
 from common.contracts.errors import SchemaRefusal
 from common.decoding import SAMPLING_FIELDS
@@ -18,6 +18,7 @@ from common.native_witness import (
     capture_text_view,
     churro_capture_system_prompt,
     derive_churro_capture,
+    derive_dots_capture,
     detect_repetition,
     parse_churro_response,
     validate_capture_text_view,
@@ -51,6 +52,8 @@ _RUNNABLE_PARSERS = frozenset(
         # in both postures.
         ("churro.v1", "xml"),
         ("dai.v1", "text"),
+        # dots.mocr has one grammar, its JSON layout cells, in both postures.
+        (dots_layout.ADAPTER, dots_layout.PARSER),
     }
 )
 # The expert transcription convention defined on the training dataset's own
@@ -576,6 +579,15 @@ def retain_model_view(
         else:
             record["parse"] = {"state": "parsed", "parser": parser, "text": parsed}
         _record_post_hoc_repetition(record, raw_response, ceiling=chandra.MAX_RESPONSE_BYTES)
+    elif adapter == dots_layout.ADAPTER:
+        record["vendor_identity"] = {
+            "repository": dots_layout.PROMPT_PROVENANCE["repository"],
+            "sha": dots_layout.PROMPT_PROVENANCE["sha"],
+            "carried_strings": {
+                dots_layout.PROMPT_PROVENANCE["symbol"]: dots_layout.LAYOUT_PROMPT_SHA256
+            },
+        }
+        record.update(derive_dots_capture(raw_response, transport_stop_reason, parser=parser))
     elif adapter == "dai.v1" and parser == "text":
         try:
             record["parse"] = {

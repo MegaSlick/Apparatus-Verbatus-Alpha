@@ -98,6 +98,10 @@ ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
 RECEIPTS_DIR: Final = "receipts/sha256"
 RECENSOR_PARTITION_RECEIPT_FILE: Final = "run-health/recensor-partition-receipt.json"
+# The Attestatores' summary of which pages a routed witness reads, and why
+# (`common/witness_routing.py`). A report for a person, rebuilt on every pass and
+# written only on a run that routes a witness; nothing reads it back.
+WITNESS_ROUTING_SUMMARY_FILE: Final = "run-health/witness-routing.json"
 # Written by the serving launcher while a stage runs, never by this store; named
 # so `inventory_scope()` covers every path any code writes in the tree.
 SERVING_LOGS_DIR: Final = "serving-logs"
@@ -529,6 +533,10 @@ class RunTree:
         """The current derived partition receipt at the Recensor boundary."""
         return RECENSOR_PARTITION_RECEIPT_FILE
 
+    def witness_routing_summary_path(self) -> str:
+        """The current derived witness-routing summary at the Attestatores boundary."""
+        return WITNESS_ROUTING_SUMMARY_FILE
+
     def resolve(self, relative_path: str) -> Path:
         """A path inside this run tree, refusing anything that leaves it.
 
@@ -640,6 +648,31 @@ class RunTree:
                     "denominator is sealed by the readings and cannot differ between two "
                     "passes over them"
                 )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write(relative, data)
+        return PublishResult(relative, reused=False)
+
+    def write_witness_routing_summary(self, record: dict[str, Any]) -> PublishResult:
+        """Atomically replace the derived witness-routing summary.
+
+        A report for a person, derived from the sealed `witness-routing` records
+        and rebuilt on every Attestatores pass, so it is replaced in place like
+        the partition receipt; it binds to this run's authority. An identical
+        pass rewrites nothing.
+        """
+        if record.get("run_id") != self.run_id or record.get("config_digest") != (
+            self._run_authority()
+        ):
+            raise SchemaRefusal("witness-routing summary does not belong to this run authority")
+        relative = self.witness_routing_summary_path()
+        target = self.resolve(relative)
+        data = canonical_bytes(record)
+        if target.exists():
+            try:
+                if target.read_bytes() == data:
+                    return PublishResult(relative, reused=True)
+            except OSError:
+                pass
         target.parent.mkdir(parents=True, exist_ok=True)
         self._atomic_write(relative, data)
         return PublishResult(relative, reused=False)
@@ -1547,7 +1580,12 @@ class RunTree:
         includes `<stage>/serving-logs/`, written by the serving launcher, which
         `fetch-run` would otherwise refuse.
         """
-        prefixes = [RUN_FILE, f"{RECEIPTS_DIR}/", RECENSOR_PARTITION_RECEIPT_FILE]
+        prefixes = [
+            RUN_FILE,
+            f"{RECEIPTS_DIR}/",
+            RECENSOR_PARTITION_RECEIPT_FILE,
+            WITNESS_ROUTING_SUMMARY_FILE,
+        ]
         for directory in sorted(set(_all_writing_directories())):
             prefixes.append(f"{directory}/{ARTIFACTS_DIR}/")
             prefixes.append(f"{directory}/{BLOBS_DIR}/")

@@ -158,6 +158,9 @@ BOUNDARY_OUTCOMES: Final = {
     # What one Recensor pass did with the run's operator review decisions; it
     # decides about no unit, each review does.
     "review-decisions": "recorded",
+    # Which page a routed witness reads (`common/witness_routing.py`): a roster
+    # fact about one page, never a witness outcome or an act's category.
+    "witness-routing": "recorded",
 }
 
 # Boundary evidence, never an act's category (an Armarium boundary record is not

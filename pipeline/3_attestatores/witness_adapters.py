@@ -30,6 +30,7 @@ from typing import Any, Callable, Final, Mapping
 
 import chandra
 import churro
+import dots
 import feeding
 
 from common import imaging_ports
@@ -262,6 +263,11 @@ def validate_adapter_presentation(
             "sized by the vendor's own scale_to_fit rule",
         )
         return
+    if resolved == dots.ADAPTER:
+        # The sealed page itself: dots.mocr's processor sizes it, not this stage.
+        if source["kind"] != "page" or presented != source:
+            raise SchemaRefusal(f"{resolved} is shown the sealed whole page exactly as sealed")
+        return
     if resolved != "dai.v1":
         # A new adapter must add its own rule here (module docstring), so an
         # unrecognized name is refused rather than measured against DAI's.
@@ -325,6 +331,17 @@ RUNNABLE_ADAPTERS: Final[dict[str, RunnableAdapter]] = {
         # No `quantization`, no `takes_page_size`: the grammar carries no
         # coordinates, so there is nothing to convert and no page size to use.
         format_capabilities=churro.FORMAT_CAPABILITIES,
+    ),
+    dots.ADAPTER: RunnableAdapter(
+        prompt=dots.prompt,
+        parse=dots.parse,
+        retain=dots.retain,
+        present=dots.present,
+        observe=dots.observe,
+        quantization=dots.QUANTIZATION_RULE,
+        # Its boxes are in the processor's resized image; the page size maps them back.
+        takes_page_size=True,
+        format_capabilities=dots.FORMAT_CAPABILITIES,
     ),
     "dai.v1": RunnableAdapter(
         prompt=feeding.dai_prompt,

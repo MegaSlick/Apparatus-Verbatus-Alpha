@@ -242,6 +242,10 @@ class ModelsConfig:
     #: Which framing each witness chair is asked in, by role; an absent chair
     #: gets its adapter's default. Sealed with the roster, not chosen in a stage.
     witness_framings: Mapping[str, str] = field(default_factory=dict)
+    #: Witness chairs that read only the pages a rule routes to them, by role,
+    #: and the rule's name (`common/witness_routing.py`). Empty: every witness
+    #: reads every page.
+    witness_routing: Mapping[str, str] = field(default_factory=dict)
     model_root: str | None = None
     source_path: Path | None = field(default=None, compare=False, repr=False)
 
@@ -249,6 +253,7 @@ class ModelsConfig:
         object.__setattr__(self, "chairs", MappingProxyType(dict(self.chairs)))
         object.__setattr__(self, "adapter_recipes", MappingProxyType(dict(self.adapter_recipes)))
         object.__setattr__(self, "witness_framings", MappingProxyType(dict(self.witness_framings)))
+        object.__setattr__(self, "witness_routing", MappingProxyType(dict(self.witness_routing)))
 
     def to_record(self) -> dict[str, object]:
         chairs: dict[str, object] = {}
@@ -263,6 +268,10 @@ class ModelsConfig:
         # Omitted when empty, or every run's `config_digest` would move.
         if self.witness_framings:
             record["witness_framings"] = dict(sorted(self.witness_framings.items()))
+        # Omitted when empty for the same reason: a run that routes nothing seals
+        # exactly what it sealed before routing existed.
+        if self.witness_routing:
+            record["witness_routing"] = dict(sorted(self.witness_routing.items()))
         return record
 
     @property

@@ -85,6 +85,12 @@ _PROVENANCE_FIELDS = frozenset({"source", "revision", "verification"})
 READING_CHAIRS = frozenset(
     {"attestator_1", "attestator_2", "attestator_3", "perlector", "reconstructor"}
 )
+# Reading chairs a decoding file may carry a row for, but need not: dots.mocr
+# (`attestator_4`) is seated only by a roster that routes it
+# (`common/witness_routing.py`), and the committed file, which seats no such
+# chair, carries no row, so its digest is the one it always was. A served
+# chair with no row is refused by `ChairClient` before any request.
+OPTIONAL_READING_CHAIRS = frozenset({"attestator_4"})
 # The chair Chandra fills. Chandra's own pipeline sends the pinned recipe's
 # temperature and top_p to a vLLM server and nothing else, so its row must be
 # the recipe's first request over vLLM's defaults, and cannot drift from it.
@@ -178,10 +184,13 @@ def _require_output_bounds(generation: Any, names: tuple[str, ...], refusal: str
 
 def _validate_chair_decoding(table: Any) -> None:
     """Close the per-chair sampling table: known chairs, known fields, finite values."""
-    if not isinstance(table, dict) or set(table) != READING_CHAIRS:
+    if (
+        not isinstance(table, dict)
+        or not READING_CHAIRS <= set(table) <= READING_CHAIRS | OPTIONAL_READING_CHAIRS
+    ):
         raise ContractError(
             f"decoding chair_decoding must hold exactly one row per reading chair "
-            f"{sorted(READING_CHAIRS)}"
+            f"{sorted(READING_CHAIRS)}, and may hold one for {sorted(OPTIONAL_READING_CHAIRS)}"
         )
     for chair, row in table.items():
         if not isinstance(row, dict) or not _PROVENANCE_FIELDS <= set(row):

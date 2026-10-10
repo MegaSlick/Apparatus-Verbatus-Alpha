@@ -1057,6 +1057,21 @@ def declared_page_witness_chairs(context) -> set[str]:
     }
 
 
+def page_witness_chairs(context, page_id: str, declared: set[str] | None = None) -> set[str]:
+    """One page's page witnesses: the sealed roster's, less a routed chair not routed to it.
+
+    `declared` is `declared_page_witness_chairs(context)`, read once by a
+    caller that walks many pages. A run that routes no witness
+    (`common/witness_routing.py`) gets the sealed roster for every page.
+    """
+    # `witness_routing` reads this module.
+    from common.witness_routing import page_roster
+
+    if declared is None:
+        declared = declared_page_witness_chairs(context)
+    return page_roster(context, page_id, declared)
+
+
 def require_page_roster(page_id: str, records: list[dict], page_chairs: set[str]) -> None:
     """A page some witness testified to carries every configured page witness and no other."""
     present = {record["payload"]["chair"] for record in records}
@@ -1161,7 +1176,8 @@ def page_feed_of(
     Stage 4 builds and publishes the feed from this, and the page-read
     denominator builds it again from the same sealed inputs and requires the
     sealed feed to equal it. `current` is each chair's latest page Testimonium
-    of the page, `page_chairs` `declared_page_witness_chairs`, `surya_census`
+    of the page, `page_chairs` `declared_page_witness_chairs` (narrowed here to
+    the page's own roster, `page_witness_chairs`), `surya_census`
     `sealed_surya_census`, `serving_recipe` the Perlector chair's or `None`
     when it is absent. `retain` stores the page render (stage 4's
     `context.retain`) or, for a reader, checks the render is already retained.
@@ -1171,6 +1187,8 @@ def page_feed_of(
     # The serving package reads `common.stage`, which reads this module.
     from common import page_feed
 
+    # A routed witness the page is not routed to is no part of this page's roster.
+    page_chairs = page_witness_chairs(context, page_id, page_chairs)
     no_testimony = not current
     witnesses = [] if no_testimony else page_witnesses(context, page_id, current, page_chairs)
     feed = page_feed.build_page_feed(

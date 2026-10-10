@@ -2655,6 +2655,21 @@ def _validate_witness_accounting(
         raise SchemaRefusal(
             "Armarium page witness chairs are not a sorted, unique part of the roster"
         )
+    basis = aggregate_basis if isinstance(aggregate_basis, dict) else {}
+    routed = basis.get(_ROUTED_WITNESS_BASIS_FIELD, [])
+    if (
+        not isinstance(routed, list)
+        or any(not _is_nonempty_str(chair) for chair in routed)
+        or routed != sorted(set(routed))
+        or not set(routed) < set(counted)
+        or (_ROUTED_WITNESS_BASIS_FIELD in basis and not routed)
+    ):
+        raise SchemaRefusal(
+            "Armarium routed page witness chairs are not a sorted, unique, proper part of the "
+            "page witness chairs"
+        )
+    # A page a routed chair is not routed to counts the other page witnesses alone.
+    page_rosters = {len(counted), len(counted) - len(routed)}
     coverage = (
         aggregate_basis.get("coverage_records") if isinstance(aggregate_basis, dict) else None
     )
@@ -2663,7 +2678,7 @@ def _validate_witness_accounting(
     for act_key, record in coverage.items():
         if (
             not isinstance(record, dict)
-            or record.get("configured") != len(counted)
+            or record.get("configured") not in page_rosters
             or record.get("floor") != witness_floor
         ):
             raise SchemaRefusal(
@@ -2701,7 +2716,13 @@ _REVIEW_DECISIONS_BASIS_FIELD: Final = "review_decisions"
 # Present only when the run's held share after the Recensor was above its
 # sealed limit and a person's advance passed it (`systemic_aggregate_argument`).
 _SYSTEMIC_BASIS_FIELD: Final = "systemic_review"
-_OPTIONAL_BASIS_FIELDS: Final = frozenset({_REVIEW_DECISIONS_BASIS_FIELD, _SYSTEMIC_BASIS_FIELD})
+# Present only when the run seats a witness on routed pages only
+# (`common/witness_routing.py`): those chairs, a sorted part of
+# `page_witness_chairs`. A page they are not routed to counts the rest alone.
+_ROUTED_WITNESS_BASIS_FIELD: Final = "routed_page_witness_chairs"
+_OPTIONAL_BASIS_FIELDS: Final = frozenset(
+    {_REVIEW_DECISIONS_BASIS_FIELD, _SYSTEMIC_BASIS_FIELD, _ROUTED_WITNESS_BASIS_FIELD}
+)
 
 
 def review_aggregate_arguments(basis: Any) -> dict[str, Any]:
