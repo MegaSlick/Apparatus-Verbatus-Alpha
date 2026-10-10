@@ -1323,9 +1323,10 @@ def test_an_arm_whose_every_page_failed_terminally_is_failed_and_blocks_its_depe
         _vendor_arm(bench, "qv", "LOOP: transcribe"),
         _cpu_arm(bench, "child", gpu=False, after=["qv"]),
     ]
+    notifier = FakeNotifier()
     queue = Recording(
         _manifest(bench, arms, end_pod="none"),
-        notifier=FakeNotifier(),
+        notifier=notifier,
         environ=bench["env"],
         poll_seconds=0.05,
     )
@@ -1337,6 +1338,10 @@ def test_an_arm_whose_every_page_failed_terminally_is_failed_and_blocks_its_depe
     assert any("run gave no answer" in e for e in status["errors"])
     assert [s["arm"] for s in status["skipped"]] == ["child"]
     assert queue.outcome["qv"] == "failed"
+    assert queue.final_failed == {"qv"}
+    assert any("arm failed: qv, not retried" in m for _, m in notifier.sent)
+    assert not any("after its retry" in m for _, m in notifier.sent)
+    assert status["skipped"] == [{"arm": "child", "reason": "needs qv, which failed"}]
     assert not [e for e in _events(bench["out"]) if e["event"] == "queue-arm-retry"]
 
 
@@ -1360,5 +1365,21 @@ def test_an_arm_with_some_terminal_failures_is_ok_with_failures(tmp_path):
     (out / "a" / "p0.json").write_text(json.dumps(terminal))
     (out / "a" / "p1.json").write_text(json.dumps(terminal))
     assert Q_()._run_status(arm) == "failed"
-    # A dependent may build on an arm that answered some pages, not on one that answered none.
-    assert "ok-with-failures" in Q.DEPENDENCY_MET and "failed" not in Q.DEPENDENCY_MET
+
+
+def test_dependents_follow_the_dependency_outcome(tmp_path):
+    class Q_:
+        _blocker = Q.Queue._blocker
+
+        def __init__(self, outcome, final_failed=()):
+            self.outcome, self.final_failed = outcome, set(final_failed)
+
+    child = type("Arm", (), {"after": ("dep",)})()
+    # A dependent builds on an arm that answered some pages, not on one that answered none.
+    assert Q_({"dep": "ok-with-failures"})._blocker(child, False) == ("ready", None)
+    assert Q_({"dep": "ok"})._blocker(child, False) == ("ready", None)
+    # A failure that will be retried defers the dependent behind the retry ...
+    assert Q_({"dep": "failed"})._blocker(child, False)[0] == "defer"
+    # ... one that will not (no page answered) skips it at once.
+    kind, reason = Q_({"dep": "failed"}, {"dep"})._blocker(child, False)
+    assert kind == "skip" and reason == "needs dep, which failed"

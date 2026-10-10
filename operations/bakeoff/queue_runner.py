@@ -707,6 +707,8 @@ class Queue:
         # Each arm's last outcome: ok, ok-with-failures, smoke-ok, smoke-failed, failed,
         # skipped, deferred, hard-stopped.
         self.outcome: dict[str, str] = {}
+        # Arms recorded failed with no retry to come (they answered no page).
+        self.final_failed: set[str] = set()
         self.budget: int | None = None
         self.hard_stopped = False
         self.terminated = False
@@ -1022,10 +1024,11 @@ class Queue:
                 continue
             if state is None:
                 found.append(("wait", None))
-            elif state in ("failed", "deferred") and not final:
+            elif state in ("failed", "deferred") and not final and name not in self.final_failed:
                 found.append(("defer", f"needs {name}, which {words[state]}"))
             else:
-                found.append(("skip", f"needs {name}, which {words.get(state, state)}"))
+                word = "failed" if name in self.final_failed else words.get(state, state)
+                found.append(("skip", f"needs {name}, which {word}"))
         for verdict in ("skip", "defer", "wait"):
             for kind, reason in found:
                 if kind == verdict:
@@ -1104,6 +1107,8 @@ class Queue:
         self._error(f"{arm.name}: {what}")
         self._event("queue-arm-error", arm=arm.name, detail=what)
         self.ping(f"error:{arm.name}", "milestone", f"arm failed: {arm.name} {what}")
+        with self.lock:
+            self.final_failed.add(arm.name)
         self._record(arm, "failed", t0)
 
     def _smoke_useless(self, arm: ArmSpec, t0: float) -> None:
@@ -1171,7 +1176,8 @@ class Queue:
                 + (f"; {len(failed)} failed, not retried ({note})" if failed else ""),
             )
         elif status == "failed":
-            self.ping(f"failed:{arm.name}", "milestone", f"arm failed: {arm.name}, after its retry")
+            after = "not retried" if arm.name in self.final_failed else "after its retry"
+            self.ping(f"failed:{arm.name}", "milestone", f"arm failed: {arm.name}, {after}")
         elif status == "smoke-failed":
             self.ping(
                 f"failed:{arm.name}", "milestone", f"arm failed: {arm.name} smoke (smoke only)"
