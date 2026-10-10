@@ -116,7 +116,7 @@ def test_a_fed_cache_scored_and_compared_end_to_end(tmp_path):
     cache = tmp_path / "cache"
     argv = [
         "run", "--run-tree", str(tree), "--out", str(cache), "--label", "swap",
-        "--model-name", "m", "--weights", str(tree), "--vllm-cmd", sys.executable, str(FAKE),
+        "--model-name", "m", "--accept-new-model-name", "--weights", str(tree), "--vllm-cmd", sys.executable, str(FAKE),
         "--port", str(_free_port()), "--startup-timeout", "60",
         "--letter-map", "attestator_1=C,attestator_3=A",
         "--witness-order", "attestator_3,attestator_2,attestator_1",
@@ -233,7 +233,7 @@ def test_lead_checked_only_for_an_explicit_checked_status():
 def _fed_run(tree, cache, label, *extra):
     argv = [
         "run", "--run-tree", str(tree), "--out", str(cache), "--label", label,
-        "--model-name", "m", "--weights", str(tree), "--vllm-cmd", sys.executable, str(FAKE),
+        "--model-name", "m", "--accept-new-model-name", "--weights", str(tree), "--vllm-cmd", sys.executable, str(FAKE),
         "--port", str(_free_port()), "--startup-timeout", "60", *extra,
     ]  # fmt: skip
     assert F.main(argv) == 0
@@ -328,3 +328,31 @@ def test_caches_of_a_real_run_tree_compare_against_it(tmp_path, monkeypatch):
     argv = ["--run-tree", str(tree), "--gold", str(gold), "--gold-glob", "*.txt"]
     assert C.main([*argv, "--answers", str(cache / "a"), "--compare", str(cache / "b")]) == 0
     assert C.main([*argv, "--answers", str(cache / "a"), "--compare", str(tree)]) == 0
+
+
+def test_repaired_replies_are_counted_in_answer_health(tmp_path):
+    tree = make_run_tree(tmp_path / "run", pages=(
+        ("Le dix mai mil", "Le dix mars mil huit"),
+        ("Le onze juin", "BARE-TEST"),
+    ))  # fmt: skip
+    (tree / "config.json").write_text("{}")
+    cache = tmp_path / "cache"
+    _fed_run(tree, cache, "bare", "--sampling", "sealed")
+    answers = C.answers_from_cache(cache / "bare")
+    assert [answers[s].repaired for s in ("p001", "p002")] == [False, True]
+    gold = _gold(tmp_path / "gold", {"p001": "Le dix mai", "p002": "Le dix mai"})
+    out = tmp_path / "card"
+    assert C.main(["--run-tree", str(tree), "--answers", str(cache / "bare"), "--gold",
+                   str(gold), "--gold-glob", "*.txt", "--out", str(out)]) == 0  # fmt: skip
+    card = json.loads((out / "scorecard.json").read_text())
+    assert card["answers"]["groups"]["acts-handwritten"]["repaired"] == 1
+    assert (
+        "- repaired before parsing (bare grammar keys quoted): 1 pages"
+        in (out / "scorecard.md").read_text()
+    )
+    # The run's own readings carry their repairs the same way.
+    path = tree / "4_perlector/artifacts/page-reading/r2.json"
+    record = json.loads(path.read_text())
+    record["payload"]["answer_repairs"] = [{"code": "unquoted-keys-quoted", "keys": 3}]
+    path.write_text(json.dumps(record))
+    assert C.answers_from_run_tree(F.load_run_tree(tree))["p002"].repaired is True

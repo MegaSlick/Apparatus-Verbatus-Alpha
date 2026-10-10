@@ -333,7 +333,7 @@ def test_cli_writes_records_and_the_scorer_counts_copies(tmp_path):
     cache = tmp_path / "cache"
     run = [
         "run", "--run-tree", str(tree), "--out", str(cache), "--label", "trap",
-        "--model-name", "m", "--weights", str(tree), "--vllm-cmd", sys.executable, str(FAKE),
+        "--weights", str(tree), "--vllm-cmd", sys.executable, str(FAKE),
         "--port", str(_free_port()), "--startup-timeout", "60", "--mutations", str(out),
     ]  # fmt: skip
     assert F.main(run) == 0
@@ -516,7 +516,7 @@ def test_fed_arm_and_scorer_refuse_a_mutation_planted_from_another_reference(tmp
     def run(label):
         return F.main([
             "run", "--run-tree", str(tree), "--out", str(cache), "--label", label,
-            "--model-name", "m", "--weights", str(tree), "--vllm-cmd", sys.executable,
+            "--weights", str(tree), "--vllm-cmd", sys.executable,
             str(FAKE), "--port", str(_free_port()), "--startup-timeout", "60",
             "--mutations", str(out), "--gold", str(gold), "--gold-glob", "*.txt",
         ])  # fmt: skip

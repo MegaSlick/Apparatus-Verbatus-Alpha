@@ -317,7 +317,7 @@ Run cards for every model are in `cards/` (index: `cards/README.md`).
 The arms above read a page alone. `fed_arm.py` sends a reader the Perlector's whole page
 request, witnesses included, so a base model, a LoRA adapter or a merged checkpoint can be
 judged in the Perlector's seat without running the pipeline. It reads a sealed run tree
-(stages 1-4 done; for example the cold run extracted from its tar) and never writes to it.
+(stages 1-4 done, kept whole under its run id) and never writes to it.
 A pipeline run tree (one with `run.json`) is used only once its Exemplar and Perlector
 stage seals verify, and every feed, call record and render it reads is digest-checked.
 
@@ -344,14 +344,17 @@ vLLM serving LoRA adapters under their own names), or `--weights` to start vLLM 
 snapshot with the Perlector's serving row (the same server options as `witness_run`).
 `--recipe` serves a variant row (`config/serving_recipes_real_variants.toml`: FP8, MTP,
 FP8 KV cache), and a quantized row is refused on a snapshot whose `config.json` does not
-declare that quantization. `--model-name` is the served name the requests ask for;
-`--revision` (and `--repo`) name the checkpoint behind it -- required with `--recipe` or
+declare that quantization. The served name is part of the request bytes, so by default
+`--model-name` is the name the run's call records carry, and vLLM is started under it
+whatever the recipe (`--served-model-name`); another name on a run tree with recorded
+calls is refused unless `--accept-new-model-name` (an adapter, a merge). A run tree with
+no recorded call needs `--model-name`. `--revision` (and `--repo`) name the checkpoint behind it -- required with `--recipe` or
 `--repo`, otherwise the Perlector chair's pinned bf16 revision; `--label` names the cache
 folder.
 
 ```sh
-.venv/bin/python -m operations.bakeoff.fed_arm run --run-tree $V/runs/cold73-2026-10-09 \
-  --out $V/bakeoff/fed-cache --label qwen38-base-greedy --model-name perlector-qwen3.8-27b \
+.venv/bin/python -m operations.bakeoff.fed_arm run --run-tree $V/runs/<run id> \
+  --out $V/bakeoff/fed-cache --label qwen38-base-greedy \
   --server-url http://127.0.0.1:8190 --concurrency 16
 ```
 
@@ -390,7 +393,10 @@ token cap, stream mode, loop guard, variant, mutation identity), the variant, th
 shown, the prompt digests and whether they match the run's, the request
 digest and whether it matches the run's, the sampling, the image digests, the reply's
 content, finish reason, usage, loop stop and seconds, the answer grammar's verdict
-(`common.page_answer`: parsed or malformed, and why), the answer and its text. The raw
+(parsed or malformed, and why) read as the pipeline reads a reply
+(`page_answer.parse_page_answer_repaired`: bare grammar keys are quoted and
+`answer_repairs` records it; a looped or cut-off reply is never repaired), the answer and
+its text. The raw
 stream is beside it as `<page stem>.sse.gz`. A page cached without an error is skipped
 next time; a label holds one setup, so a page cached under another (or whose request
 bytes now differ) is refused, never mixed in. The page accounting (holds) is not run here.
@@ -418,7 +424,7 @@ Per page group (act pages split by form) and for the hard pages:
   as empty; act recall (gold acts matched by a `kind: act` entry at CER <= 0.5) and pages
   with the exact act count; row recall and surname recall on index and table pages;
   inserted words per gold word; false text on pages with no gold text;
-- **answer health**: parsed and malformed (by reason), errors, finish reasons,
+- **answer health**: parsed and malformed (by reason), pages repaired before parsing, errors, finish reasons,
   loop-guard stops, completion tokens, seconds;
 - **scepticism** (pages whose answer parsed), among the witnesses that read the page (a
   failed or empty witness is counted apart as absent, never "the only one wrong"): per

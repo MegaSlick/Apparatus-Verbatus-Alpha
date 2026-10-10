@@ -6,7 +6,8 @@ synthetic answer by the prompt it is sent, and refuses a request without an imag
 a Perlector page prompt that says no image is shown). A request with `"stream": true` is
 answered as server-sent events, one line per chunk, with a final usage chunk and `[DONE]`.
 A Perlector prompt containing `LOOP-TEST` is answered with one line over and over (one
-containing `HANG-TEST` waits 5 s first); for
+containing `HANG-TEST` waits 5 s first, one containing `BARE-TEST` gets the answer with
+every grammar key unquoted); for
 other prompts, one containing `LOOP` repeats one line a thousand times and one containing
 `HANG` waits 30 s before answering. With `FAKE_VLLM_LAUNCHES` set, each start appends a
 line to that file, so a test can count model loads.
@@ -36,6 +37,12 @@ PERLECTOR_ANSWER = {
 }
 
 
+BARE_KEY_ANSWER = (
+    '{\nacts: [{n: 1, kind: "act", label: null, cites: ["A1"], text: "Le dix mai", '
+    "continues_from_previous_page: false, continues_to_next_page: false}],\n set_aside: []}"
+)
+
+
 def _flag(name: str) -> str:
     return sys.argv[sys.argv.index(name) + 1]
 
@@ -54,6 +61,8 @@ def answer(body: dict) -> str:
     if "witness regime:" in joined:  # the Perlector's page prompt (common/page_prompt.py)
         if "HANG-TEST" in joined:  # a page that runs past any short request timeout
             time.sleep(5)
+        if "BARE-TEST" in joined:
+            return BARE_KEY_ANSWER
         if "LOOP-TEST" in joined:
             return '{"acts": [{"n": 1, "kind": "act", "text": "' + "same row\\n" * 200
         return json.dumps(PERLECTOR_ANSWER, ensure_ascii=False)

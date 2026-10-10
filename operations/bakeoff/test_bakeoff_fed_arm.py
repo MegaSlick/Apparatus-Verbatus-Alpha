@@ -324,14 +324,18 @@ def test_one_run_end_to_end_against_the_fake_server(tree, tmp_path):
     assert events.count("nothing-to-do") == 1
     # The same label with another setup is refused.
     with pytest.raises(SystemExit, match="another setup"):
-        F.main(_run_argv(tree, out, "sealed-repeat", "--model-name", "other"))
+        F.main(
+            _run_argv(
+                tree, out, "sealed-repeat", "--model-name", "other", "--accept-new-model-name"
+            )
+        )
 
 
 def test_variant_runs_greedy_and_without_an_image(tree, tmp_path):
     (tree / "config.json").write_text("{}")
     out = tmp_path / "cache"
     argv = _run_argv(
-        tree, out, "no-image", "--model-name", "adapter-x", "--image", "none",
+        tree, out, "no-image", "--model-name", "adapter-x", "--accept-new-model-name", "--image", "none",
         "--drop-witness", "attestator_2", "--no-stream", "--pages", "p001,2",
     )  # fmt: skip
     assert F.main(argv) == 0
@@ -587,3 +591,78 @@ def test_a_quantized_recipe_is_refused_on_an_unquantized_snapshot(tree, tmp_path
     with pytest.raises(SystemExit):  # another checkpoint must say its revision
         F.parse_args(["run", "--run-tree", "t", "--out", "o", "--label", "l", "--model-name",
                       "m", "--weights", "w", "--recipe", "unproven-real-perlector-fp8"])  # fmt: skip
+
+
+# --- bake-off day: the run's served name, and the pipeline's own answer parser -------
+
+
+def test_the_runs_served_name_is_the_default_and_the_server_answers_under_it(tree, tmp_path):
+    (tree / "config.json").write_text("{}")
+    assert F.recorded_model_names(F.load_run_tree(tree)) == [SERVED]
+    out = tmp_path / "cache"
+    # No --model-name: the fake answers only under its --served-model-name, which the
+    # arm sets from the resolved name, so a 200 shows the server was started under it.
+    argv = _run_argv(tree, out, "default-name", "--sampling", "sealed", "--pages", "p001")
+    assert F.main(argv) == 0
+    record = json.loads((out / "default-name" / "p001.json").read_text())
+    assert record["model_name"] == SERVED and record["error"] is None
+    assert record["request"]["matches_run"] is True
+
+
+def test_another_explicit_name_on_a_run_with_recorded_calls_is_refused(tree, tmp_path):
+    (tree / "config.json").write_text("{}")
+    out = tmp_path / "cache"
+    for name in ("perlector-qwen3.8-27b-fp8", "adapter-x"):
+        with pytest.raises(SystemExit, match="part of the request bytes") as refused:
+            F.main(_run_argv(tree, out, "x", "--model-name", name))
+        assert SERVED in str(refused.value)
+    assert not (out / "x").exists()
+    assert F.resolve_model_name(F.load_run_tree(tree), SERVED) == SERVED
+    # On purpose (an adapter, a merge), and recorded in the cache's setup.
+    argv = _run_argv(tree, out, "adapter", "--model-name", "adapter-x", "--pages", "p001",
+                     "--accept-new-model-name")  # fmt: skip
+    assert F.main(argv) == 0
+    run = json.loads((out / "adapter" / "run.json").read_text())
+    assert run["setup"]["accepted"]["new_model_name"] is True
+
+
+def test_a_run_tree_without_recorded_calls_needs_a_name(tree):
+    for path in (tree / "4_perlector/artifacts/page-reading").glob("*.json"):
+        record = json.loads(path.read_text())
+        del record["payload"]["engine_call"]
+        path.write_text(json.dumps(record))
+    bare = F.load_run_tree(tree)
+    assert F.recorded_model_names(bare) == []
+    with pytest.raises(SystemExit, match="records no Perlector call"):
+        F.resolve_model_name(bare, None)
+    assert F.resolve_model_name(bare, "any-name") == "any-name"
+
+
+def test_a_bare_key_reply_is_parsed_as_the_pipeline_parses_it(tmp_path):
+    tree = make_run_tree(tmp_path / "run", pages=(
+        ("Le dix mai mil", "Le dix mars mil huit"),
+        ("Le onze juin", "BARE-TEST"),
+    ))  # fmt: skip
+    (tree / "config.json").write_text("{}")
+    out = tmp_path / "cache"
+    assert F.main(_run_argv(tree, out, "bare", "--sampling", "sealed")) == 0
+    clean = json.loads((out / "bare" / "p001.json").read_text())
+    assert clean["parse_state"] == "parsed" and clean["repaired"] is False
+    assert clean["answer_repairs"] == []
+    bare = json.loads((out / "bare" / "p002.json").read_text())
+    assert bare["parse_state"] == "parsed" and bare["parse_problems"] == []
+    assert bare["repaired"] is True and bare["text"] == "Le dix mai"
+    assert [(r["code"], r["keys"]) for r in bare["answer_repairs"]] == [("unquoted-keys-quoted", 9)]
+    # The unrepaired grammar would have called it malformed; a loop-stopped or cut-off
+    # reply is never repaired.
+    from common import page_answer
+
+    content = bare["content"]
+    assert page_answer.parse_page_answer(content)[0] == "malformed"
+    assert F.parse_reply({"content": content, "loop_stop": None, "finish_reason": "stop"})[0] == (
+        "parsed"
+    )
+    for cut in ({"loop_stop": {"kind": "line"}, "finish_reason": "repetition-loop"},
+                {"loop_stop": None, "finish_reason": "length"}):  # fmt: skip
+        state, _, _, repairs = F.parse_reply({"content": content, **cut})
+        assert state == "malformed" and repairs == []
