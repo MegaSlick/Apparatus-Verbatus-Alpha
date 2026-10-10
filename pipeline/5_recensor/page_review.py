@@ -294,15 +294,18 @@ def confirmation(
     accounted for by the page's readings: the page accounting's rules (d), (e)
     and (f) pass. A page of `other` entries also needs rule (i) to pass, so no
     detector record lies in an `other` region; without a record detector it
-    stays held. A blank page needs rule (i) to pass or not apply, no detected
-    line at all, and every witness that read the page to have retained blank
-    text, with at least one such witness that is not a census: `census` names
-    the chairs whose page record is their record detector's look rather than
-    a reading of the page's text.
+    stays held. A rule the page accounting records as not applying to the page's
+    stated type (`page_type.applicability`) confirms whatever its status: its
+    findings are recorded there and hold nothing. A blank page needs rule (i) to
+    pass or not apply, no detected line at all, and every witness that read the
+    page to have retained blank text, with at least one such witness that is
+    not a census: `census` names the chairs whose page record is their record
+    detector's look rather than a reading of the page's text.
     """
     rules = accounting.get("rules", {})
     allowed = BLANK_RULES if blank else {rule: CONFIRMING for rule in NO_ACT_RULES}
     statuses = {rule: rules.get(rule, {}).get("status") for rule in allowed}
+    switched_off = rules_not_applying(accounting)
     lines = len(accounting.get("lines") or [])
     witnesses = [
         {
@@ -316,7 +319,7 @@ def confirmation(
         f"page accounting rule ({rule}) is {status or 'absent'}, not "
         + " or ".join(sorted(allowed[rule]))
         for rule, status in statuses.items()
-        if status not in allowed[rule]
+        if status not in allowed[rule] and rule not in switched_off
     ]
     if blank:
         if lines:
@@ -341,6 +344,17 @@ def confirmation(
         "confirmed": not failures,
         "failures": failures,
     }
+
+
+def rules_not_applying(accounting: dict) -> frozenset[str]:
+    """The rules the page accounting records as switched off by the page's stated type.
+
+    An accounting of an untyped page, or one with no page type at all, switches off none.
+    """
+    applicability = (accounting.get("page_type") or {}).get("applicability") or {}
+    return frozenset(
+        rule for rule, verdict in applicability.items() if verdict.get("applies") is False
+    )
 
 
 # --- continuation --------------------------------------------------------------------
@@ -570,18 +584,35 @@ def review_of(
         and set(row_codes) <= RELEASABLE_HOLDS
     )
     if released:
+        # A confirmed page whose rule (i) status would not confirm is one whose
+        # stated type switches the rule off (`rules_not_applying`).
+        blank = confirmed["confirms"] == "page-blank"
+        switched_off = confirmed["rules"].get("i") not in (
+            BLANK_RULES["i"] if blank else CONFIRMING
+        )
+        if blank:
+            rule_i = (
+                ", rule (i) does not apply to the page's stated type"
+                if switched_off
+                else ", rule (i) passes or has no record detector to apply"
+            )
+            detail = (
+                f"{rule_i}, no line was detected and every witness that read the page "
+                "retained blank text"
+            )
+        elif switched_off:
+            detail = (
+                " and rule (i) does not apply to the page's stated type, so every reading "
+                "on the page is accounted for by the rules that apply and none is an act"
+            )
+        else:
+            detail = (
+                " and so does rule (i), so every reading on the page is accounted "
+                "for and none is an act"
+            )
         release = {
             "hold_codes": row_codes,
-            "reason": (
-                "confirmed: the page accounting's rules (d), (e) and (f) pass"
-                + (
-                    ", rule (i) passes or has no record detector to apply, no line was "
-                    "detected and every witness that read the page retained blank text"
-                    if confirmed["confirms"] == "page-blank"
-                    else " and so does rule (i), so every reading on the page is accounted "
-                    "for and none is an act"
-                )
-            ),
+            "reason": "confirmed: the page accounting's rules (d), (e) and (f) pass" + detail,
         }
         row_codes = []
     elif row_codes:
