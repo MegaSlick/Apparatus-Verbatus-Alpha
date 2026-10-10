@@ -663,5 +663,9 @@ def test_row_kind_must_be_an_entry_kind(tmp_path):
 
 def test_held_out_names_keep_their_dots(tmp_path):
     listing = tmp_path / "held.txt"
-    listing.write_text("Vol.1.v2_00030_1L.tif\nVol.1.v2_00031_1L\nplain.JPG  # image\n")
-    assert E.read_held_out(listing) == {"Vol.1.v2_00030_1L", "Vol.1.v2_00031_1L", "plain"}
+    listing.write_text(
+        "Vol.1.v2_00030_1L.tif\nVol.1.v2_00031_1L\nplain.JPG  # image\nPages/Prepped/X_1L.tif\n"
+    )
+    held = E.read_held_out(listing)
+    assert held == {"Vol.1.v2_00030_1L", "Vol.1.v2_00031_1L", "plain", "X_1L"}
+    assert E.is_held_out("X_1L", held) and E.is_held_out("X_2R", held)

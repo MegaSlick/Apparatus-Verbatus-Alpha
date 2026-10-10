@@ -106,15 +106,16 @@ _WORD = re.compile(r"\S+")
 original_of = M.original_of  # `X_1L` and `X_2R` are the two halves of `X`
 
 
-# A held-out line is a page stem or its file name. Only these suffixes are file extensions:
-# a stem may itself hold dots (`Volume_1.v2_00030`), which `Path.stem` would cut.
+# A held-out line is a page stem, its file name or a path to it. Only these suffixes are
+# file extensions: a stem may itself hold dots (`Volume_1.v2_00030`), which `Path.stem`
+# would cut.
 FILE_SUFFIXES = (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".jp2", ".txt", ".json")
 
 
 def read_held_out(path: Path) -> set[str]:
     stems = set()
     for line in path.read_text("utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
+        line = line.split("#", 1)[0].strip().replace("\\", "/").rsplit("/", 1)[-1]
         if line.lower().endswith(FILE_SUFFIXES):
             line = line[: line.rindex(".")]
         if line:

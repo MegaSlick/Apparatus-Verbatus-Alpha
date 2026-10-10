@@ -145,6 +145,7 @@ def test_instruments_are_droppable_and_donate_like_acts(tmp_path):
         entry["kind"] = "instrument"
     dropped = M.mutate(feed, ref, "dropped-act", seed=0)
     assert dropped.changes and dropped.changes[0]["kind"] == "dropped-act"
+    assert _texts(dropped.feed) != _texts(feed)
     assert M.donor_acts({"p009": _ref("Le dix mai mil huit cent Richer Lalonde fils")}, "p001")
     donor = _ref("Le dix mai mil huit cent Richer Lalonde fils de Pierre")
     donor.entries[0]["kind"] = "instrument"

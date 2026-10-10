@@ -62,8 +62,8 @@ the cited boxes) unless the reference brings its own; rebuilt cites are a draft 
 against the run's feed: they are remapped to the ids the mutated feed shows (a mutation
 records `id_map`, source unit id to shown id), a cite to a unit no longer shown is
 dropped, every remaining cite must be a shown id, and every shown id not cited is set
-aside. A reference with no entries cites nothing: every shown id is set aside as
-"empty". An example that fails this is not written; the manifest's `refused` lists it.
+aside. A reference with no entries cites nothing: every shown id is set aside, a
+planted one as "not on the page" and every other as "empty". An example that fails this is not written; the manifest's `refused` lists it.
 `--row-kind` overrides the kind of a gold page's rows (default: by page type in the
 entries grammar, `other` in the acts grammar).
 
