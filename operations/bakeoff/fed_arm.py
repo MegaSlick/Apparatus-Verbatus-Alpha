@@ -1086,33 +1086,6 @@ def _pick(tree: RunTree, pages: str | None, limit: int | None) -> list[Page]:
     return chosen[: limit or None]
 
 
-def assert_quantization(row: dict[str, Any], weights: Path) -> None:
-    """Refuse a quantized recipe on a snapshot whose config.json does not declare it.
-
-    The serving manager's guard (`operations/serving/manager.py::assert_quantization`)
-    on the snapshot this arm launches, so `--recipe unproven-real-perlector-fp8` with
-    bf16 `--weights` is refused rather than quantized at load. (Branch
-    work/serving-nvfp4 adds the same wrapper to `arms.py` for `witness_run`.)
-    """
-    if row.get("quantization") is None:
-        return
-    from types import SimpleNamespace
-
-    from operations.serving.errors import ServingConfigurationError
-    from operations.serving.manager import assert_quantization as guard
-
-    profile = SimpleNamespace(
-        quantization=row["quantization"],
-        chair=row.get("chair"),
-        recipe=row.get("recipe"),
-        tier=row.get("tier"),
-    )
-    try:
-        guard(SimpleNamespace(root=Path(weights)), profile)
-    except ServingConfigurationError as error:
-        raise SystemExit(str(error)) from error
-
-
 def mutation_references(
     args: argparse.Namespace, tree: RunTree
 ) -> dict[str, dict[str, str]] | None:
@@ -1199,7 +1172,7 @@ def run(args: argparse.Namespace) -> int:
     if not url:
         weights = A.resolve_weights(ARM, args.weights, None, None)
         row = A.serving_row(ARM.chair, args.tier or ARM.default_tier, args.recipe)
-        assert_quantization(row, weights)
+        A.assert_row_quantization(row, weights)
         argv = A.server_argv(
             row, weights, port=args.port, served_name=args.model_name,
             gpu_memory_utilization=args.gpu_memory_utilization, max_num_seqs=args.max_num_seqs,
