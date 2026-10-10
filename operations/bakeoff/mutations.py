@@ -61,6 +61,7 @@ from typing import Any
 
 from rapidfuzz.distance import Levenshtein
 
+from common.page_types import is_act_class
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import score as S
 from operations.bakeoff import witness_run as W
@@ -94,8 +95,9 @@ SCENARIOS: tuple[str, ...] = tuple(s for family in FAMILIES.values() for s in fa
 FAMILY_OF = {s: f for f, members in FAMILIES.items() for s in members}
 
 # The training plan's feed mix (TRAINING-PLAN (c) "Planted-error rate"), as shares of 100:
-# 40 honest; 25 planted (12 / 8 / 5); 20 removed (10 blind); 15 structural (the plan's
-# 10 plus the 5 image counterfactuals, which need checked labels and are not built here).
+# 40 honest; 25 planted (12 / 8 / 5); 20 removed (10 blind); 15 structural, spread over
+# the seven structural scenarios. The plan's image counterfactuals need checked labels and
+# are not built here, so they take no share; `blank-chatty` is drawn only for a blank page.
 DEFAULT_MIX: dict[str, int] = {
     "honest": 40,
     "plant-1": 12, "plant-2": 8, "plant-3": 5,
@@ -203,6 +205,11 @@ class Reference:
     status_label: str  # e.g. "fool's gold", "silver", "lead-checked"
     entries: list[dict[str, Any]] = field(default_factory=list)
     words: list[RefWord] = field(default_factory=list)
+    # The page's type and writing (`common.page_types`) where the reference says them;
+    # `typing_problem` says why not where it cannot.
+    page_type: str | None = None
+    writing: str | None = None
+    typing_problem: str | None = None
 
     @property
     def blank(self) -> bool:
@@ -233,6 +240,8 @@ def reference_record_digest(ref: Reference) -> str:
         "entries": ref.entries,
         "words": [[w.text, w.status, w.cls, w.entry] for w in ref.words],
     }
+    if ref.page_type is not None:  # absent for a reference that names none: its digest stands
+        record |= {"page_type": ref.page_type, "writing": ref.writing}
     data = json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
@@ -599,7 +608,9 @@ def _remove_witness(m: Mutation, row: dict[str, Any], outcome: str | None) -> No
 
 def _dropped_act(m: Mutation, ref: Reference, rng: random.Random, rows: list[dict]) -> None:
     acts = [
-        n for n, e in enumerate(ref.entries) if e["kind"] == "act" and len(ref.entry_words(n)) >= 3
+        n
+        for n, e in enumerate(ref.entries)
+        if is_act_class(e["kind"]) and len(ref.entry_words(n)) >= 3
     ]
     if not acts:
         m.notes.append("no act of three words or more to drop")
@@ -903,7 +914,9 @@ def _scenario(m: Mutation, ref: Reference, scenario: str, rng, turn: int, donors
             m.notes.append(f"{len(rows)} witnesses read the page; planted in all of them")
             _plant(m, ref, rng, rows, [])
         else:
-            _plant(m, ref, rng, [r for r in rows if r is not chair], [chair])
+            # Exactly two witnesses share the wrong word; every other one keeps the right word.
+            others = [r for r in rows if r is not chair]
+            _plant(m, ref, rng, others[:2], [chair, *others[2:]])
     elif scenario == "plant-3":
         _plant(m, ref, rng, rows, [])
     elif scenario == "dropped-act":
@@ -1066,7 +1079,7 @@ def donor_acts(refs: dict[str, Reference], exclude: str, limit: int = 40) -> lis
             continue
         for e in ref.entries:
             text = scored_text(e["text"])  # witnesses write no doubt marks
-            if e["kind"] == "act" and 8 <= len(text.split()) <= 120:
+            if is_act_class(e["kind"]) and 8 <= len(text.split()) <= 120:
                 out.append(text)
     return out[:limit]
 

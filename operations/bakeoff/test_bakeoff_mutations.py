@@ -123,6 +123,39 @@ def test_plant_two_and_three_share_one_wrong_word(tmp_path):
     assert pair.planted and all(site["k"] == 2 for site in pair.planted) and pair.notes
 
 
+def test_plant_two_plants_exactly_two_witnesses_whatever_the_count(tmp_path):
+    feed = _three(_tree(tmp_path).pages[1].feed)
+    feed["witnesses"].append(_row("D", "attestator_4", [TEXT, "Folio 1"]))
+    ref = _ref(feed=feed)
+    for turn in range(4):
+        m = M.mutate(feed, ref, "plant-2", seed=1, turn=turn)
+        assert m.planted and not m.notes
+        chair = feed["witnesses"][turn]["witness_label"]
+        for site in m.planted:
+            assert site["k"] == 2 and len(set(site["witnesses"])) == 2
+            assert chair not in site["witnesses"]
+        wrong = [label for label, texts in _texts(m.feed).items() if texts[0] != TEXT]
+        assert len(wrong) == 2 and chair not in wrong
+
+
+def test_instruments_are_droppable_and_donate_like_acts(tmp_path):
+    feed = _three(_tree(tmp_path).pages[1].feed)
+    ref = _ref(feed=feed)
+    for entry in ref.entries:
+        entry["kind"] = "instrument"
+    dropped = M.mutate(feed, ref, "dropped-act", seed=0)
+    assert dropped.changes and dropped.changes[0]["kind"] == "dropped-act"
+    assert _texts(dropped.feed) != _texts(feed)
+    assert M.donor_acts({"p009": _ref("Le dix mai mil huit cent Richer Lalonde fils")}, "p001")
+    donor = _ref("Le dix mai mil huit cent Richer Lalonde fils de Pierre")
+    donor.entries[0]["kind"] = "instrument"
+    assert M.donor_acts({"p009": donor}, "p001") == [
+        "Le dix mai mil huit cent Richer Lalonde fils de Pierre"
+    ]
+    donor.entries[0]["kind"] = "paragraph"
+    assert M.donor_acts({"p009": donor}, "p001") == []
+
+
 def test_planted_forms_look_like_reading_errors():
     import random
 

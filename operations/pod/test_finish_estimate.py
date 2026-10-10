@@ -22,6 +22,7 @@ from common.chairs.config import load_models_toml
 from common.chairs.models import AbsentChair
 from common.contracts.stages import PERLECTOR
 from common.stage import EXIT_HELD
+from conftest import dots_models_config, dots_serving_recipes, run_orchestrator
 from operations.notify.client import NotifyOutcome
 
 from .finish_estimate import (
@@ -209,6 +210,29 @@ def test_only_page_witnesses_count_toward_the_attestatores_total(fixture_run: Pa
     assert RunTreeProgress(fixture_run, None).count("attestatores").total is None
     unknown = {name: chair for name, chair in FIXTURE_CHAIRS.items() if name != "attestator_2"}
     assert RunTreeProgress(fixture_run, unknown).count("attestatores").total is None
+
+
+def test_a_routed_witness_counts_only_on_the_pages_routed_to_it(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """dots.mocr routed to page 2, a table page: three witnesses read page 1, four page 2."""
+    base = tmp_path_factory.mktemp("routed")
+    models = dots_models_config(base / "models")
+    completed = run_orchestrator(
+        base / "runs",
+        "estimate",
+        "dots-table",
+        models_config=models,
+        serving_recipes_config=dots_serving_recipes(base),
+    )
+    # The fixture's pages carry an act across their break, so the run is partial.
+    assert completed.returncode == 3, completed.stderr[-2000:]
+
+    counted = RunTreeProgress(base / "runs" / "estimate", load_models_toml(models).chairs).count(
+        "attestatores"
+    )
+
+    assert (counted.done, counted.total) == (7, 7)
 
 
 def test_the_stage_in_progress_is_the_first_unsealed_one(fixture_run: Path, tmp_path: Path) -> None:
