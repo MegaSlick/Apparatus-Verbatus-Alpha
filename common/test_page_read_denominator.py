@@ -212,7 +212,7 @@ def _fixture_says(monkeypatch, ordinal: int, answer: str, stop_reason: str | Non
 def _read_as(root: Path, ordinal: int, content: str, stop_reason: str | None) -> Callable:
     """A forge making page `ordinal`'s reading what stage 4 reads from `content`."""
     feed = _one(root, "page-feed", ordinal)[1]["payload"]
-    state, answer, problems = page_path.read_reply(
+    state, answer, problems, _repairs = page_path.read_reply(
         content, stop_reason, feed, load_page_accounting_policy()
     )
     read = state == "parsed" and not problems
