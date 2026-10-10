@@ -5,6 +5,7 @@ import json
 import signal
 import socket
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -262,6 +263,13 @@ def test_a_stale_handoff_never_signals_an_unrelated_process(tmp_path):
     argv = [sys.executable, "-c", "import time; time.sleep(60)"]
     process = subprocess.Popen(argv, start_new_session=True)
     try:
+        # Just after the fork the child still shows the parent's command line; a server
+        # named in a hand-off file has long since started, so wait for the same here.
+        deadline = time.monotonic() + 10
+        cmdline = Path(f"/proc/{process.pid}/cmdline")
+        while cmdline.read_bytes().rstrip(b"\0").split(b"\0") != [a.encode() for a in argv]:
+            assert time.monotonic() < deadline, "the child never started"
+            time.sleep(0.01)
         stale = {"url": "http://127.0.0.1:1", "argv": ["vllm", "serve", "x"], "pid": process.pid}
         W.Server.adopted(stale).stop()
         assert process.poll() is None  # the pid is alive but is not the recorded server
