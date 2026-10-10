@@ -222,6 +222,8 @@ def test_lead_checked_only_for_an_explicit_checked_status():
         "gold",
         "gold (unchecked draft)",
         "gold (AI draft)",
+        "gold (Tyrel 2026-99-99)",
+        "gold (Tyrel 2026-02-30)",
         "gold ()",
         "gold (2026-10-07)",
     ):
@@ -271,7 +273,7 @@ def test_compare_refuses_answer_sets_that_were_asked_differently(tmp_path, capsy
     for key, value in (
         ("sampling_name", "sealed"), ("seed", 7), ("max_tokens", 100),
         ("decoding_sha256", "0" * 64), ("variant", {"changed": True}),
-        ("run", {"run_sha256": "0" * 64}),
+        ("run", {"run_sha256": "0" * 64}), ("stream", False),
     ):  # fmt: skip
         with pytest.raises(SystemExit) as refused:
             compare(_retarget(cache / "a", tmp_path / f"b-{key}", **{key: value}))
@@ -294,3 +296,35 @@ def test_compare_refuses_answer_sets_that_were_asked_differently(tmp_path, capsy
     (elsewhere / "config.json").write_text("{}")
     with pytest.raises(SystemExit):
         compare(elsewhere)
+
+
+def test_one_cache_folder_may_not_mix_model_identities(tmp_path, capsys):
+    tree = make_run_tree(tmp_path / "run", pages=(("Le dix mai", "Le dix mai"),) * 2)
+    (tree / "config.json").write_text("{}")
+    cache = tmp_path / "cache"
+    _fed_run(tree, cache, "a")
+    mixed = _retarget(cache / "a", tmp_path / "mixed")
+    record = json.loads((mixed / "p002.json").read_text())
+    record["setup"]["revision"] = "another"
+    (mixed / "p002.json").write_text(json.dumps(record))
+    gold = _gold(tmp_path / "gold", {"p001": "Le dix mai", "p002": "Le dix mai"})
+    argv = ["--run-tree", str(tree), "--gold", str(gold), "--gold-glob", "*.txt"]
+    with pytest.raises(SystemExit):
+        C.main([*argv, "--answers", str(cache / "a"), "--compare", str(mixed)])
+    assert "mixes setups" in capsys.readouterr().err
+
+
+def test_caches_of_a_real_run_tree_compare_against_it(tmp_path, monkeypatch):
+    # A run tree with run.json is loaded sealed by fed_arm; the scorer must load it alike,
+    # or its identity differs from the one the caches recorded and every cache is refused.
+    tree = make_run_tree(tmp_path / "run", pages=(("Le dix mai", "Le dix mai"),))
+    (tree / "config.json").write_text("{}")
+    (tree / "run.json").write_text(json.dumps({"run_id": "run"}))
+    monkeypatch.setattr(F, "verify_seals", lambda root: None)
+    cache = tmp_path / "cache"
+    _fed_run(tree, cache, "a")
+    _fed_run(tree, cache, "b")
+    gold = _gold(tmp_path / "gold", {"p001": "Le dix mai"})
+    argv = ["--run-tree", str(tree), "--gold", str(gold), "--gold-glob", "*.txt"]
+    assert C.main([*argv, "--answers", str(cache / "a"), "--compare", str(cache / "b")]) == 0
+    assert C.main([*argv, "--answers", str(cache / "a"), "--compare", str(tree)]) == 0

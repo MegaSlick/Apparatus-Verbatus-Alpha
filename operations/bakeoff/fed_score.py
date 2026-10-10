@@ -62,6 +62,7 @@ STATUS says fool's gold; only an explicit checked status (`gold (<who> <date>)` 
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import random
@@ -183,8 +184,14 @@ def load_answers(path: Path, tree: F.RunTree) -> dict[str, Answer]:
     if is_run_tree(path):
         if path.resolve() == tree.root.resolve():
             return answers_from_run_tree(tree)
-        return answers_from_run_tree(F.load_run_tree(path))
+        return answers_from_run_tree(load_tree(path))
     return answers_from_cache(path)
+
+
+def load_tree(path: Path) -> F.RunTree:
+    """A run tree loaded as `fed_arm` loads it (a real run, with run.json, has its seals
+    proven), so its identity equals the one the caches recorded."""
+    return F.load_run_tree(path, sealed=F.is_real_run(path))
 
 
 def is_run_tree(path: Path) -> bool:
@@ -193,7 +200,9 @@ def is_run_tree(path: Path) -> bool:
 
 # What two compared answer sets must share: the same pages asked the same way, so a
 # difference between them is the model's. The model, checkpoint and recipe may differ.
-COMPARABLE = ("variant", "sampling_name", "seed", "max_tokens", "decoding_sha256")
+COMPARABLE = ("variant", "sampling_name", "seed", "max_tokens", "decoding_sha256", "stream")
+# One folder is one model: its pages may not mix these.
+MODEL_IDENTITY = ("model_name", "repo", "revision", "recipe")
 
 
 def cache_setups(folder: Path) -> dict[str, dict[str, Any]] | str:
@@ -215,7 +224,7 @@ def mutation_of(setup: dict[str, Any]) -> Any:
 
 
 def comparable_view(setup: dict[str, Any]) -> dict[str, Any]:
-    view = {k: setup.get(k) for k in COMPARABLE}
+    view = {k: setup.get(k) for k in (*COMPARABLE, *MODEL_IDENTITY)}
     view["run"] = setup.get("run")
     return view
 
@@ -225,7 +234,7 @@ def describe_set(
 ) -> tuple[str, list[str], dict[str, dict[str, Any]] | None]:
     """(a line for the card, problems, per-page setups or None for a run's own readings)."""
     if is_run_tree(path):
-        same = Path(path).resolve() == tree.root.resolve() or F.load_run_tree(path).identity() == (
+        same = Path(path).resolve() == tree.root.resolve() or load_tree(path).identity() == (
             tree.identity()
         )
         problems = [] if same else [f"{path} is another run tree than --run-tree"]
@@ -239,7 +248,7 @@ def describe_set(
     first = next(iter(setups.values()))
     problems = []
     if len(views) > 1:
-        problems.append(f"{path} mixes setups (run, sampling, seed, cap or decoding differ)")
+        problems.append(f"{path} mixes setups (model, run, sampling, seed, cap or decoding differ)")
     if first.get("run") != tree.identity():
         problems.append(f"{path} was answered on another run tree than --run-tree")
     line = (
@@ -1070,7 +1079,7 @@ def _jsonable(card: dict[str, Any]) -> dict[str, Any]:
 
 
 _CHECKED_STATUS = re.compile(
-    r"lead-checked|gold\s*\(\s*[^()\s][^()]*?\s+\d{4}-\d{2}-\d{2}\s*\)", re.IGNORECASE
+    r"lead-checked|gold\s*\(\s*[^()\s][^()]*?\s+(\d{4}-\d{2}-\d{2})\s*\)", re.IGNORECASE
 )
 
 
@@ -1101,7 +1110,16 @@ def is_checked_status(status: str) -> bool:
     """A gold STATUS that says a person checked every word: `gold (<who> <date>)` with the
     checker's name and an ISO date, or `lead-checked`. Anything else (bare `gold`, `gold
     (unchecked draft)`, fool's gold, silver, draft, empty, unknown) is not."""
-    return bool(_CHECKED_STATUS.fullmatch(status.strip()))
+    found = _CHECKED_STATUS.fullmatch(status.strip())
+    if found is None:
+        return False
+    if found.group(1) is None:  # lead-checked
+        return True
+    try:
+        datetime.date.fromisoformat(found.group(1))
+    except ValueError:
+        return False
+    return True
 
 
 def reference_label(golds: list) -> str:
@@ -1136,7 +1154,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    tree = F.load_run_tree(args.run_tree)
+    tree = load_tree(args.run_tree)
     gold = load_gold_dir(args.gold, args.gold_glob)
     if args.exclude:
         for stem in args.exclude.read_text("utf-8").split():
