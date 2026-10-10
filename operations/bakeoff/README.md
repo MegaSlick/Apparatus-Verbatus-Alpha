@@ -416,23 +416,35 @@ Per page group (act pages split by form) and for the hard pages:
   inserted words per gold word; false text on pages with no gold text;
 - **answer health**: parsed and malformed (by reason), errors, finish reasons,
   loop-guard stops, completion tokens, seconds;
-- **scepticism** (pages whose answer parsed): per witness, when only it has a gold word
-  right, how often the reader follows; when only it is wrong, how often the reader
-  resists; of the words it got wrong, how often the reader wrote its same wrong word;
-  all witnesses wrong and the reader right (recovery); all right and the reader wrong
-  (damage); beats the vote (right where most witnesses that read the page were wrong,
-  minus wrong where most were right); and the share of the reader's errors that are a
-  witness's error;
-- **with `--compare`**: per page the CER between the two readings, pages read
-  identically, gold words whose right/wrong flipped by group, and the headline rows side
-  by side. Run the same arm twice (`--sampling sealed`) to see the noise floor before
-  reading a change.
+- **scepticism** (pages whose answer parsed), among the witnesses that read the page (a
+  failed or empty witness is counted apart as absent, never "the only one wrong"): per
+  witness, when only it has a gold word right, how often the reader also has it
+  ("followed": agreement, not proof of reliance); when only it wrote a wrong word, how
+  often the reader resists (leaving the word out is counted apart); of the words it got
+  wrong with a word of its own, how often the reader wrote its same wrong word (each
+  written word stands for one gold word at most); all witnesses wrong and the reader
+  right (recovery); all right and the reader wrong (damage); beats the vote (right where
+  the plurality of the witnesses that read was wrong, minus wrong where it was right;
+  ties that include the right word reported apart, the same `vote` as `vote_check`); and
+  the share of the reader's errors that are a witness's error. Rates carry a 95%
+  interval from resampling pages, since words on one page are not independent;
+- **failures count**: a page of the run with gold and no answer is a failed, empty
+  reading in the "all" figures and in answer health, so an arm cannot look better by
+  failing its hardest pages;
+- **with `--compare`**: the paired pages (both answers parsed, with how many each side
+  failed) and each rate's per-page difference with its interval; per page the CER between
+  the two readings, pages read identically, gold words whose right/wrong flipped by
+  group, and the headline rows side by side. Run the same arm twice (`--sampling sealed`)
+  to see the noise floor before reading a change.
 
 `scorecard.md` and `scorecard.json` go to `--out`. Every heading says **vs fool's gold
-(ballpark, not accuracy)** while any gold page's STATUS says fool's gold; lead-checked
-gold drops the label. On the cold run's own readings it reproduces the follow table of
-the 2026-10-09 witness-hints note (handwritten acts: 8,769 gold words, only Chandra right
-followed 440 of 582, only DAI 82 of 234, only Churro 378 of 657).
+(ballpark, not accuracy)** while any scored gold page's STATUS says fool's gold; only an
+explicit checked status (`gold (<who> <date>)` or `lead-checked`) on every scored page,
+in both compared sets, drops the label. On the cold run's own readings it reproduces the
+follow column of the 2026-10-09 witness-hints note (handwritten acts: 8,769 gold words,
+only Chandra right followed 440 of 582, only DAI 82 of 234, only Churro 378 of 657); its
+resisted, copied and vote figures differ from that note by design (absent witnesses
+apart, one-to-one copies, plurality vote with ties apart).
 
 ## The trap generator (`mutations.py`)
 
@@ -470,8 +482,9 @@ The reference is the page's gold or silver text as a `Reference`: entries plus o
 (`checked`, `agreed`, `draft`, `unresolved`) and class per graphemic-v1 word, tokenised
 exactly as the scorer tokenises `gold.reference_text()`, so a planted site's word index is
 the scorer's. From a bake-off gold file (fool's gold today) `statuses_from_agreement` makes
-a word `agreed` when two or more shown witnesses have it, `unresolved` when it comes from a
-`[[a|b]]` mark, `draft` otherwise.
+a word `agreed` when two or more shown witnesses have it, `unresolved` when it sits inside a
+`[[a|b]]` mark (by position, `gold.marked_words`), `draft` otherwise. An entry's `text`
+keeps the doubt marks (`gold.diplomatic_text`); its words are the scored words.
 
 ```sh
 .venv/bin/python -m operations.bakeoff.mutations --run-tree <run tree> \
@@ -489,9 +502,13 @@ structural trap did), `set_aside_ids` (planted units the right answer sets aside
 (the other variants apply on top) and keeps the sidecar in the cached answer; the
 scorecard then adds a **Planted errors** block: per scenario, per k, per chair (k = 1)
 and per class, how many sites the reader resisted (its word right), copied (it wrote the
-planted word) or got wrong another way. `mutations.json` beside the records reports the
+planted word) or got wrong another way. Each record carries `reference_sha256`, and a
+site is judged only when that digest and its `ref_word` match the scored gold (else it is
+counted as misaligned); a structural trap that touches several witnesses (name-swap,
+normalised) records one site per reference word with `k` the witnesses carrying it. `mutations.json` beside the records reports the
 sites and the **voting must lose** check (`vote_check`): on name, date and number spans,
-how often a majority vote of the shown witnesses is wrong (ties to the first shown), with
+how often a plurality vote of the shown witnesses is wrong (a tie that includes the right
+word is reported apart as `vote_tied`; the scorecard's own `vote`), with
 the plan's 25-35% target. The training exporter (`operations/training/`) draws the whole
 mix from this module.
 

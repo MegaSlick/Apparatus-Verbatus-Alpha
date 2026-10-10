@@ -62,7 +62,14 @@ from rapidfuzz.distance import Levenshtein
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import score as S
 from operations.bakeoff import witness_run as W
-from operations.bakeoff.gold import GoldPage, load_gold_dir
+from operations.bakeoff.fed_score import reference_digest
+from operations.bakeoff.gold import (
+    GoldPage,
+    diplomatic_text,
+    load_gold_dir,
+    marked_words,
+    scored_text,
+)
 
 SCHEMA = "witness-mutation.v1"
 
@@ -173,7 +180,6 @@ INVENTED_TEMPLATES = (
 )
 _PUNCT = ".,;:!?()[]{}\"'«»-–—"
 _WORD = re.compile(r"\S+")
-_DOUBT = re.compile(r"\[\[([^\[\]]*)\]\]")
 
 
 # --- the reference -------------------------------------------------------------------
@@ -230,58 +236,59 @@ def classify(token: str) -> str:
     return "word"
 
 
-def _doubtful_words(raw: str) -> Counter:
-    """First readings of `[[a|b]]` / `[[a]]` marks (never `[[?]]`): unresolved words."""
-    out: Counter = Counter()
-    for m in _DOUBT.finditer(raw):
-        first = m.group(1).split("|")[0].strip()
-        if first and first != "?":
-            out.update(S.tokens(first))
-    return out
+def reference_words(text: str) -> list[tuple[str, bool]]:
+    """(graphemic-v1 token, doubtful) for every scored word of a text in the Perlector's
+    mark grammar. Doubt is tracked by position (`gold.marked_words`), never by spelling."""
+    return [(token, w.doubtful) for w in marked_words(text) for token in S.tokens(w.text)]
 
 
 def reference_from_gold(gold: GoldPage, row_kind: str = "other") -> Reference:
     """A bake-off gold page as a Reference with every word `draft` (statuses set later).
 
+    Each entry's `text` is the diplomatic target (`gold.diplomatic_text`: struck text
+    dropped, inserted text kept, the doubt marks `[[?]]` and `[[a|b]]` kept as written),
+    so a training answer says where the ink is unread or uncertain. Its words are the
+    scored words (marks reduced); a word inside a doubtful reading is `unresolved`.
     Entries follow `GoldPage.reference_text()`'s order: acts, then headings (one `other`
     entry), then index rows (one `row_kind` entry each), so the words tokenise to exactly
-    `score.tokens(gold.reference_text())`, the scorer's reference.
+    `score.tokens(gold.reference_text())`, the scorer's reference (checked; a mismatch
+    raises ValueError). An act that is only `[[?]]` is an entry with no scored words.
     """
-    from operations.bakeoff.gold import reduce_marks
-
     ref = Reference(gold.stem, gold.status or "unknown")
 
-    def add(kind: str, label: str | None, raw: str, reduced: str, previous=False, nxt=False):
+    def add(kind: str, label: str | None, text: str, previous=False, nxt=False):
         index = len(ref.entries)
         ref.entries.append(
             {
                 "kind": kind,
                 "label": label,
-                "text": reduced,
+                "text": text,
                 "continues_from_previous_page": bool(previous),
                 "continues_to_next_page": bool(nxt),
             }
         )
-        doubtful = _doubtful_words(raw)
-        for token in S.tokens(reduced):
-            status = "draft"
-            if doubtful[token] > 0:
-                doubtful[token] -= 1
-                status = "unresolved"
+        for token, doubtful in reference_words(text):
+            status = "unresolved" if doubtful else "draft"
             ref.words.append(RefWord(token, status, classify(token), index))
 
+    def lines(raw: str) -> str:
+        return "\n".join(line for line in diplomatic_text(raw).split("\n") if line)
+
     for act in gold.acts:
-        raw = "\n".join(act.lines)
-        reduced = "\n".join(line for line in reduce_marks(raw).split("\n") if line)
-        if not reduced:
+        text = lines("\n".join(act.lines))
+        if not text:
             continue
         kind = "act" if act.kind.strip().lower() not in ("other", "heading", "note") else "other"
-        add(kind, act.kind.strip() or None, raw, reduced, act.from_previous, act.to_next)
-    headings = gold.heading_lines()
+        add(kind, act.kind.strip() or None, text, act.from_previous, act.to_next)
+    headings = lines("\n".join(h for h in gold.headings))
     if headings:
-        add("other", "headings", "\n".join(gold.headings), "\n".join(headings))
-    for raw, reduced in zip(gold.rows, gold.row_lines(), strict=False):
-        add(row_kind, "index row", raw, reduced)
+        add("other", "headings", headings)
+    for raw in gold.rows:
+        text = lines(raw.replace(" | ", " "))
+        if text:
+            add(row_kind, "index row", text)
+    if ref.tokens() != S.tokens(gold.reference_text()):
+        raise ValueError(f"{gold.stem}: reference words do not match the scorer's tokens")
     return ref
 
 
@@ -464,6 +471,11 @@ class Mutation:
     changes: list[dict[str, Any]] = field(default_factory=list)
     set_aside_ids: list[str] = field(default_factory=list)  # units the answer must set aside
     notes: list[str] = field(default_factory=list)
+    # Every unit id of the source feed -> its id in the shown feed, None when the unit is
+    # no longer shown (a removed witness, a dropped act); a merged unit stands for both.
+    id_map: dict[str, str | None] = field(default_factory=dict)
+    # The scored reference the sites index (`fed_score.reference_digest`).
+    reference_sha256: str | None = None
 
     @property
     def family(self) -> str:
@@ -641,6 +653,7 @@ def _merged_entries(m: Mutation, rng: random.Random, rows: list[dict]) -> None:
         k = rng.randrange(len(row["units"]) - 1)
         a, b = row["units"][k], row["units"][k + 1]
         merged = {**a, "text": a["text"].rstrip() + " " + b["text"].lstrip()}
+        merged[_ORIGIN] = [*a.get(_ORIGIN, []), *b.get(_ORIGIN, [])]
         if a.get("box_1000") and b.get("box_1000"):
             merged["box_1000"] = [
                 min(a["box_1000"][0], b["box_1000"][0]), min(a["box_1000"][1], b["box_1000"][1]),
@@ -656,6 +669,7 @@ def _merged_entries(m: Mutation, rng: random.Random, rows: list[dict]) -> None:
 
 
 def _normalised(m: Mutation, ref: Reference, rows: list[dict]) -> None:
+    by_word: dict[tuple, dict[str, Any]] = {}  # one site per (reference word, form)
     for row in rows:
         words_before = witness_words(row)
         mapping = {v: k for k, v in align(ref.tokens(), words_before).items()}
@@ -667,21 +681,29 @@ def _normalised(m: Mutation, ref: Reference, rows: list[dict]) -> None:
                 new = re.sub(pattern, repl, new)
             if new != original:
                 edits.append((ww.unit, ww.start, ww.end, new))
-                m.planted.append(
+                i = mapping.get(j)
+                key = (i, new) if i is not None else (row["witness_label"], j, new)
+                site = by_word.setdefault(
+                    key,
                     {
-                        "ref_index": mapping.get(j),
-                        "ref_word": ref.words[mapping[j]].text if j in mapping else None,
+                        "ref_index": i,
+                        "ref_word": ref.words[i].text if i is not None else None,
                         "planted": new,
                         "cls": "normalised",
-                        "k": len(rows),
-                        "status": ref.words[mapping[j]].status if j in mapping else None,
-                        "entry": ref.words[mapping[j]].entry if j in mapping else None,
-                        "witnesses": [row["witness_label"]],
-                        "letters": [row["letter"]],
-                        "unit_ids": [row["units"][ww.unit]["id"]],
-                    }  # fmt: skip
+                        "k": 0,
+                        "status": ref.words[i].status if i is not None else None,
+                        "entry": ref.words[i].entry if i is not None else None,
+                        "witnesses": [],
+                        "letters": [],
+                        "unit_ids": [],
+                    },
                 )
+                site["k"] += 1
+                site["witnesses"].append(row["witness_label"])
+                site["letters"].append(row["letter"])
+                site["unit_ids"].append(row["units"][ww.unit]["id"])
         _apply_edits(row, edits)
+    m.planted.extend(by_word.values())
     if not m.planted:
         m.notes.append("nothing to normalise on this page")
     m.changes.append({"kind": "normalised", "sites": len(m.planted)})
@@ -700,6 +722,16 @@ def _name_swap(m: Mutation, ref: Reference, rng: random.Random, rows: list[dict]
         m.notes.append("fewer than two settled names every witness has; no swap")
         return
     a, b = rng.sample(sorted(distinct.values()), 2)
+    # One site per swapped position, carried by every witness (k = how many carry it),
+    # as plant-3 records its sites; never one site per witness.
+    sites = {
+        i: {
+            "ref_index": i, "ref_word": ref.words[i].text, "planted": None, "cls": "name",
+            "k": 0, "status": ref.words[i].status, "entry": ref.words[i].entry,
+            "witnesses": [], "letters": [], "unit_ids": [],
+        }
+        for i in sorted((a, b))
+    }  # fmt: skip
     for row in rows:
         words = witness_words(row)
         mp = maps[row["witness_label"]]
@@ -708,20 +740,13 @@ def _name_swap(m: Mutation, ref: Reference, rng: random.Random, rows: list[dict]
         tb = row["units"][wb.unit]["text"][wb.start : wb.end]
         _apply_edits(row, [(wa.unit, wa.start, wa.end, tb), (wb.unit, wb.start, wb.end, ta)])
         for i, planted in ((a, tb), (b, ta)):
-            m.planted.append(
-                {
-                    "ref_index": i,
-                    "ref_word": ref.words[i].text,
-                    "planted": planted,
-                    "cls": "name",
-                    "k": len(rows),
-                    "status": ref.words[i].status,
-                    "entry": ref.words[i].entry,
-                    "witnesses": [row["witness_label"]],
-                    "letters": [row["letter"]],
-                    "unit_ids": [row["units"][words[mp[i]].unit]["id"]],
-                }  # fmt: skip
-            )
+            site = sites[i]
+            site["planted"] = site["planted"] or planted
+            site["k"] += 1
+            site["witnesses"].append(row["witness_label"])
+            site["letters"].append(row["letter"])
+            site["unit_ids"].append(row["units"][words[mp[i]].unit]["id"])
+    m.planted.extend(sites.values())
     m.changes.append({"kind": "name-swap", "ref_indices": [a, b]})
 
 
@@ -798,25 +823,44 @@ def mutate(
         turn,
         copy.deepcopy(feed),
     )
+    m.reference_sha256 = reference_digest(ref.tokens())
+    for row in m.feed["witnesses"]:
+        for unit in row["units"]:
+            unit[_ORIGIN] = [unit["id"]]
+    _scenario(m, ref, scenario, rng, turn, donors or [])
+    shown = {}
+    for row in m.feed["witnesses"]:
+        for unit in row["units"]:
+            for origin in unit.pop(_ORIGIN, []):
+                shown[origin] = unit["id"]
+    m.id_map = {
+        u["id"]: shown.get(u["id"]) for row in feed["witnesses"] for u in row["units"]
+    }  # fmt: skip
+    return m
+
+
+_ORIGIN = "_source_ids"  # a working tag on each unit while a mutation runs, never written
+
+
+def _scenario(m: Mutation, ref: Reference, scenario: str, rng, turn: int, donors) -> None:
     rows = present(m.feed)
-    donors = donors or []
     if scenario == "honest":
-        return m
+        return
     if scenario == "blind":
         m.feed["witnesses"] = []
         m.changes.append({"kind": "blind"})
-        return m
+        return
     if scenario == "permute":
         _permute(m, rng)
-        return m
+        return
     if scenario == "blank-chatty":
         if not ref.blank:
             m.notes.append("page has gold text; blank-chatty needs a blank page")
         _blank_chatty(m, ref, rng, donors)
-        return m
+        return
     if not rows:
         m.notes.append("no witness read this page; nothing to change")
-        return m
+        return
     chair = rows[_rotate(rows, turn)]
     if scenario in ("drop-one", "failed-one", "empty-one"):
         outcome = {"drop-one": None, "failed-one": "failed", "empty-one": "genuinely-empty"}[
@@ -847,7 +891,6 @@ def mutate(
         _name_swap(m, ref, rng, rows)
     elif scenario == "injection":
         _injection(m, ref, rng, chair, donors)
-    return m
 
 
 def blind_labels(m: Mutation, seed: int) -> None:
@@ -879,9 +922,11 @@ def draw_scenarios(mix: dict[str, int], n: int, rng: random.Random, blank: bool)
 def vote_check(items: list[tuple[Reference, dict[str, Any]]]) -> dict[str, Any]:
     """A7a's rule: across these (reference, feed) pairs, how often a majority vote of the
     shown witnesses is wrong on name, date and number spans. Voters are the witnesses that
-    read; each votes the word it wrote in the span (or "absent"); ties go to the first
-    shown. Reported per class and overall, with the 25-35% target."""
-    from operations.bakeoff.fed_score import aligned
+    read; each votes the word it wrote in the span (or absent). The vote is the
+    scorecard's own (`fed_score.vote`): a plurality; a tie that includes the right word
+    is `tied`, reported apart and counted neither right nor wrong; a tie among wrong
+    words is wrong. Reported per class and overall, with the 25-35% target."""
+    from operations.bakeoff.fed_score import aligned, ballot, vote
 
     counts: Counter = Counter()
     for ref, feed in items:
@@ -897,31 +942,35 @@ def vote_check(items: list[tuple[Reference, dict[str, Any]]]) -> dict[str, Any]:
         for i, word in enumerate(ref.words):
             if word.cls not in ("name", "date", "number"):
                 continue
-            ballots = Counter()
-            first: dict[str, int] = {}
-            for order, (right, form) in enumerate(votes):
-                ballot = word.text if right[i] else (form[i] or "<absent>")
-                ballots[ballot] += 1
-                first.setdefault(ballot, order)
-            best = max(ballots.values())
-            winner = min((b for b, c in ballots.items() if c == best), key=lambda b: first[b])
+            outcome = vote(
+                [ballot(word.text, right[i], form[i]) for right, form in votes], word.text
+            )
             counts[f"{word.cls}:spans"] += 1
             counts["spans"] += 1
-            if winner != word.text:
+            if outcome == "wrong":
                 counts[f"{word.cls}:vote-wrong"] += 1
                 counts["vote-wrong"] += 1
+            elif outcome == "tie":
+                counts[f"{word.cls}:vote-tied"] += 1
+                counts["vote-tied"] += 1
     rate = counts["vote-wrong"] / counts["spans"] if counts["spans"] else None
     low, high = VOTE_MUST_LOSE
     return {
         "spans": counts["spans"],
         "vote_wrong": counts["vote-wrong"],
+        "vote_tied": counts["vote-tied"],
         "rate": rate,
+        "tied_rate": counts["vote-tied"] / counts["spans"] if counts["spans"] else None,
         "target": list(VOTE_MUST_LOSE),
         "verdict": None
         if rate is None
         else ("ok" if low <= rate <= high else "below" if rate < low else "above"),
         "by_class": {
-            c: {"spans": counts[f"{c}:spans"], "vote_wrong": counts[f"{c}:vote-wrong"]}
+            c: {
+                "spans": counts[f"{c}:spans"],
+                "vote_wrong": counts[f"{c}:vote-wrong"],
+                "vote_tied": counts[f"{c}:vote-tied"],
+            }
             for c in ("name", "date", "number")
         },
     }
@@ -946,15 +995,29 @@ def references_from_gold_dir(
     return out
 
 
+_HALF = re.compile(r"_(\d[LR])$")
+
+
+def original_of(stem: str) -> str:
+    """The original image's stem: `X_1L` and `X_2R` are the two halves of `X`."""
+    return _HALF.sub("", stem)
+
+
 def donor_acts(refs: dict[str, Reference], exclude: str, limit: int = 40) -> list[str]:
-    """Other pages' act texts of a sentence or more, for invented acts."""
+    """Other pages' act texts of a sentence or more, for invented acts.
+
+    Never the page itself nor the other half of the same original (its text can be on
+    the page). The caller filters `refs` to pages it may show: the exporter passes only
+    pages off the held-out list, so a held-out transcription never reaches a prompt.
+    """
     out = []
     for stem, ref in sorted(refs.items()):
-        if stem == exclude:
+        if original_of(stem) == original_of(exclude):
             continue
         for e in ref.entries:
-            if e["kind"] == "act" and 8 <= len(e["text"].split()) <= 120:
-                out.append(" ".join(e["text"].split()))
+            text = scored_text(e["text"])  # witnesses write no doubt marks
+            if e["kind"] == "act" and 8 <= len(text.split()) <= 120:
+                out.append(text)
     return out[:limit]
 
 
