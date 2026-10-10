@@ -446,3 +446,50 @@ on their own, so each model's weak spots show.
 
 Report to the lead in plain words, phone-sized: which models did well on which page types,
 which failed and how, what it cost, and that both pods are confirmed gone.
+
+## 9. Perlector build bake-off
+
+Question: does a smaller or faster build of the Perlector's model (FP8, FP8 with MTP,
+NVFP4, optionally Qwen3.5-27B) read pages as well as the bf16 build that the pipeline
+serves? One fresh pipeline run supplies the requests; every build is sent those same
+requests and scored at home. **This costs money and needs the lead's approval before the
+first pod: section 0's approvals cover 2026-10-09 only.** The queue alone plans 6.5 hours
+on the 96 GB card (`queue_runner run --dry-run` prints it), on top of the fresh run.
+
+1. **Fresh run.** Create and set up a 96 GB pod as in 4.2, but with a guard window long
+   enough for the whole day: the fresh run, the 6.5-hour queue, the downloads and the
+   fetch, about 10 hours (`pod_start_command.sh 10 <sha>`). The lead approves the window
+   with the spend; the 6-hour window of 4.2 would delete the pod partway through the queue.
+   Then `pod_run --from door --to perlector` with the Perlector served bf16
+   (`operations/pod/README.md`, "`pod_run.py`"). Do not use an older run: its requests
+   were served under other settings. Keep the whole run folder intact, named by
+   its run id, at `/workspace/private/runs/<run id>` (copy it there with `cp -a` if the
+   run wrote it elsewhere): the stage seals are read through that name. Keep the pod.
+2. **Check the replay.** Put the run's page images in `/workspace/private/bakeoff-pages`
+   (same file stems as the run's pages), and the manifest on the pod with the run id in
+   it: `sed 's/RUN_ID/<run id>/' operations/bakeoff/queue/perlector-fed-96gb.toml >
+   /workspace/private/bakeoff/perlector-fed-96gb.toml`. Then
+   `.venv/bin/python -m operations.bakeoff.fed_arm prompts --run-tree /workspace/private/runs/<run id>`
+   must print `whole requests byte-identical N of N` with N the run's page count and no
+   `config differs` line. Anything else: stop and tell the lead.
+3. **Run the fed queue**, validate, dry-run and launch exactly as in 2.4, with
+   `Q="--manifest /workspace/private/bakeoff/perlector-fed-96gb.toml --keep-pod"`
+   and the log `/workspace/private/bakeoff/queue-perlector-fed-96gb.log`; watch as in
+   section 3 with `--status /workspace/private/bakeoff/fed-cache/status.json`. Arms run in
+   this order: bf16-a, bf16-b, fp8, fp8-mtp3, nvfp4, qwen35. Each asks for the model name
+   the run recorded, sealed sampling, on the pipeline's serving row for this card. A
+   build that will not start (MTP, NVFP4 are unproven here) fails alone and the rest go on.
+4. **Fetch, delete, confirm** as in section 6: `queue_runner fetch --remote
+   /workspace/private/bakeoff/fed-cache --into private/bakeoff/fed-cache-<date>`, and
+   bring the run folder home as well (`scp -r`, or `verbatus fetch-run`), because scoring
+   reads it. Then delete the pod and confirm it is gone.
+5. **Score at home**, with `fed_score` (README, "The Perlector scorecard"). First bf16-a
+   against bf16-b (`--answers .../bf16-a --compare .../bf16-b --names bf16-a,bf16-b`): that
+   is the noise floor. Then each build against bf16-a. A difference no larger than the
+   bf16-a-versus-bf16-b difference is not a finding. Read answer health beside the reading: malformed pages,
+   pages repaired before parsing, loop stops, errors.
+
+What this does not measure: the pipeline sends a page one more time (a re-ask) when its
+first reading is held, and the replay sends the first reading only. And bf16 A against B
+uses the same seed, so it measures how much the engine varies from run to run, not how
+much a different sampling draw would change the reading.

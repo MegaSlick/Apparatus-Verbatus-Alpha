@@ -105,6 +105,7 @@ class Answer:
     error: str | None
     witnesses: list[Witness] = field(default_factory=list)
     mutation: dict[str, Any] | None = None  # the witness-mutation sidecar, if any
+    repaired: bool = False  # the reply's bare grammar keys were quoted before parsing
 
     @property
     def entries(self) -> list[dict[str, Any]]:
@@ -151,6 +152,7 @@ def answers_from_run_tree(tree: F.RunTree) -> dict[str, Answer]:
             seconds=None,
             error=(reading.get("failure") or {}).get("code") if reading.get("failure") else None,
             witnesses=witnesses_of(page.feed),
+            repaired=bool(reading.get("answer_repairs")),
         )
     return out
 
@@ -175,6 +177,7 @@ def answers_from_cache(folder: Path, names: dict[str, str] | None = None) -> dic
             error=record.get("error"),
             witnesses=witnesses_of(record["feed"], names),
             mutation=record.get("mutation"),
+            repaired=bool(record.get("answer_repairs")),
         )
     return out
 
@@ -622,6 +625,7 @@ def summarise(rows: list[dict[str, Any]], answers: dict[str, Answer]) -> dict[st
         "parse_codes": Counter(code for a in health for code in a.parse_codes),
         "other_codes": Counter(code for a in health for code in a.other_codes),
         "errors": sum(a.error is not None for a in health),
+        "repaired": sum(a.repaired for a in health),
         "finish": Counter(str(a.finish_reason) for a in health),
         "loop_stops": sum(a.loop_stop for a in health),
         "completion_median": statistics.median(completions) if completions else None,
@@ -848,6 +852,7 @@ def report(card: dict[str, Any], title: str, label: str) -> list[str]:
         f"- parsed {s['parsed']} / {s['pages']}; errors (no reply) {s['errors']}",
         "- malformed, by reason (pages): "
         + (", ".join(f"{k} {v}" for k, v in s["parse_codes"].most_common()) or "none"),
+        f"- repaired before parsing (bare grammar keys quoted): {s['repaired']} pages",
         "- other problems on parsed pages (page accounting, run tree only): "
         + (", ".join(f"{k} {v}" for k, v in s["other_codes"].most_common()) or "none"),
         "- finish: " + ", ".join(f"{k} {v}" for k, v in s["finish"].most_common()),
