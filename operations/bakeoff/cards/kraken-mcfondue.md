@@ -8,8 +8,7 @@ the pinned 2.14.0; the pinned environment is untested with this file)
   by Simon Gabay, Thibault Clérice and Alix Chagué (Université de Genève / Inria).
 - File: `ManuMcFondue.mlmodel`, 16,377,369 bytes (16.4 MB), Zenodo MD5
   `c1c3c628f79f19a7a8116a9afd5c47d2`, SHA-256
-  `96e32e782b6627aa57961a6ed5a84c522174630c6bc9f6ebc83eedce1f5e490e` (measured here,
-  2026-10-08). The arm's `revision` field records `<file>@sha256:<that digest>`.
+  `96e32e782b6627aa57961a6ed5a84c522174630c6bc9f6ebc83eedce1f5e490e` (measured). The arm's `revision` field records `<file>@sha256:<that digest>`.
 - Licence: CC BY 4.0 (Zenodo metadata and the file's `metadata.json`): use and adapt
   with attribution. The file is fetched at run time, never stored in this tree.
 - Training (Zenodo `metadata.json`): openly licensed French material from HTR-United,
@@ -70,6 +69,6 @@ then a `--limit 2` run.
   `kraken-mcfondue-blla`, `kraken-mcfondue-surya`; weights in `<store>/hf/kraken-mcfondue-v4/`.
 
 ## Sources
-- https://zenodo.org/api/records/10886224 and its `metadata.json` (read 2026-10-08)
+- https://zenodo.org/api/records/10886224 and its `metadata.json`
 - the file's own CoreML metadata, read with coremltools 9.0
 - kraken 7.1.1 wheel from PyPI: `kraken/models/loaders.py`, `kraken/models/_coreml.py`

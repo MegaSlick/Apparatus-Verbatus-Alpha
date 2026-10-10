@@ -61,7 +61,7 @@ The package's `OCR_LAYOUT_PROMPT` (`chandra/prompts.py`), one user turn, image f
 
 - VRAM: weights 10.6 GB; fits a 24 GB card (the repository measured startup on an RTX 4090; the launcher has a 24 GB row). The A40 48 GB gives the launcher's 32-sequence row.
 - CPU: one thread per page in flight for image preparation (PIL); light.
-- Seconds per page: about 5-8 s/page throughput at high concurrency and about 2 min median latency per page, by the first A40 run of our `chandra` arm (2026-10-08). The native arm adds the retry loop: a page that loops costs up to 7 x 12,384 tokens, so expect a longer tail than our arm. Datalab reports 1.44 pages/s on an H100 at 96 sequences (60 s mean, 156 s p95 latency) on olmOCR-bench pages.
+- Seconds per page: about 5-8 s/page throughput at high concurrency and about 2 min median latency per page, measured on an A40 with our `chandra` arm. The native arm adds the retry loop: a page that loops costs up to 7 x 12,384 tokens, so expect a longer tail than our arm. Datalab reports 1.44 pages/s on an H100 at 96 sequences (60 s mean, 156 s p95 latency) on olmOCR-bench pages.
 
 ## Known failure modes
 
