@@ -43,8 +43,17 @@ entries, doubt marks, statuses, classes); the exporter builds the target only fr
 same reference, writes both digests into each example and its `planted.jsonl` line, and
 the scorer judges planted sites only against a reference with the same digests.
 
-**The answer is the reference in the Perlector's grammar** (`common.page_answer`): the
-entries in order with `n`, `kind`, `label`, `cites`, `text` and both continuation flags,
+**The answer is the reference in the grammar the prompt asks for** (`common.page_answer`).
+When the feed's `page_types` switch is "named" (the protocol's setting), that is
+`{"page_type", "writing", "entries", "set_aside"}` with each entry's kind one of the seven
+entry kinds (`common.page_types`); otherwise the older `{"acts", "set_aside"}`, byte for
+byte as before, with each kind folded to `act` or `other`. A gold page's type comes from
+its CATEGORY (`acts-*` register-acts, `index`, `list` table, `ledger`, `contract`
+instrument, `blank` and `near-blank` blank when the gold has no text) and its writing
+from its FORM; its rows take the kind of that type (`index-row`, `table-row`,
+`ledger-entry`) and its acts the kind `instrument` on an instrument page. A page the
+header does not settle (`non-register`, a missing FORM) is refused for a named feed, and
+the manifest's `refused` says why. The entries in order with `n`, `kind`, `label`, `cites`, `text` and both continuation flags,
 and `set_aside` for the planted units (an invented act, an injection: reason "not on the
 page") and for shown units whose text matches no entry. Cites are rebuilt from the shown
 feed (witness units by word overlap with the entry, Surya lines and blocks by the rows of
@@ -53,8 +62,10 @@ the cited boxes) unless the reference brings its own; rebuilt cites are a draft 
 against the run's feed: they are remapped to the ids the mutated feed shows (a mutation
 records `id_map`, source unit id to shown id), a cite to a unit no longer shown is
 dropped, every remaining cite must be a shown id, and every shown id not cited is set
-aside. An example that fails this is not written; the manifest's `refused` lists it. Index rows become entries of kind `--row-kind` (default `other`)
-until the entry kinds are settled (training plan, decision 4).
+aside. A reference with no entries cites nothing: every shown id is set aside as
+"empty". An example that fails this is not written; the manifest's `refused` lists it.
+`--row-kind` overrides the kind of a gold page's rows (default: by page type in the
+entries grammar, `other` in the acts grammar).
 
 **Loss weights** are a separate field, `loss_spans`: `[start, end, weight]` character
 spans that tile the assistant text. Each word carries its reference status's weight:
@@ -70,23 +81,30 @@ when the trainer does.
 
 **The reference.** Today: a bake-off gold file (fool's gold, an unchecked AI draft), with
 statuses from witness agreement (`agreed` where two or more shown witnesses have the word,
-`unresolved` for a `[[a|b]]` reading, `draft` otherwise). Tomorrow: `training-reference.v1`
+`unresolved` for a `[[a|b]]` reading, `draft` otherwise). Tomorrow: `training-reference.v2`
 records from the silver tooling, `--reference <dir>`, one JSON per page stem:
 
 ```json
-{"schema": "training-reference.v1", "stem": "<page stem>", "status_label": "silver",
+{"schema": "training-reference.v2", "stem": "<page stem>", "status_label": "silver",
+ "page_type": "register-acts", "writing": "handwritten",
  "entries": [{"kind": "act", "label": "baptism", "text": "...", "cites": ["A1", "L1"],
               "continues_from_previous_page": false, "continues_to_next_page": false,
               "words": [{"text": "Le", "status": "checked", "cls": "word"}, ...]}]}
 ```
 
+`page_type` and `writing` come together and are needed for a feed that names them (v1
+records, which have neither, still train the acts grammar); every `kind` is an entry kind.
 `words` is optional (then every word is `checked` for a `lead-checked` page, `draft`
 otherwise); `cites` is optional (then they are rebuilt); `cls` is optional (then the
 heuristic classifier decides). A reference found here wins over a gold file of the same
 stem.
 
+**Reproducible.** A page's examples are a function of the page and `--seed`: the witness a
+one-witness scenario touches rotates per page, so `--pages` does not change them. `--out`
+inside the repository is refused unless under `private/`, `workbench/` or `scriptorium/`.
+
 **Held out.** `--held-out` is a text file of page stems (or file names; `#` comments),
-required. A listed page is never exported, and neither is the other half of its original
+required (a stem may hold dots; only a file extension such as `.tif` is cut). A listed page is never exported, and neither is the other half of its original
 (`X_1L` and `X_2R` belong together). Invented acts and injections borrow text only from
 pages that may be exported, never from a held-out page or the page's own other half.
 

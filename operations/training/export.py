@@ -6,7 +6,9 @@
 
 Every example is one page shown once under one witness story (`operations.bakeoff.mutations`:
 honest, planted, removed, structural) with the same answer every time: the reference
-(gold or silver) in the Perlector's own JSON grammar (`common.page_answer`). The prompt is
+(gold or silver) in the grammar the prompt asks for (`common.page_answer`): the `entries`
+shape with page type and writing when the feed's `page_types` switch is "named", else the
+older `acts` shape. The prompt is
 the Perlector's, with every image the request carries: `fed_arm.request_images` gives
 the images as stage 4 sends them (the render, then the page overlay when the feed draws
 one, `common/page_path.py`), `fed_arm.build_body` renders the request, and the example
@@ -61,15 +63,39 @@ from typing import Any
 from rapidfuzz.distance import Levenshtein
 
 from common import page_path
+from common.page_answer import answer_entry_list
+from common.page_types import (
+    ACT,
+    BLANK,
+    ENTRY_KINDS,
+    INDEX,
+    INDEX_ROW,
+    INSTRUMENT,
+    INSTRUMENT_PAGE,
+    LEDGER,
+    LEDGER_ENTRY,
+    OTHER,
+    PAGE_TYPES,
+    PARAGRAPH,
+    PROSE,
+    REGISTER_ACTS,
+    TABLE,
+    TABLE_ROW,
+    WRITINGS,
+    act_class,
+)
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import mutations as M
 from operations.bakeoff import score as S
 from operations.bakeoff import witness_run as W
 from operations.bakeoff.fed_score import is_checked_status
-from operations.bakeoff.gold import load_gold_dir, marked_words, scored_text
+from operations.bakeoff.gold import GoldPage, load_gold_dir, marked_words, scored_text
+from operations.bakeoff.groups import form_of
 
 SCHEMA = "perlector-training-example.v1"
-REFERENCE_SCHEMA = "training-reference.v1"
+REFERENCE_SCHEMA = "training-reference.v2"
+# v1 records carry no page type or writing: they train the `acts` grammar only.
+READABLE_REFERENCE_SCHEMAS = ("training-reference.v1", REFERENCE_SCHEMA)
 WEIGHTS = {"checked": 1.0, "agreed": 0.7, "draft": 0.3, "unresolved": 0.0}
 CITES_WEIGHT = 0.3  # cites rebuilt from geometry are a draft, not a checked fact
 UNIT_OVERLAP = 0.5  # share of a unit's words found in an entry's text to cite it
@@ -80,12 +106,19 @@ _WORD = re.compile(r"\S+")
 original_of = M.original_of  # `X_1L` and `X_2R` are the two halves of `X`
 
 
+# A held-out line is a page stem or its file name. Only these suffixes are file extensions:
+# a stem may itself hold dots (`Volume_1.v2_00030`), which `Path.stem` would cut.
+FILE_SUFFIXES = (".tif", ".tiff", ".png", ".jpg", ".jpeg", ".jp2", ".txt", ".json")
+
+
 def read_held_out(path: Path) -> set[str]:
     stems = set()
     for line in path.read_text("utf-8").splitlines():
         line = line.split("#", 1)[0].strip()
+        if line.lower().endswith(FILE_SUFFIXES):
+            line = line[: line.rindex(".")]
         if line:
-            stems.add(Path(line).stem)
+            stems.add(line)
     return stems
 
 
@@ -97,11 +130,28 @@ def is_held_out(stem: str, held: set[str]) -> bool:
 
 
 def reference_from_json(record: dict[str, Any]) -> M.Reference:
-    """A `training-reference.v1` record: entries with text and, per word, status and class."""
-    if record.get("schema") != REFERENCE_SCHEMA:
+    """A `training-reference.v2` record (or a v1 one, which names no page type): entries
+    with text and, per word, status and class. `page_type` and `writing` come together or
+    not at all, and every entry's `kind` is one of `common.page_types.ENTRY_KINDS`."""
+    if record.get("schema") not in READABLE_REFERENCE_SCHEMAS:
         raise SystemExit(f"reference {record.get('stem')!r} is not {REFERENCE_SCHEMA}")
     ref = M.Reference(record["stem"], record.get("status_label", "silver"))
+    page_type, writing = record.get("page_type"), record.get("writing")
+    if (page_type is None) != (writing is None):
+        raise SystemExit(
+            f"{record['stem']}: page_type and writing are given together or not at all"
+        )
+    if page_type is not None:
+        if page_type not in PAGE_TYPES:
+            raise SystemExit(f"{record['stem']}: page_type {page_type!r} not in {PAGE_TYPES}")
+        if writing not in WRITINGS:
+            raise SystemExit(f"{record['stem']}: writing {writing!r} not in {WRITINGS}")
+        ref.page_type, ref.writing = page_type, writing
+    else:
+        ref.typing_problem = "the reference names no page type or writing"
     for n, e in enumerate(record["entries"]):
+        if e["kind"] not in ENTRY_KINDS:
+            raise SystemExit(f"{record['stem']}: entry kind {e['kind']!r} not in {ENTRY_KINDS}")
         ref.entries.append(
             {
                 "kind": e["kind"],
@@ -129,20 +179,89 @@ def reference_from_json(record: dict[str, Any]) -> M.Reference:
     return ref
 
 
+# What a bake-off gold page's CATEGORY says about its type, and the kind of its rows and
+# of its acts on a page of that type (`common.page_types.EXPECTED_KINDS`).
+GOLD_PAGE_TYPES = {
+    "acts-18c": REGISTER_ACTS,
+    "acts-19c": REGISTER_ACTS,
+    "acts-20c": REGISTER_ACTS,
+    "index": INDEX,
+    "list": TABLE,
+    "ledger": LEDGER,
+    "contract": INSTRUMENT_PAGE,
+}
+ROW_KIND_OF = {INDEX: INDEX_ROW, TABLE: TABLE_ROW, LEDGER: LEDGER_ENTRY}
+ACT_KIND_OF = {INSTRUMENT_PAGE: INSTRUMENT, PROSE: PARAGRAPH}
+GOLD_WRITINGS = {
+    "handwritten": "handwritten",
+    "typed": "typed",
+    "printed form": "printed",
+    "mixed": "mixed",
+}
+
+
+def gold_typing(page: GoldPage, blank: bool) -> tuple[str | None, str | None, str | None]:
+    """`(page_type, writing, problem)` for a gold page: the type from its CATEGORY, the
+    writing from its FORM. Either one the header does not settle gives a problem instead,
+    so the page is refused for a feed that asks for them rather than guessed: a
+    `non-register` page could be prose, a table or an instrument, and a blank-like page
+    is typed `blank` only when the gold has no text."""
+    category = page.category
+    if category in ("blank", "near-blank"):
+        page_type = BLANK if blank else None
+    else:
+        page_type = GOLD_PAGE_TYPES.get(category)
+    form = page.header.get("FORM", "").strip()
+    writing = GOLD_WRITINGS.get(form_of(form)) if form else None
+    problems = []
+    if page_type is None:
+        problems.append(f"CATEGORY {category!r} does not settle the page type")
+    if writing is None:
+        problems.append(f"FORM {form!r} does not settle the writing")
+    return page_type, writing, "; ".join(problems) or None
+
+
+def is_named(feed: dict[str, Any]) -> bool:
+    """Whether the feed's prompt asks for the page type and entry kinds (the `entries` grammar)."""
+    return feed.get("switches", {}).get("page_types") == "named"
+
+
+def reference_from_gold_for(page: GoldPage, feed: dict[str, Any], row_kind: str | None):
+    """A gold page as a Reference for the grammar `feed` asks for. In the `entries`
+    grammar its rows and acts take the kinds of its page type; `row_kind` overrides the
+    kind of the rows. In the `acts` grammar rows are `other` unless `row_kind` says."""
+    named = is_named(feed)
+    page_type, writing, problem = gold_typing(page, not S.tokens(page.reference_text()))
+    default_row = ROW_KIND_OF.get(page_type, OTHER) if named else OTHER
+    ref = M.reference_from_gold(page, row_kind or default_row)
+    ref.page_type, ref.writing, ref.typing_problem = page_type, writing, problem
+    if named:
+        for entry in ref.entries:
+            if entry["kind"] == ACT:
+                entry["kind"] = ACT_KIND_OF.get(page_type, ACT)
+    return ref
+
+
 def load_references(
-    tree: F.RunTree, gold: Path | None, gold_glob: str, reference_dir: Path | None, row_kind: str
+    tree: F.RunTree,
+    gold: Path | None,
+    gold_glob: str,
+    reference_dir: Path | None,
+    row_kind: str | None,
 ) -> dict[str, M.Reference]:
+    if row_kind is not None and row_kind not in ENTRY_KINDS:
+        raise SystemExit(f"--row-kind {row_kind!r} is not an entry kind; one of {ENTRY_KINDS}")
     refs: dict[str, M.Reference] = {}
     stems = tree.by_stem()
     if reference_dir:
         for path in sorted(Path(reference_dir).glob("*.json")):
             record = json.loads(path.read_text("utf-8"))
-            if record.get("schema") == REFERENCE_SCHEMA and record["stem"] in stems:
+            if record.get("schema") in READABLE_REFERENCE_SCHEMAS and record["stem"] in stems:
                 refs[record["stem"]] = reference_from_json(record)
     if gold:
         for stem, page in load_gold_dir(gold, gold_glob).items():
             if stem in stems and stem not in refs:
-                ref = M.reference_from_gold(page, row_kind)
+                ref = reference_from_gold_for(page, stems[stem].feed, row_kind)
                 M.statuses_from_agreement(ref, stems[stem].feed)
                 refs[stem] = ref
     return refs
@@ -216,15 +335,23 @@ def build_answer(
     set_aside_ids: list[str],
     id_map: dict[str, str | None] | None = None,
 ) -> dict[str, Any]:
-    """The reference as a page answer: entries in order with cites rebuilt from the shown
-    feed (witness units by word overlap, Surya lines and blocks by the cited boxes' rows),
-    planted units set aside, every other shown id cited by some entry.
+    """The reference as a page answer in the grammar the shown feed's prompt asks for: the
+    `entries` shape with the page's type and writing when its `page_types` switch is
+    "named" (ExampleRefused when the reference cannot say them, or names a kind that is
+    not an entry kind), else the `acts` shape with each kind folded to its act class.
+    Entries in order with cites rebuilt from the shown feed (witness units by word
+    overlap, Surya lines and blocks by the cited boxes' rows), planted units set aside,
+    every other shown id cited by some entry. A reference with no entries cites nothing:
+    every shown id is set aside as empty.
 
     A reference that brings its own cites (all entries or none, else ExampleRefused) has
     them remapped to the shown feed through the mutation's `id_map` (source unit id ->
     shown id, None when no longer shown), every cite is checked against the shown ids
     (ExampleRefused on any mismatch), and every shown id it does not cite is set aside.
     """
+    named = is_named(feed)
+    if named and (ref.page_type is None or ref.writing is None):
+        raise ExampleRefused(ref.typing_problem or "the reference names no page type")
     aside = set(set_aside_ids)
     shown = shown_ids(feed)
     given = [e.get("cites") is not None for e in ref.entries]
@@ -233,6 +360,8 @@ def build_answer(
         raise ExampleRefused("the reference gives cites for some entries only")
     entries = []
     for n, e in enumerate(ref.entries):
+        if e["kind"] not in ENTRY_KINDS:
+            raise ExampleRefused(f"entry {n + 1} has kind {e['kind']!r}, not an entry kind")
         cites: list[str] = []
         for cite in e.get("cites") or []:
             for mapped in _map_cite(cite, id_map, shown):
@@ -241,7 +370,7 @@ def build_answer(
         entries.append(
             {
                 "n": n + 1,
-                "kind": e["kind"],
+                "kind": e["kind"] if named else act_class(e["kind"]),
                 "label": e.get("label"),
                 "cites": cites,
                 "text": e["text"],
@@ -258,6 +387,8 @@ def build_answer(
         if planted:
             raise ExampleRefused(f"target cites planted units: {sorted(planted)}")
         aside |= shown - cited
+    if not entries:
+        aside |= shown
     if not own_cites and entries:
         entry_keys = [set(_keys(scored_text(e["text"]))) for e in entries]
         best_for: dict[str, tuple[float, int]] = {}
@@ -304,11 +435,15 @@ def build_answer(
         if e["label"] is None:
             del e["label"]
     reasons = {uid: "not on the page" for uid in set_aside_ids}
+    other = "not in the reading" if entries else "empty"
+    set_aside = [{"id": uid, "reason": reasons.get(uid, other)} for uid in sorted(aside)]
+    if not named:
+        return {"acts": entries, "set_aside": set_aside}
     return {
-        "acts": entries,
-        "set_aside": [
-            {"id": uid, "reason": reasons.get(uid, "not in the reading")} for uid in sorted(aside)
-        ],
+        "page_type": ref.page_type,
+        "writing": ref.writing,
+        "entries": entries,
+        "set_aside": set_aside,
     }
 
 
@@ -355,7 +490,7 @@ def loss_spans(answer_json: str, answer: dict[str, Any], ref: M.Reference, cites
     Spans tile the whole string."""
     special: list[tuple[int, int, float]] = []
     cursor = 0
-    for n, e in enumerate(answer["acts"]):
+    for n, e in enumerate(answer_entry_list(answer)):
         cites_json = '"cites": ' + json.dumps(e["cites"], ensure_ascii=False)
         at = answer_json.index(cites_json, cursor)
         special.append((at + len('"cites": '), at + len(cites_json), cites_weight))
@@ -487,6 +622,25 @@ def parse_mix(text: str | None) -> dict[str, int]:
     return mix
 
 
+REPOSITORY = Path(__file__).resolve().parents[2]
+UNTRACKED_FOLDERS = ("private", "scriptorium", "workbench")  # gitignored
+
+
+def refuse_out_in_repository(out: Path) -> None:
+    """An export holds register material, so it never goes inside the repository tree
+    except under a gitignored folder."""
+    resolved = out.resolve()
+    if not resolved.is_relative_to(REPOSITORY):
+        return
+    top = resolved.relative_to(REPOSITORY).parts[:1]
+    if top and top[0] in UNTRACKED_FOLDERS:
+        return
+    raise SystemExit(
+        f"--out {out} is inside the repository; write it outside, or under "
+        f"{', '.join(UNTRACKED_FOLDERS)} (gitignored)"
+    )
+
+
 def export(
     tree: F.RunTree,
     refs: dict[str, M.Reference],
@@ -510,6 +664,7 @@ def export(
     An example whose target cannot be made right (`ExampleRefused`) is not written and
     is counted by reason."""
     mix = mix or dict(M.DEFAULT_MIX)
+    refuse_out_in_repository(out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "images").mkdir(exist_ok=True)
     chosen = pages or [tree.pages[o] for o in sorted(tree.pages)]
@@ -534,7 +689,6 @@ def export(
     # trained on, never a held-out page or its sibling half.
     donor_refs = {stem: r for stem, r in refs.items() if not is_held_out(stem, held)}
     counts: Counter = Counter()
-    turns: Counter = Counter()
     planted_by: Counter = Counter()
     tokens: list[dict] = []
     vote_items, honest_items = [], []
@@ -546,6 +700,9 @@ def export(
     ):
         for page in kept:
             ref = refs[page.stem]
+            # Which witness a one-witness scenario touches rotates per page, so a page's
+            # examples depend on (page, seed) and not on which other pages are exported.
+            turns: Counter = Counter()
             rng = random.Random(f"{M.page_sha(page.feed)}|mix|{seed}")
             render = page.feed.get("page_render")
             render_rel = None
@@ -729,7 +886,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mix", help="scenario=share,... (default: the training plan's mix)")
     parser.add_argument("--blinded-share", type=float, default=0.5)
     parser.add_argument(
-        "--row-kind", default="other", help="entry kind for index rows (decision 4)"
+        "--row-kind",
+        choices=ENTRY_KINDS,
+        help="entry kind for the rows of a list (default: by page type in the entries "
+        "grammar, `other` in the acts grammar)",
     )
     parser.add_argument("--pages", help="comma-separated stems or ordinals")
     parser.add_argument("--no-copy-images", action="store_true", help="reference the run's renders")
