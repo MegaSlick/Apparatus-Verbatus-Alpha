@@ -71,7 +71,10 @@ ANSWER_GRAMMAR: Final = "answer-grammar"
 UNKNOWN_ID: Final = "unknown-id"
 MALFORMED_RANGE: Final = "malformed-range"
 # A range over Surya lines or blocks: their numbering follows the detector, not
-# the page's columns, so a range could name ink the entry never read.
+# the page's columns, so a range could name ink the entry never read. Under a
+# policy (`validate_answer`) a range is read when it can name no such ink: a
+# block range (blocks place nothing), or a line range whose every line lies
+# inside the entry's own cited witness units.
 DETECTION_RANGE: Final = "detection-range"
 CITED_AND_SET_ASIDE: Final = "cited-and-set-aside"
 SET_ASIDE_TWICE: Final = "set-aside-twice"
@@ -601,8 +604,102 @@ def duplicate_regions(
     return sorted(findings, key=lambda finding: finding["ns"])
 
 
-def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[str, Any]:
+def _range_ids(cite: str) -> list[str]:
+    match = _RANGE.fullmatch(cite)
+    letter, first, last = match[1], int(match[2]), int(match[4])
+    return [f"{letter}{number}" for number in range(first, last + 1)]
+
+
+def _covered_detection_ranges(
+    cited_ids: list[str],
+    problems: list[dict[str, Any]],
+    candidates: Mapping[str, Box | None],
+    policy: PageAccountingPolicy,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Read the detection ranges of one entry that can name no ink it did not read.
+
+    `expand_cites` refuses every range over Surya lines or blocks, because their
+    numbering follows the detector rather than the page's columns. Two kinds
+    cannot name unread ink, and are read here: a range of blocks, since a block
+    places nothing (`placement_boxes`), and a range of lines each of which lies
+    inside (`is_inside`) the boxes of the witness units the same entry cites,
+    since those units already claim that ink for the entry. Any other detection
+    range stays `detection-range`, contributing no id. Returns the entry's ids
+    and its remaining problems.
+    """
+    own_units = [
+        candidates[identifier]
+        for identifier in cited_ids
+        if identifier[0] not in DETECTION_LETTERS and candidates[identifier] is not None
+    ]
+    ids = list(cited_ids)
+    kept: list[dict[str, Any]] = []
+    for problem in problems:
+        cite = problem.get("cite")
+        if problem["code"] != DETECTION_RANGE or not isinstance(cite, str):
+            kept.append(problem)
+            continue
+        span = _range_ids(cite)
+        if any(identifier not in candidates for identifier in (span[0], span[-1])):
+            kept.append(problem)
+            continue
+        boxes = [candidates[identifier] for identifier in span]
+        blocks = all(box is None for box in boxes)
+        lines_read = all(
+            box is not None and own_units and is_inside(box, own_units, policy) for box in boxes
+        )
+        if blocks or lines_read:
+            ids.extend(span)
+        else:
+            kept.append(problem)
+    return list(dict.fromkeys(ids)), kept
+
+
+def _shared_units(
+    cited: Sequence[Sequence[str]], candidates: Mapping[str, Box | None]
+) -> frozenset[str]:
+    """The placing witness units more than one entry of an answer cites."""
+    counts = Counter(
+        identifier
+        for ids in cited
+        for identifier in set(ids)
+        if identifier[0] not in DETECTION_LETTERS and candidates.get(identifier) is not None
+    )
+    return frozenset(identifier for identifier, count in counts.items() if count > 1)
+
+
+def _placing_ids(
+    cited_ids: Sequence[str], shared: frozenset[str], candidates: Mapping[str, Box | None]
+) -> list[str]:
+    """The cited ids that place an entry: a unit other entries cite too places it only alone.
+
+    A witness unit several entries cite (a whole table, or two acts the witness
+    ran together) cannot say which part of its box is whose, so it lends no
+    area to an entry that cites any other placing id (its own lines or
+    units); that entry is placed by those. An entry placed by nothing else
+    keeps the shared unit's box, and rule (h) then holds it as a duplicate.
+    """
+    own = [
+        identifier
+        for identifier in cited_ids
+        if identifier not in shared and candidates.get(identifier) is not None
+    ]
+    return [identifier for identifier in cited_ids if identifier not in shared] if own else list(
+        cited_ids
+    )
+
+
+def validate_answer(
+    answer: Any,
+    candidates: Mapping[str, Box | None],
+    *,
+    policy: PageAccountingPolicy | None = None,
+) -> dict[str, Any]:
     """Read a parsed page answer against its feed's candidates, repairing nothing.
+
+    With `policy` (every reading the pipeline measures), a detection range that
+    can name no unread ink is read (`_covered_detection_ranges`); without it,
+    every detection range is `detection-range`.
 
     `candidates` is `feed_candidates(feed, policy)`. The answer's grammar is
     `common.page_answer.grammar_problems`'s; an answer outside it has no entries
@@ -629,10 +726,18 @@ def validate_answer(answer: Any, candidates: Mapping[str, Box | None]) -> dict[s
         }
     problems: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []
+    expanded = []
     for raw in answer["acts"]:
         cited_ids, cite_problems = expand_cites(raw["cites"], candidates)
+        if policy is not None:
+            cited_ids, cite_problems = _covered_detection_ranges(
+                cited_ids, cite_problems, candidates, policy
+            )
         problems.extend({**problem, "n": raw["n"]} for problem in cite_problems)
-        boxes = region_boxes(cited_ids, candidates)
+        expanded.append((raw, cited_ids))
+    shared = _shared_units([cited_ids for _raw, cited_ids in expanded], candidates)
+    for raw, cited_ids in expanded:
+        boxes = region_boxes(_placing_ids(cited_ids, shared, candidates), candidates)
         entries.append(
             {
                 "n": raw["n"],
@@ -1530,7 +1635,7 @@ def page_accounting(
     rules: dict[str, dict[str, Any]] = {}
     answered = parse_state == PARSED and reading.get("answer") is not None
     validated = (
-        validate_answer(reading["answer"], candidates)
+        validate_answer(reading["answer"], candidates, policy=policy)
         if answered
         else {"entries": [], "set_aside": {}, "problems": []}
     )

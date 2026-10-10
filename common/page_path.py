@@ -718,7 +718,7 @@ def _validated(
     """The answer read against every feed id, or a re-ask's against the ids it names."""
     candidates = page_accounting.feed_candidates(feed, accounting_policy)
     if named is None:
-        return page_accounting.validate_answer(answer, candidates)
+        return page_accounting.validate_answer(answer, candidates, policy=accounting_policy)
     return page_accounting.validate_reask_answer(answer, candidates, named)
 
 
