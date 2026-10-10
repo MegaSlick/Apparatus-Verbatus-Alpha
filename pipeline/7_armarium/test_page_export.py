@@ -331,7 +331,19 @@ def test_a_held_reading_is_a_review_item_with_its_reasons(page_review, tmp_path)
     assert items["p2:1"]["category"] == "held-for-review"
     assert "reading-unplaced" in items["p2:1"]["reason"]
     assert claims["page_accounting"]["held_pages"] == [2]
-    assert "unread-ink" in claims["page_accounting"]["pages"][1]["hold_codes"]
+    # The ink threshold is a review flag under the committed `[flags]`: rule (f) says
+    # `flag`, the page is held by its other codes, and the flagged layer carries the
+    # reading's text with both lists.
+    page_two = claims["page_accounting"]["pages"][1]
+    assert "unread-ink" not in page_two["hold_codes"] and page_two["rules"]["f"] == "flag"
+    flagged = _jsonl(bundle["members"], "flagged.jsonl")
+    assert list(flagged) == ["p2:1"]
+    assert flagged["p2:1"]["status"] == "not-established"
+    assert flagged["p2:1"]["flag_codes"] == ["residual-ink", "unread-ink"]
+    assert "reading-unplaced" in flagged["p2:1"]["hold_codes"]
+    assert flagged["p2:1"]["text_label"] == "model reading, not established"
+    assert isinstance(flagged["p2:1"]["text"], str) and flagged["p2:1"]["text"]
+    assert flagged["p2:1"]["review_priority"] == 1
     assert claims["status"] == "partial"
     assert "p2:1" not in bundle["established"]
 

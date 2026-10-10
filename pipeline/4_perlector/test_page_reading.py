@@ -393,7 +393,7 @@ def test_each_page_is_accounted_and_holds_only_for_reasons_it_names(page_tree, r
     assert set(accounts) == {1, 2}
     for account in accounts.values():
         payload = account["payload"]
-        assert payload["schema"] == "page-accounting.v2" and account["outcome"] == "read"
+        assert payload["schema"] == "page-accounting.v3" and account["outcome"] == "read"
         assert payload["holds"] == []
         assert {unit["disposition"] for unit in payload["units"]} == {"cited"}
         # Every DAI record lies inside exactly one act region.

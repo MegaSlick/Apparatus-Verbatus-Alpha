@@ -43,6 +43,9 @@ from coniector_layer import (
     text_bundle_placements,
     verify_row,
 )
+from flagged_layer import FLAGGED_MEMBER
+from flagged_layer import SOURCES_FIELD as FLAGGED_SOURCES_FIELD
+from flagged_layer import verify_rows as verify_flagged_rows
 from operator_layer import LABEL_LINE as OPERATOR_LABEL_LINE
 from operator_layer import (
     MODEL_READING_SCHEMA,
@@ -373,6 +376,9 @@ class ArmariumProjection:
     # The model's reading of each delivered reading a person corrected
     # (`run.model_reading_row`), shown beside the person's text.
     model_readings: tuple[dict[str, Any], ...] = ()
+    # The flagged layer (`flagged_layer.flagged_row`): every counted reading the
+    # Recensor held or flagged, with its text labelled, beside the strict export.
+    flagged_readings: tuple[dict[str, Any], ...] = ()
     # The run's lot (`identities.lot_id`), set exactly when the sealed formats say
     # `lot = true`; every row and the manifest's `run` block carry it.
     lot: str | None = None
@@ -573,6 +579,11 @@ def build_armarium_bundle(
         sources_record[MODEL_READINGS_FIELD] = [
             model_reading_record(model_readings[act_id]) for act_id in sorted(model_readings)
         ]
+    flagged_rows = _flagged_rows(projection)
+    if flagged_rows:
+        # Every package carries the held and flagged readings with their text,
+        # labelled; `flagged.jsonl` repeats them with the review-items format.
+        sources_record[FLAGGED_SOURCES_FIELD] = list(flagged_rows)
     if projection.reading_hold_codes is not None:
         # Lets a verifier require the row of a reading released on its own holds,
         # which no page hold would otherwise show.
@@ -622,6 +633,8 @@ def build_armarium_bundle(
         members["review-items.jsonl"] = _jsonl_bytes(
             _review_records(projection.acts, projection.other_readings, lot)
         )
+        if flagged_rows:
+            members[FLAGGED_MEMBER] = _jsonl_bytes(list(flagged_rows))
     members.update(embedded)
     members.update(embedded_crops)
     members.update(embedded_other_crops)
@@ -755,6 +768,7 @@ def verify_export_bundle(data: bytes, clean_root) -> dict[str, Any]:
     _verify_operator_layer(
         root, manifest, formats, sources, actual_names, recorded, operator_labels
     )
+    _verify_flagged_layer(root, manifest, formats, sources, actual_names)
     # Last, so every input the writer is fed has been checked on its own.
     if "text-bundle" in formats.formats:
         _verify_text_bundle_rendering(root, manifest, sources)
@@ -1722,6 +1736,82 @@ def _verify_operator_layer(
             raise SchemaRefusal(f"{subject} shows other operator rows than sources.json records")
         for row in rows:
             _verify_retained_references(row)
+
+
+def _flagged_rows(projection: ArmariumProjection) -> tuple[dict[str, Any], ...]:
+    """The projection's flagged layer, each row held to the reading it names, references marked.
+
+    The producer's rows are checked here as the verifier checks a package's, so
+    a row of no counted reading, or one that contradicts its reading's category
+    or text, never leaves the run tree.
+    """
+    if not projection.flagged_readings:
+        return ()
+    readings = _readings_by_kind(projection.acts, projection.other_readings)
+    outcomes = {
+        reading["act_id"]: {**_row_head(reading), "kind": kind} for reading, kind in readings
+    }
+    rows = [
+        {**row, "reason": outcomes[row["act_id"]]["reason"]}
+        if row.get("act_id") in outcomes
+        else row
+        for row in projection.flagged_readings
+    ]
+    verify_flagged_rows(
+        rows,
+        outcomes=outcomes,
+        kinds={act_id: outcome["kind"] for act_id, outcome in outcomes.items()},
+        literals={reading["act_id"]: reading[CANONICAL_TEXT_FIELD] for reading, _kind in readings},
+        lot=projection.lot,
+        subject="an Armarium projection",
+    )
+    return tuple(_mark_retained_references(row) for row in rows)
+
+
+def _verify_flagged_layer(
+    root: Path,
+    manifest: dict[str, Any],
+    formats: ArmariumFormats,
+    sources: dict[str, Any],
+    actual_names: set[str],
+) -> None:
+    """The held and flagged readings, as `sources.json` records them and `flagged.jsonl` shows them.
+
+    Each row is held to the package's own accounting (`flagged_layer.verify_rows`):
+    a counted reading's identity and category, codes that hold or flag it, the
+    priority those codes give, and, for an established reading when the package
+    carries JSONL, the delivered literal. With the review-items format the member
+    repeats the rows exactly, and is written exactly when there are any.
+    """
+    recorded = sources.get(FLAGGED_SOURCES_FIELD) or []
+    acts = _act_outcome_sources(sources)
+    others = _other_outcome_sources(sources)
+    outcomes: dict[str, dict[str, Any]] = {**acts, **others}
+    kinds = {act_id: "act" for act_id in acts} | {act_id: "other" for act_id in others}
+    literals: dict[str, str | None] | None = None
+    if "jsonl" in formats.formats:
+        literals = {}
+        for member in ("acts.jsonl", OTHER_READINGS_MEMBER):
+            for row in _jsonl_rows(root / member, member, "a reading row"):
+                if isinstance(row, dict) and isinstance(row.get("act_id"), str):
+                    literals[row["act_id"]] = row.get(CANONICAL_TEXT_FIELD)
+    lot = manifest["run"]["lot"]
+    verified = verify_flagged_rows(
+        recorded, outcomes=outcomes, kinds=kinds, literals=literals, lot=lot, subject="sources.json"
+    )
+    for row in verified.values():
+        _verify_retained_references_bounded(row)
+        _verify_evidence_refs(row["evidence_refs"], subject="a flagged-reading row")
+    if "review-items" in formats.formats:
+        shown = (
+            list(_jsonl_rows(root / FLAGGED_MEMBER, FLAGGED_MEMBER, "a flagged-reading row"))
+            if FLAGGED_MEMBER in actual_names
+            else []
+        )
+        if shown != list(recorded):
+            raise SchemaRefusal(
+                f"{FLAGGED_MEMBER} shows other flagged readings than sources.json records"
+            )
 
 
 def _model_readings_shown(
@@ -4978,6 +5068,7 @@ def _load_sources(root) -> dict[str, Any]:
         OPERATOR_SOURCES_FIELD,
         READING_HOLDS_FIELD,
         MODEL_READINGS_FIELD,
+        FLAGGED_SOURCES_FIELD,
     }
     if set(record) - optional != {"schema", *_SOURCES_FIELDS}:
         raise SchemaRefusal("the package sources citation has an unrecognized field set")
@@ -5010,6 +5101,11 @@ def _load_sources(root) -> dict[str, Any]:
     ):
         raise SchemaRefusal("the package sources citation carries an empty operator layer")
     sources[READING_HOLDS_FIELD] = record.get(READING_HOLDS_FIELD)
+    sources[FLAGGED_SOURCES_FIELD] = record.get(FLAGGED_SOURCES_FIELD)
+    if FLAGGED_SOURCES_FIELD in record and not (
+        isinstance(sources[FLAGGED_SOURCES_FIELD], list) and sources[FLAGGED_SOURCES_FIELD]
+    ):
+        raise SchemaRefusal("the package sources citation carries an empty flagged layer")
     sources[MODEL_READINGS_FIELD] = record.get(MODEL_READINGS_FIELD)
     if MODEL_READINGS_FIELD in record and not (
         isinstance(sources[MODEL_READINGS_FIELD], list) and sources[MODEL_READINGS_FIELD]
@@ -5112,6 +5208,10 @@ def _verify_exact_product_members(
             for row in sources[OPERATOR_SOURCES_FIELD]
         ):
             expected.add(MODEL_READINGS_MEMBER)
+    # Written exactly when `sources.json` records a held or flagged reading
+    # (`_verify_flagged_layer`).
+    if "review-items" in formats.formats and sources.get(FLAGGED_SOURCES_FIELD):
+        expected.add(FLAGGED_MEMBER)
     expected.update(_embedded_member_paths(sources))
     if actual_names != expected:
         missing = sorted(expected - actual_names)

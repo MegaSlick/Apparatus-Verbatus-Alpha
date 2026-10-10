@@ -90,6 +90,8 @@ PAGE_REVIEW_FIELDS: Final = frozenset(
         "page_ordinal",
         "reason",
         "hold_codes",
+        "flag_codes",
+        "review_priority",
         "coverage",
         "page_reading_ref",
         "page_accounting_ref",
@@ -105,6 +107,82 @@ PAGE_REVIEW_FIELDS: Final = frozenset(
     }
 )
 PUBLISHED_PAGE_REVIEW_FIELDS: Final = PAGE_REVIEW_FIELDS | {"attempt_ordinal"}
+# A held or flagged unit's place in the review queue, from the codes it carries:
+# the lowest tier of any code wins. 1, look first: text or ink may be missing
+# from the output. 2: structure doubt, entries split or joined wrongly, or a
+# reading that may be cut short. 3: thin evidence, not a sign of loss. A code
+# this table does not name is tier 1, so a new code is never buried.
+REVIEW_PRIORITY_LOOK_FIRST: Final = 1
+REVIEW_PRIORITY_STRUCTURE: Final = 2
+REVIEW_PRIORITY_INFORMATIONAL: Final = 3
+REVIEW_PRIORITY: Final[Mapping[str, int]] = {
+    "page-unread": 1,
+    "page-answer-incomplete": 1,
+    "unknown-id": 1,
+    "detection-range": 1,
+    "reading-unplaced": 1,
+    "unaccounted-witness-unit": 1,
+    "set-aside-substantial": 1,
+    "witness-text-not-read": 1,
+    "unread-line": 1,
+    "unread-ink": 1,
+    "residual-ink": 1,
+    "record-not-read": 1,
+    "merged-detection": 1,
+    "set-aside-record": 1,
+    "reask-set-aside": 1,
+    "reask-unread": 1,
+    "reask-no-text": 1,
+    "entry-no-readable-text": 1,
+    "superseded-act-not-read": 1,
+    "review-missed-act": 1,
+    "review-hold": 1,
+    "duplicate-region": 2,
+    "shared-line": 2,
+    "split-detection": 2,
+    "record-read-as-other": 2,
+    "reading-incomplete": 2,
+    "truncation-not-classified": 2,
+    "reask-unplaced": 2,
+    "reask-duplicate": 2,
+    "continuation-off-page-edge": 2,
+    "doubt-marks-malformed": 2,
+    "doubt-share-high": 2,
+    "page-doubt-share-high": 2,
+    "uncertainty-assessment-malformed": 2,
+    "under-witnessed": 3,
+    "unresolved-witness": 3,
+    "witness-not-read": 3,
+    "witness-read-no-units": 3,
+    "witness-short-unit-not-read": 3,
+    "no-detector-record-on-act-page": 3,
+    "no-autopsia": 3,
+    "unread-line-not-measured": 3,
+    "witness-text-not-measured": 3,
+    "unread-ink-not-measured": 3,
+    "detector-records-not-measured": 3,
+    "detector-record-not-measured": 3,
+    "record-detector-capped": 3,
+    "reask-duplicate-not-measured": 3,
+    "residual-ink-not-measurable": 3,
+    "residual-ink-not-measured": 3,
+    "page-blank-unconfirmed": 3,
+    "no-act-on-page-unconfirmed": 3,
+}
+
+
+def review_priority(codes: Collection[str]) -> int | None:
+    """The review tier of a unit carrying `codes`, hold and flag codes alike; None with none."""
+    if not codes:
+        return None
+    return min(REVIEW_PRIORITY.get(code, REVIEW_PRIORITY_LOOK_FIRST) for code in codes)
+
+
+def review_flags(review: Mapping[str, Any]) -> list[str]:
+    """The review flags a unit's review records without holding it."""
+    return list(_payload(review)["flag_codes"])
+
+
 # A review an operator decision concerns adds its `operator_review` block.
 REVIEWED_PAGE_REVIEW_FIELDS: Final = PAGE_REVIEW_FIELDS | {REVIEW_FIELD}
 RELEASE_FIELDS: Final = frozenset({"hold_codes", "reason"})
@@ -328,6 +406,14 @@ def _require_review_of_row(review: Mapping[str, Any], row: Mapping[str, Any]) ->
             "denominator counts them"
         )
     release, notes = payload["release"], payload["notes"]
+    flags = payload["flag_codes"]
+    if not _strings(flags) or payload["review_priority"] != review_priority(
+        set(payload["hold_codes"]) | set(flags) if _strings(payload["hold_codes"]) else set(flags)
+    ):
+        raise FatalAccounting(
+            f"{what} does not carry its review flags as codes with the review priority they "
+            "and its hold codes give"
+        )
     if (
         not isinstance(payload["reason"], str)
         or not _strings(payload["hold_codes"])

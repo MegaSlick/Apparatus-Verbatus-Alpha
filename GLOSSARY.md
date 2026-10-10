@@ -86,6 +86,11 @@ Recensor reviews each and a person decides about held ones (`--unit p1:2`).
 **held** — kept back for human review: not established or exported until a person
 decides, and never silently dropped or passed as done.
 
+**flagged** — marked for human review without being held: a finding the sealed policy
+names as a review flag is measured and recorded like a hold, reported, and carried with
+the reading's text in the flagged export, but the reading is established and exported
+as read. A flag is a question for a person; a hold is a stop.
+
 **override** — a person's decision (`release`) that sends a held reading to export as
 the model read it, its own holds included. It is labelled "released by operator" with
 who, when, why and the holds it cleared. It is never available for a reading with no

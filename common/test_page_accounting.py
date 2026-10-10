@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import random
 from pathlib import Path
 
@@ -26,7 +27,10 @@ from common.page_accounting import (
 )
 from common.residual_ink import INK_RUNS_SCHEMA
 
-POLICY = load_page_accounting_policy()
+# The committed policy, and the same with no review flag: the rule tests below
+# are about what each rule measures, so they run with every finding holding.
+SEALED = load_page_accounting_policy()
+POLICY = dataclasses.replace(SEALED, flag_codes=frozenset())
 WIDTH, HEIGHT = 1000, 1400
 RULE_NAMES = "abcdefghi"
 # A first reading's accounting: every rule passes, and rule (j), the re-ask's, does not apply.
@@ -259,7 +263,8 @@ def test_a_clean_page_passes_every_rule():
 
     assert statuses(record) == CLEAN
     assert record["holds"] == []
-    assert record["schema"] == "page-accounting.v2"
+    assert record["schema"] == "page-accounting.v3"
+    assert record["flags"] == []
     assert record["policy_sha256"] == POLICY.sha256
     assert record["units"][0] == {"id": "A1", "disposition": "cited", "by": [1]}
     assert record["lines"][:3] == [
@@ -960,10 +965,14 @@ def test_a_marginal_name_that_is_read_passes_and_one_that_is_not_holds():
 
     acts(case)[2]["text"] = acts(case)[2]["text"].removesuffix(" Jean Roy")
     unread = account(case)
-    [held] = [f for f in unread["rules"]["e"]["findings"] if f["code"] == "witness-text-not-read"]
+    # A cited unit of seven letters read differently is a short-unit dissent, with its own code.
+    [held] = [
+        f for f in unread["rules"]["e"]["findings"] if f["code"] == "witness-short-unit-not-read"
+    ]
     assert held["id"] == "C4"
     assert held["reasons"] == ["short-unit-distance"]
     assert held["distance_bp"] > POLICY.max_short_unit_distance_bp
+    assert unread["holds"] == ["witness-short-unit-not-read"]
 
 
 def test_a_burial_folded_into_a_merged_unit_and_read_by_one_witness_alone_holds():
@@ -2234,8 +2243,8 @@ class _Context:
 
 
 def test_the_stage_reads_the_policy_only_under_the_run_seal(tmp_path: Path):
-    policy = require_page_accounting_policy(_Context({"page-accounting": POLICY.sha256}))
-    assert policy == POLICY
+    policy = require_page_accounting_policy(_Context({"page-accounting": SEALED.sha256}))
+    assert policy == SEALED
 
     edited = tmp_path / "edited.toml"
     edited.write_text(
@@ -2301,3 +2310,106 @@ def test_an_entry_citing_another_entrys_units_beside_its_own_ink_is_still_a_dupl
     acts(case)[1]["cites"] = ["A1", "B1", "C1", "A2", "B2", "C2"]
 
     assert duplicates(account(case)) == [[1, 2]]
+
+
+# --- review flags ----------------------------------------------------------------------
+
+
+def test_the_committed_file_seals_the_lead_s_review_flags():
+    """No `[flags]` table in the file means the code's defaults: the four uncalibrated checks."""
+    assert SEALED.flag_codes == page_accounting_module.DEFAULT_FLAG_CODES
+    assert SEALED.flag_codes == {
+        "no-detector-record-on-act-page",
+        "unread-ink",
+        "residual-ink",
+        "witness-short-unit-not-read",
+    }
+    assert SEALED.short_unit_characters == page_accounting_module.DEFAULT_SHORT_UNIT_CHARACTERS
+
+
+def _with_flags(tmp_path: Path, table: str) -> Path:
+    edited = tmp_path / "flags.toml"
+    edited.write_text(
+        DEFAULT_PAGE_ACCOUNTING_CONFIG_PATH.read_text(encoding="utf-8") + "\n" + table,
+        encoding="utf-8",
+    )
+    return edited
+
+
+def test_the_flags_table_is_read_and_checked(tmp_path: Path):
+    policy = load_page_accounting_policy(
+        _with_flags(tmp_path, '[flags]\ncodes = ["unread-ink"]\nshort_unit_characters = 9\n')
+    )
+    assert policy.flag_codes == {"unread-ink"} and policy.short_unit_characters == 9
+    assert policy.sha256 != SEALED.sha256
+    # Every code may be taken back: an empty list holds everything, as before the flags.
+    strict = load_page_accounting_policy(
+        _with_flags(tmp_path, "[flags]\ncodes = []\nshort_unit_characters = 15\n")
+    )
+    assert strict.flag_codes == frozenset()
+    with pytest.raises(ContractError, match="no page-level hold code"):
+        load_page_accounting_policy(
+            _with_flags(
+                tmp_path, '[flags]\ncodes = ["duplicate-region"]\nshort_unit_characters = 15\n'
+            )
+        )
+    with pytest.raises(ContractError, match="exactly codes and short_unit_characters"):
+        load_page_accounting_policy(_with_flags(tmp_path, '[flags]\ncodes = ["unread-ink"]\n'))
+    with pytest.raises(ContractError, match="twice"):
+        load_page_accounting_policy(
+            _with_flags(
+                tmp_path,
+                '[flags]\ncodes = ["unread-ink", "unread-ink"]\nshort_unit_characters = 1\n',
+            )
+        )
+
+
+def test_a_flagged_finding_is_recorded_and_holds_nothing():
+    """Under the sealed flags the detector's silence is measured, named, and holds no one."""
+    case = page()
+    _detector_found_nothing(case)
+
+    record = account(case, SEALED)
+
+    assert record["rules"]["i"]["status"] == "flag"
+    assert record["rules"]["i"]["findings"] == [
+        {"code": "no-detector-record-on-act-page", "acts": [1, 2, 3]}
+    ]
+    assert record["holds"] == []
+    assert record["flags"] == ["no-detector-record-on-act-page"]
+    # The same page under a policy with no flags holds, as it always did.
+    assert account(case)["holds"] == ["no-detector-record-on-act-page"]
+
+
+def test_a_rule_with_a_held_finding_beside_a_flagged_one_still_holds():
+    case = page()
+    _detector_found_nothing(case)
+    acts(case)[2]["text"] = acts(case)[2]["text"].removesuffix(" Jean Roy")
+    witness(case, "C")["units"].append({"id": "C4", "box_px": None, "text": "Jean Roy"})
+    acts(case)[2]["cites"].append("C4")
+    # An uncited short unit nobody read is unread text, not a dissent, whatever its length.
+    witness(case, "C")["units"].append({"id": "C5", "box_px": None, "text": "Zqxwv Kjyq"})
+
+    record = account(case, SEALED)
+
+    codes = {f["id"]: f["code"] for f in record["rules"]["e"]["findings"] if "id" in f}
+    assert codes["C4"] == "witness-short-unit-not-read"
+    assert codes["C5"] == "witness-text-not-read"
+    assert record["rules"]["e"]["status"] == "hold"
+    # The uncited unit is also unaccounted for under rule (c); both hold.
+    assert record["holds"] == ["unaccounted-witness-unit", "witness-text-not-read"]
+    assert record["flags"] == ["no-detector-record-on-act-page", "witness-short-unit-not-read"]
+
+
+def test_a_long_unit_read_differently_is_never_a_short_unit():
+    """The burial folded into a merged unit (50 letters) keeps the hold the lead did not relax."""
+    case = page(noise=0.15, seed=3)
+    burial = noisy(BURIAL, 0.3, 11)
+    witness(case, "A")["units"][2]["text"] += " " + burial
+    witness(case, "C")["units"].append({"id": "C4", "box_px": None, "text": BURIAL})
+    acts(case)[2]["cites"].append("C4")
+
+    record = account(case, SEALED)
+
+    assert record["holds"] == ["witness-text-not-read"]
+    assert record["flags"] == []

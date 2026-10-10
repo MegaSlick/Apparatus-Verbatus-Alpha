@@ -98,6 +98,10 @@ ARTIFACTS_DIR: Final = "artifacts"
 BLOBS_DIR: Final = "blobs/sha256"
 RECEIPTS_DIR: Final = "receipts/sha256"
 RECENSOR_PARTITION_RECEIPT_FILE: Final = "run-health/recensor-partition-receipt.json"
+# The Recensor's derived review summary: holds and review flags counted per page
+# and per unit, by code and by page type, with the review queue in priority order.
+# A report for a person, rebuilt on every pass; nothing after the Recensor reads it.
+RECENSOR_REVIEW_SUMMARY_FILE: Final = "run-health/recensor-review-summary.json"
 # Written by the serving launcher while a stage runs, never by this store; named
 # so `inventory_scope()` covers every path any code writes in the tree.
 SERVING_LOGS_DIR: Final = "serving-logs"
@@ -529,6 +533,10 @@ class RunTree:
         """The current derived partition receipt at the Recensor boundary."""
         return RECENSOR_PARTITION_RECEIPT_FILE
 
+    def recensor_review_summary_path(self) -> str:
+        """The current derived review summary at the Recensor boundary."""
+        return RECENSOR_REVIEW_SUMMARY_FILE
+
     def resolve(self, relative_path: str) -> Path:
         """A path inside this run tree, refusing anything that leaves it.
 
@@ -642,6 +650,22 @@ class RunTree:
                 )
         target.parent.mkdir(parents=True, exist_ok=True)
         self._atomic_write(relative, data)
+        return PublishResult(relative, reused=False)
+
+    def write_recensor_review_summary(self, record: dict[str, Any]) -> PublishResult:
+        """Atomically replace the derived Recensor review summary.
+
+        A report for a person, derived from the reviews on disk and rebuilt on
+        every pass, so it is replaced in place like the partition receipt; it
+        binds to this run's authority and nothing after the Recensor reads it.
+        """
+        if record.get("run_id") != self.run_id or record.get("config_digest") != (
+            self._run_authority()
+        ):
+            raise SchemaRefusal("Recensor review summary does not belong to this run authority")
+        relative = self.recensor_review_summary_path()
+        self.resolve(relative).parent.mkdir(parents=True, exist_ok=True)
+        self._atomic_write(relative, canonical_bytes(record))
         return PublishResult(relative, reused=False)
 
     def read_recensor_partition_receipt(self) -> dict[str, Any]:
@@ -1547,7 +1571,12 @@ class RunTree:
         includes `<stage>/serving-logs/`, written by the serving launcher, which
         `fetch-run` would otherwise refuse.
         """
-        prefixes = [RUN_FILE, f"{RECEIPTS_DIR}/", RECENSOR_PARTITION_RECEIPT_FILE]
+        prefixes = [
+            RUN_FILE,
+            f"{RECEIPTS_DIR}/",
+            RECENSOR_PARTITION_RECEIPT_FILE,
+            RECENSOR_REVIEW_SUMMARY_FILE,
+        ]
         for directory in sorted(set(_all_writing_directories())):
             prefixes.append(f"{directory}/{ARTIFACTS_DIR}/")
             prefixes.append(f"{directory}/{BLOBS_DIR}/")
