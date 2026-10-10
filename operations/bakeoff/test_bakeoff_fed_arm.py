@@ -394,6 +394,7 @@ def test_a_changed_mutation_under_the_same_label_is_refused(tree, tmp_path):
         "schema": "witness-mutation.v1", "page": "p001", "page_ordinal": 1,
         "page_sha": feed["page_render"]["image_sha256"], "scenario": "honest", "seed": 0,
         "turn": 0, "feed": feed, "planted": [], "changes": [],
+        "reference_sha256": "w" * 64, "reference_record_sha256": "r" * 64,
     }  # fmt: skip
     (folder / "p001.json").write_text(json.dumps(record))
     out = tmp_path / "cache"
@@ -413,6 +414,7 @@ def test_a_mutation_from_another_page_or_feed_is_refused(tree):
     good = {
         "schema": "witness-mutation.v1", "page": "p001", "page_ordinal": 1,
         "page_sha": page.feed["page_render"]["image_sha256"], "feed": copy.deepcopy(page.feed),
+        "reference_sha256": "w" * 64, "reference_record_sha256": "r" * 64,
     }  # fmt: skip
     variant = F.Variant(mutations=str(tree / "muts"))
     (tree / "muts").mkdir()

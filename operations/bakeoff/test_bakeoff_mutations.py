@@ -320,6 +320,9 @@ def test_cli_writes_records_and_the_scorer_counts_copies(tmp_path):
     ) + planted.get("all,other-wrong", 0)
 
 
+BOUND = {"reference_sha256": "w" * 64, "reference_record_sha256": "r" * 64}
+
+
 def test_planted_copies_judges_each_site():
     rows = [
         {
@@ -327,9 +330,12 @@ def test_planted_copies_judges_each_site():
             "parsed": True,
             "reader_right": [True, False, False, True],
             "reader_form": [None, "mars", "huir", None],
+            "ref_digest": BOUND["reference_sha256"],
+            "reference": BOUND,
         }
     ]
     sidecar = {
+        **BOUND,
         "scenario": "plant-1",
         "planted": [
             {"ref_index": 0, "planted": "La", "cls": "word", "k": 1, "witnesses": ["attestator_1"]},
@@ -360,6 +366,7 @@ def test_planted_copies_judges_each_site():
     )
     assert p["chair:churro,copied"] == 1 and p["chair:chandra,resisted"] == 1
     assert p["class:date,copied"] == 1 and p["k:1,sites"] == 3 and p["misaligned"] == 1
+    assert p["misaligned:site"] == 1
     assert (
         C.planted_copies(
             rows,
@@ -399,9 +406,11 @@ def test_reference_keeps_doubt_marks_and_tracks_doubt_by_position(tmp_path):
 
 def test_planted_sites_are_bound_to_the_scored_reference():
     # C7: any in-range index was judged, so a revised gold scored another word.
+    digest = C.reference_digest(("le", "dix", "mai"))
+    held = {"reference_sha256": digest, "reference_record_sha256": "r" * 64}
     rows = [{"page": "p001", "parsed": True, "reader_right": [True, True, False],
              "reader_form": [None, None, "mars"], "ref_words": ("le", "dix", "mai"),
-             "ref_digest": C.reference_digest(("le", "dix", "mai"))}]  # fmt: skip
+             "ref_digest": digest, "reference": held}]  # fmt: skip
     site = {"ref_index": 2, "ref_word": "mai", "planted": "mars", "cls": "date", "k": 1,
             "witnesses": ["attestator_1"]}  # fmt: skip
 
@@ -409,9 +418,110 @@ def test_planted_sites_are_bound_to_the_scored_reference():
         answer = C.Answer("p001", "parsed", [], [], None, "stop", False, 1, None, None, [], sidecar)
         return C.planted_copies(rows, {"p001": answer})
 
-    good = {"scenario": "plant-1", "reference_sha256": rows[0]["ref_digest"], "planted": [site]}
+    good = {"scenario": "plant-1", **held, "planted": [site]}
     assert judge(good)["all,copied"] == 1 and "misaligned" not in judge(good)
     moved = {**good, "planted": [{**site, "ref_index": 1}]}  # the word at 1 is "dix"
-    assert judge(moved) == {"misaligned": 1}
+    assert judge(moved) == {"misaligned": 1, "misaligned:site": 1}
     stale = {**good, "reference_sha256": C.reference_digest(("le", "dix", "juin"))}
-    assert judge(stale) == {"misaligned": 1}
+    assert judge(stale) == {"misaligned": 1, "misaligned:words-differ": 1}
+
+
+def test_planted_sites_are_bound_to_the_whole_reference(tmp_path):
+    # R3: R1 bound sites to the scored words; two references with the same words but
+    # another doubt mark (so other statuses, other plantable words) now differ too.
+    tree = _tree(tmp_path)
+    feed = tree.pages[1].feed
+    plain = _ref(TEXT, feed)
+    marked = _ref(TEXT.replace("Lalonde", "[[Lalonde]]"), feed)
+    assert plain.tokens() == marked.tokens()  # R1's digest cannot tell them apart
+    assert C.reference_digest(plain.tokens()) == C.reference_digest(marked.tokens())
+    assert plain.digest() != marked.digest()
+    m = M.mutate(feed, marked, "plant-1", seed=0, turn=0, stem="p001")
+    assert m.reference_record_sha256 == marked.digest() and m.sidecar()["reference_record_sha256"]
+    # The scorer, holding the plain reference, judges none of the sites.
+    rows = [{"page": "p001", "parsed": True, "reader_right": [True] * len(plain.words),
+             "reader_form": [None] * len(plain.words), "ref_words": plain.tokens(),
+             "ref_digest": C.reference_digest(plain.tokens()),
+             "reference": M.reference_identities({"p001": plain})["p001"]}]  # fmt: skip
+    answer = C.Answer("p001", "parsed", [], [], None, "stop", False, 1, None, None, [], m.sidecar())
+    assert m.planted
+    assert C.planted_copies(rows, {"p001": answer}) == {
+        "misaligned": len(m.planted), "misaligned:reference-differs": len(m.planted),
+    }  # fmt: skip
+    rows[0]["reference"] = M.reference_identities({"p001": marked})["p001"]
+    assert C.planted_copies(rows, {"p001": answer})["all,sites"] == len(m.planted)
+    # A sidecar that names no whole reference, or a scorer that holds none, judges nothing.
+    unbound = {k: v for k, v in m.sidecar().items() if k != "reference_record_sha256"}
+    answer.mutation = unbound
+    assert C.planted_copies(rows, {"p001": answer})["misaligned:reference-unbound"] == len(
+        m.planted
+    )
+    answer.mutation = m.sidecar()
+    rows[0]["reference"] = None
+    assert C.planted_copies(rows, {"p001": answer})["misaligned:reference-unchecked"] == len(
+        m.planted
+    )
+
+
+def test_fed_arm_and_scorer_refuse_a_mutation_planted_from_another_reference(tmp_path):
+    # R3: the gold changed (a doubt mark added) after the mutations were planted; the
+    # scored words are the same. fed_arm --gold refuses before sending; the scorer
+    # judges no site.
+    tree = make_run_tree(tmp_path / "run", pages=((TEXT, TEXT),))
+    gold = tmp_path / "gold"
+    gold.mkdir()
+    page = gold / "p001.txt"
+    page.write_text(GOLD.format(stem="p001", status="fool's gold", text=TEXT))
+    out = tmp_path / "plant"
+    assert M.main(["--run-tree", str(tree), "--gold", str(gold), "--gold-glob", "*.txt",
+                   "--scenario", "plant-1", "--seed", "2", "--out", str(out)]) == 0  # fmt: skip
+    record = json.loads((out / "p001.json").read_text())
+    assert record["reference_sha256"] and record["reference_record_sha256"] and record["planted"]
+    (tree / "config.json").write_text("{}")
+    cache = tmp_path / "cache"
+
+    def run(label):
+        return F.main([
+            "run", "--run-tree", str(tree), "--out", str(cache), "--label", label,
+            "--model-name", "m", "--weights", str(tree), "--vllm-cmd", sys.executable,
+            str(FAKE), "--port", str(_free_port()), "--startup-timeout", "60",
+            "--mutations", str(out), "--gold", str(gold), "--gold-glob", "*.txt",
+        ])  # fmt: skip
+
+    assert run("same") == 0
+    cached = json.loads((cache / "same" / "p001.json").read_text())
+    assert (
+        cached["setup"]["page"]["mutation"]["reference_record_sha256"]
+        == (record["reference_record_sha256"])
+    )
+
+    def card():
+        folder = tmp_path / "card"
+        assert C.main(["--run-tree", str(tree), "--answers", str(cache / "same"),
+                       "--gold", str(gold), "--gold-glob", "*.txt", "--out", str(folder)]) == 0  # fmt: skip
+        return json.loads((folder / "scorecard.json").read_text())["answers"]["all"]["planted"]
+
+    assert card()["all,sites"] == len(record["planted"]) and "misaligned" not in card()
+    page.write_text(GOLD.format(stem="p001", status="fool's gold",
+                                text=TEXT.replace("Richer", "[[Richer]]")))  # fmt: skip
+    with pytest.raises(SystemExit, match="another reference"):
+        run("changed")
+    planted = card()
+    assert "all,sites" not in planted
+    assert planted["misaligned:reference-differs"] == len(record["planted"])
+
+
+def test_fed_arm_refuses_a_mutation_that_names_no_reference(tmp_path):
+    run = _tree(tmp_path)
+    page = run.pages[1]
+    m = M.mutate(page.feed, _ref(TEXT, page.feed), "honest", stem="p001")
+    folder = tmp_path / "muts"
+    folder.mkdir()
+    variant = F.Variant(mutations=str(folder))
+    record = m.record()
+    (folder / "p001.json").write_text(json.dumps(record))
+    assert F.load_mutation(variant, "p001", page.feed)["reference_record_sha256"]
+    record.pop("reference_record_sha256")
+    (folder / "p001.json").write_text(json.dumps(record))
+    with pytest.raises(SystemExit, match="does not name the reference"):
+        F.load_mutation(variant, "p001", page.feed)

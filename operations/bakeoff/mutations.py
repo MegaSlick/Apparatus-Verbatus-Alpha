@@ -33,7 +33,9 @@ so a rebuild gives the same feeds. The output record (`witness-mutation.v1`) car
 mutated feed and a sidecar of planted sites (`planted`: reference word index, the word,
 the planted form, class, the witnesses and unit ids) and structural changes (`changes`),
 which `fed_arm run --mutations DIR` sends and `fed_score` reads to count planted-error
-copies. `vote_check` reports the "voting must lose" rule of A7a: on name, date and number
+copies. The record names the reference it was planted from by two digests,
+`reference_sha256` (the scored words) and `reference_record_sha256` (the whole reference,
+`reference_record_digest`); the exporter, the fed arm and the scorer check them. `vote_check` reports the "voting must lose" rule of A7a: on name, date and number
 spans a majority-vote reader should be wrong 25-35% of the time across a dataset.
 
 The reference is the page's gold or silver text (`Reference`): entries with text, and one
@@ -211,6 +213,28 @@ class Reference:
 
     def entry_words(self, entry: int) -> list[int]:
         return [i for i, w in enumerate(self.words) if w.entry == entry]
+
+    def digest(self) -> str:
+        """The whole reference's identity (`reference_record_digest`)."""
+        return reference_record_digest(self)
+
+
+def reference_record_digest(ref: Reference) -> str:
+    """The whole reference's identity: its page, status label, every entry (kind, label,
+    the diplomatic text with its doubt marks, continuation flags, own cites) and every
+    word's text, status, class and entry. `fed_score.reference_digest` binds only the
+    scored words; two references with the same words but other doubt marks, statuses or
+    entries plant on other words and weigh other spans, so a mutation carries this too
+    (`Mutation.reference_record_sha256`) and the exporter, the fed arm and the scorer
+    check that the reference they hold is this one."""
+    record = {
+        "stem": ref.stem,
+        "status_label": ref.status_label,
+        "entries": ref.entries,
+        "words": [[w.text, w.status, w.cls, w.entry] for w in ref.words],
+    }
+    data = json.dumps(record, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
 
 
 def _core(token: str) -> str:
@@ -474,8 +498,10 @@ class Mutation:
     # Every unit id of the source feed -> its id in the shown feed, None when the unit is
     # no longer shown (a removed witness, a dropped act); a merged unit stands for both.
     id_map: dict[str, str | None] = field(default_factory=dict)
-    # The scored reference the sites index (`fed_score.reference_digest`).
+    # The scored reference the sites index (`fed_score.reference_digest`), and the whole
+    # reference the mutation was planted from (`reference_record_digest`).
     reference_sha256: str | None = None
+    reference_record_sha256: str | None = None
 
     @property
     def family(self) -> str:
@@ -824,6 +850,7 @@ def mutate(
         copy.deepcopy(feed),
     )
     m.reference_sha256 = reference_digest(ref.tokens())
+    m.reference_record_sha256 = ref.digest()
     for row in m.feed["witnesses"]:
         for unit in row["units"]:
             unit[_ORIGIN] = [unit["id"]]
@@ -993,6 +1020,29 @@ def references_from_gold_dir(
         statuses_from_agreement(ref, by_stem[stem].feed)
         out[stem] = ref
     return out
+
+
+def reference_identities(refs: dict[str, Reference]) -> dict[str, dict[str, str]]:
+    """Per page, the two digests a mutation record carries of its reference."""
+    return {
+        stem: {
+            "reference_sha256": reference_digest(ref.tokens()),
+            "reference_record_sha256": ref.digest(),
+        }
+        for stem, ref in refs.items()
+    }
+
+
+REFERENCE_KEYS = ("reference_sha256", "reference_record_sha256")
+
+
+def reference_mismatch(record: dict[str, Any], expected: dict[str, str] | None) -> list[str]:
+    """Which of a mutation record's reference digests differ from `expected` (the
+    reference the caller holds for the page): a missing digest, or no reference for the
+    page, counts as a difference, so an unbound record is never taken as bound."""
+    if expected is None:
+        return ["no reference for this page"]
+    return [k for k in REFERENCE_KEYS if not record.get(k) or record.get(k) != expected.get(k)]
 
 
 _HALF = re.compile(r"_(\d[LR])$")

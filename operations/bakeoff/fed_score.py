@@ -49,7 +49,10 @@ Per page group (`score.page_group`; act pages split by FORM) and for the hard pa
   site the reader either resisted (its word is right), copied (it wrote the planted
   word) or went wrong another way, counted per scenario, per number of witnesses that
   carried the error (k = 1, 2, 3), per chair for k = 1, and per word class. A site is
-  judged only against the reference it was planted on (digest and word checked).
+  judged only against the reference it was planted on: the sidecar's whole-reference
+  digest (`reference_record_sha256`) must equal the reference rebuilt from `--gold` as
+  `mutations` builds it (statuses from the run's own feeds, `--row-kind`), and its
+  scored-words digest and each site's word must match the gold's.
 
 Every heading says "vs fool's gold (ballpark, not accuracy)" while any scored gold page's
 STATUS says fool's gold; only an explicit checked status (`gold (<who> <date>)` or
@@ -417,14 +420,35 @@ def scepticism(rows: list[dict[str, Any]]) -> dict[str, Any]:
     return {"counts": c, "witnesses": names, "pages": pages}
 
 
+def reference_problem(sidecar: dict[str, Any], row: dict[str, Any]) -> str | None:
+    """Why a sidecar's sites cannot be judged against this row's reference, or None.
+
+    `reference-unbound`: the sidecar names no whole reference; `reference-unchecked`:
+    the scorer holds no rebuilt reference for the page (`row["reference"]`, set by
+    `scorecard(..., references=)`); `reference-differs`: the whole reference differs
+    (other doubt marks, statuses or entries, even with the same words);
+    `words-differ`: the scored words differ from this gold's."""
+    record = sidecar.get("reference_record_sha256")
+    if not record or not sidecar.get("reference_sha256"):
+        return "reference-unbound"
+    held = row.get("reference")
+    if not held:
+        return "reference-unchecked"
+    if record != held.get("reference_record_sha256"):
+        return "reference-differs"
+    if sidecar["reference_sha256"] != row.get("ref_digest"):
+        return "words-differ"
+    return None
+
+
 def planted_copies(rows: list[dict[str, Any]], answers: dict[str, Answer]) -> dict[str, Any]:
     """Per planted site: resisted (reader right), copied (the reader wrote the planted
     word) or other-wrong; grouped by scenario, by k, by chair (k = 1) and by class.
-    Sites are bound to the scored reference: a sidecar whose `reference_sha256` differs
-    from this gold's (`reference_digest`) has every site `misaligned`, and so has a site
-    with no index, an index past the gold's words, or a `ref_word` that is not the gold's
-    word at that index (planted against another reference); misaligned sites are not
-    judged."""
+    Sites are bound to the reference they were planted on: a sidecar whose whole
+    reference is not the scorer's (`reference_problem`) has every site `misaligned`,
+    and so has a site with no index, an index past the gold's words, or a `ref_word`
+    that is not the gold's word at that index; misaligned sites are not judged
+    (`misaligned:<why>` says why)."""
     c: Counter = Counter()
     for row in rows:
         answer = answers[row["page"]]
@@ -432,18 +456,20 @@ def planted_copies(rows: list[dict[str, Any]], answers: dict[str, Answer]) -> di
         if not sidecar or not row["parsed"]:
             continue
         scenario = sidecar.get("scenario", "?")
-        digest = sidecar.get("reference_sha256")
-        stale = digest is not None and digest != row.get("ref_digest")
+        problem = reference_problem(sidecar, row)
         words = row.get("ref_words")
         for site in sidecar.get("planted") or []:
             i = site.get("ref_index")
-            if (
-                stale
-                or i is None
+            why = problem or (
+                "site"
+                if i is None
                 or i >= len(row["reader_right"])
                 or (words is not None and site.get("ref_word") != words[i])
-            ):
+                else None
+            )
+            if why:
                 c["misaligned"] += 1
+                c[f"misaligned:{why}"] += 1
                 continue
             planted = " ".join(S.tokens(site["planted"]))
             mine = row["reader_form"][i]
@@ -534,17 +560,24 @@ def missing_answer(stem: str) -> Answer:
 
 
 def scorecard(
-    answers: dict[str, Answer], gold: dict, hard: set[str], expected: set[str] | None = None
+    answers: dict[str, Answer],
+    gold: dict,
+    hard: set[str],
+    expected: set[str] | None = None,
+    references: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """The card over every gold page that has an answer and, failure-inclusive, every
     `expected` page (default: none) that has none: it counts as an unparsed, empty
     answer (CER 1 in the "all" medians, an error in answer health), so an arm cannot
-    look better by failing its hardest pages."""
+    look better by failing its hardest pages. `references` (per stem, the digests of
+    the reference rebuilt from this gold, `reference_identities`) is what planted sites
+    are checked against; without it no planted site is judged."""
     unanswered = sorted(s for s in gold if s not in answers)
     missing = [s for s in unanswered if s in (expected or set())]
     answers = {**answers, **{s: missing_answer(s) for s in missing}}
     rows = [score_page(a, gold[s], s in hard) for s, a in sorted(answers.items()) if s in gold]
     for row in rows:
+        row["reference"] = (references or {}).get(row["page"])
         if row["parsed"]:
             row["counts"] = page_counts(row)
     by_group: dict[str, list] = defaultdict(list)
@@ -799,9 +832,13 @@ def planted_report(card: dict[str, Any]) -> list[str]:
             f"{p.get(f'{g},other-wrong', 0)} |"
         )
     if p.get("misaligned"):
+        why = ", ".join(
+            f"{k.split(':', 1)[1]} {v}" for k, v in sorted(p.items()) if k.startswith("misaligned:")
+        )
         out.append(
-            "\nSites not judged (planted against another reference: digest, index or "
-            f"word differs): {p['misaligned']}"
+            "\nSites not judged (not bound to this reference: the whole reference, its "
+            f"words or the site's word differs, or no reference to check): {p['misaligned']}"
+            + (f" ({why})" if why else "")
         )
     return out + [""]
 
@@ -953,6 +990,29 @@ def _jsonable(card: dict[str, Any]) -> dict[str, Any]:
 _CHECKED_STATUS = re.compile(r"(lead-checked|gold(\s*\(.*\))?)", re.IGNORECASE)
 
 
+def reference_identities(
+    gold: dict, tree: F.RunTree, row_kind: str = "other"
+) -> dict[str, dict[str, str]]:
+    """Per gold page the run has, the digests of the reference `mutations` plants on:
+    built from the gold page (`reference_from_gold`) with statuses from the run's own
+    feed (`statuses_from_agreement`). A page whose gold cannot be made a reference has
+    none (its planted sites are not judged)."""
+    from operations.bakeoff import mutations as M
+
+    by_stem = tree.by_stem()
+    refs = {}
+    for stem, page in gold.items():
+        if stem not in by_stem:
+            continue
+        try:
+            ref = M.reference_from_gold(page, row_kind)
+        except ValueError:
+            continue
+        M.statuses_from_agreement(ref, by_stem[stem].feed)
+        refs[stem] = ref
+    return M.reference_identities(refs)
+
+
 def is_checked_status(status: str) -> bool:
     """A gold STATUS that says a person checked every word: `gold (<who> <date>)` as the
     bake-off template writes it, `gold`, or `lead-checked`. Anything else (fool's gold,
@@ -987,6 +1047,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hard-pages", type=Path)
     parser.add_argument("--exclude", type=Path, help="stems to leave out, one per line")
     parser.add_argument("--out", type=Path, help="write scorecard.md and scorecard.json here")
+    parser.add_argument(
+        "--row-kind", default="other", help="entry kind for index rows, as the mutations used"
+    )
     args = parser.parse_args(argv)
 
     tree = F.load_run_tree(args.run_tree)
@@ -1006,7 +1069,8 @@ def main(argv: list[str] | None = None) -> int:
         scored += [g for s, g in gold.items() if s in other]
     label = reference_label(scored)
     fools = label != " (lead-checked gold)"
-    card = scorecard(answers, gold, hard, expected)
+    references = reference_identities(gold, tree, args.row_kind)
+    card = scorecard(answers, gold, hard, expected, references)
     lines = [f"# Perlector scorecard{label}", ""]
     if fools:
         lines += [
@@ -1017,7 +1081,7 @@ def main(argv: list[str] | None = None) -> int:
     lines += report(card, f"{names[0]}: {len(answers)} answers", label)
     out_json: dict[str, Any] = {"label": label.strip(), "answers": _jsonable(card)}
     if other is not None:
-        card_b = scorecard(other, gold, hard, expected)
+        card_b = scorecard(other, gold, hard, expected, references)
         inv = invariance(answers, other, card, card_b)
         lines += compare_report(card, card_b, inv, (names[0], names[1]), label)
         lines += report(card_b, f"{names[1]}: {len(other)} answers", label)
