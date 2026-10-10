@@ -185,7 +185,8 @@ class ModelJob:
         self.label = args.label if (args.label and not args.run_all) else name
         self.dir = args.out / self.label
         self.tier = args.tier or self.arm.default_tier
-        self.row = A.serving_row(self.arm.chair, self.tier)
+        self.recipe = getattr(args, "recipe", None)
+        self.row = A.serving_row(self.arm.chair, self.tier, self.recipe)
         self.max_model_len = args.max_model_len or self.row["max_model_len"]
         identity = A.chair_identity(self.arm.chair)
         self.repo = args.repo or identity["repo"]
@@ -195,6 +196,22 @@ class ModelJob:
         self.served_name = f"bakeoff-{self.label}"
         self.weights: Path | None = None
         self.prepared: list[tuple[Path, list[tuple[dict, dict]]]] = []
+        self.allowed_set = getattr(args, "allowed_tokens", None)
+        self.allowed_tokens: tuple[str, tuple[int, ...]] | None = None
+
+    def _allowed_tokens(self) -> tuple[str, tuple[int, ...]] | None:
+        """The named output-token set, from the served snapshot's tokenizer; off unless asked."""
+        if self.allowed_set is None:
+            return None
+        if self.allowed_tokens is None:
+            from operations.bakeoff import allowed_tokens as T
+
+            weights = self.weights or self.resolve_weights()
+            self.allowed_tokens = (
+                self.allowed_set,
+                T.load(self.allowed_set, weights / "tokenizer.json"),
+            )
+        return self.allowed_tokens
 
     def resolve_weights(self) -> Path:
         explicit = self.args.weights
@@ -279,6 +296,7 @@ class ModelJob:
                     max_model_len=self.max_model_len,
                     prompt_text=self.prompt_text,
                     repo=self.repo,
+                    allowed_tokens=self._allowed_tokens(),
                 )
                 for unit in A.page_units(self.arm, png, records)
             ]
@@ -297,7 +315,13 @@ class ModelJob:
             max_num_batched_tokens=self.args.max_num_batched_tokens,
         )
         prefix = self.args.vllm_cmd or [sys.executable, "-m", "vllm.entrypoints.cli.main"]
-        event(self.args.out, "server-start", model=self.label, weights=str(self.weights))
+        event(
+            self.args.out,
+            "server-start",
+            model=self.label,
+            weights=str(self.weights),
+            **({"recipe": self.recipe} if self.recipe else {}),
+        )
         server = Server(prefix, argv, self.args.port, self.dir / "server.log")
         try:
             server.wait_ready(self.args.startup_timeout)
@@ -524,6 +548,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             help="a page with no record: skip it (none) or show DAI the whole page",
         )
         p.add_argument("--tier", help="serving row tier (default per model)")
+        p.add_argument(
+            "--recipe",
+            help="serve the chair's row with this recipe name, from the run or the variants "
+            "catalogue (default: the chair's run row)",
+        )
+        p.add_argument(
+            "--allowed-tokens",
+            choices=["latin-json-v1"],
+            help="restrict output to a named token set from the snapshot's tokenizer (default off)",
+        )
         p.add_argument("--max-model-len", type=int)
         p.add_argument("--max-num-seqs", type=int, default=32)
         p.add_argument("--max-num-batched-tokens", type=int, help="default: the row's")

@@ -1,4 +1,4 @@
-"""The page answer grammar: what is read, what is held, and that nothing is repaired."""
+"""The page answer grammar: what is read, what is held, and the one repair."""
 
 from __future__ import annotations
 
@@ -92,10 +92,6 @@ def test_a_code_fenced_answer_is_malformed_and_named(opening):
         (_with(lambda a: a["acts"][0].update(cites=["A1", 2])), "cites-invalid"),
         (_with(lambda a: a["acts"][0].update(text=None)), "text-invalid"),
         (_with(lambda a: a["acts"][0].update(continues_to_next_page="no")), "flag-invalid"),
-        (
-            _with(lambda a: a["acts"][1].update(continues_from_previous_page=True)),
-            "continuation-not-at-edge",
-        ),
         (_with(lambda a: a["set_aside"].append({"id": "A1"})), "set-aside-invalid"),
         (_with(lambda a: a["set_aside"].append({"id": 4, "reason": "x"})), "set-aside-invalid"),
     ],
@@ -335,6 +331,66 @@ def test_a_flag_on_the_page_s_first_or_last_act_or_entry_is_read(raw):
         "no-act-page-end-on-first-of-two",
     ],
 )
-def test_a_flag_anywhere_else_is_refused(raw):
-    state, _answer, problems = page_answer.parse_page_answer(raw)
-    assert (state, _codes(problems)) == ("malformed", ["continuation-not-at-edge"])
+def test_a_flag_anywhere_else_keeps_the_answer_and_is_named_on_its_entry(raw):
+    """A stray flag is one entry's statement: the page keeps every entry, and the flag is
+    named by entry for the Recensor to judge, never a reason to drop the page."""
+    state, answer, problems = page_answer.parse_page_answer(raw)
+    assert (state, answer, problems) == ("parsed", json.loads(raw), [])
+    assert page_answer.stray_continuation_flags(answer["acts"])
+
+
+def test_stray_flags_are_named_by_entry_and_flag():
+    acts = json.loads(_page(ACT, START, ("act", True, True), ACT, END))["acts"]
+    assert page_answer.stray_continuation_flags(acts) == {
+        1: ["continues_from_previous_page"],
+        2: ["continues_from_previous_page", "continues_to_next_page"],
+    }
+    edges_only = json.loads(_page(OTHER, START, ACT, END, OTHER))["acts"]
+    assert page_answer.stray_continuation_flags(edges_only) == {}
+
+
+BARE = (
+    '{\nacts: [{n: 1, kind: "act", label: null, cites: ["A1"], '
+    'text: "Le 3 mai, kind: x, n: 2 {acts: y}", continues_from_previous_page: false, '
+    "continues_to_next_page: false}],\n set_aside: []}"
+)
+
+
+def test_bare_grammar_keys_are_quoted_and_the_repair_recorded():
+    """The cold73 shape: `{\nacts: [` with every grammar key bare. Text inside a
+    string that looks like a key is never touched."""
+    assert page_answer.parse_page_answer(BARE)[2][0]["code"] == "not-json"
+    state, answer, problems, repairs = page_answer.parse_page_answer_repaired(BARE)
+    assert (state, problems) == ("parsed", [])
+    assert answer["acts"][0]["text"] == "Le 3 mai, kind: x, n: 2 {acts: y}"
+    assert [(repair["code"], repair["keys"]) for repair in repairs] == [("unquoted-keys-quoted", 9)]
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "{acts: [], set_aside: [], }",
+        "{acts: [], set_aside: [], 'x': 1}",
+        "{acts: [], colour: []}",
+        "```json\n{acts: [], set_aside: []}\n```",
+        "{acts: [], set_aside: []} trailing",
+    ],
+    ids=["trailing-comma", "single-quotes", "unknown-bare-key", "fenced", "trailing-prose"],
+)
+def test_the_repair_quotes_grammar_keys_and_nothing_else(raw):
+    """Any other departure stays the reply's own problem, unrepaired and unrecorded."""
+    state, answer, problems, repairs = page_answer.parse_page_answer_repaired(raw)
+    assert (state, answer, repairs) == ("malformed", None, [])
+    assert problems == page_answer.parse_page_answer(raw)[2]
+
+
+def test_a_repaired_reply_still_meets_the_grammar_or_is_held():
+    raw = '{acts: [{n: 2, kind: "act", cites: [], text: "x", continues_from_previous_page: false, continues_to_next_page: false}], set_aside: []}'
+    state, answer, problems, repairs = page_answer.parse_page_answer_repaired(raw)
+    assert (state, answer, _codes(problems)) == ("malformed", None, ["n-not-contiguous"])
+    assert _codes(repairs) == ["unquoted-keys-quoted"]
+
+
+def test_a_well_formed_reply_is_never_repaired():
+    raw = json.dumps(GOOD)
+    assert page_answer.parse_page_answer_repaired(raw) == ("parsed", GOOD, [], [])

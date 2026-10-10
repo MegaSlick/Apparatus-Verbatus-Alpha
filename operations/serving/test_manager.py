@@ -2394,8 +2394,12 @@ def test_real_catalogue_covers_each_chair_and_names_unservable_tiers():
                 assert profile.enable_prefix_caching is False, (identity.role, tier)
             assert serving_mode_for(real_catalogue, identity, tier) == "live"
     # A hybrid repository missing from the real roster would make the check
-    # above pass without checking anything.
-    assert _HYBRID_ATTENTION_REPOSITORIES <= {identity.repo for identity in configured}
+    # above pass without checking anything. The FP8 build is served only by
+    # config/serving_recipes_real_variants.toml so far, whose rows
+    # test_serving_variants.py holds to prefix caching off.
+    assert _HYBRID_ATTENTION_REPOSITORIES - {"Qwen/Qwen3.8-27B-FP8"} <= {
+        identity.repo for identity in configured
+    }
 
 
 def test_an_in_process_row_is_never_launched_as_a_server() -> None:

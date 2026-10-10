@@ -1038,7 +1038,9 @@ def test_the_command_line_moves_the_copy_to_the_global_mount(bench):
         Q.override_manifest(manifest, str(bench["out"] / "inside"), False)
 
 
-@pytest.mark.parametrize("name", ["witness-24gb.toml", "reader-96gb.toml"])
+@pytest.mark.parametrize(
+    "name", ["witness-24gb.toml", "reader-96gb.toml", "perlector-fp8-96gb.toml"]
+)
 def test_the_bakeoff_manifests_validate_on_the_global_route(name, capsys):
     argv = [
         "--manifest",
