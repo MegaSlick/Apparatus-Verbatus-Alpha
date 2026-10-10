@@ -7,19 +7,31 @@
 Every example is one page shown once under one witness story (`operations.bakeoff.mutations`:
 honest, planted, removed, structural) with the same answer every time: the reference
 (gold or silver) in the Perlector's own JSON grammar (`common.page_answer`). The prompt is
-the Perlector's: `fed_arm.build_body` renders the request exactly as the pipeline sends
-it, and the text block of that body is the training prompt, byte for byte; an honest,
-named example is also checked against the run's recorded prompt digests.
+the Perlector's, with every image the request carries: `fed_arm.request_images` gives
+the images as stage 4 sends them (the render, then the page overlay when the feed draws
+one, `common/page_path.py`), `fed_arm.build_body` renders the request, and the example
+carries those images in that order and the body's text block as the prompt, byte for
+byte. Every page's source request is checked against the run before any variant is
+drawn (prompt text, image digests, the reading's `request_digest`); an honest, named
+example's whole request (text and image digests, `page_path.request_digest`) must equal
+the run's recorded `request_digest`, or the export stops.
 
 The dataset is neutral (`images` + `messages` JSONL, one object per line, HF-datasets and
 mlx-vlm friendly), with the loss weights as a separate field:
 
-    {"id", "page", "images": ["images/<stem>.png"],
-     "messages": [{"role": "user", "content": [{"type": "image"}, {"type": "text", "text": PROMPT}]},
+    {"id", "page", "images": ["images/<stem>.png", "images/<stem>.overlay-<sha16>.png"],
+     "image_sha256s": [...],                     # one per image, in the request's order
+     "messages": [{"role": "user", "content": [{"type": "image"}, {"type": "image"},
+                                               {"type": "text", "text": PROMPT}]},
                   {"role": "assistant", "content": ANSWER_JSON}],
      "loss_spans": [[start, end, weight], ...],   # character spans over the assistant content
      "scenario", "family", "witness_regime", "planted_sites", "chat_template_kwargs",
-     "prompt_sha256", "prompt_matches_run", "reference_status", "tokens": {...}}
+     "prompt_sha256", "request_digest", "prompt_matches_run", "request_matches_run",
+     "reference_status", "reference_sha256", "reference_record_sha256", "tokens": {...}}
+
+The mutation that made each example names the reference it was planted from
+(`reference_sha256`, `reference_record_sha256`); the target is built only from that same
+reference (checked per example), and `planted.jsonl` carries both digests to the scorer.
 
 Loss weights per reference word: checked 1.0, agreed 0.7, draft 0.3, unresolved 0 (the
 training plan's table); the JSON scaffold 1.0; cites `CITES_WEIGHT` while they are
@@ -48,6 +60,7 @@ from typing import Any
 
 from rapidfuzz.distance import Levenshtein
 
+from common import page_path
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import mutations as M
 from operations.bakeoff import score as S
@@ -410,6 +423,55 @@ def token_estimate(feed: dict[str, Any], prompt: str, answer_json: str, page: F.
     }
 
 
+# --- the request ---------------------------------------------------------------------
+
+
+def source_request_problems(tree: F.RunTree, page: F.Page) -> list[str]:
+    """Where the page's own request, rebuilt from its sealed feed, differs from what the
+    run sent: the prompt text, the images (render and overlay) against the feed's and the
+    call record's digests, and the reading's `request_digest`. Empty when it rebuilds."""
+    problems = []
+    if not F.prompt_check(page.feed)["text_identical"]:
+        problems.append("prompt text")
+    check = F.request_check(tree, page)
+    problems += [k for k in ("images", "call_images", "reading_digest") if check[k] is False]
+    return problems
+
+
+def example_request(
+    tree: F.RunTree, page: F.Page, feed: dict[str, Any]
+) -> tuple[list[bytes], dict[str, Any], str]:
+    """(the images, the feed as shown, the prompt) as the pipeline and the fed arm send
+    this feed: the render, then the overlay when the feed draws one. A feed equal to the
+    run's sends the run's own overlay (redrawn and checked against its recorded digest);
+    a changed feed has its overlay drawn afresh from the rows it shows
+    (`fed_arm.request_images`)."""
+    source = page.feed if feed == page.feed else feed
+    images, shown = F.request_images(tree, page, source, F.Variant())
+    _, prompt = F.build_body(
+        shown, images, model_name="training", sampling=F.GREEDY, seed=0,
+        max_tokens=F.MAX_TOKENS, stream=False,
+    )  # fmt: skip
+    return images, shown, prompt
+
+
+def _image_paths(
+    out: Path, stem: str, render_rel: str | None, images: list[bytes], digests: list[str]
+) -> list[str]:
+    """Each image's path in the request's order: the render's (`render_rel`, written once
+    per page), then each overlay, written once under its digest."""
+    paths = []
+    for n, (image, digest) in enumerate(zip(images, digests, strict=True)):
+        if n == 0 and render_rel is not None:
+            paths.append(render_rel)
+            continue
+        rel = f"images/{stem}.overlay-{digest[:16]}.png"
+        if not (out / rel).is_file():
+            (out / rel).write_bytes(image)
+        paths.append(rel)
+    return paths
+
+
 # --- the export ------------------------------------------------------------------------
 
 
@@ -440,25 +502,31 @@ def export(
     allow_prompt_mismatch: bool = False,
 ) -> dict[str, Any]:
     """Write the dataset. Before any variant is drawn, every page's source feed must
-    rebuild the run's own recorded prompt (`fed_arm.prompt_check`): a page whose prompt
-    differs stops the export (SystemExit naming the pages) unless `allow_prompt_mismatch`,
-    which leaves those pages out and lists them in the manifest. An example whose target
-    cannot be made right (`ExampleRefused`) is not written and is counted by reason."""
+    rebuild the run's own request (`source_request_problems`: prompt text, images,
+    request digest): a page that differs stops the export (SystemExit naming the pages)
+    unless `allow_prompt_mismatch`, which leaves those pages out and lists them in the
+    manifest. Each example carries every image of its request; an honest, named
+    example whose request digest differs from the run's recorded one stops the export.
+    An example whose target cannot be made right (`ExampleRefused`) is not written and
+    is counted by reason."""
     mix = mix or dict(M.DEFAULT_MIX)
     out.mkdir(parents=True, exist_ok=True)
     (out / "images").mkdir(exist_ok=True)
     chosen = pages or [tree.pages[o] for o in sorted(tree.pages)]
     kept = [p for p in chosen if p.stem in refs and not is_held_out(p.stem, held)]
     excluded = sorted(p.stem for p in chosen if p.stem in refs and is_held_out(p.stem, held))
-    # The source feed is checked once per page, before any variant: every variant's prompt
-    # comes from the same builder, so a page that does not rebuild its run prompt cannot
-    # be trusted in any form.
-    mismatched = sorted(p.stem for p in kept if not F.prompt_check(p.feed)["identical"])
+    # The source request is checked once per page, before any variant: every variant's
+    # prompt and images come from the same builder and renders, so a page that does not
+    # rebuild its run request cannot be trusted in any form. (The builder's code digest
+    # is not compared: an alias added to the module changes it, not the bytes sent.)
+    source_problems = {p.stem: source_request_problems(tree, p) for p in kept}
+    mismatched = sorted(stem for stem, problems in source_problems.items() if problems)
     if mismatched and not allow_prompt_mismatch:
+        detail = "; ".join(f"{s} ({', '.join(source_problems[s])})" for s in mismatched)
         raise SystemExit(
-            f"{len(mismatched)} page(s) do not rebuild the run's recorded prompt: "
-            f"{', '.join(mismatched)}; check the builder and the run's configuration, or "
-            "pass --allow-prompt-mismatch to leave them out"
+            f"{len(mismatched)} page(s) do not rebuild the run's recorded request: {detail}; "
+            "check the builder and the run's configuration, or pass --allow-prompt-mismatch "
+            "to leave them out"
         )
     kept = [p for p in kept if p.stem not in mismatched]
     refused: list[dict[str, str]] = []
@@ -471,6 +539,7 @@ def export(
     tokens: list[dict] = []
     vote_items, honest_items = [], []
     matched = Counter()
+    image_counts: Counter = Counter()
     with (
         (out / "train.jsonl").open("w", encoding="utf-8") as data,
         (out / "planted.jsonl").open("w", encoding="utf-8") as side,
@@ -479,14 +548,14 @@ def export(
             ref = refs[page.stem]
             rng = random.Random(f"{M.page_sha(page.feed)}|mix|{seed}")
             render = page.feed.get("page_render")
-            image_bytes = tree.blob(render["image_path"]) if render else None
-            image_rel = None
-            if image_bytes is not None:
-                image_rel = f"images/{page.stem}.png"
+            render_rel = None
+            if render:
                 if copy_images:
-                    (out / image_rel).write_bytes(image_bytes)
+                    render_rel = f"images/{page.stem}.png"
+                    (out / render_rel).write_bytes(tree.render(page))
                 else:
-                    image_rel = str((tree.root / render["image_path"]).resolve())
+                    render_rel = str((tree.root / render["image_path"]).resolve())
+
             for k, scenario in enumerate(
                 M.draw_scenarios(mix, variants_per_page, rng, ref.blank), start=1
             ):
@@ -499,17 +568,43 @@ def export(
                 blinded = rng.random() < blinded_share and mutation.feed["witnesses"]
                 if blinded:
                     M.blind_labels(mutation, seed)
-                feed = mutation.feed
-                _, prompt = F.build_body(
-                    feed, image_bytes, model_name="training", sampling=F.GREEDY, seed=0,
-                    max_tokens=F.MAX_TOKENS, stream=False,
-                )  # fmt: skip
-                matches_run = None
+                example_id = f"{page.stem}#{k}"
+                # The target is built from the very reference the mutation was planted on.
+                bound = M.reference_mismatch(
+                    mutation.record(), M.reference_identities({page.stem: ref})[page.stem]
+                )
+                if bound:
+                    raise SystemExit(
+                        f"{example_id}: the reference changed between planting and the "
+                        f"target ({', '.join(bound)} differ)"
+                    )
+                images, feed, prompt = example_request(tree, page, mutation.feed)
+                digests = [hashlib.sha256(image).hexdigest() for image in images]
+                if digests != page_path.request_image_sha256s(feed):
+                    raise SystemExit(
+                        f"{example_id}: the images do not match the shown feed's digests"
+                    )
+                request_sha = page_path.request_digest(prompt, digests)
+                matches_run = request_matches = None
                 if scenario == "honest" and not blinded:
-                    matches_run = F.prompt_check(feed)["identical"]
+                    matches_run = F.prompt_check(feed)["text_identical"]
+                    recorded = (page.reading or {}).get("request_digest")
                     matched["checked"] += 1
                     matched["identical"] += bool(matches_run)
-                example_id = f"{page.stem}#{k}"
+                    if recorded:
+                        request_matches = request_sha == recorded
+                        matched["requests_checked"] += 1
+                        matched["requests_identical"] += request_matches
+                    else:
+                        matched["requests_unrecorded"] += 1
+                    if not matches_run or request_matches is False:
+                        raise SystemExit(
+                            f"{example_id}: an honest, named example's request differs from "
+                            f"the run's (prompt text {'same' if matches_run else 'differs'}, "
+                            f"request digest {request_sha[:12]} vs recorded "
+                            f"{(recorded or '-')[:12]}); the exporter would train on a "
+                            "request the pipeline never sends"
+                        )
                 try:
                     answer = build_answer(ref, feed, mutation.set_aside_ids, id_map=mutation.id_map)
                 except ExampleRefused as refusal:
@@ -522,14 +617,14 @@ def export(
                 spans = loss_spans(answer_json, answer, ref, cites_weight)
                 est = token_estimate(feed, prompt, answer_json, page)
                 tokens.append(est)
-                content = [{"type": "text", "text": prompt}]
-                if image_rel:
-                    content.insert(0, {"type": "image"})
+                content = [*({"type": "image"} for _ in images), {"type": "text", "text": prompt}]
+                image_counts[len(images)] += 1
                 example = {
                     "schema": SCHEMA,
                     "id": example_id,
                     "page": page.stem,
-                    "images": [image_rel] if image_rel else [],
+                    "images": _image_paths(out, page.stem, render_rel, images, digests),
+                    "image_sha256s": digests,
                     "messages": [
                         {"role": "user", "content": content},
                         {"role": "assistant", "content": answer_json},
@@ -542,9 +637,13 @@ def export(
                     "set_aside_ids": mutation.set_aside_ids,
                     "chat_template_kwargs": {"enable_thinking": False},
                     "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+                    "request_digest": request_sha,
                     "prompt_matches_run": matches_run,
+                    "request_matches_run": request_matches,
                     "source_prompt_matches_run": True,
                     "reference_status": ref.status_label,
+                    "reference_sha256": mutation.reference_sha256,
+                    "reference_record_sha256": mutation.reference_record_sha256,
                     "cites_weight": cites_weight,
                     "tokens": est,
                 }
@@ -591,6 +690,10 @@ def export(
         "refused": refused,
         "honest_prompts_checked": matched["checked"],
         "honest_prompts_identical_to_run": matched["identical"],
+        "honest_requests_checked": matched["requests_checked"],
+        "honest_requests_identical_to_run": matched["requests_identical"],
+        "honest_requests_unrecorded": matched["requests_unrecorded"],
+        "examples_by_image_count": {str(n): image_counts[n] for n in sorted(image_counts)},
         "vote_check": {"all": M.vote_check(vote_items), "honest": M.vote_check(honest_items)},
         "tokens": {
             key: summary(key)
@@ -639,7 +742,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not args.gold and not args.reference:
         parser.error("give --gold and/or --reference")
-    tree = F.load_run_tree(args.run_tree)
+    tree = F.load_run_tree(args.run_tree, sealed=F.is_real_run(args.run_tree))
     refs = load_references(tree, args.gold, args.gold_glob, args.reference, args.row_kind)
     held = read_held_out(args.held_out)
     manifest = export(

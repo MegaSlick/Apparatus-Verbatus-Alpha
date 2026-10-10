@@ -1,5 +1,6 @@
 """The training exporter on synthetic pages, feeds and gold (never a real page or text)."""
 
+import hashlib
 import json
 
 import pytest
@@ -346,3 +347,104 @@ def test_a_page_whose_prompt_no_longer_rebuilds_stops_the_export(tmp_path):
     assert manifest["prompt_mismatch_excluded"] == ["p003"] and manifest["pages"] == 2
     assert {e["page"] for e in _examples(tmp_path / "out2")} == {"p001", "p002"}
     assert all(e["source_prompt_matches_run"] for e in _examples(tmp_path / "out2"))
+
+
+# --- R3: every image of the request, the whole request checked, the reference bound ----
+
+
+def test_overlay_examples_carry_the_render_and_the_overlay_as_the_pipeline_sends(tmp_path):
+    # R3: the exporter sent the render alone; the pipeline (common/page_path.py) sends
+    # the render, then the overlay. Every example now carries both, in that order.
+    from common import page_path
+
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES, overlay=True))
+    refs = _refs(tree)
+    out = tmp_path / "out"
+    mix = {"honest": 2, "plant-1": 1, "drop-one": 1, "permute": 1}
+    manifest = E.export(tree, refs, set(), out, seed=3, variants_per_page=6, mix=mix,
+                        blinded_share=0.3)  # fmt: skip
+    examples = _examples(out)
+    assert examples and manifest["examples_by_image_count"] == {"2": len(examples)}
+    honest_named = [e for e in examples if e["scenario"] == "honest" and
+                    e["witness_regime"] == "named"]  # fmt: skip
+    assert honest_named
+    for e in examples:
+        page = tree.by_stem()[e["page"]]
+        user = e["messages"][0]["content"]
+        assert [b["type"] for b in user] == ["image", "image", "text"]
+        assert len(e["images"]) == len(e["image_sha256s"]) == 2
+        assert e["images"][0] == f"images/{e['page']}.png"
+        for path, digest in zip(e["images"], e["image_sha256s"], strict=True):
+            assert hashlib.sha256((out / path).read_bytes()).hexdigest() == digest
+        assert e["image_sha256s"][0] == page.feed["page_render"]["image_sha256"]
+        assert e["request_digest"] == page_path.request_digest(user[2]["text"], e["image_sha256s"])
+    for e in honest_named:
+        page = tree.by_stem()[e["page"]]
+        # Byte for byte what the run recorded: the text and both images' digests.
+        assert e["image_sha256s"] == page_path.request_image_sha256s(page.feed)
+        assert e["request_digest"] == page.reading["request_digest"]
+        assert e["request_matches_run"] is True and e["prompt_matches_run"] is True
+    assert manifest["honest_requests_checked"] == len(honest_named)
+    assert manifest["honest_requests_identical_to_run"] == len(honest_named)
+    # A changed feed has its overlay drawn from the rows it shows (as fed_arm sends it).
+    changed = [e for e in examples if e["scenario"] in ("drop-one", "plant-1")]
+    assert any(
+        e["image_sha256s"][1] != tree.by_stem()[e["page"]].feed["overlay"]["image_sha256"]
+        for e in changed
+    )
+
+
+def test_an_honest_example_whose_request_differs_from_the_run_stops_the_export(
+    tmp_path, monkeypatch
+):
+    # R3: the request (text and every image) of an honest, named example must be the run's.
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES, overlay=True))
+    refs = _refs(tree)
+    real = E.example_request
+
+    def render_only(tree_, page, feed):  # the old exporter: the overlay left out
+        images, shown, prompt = real(tree_, page, feed)
+        return images[:1], {**shown, "overlay": None}, prompt
+
+    monkeypatch.setattr(E, "example_request", render_only)
+    with pytest.raises(SystemExit, match="honest, named example's request differs"):
+        E.export(tree, refs, set(), tmp_path / "out", variants_per_page=4,
+                 mix={"honest": 1}, blinded_share=0.0)  # fmt: skip
+
+
+def test_the_source_request_is_checked_not_the_builder_code_digest(tmp_path):
+    # R3: a page whose recorded request digest differs stops the export before any
+    # variant; a builder code digest that moved while the bytes sent did not (R2's
+    # recipe aliases) does not: on cold73 that stopped every page.
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES, overlay=True))
+    refs = _refs(tree)
+    for page in tree.pages.values():
+        page.feed["prompt"]["builder_sha256"] = "0" * 64
+    manifest = E.export(tree, refs, set(), tmp_path / "ok", variants_per_page=2)
+    assert manifest["pages"] == 3 and not manifest["prompt_mismatch_excluded"]
+    tree.pages[2].reading["request_digest"] = "f" * 64
+    with pytest.raises(SystemExit, match=r"p002 \(reading_digest\)"):
+        E.export(tree, refs, set(), tmp_path / "out", variants_per_page=2)
+
+
+def test_each_example_is_bound_to_the_reference_it_was_planted_from(tmp_path, monkeypatch):
+    # R3: the mutation names the whole reference; the target must be built from it.
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    refs = _refs(tree)
+    out = tmp_path / "out"
+    E.export(tree, refs, set(), out, variants_per_page=4, blinded_share=0.0)
+    sidecars = [json.loads(line) for line in (out / "planted.jsonl").read_text().splitlines()]
+    for e, side in zip(_examples(out), sidecars, strict=True):
+        ref = refs[e["page"]]
+        assert e["reference_record_sha256"] == side["reference_record_sha256"] == ref.digest()
+        assert e["reference_sha256"] == side["reference_sha256"]
+    real = M.mutate
+
+    def planted_elsewhere(*args, **kwargs):
+        m = real(*args, **kwargs)
+        m.reference_record_sha256 = "0" * 64  # planted from another version of the reference
+        return m
+
+    monkeypatch.setattr(M, "mutate", planted_elsewhere)
+    with pytest.raises(SystemExit, match="reference changed between planting and the target"):
+        E.export(tree, refs, set(), tmp_path / "out2", variants_per_page=1)

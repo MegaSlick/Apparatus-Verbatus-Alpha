@@ -22,12 +22,26 @@ and writes one example per draw.
 
 **The prompt is the Perlector's.** Each example's user text is what `fed_arm.build_body`
 renders for the shown feed, which is `common.page_prompt.build_page_prompt`, the pipeline's
-own builder, so training prompts equal serving prompts byte for byte. Before any variant
-is drawn, every page's source feed must rebuild the run's recorded prompt digests
-(`fed_arm.prompt_check`); a page that does not stops the export, naming the page, unless
-`--allow-prompt-mismatch` leaves such pages out (listed in the manifest's
-`prompt_mismatch_excluded`). An honest, named example is also checked again and counted. The image is the run's page render (copied to `images/`), sent first as
-the pipeline sends it; `chat_template_kwargs` records thinking off.
+own builder, so training prompts equal serving prompts byte for byte. **The images are the
+request's**, in the pipeline's order (`common/page_path.py`): the page render, then the
+page overlay when the feed draws one (`fed_arm.request_images`; a feed the variant
+changed has its overlay drawn from the rows it shows, as the fed arm sends it). Each
+example lists every image (`images`, `image_sha256s`) with one `{"type": "image"}` block
+per image before the prompt, and its `request_digest` (text and image digests,
+`page_path.request_digest`). Before any variant is drawn, every page's source request
+must rebuild the run's (prompt text, render and overlay digests, the reading's
+`request_digest`; the builder's code digest is not compared, since a recipe alias moves it
+without changing a byte sent); a page that does not stops the export, naming the page and
+what differs, unless `--allow-prompt-mismatch` leaves such pages out (listed in the
+manifest's `prompt_mismatch_excluded`). An honest, named example's request digest must
+equal the run's recorded one, or the export stops. `chat_template_kwargs` records
+thinking off. A real run tree's stage seals are proven first, as the fed arm does.
+
+**The reference is bound.** Each mutation names the reference it was planted from
+(`reference_sha256`, the scored words; `reference_record_sha256`, the whole reference:
+entries, doubt marks, statuses, classes); the exporter builds the target only from that
+same reference, writes both digests into each example and its `planted.jsonl` line, and
+the scorer judges planted sites only against a reference with the same digests.
 
 **The answer is the reference in the Perlector's grammar** (`common.page_answer`): the
 entries in order with `n`, `kind`, `label`, `cites`, `text` and both continuation flags,
@@ -84,10 +98,10 @@ sidecar keeps the chair.
 
 | file | what |
 |---|---|
-| `train.jsonl` | one example per line: `id`, `page`, `images`, `messages` (user: image + prompt; assistant: the answer JSON), `loss_spans`, `scenario`, `family`, `witness_regime`, `planted_sites`, `set_aside_ids`, `prompt_sha256`, `prompt_matches_run`, `reference_status`, `tokens` |
+| `train.jsonl` | one example per line: `id`, `page`, `images`, `messages` (user: image + prompt; assistant: the answer JSON), `loss_spans`, `scenario`, `family`, `witness_regime`, `planted_sites`, `set_aside_ids`, `image_sha256s`, `prompt_sha256`, `request_digest`, `prompt_matches_run`, `request_matches_run`, `reference_status`, `reference_sha256`, `reference_record_sha256`, `tokens` |
 | `planted.jsonl` | the mutation sidecar per example (`witness-mutation.v1` without the feed): what was planted where, in which witness |
-| `images/<stem>.png` | the run's page renders |
-| `manifest.json` | counts by scenario and family, blinded examples, planted sites by class and k, held-out pages excluded, honest prompts checked against the run, the voting-must-lose check on the whole set and on the honest feeds alone, and the token-length summary |
+| `images/<stem>.png`, `images/<stem>.overlay-<sha16>.png` | the run's page renders, and each distinct page overlay sent (with `--no-copy-images` the render is referenced in the run, overlays are still written) |
+| `manifest.json` | counts by scenario and family, blinded examples, planted sites by class and k, held-out pages excluded, honest prompts and whole requests checked against the run, examples by image count, the voting-must-lose check on the whole set and on the honest feeds alone, and the token-length summary |
 
 Token lengths: no tokenizer is available offline, so the prompt is reported with the
 sealed upper bound the pipeline admits requests by (`common.request_capacity`, reported
