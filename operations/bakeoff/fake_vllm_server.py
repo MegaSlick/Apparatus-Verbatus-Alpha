@@ -2,7 +2,11 @@
 
 Run as `python fake_vllm_server.py serve <weights> ... --port N --served-model-name M`.
 It answers `/v1/models` and `/v1/chat/completions` in vLLM's OpenAI shape, choosing a
-synthetic answer by the prompt it is sent, and refuses a request without an image.
+synthetic answer by the prompt it is sent, and refuses a request without an image (except
+a Perlector page prompt that says no image is shown). `"stream": true` is answered as
+server-sent events, a few characters a chunk, with a final usage chunk and `[DONE]`. A
+Perlector prompt containing `LOOP-TEST` is answered with one line over and over, so a
+client's repetition-loop guard can be tested.
 """
 
 from __future__ import annotations
@@ -10,6 +14,21 @@ from __future__ import annotations
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+PERLECTOR_ANSWER = {
+    "acts": [
+        {
+            "n": 1,
+            "kind": "act",
+            "label": "synthetic",
+            "cites": ["A1"],
+            "text": "Le dix mai",
+            "continues_from_previous_page": False,
+            "continues_to_next_page": False,
+        }
+    ],
+    "set_aside": [],
+}
 
 
 def _flag(name: str) -> str:
@@ -27,6 +46,10 @@ def answer(body: dict) -> str:
         if part.get("type") == "text"
     ]
     joined = " ".join(texts)
+    if "witness regime:" in joined:  # the Perlector's page prompt (common/page_prompt.py)
+        if "LOOP-TEST" in joined:
+            return '{"acts": [{"n": 1, "kind": "act", "text": "' + "same row\\n" * 200
+        return json.dumps(PERLECTOR_ANSWER, ensure_ascii=False)
     if joined.startswith("OCR this image"):
         return '<div data-bbox="10 10 990 990" data-label="Text"><p>Le dix mai</p></div>'
     if "Please output the layout information" in joined:  # dots.mocr's layout prompt
@@ -56,6 +79,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _stream(self, content: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        chunks = [content[i : i + 7] for i in range(0, len(content), 7)]
+        events = [{"choices": [{"index": 0, "delta": {"content": c}}]} for c in chunks]
+        events.append({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        events.append(
+            {"choices": [], "usage": {"prompt_tokens": 100, "completion_tokens": len(chunks)}}
+        )
+        try:
+            for event in events:
+                payload = {"model": SERVED, "object": "chat.completion.chunk", **event}
+                self.wfile.write(b"data: " + json.dumps(payload).encode("utf-8") + b"\n\n")
+                self.wfile.flush()
+            self.wfile.write(b"data: [DONE]\n\n")
+        except (BrokenPipeError, ConnectionResetError):  # the client stopped reading
+            pass
+
     def do_GET(self) -> None:  # noqa: N802
         if self.path == "/v1/models":
             self._send(200, {"data": [{"id": SERVED}]})
@@ -69,10 +111,14 @@ class Handler(BaseHTTPRequestHandler):
             for message in body["messages"]
             for part in (message["content"] if isinstance(message["content"], list) else [])
         )
-        if body.get("model") != SERVED or not has_image:
+        text_only_ok = "page image: not shown." in json.dumps(body["messages"])
+        if body.get("model") != SERVED or not (has_image or text_only_ok):
             self._send(400, {"error": "wrong model or no image"})
             return
         content = answer(body)
+        if body.get("stream"):
+            self._stream(content)
+            return
         self._send(
             200,
             {
