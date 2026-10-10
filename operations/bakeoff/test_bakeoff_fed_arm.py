@@ -666,3 +666,10 @@ def test_a_bare_key_reply_is_parsed_as_the_pipeline_parses_it(tmp_path):
                 {"loop_stop": None, "finish_reason": "length"}):  # fmt: skip
         state, _, _, repairs = F.parse_reply({"content": content, **cut})
         assert state == "malformed" and repairs == []
+
+
+def test_a_cached_page_with_no_recorded_setup_is_refused_by_name(tmp_path):
+    cached = tmp_path / "p001.json"
+    cached.write_text(json.dumps({"setup_sha256": "0" * 64}), "utf-8")
+    with pytest.raises(SystemExit, match="another setup .*use a new --label"):
+        F.cached_state(cached, {"model_name": "m"}, "r" * 64, "s" * 64)

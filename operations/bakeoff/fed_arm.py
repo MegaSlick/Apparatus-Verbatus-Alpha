@@ -996,9 +996,10 @@ def cached_state(path: Path, setup: dict[str, Any], request_sha: str, settings_s
     except (OSError, ValueError):
         return "send"
     if old.get("setup_sha256") != _digest(setup):
+        recorded = old.get("setup")
+        differ = _setup_difference(recorded, setup) if isinstance(recorded, dict) else "setup"
         raise SystemExit(
-            f"{path} was cached under another setup "
-            f"({_setup_difference(old['setup'], setup)} differ); use a new --label"
+            f"{path} was cached under another setup ({differ} differ); use a new --label"
         )
     if (old.get("request") or {}).get("sha256") != request_sha:
         raise SystemExit(

@@ -18,7 +18,9 @@ output file; a foreground `sleep`, `tail -f` or `watch` blocks the session.
 ## 0. Decisions for the 2026-10-09 bake-off (sections 1–8) — do not ask again
 
 The lead set these in the session for 2026-10-09; they cover every paid create in
-sections 1–8 on that day. Any other day's session sets its own budget (section 9).
+sections 1–8 on that day. A session running sections 1–8 on another day sets that day's
+budget with the lead before its first paid create, and the "approved 2026-10-08, §0"
+notes below then stand for that budget. Section 9 sets its own.
 
 | Question | Answer |
 |---|---|

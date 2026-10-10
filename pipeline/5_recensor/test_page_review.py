@@ -1438,11 +1438,9 @@ def test_a_no_act_page_is_confirmed_over_a_flagged_rule():
     assert confirmed["confirmed"] is True and confirmed["failures"] == []
 
 
-def test_the_review_summary_counts_a_page_by_the_type_its_reading_names():
-    named = {
-        "payload": {
-            "answer": {"page_type": "index", "writing": "typed", "entries": [], "set_aside": []}
-        }
-    }
+def test_the_review_summary_counts_a_page_by_the_type_its_accounting_records():
+    named = {"payload": {"page_type": {"stated": "index", "writing": "typed"}}}
     assert page_review.page_type_of(named) == "index"
-    assert page_review.page_type_of({"payload": {"answer": None}}) == page_review.UNTYPED_PAGE
+    # An answer that named a type but failed validation: the accounting states none.
+    held = {"payload": {"page_type": {"stated": None, "writing": None}}}
+    assert page_review.page_type_of(held) == page_review.UNTYPED_PAGE
