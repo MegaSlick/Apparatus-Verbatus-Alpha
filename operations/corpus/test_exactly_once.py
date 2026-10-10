@@ -475,8 +475,8 @@ def test_a_catch_through_an_unplaced_region_only_is_reported_not_credited():
     assert _caught_by(held, box) == (["g"], ["f"], ["b", "e"])
 
 
-def test_only_a_finding_the_accounting_holds_catches_a_failure():
-    """A review flag and a finding of a rule the page type switched off hold nothing."""
+def test_only_findings_listed_in_the_accounting_holds_catch_a_failure():
+    """A review flag and a finding left out of `holds` catch nothing."""
     box = band(1)
     page_records = {
         "act_regions": [
@@ -490,7 +490,6 @@ def test_only_a_finding_the_accounting_holds_catches_a_failure():
             },
             "holds": [],
             "flags": ["witness-short-unit-not-read"],
-            "page_type": {"recorded_not_held": ["record-read-as-other"]},
         },
     }
 

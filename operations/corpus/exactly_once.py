@@ -1081,7 +1081,7 @@ def summary_lines(report: Mapping[str, Any]) -> list[str]:
         f"failures caught (located) by rule: {records['failures_caught_by_rule']}; "
         f"not credited: page-wide {records['failures_caught_page_wide_by_rule']}, "
         f"unplaced-only {records['failures_caught_unplaced_only_by_rule']}, "
-        f"flagged only {records['failures_flagged_by_rule']}",
+        f"flagged (may also be caught) {records['failures_flagged_by_rule']}",
         f"by merge class: {records['by_merge_class']}",
         f"scope: {report['scope']}",
         f"re-ask: {report['reask']['pages_reasked']} page(s), "
