@@ -213,11 +213,17 @@ class ServingReceipt:
 
 @dataclass(frozen=True, slots=True)
 class WitnessFloorStatus:
-    """The count that makes explicit absences visible against the witness floor."""
+    """The count that makes explicit absences visible against the witness floor.
+
+    `configured_roles` are the witnesses every page is read by. A routed chair
+    reads only the pages its rule sends it, so it is listed in `routed_roles`
+    and never counted: an act page must meet the floor without it.
+    """
 
     floor: int
     configured_roles: tuple[str, ...]
     absent_roles: tuple[str, ...]
+    routed_roles: tuple[str, ...] = ()
 
     @property
     def configured_count(self) -> int:
@@ -294,19 +300,26 @@ class ModelsConfig:
         return tuple(sorted(role for role in self.chairs if is_witness_role(role)))
 
     def witness_floor_status(self) -> WitnessFloorStatus:
-        """Count configured Attestator chairs; explicit absences create a deficit."""
+        """Count the configured Attestator chairs that read every page.
+
+        Explicit absences create a deficit; a routed chair is set apart, not counted.
+        """
 
         configured: list[str] = []
         absent: list[str] = []
+        routed: list[str] = []
         for role, value in self.chairs.items():
             if not is_witness_role(role):
                 continue
             if isinstance(value, AbsentChair):
                 absent.append(role)
+            elif role in self.witness_routing:
+                routed.append(role)
             else:
                 configured.append(role)
         return WitnessFloorStatus(
             floor=self.witness_floor,
             configured_roles=tuple(sorted(configured)),
             absent_roles=tuple(sorted(absent)),
+            routed_roles=tuple(sorted(routed)),
         )

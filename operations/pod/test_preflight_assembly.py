@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pytest
 
-from common.chairs.models import ChairIdentity
+from common.chairs.models import AbsentChair, ChairIdentity, ModelsConfig
 from operations.serving.config import FixtureProfile, ServingRecipes, UnsupportedProfile
 from operations.serving.preflight import _with_service_evidence
 
@@ -333,6 +333,29 @@ def fixture_page(tmp_path: Path) -> Path:
 
 def runner(fixture: Path, *, roles: tuple[str, ...], reader: Reader) -> PreflightRunner:
     return PreflightRunner(Models(*roles), table(), Verifier(), reader, fixture)
+
+
+def test_a_routed_chair_does_not_make_up_the_witness_floor(fixture_page: Path) -> None:
+    """Two witnesses read every page and dots.mocr only the routed ones: every act
+    page would be held under-witnessed, so the preflight is red before money is spent."""
+
+    models = ModelsConfig(
+        witness_floor=3,
+        chairs={
+            "attestator_1": identity("attestator_1"),
+            "attestator_2": identity("attestator_2"),
+            "attestator_3": AbsentChair(role="attestator_3", reason="not served"),
+            "attestator_4": identity("attestator_4"),
+        },
+        witness_routing={"attestator_4": "index-and-table.v1"},
+    )
+    report = PreflightRunner(models, table(), Verifier(), Reader(served=False), fixture_page).run(
+        synthetic_profile()
+    )
+
+    assert report.color == "red"
+    [issue] = [issue for issue in report.issues if issue.code == "witness-floor-unmet"]
+    assert "(2)" in issue.message and "attestator_4" in issue.message
 
 
 def test_unsupported_tier_is_placed_without_cache_or_smoke(fixture_page: Path) -> None:

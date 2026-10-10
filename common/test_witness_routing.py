@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from common.chairs.config import parse_models_config
+from common.chairs.config import load_models_toml, parse_models_config
 from common.chairs.errors import ConfigurationRefusal
+from common.chairs.models import ModelsConfig
 from common.witness_routing import (
     SIGNAL_BOTH,
     SIGNAL_NO_DETECTOR_RECORD,
@@ -15,6 +18,7 @@ from common.witness_routing import (
 )
 
 PIN = "0" * 64
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _chair(role: str, **extra) -> dict:
@@ -89,6 +93,42 @@ def test_a_routing_nothing_could_decide_or_that_empties_a_page_is_refused(routin
     raw["chairs"].update(chairs)
     with pytest.raises(ConfigurationRefusal, match=words):
         parse_models_config(raw)
+
+
+def test_a_routing_that_leaves_act_pages_below_the_floor_is_refused_when_it_loads():
+    """With `attestator_3` absent, only two witnesses read an act page: the routed
+    dots.mocr cannot make up the floor of 3 there, so every act page would be held."""
+    raw = _raw(witness_routing={"attestator_4": "index-and-table.v1"})
+    raw["chairs"]["attestator_3"] = {"state": "absent", "reason": "not served"}
+    with pytest.raises(ConfigurationRefusal, match="below the witness floor"):
+        parse_models_config(raw)
+    raw["witness_floor"] = 2
+    status = parse_models_config(raw).witness_floor_status()
+    assert status.configured_roles == ("attestator_1", "attestator_2")
+    assert status.routed_roles == ("attestator_4",)
+    assert status.meets_floor
+
+
+def test_the_floor_status_never_counts_a_routed_chair():
+    """Built without the load-time check, as a caller holding a `ModelsConfig` could."""
+    raw = _raw(witness_routing={"attestator_4": "index-and-table.v1"}, witness_floor=2)
+    raw["chairs"]["attestator_3"] = {"state": "absent", "reason": "not served"}
+    loaded = parse_models_config(raw)
+    config = ModelsConfig(
+        witness_floor=3,
+        chairs=loaded.chairs,
+        witness_routing=loaded.witness_routing,
+        model_root=loaded.model_root,
+    )
+    status = config.witness_floor_status()
+    assert status.configured_count == 2
+    assert (status.deficit, status.meets_floor) == (1, False)
+
+
+def test_every_committed_roster_still_loads_and_meets_its_floor():
+    for path in sorted((ROOT / "config").glob("models*.toml")):
+        status = load_models_toml(path).witness_floor_status()
+        assert status.meets_floor and status.routed_roles == (), path
 
 
 def test_either_signal_routes_a_page_and_a_page_with_neither_is_not_routed():
