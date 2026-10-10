@@ -9,9 +9,11 @@
 # The vendor sampling is not greedy (temperature 0.7, seed 0), so the bf16 repeat arm at the
 # end measures how much bf16 differs from itself; a difference smaller than that is noise.
 #
-# When the fed-witness arm (`qwen-fed`, the Perlector's own prompt with witnesses) lands, the
-# same arms run it by changing `--model qwen-vendor` to `--model qwen-fed`; `--recipe` and the
-# weights stay as written.
+# The fed-witness arm (`qwen-fed`, the Perlector's own prompt with witnesses) is its own
+# module, not a witness_run model: `operations.bakeoff.fed_arm run --run-tree <cold73 tree>
+# --label ... --model-name ... --weights <the same snapshot> --recipe <the same row>
+# --revision <the same pin>`. Its cache refuses a label reused under another checkpoint,
+# recipe, seed, token cap or run tree, and it refuses a quantized row on bf16 weights.
 schema = "bakeoff-queue.v1"
 name = "perlector-fp8-96gb"
 pages = "/workspace/private/bakeoff-pages"
