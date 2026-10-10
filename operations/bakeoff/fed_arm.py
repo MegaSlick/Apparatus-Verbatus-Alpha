@@ -47,7 +47,11 @@ instruction stay what the pipeline would build for that feed:
   written by `operations.bakeoff.mutations`): each page's feed is the record's
   counterfactual feed (planted errors, a dropped act, a shuffled roster...) and the
   record's sidecar of planted sites travels with the cached answer, so `fed_score` can
-  count copied planted errors. The other feed variants apply on top of it.
+  count copied planted errors. The other feed variants apply on top of it. A record
+  must name the reference it was planted from (`reference_sha256`, the scored words,
+  and `reference_record_sha256`, the whole reference); both enter the cache identity,
+  and with `--gold DIR` (and `--gold-glob`, `--row-kind`) they are checked against the
+  reference rebuilt from that gold as `mutations` builds it, before anything is sent.
 
 Each page is cached at `<out>/<label>/<page stem>.json` (schema `bakeoff-fed-page.v1`):
 the setup (`setup_of`: the run tree by content, served name, `--repo`/`--revision`/
@@ -398,15 +402,21 @@ MUTATION_FIXED = ("page_id", "page_ordinal", "page_size", "page_render", "surya"
 
 
 def load_mutation(
-    variant: Variant, stem: str, source: dict[str, Any] | None = None
+    variant: Variant,
+    stem: str,
+    source: dict[str, Any] | None = None,
+    references: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
     """The page's witness-mutation record under `variant.mutations`, or None.
 
     The record must be this page's and made from this feed: its page stem and
     ordinal, its page digest (the render's), and the feed fields a mutation keeps
     (`MUTATION_FIXED`, including the original `feed_digest`) are checked against
-    `source`, the run's sealed feed. Its file digest is kept as `_record_sha256`
-    (the mutation's identity in the cache).
+    `source`, the run's sealed feed. It must name its reference by both digests
+    (`mutations.REFERENCE_KEYS`); with `references` (per stem, the digests of the
+    reference the caller will score against, `mutations.reference_identities`) they
+    must be that reference's. Its file digest is kept as `_record_sha256` (the
+    mutation's identity in the cache).
     """
     if not variant.mutations:
         return None
@@ -435,6 +445,21 @@ def load_mutation(
             raise SystemExit(
                 f"{path} was not made from this run's feed for page {stem}: "
                 f"{', '.join(problems)} differ"
+            )
+    from operations.bakeoff import mutations as M
+
+    unbound = [k for k in M.REFERENCE_KEYS if not record.get(k)]
+    if unbound:
+        raise SystemExit(
+            f"{path} does not name the reference it was planted from ({', '.join(unbound)} "
+            "missing); rebuild it with operations.bakeoff.mutations"
+        )
+    if references is not None:
+        differ = M.reference_mismatch(record, references.get(stem))
+        if differ:
+            raise SystemExit(
+                f"{path} was planted from another reference than --gold gives for page "
+                f"{stem} ({', '.join(differ)}); rebuild the mutations from this reference"
             )
     return {**record, "_record_sha256": _sha(data)}
 
@@ -903,7 +928,10 @@ def _digest(value: Any) -> str:
 def mutation_identity(mutation: dict[str, Any] | None) -> dict[str, Any] | None:
     if mutation is None:
         return None
-    keys = ("_record_sha256", "scenario", "seed", "turn", "page_sha", "reference_sha256")
+    keys = (
+        "_record_sha256", "scenario", "seed", "turn", "page_sha", "reference_sha256",
+        "reference_record_sha256",
+    )  # fmt: skip
     return {k: mutation.get(k) for k in keys}
 
 
@@ -1079,6 +1107,20 @@ def assert_quantization(row: dict[str, Any], weights: Path) -> None:
         raise SystemExit(str(error)) from error
 
 
+def mutation_references(
+    args: argparse.Namespace, tree: RunTree
+) -> dict[str, dict[str, str]] | None:
+    """With `--gold`, the reference digests per page, built from that gold as
+    `operations.bakeoff.mutations` builds them (statuses from the run's own feeds);
+    without it None (the records' digests are still required and cached)."""
+    if not getattr(args, "gold", None):
+        return None
+    from operations.bakeoff import mutations as M
+
+    refs = M.references_from_gold_dir(args.gold, args.gold_glob, tree, args.row_kind)
+    return M.reference_identities(refs)
+
+
 def _prepare(
     args: argparse.Namespace, tree: RunTree, variant: Variant, setup: dict[str, Any]
 ) -> list[tuple]:
@@ -1086,8 +1128,9 @@ def _prepare(
     todo = []
     config_new = bool(config_differences(tree))
     folder = args.out / args.label
+    references = mutation_references(args, tree) if variant.mutations else None
     for page in _pick(tree, args.pages, args.limit):
-        mutation = load_mutation(variant, page.stem, page.feed)
+        mutation = load_mutation(variant, page.stem, page.feed, references)
         feed = apply_variant(page.feed, variant, _load_added(variant, page.stem), mutation)
         if not variant.feed_changed and not args.accept_new_builder:
             check = request_check(tree, page)
@@ -1253,6 +1296,13 @@ def _variant_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--image", choices=IMAGE_MODES, default="clear")
     p.add_argument("--blur-radius", type=float, default=8.0)
     p.add_argument("--mutations", type=Path, metavar="DIR", help="witness-mutation.v1 records")
+    p.add_argument(
+        "--gold",
+        type=Path,
+        help="with --mutations: the reference pages; each record must be planted from them",
+    )
+    p.add_argument("--gold-glob", default="**/*.txt")
+    p.add_argument("--row-kind", default="other", help="entry kind for index rows (as mutations)")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -1321,7 +1371,8 @@ def prompts(args: argparse.Namespace) -> int:
 
         variant = variant_from_args(args)
         page = tree.pages[args.show]
-        mutation = load_mutation(variant, page.stem, page.feed)
+        references = mutation_references(args, tree) if variant.mutations else None
+        mutation = load_mutation(variant, page.stem, page.feed, references)
         feed = apply_variant(page.feed, variant, _load_added(variant, page.stem), mutation)
         print(page_prompt.build_page_prompt(feed["prompt"]["serving_recipe"], feed))
         return 0

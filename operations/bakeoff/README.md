@@ -502,9 +502,14 @@ structural trap did), `set_aside_ids` (planted units the right answer sets aside
 (the other variants apply on top) and keeps the sidecar in the cached answer; the
 scorecard then adds a **Planted errors** block: per scenario, per k, per chair (k = 1)
 and per class, how many sites the reader resisted (its word right), copied (it wrote the
-planted word) or got wrong another way. Each record carries `reference_sha256`, and a
-site is judged only when that digest and its `ref_word` match the scored gold (else it is
-counted as misaligned); a structural trap that touches several witnesses (name-swap,
+planted word) or got wrong another way. Each record names its reference by two digests:
+`reference_sha256` (the scored words) and `reference_record_sha256` (the whole reference:
+entries, doubt marks, statuses, classes). `fed_arm` refuses a record without them, keeps
+both in the cache identity, and with `--gold` (`--gold-glob`, `--row-kind`) refuses a
+record planted from another reference before sending. The scorecard rebuilds the
+reference from its `--gold` as `mutations` does and judges a site only when both digests
+and its `ref_word` match (else it is counted as misaligned, with the reason:
+`reference-differs`, `words-differ`, `reference-unbound`, `site`); a structural trap that touches several witnesses (name-swap,
 normalised) records one site per reference word with `k` the witnesses carrying it. `mutations.json` beside the records reports the
 sites and the **voting must lose** check (`vote_check`): on name, date and number spans,
 how often a plurality vote of the shown witnesses is wrong (a tie that includes the right
