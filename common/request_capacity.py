@@ -562,8 +562,11 @@ def _rate_bound_tokens(characters: int) -> int:
 # the builder expires it. Re-sealed 2026-10-10 for the recipe aliases
 # (`page_prompt.RECIPE_ALIASES`): a table of recipe names only, no wording, so every
 # rendered prompt is byte-identical (cold73: 73/73) and the rate carries unchanged.
+# Re-sealed again for the page-type and entry-kind instruction (`[feed] page_types`):
+# 442 more prose tokens on the dense test page, charged at the same carried rate, which
+# was measured on this builder's English prose and is not re-measured here.
 PERLECTOR_PAGE_PROMPT_TEMPLATE_DIGEST: Final = (
-    "b74707dada363cd4cc2ffff240d6927bcfa3b66d0961b07b34b80ab156e0a1d0"
+    "4dd2e4a5ac81daa87eee01cd08b850a49cc21edd508000f3c7998439a1b16dfd"
 )
 # Chat-template cost: one turn plus each image, charged at the most a
 # page request sends -- the page render and its overlay (`[feed] page_overlay`).

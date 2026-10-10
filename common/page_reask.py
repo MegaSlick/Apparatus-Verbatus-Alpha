@@ -29,6 +29,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any, Final
 
+from common import page_answer
 from common.contracts.errors import ContractError
 from common.page_accounting import (
     ANSWER_BASIS_FIRST,
@@ -143,7 +144,7 @@ def render_reask(
     return {
         "prior_entries": [
             {"n": act["n"], "kind": act["kind"], "label": act.get("label"), "cites": act["cites"]}
-            for act in first_answer["acts"]
+            for act in page_answer.answer_entry_list(first_answer)
         ],
         "named": [dict(item) for item in named],
     }

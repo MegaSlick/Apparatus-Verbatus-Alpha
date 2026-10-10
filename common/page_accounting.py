@@ -46,11 +46,17 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Final, Protocol
 
+from common import page_types
 from common.contracts.errors import ContractError
 from common.contracts.outcomes import WITNESS_READING_OUTCOMES
 from common.contracts.uncertainty import UNCERTAINTY_TOKENS
 from common.imaging import Bounds
-from common.page_answer import grammar_problems
+from common.page_answer import (
+    answer_entry_list,
+    answer_grammar,
+    grammar_problems,
+    stated_page_type,
+)
 from common.page_edges import FIRST_READING, OPERATOR_REREAD_FIRST, REASK_READING
 from common.page_witness_units import DETECTION_LETTERS
 from common.perlector_audit import TRUNCATION_COMPLETE
@@ -111,6 +117,11 @@ READING_INCOMPLETE: Final = "reading-incomplete"
 # region to classify over): whether it is complete was not measured.
 TRUNCATION_NOT_CLASSIFIED: Final = "truncation-not-classified"
 SHARED_LINE: Final = "shared-line"
+# Row entries (index rows, table rows, ledger entries) placed by one witness unit
+# they all cite -- a whole table a witness gave as one unit: rule (h) records the
+# unit and its rows, and the area that unit lends them is not a duplicate claim
+# between them (`duplicate_regions`).
+ROWS_SHARE_UNIT: Final = "rows-share-unit"
 MERGED_DETECTION: Final = "merged-detection"
 RECORD_READ_AS_OTHER: Final = "record-read-as-other"
 RECORD_NOT_READ: Final = "record-not-read"
@@ -654,28 +665,72 @@ def duplicate_regions(
     region. That holds one region inside another, and the same ink named by
     other ids (a range of units against the lines under them). An act sharing
     one line with its neighbour at its edge stays under the share; rule (h)
-    records that line as `shared-line`.
+    records that line as `shared-line`. Two row entries are compared without
+    the box of a witness unit both are placed by (`_compared_regions`).
     """
-    placed = [
-        (entry["n"], entry["region_boxes_px"], region_area(entry["region_boxes_px"]))
-        for entry in entries
-        if entry["region_boxes_px"]
-    ]
+    placed = [entry for entry in entries if entry["region_boxes_px"]]
     findings = []
-    for index, (n, region, area) in enumerate(placed):
-        for other_n, other, other_area in placed[index + 1 :]:
+    for index, entry in enumerate(placed):
+        for other_entry in placed[index + 1 :]:
+            region, other = _compared_regions(entry, other_entry)
+            if not region or not other:
+                continue
             shared = _shared_area(region, other)
-            smaller = min(area, other_area)
+            smaller = min(region_area(region), region_area(other))
             if shared * BASIS_POINTS > policy.max_shared_share_bp * smaller:
                 findings.append(
                     {
                         "code": DUPLICATE_REGION,
-                        "ns": sorted((n, other_n)),
+                        "ns": sorted((entry["n"], other_entry["n"])),
                         "shared_px": shared,
                         "smaller_region_px": smaller,
                     }
                 )
     return sorted(findings, key=lambda finding: finding["ns"])
+
+
+def _row_shared_units(entry: Mapping[str, Any]) -> Mapping[str, Box]:
+    """The shared units placing a row entry; none for any other kind, or a reading of
+    the `acts` grammar, whose kinds are act classes."""
+    if entry.get("entry_kind") not in page_types.ROW_KINDS:
+        return {}
+    return entry.get("placing_shared") or {}
+
+
+def _compared_regions(
+    entry: Mapping[str, Any], other: Mapping[str, Any]
+) -> tuple[list[Box], list[Box]]:
+    """Two entries' regions as rule (h) compares them.
+
+    Two row entries placed by one witness unit both cite (a whole table a witness
+    gave as one unit) are compared without that unit's box: it is the table they
+    are rows of, not a claim of one row's ink. Each keeps every other box it
+    places, so two rows naming the same line are still a duplicate; a row that the
+    shared unit alone places has nothing left to compare, and is no duplicate of
+    another row (`rows-share-unit` records them). Every other pair is compared
+    whole, as before page types.
+    """
+    common = set(_row_shared_units(entry)) & set(_row_shared_units(other))
+    if not common:
+        return list(entry["region_boxes_px"]), list(other["region_boxes_px"])
+    dropped = [entry["placing_shared"][identifier] for identifier in sorted(common)]
+    return (
+        [box for box in entry["region_boxes_px"] if box not in dropped],
+        [box for box in other["region_boxes_px"] if box not in dropped],
+    )
+
+
+def rows_sharing_units(entries: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """`rows-share-unit` for each shared witness unit that places two or more row entries."""
+    rows: dict[str, list[int]] = {}
+    for entry in entries:
+        for identifier in _row_shared_units(entry):
+            rows.setdefault(identifier, []).append(entry["n"])
+    return [
+        {"code": ROWS_SHARE_UNIT, "id": identifier, "ns": sorted(ns)}
+        for identifier, ns in sorted(rows.items(), key=lambda item: id_key(item[0]))
+        if len(ns) > 1
+    ]
 
 
 def _range_ids(cite: str) -> list[str]:
@@ -788,6 +843,11 @@ def validate_answer(
     can name no unread ink is read (`_covered_detection_ranges`); without it,
     every detection range is `detection-range`.
 
+    Each entry's `kind` is its act class (`common.page_types.act_class`): `act`
+    for an act or instrument, `other` for every other kind, so every rule and
+    record after the answer reads one census of acts whichever grammar the answer
+    is in; `entry_kind` is the kind as the answer named it.
+
     `candidates` is `feed_candidates(feed, policy)`. The answer's grammar is
     `common.page_answer.grammar_problems`'s; an answer outside it has no entries
     and one `answer-grammar` problem per departure. Returns `entries` (one per
@@ -814,7 +874,7 @@ def validate_answer(
     problems: list[dict[str, Any]] = []
     entries: list[dict[str, Any]] = []
     expanded = []
-    for raw in answer["acts"]:
+    for raw in answer_entry_list(answer):
         cited_ids, cite_problems = expand_cites(raw["cites"], candidates)
         if policy is not None:
             cited_ids, cite_problems = _covered_detection_ranges(
@@ -824,11 +884,15 @@ def validate_answer(
         expanded.append((raw, cited_ids))
     shared = _shared_units([cited_ids for _raw, cited_ids in expanded], candidates)
     for raw, cited_ids in expanded:
-        boxes = region_boxes(_placing_ids(cited_ids, shared, candidates, policy), candidates)
+        placing = _placing_ids(cited_ids, shared, candidates, policy)
+        boxes = region_boxes(placing, candidates)
         entries.append(
             {
                 "n": raw["n"],
-                "kind": raw["kind"],
+                "kind": page_types.act_class(raw["kind"]),
+                "entry_kind": raw["kind"],
+                # The shared witness units that place this entry, each with its box.
+                "placing_shared": {i: candidates[i] for i in placing if i in shared},
                 "label": raw.get("label"),
                 "cites": list(raw["cites"]),
                 "cited_ids": cited_ids,
@@ -1729,6 +1793,11 @@ def page_accounting(
     entries = sorted(validated["entries"], key=lambda entry: entry["n"])
     set_aside = validated["set_aside"]
     problems = validated["problems"]
+    typed = _page_type_context(
+        reading["answer"] if answered and not problems else None,
+        feed,
+        None if records is None else len(records),
+    )
     combined = None
     if reask is not None:
         if not answered:
@@ -1823,6 +1892,7 @@ def page_accounting(
             entries,
             reask,
             attempt,
+            typed,
         )
 
     # (b) every cited id exists, and every entry cites a boxed id.
@@ -1891,6 +1961,7 @@ def page_accounting(
             for row in line_rows
             if len(row["inside"]) > 1
         ]
+        + rows_sharing_units(entries)
     )
     rules["i"] = _detection_rule(record_rows, detector, capped, entries, unboxed_records)
     rules["j"] = _reask_rule(combined, entries, units, policy, reask)
@@ -1906,6 +1977,7 @@ def page_accounting(
         entries,
         reask,
         attempt,
+        typed,
     )
 
 
@@ -2376,15 +2448,32 @@ def _record(
     entries: list[dict[str, Any]],
     reask: Mapping[str, Any] | None,
     attempt: int = FIRST_READING,
+    typed: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    typed = typed if typed is not None else _page_type_context(None, feed, None)
+    # A rule the page type switches off (`common.page_types.applicability`) is still
+    # measured; its findings are recorded, neither held nor flagged.
+    not_applied = {
+        rule for rule, verdict in typed["applicability"].items() if not verdict["applies"]
+    }
     found = {
         finding["code"]
-        for rule in rules.values()
+        for name, rule in rules.items()
+        if name not in not_applied
         for finding in rule["findings"]
         if finding["code"] in HOLD_CODES
     }
     holds = sorted(found - policy.flag_codes)
     flags = sorted(found & policy.flag_codes)
+    recorded = sorted(
+        {
+            finding["code"]
+            for name in sorted(not_applied)
+            for finding in rules[name]["findings"]
+            if finding["code"] in HOLD_CODES
+        }
+        - found
+    )
     return {
         "schema": SCHEMA,
         "page_id": feed["page_id"],
@@ -2400,6 +2489,7 @@ def _record(
                 "reading_attempt": entry.get("reading_attempt", attempt),
                 "reading_n": entry.get("reading_n", entry["n"]),
                 "kind": entry["kind"],
+                "entry_kind": entry.get("entry_kind", entry["kind"]),
                 "cited_ids": sorted(entry["cited_ids"], key=id_key),
                 "union_box_px": entry["union_box_px"],
             }
@@ -2413,7 +2503,32 @@ def _record(
         # Findings the sealed `[flags]` make review flags: recorded, reported by
         # the Recensor and the flagged export, holding nothing.
         "flags": flags,
+        "page_type": {
+            **typed,
+            "kinds": page_types.kind_agreement(
+                typed["stated"], [entry.get("entry_kind", entry["kind"]) for entry in entries]
+            ),
+            "recorded_not_held": recorded,
+        },
         "policy_sha256": policy.sha256,
+    }
+
+
+def _page_type_context(
+    answer: Mapping[str, Any] | None, feed: Mapping[str, Any], record_count: int | None
+) -> dict[str, Any]:
+    """The page type a valid answer states, the model-free facts beside it, and which
+    rules apply (`common.page_types`). An answer in the `acts` grammar, or none, states
+    no type, and every rule applies."""
+    page_type, writing = stated_page_type(answer)
+    facts = page_types.type_facts(feed, record_count)
+    return {
+        "grammar": None if answer is None else answer_grammar(answer),
+        "stated": page_type,
+        "writing": writing,
+        "facts": facts,
+        "agreement": page_types.type_agreement(page_type, writing, facts),
+        "applicability": page_types.applicability(page_type, writing),
     }
 
 

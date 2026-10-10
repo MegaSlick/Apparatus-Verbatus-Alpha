@@ -89,7 +89,8 @@ never authoritative. Each witness sits in a chair, with model and revision pinne
 model roster; the Testimonium carries the resolved identity that produced it.
 
 **Perlector** — *perlegere*, to read through to the end. Reads each sealed page whole,
-in one call, names the acts on it, and establishes their text from the ink, using the
+in one call, names the page's type and the entries on it, each of its kind (an act, an
+index row, a table row and so on), and establishes their text from the ink, using the
 testimonia as clues that sharpen its own reading, never as options to choose between.
 What the call is shown is the page's feed: the page image, each witness's page broken
 into its own units, and the detected lines and blocks, each with an id. The Perlector
@@ -103,7 +104,10 @@ page image cannot establish text from the ink, and every act it reads is held.
 
 Every page reading is then measured by the **page accounting**, a model-free check that
 every witness unit, detected line, detector record, witness's text and the page's ink
-is accounted for. Anything it cannot account for, or cannot measure, holds the page.
+is accounted for. Anything it cannot account for, or cannot measure, holds the page,
+except that a check built for one page type (the record detector's, for handwritten
+register acts) is recorded and does not hold on a page of another type. The stated
+page type is set beside detection facts that bear on it, as a recorded cross-check.
 
 **A page that cannot be read is not an empty page.** The cases are kept apart:
 

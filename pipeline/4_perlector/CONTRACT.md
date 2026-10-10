@@ -26,8 +26,8 @@ repository's `bounds` `{x, y, w, h}` in sealed-page pixels.
   census and its detections must agree exactly, or the pass refuses by name. A run
   with no Surya census shows none and says so on the feed.
 - The Ink Map's runs for each page.
-- Sealed configuration: `perlector-protocol` (the `[feed]` switches, the page render
-  size, the truncation floor), `decoding` (the Perlector's sampling row, page
+- Sealed configuration: `perlector-protocol` (the `[feed]` switches, among them
+  `page_types`, the page render size, the truncation floor), `decoding` (the Perlector's sampling row, page
   answer cap and repetition-loop guard), `page-accounting`, `alignment` (the dissent step budget), `recovery`
   (whether a page may be re-asked) and the serving catalogue. `perlector-audit` is
   sealed and recorded on every reading as not run.
@@ -51,6 +51,51 @@ the answer measure the output reserve is sized on, the rendered prompt (null whe
 nothing is asked) and `feed_digest`. It defines every id a reading may cite. Its
 inputs are every page witness's Testimonium (hidden ones included, since the
 accounting measures them), every Surya record, the render and the sealed page.
+
+## Page types and entry kinds
+
+With the `[feed]` switch `page_types = "named"` the reading names its page's type
+and each entry's kind (`common/page_types.py`; the answer's `entries` shape below):
+
+- page types: `register-acts`, `index`, `table`, `ledger`, `instrument`, `prose`,
+  `blank`, with `writing` one of `handwritten`, `typed`, `printed`, `mixed`;
+- entry kinds: `act`, `index-row`, `table-row`, `ledger-entry`, `instrument`,
+  `paragraph`, `other`.
+
+Each kind has an act class: `act` for an act or instrument, `other` for every other
+kind. Every record after the answer -- act-region, Perlectio, page accounting entries,
+the page-read denominator, the Recensor and the Coniector -- carries the class as its
+`kind`, so an index row is never counted, paired across a page break or reconstructed
+as an act; the kind the reading named travels beside it as `entry_kind`. A table
+without the switch is `off`: the reading is asked for the older `acts` shape, its kinds
+are already act classes, and nothing below changes for it. So the saved answers of a run
+sealed before page types replay as they were read (`operations/replay/`).
+
+What the page type changes, all recorded on the page accounting's `page_type`:
+
+- **Rule (i), the record detector**, applies only on a page whose type is not stated
+  and on `handwritten` or `mixed` `register-acts`. On every other stated page it is
+  still measured and recorded, but its findings are listed in
+  `page_type.recorded_not_held` instead of `holds` or `flags`.
+- **Rule (h), duplicate regions**: two entries of a row kind (`index-row`,
+  `table-row`, `ledger-entry`) placed by one witness unit they both cite -- a whole
+  table a witness gave as one unit -- are compared without that unit's box, and the
+  unit and its rows are recorded `rows-share-unit`. Two rows naming the same line are
+  still a duplicate.
+- **The truncation length signal** judges only `act` and `instrument` entries, the
+  kinds it was measured on; on any other kind of an `entries` answer it is not judged
+  and the measure records `length_exempt_kind`. The engine's stop word and the other
+  two signals still decide.
+- **A model-free cross-check** sets the stated type beside what the detectors found:
+  `page_type.facts` (`surya_table_blocks`, `witness_table_units` per chair,
+  `detector_records`) and `page_type.agreement`, one `{check, agrees, detail}` per check
+  (`table-evidence`; `detector-records` on handwritten register acts, index and table
+  pages), plus `page_type.kinds`, the entry kinds unexpected on the stated type. These
+  are facts only: none holds here, and whether a disagreement flags or holds a page is
+  the review configuration's decision.
+
+Whether a check that applies holds a page or only flags it is the sealed `[flags]`
+table of `config/page_accounting.toml`; the page type decides only which checks apply.
 
 **`reader-sent`** (subject `page_id`, live only), published before the call leaves:
 
@@ -77,7 +122,9 @@ differ from an unbatched one in low-order bits.
 ```
 
 - `parse_state`: `parsed` (`answer` is the object exactly as given); `malformed` (not
-  the answer grammar); `cut-off` (the engine stopped at the output cap; never
+  the answer grammar, `common/page_answer.py`: either the `entries` shape `{page_type,
+  writing, entries, set_aside}`, a re-ask's `{entries, set_aside}`, or the older `acts`
+  shape `{acts, set_aside}` whose kinds are `act` and `other` only); `cut-off` (the engine stopped at the output cap; never
   parsed); `repetition-loop` (the reply repeated the same line or block of lines
   over and over and the call was stopped; never parsed, `stop_reason`
   `repetition-loop`, `finish_reason` the engine's word if one had arrived, as a
@@ -95,8 +142,9 @@ differ from an unbatched one in low-order bits.
   both cited and set aside, a set-aside without a reason, a missing finish reason. No
   answer is trimmed or split.
 - A continuation flag set on an entry that is not at its page's edge (only the first
-  `act` entry may continue from the page before, only the last onto the page after,
-  and an `other` entry only as the answer's first or last entry) is not a problem of
+  entry of the act class, an `act` or `instrument`, may continue from the page before,
+  only the last onto the page after, and any other entry only as the answer's first or
+  last entry) is not a problem of
   the answer: the page keeps every entry, and the flag stays on its entry's Perlectio
   exactly as given. It is on no page break, so it joins nothing, and the Recensor
   holds that `act` entry `continuation-off-page-edge` or notes it on an `other` entry
@@ -145,11 +193,17 @@ measures the reading against every witness unit, every Surya line, every detecto
 record and the page's ink, rule by rule, and lists its `holds`; outcome `held` when
 there are any. A finding whose code the policy's `[flags] codes` names is a review
 flag: listed in `flags` instead, recorded and reported but holding nothing, and a rule
-whose every finding is one has status `flag`. Rule (e) names a cited witness unit of at
+whose every finding is one has status `flag`. A rule the page type switches off is
+still measured, and its findings are listed in `page_type.recorded_not_held`, neither
+held nor flagged. Rule (e) names a cited witness unit of at
 most `short_unit_characters` normalized characters read differently
 `witness-short-unit-not-read` (a signature or initials: a dissent about a few letters),
-and any other unit `witness-text-not-read`. Its inputs are the feed, the reading, every
-page witness's Testimonium and every detection and ink record it measured.
+and any other unit `witness-text-not-read`. Its `entries` carry `kind` (the act class)
+and `entry_kind`, and its `page_type` block `{grammar, stated, writing, facts,
+agreement, applicability, kinds, recorded_not_held}` says what the reading stated and
+which rules applied ("Page types and entry kinds" above). Its inputs are the feed, the
+reading, every page witness's Testimonium and every detection and ink record it
+measured.
 
 Then, per entry of a `read` answer, in answer order, two records. Each names the
 page's last accounting as `page_accounting_ref` and carries its holds as
@@ -183,8 +237,11 @@ act `no-autopsia`.
  page_accounting_ref, feed_ref, n, kind, label, text, uncertain_spans, gaps,
  uncertainty_assessment, dissent, truncation | null, autopsia,
  continues_from_previous_page, continues_to_next_page, holds, page_holds,
- engine_call, provenance, reading_attempt?, reading_n?}
+ engine_call, provenance, reading_attempt?, reading_n?, entry_kind?}
 ```
+
+- `kind` is the entry's act class; `entry_kind` is present exactly when the answer
+  named the kind (the `entries` shape), and its class is `kind`.
 
 - `text` is the entry's text with the reader's doubt marks split out: `[[?]]` is a
   zero-width gap, `[[reading|other]]` an uncertain span with its alternatives. The
@@ -355,6 +412,14 @@ receipt is the source's own. The client keeps no bytes the source did not keep.
 - A source re-ask the current plan does not make is not read.
 
 ## Consumer obligations
+
+- Count acts by `kind == "act"` only. Export an entry of a row kind
+  (`entry_kind` `index-row`, `table-row` or `ledger-entry`) as a row, never as an act:
+  `common.page_types.row_record` gives its `rows.jsonl` line (`armarium-row.v1`:
+  `act_key, act_id, page_id, page_ordinal, page_type, n, entry_kind, label, text,
+  uncertain_spans, gaps, holds`, and `review` when the caller passes one), the page
+  type read from the entry's page accounting (`page_type.stated`). A Perlectio with
+  no `entry_kind` is of an `acts` answer and has no row.
 
 - Recompute every attempt id from (subject, operation, ordinal), and require
   ordinals 1..N without a gap: a gap is an attempt that is no longer there.

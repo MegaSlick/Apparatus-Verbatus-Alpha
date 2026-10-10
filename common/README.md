@@ -84,6 +84,7 @@ when a second user needs it.
 | `page_render.py`, `page_overlay.py` | the page render the reading sees, and the labelled copy of it the overlay draws ids on |
 | `page_prompt.py` | the request text rendered from a feed, with the pinned instruction |
 | `page_answer.py` | the page answer grammar, read and never repaired |
+| `page_types.py` | page types and entry kinds: each kind's act class, which checks apply per type, the type cross-check facts and the `rows.jsonl` line |
 | `page_accounting.py` | the page accounting: the model-free check that a reading accounted for everything on its page |
 | `page_path.py` | everything the Perlector's page records derive, for the stage that writes them and every reader that checks them |
 | `page_reask.py` | the plan of a page's one re-ask: which ids it names and what it shows |

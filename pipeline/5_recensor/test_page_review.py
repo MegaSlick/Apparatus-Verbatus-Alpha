@@ -1334,3 +1334,15 @@ def test_a_no_act_page_is_confirmed_over_a_flagged_rule():
         flagged, [_testimonium("a")], blank=False, census=frozenset()
     )
     assert confirmed["confirmed"] is True and confirmed["failures"] == []
+
+
+def test_the_review_summary_counts_a_page_by_the_type_its_reading_names():
+    named = {
+        "payload": {
+            "answer": {"page_type": "index", "writing": "typed", "entries": [], "set_aside": []}
+        }
+    }
+    assert page_review.page_type_of(named) == "index"
+    old = {"payload": {"answer": {"acts": [], "set_aside": []}}}
+    assert page_review.page_type_of(old) == page_review.UNTYPED_PAGE
+    assert page_review.page_type_of({"payload": {"answer": None}}) == page_review.UNTYPED_PAGE

@@ -7,25 +7,40 @@ object exactly as the model gave it and `problems` is empty; on `malformed`
 `answer` is `None`, the whole page is held, and `problems` is every reason the
 reply is not the grammar, each `{"code", "detail"}`.
 
-The grammar:
+The grammar has two shapes, told apart by their top-level keys. The `entries`
+shape names the page's type and each entry's kind (`common.page_types`):
 
-    {"acts": [{"n", "kind", "label"?, "cites", "text",
-               "continues_from_previous_page", "continues_to_next_page"}, ...],
+    {"page_type", "writing",
+     "entries": [{"n", "kind", "label"?, "cites", "text",
+                  "continues_from_previous_page", "continues_to_next_page"}, ...],
      "set_aside": [{"id", "reason"}, ...]}
 
-* both top-level keys required, no others;
-* each act: `n` an integer, `1..k` contiguous in the order given; `kind`
-  `"act"` or `"other"`; `label` absent, `null`, or a non-blank string of at
-  most 80 characters; `cites` a list of strings; `text` a string; both
+and a re-ask, which reads ids inside a page already typed, answers it without
+`page_type` and `writing`. The older `acts` shape names neither:
+
+    {"acts": [{...the same entry...}, ...], "set_aside": [...]}
+
+* exactly the top-level keys of one shape, no others;
+* `page_type` one of `common.page_types.PAGE_TYPES`, `writing` one of `WRITINGS`;
+* each entry: `n` an integer, `1..k` contiguous in the order given; `kind` one
+  of `common.page_types.ENTRY_KINDS` in the `entries` shape, `"act"` or
+  `"other"` in the `acts` shape; `label` absent, `null`, or a non-blank string
+  of at most 80 characters; `cites` a list of strings; `text` a string; both
   continuation flags present as booleans;
 * each set-aside entry: `id` and `reason`, both strings.
 
+Both shapes are read wherever an answer is read, so a saved run's answers in
+the `acts` shape replay as they were read: their kinds are already act
+classes and their page type is not stated (`stated_page_type` is `None`).
+`answer_entry_list` gives either shape's entries.
+
 A continuation flag set on an entry that is not at its page's edge is grammar,
 not a malformed answer: it is a statement about one entry, so it never costs the
-page its other entries. Only the first `act` entry may continue from the page
-before and only the last onto the page after (`common.page_edges.edge_acts`), so
-a flag elsewhere is on no page break and joins nothing; the Recensor holds such
-an `act` entry `continuation-off-page-edge` and notes one on an `"other"` entry
+page its other entries. Only the first entry of the act class (an `act` or an
+`instrument`) may continue from the page before and only the last onto the page
+after (`common.page_edges.edge_acts`), so a flag elsewhere is on no page break
+and joins nothing; the Recensor holds such an act entry
+`continuation-off-page-edge` and notes one on any other entry
 (`pipeline/5_recensor/CONTRACT.md`). `stray_continuation_flags` names them.
 
 Whether an id exists, whether a range is well formed and the set-aside rules
@@ -69,19 +84,32 @@ never changed: the raw response blob stays as the engine sent it.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, Final
 
 from common.page_edges import edge_acts
+from common.page_types import ENTRY_KINDS, PAGE_TYPES, WRITINGS, is_act_class
 
 PARSED: Final = "parsed"
 MALFORMED: Final = "malformed"
 PARSE_STATES: Final = frozenset({PARSED, MALFORMED})
 
+# The act classes: the kinds of the `acts` shape, and the `kind` of every record after it.
 ACT_KINDS: Final = frozenset({"act", "other"})
 LABEL_MAX_CHARACTERS: Final = 80
 FENCED_ANSWER: Final = "fenced-answer"
 
+# The two shapes of an answer, by their top-level keys.
+ACTS_GRAMMAR: Final = "acts"
+ENTRIES_GRAMMAR: Final = "entries"
 _TOP_FIELDS: Final = frozenset({"acts", "set_aside"})
+_ENTRIES_TOP_FIELDS: Final = frozenset({"page_type", "writing", "entries", "set_aside"})
+_REASK_ENTRIES_TOP_FIELDS: Final = frozenset({"entries", "set_aside"})
+_SHAPES: Final = {
+    _TOP_FIELDS: ACTS_GRAMMAR,
+    _ENTRIES_TOP_FIELDS: ENTRIES_GRAMMAR,
+    _REASK_ENTRIES_TOP_FIELDS: ENTRIES_GRAMMAR,
+}
 _ACT_REQUIRED: Final = frozenset(
     {"n", "kind", "cites", "text", "continues_from_previous_page", "continues_to_next_page"}
 )
@@ -215,8 +243,9 @@ def _shown(value: Any) -> str:
     return "a list" if isinstance(value, list) else "an object"
 
 
-def _act_problems(index: int, act: Any) -> list[dict[str, str]]:
-    where = f"acts[{index}]"
+def _act_problems(index: int, act: Any, list_key: str = "acts") -> list[dict[str, str]]:
+    where = f"{list_key}[{index}]"
+    kinds = ACT_KINDS if list_key == "acts" else frozenset(ENTRY_KINDS)
     if not isinstance(act, dict):
         return [_problem("act-not-object", f"{where} is not an object")]
     problems = []
@@ -232,7 +261,7 @@ def _act_problems(index: int, act: Any) -> list[dict[str, str]]:
         problems.append(
             _problem("n-not-contiguous", f"{where}.n is {act['n']}, expected {index + 1}")
         )
-    if "kind" in act and not (isinstance(act["kind"], str) and act["kind"] in ACT_KINDS):
+    if "kind" in act and not (isinstance(act["kind"], str) and act["kind"] in kinds):
         problems.append(_problem("kind-unknown", f"{where}.kind is {_shown(act['kind'])}"))
     label = act.get("label")
     if label is not None and (
@@ -261,9 +290,9 @@ def _act_problems(index: int, act: Any) -> list[dict[str, str]]:
 def stray_continuation_flags(acts: list[Any]) -> dict[int, list[str]]:
     """`{index: [flag, ...]}` for each entry whose continuation flag is set off its page's edge.
 
-    `continues_from_previous_page` belongs on the first `act` entry and
-    `continues_to_next_page` on the last (`common.page_edges.edge_acts`); an
-    `"other"` entry may carry one as the answer's first or last entry. Anything
+    `continues_from_previous_page` belongs on the first entry of the act class
+    and `continues_to_next_page` on the last (`common.page_edges.edge_acts`); any
+    other entry may carry one as the answer's first or last entry. Anything
     else is on no page break. It is named, never an answer problem.
     """
     entries = [act for act in acts if isinstance(act, dict)]
@@ -272,7 +301,7 @@ def stray_continuation_flags(acts: list[Any]) -> dict[int, list[str]]:
     for index, act in enumerate(acts):
         if not isinstance(act, dict):
             continue
-        is_act = act.get("kind") == "act"
+        is_act = is_act_class(act.get("kind"))
         for flag, edge, position in (
             ("continues_from_previous_page", first, 0),
             ("continues_to_next_page", last, len(acts) - 1),
@@ -295,26 +324,59 @@ def grammar_problems(answer: Any) -> list[dict[str, str]]:
     """Every way a decoded value departs from the page answer grammar."""
     if not isinstance(answer, dict):
         return [_problem("not-object", "the answer is not a JSON object")]
-    if set(answer) != _TOP_FIELDS:
+    shape = _SHAPES.get(frozenset(answer))
+    if shape is None:
         return [
             _problem(
                 "top-fields",
-                f"the answer's keys are {sorted(answer)}, not exactly {sorted(_TOP_FIELDS)}",
+                f"the answer's keys are {sorted(answer)}, not exactly {sorted(_TOP_FIELDS)} "
+                f"or {sorted(_ENTRIES_TOP_FIELDS)} (a re-ask: without page_type and writing)",
             )
         ]
-    acts, set_aside = answer["acts"], answer["set_aside"]
+    list_key = "acts" if shape == ACTS_GRAMMAR else "entries"
+    acts, set_aside = answer[list_key], answer["set_aside"]
     problems = []
+    if "page_type" in answer and not (
+        isinstance(answer["page_type"], str) and answer["page_type"] in PAGE_TYPES
+    ):
+        problems.append(
+            _problem("page-type-unknown", f"page_type is {_shown(answer['page_type'])}")
+        )
+    if "writing" in answer and not (
+        isinstance(answer["writing"], str) and answer["writing"] in WRITINGS
+    ):
+        problems.append(_problem("writing-unknown", f"writing is {_shown(answer['writing'])}"))
     if not isinstance(acts, list):
-        problems.append(_problem("acts-not-list", "acts is not a list"))
+        problems.append(_problem("acts-not-list", f"{list_key} is not a list"))
     else:
         for index, act in enumerate(acts):
-            problems.extend(_act_problems(index, act))
+            problems.extend(_act_problems(index, act, list_key))
     if not isinstance(set_aside, list):
         problems.append(_problem("set-aside-not-list", "set_aside is not a list"))
     else:
         for index, entry in enumerate(set_aside):
             problems.extend(_set_aside_problems(index, entry))
     return problems
+
+
+def answer_grammar(answer: Mapping[str, Any]) -> str:
+    """The shape of a parsed answer: `"entries"` or `"acts"`."""
+    shape = _SHAPES.get(frozenset(answer))
+    if shape is None:
+        raise ValueError("not a parsed page answer")
+    return shape
+
+
+def answer_entry_list(answer: Mapping[str, Any]) -> list[Any]:
+    """A parsed answer's entries, in either shape, in the order given."""
+    return answer["entries"] if answer_grammar(answer) == ENTRIES_GRAMMAR else answer["acts"]
+
+
+def stated_page_type(answer: Mapping[str, Any] | None) -> tuple[str | None, str | None]:
+    """`(page_type, writing)` as a parsed answer states them, `(None, None)` where it does not."""
+    if answer is None:
+        return None, None
+    return answer.get("page_type"), answer.get("writing")
 
 
 def decode_json_reply(raw: Any) -> tuple[Any, list[dict[str, str]]]:
@@ -353,7 +415,7 @@ def _graded(
 # --- the one repair: bare grammar keys ------------------------------------------
 
 UNQUOTED_KEYS_QUOTED: Final = "unquoted-keys-quoted"
-_GRAMMAR_KEYS: Final = _TOP_FIELDS | _ACT_FIELDS | _SET_ASIDE_FIELDS
+_GRAMMAR_KEYS: Final = _TOP_FIELDS | _ENTRIES_TOP_FIELDS | _ACT_FIELDS | _SET_ASIDE_FIELDS
 _KEY_CHARACTERS: Final = frozenset("abcdefghijklmnopqrstuvwxyz_")
 
 
