@@ -22,9 +22,11 @@ and writes one example per draw.
 
 **The prompt is the Perlector's.** Each example's user text is what `fed_arm.build_body`
 renders for the shown feed, which is `common.page_prompt.build_page_prompt`, the pipeline's
-own builder, so training prompts equal serving prompts byte for byte. An honest, named
-example is also checked against the run's recorded prompt digests and the manifest counts
-how many matched. The image is the run's page render (copied to `images/`), sent first as
+own builder, so training prompts equal serving prompts byte for byte. Before any variant
+is drawn, every page's source feed must rebuild the run's recorded prompt digests
+(`fed_arm.prompt_check`); a page that does not stops the export, naming the page, unless
+`--allow-prompt-mismatch` leaves such pages out (listed in the manifest's
+`prompt_mismatch_excluded`). An honest, named example is also checked again and counted. The image is the run's page render (copied to `images/`), sent first as
 the pipeline sends it; `chat_template_kwargs` records thinking off.
 
 **The answer is the reference in the Perlector's grammar** (`common.page_answer`): the
@@ -33,12 +35,22 @@ and `set_aside` for the planted units (an invented act, an injection: reason "no
 page") and for shown units whose text matches no entry. Cites are rebuilt from the shown
 feed (witness units by word overlap with the entry, Surya lines and blocks by the rows of
 the cited boxes) unless the reference brings its own; rebuilt cites are a draft and weigh
-`CITES_WEIGHT` (0.3). Index rows become entries of kind `--row-kind` (default `other`)
+`CITES_WEIGHT` (0.3). A reference's own cites (on every entry or on none) are written
+against the run's feed: they are remapped to the ids the mutated feed shows (a mutation
+records `id_map`, source unit id to shown id), a cite to a unit no longer shown is
+dropped, every remaining cite must be a shown id, and every shown id not cited is set
+aside. An example that fails this is not written; the manifest's `refused` lists it. Index rows become entries of kind `--row-kind` (default `other`)
 until the entry kinds are settled (training plan, decision 4).
 
 **Loss weights** are a separate field, `loss_spans`: `[start, end, weight]` character
 spans that tile the assistant text. Each word carries its reference status's weight:
 checked 1.0, agreed 0.7, draft 0.3, unresolved 0; the JSON scaffold 1.0; cites as above.
+The entry text keeps the Perlector's doubt marks as the reference writes them (`[[?]]` for
+unread ink, `[[reading|other]]` for an uncertain one; struck text dropped, inserted text
+kept), so the model learns to say where the ink is unsure: the readings inside a mark are
+`unresolved` (0) and the mark syntax weighs as a draft word (1.0 on a lead-checked
+reference). Doubt is tracked by position, so a certain word spelled like a doubtful one
+elsewhere stays certain.
 A trainer that masks by token maps these spans onto its tokens; the data never changes
 when the trainer does.
 
@@ -61,7 +73,8 @@ stem.
 
 **Held out.** `--held-out` is a text file of page stems (or file names; `#` comments),
 required. A listed page is never exported, and neither is the other half of its original
-(`X_1L` and `X_2R` belong together).
+(`X_1L` and `X_2R` belong together). Invented acts and injections borrow text only from
+pages that may be exported, never from a held-out page or the page's own other half.
 
 **Blinded regime.** `--blinded-share` of the examples (default half, A7a2's regime) show
 pseudonym witness labels with the chair hidden, so trust cannot attach to a name; the

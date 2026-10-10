@@ -80,14 +80,16 @@ def test_export_honours_the_held_out_list_and_reuses_the_perlector_prompt(tmp_pa
     assert manifest["vote_check"]["all"]["spans"] >= manifest["vote_check"]["honest"]["spans"]
 
 
-def sidecar_feed(out, example, sidecar):
+def sidecar_feed(out, example, sidecar, held=frozenset({"p002"})):
     """Rebuild the shown feed from the honest run feed and the sidecar is not possible for
     every scenario; the exporter does not store feeds, so the test regenerates it."""
     tree = F.load_run_tree(out.parent / "run")
     page = tree.by_stem()[example["page"]]
     refs = _refs(tree)
     m = M.mutate(page.feed, refs[page.stem], sidecar["scenario"], seed=sidecar["seed"],
-                 turn=sidecar["turn"], stem=page.stem, donors=M.donor_acts(refs, page.stem))  # fmt: skip
+                 turn=sidecar["turn"], stem=page.stem,
+                 donors=M.donor_acts({k: v for k, v in refs.items() if not E.is_held_out(k, held)},
+                                     page.stem))  # fmt: skip
     if any(c["kind"] == "blinded" for c in sidecar["changes"]):
         M.blind_labels(m, sidecar["seed"])
     return m.feed
@@ -216,3 +218,131 @@ def test_cli_end_to_end_with_mix_and_blinding(tmp_path):
     with pytest.raises(SystemExit):
         E.parse_mix("honest=1,no-such=2")
     assert E.parse_mix(None) == M.DEFAULT_MIX and sum(M.DEFAULT_MIX.values()) == 100
+
+
+SECRET = "Le vingt mai mil huit cent Secret Heldout fils de Pierre Heldout"
+
+
+def test_donor_acts_never_come_from_held_out_pages_or_sibling_halves(tmp_path):
+    # C7 P1: invented acts and injections borrowed text from every reference, held-out
+    # pages included. p001's only possible donors here are held out (p002_1L) or its own
+    # sibling half (p001_2R is not a donor for p001_1L).
+    pages = ((TEXT, TEXT), (SECRET, SECRET), (SECRET, SECRET))
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=pages))
+    stems = {1: "p001_1L", 2: "p002_1L", 3: "p001_2R"}
+    for ordinal, stem in stems.items():
+        tree.pages[ordinal].stem = stem
+    texts = {"p001_1L": TEXT, "p002_1L": SECRET, "p001_2R": SECRET.replace("Secret", "Sibling")}
+    refs = {}
+    for stem, text in texts.items():
+        refs[stem] = M.reference_from_gold(
+            parse_gold(GOLD.format(stem=stem, status="fool's gold", text=text), stem)
+        )
+    assert M.donor_acts(refs, "p001_1L") == [" ".join(SECRET.split())]  # only p002_1L's act
+    out = tmp_path / "out"
+    E.export(tree, refs, {"p002_1L"}, out, seed=0, variants_per_page=8, blinded_share=0.0,
+             mix={"invented-act": 1, "injection": 1}, pages=[tree.pages[1]])  # fmt: skip
+    examples = _examples(out)
+    assert examples and {e["scenario"] for e in examples} <= {"invented-act", "injection"}
+    for example in examples:
+        prompt = example["messages"][0]["content"][1]["text"]
+        assert "Heldout" not in prompt and "Sibling" not in prompt
+
+
+def test_targets_keep_unread_ink_and_uncertain_readings(tmp_path):
+    # C7 P1: the assistant target was the scoring text, so `[[?]]` vanished and
+    # `[[juin|juillet]]` became a plain `juin`. The target now keeps the doubt grammar;
+    # the readings inside carry the unresolved weight (0) and the mark syntax a draft's.
+    pages = ((TEXT, TEXT), ("Le onze juin", "Le onze juin"), ("Le douze mai", "Le douze mai"))
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=pages))
+    texts = {**TEXTS, "p002": "Le onze [[?]] [[juin|juillet]]", "p003": "[[?]]"}
+    refs = _refs(tree, texts)
+    answer = E.build_answer(refs["p002"], tree.pages[2].feed, [])
+    assert answer["acts"][0]["text"] == "Le onze [[?]] [[juin|juillet]]"
+    j = json.dumps(answer, ensure_ascii=False)
+    state, parsed, problems = parse_page_answer(j)
+    assert state == "parsed", problems
+    # The reading scores exactly as the reference's scored words.
+    from operations.bakeoff import score as S
+
+    assert (
+        S.tokens(S.normalise_output("perlector", F.reading_text(parsed))) == refs["p002"].tokens()
+    )
+    weights = {j[s:e]: w for s, e, w in E.loss_spans(j, answer, refs["p002"], E.CITES_WEIGHT)}
+    assert weights["juin"] == 0.0 and weights["onze"] == 0.7
+    assert weights["[[?]]"] == weights["[["] == weights["|juillet]]"] == E.WEIGHTS["draft"]
+    # A gap-only act is still an act in the target.
+    gap = E.build_answer(refs["p003"], tree.pages[3].feed, [])
+    assert [e["text"] for e in gap["acts"]] == ["[[?]]"]
+    # A lead-checked reference weighs the mark syntax fully.
+    refs["p002"].status_label = "lead-checked"
+    weights = {j[s:e]: w for s, e, w in E.loss_spans(j, answer, refs["p002"], 1.0)}
+    assert weights["[[?]]"] == 1.0
+
+
+def _own_cites_ref(cites):
+    ref = M.Reference("p001", "silver")
+    ref.entries.append({"kind": "act", "label": None, "text": TEXT, "cites": cites,
+                        "continues_from_previous_page": False, "continues_to_next_page": False})  # fmt: skip
+    for token in M.reference_words(TEXT):
+        ref.words.append(M.RefWord(token[0], "checked", "word", 0))
+    return ref
+
+
+def test_reference_cites_are_remapped_to_the_shown_feed_and_validated(tmp_path):
+    # C7 P2: a reference's own cites were copied unchanged, so after a permutation the
+    # target cited `A1` although no A1 was shown (at weight 1.0).
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    feed = tree.pages[1].feed  # A1 A2 | B empty | C1, Surya L1 S1
+    ref = _own_cites_ref(["A1", "C1", "L1"])
+    for scenario, seed in (("permute", 0), ("permute", 3), ("drop-one", 0), ("merged-entries", 0),
+                           ("invented-act", 0), ("blind", 0), ("honest", 0)):  # fmt: skip
+        m = M.mutate(feed, ref, scenario, seed=seed, donors=["Le deux juin mil huit cent un"])
+        shown = E.shown_ids(m.feed)
+        answer = E.build_answer(ref, m.feed, m.set_aside_ids, id_map=m.id_map)
+        cites = answer["acts"][0]["cites"]
+        aside = {s["id"] for s in answer["set_aside"]}
+        assert set(cites) <= shown, (scenario, cites, shown)
+        assert set(cites) | aside == shown and not set(cites) & aside, scenario
+        expected = {m.id_map[u] for u in ("A1", "C1") if m.id_map[u]} | {"L1"}
+        assert set(cites) == expected, scenario
+    # A permutation may change only the order (letters kept); the page sha that seeds it
+    # differs across machines, so look for a seed whose permutation renames letters.
+    for seed in range(20):
+        permuted = M.mutate(feed, ref, "permute", seed=seed)
+        if permuted.id_map["A1"] != "A1" or permuted.id_map["C1"] != "C1":
+            break
+    else:
+        raise AssertionError("no seed in 0..19 renamed a witness letter")
+    dropped = M.mutate(feed, ref, "drop-one", turn=0)
+    assert dropped.id_map["A1"] is None and dropped.id_map["C1"] == "B1"
+    merged = M.mutate(feed, ref, "merged-entries", seed=0)
+    assert merged.id_map["A1"] == merged.id_map["A2"] == "A1"
+    # An id that is neither a source unit nor shown, or cites on some entries only: refused.
+    with pytest.raises(E.ExampleRefused):
+        E.build_answer(
+            _own_cites_ref(["Z9"]), feed, [], id_map=M.mutate(feed, ref, "honest").id_map
+        )
+    mixed = _own_cites_ref(["A1"])
+    mixed.entries.append({**mixed.entries[0], "cites": None})
+    with pytest.raises(E.ExampleRefused):
+        E.build_answer(mixed, feed, [])
+    # The exporter refuses such an example and counts it instead of writing it.
+    manifest = E.export(tree, {"p001": _own_cites_ref(["Z9"])}, set(), tmp_path / "out",
+                        variants_per_page=3, blinded_share=0.0, pages=[tree.pages[1]])  # fmt: skip
+    assert manifest["examples"] == 0 and len(manifest["refused"]) == 3
+
+
+def test_a_page_whose_prompt_no_longer_rebuilds_stops_the_export(tmp_path):
+    # C7: an honest prompt mismatch was recorded and the export went on; blinded and
+    # mutated examples were never checked. The source feed is now checked first.
+    tree = F.load_run_tree(make_run_tree(tmp_path / "run", pages=PAGES))
+    refs = _refs(tree)
+    tree.pages[3].feed["prompt"]["rendered_sha256"] = "0" * 64  # the run sent another prompt
+    with pytest.raises(SystemExit, match="p003"):
+        E.export(tree, refs, set(), tmp_path / "out", variants_per_page=2)
+    manifest = E.export(tree, refs, set(), tmp_path / "out2", variants_per_page=2,
+                        allow_prompt_mismatch=True)  # fmt: skip
+    assert manifest["prompt_mismatch_excluded"] == ["p003"] and manifest["pages"] == 2
+    assert {e["page"] for e in _examples(tmp_path / "out2")} == {"p001", "p002"}
+    assert all(e["source_prompt_matches_run"] for e in _examples(tmp_path / "out2"))

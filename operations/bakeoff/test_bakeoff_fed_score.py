@@ -2,6 +2,7 @@
 
 import json
 import sys
+from collections import Counter
 
 from operations.bakeoff import fed_arm as F
 from operations.bakeoff import fed_score as C
@@ -57,11 +58,14 @@ def test_follow_resist_copy_and_vote_on_one_page(tmp_path):
     assert (c["tokens"], c["reader-right"]) == (5, 4)
     assert (c["only-right:chandra"], c["only-right:chandra,followed"]) == (1, 1)  # "mai"
     assert (c["only-right:churro"], c["only-right:churro,followed"]) == (1, 0)  # "huit"
-    assert (c["only-wrong:dai"], c["only-wrong:dai,resisted"]) == (3, 3)
+    # DAI read nothing: absent, never "the only one wrong" (C7: that measured absence).
+    assert (c["only-wrong:dai"], c["absent:dai"]) == (0, 5)
     assert (c["wrong-form:churro"], c["wrong-form:churro,copied"]) == (1, 0)  # "mars"
     assert c["wrong-form:chandra"] == 1 and c["wrong-form:dai"] == 0  # an empty DAI has no form
-    # Only Chandra and Churro read the page: "mai" beats a one-to-one split.
-    assert (c["vote-beaten"], c["vote-lost"]) == (1, 0)
+    # Only Chandra and Churro read the page: "mai" and "huit" are one-to-one ties that
+    # include the right word, reported apart (the reader has "mai", not "huit").
+    assert (c["vote-beaten"], c["vote-lost"]) == (0, 0)
+    assert (c["vote-tie"], c["vote-tie,reader-right"], c["vote-right"]) == (2, 1, 3)
     assert (c["reader-wrong"], c["reader-wrong,a-witness-error"]) == (1, 0)
     assert s["gold_acts"] == s["acts_matched"] == s["act_entries"] == 1
     assert 0 < s["cer_median_parsed"] < 0.5 and s["inserted"] == 0
@@ -115,3 +119,70 @@ def test_a_fed_cache_scored_and_compared_end_to_end(tmp_path):
     common[3] = str(gold)
     assert C.main([*common, "--out", str(out)]) == 0
     assert FOOLS_GOLD_LABEL not in (out / "scorecard.md").read_text()
+
+
+def test_copy_attribution_is_one_to_one():
+    # C7: `Jean Paul` read as `Jeanne` gave `Jeanne` for both gold words, so one
+    # emitted word could count as two copied errors.
+    right, form, inserted = C.aligned(("Jean", "Paul"), ("Jeanne",))
+    assert right == [False, False] and form == ["Jeanne", None] and inserted == 0
+    right, form, _ = C.aligned(("le", "Jean", "Paul", "fils"), ("le", "Paule", "Jeanne", "fils"))
+    assert form[1:3] in (["Paule", "Jeanne"], ["Jeanne", None], [None, "Jeanne"])
+    assert len([f for f in form if f is not None]) == len(set(f for f in form if f is not None))
+
+
+def test_absent_witnesses_are_not_the_only_one_wrong():
+    # C7: with DAI empty, every word Chandra and Churro agreed on was "only DAI wrong,
+    # resisted". An absent witness is counted apart; a witness that read the page but
+    # wrote nothing in the place is "only-omitted", not "only-wrong".
+    def w(right, form, read=True):
+        return {"right": right, "form": form, "read": read}
+
+    row = {"reader_right": [True, True], "reader_form": [None, None], "ref_words": ("a", "b"),
+           "witnesses": {"chandra": w([True, True], [None, None]),
+                         "dai": w([False, False], [None, None], read=False),
+                         "churro": w([True, False], [None, None])}}  # fmt: skip
+    c = C.page_counts(row)
+    assert c["only-wrong:dai"] == 0 and c["absent:dai"] == 2
+    assert c["all-right"] == 1 and (c["only-omitted:churro"], c["only-wrong:churro"]) == (1, 0)
+    row["witnesses"]["churro"]["form"] = [None, "x"]
+    assert C.page_counts(row)["only-wrong:churro,resisted"] == 1
+
+
+def test_failures_count_and_intervals_resample_pages(tmp_path):
+    # C7: missing answers were left out of even the "all" metrics, and rates were read
+    # as if every word were independent.
+    tree = F.load_run_tree(
+        make_run_tree(tmp_path / "run", pages=(("Le dix mai", "Le dix mai"),) * 3)
+    )
+    answers = C.answers_from_run_tree(tree)
+    gold = {s: parse_gold(GOLD.format(stem=s, status="x", text="Le dix mai"), s)
+            for s in ("p001", "p002", "p003")}  # fmt: skip
+    del answers["p003"]
+    card = C.scorecard(answers, gold, set(), expected={"p001", "p002", "p003"})
+    s = card["all"]
+    assert (s["pages"], s["parsed"], s["failed"], s["errors"]) == (3, 2, 1, 1)
+    assert max(s["cer_all_pages"]) == 1.0 and card["missing"] == ["p003"]
+    assert C.scorecard(answers, gold, set())["all"]["pages"] == 2  # nothing expected
+    pages = [Counter({"n": 1, "d": 2}), Counter({"n": 2, "d": 2}), Counter({"n": 0, "d": 2})] * 10
+    lo, hi = C.boot_ratio(pages, "n", "d")
+    assert lo < 0.5 < hi and C.boot_ratio(pages, "n", "d") == (lo, hi)  # seeded
+    diff, interval = C.boot_paired(pages, pages, "n", "d")
+    assert diff == 0 and interval == (0.0, 0.0)
+    lines = C.paired_report(card, card, ("A", "B"))
+    assert any("both parsed 2" in line for line in lines)
+
+
+def test_lead_checked_only_for_an_explicit_checked_status():
+    # C7: any status without "fool" (silver, draft, unknown) was labelled lead-checked,
+    # and a comparison inherited the first set's label.
+    def page(status):
+        return parse_gold(GOLD.format(stem="p", status=status, text="Le dix"), "p")
+
+    assert C.reference_label([page("gold (Tyrel 2026-10-07)"), page("lead-checked")]) == (
+        " (lead-checked gold)"
+    )
+    for statuses in (["silver"], ["draft"], [""], ["gold (Tyrel)", "silver"]):
+        assert C.reference_label([page(s) for s in statuses]) != " (lead-checked gold)"
+    assert C.reference_label([page("gold (Tyrel)"), page("fool's gold")]) == f" {FOOLS_GOLD_LABEL}"
+    assert not C.is_checked_status("fool's gold") and C.is_checked_status("Gold")
