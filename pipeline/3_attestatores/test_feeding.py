@@ -1206,7 +1206,7 @@ def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending(
     with pytest.raises(SchemaRefusal, match="does not run for adapter"):
         retain_model_view(
             _Context(tree=tree),
-            adapter="dai-atr.v1",
+            adapter="dai-atr.v2",
             view={},
             raw_response=b"native DAI text",
             transport_stop_reason="eos",
@@ -1215,7 +1215,7 @@ def test_model_view_refuses_a_parser_it_cannot_run_instead_of_recording_pending(
     assert tree.blobs == {}
     unparsed = retain_model_view(
         _Context(tree=tree),
-        adapter="dai-atr.v1",
+        adapter="dai-atr.v2",
         view={},
         raw_response=b"native DAI text",
         transport_stop_reason="eos",

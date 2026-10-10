@@ -1,6 +1,6 @@
 # Pod F: the Perlector's model served smaller and faster, on the 96 GB card (RTX PRO 6000).
-# Not run yet; prepared 2026-10-09 (workbench design note S0c). Launch: RUNBOOK.md section 4,
-# exactly as reader-96gb.toml. Paths are the pod's.
+# Not run yet; prepared 2026-10-09 (workbench design note S0c). Launch: as pod R in
+# RUNBOOK.md sections 2.4 and 4.2, with this manifest in place of reader-96gb.toml. Paths are the pod's.
 #
 # Each arm is the 2026-10-09 `qwen38-27b-vendor` arm (same prompt, sampling, pixels, 32 in
 # flight, 0.92 of the card) with one change, named by `--recipe`: a row of
@@ -15,8 +15,8 @@
 # runs late, the FP8 arms and the noise floor are kept and NVFP4 is what is cut.
 #
 # The fed-witness arm (`qwen-fed`, the Perlector's own prompt with witnesses) is its own
-# module, not a witness_run model: `operations.bakeoff.fed_arm run --run-tree <cold73 tree>
-# --label ... --model-name ... --weights <the same snapshot> --recipe <the same row>
+# module, not a witness_run model: `operations.bakeoff.fed_arm run --run-tree <run tree>
+# --label ... --weights <the same snapshot> --recipe <the same row>
 # --revision <the same pin>`. Its cache refuses a label reused under another checkpoint,
 # recipe, seed, token cap or run tree, and it refuses a quantized row on bf16 weights.
 schema = "bakeoff-queue.v1"

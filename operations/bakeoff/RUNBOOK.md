@@ -24,7 +24,7 @@ approval for every paid create below.
 |---|---|
 | Small card (pod W) | A40 48 GB; if none is free, RTX 3090 24 GB. Either with as many vCPU as stock allows: try 32, fall back to 16 (the CPU line arms need them; the dry run's estimate decides whether the day fits). |
 | Big card (pod R) | RTX PRO 6000 96 GB. |
-| Where | Any Secure datacenter that has the cards in stock on the day. No region is fixed: each pod keeps its working files on its own disk and leaves a safety copy of its results on the lead's **global volume** (object storage, mountable anywhere; id in `private/runpod-notes.md`, never in git). No network volume is made unless the global route fails (2.1, fallback). |
+| Where | Any Secure datacenter that has the cards in stock on the day. No region is fixed: each pod keeps its working files and its results on its own disk (deleted with the pod) and the session fetches them home over SSH before deleting it (step 6). The API attaches no global volume (`operations/pod/RUNPOD.md`), so none is used. No network volume is made unless the lead says so (2.1, fallback). |
 | Models | Every arm downloads its own weights on boot at pinned versions (the queue's `prepare` steps); nothing has to be on a volume beforehand. Try every reasonable candidate. HunyuanOCR is dropped (licence excludes the EU/UK). dots.mocr and the Surya recogniser run for the bench. |
 | Spend | Standing approval up to **$15** for the whole day: both pods, the two-minute smoke pod, any fetch pod, one retry included. |
 | Pod windows | Pods start with an hours window, not `off`: pod W `12`, pod R `6`. The guard deletes the pod at the deadline whatever is running; that is the backstop if the session dies. The queue releases the guard earlier when it is done. |
@@ -39,7 +39,7 @@ free anywhere; something would delete data or a volume; or a step here says "sto
 
 ### 1.1 Code and tests
 
-Both PRs (#318, the cheat sheet; #319, the global-volume route) are merged before the
+Both PRs (#318, the cheat sheet; #319, the pod tool) are merged before the
 day. `<sha>` is `main`'s head and must exist on GitHub: the guard fetches
 `pod_guard.sh` from `raw.githubusercontent.com` at that commit.
 
@@ -79,15 +79,12 @@ on the pod). If `~/bakeoff-pages` is missing or short:
 runpodctl version                 # 2.x; v1.x has no `pod` command: brew install runpod/runpodctl/runpodctl
 runpodctl pod list --all          # []  (nothing running before we start)
 ls private/ntfy.conf              # the phone topic file exists
-grep -c "Global volume" private/runpod-notes.md   # 1: the note with the global volume's id
 .venv/bin/python -m operations.pod.create_pod --help | head -3
 ```
 
 The account key is never typed: `create_pod` reads it from `~/.runpod/config.toml`
 (`runpodctl`'s own config) when `RUNPOD_API_KEY` is not set, and never prints it. If
-`pod list` shows a pod: stop and tell the lead (an unknown pod is billing). Read the
-global volume's id from the note; it is `<gv>` below, and never goes into git, a PR or a
-comment.
+`pod list` shows a pod: stop and tell the lead (an unknown pod is billing).
 
 ## 2. Pod W (witnesses)
 
@@ -105,58 +102,49 @@ and the hourly price; write the prices down for step 5.
 Nothing is created in this step. The datacenter is left to RunPod unless a card is in
 stock in exactly one place (then `--datacenter <dc>` pins it).
 
-### 2.1 Create it, guard armed, global volume attached
-
-**Superseded on 2026-10-09:** the API attaches no global volume (`operations/pod/RUNPOD.md`,
-"Attaching a global volume"). Create pods with `--disk-gb` and without the `--global-*`
-options, run queues with `--keep-pod` only, pull results home as arms finish, and copy them
-into a console-deployed pod with the global volume at the end. The steps below are kept for
-when RunPod's API honours `objectMounts`.
+### 2.1 Create it, guard armed, on its own disk
 
 **The project's pod tool is the route**: `operations/pod/create_pod.py` sends the v1
-GraphQL mutation (`podFindAndDeployOnDemand` with `objectMounts`), the only create that
-can attach a global volume; the connector, `runpodctl` and REST cannot. Each pod gets
-its **own disk at `/workspace/private`** (`--disk-gb`: the guard's records, the clone,
-the model store, the pages and the cache live there; it is deleted with the pod) and the
-**global volume at `/workspace/global`** (object storage: the queue's final copy of the
-cache, the safety net only). `--cuda 13.0` keeps the pod off 12.8 hosts, which the
-`cu1300` image cannot use. The hours window arms the guard's deadline.
+GraphQL mutation (`podFindAndDeployOnDemand`) with the guard's start command. Each pod
+gets its **own disk at `/workspace/private`** (`--disk-gb`: the guard's records, the
+clone, the model store, the pages, the cache and the queue's copy of it live there; it
+is deleted with the pod). RunPod's API attaches no global volume
+(`operations/pod/RUNPOD.md`, "Attaching a global volume"), so none is asked for: the
+results come home over SSH (step 6) before the pod is deleted. `--cuda 13.0` keeps the
+pod off 12.8 hosts, which the `cu1300` image cannot use. The hours window arms the
+guard's deadline.
 
-**First, the two-minute smoke on the cheapest card** (approved 2026-10-08, §0). Every
-field of this route is schema-checked but was never used on a live pod before today, so
-prove it on the cheapest card in stock before renting the real one. About 5 cents.
+**First, the two-minute smoke on the cheapest card** (approved 2026-10-08, §0): prove
+the create, the guard and SSH on the cheapest card in stock before renting the real
+one. About 5 cents.
 
 ```sh
 START=$(sh operations/pod/pod_start_command.sh 1 <sha>) &&
 .venv/bin/python -m operations.pod.create_pod \
-  --name verbatus-smoke-gv --gpu "NVIDIA RTX A5000" \
+  --name verbatus-smoke --gpu "NVIDIA RTX A5000" \
   --image runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404 \
   --container-disk-gb 20 --disk-gb 20 --cuda 13.0 \
-  --global-volume <gv> --global-mount /workspace/global \
   --start-command "$START"
 ```
 
 (`--gpu "NVIDIA GeForce RTX 3090"` if no A5000 is in stock.) Expect: exit 0 and the
-pod's JSON, with `objectStores` naming `<gv>` at `/workspace/global` and
-`volumeMountPath` `/workspace/private`. Write its id down. Get its address (step 2.2),
-then one command, and the delete:
+pod's JSON with `volumeMountPath` `/workspace/private`. Write its id down. Get its
+address (step 2.2), then one command, and the delete:
 
 ```sh
-ssh -o ConnectTimeout=20 -p <port> root@<ip> 'findmnt -o TARGET,FSTYPE /workspace/private /workspace/global;
-  grep -c "armed for pod" /workspace/private/.pod_guard/guard.log;
-  echo smoke-$(date +%s) > /workspace/global/smoke.txt && cat /workspace/global/smoke.txt'
+ssh -o ConnectTimeout=20 -p <port> root@<ip> 'findmnt -o TARGET,FSTYPE /workspace/private;
+  grep -c "armed for pod" /workspace/private/.pod_guard/guard.log'
 runpodctl pod delete <smoke pod id>
 ```
 
-Expect: two mounted targets, a count of at least 1, the smoke line read back. Then
-`runpodctl pod list --all` until it prints `[]` (a few tries, half a minute apart, in the
-background). The file's survival is checked on pod W in 2.3.
+Expect: the mounted target and a count of at least 1. Then `runpodctl pod list --all`
+until it prints `[]` (a few tries, half a minute apart, in the background).
 
 | You see | Do |
 |---|---|
 | exit 2, `nothing was created` | First `runpodctl pod list --all`: a transport timeout after the POST can still have created the pod (delete it if so, confirm). Then read the message (a GraphQL error names the field or the stock), fix and retry. |
-| exit 3, `does not report the mounts` | The pod exists without the volume. `runpodctl pod delete <id>`, confirm with `pod list --all`, and stop: tell the lead with the printed JSON. |
-| `findmnt` shows only one of the two paths, or the count is 0 | Delete the pod, confirm it is gone, stop, tell the lead. |
+| exit 3, `does not report the mounts` | The pod exists without what was asked. `runpodctl pod delete <id>`, confirm with `pod list --all`, and stop: tell the lead with the printed JSON. |
+| `findmnt` shows no `/workspace/private`, or the count is 0 | Delete the pod, confirm it is gone, stop, tell the lead. |
 | `pod get` shows no public ip/port, or `ssh` never connects | Delete it, confirm with `pod list --all`, create once more; a second miss is a stop. |
 
 **Then pod W** (approved 2026-10-08, §0), the same way with the real card:
@@ -167,15 +155,14 @@ START=$(sh operations/pod/pod_start_command.sh 12 <sha>) &&
   --name verbatus-bakeoff-w --gpu "NVIDIA A40" \
   --image runpod/pytorch:1.4.0-cu1300-torch2130-ubuntu2404 \
   --container-disk-gb 100 --disk-gb 100 --min-vcpu 32 --cuda 13.0 \
-  --global-volume <gv> --global-mount /workspace/global \
   --start-command "$START"
 ```
 
 (`--gpu "NVIDIA GeForce RTX 3090"` if that is the card from 2.0; `--datacenter <dc>` only
-when 2.0 found stock in one place.) Expect: exit 0, JSON with `id`, `vcpuCount` 32 or
-more, `objectStores` with `<gv>`. Write the id down as `<pod W id>`. The `&&` means a
-refused start command creates nothing. Never create a pod without that start command:
-it arms the guard, with a deadline 12 hours out.
+when 2.0 found stock in one place.) Expect: exit 0, JSON with `id` and `vcpuCount` 32 or
+more. Write the id down as `<pod W id>`. The `&&` means a refused start command creates
+nothing. Never create a pod without that start command: it arms the guard, with a
+deadline 12 hours out.
 
 - Refused for stock (a GraphQL error about instances): `pod list --all` first (above),
   then retry with `--min-vcpu 16`; then the other small card; if neither fits, read the
@@ -186,14 +173,12 @@ it arms the guard, with a deadline 12 hours out.
 - If `pod_start_command.sh` prints nothing and exits 2: nothing was created; read its
   message, fix, retry.
 
-**Fallback: a network volume (one datacenter).** Only when the smoke's `smoke.txt` is
-gone on pod W (2.3) or the lead says so. Create a network volume with the connector's
-`create-network-volume` (name `verbatus-bakeoff-<date>`, datacenter `<dc>` from the
-stock reading, 100 GB for pod W, 300 GB for pod R; it bills for storage until deleted, so
-ask the lead afterwards whether to keep it), then the same create with
-`--network-volume <volume id> --datacenter <dc>` in place of `--disk-gb` and without the
-two `--global-*` options. On this route the queues run with `--keep-pod` only, without
-`--sync-to`/`--own-disk`.
+**Fallback: a network volume (one datacenter).** Only when the lead says so. Create a
+network volume with the connector's `create-network-volume` (name
+`verbatus-bakeoff-<date>`, datacenter `<dc>` from the stock reading, 100 GB for pod W,
+300 GB for pod R; it bills for storage until deleted, so ask the lead afterwards whether
+to keep it), then the same create with `--network-volume <volume id> --datacenter <dc>`
+in place of `--disk-gb`. The queues run the same way.
 
 ### 2.2 Get the SSH address
 
@@ -208,17 +193,15 @@ direct form `ssh -p <port> root@<ip>`; the `ssh.runpod.io` proxy cannot run comm
 ### 2.3 Check, then set up the pod (one command each, from the Mac)
 
 ```sh
-ssh -p <port> root@<ip> 'findmnt -o TARGET,FSTYPE /workspace/private /workspace/global;
+ssh -p <port> root@<ip> 'findmnt -o TARGET,FSTYPE /workspace/private;
   grep -c "armed for pod" /workspace/private/.pod_guard/guard.log;
-  cat /workspace/global/smoke.txt; nproc; df -h /workspace/private | tail -1'
+  nproc; df -h /workspace/private | tail -1'
 ```
 
-Expect: both mounts, a count of at least 1, the smoke line (the global volume kept it
-across pods), `nproc` 32 (or 16), and about 100G free. **If the count is 0 or a mount is
-missing: stop.** Delete the pod (`runpodctl pod delete <pod W id>`), confirm with
-`runpodctl pod list --all` that it is gone, and tell the lead. If only `smoke.txt` is
-missing: keep pod W (its results live on its own disk and come home over SSH in step 6),
-carry on, and tell the lead that the global volume did not keep the file.
+Expect: the mount, a count of at least 1, `nproc` 32 (or 16), and about 100G free.
+**If the count is 0 or the mount is missing: stop.** Delete the pod
+(`runpodctl pod delete <pod W id>`), confirm with `runpodctl pod list --all` that it is
+gone, and tell the lead.
 
 Arm the guard's phone pings (the topic goes over stdin, never a command line), then the
 clone and the runtime (about 5 minutes; run in the background and read its output file):
@@ -232,7 +215,7 @@ ssh -p <port> root@<ip> 'set -e; git clone -q https://github.com/MegaSlick/Appar
 ```
 
 Expect: a byte count (the topic's length plus one) and `SETUP-OK` as the last line. Then
-the pages and the manifest (to the pod's disk, never to git or the global volume; the
+the pages and the manifest (to the pod's disk, never to git; the
 `/.` form does not nest on a retry):
 
 ```sh
@@ -245,22 +228,20 @@ ssh -p <port> root@<ip> 'ls /workspace/private/bakeoff-pages | wc -l'     # 73
 ### 2.4 Check, then launch the queue detached
 
 ```sh
-Q="--manifest /workspace/private/bakeoff/witness-24gb.toml --sync-to /workspace/global/bakeoff/witness-cache-home --own-disk --keep-pod"
+Q="--manifest /workspace/private/bakeoff/witness-24gb.toml --keep-pod"
 ssh -p <port> root@<ip> "cd /opt/verbatus && .venv/bin/python -m operations.bakeoff.queue_runner validate $Q &&
   .venv/bin/python -m operations.bakeoff.queue_runner run --dry-run $Q"
 ```
 
 Expect: `ok: witness-24gb, …`, then the dry run with its estimate for this pod's CPUs and
-a last line naming `/workspace/global/bakeoff/` and ending `end pod: none (own disk: …)`.
-If the estimate shows a day long enough to pass $15 (step 5): stop and tell the lead
-before launching.
+a last line naming the copy from `/workspace/private/bakeoff/witness-cache` to the
+manifest's `sync_to` and ending `end pod: none`. If the estimate shows a day long enough
+to pass $15 (step 5): stop and tell the lead before launching.
 
-`--sync-to` puts the end-of-day copy on the global volume, `--own-disk` says the cache
-is on a disk that dies with the pod, and `--keep-pod` keeps the pod at the end so the
-results come home over SSH from that disk (step 6) before the session deletes it; the
-global-volume copy is the safety net. With both, the queue does not read that copy back
-on the pod (slow on a network disk): `fetch` in step 6 is the check. On the network-volume fallback, use `--keep-pod`
-alone.
+The manifest's `sync_to` is a second copy on the pod's own disk, made and verified once
+at the end. `--keep-pod` keeps the pod at the end (`end_pod = none`) so the results come
+home over SSH from that disk (step 6) before the session deletes it. Without it the
+queue would delete the pod once the copy verified, taking the results with it.
 
 Launch, with the phone topic on stdin and the pod id checked first (the queue cannot end
 a pod without `RUNPOD_POD_ID`; it is in PID 1's environment when the shell lacks it):
@@ -297,8 +278,7 @@ On the Mac, in the background (it runs for hours; read its output file):
 ```
 
 It prints a line per change and exits 0 when the queue writes `DONE.json` (with
-`--keep-pod` the expected last line says the copy is verified `at home by fetch` and the
-pod is `kept (end_pod = none)`), 1 on failure. `watch --ntfy --queue witness-24gb` follows the phone pings
+`--keep-pod` the expected last line says the pod is `kept (end_pod = none)`), 1 on failure. `watch --ntfy --queue witness-24gb` follows the phone pings
 instead. Do nothing else on the pod: no `pgrep`, no `nvidia-smi` loops, no second launch.
 
 | You see | Do |
@@ -308,9 +288,8 @@ instead. Do nothing else on the pod: no `pgrep`, no `nvidia-smi` loops, no secon
 | The phone says `Needs a decision` | The queue cannot go on by itself (no pages, SIGTERM, or a pod it did not end): act on the message. |
 | The phone says `Queue finished` | The queue is done, not the session: fetch (step 6), then delete the pod. |
 | `watch` warns the status is 10 minutes old | Look once: `ssh -p <port> root@<ip> 'tail -n 5 /workspace/private/bakeoff/queue-witness-24gb.log; cat /workspace/private/bakeoff/witness-cache/status.json'`. If the queue is still running an arm, leave it. If the process is gone, tell the lead. Do not restart things from the Mac. |
-| The queue ends `state: failed` | Three causes only: the own-disk copy did not verify (`end_action` `NOT ended …`), `pod_delete.sh` failed, or the queue found no pages (it returns before any pod handling: pod left up, no `end_action`). The pod is up: do step 6 (fetch from its disk), then delete it by hand and confirm it is gone. |
-| `end_action` says `pod_delete.sh exit 3` | The pod was stopped, not deleted; its disk still bills. `runpodctl pod delete <id>`, then `pod list --all`. |
-| The pod is gone but there is no `DONE.json` | The guard's deadline or a crash ended it. Only what the queue had already copied to `/workspace/global/bakeoff/` survives (the copy is made once, at the end); step 6 says how to read it. Tell the lead. |
+| The queue ends `state: failed` | The queue found no pages (it returns before any pod handling: pod left up, no `end_action`), or the end copy did not verify. The pod is up: do step 6 (fetch from its disk), then delete it by hand and confirm it is gone. |
+| The pod is gone but there is no `DONE.json` | The guard's deadline or a crash ended it, and the pod's disk went with it: nothing was copied anywhere else. Tell the lead. |
 | The day's spend nears $15 | Tell the lead before it passes. |
 
 ## 4. Pod R (readers)
@@ -333,9 +312,8 @@ As 2.1–2.3 (approved 2026-10-08, §0) with these changes: name `verbatus-bakeo
 (`pod_start_command.sh 6 <sha>`), `--container-disk-gb 120 --disk-gb 300` (the 27B goes
 through the store as a download cache, a staging copy and the final copy, about 167 GB
 for one model, and the readers download 130.5 GB of weights in all), no `--min-vcpu`
-(the reader queue has no CPU arms), the same `--cuda 13.0 --global-volume <gv>
---global-mount /workspace/global`. No smoke again: the morning's smoke covered the
-route. Call its id `<pod R id>`; its address `<ip R>`, `<port R>`. Copy
+(the reader queue has no CPU arms), the same `--cuda 13.0`. No smoke again: pod W's
+create covered the route. Call its id `<pod R id>`; its address `<ip R>`, `<port R>`. Copy
 `reader-96gb.toml` up instead of the witness manifest, and the pages too (each pod has
 its own disk). The 2.3 expect line reads about 300G free; below 250G, stop and tell the
 lead.
@@ -355,7 +333,7 @@ gated). Never put `HF_HUB_OFFLINE=1` in the launch command: the queue makes each
 command offline by itself. Validate, dry-run and launch exactly as 2.4 with
 
 ```sh
-Q="--manifest /workspace/private/bakeoff/reader-96gb.toml --sync-to /workspace/global/bakeoff/reader-cache-home --own-disk --keep-pod"
+Q="--manifest /workspace/private/bakeoff/reader-96gb.toml --keep-pod"
 ```
 
 and the log `/workspace/private/bakeoff/queue-reader-96gb.log`. Then `watch` as in step
@@ -411,16 +389,13 @@ runpodctl pod get <pod R id>      # an error: not found
 and check that billing has stopped in the RunPod console. If a pod is still listed:
 `runpodctl pod delete <id>`, then list again.
 
-The copy on the global volume (`/workspace/global/bakeoff/witness-cache-home/`,
-`reader-cache-home/`, each with its own `DONE.json`) is the safety net for a pod that
-died before the fetch. Reading it needs a GPU pod with the volume attached (CPU pods
-cannot mount global volumes): the cheapest card as in the 2.1 smoke (approved
-2026-10-08, §0), `fetch` with `--remote /workspace/global/bakeoff/witness-cache-home`,
-then delete that pod and confirm. Object storage is eventually consistent, so a fetch
-from there that does not verify is retried a minute later before it is called lost.
+A pod that died before the fetch took its disk with it, and the queue's copy under
+`witness-cache-home/` or `reader-cache-home/` is on that same disk. Nothing else holds
+the results, which is why the fetch comes before the delete.
 
-Once both caches are home: ask the lead whether to keep the copies on the global volume
-(it bills for storage) or clear them.
+Once both caches are home, tell the lead where they are. A copy on a global volume
+needs a pod the lead deploys from the console with the volume attached
+(`operations/pod/RUNPOD.md`); the session then copies over SSH.
 
 ## 7. Score at home
 
@@ -471,3 +446,50 @@ on their own, so each model's weak spots show.
 
 Report to the lead in plain words, phone-sized: which models did well on which page types,
 which failed and how, what it cost, and that both pods are confirmed gone.
+
+## 9. Perlector build bake-off
+
+Question: does a smaller or faster build of the Perlector's model (FP8, FP8 with MTP,
+NVFP4, optionally Qwen3.5-27B) read pages as well as the bf16 build that the pipeline
+serves? One fresh pipeline run supplies the requests; every build is sent those same
+requests and scored at home. **This costs money and needs the lead's approval before the
+first pod: section 0's approvals cover 2026-10-09 only.** The queue alone plans 6.5 hours
+on the 96 GB card (`queue_runner run --dry-run` prints it), on top of the fresh run.
+
+1. **Fresh run.** Create and set up a 96 GB pod as in 4.2, but with a guard window long
+   enough for the whole day: the fresh run, the 6.5-hour queue, the downloads and the
+   fetch, about 10 hours (`pod_start_command.sh 10 <sha>`). The lead approves the window
+   with the spend; the 6-hour window of 4.2 would delete the pod partway through the queue.
+   Then `pod_run --from door --to perlector` with the Perlector served bf16
+   (`operations/pod/README.md`, "`pod_run.py`"). Do not use an older run: its requests
+   were served under other settings. Keep the whole run folder intact, named by
+   its run id, at `/workspace/private/runs/<run id>` (copy it there with `cp -a` if the
+   run wrote it elsewhere): the stage seals are read through that name. Keep the pod.
+2. **Check the replay.** Put the run's page images in `/workspace/private/bakeoff-pages`
+   (same file stems as the run's pages), and the manifest on the pod with the run id in
+   it: `sed 's/RUN_ID/<run id>/' operations/bakeoff/queue/perlector-fed-96gb.toml >
+   /workspace/private/bakeoff/perlector-fed-96gb.toml`. Then
+   `.venv/bin/python -m operations.bakeoff.fed_arm prompts --run-tree /workspace/private/runs/<run id>`
+   must print `whole requests byte-identical N of N` with N the run's page count and no
+   `config differs` line. Anything else: stop and tell the lead.
+3. **Run the fed queue**, validate, dry-run and launch exactly as in 2.4, with
+   `Q="--manifest /workspace/private/bakeoff/perlector-fed-96gb.toml --keep-pod"`
+   and the log `/workspace/private/bakeoff/queue-perlector-fed-96gb.log`; watch as in
+   section 3 with `--status /workspace/private/bakeoff/fed-cache/status.json`. Arms run in
+   this order: bf16-a, bf16-b, fp8, fp8-mtp3, nvfp4, qwen35. Each asks for the model name
+   the run recorded, sealed sampling, on the pipeline's serving row for this card. A
+   build that will not start (MTP, NVFP4 are unproven here) fails alone and the rest go on.
+4. **Fetch, delete, confirm** as in section 6: `queue_runner fetch --remote
+   /workspace/private/bakeoff/fed-cache --into private/bakeoff/fed-cache-<date>`, and
+   bring the run folder home as well (`scp -r`, or `verbatus fetch-run`), because scoring
+   reads it. Then delete the pod and confirm it is gone.
+5. **Score at home**, with `fed_score` (README, "The Perlector scorecard"). First bf16-a
+   against bf16-b (`--answers .../bf16-a --compare .../bf16-b --names bf16-a,bf16-b`): that
+   is the noise floor. Then each build against bf16-a. A difference no larger than the
+   bf16-a-versus-bf16-b difference is not a finding. Read answer health beside the reading: malformed pages,
+   pages repaired before parsing, loop stops, errors.
+
+What this does not measure: the pipeline sends a page one more time (a re-ask) when its
+first reading is held, and the replay sends the first reading only. And bf16 A against B
+uses the same seed, so it measures how much the engine varies from run to run, not how
+much a different sampling draw would change the reading.

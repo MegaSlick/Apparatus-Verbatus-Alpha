@@ -434,10 +434,10 @@ def answer_measure(
     number of Surya lines shown. The answer transcribes
     the same ink the witnesses read, so its text is measured by the longest
     witness text, text outside its units included. Its entries are the page's
-    likely act count: the most of Surya's blocks, DAI's detector records and
-    Chandra's layout blocks, each about one act. A line witness's lines are
-    fractions of acts and are not counted. With none of the three shown the
-    count is 0 and only the text is reserved. Every line shown is cited or
+    likely act count: the most of Surya's blocks and of any shown witness's
+    layout blocks or detector records (Chandra's, DAI's, dots.mocr's), each about
+    one act. A line witness's lines are fractions of acts and are not counted.
+    With none of these shown the count is 0 and only the text is reserved. Every line shown is cited or
     set aside by its own id, so each is one more cite. The reserve decides
     admission, and the request is sent the page cap or the room left,
     whichever is less.

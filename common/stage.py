@@ -441,6 +441,7 @@ class StageContext:
         "_recovery_policy",
         "sealed",
         "page_read_denominator",
+        "exemplar_pages",
         "serving_reader",
     )
 
@@ -488,6 +489,9 @@ class StageContext:
         self.page_read_denominator: (
             tuple[dict[int, dict[str, Any]], list[dict[str, Any]]] | None
         ) = None
+        # The Exemplar's pages by ordinal, once a stage after it has asked: the
+        # Exemplar is sealed before any later stage starts, so they are read once.
+        self.exemplar_pages: dict[int, str] | None = None
         # Read back a live page call; `None` refuses one (`ServingReader`).
         self.serving_reader = serving_reader
 
@@ -2022,8 +2026,8 @@ def _sealed_page_rectangle(context, page_id: str, ordinal: int, what: str) -> di
 #
 # A run counts the acts the Perlector established on each page it read whole.
 # The records are the Perlector's page path (`pipeline/4_perlector/CONTRACT.md`,
-# "Page reading"); what each says that decides the count or a hold -- the
-# feed, the reading's answer and problems, the accounting, each entry's
+# "Records, per page, in publication order"); what each says that decides the count
+# or a hold -- the feed, the reading's answer and problems, the accounting, each entry's
 # act-region and Perlectio, its dissent included -- is recomputed here from
 # the sealed evidence with stage 4's own derivations (`common/page_path.py`),
 # never trusted. The run tree binds every record read to this run's
@@ -2233,6 +2237,14 @@ class _PageReadRecords:
                 page_path.PERLECTIO_KIND,
             )
         }
+        self._by_subject = {
+            kind: _grouped(records, lambda record: record.get("subject_id"))
+            for kind, records in self.by_kind.items()
+        }
+        self._on_page = {
+            kind: _grouped(records, lambda record: _payload_of(record).get("page_id"))
+            for kind, records in self.by_kind.items()
+        }
         for record in self.by_kind[page_path.PERLECTIO_KIND]:
             schema = _payload_of(record).get("schema")
             if schema != page_path.PERLECTIO_SCHEMA:
@@ -2282,12 +2294,10 @@ class _PageReadRecords:
         return self._decisions
 
     def by_subject(self, kind: str, subject: str) -> list[dict[str, Any]]:
-        return [record for record in self.by_kind[kind] if record.get("subject_id") == subject]
+        return list(self._by_subject[kind].get(subject, ()))
 
     def on_page(self, kind: str, page_id: str) -> list[dict[str, Any]]:
-        return [
-            record for record in self.by_kind[kind] if _payload_of(record).get("page_id") == page_id
-        ]
+        return list(self._on_page[kind].get(page_id, ()))
 
     def ref(self, record: Mapping[str, Any]) -> dict[str, str]:
         path = self.tree.artifact_path(PERLECTOR, record["kind"], record["artifact_id"])
@@ -2307,6 +2317,25 @@ class _PageReadRecords:
                         f"Perlector {kind} {record.get('artifact_id')!r} names page {page!r}, "
                         "which this run's Exemplar never published"
                     )
+
+
+def _grouped(
+    records: list[dict[str, Any]], key: Callable[[dict[str, Any]], Any]
+) -> dict[Any, list[dict[str, Any]]]:
+    """`records` grouped by `key`, each group in record order.
+
+    A record whose key cannot be hashed, as a malformed list or object, is
+    left out: no subject or page id a caller asks about can equal it.
+    """
+    groups: dict[Any, list[dict[str, Any]]] = {}
+    for record in records:
+        value = key(record)
+        try:
+            group = groups.setdefault(value, [])
+        except TypeError:
+            continue
+        group.append(record)
+    return groups
 
 
 def _one(records: list[dict[str, Any]], what: str, attempt: str) -> dict[str, Any]:
@@ -4004,7 +4033,14 @@ def exemplar_page_ids(context) -> dict[int, str]:
     container page's full identity.  Says which page an ordinal names, not
     that its bytes are sound. Every submitted ordinal has exactly one page, so
     no submitted page is silently absent from what a stage reads or counts.
+    Verified once per context; each caller gets a copy.
     """
+    if context.exemplar_pages is None:
+        context.exemplar_pages = _verify_exemplar_page_ids(context)
+    return dict(context.exemplar_pages)
+
+
+def _verify_exemplar_page_ids(context) -> dict[int, str]:
     submitted = {
         row.get("ordinal")
         for row in context.run.get("source_manifest", [])

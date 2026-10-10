@@ -437,8 +437,9 @@ def _record_post_hoc_repetition(
     already retained and parsed, so a degenerated-but-complete answer does not
     reach the Perlector as full testimony under ``stop_reason = "stop"``.
 
-    Shared with Churro's own scan so two page witnesses mean the same thing by
-    one finding: inspects ``parse["text"]`` when a parse produced one (markup
+    Only Chandra calls this helper. It scans with `native_witness.detect_repetition`,
+    the same detector Churro's own scan uses, so two page witnesses mean the same
+    thing by one finding: inspects ``parse["text"]`` when a parse produced one (markup
     like `<div data-bbox=...>` repeats by construction, so raw bytes would be
     the wrong signal), skips a body past the grammar's parsing ceiling rather
     than scanning unbounded bytes, and lets a parse outcome win over a

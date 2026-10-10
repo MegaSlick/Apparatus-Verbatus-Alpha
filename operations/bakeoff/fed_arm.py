@@ -2,7 +2,7 @@
 
     python -m operations.bakeoff.fed_arm prompts --run-tree RUN
     python -m operations.bakeoff.fed_arm run --run-tree RUN --out CACHE --label NAME \\
-        --model-name SERVED (--server-url URL | --weights DIR) [variant options]
+        [--model-name SERVED] (--server-url URL | --weights DIR) [variant options]
 
 A sealed run tree already holds everything a Perlector page reading was shown: the
 `page-feed` record of every page (each witness's units as the reader saw them, Surya's
@@ -23,7 +23,11 @@ run's sealed `config/decoding.toml` (`run` refuses then, unless `--accept-new-co
 `run` sends that request -- the render (and overlay) first, then the rebuilt text, one user turn,
 thinking off, `max_tokens` 12,288, streamed under the Perlector's sealed repetition-loop
 guard (`common.repetition_loop`) -- to whatever model a vLLM server serves under
-`--model-name`: the base, a LoRA adapter's name or a merged checkpoint. Sampling is
+`--model-name`, which defaults to the name the run's call records carry
+(`resolve_model_name`; the name is part of the request bytes, so every checkpoint
+replayed is asked for under the run's own): the base, a LoRA adapter's name or a merged
+checkpoint. A run tree with recorded calls refuses another name unless
+`--accept-new-model-name`. Sampling is
 greedy by default (temperature 0, so two arms differ by their inputs, not the dice), or
 `--sampling sealed`: the Perlector's sealed row, which with the run's served name and an
 unchanged feed reproduces the run's request byte for byte (the noise-floor repeat).
@@ -584,6 +588,32 @@ def request_images(
 # --- the request --------------------------------------------------------------------
 
 
+def recorded_model_names(tree: RunTree) -> list[str]:
+    """The served model names the run's retained call records asked for."""
+    return sorted({p.call["served_model_id"] for p in tree.pages.values() if p.call})
+
+
+def resolve_model_name(tree: RunTree, explicit: str | None, *, accept_new: bool = False) -> str:
+    """The served name to ask for: the run's own, or an explicit one only where nothing is
+    recorded (or `accept_new`). The name is part of the request body, so a replay under
+    another name is not the run's request."""
+    recorded = recorded_model_names(tree)
+    if len(recorded) > 1:
+        raise SystemExit(f"{tree.root}: the call records name several served models {recorded}")
+    if explicit is None:
+        if not recorded:
+            raise SystemExit("--model-name is required: the run tree records no Perlector call")
+        return recorded[0]
+    if recorded and explicit != recorded[0] and not accept_new:
+        raise SystemExit(
+            f"--model-name {explicit!r} differs from the name {recorded[0]!r} in the run's "
+            "call records; the name is part of the request bytes, so this replay would not "
+            "send the run's request. Omit --model-name, or pass --accept-new-model-name "
+            "to ask for another name on purpose (an adapter, a merge)"
+        )
+    return explicit
+
+
 def decoding_policy() -> tuple[dict[str, Any], str]:
     """This checkout's sealed decoding policy (config/decoding.toml) and its digest."""
     from common.decoding import load_decoding_policy
@@ -987,21 +1017,33 @@ def _setup_difference(old: dict[str, Any], new: dict[str, Any]) -> str:
     return ", ".join(sorted(k for k in set(old) | set(new) if old.get(k) != new.get(k)))
 
 
+def parse_reply(
+    result: dict[str, Any],
+) -> tuple[str, dict[str, Any] | None, list[dict[str, str]], list[dict[str, Any]]]:
+    """`(parse_state, answer, problems, repairs)` as the pipeline reads a reply
+    (`common.page_path.read_reply`): the repaired parser, except that a reply the guard
+    stopped or the engine cut off is never repaired."""
+    from common import page_answer
+
+    content = result["content"]
+    if result.get("loop_stop") is not None or result.get("finish_reason") == "length":
+        return (*page_answer.parse_page_answer(content), [])
+    return page_answer.parse_page_answer_repaired(content)
+
+
 def page_record(
     page: Page, feed: dict[str, Any], variant: Variant, args: argparse.Namespace,
     body: bytes, images: list[bytes], result: dict[str, Any],
     mutation: dict[str, Any] | None = None, *, setup: dict[str, Any] | None = None,
     settings_sha: str | None = None,
 ) -> dict[str, Any]:  # fmt: skip
-    from common.page_answer import parse_page_answer
-
     check = prompt_check(feed)
     sent_sha = _sha(body)
     recorded = page.call["request_sha256"] if page.call else None
     if result["error"] is None:
-        state, answer, problems = parse_page_answer(result["content"])
+        state, answer, problems, repairs = parse_reply(result)
     else:
-        state, answer, problems = None, None, []
+        state, answer, problems, repairs = None, None, [], []
     failure = None
     if result.get("stop") in W.TERMINAL_STOPS:
         failure = {
@@ -1057,6 +1099,8 @@ def page_record(
         "raw_bytes": len(result["raw"]),
         "parse_state": state,
         "parse_problems": problems,
+        "answer_repairs": repairs,
+        "repaired": bool(repairs),
         "answer": answer,
         "text": reading_text(answer),
         "error": result["error"],
@@ -1152,6 +1196,9 @@ def run(args: argparse.Namespace) -> int:
             + ". Run from the run's commit, or pass --accept-new-config to send this "
             "checkout's (recorded in the cache's setup)"
         )
+    args.model_name = resolve_model_name(
+        tree, args.model_name, accept_new=args.accept_new_model_name
+    )
     variant = variant_from_args(args)
     guard = loop_guard()
     setup = setup_of(args, tree, variant, guard)
@@ -1159,6 +1206,8 @@ def run(args: argparse.Namespace) -> int:
         "new_builder": bool(args.accept_new_builder),
         "new_config": bool(differences),
     }
+    if args.accept_new_model_name and args.model_name not in recorded_model_names(tree):
+        setup["accepted"]["new_model_name"] = True
     folder = args.out / args.label
     folder.mkdir(parents=True, exist_ok=True)
     todo = _prepare(args, tree, variant, setup)
@@ -1295,7 +1344,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     r.add_argument("--out", type=Path, required=True)
     r.add_argument("--label", required=True, help="cache folder: name the model and variant")
     r.add_argument(
-        "--model-name", required=True, help="the served model name (base, adapter, merge)"
+        "--model-name",
+        help="the served model name; default the run's own, from its call records",
+    )
+    r.add_argument(
+        "--accept-new-model-name",
+        action="store_true",
+        help="ask for a name other than the run's recorded one (an adapter, a merge)",
     )
     r.add_argument("--sampling", choices=["greedy", "sealed"], default="greedy")
     r.add_argument("--seed", type=int, default=0)

@@ -169,7 +169,7 @@ max_page_doubt_share_bp = 3000
 # reading's text in the Armarium's flagged export (`flagged.jsonl`), but it holds
 # nothing: the reading is established and exported as read. These are the checks
 # not yet calibrated for this corpus: the record detector's disagreement with a
-# reading that establishes acts, the two ink thresholds (`[coverage_audit]` in
+# reading that establishes acts, the two ink thresholds (`[coverage_audit.provenance]` in
 # `config/ink_map.toml` says `calibrated_for_this_corpus = false`), and a short
 # witness unit read differently.
 # To make one hold again, take its code out of this list; `codes = []` holds

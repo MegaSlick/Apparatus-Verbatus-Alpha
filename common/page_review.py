@@ -942,7 +942,8 @@ def _of_superseded_inputs(tree, record: Mapping[str, Any], superseded: Collectio
 
 def continuation_links(context, rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Every `continuation-link`, as `{ref, from_page_ordinal, to_page_ordinal,
-    head_act_id, tail_act_id, agreed}`.
+    head_act_id, tail_act_id, continues_to_next_page,
+    continues_from_previous_page, agreed}`.
 
     One link per page break an answer flags, subject `page-break:<p>:<p+1>`:
     `head` (`from_act_id`) is the last `act` entry of page p and `tail`

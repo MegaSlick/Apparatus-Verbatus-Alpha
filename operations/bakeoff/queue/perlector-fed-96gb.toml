@@ -1,0 +1,115 @@
+# Perlector build bake-off on the 96 GB card (RTX PRO 6000): one fresh run's Perlector
+# requests replayed into each build. Launch: RUNBOOK.md "Perlector build bake-off". Paths
+# are the pod's. RUN_ID below is the fresh run's id, replaced (sed) before the manifest is
+# copied up; the run folder keeps that name, because the stage seals are read through it.
+#
+# Every arm is `fed_arm run --sampling sealed` on the same run tree. The served name is not
+# given: fed_arm asks for the name the run's call records carry and refuses another, so
+# every build answers under the name the run used (the request bytes include it). Serving is
+# the pipeline's Perlector row for this card (generic-80gb-plus in
+# config/serving_recipes_real.toml): 4 sequences, 0.88 of the card, 8,192 batched tokens,
+# 4 requests in flight. `--recipe` swaps only the weights' format or speculative decoding
+# (config/serving_recipes_real_variants.toml).
+#
+# Order: the noise floor first (bf16 twice, same seed), then FP8, then the arms whose start
+# is not yet proven on this stack (FP8 with MTP, NVFP4, the older Qwen3.5-27B), so a failed
+# or cut arm costs only itself. The queue's smoke is `--limit 2`; fed_arm starts its server
+# again for the full run.
+schema = "bakeoff-queue.v1"
+name = "perlector-fed-96gb"
+pages = "/workspace/private/bakeoff-pages"
+out = "/workspace/private/bakeoff/fed-cache"
+sync_to = "/workspace/private/bakeoff/fed-cache-home"   # a second copy on the same disk
+own_disk = false
+smoke_pages = 2
+behind_schedule_min = 30
+end_pod = "delete"
+# hard_stop_min = 480            # the lead's cap for the day; off unless set
+
+# The incumbent build (55.6 GB fetch). With bf16-b it is the noise floor: the same requests,
+# seed and build twice, so a difference between builds smaller than A against B is engine noise.
+[[arms]]
+name = "bf16-a"
+time_box_min = 75
+cut = "never"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27B"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.fed_arm", "run",
+  "--run-tree", "/workspace/private/runs/RUN_ID", "--label", "bf16-a", "--sampling", "sealed",
+  "--weights", "/workspace/private/model-store/hf/qwen3.8-27B",
+  "--repo", "Qwen/Qwen3.8-27B", "--revision", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "--max-num-seqs", "4", "--gpu-memory-utilization", "0.88", "--concurrency", "4",
+  "--out", "/workspace/private/bakeoff/fed-cache"]
+
+# The repeat of bf16-a, same weights already in the store.
+[[arms]]
+name = "bf16-b"
+time_box_min = 60
+cut = "never"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27B"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.fed_arm", "run",
+  "--run-tree", "/workspace/private/runs/RUN_ID", "--label", "bf16-b", "--sampling", "sealed",
+  "--weights", "/workspace/private/model-store/hf/qwen3.8-27B",
+  "--repo", "Qwen/Qwen3.8-27B", "--revision", "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+  "--max-num-seqs", "4", "--gpu-memory-utilization", "0.88", "--concurrency", "4",
+  "--out", "/workspace/private/bakeoff/fed-cache"]
+
+# Official FP8 weights (30.9 GB).
+[[arms]]
+name = "fp8"
+time_box_min = 60
+cut = "never"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-fp8"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.fed_arm", "run",
+  "--run-tree", "/workspace/private/runs/RUN_ID", "--label", "fp8", "--sampling", "sealed",
+  "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-fp8",
+  "--repo", "Qwen/Qwen3.8-27B-FP8", "--revision", "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+  "--recipe", "unproven-real-perlector-fp8",
+  "--max-num-seqs", "4", "--gpu-memory-utilization", "0.88", "--concurrency", "4",
+  "--out", "/workspace/private/bakeoff/fed-cache"]
+
+# FP8 plus the model's own MTP head, 3 draft tokens: unproven with image inputs on vLLM 0.30.0.
+[[arms]]
+name = "fp8-mtp3"
+time_box_min = 60
+cut = "behind-schedule"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-fp8"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.fed_arm", "run",
+  "--run-tree", "/workspace/private/runs/RUN_ID", "--label", "fp8-mtp3", "--sampling", "sealed",
+  "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-fp8",
+  "--repo", "Qwen/Qwen3.8-27B-FP8", "--revision", "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+  "--recipe", "unproven-real-perlector-fp8-mtp3",
+  "--max-num-seqs", "4", "--gpu-memory-utilization", "0.88", "--concurrency", "4",
+  "--out", "/workspace/private/bakeoff/fed-cache"]
+
+# NVIDIA's mixed NVFP4/FP8 build (21.9 GB); needs a Blackwell card and is unproven here.
+[[arms]]
+name = "nvfp4"
+time_box_min = 60
+cut = "behind-schedule"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.8-27b-nvfp4"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.fed_arm", "run",
+  "--run-tree", "/workspace/private/runs/RUN_ID", "--label", "nvfp4", "--sampling", "sealed",
+  "--weights", "/workspace/private/model-store/hf/qwen3.8-27b-nvfp4",
+  "--repo", "nvidia/Qwen3.8-27B-NVFP4", "--revision", "482ca0f3832238542f8f5295dde86b5f22711d80",
+  "--recipe", "unproven-real-perlector-nvfp4",
+  "--max-num-seqs", "4", "--gpu-memory-utilization", "0.88", "--concurrency", "4",
+  "--out", "/workspace/private/bakeoff/fed-cache"]
+
+# Optional, last: the previous generation on the Perlector row, asked under the run's name.
+[[arms]]
+name = "qwen35"
+time_box_min = 75
+cut = "behind-schedule"
+gpu = true
+prepare = [".venv/bin/python", "-m", "operations.bakeoff.weights", "fetch", "--store-root", "/workspace/private/model-store", "qwen3.5-27b"]
+command = [".venv/bin/python", "-m", "operations.bakeoff.fed_arm", "run",
+  "--run-tree", "/workspace/private/runs/RUN_ID", "--label", "qwen35", "--sampling", "sealed",
+  "--weights", "/workspace/private/model-store/hf/qwen3.5-27b",
+  "--repo", "Qwen/Qwen3.5-27B", "--revision", "fc05daec18b0a78c049392ed2e771dde82bdf654",
+  "--max-num-seqs", "4", "--gpu-memory-utilization", "0.88", "--concurrency", "4",
+  "--out", "/workspace/private/bakeoff/fed-cache"]
