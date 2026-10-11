@@ -505,11 +505,17 @@ def test_png_and_shrinking_are_available_by_setting(tmp_path, monkeypatch):
         assert image.size[0] < 240 and image.size[1] < 320  # shrunk, from a larger crop
 
 
+def _packaging_file(name: str) -> Path:
+    """pyproject.toml or README.md: beside the package here, one folder up in pagekit's own repository."""
+    here = Path(__file__).parent
+    return here / name if (here / name).exists() else here.parent / name
+
+
 def test_every_thresholds_file_ships_with_the_package():
     import tomllib
 
     here = Path(__file__).parent
-    with (here / "pyproject.toml").open("rb") as handle:
+    with _packaging_file("pyproject.toml").open("rb") as handle:
         shipped = set(tomllib.load(handle)["tool"]["setuptools"]["package-data"]["pagekit"])
     assert {path.name for path in here.glob("thresholds*.toml")} <= shipped
 
@@ -907,7 +913,7 @@ def test_the_manifest_stays_closed_with_its_documented_skipped_field(tmp_path, m
     }
     for entry in manifest["skipped"]:
         assert set(entry) == {"name", "path", "sha256", "reason"}
-    readme = (Path(__file__).parent / "README.md").read_text(encoding="utf-8")
+    readme = _packaging_file("README.md").read_text(encoding="utf-8")
     assert "`skipped`" in readme
 
 
