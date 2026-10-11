@@ -19,6 +19,10 @@ dependencies = ["kraken==7.1.1"]
 [tool.uv]
 required-version = "==0.12.1"
 package = false
+# kraken pins lightning==2.6.1, which loads checkpoint hyperparameters through an
+# instantiator that can run arbitrary code (GHSA, fixed in 2.6.6); the override takes the
+# patch release.
+override-dependencies = ["lightning==2.6.6"]
 # The pod (CPU beside the GPU arms) and the lead's Mac.
 environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",

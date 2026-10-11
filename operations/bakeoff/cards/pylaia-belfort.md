@@ -21,7 +21,7 @@ on synthetic pages, on the CPU; the Mac install is untested)
 ## Install
 - Own environment, `operations/bakeoff/lines/venvs/pylaia/pyproject.toml`: `pylaia==1.1.2`,
   Python 3.10 (PyLaia requires `<3.11`), `setuptools==70.3.0` (torchmetrics 0.7 imports
-  `pkg_resources`) and `pip==25.2` (PyLaia runs `python -m pip freeze` at start and stops
+  `pkg_resources`) and `pip==26.2` (PyLaia runs `python -m pip freeze` at start and stops
   without pip). Both were found missing here and added. `uv.lock` (linux x86_64 and
   macOS arm64) pins torch 1.13.1, torchaudio 0.13.1, pytorch-lightning 1.4.2.
 - `python -m operations.bakeoff.lines.pylaia install`. Measured here: 204 s cold on linux

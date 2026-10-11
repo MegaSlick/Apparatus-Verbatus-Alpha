@@ -11,7 +11,7 @@
 
 ## Install
 
-- Own venv for the client: `operations/bakeoff/native/venvs/dots-mocr/pyproject.toml` with `uv.lock` (produced here, linux x86_64): `pymupdf==1.26.4`, `cairosvg==2.8.2`, `openai==2.2.0`, `requests==2.32.5`, `pydantic==2.12.3`, `numpy==2.3.4`, `tqdm==4.67.1`, `pillow==12.3.0`, 39 packages in the lock: what `import dots_mocr` needs on its vLLM path.
+- Own venv for the client: `operations/bakeoff/native/venvs/dots-mocr/pyproject.toml` with `uv.lock` (produced here, linux x86_64): `pymupdf==1.26.4`, `cairosvg==2.9.1`, `openai==2.2.0`, `requests==2.34.2`, `pydantic==2.12.3`, `numpy==2.3.4`, `tqdm==4.67.1`, `pillow==12.3.0`, 39 packages in the lock: what `import dots_mocr` needs on its vLLM path.
 - The vendor package is not built: its `setup.py` (`find_packages()`) leaves out `dots_mocr/model`, which has no `__init__.py`, so a wheel cannot import it. The vendor's own instruction is `pip install -e .` in a clone; `install` does the equivalent: `uv sync --locked`, then a checkout of the pinned commit into `<venv>/src/dots-mocr` and a `.pth` file pointing at it.
 - Vendor's own pins (`requirements.txt`): `gradio, PyMuPDF, openai, qwen_vl_utils, transformers==4.57.6, huggingface_hub, modelscope, accelerate, cairosvg` (flash-attn commented out). The transformers, gradio, modelscope and accelerate pins serve the demos and the transformers path, not this one.
 - The vLLM server runs from the project pod venv (vLLM 0.30.0, transformers 5.14.1); the vendor names vLLM 0.11.0 or later.
