@@ -22,7 +22,7 @@ here on the CPU with the real model on a synthetic page); cut first if behind sc
 ## Install
 - Own environment, `operations/bakeoff/lines/venvs/party/pyproject.toml`: `party` from git
   at the commit above and `kraken==7.0.3` (Party requires `kraken~=7.0.0b5`, so it cannot
-  share the kraken 7.1 environment). `uv.lock` pins torch 2.12.0, lightning 2.6.1, timm
+  share the kraken 7.1 environment). `uv.lock` pins torch 2.12.0, lightning 2.6.6 (an override over kraken's 2.6.1 pin, for a checkpoint code-execution fix; the arm has not been run since, and earlier results on this card do not validate 2.6.6), timm
   1.0.30. Install needs git and network (versioningit builds from the git checkout).
 - `python -m operations.bakeoff.lines.party install`: 116 s cold here (linux x86_64,
   cached wheels shared with the kraken install); estimate 4-5 min on a fresh pod.

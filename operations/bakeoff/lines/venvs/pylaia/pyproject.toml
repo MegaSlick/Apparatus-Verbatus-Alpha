@@ -15,7 +15,7 @@ requires-python = "==3.10.*"
 # torchmetrics 0.7 (pulled by pytorch-lightning 1.4.2) imports pkg_resources, which
 # setuptools no longer ships by default; an older setuptools provides it. PyLaia logs
 # `python -m pip freeze` at start and stops if pip is missing, as it is in a uv venv.
-dependencies = ["pylaia==1.1.2", "setuptools==70.3.0", "pip==25.2"]
+dependencies = ["pylaia==1.1.2", "setuptools==70.3.0", "pip==26.2"]
 
 [tool.uv]
 required-version = "==0.12.1"
