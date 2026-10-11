@@ -16,8 +16,8 @@ pod ids) live in the lead's private notes, never here.
   `sh operations/pod/pod_start_command.sh <hours|off> <sha>`. Never create a pod without it.
 - **Shutdown is verified, never assumed**: `runpodctl pod list --all` is empty,
   `runpodctl pod get <id>` fails, and the console's billing has stopped.
-- **Data that never leaves**: real pages and transcriptions go only to the lead's machine
-  and the lead's own pods and volumes. Never into git, never to another service.
+- **Real material stays out of git**: real pages and transcriptions live on the lead's
+  machine and the lead's own pods and volumes, never in git (AGENTS.md).
 - **Deleting a volume is the lead's action.** Give the lead the command
   (`runpodctl network-volume delete <id>`, or the console's Storage page).
 

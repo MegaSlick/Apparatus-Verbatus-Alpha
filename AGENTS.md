@@ -40,12 +40,15 @@ Before any RunPod work (a pod, a volume, a price, stock, the API), read
 where results go, and the traps already met. For a bake-off day, also
 `operations/bakeoff/RUNBOOK.md`.
 
-## Data that never leaves
+## Real material stays out of git
 
-Real register images, transcriptions and personal data stay on the lead's machines and
-pods, in the gitignored `private/`, `scriptorium/` and `workbench/` folders. Never commit
-them or send them to an outside service. Before using a new tool on this repository,
-check what it uploads.
+The repository is public. Real register images, transcriptions and personal data live in
+the gitignored `private/`, `scriptorium/` and `workbench/` folders on the lead's machines
+and pods, and are never committed: thousands of images do not belong in git.
+
+The registers are public-domain archival scans. Giving them to the lead's own accounts
+and tools for project work (Claude sessions, ChatGPT/Codex, the lead's pods) is fine and
+expected. Personal data about living people goes only to tools the lead chose.
 
 ## Git
 
