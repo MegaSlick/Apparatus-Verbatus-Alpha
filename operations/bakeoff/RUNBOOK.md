@@ -400,9 +400,9 @@ run.
    `ssh -p <port> root@<ip> 'cd /opt/verbatus && mkdir -p /workspace/private/bakeoff && sed
    "s/RUN_ID/<run id>/" operations/bakeoff/queue/perlector-fed-96gb.toml >
    /workspace/private/bakeoff/perlector-fed-96gb.toml'`.
-   Then
-   `.venv/bin/python -m operations.bakeoff.fed_arm prompts --run-tree /workspace/private/runs/<run id>`
-   must print `whole requests byte-identical N of N` (N the run's page count) and no `config
+   Then, also on the pod,
+   `ssh -p <port> root@<ip> 'cd /opt/verbatus && .venv/bin/python -m operations.bakeoff.fed_arm
+   prompts --run-tree /workspace/private/runs/<run id>'` must print `whole requests byte-identical N of N` (N the run's page count) and no `config
    differs` line. Anything else: stop.
 3. **Run the fed queue** as in 2.4 with
    `Q="--manifest /workspace/private/bakeoff/perlector-fed-96gb.toml --keep-pod"`, the log
