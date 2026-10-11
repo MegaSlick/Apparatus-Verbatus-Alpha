@@ -18,7 +18,7 @@ synthetic page, on the CPU; the Mac install and the GPU path are untested)
 ## Install
 - Own environment, `operations/bakeoff/lines/venvs/kraken/pyproject.toml`: `kraken==7.1.1`,
   Python 3.12; `uv.lock` (resolved here for linux x86_64 and macOS arm64) pins torch
-  2.14.0, torchvision 0.29.1, lightning 2.6.6 (an override over kraken's 2.6.1 pin, for a checkpoint code-execution fix), coremltools 9.0, numpy 2.4.6.
+  2.14.0, torchvision 0.29.1, lightning 2.6.6 (an override over kraken's 2.6.1 pin, for a checkpoint code-execution fix; the arm has not been run since, and earlier results on this card do not validate 2.6.6), coremltools 9.0, numpy 2.4.6.
 - `python -m operations.bakeoff.lines.kraken_ppocr install [--venv-dir DIR]` runs
   `uv sync --frozen` on that recipe. Measured here: 279 s cold on linux x86_64 (PyPI's
   CUDA torch, 5.8 GB venv); 0.2 s when already synced. On the Mac (CPU torch wheel,
