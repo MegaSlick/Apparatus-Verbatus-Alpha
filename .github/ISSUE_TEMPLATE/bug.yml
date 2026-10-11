@@ -10,7 +10,7 @@ body:
         fixtures in `proof/`. Anything of that kind is removed as soon as it is seen.
 
         Issues wait for the maintainer, who reads every one. AI agents also follow
-        `docs/AI_CONTRIBUTORS.md`.
+        *Using an AI agent* in `CONTRIBUTING.md`.
   - type: input
     id: commit
     attributes:

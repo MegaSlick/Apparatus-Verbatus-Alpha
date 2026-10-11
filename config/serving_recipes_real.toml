@@ -428,8 +428,8 @@ required_packages = { vllm = "0.30.0", transformers = "5.14.1", "qwen-vl-utils" 
 # one reviewed card, the 96 GB RTX PRO 6000, 0.88 x 96 GB - 55.6 GB = 28.9 GB
 # holds four full-length pages (16 GiB) with 11.7 GB left, so the row asks for
 # four: on an 80 GB card vLLM schedules only what its KV pool holds and queues
-# the rest, so the cap costs it nothing but waiting. Measured 2026-10-07 at two:
-# about 3 minutes a page, the GPU half idle between calls. The stage's default
+# the rest, so the cap costs it nothing but waiting. At two, a page took about
+# 3 minutes with the GPU half idle between calls. The stage's default
 # concurrency is this value. Prefill chunks of 8,192 tokens halve the engine
 # steps a 58,000-token page takes to read in.
 max_model_len = 65536

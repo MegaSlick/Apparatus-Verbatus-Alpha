@@ -293,8 +293,8 @@ def committed_recordgold_bytes(
 ) -> bytes:
     """Answer the two pinned URLs from the copies committed beside the code.
 
-    The project lead approved committing this one public record (2026-10-07) so a
-    pod's preflight needs no network for it. The bytes are those the IIIF server
+    This one public record is committed so a pod's preflight needs no network
+    for it. The bytes are those the IIIF server
     and the datasets server served when the pins were taken; the same digest
     checks as a live fetch run on them, so a changed file is refused by name.
     """

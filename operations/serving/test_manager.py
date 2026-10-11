@@ -5623,10 +5623,9 @@ def test_a_gone_service_whose_lease_is_still_held_keeps_its_record(tmp_path: Pat
 def test_a_taken_over_service_stops_while_a_straggler_keeps_the_launcher_s_lease(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Live 2026-10-08 (prep73): the Coniector stopped the Perlector's service, its group
-    and endpoint were gone, yet the lease the Perlector's manager had taken was still
-    held, and the stop failed. The stop now succeeds and says so, and the lease is left
-    held, so no chair starts on the card until whatever holds it lets go."""
+    """The Coniector stops the Perlector's service; its group and endpoint are gone, yet
+    the lease the Perlector's manager took is still held. The stop succeeds and says
+    so, and the lease is left held, so no chair starts on the card until whatever holds it lets go."""
     first, second, identities, clock = _shared_managers(tmp_path)
     started = first.manager.start(identities["perlector"], TIER)
     # The launching manager's lease descriptor as a process of the service, outside

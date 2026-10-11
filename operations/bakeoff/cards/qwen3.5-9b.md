@@ -1,13 +1,11 @@
 # Qwen3.5-9B run card
 
-**Verdict in one line:** ready-untested-here (the plain arm ran on 2026-10-08; the vendor arm has not run on a GPU)
+**Verdict in one line:** ready-untested-here (the plain arm has run on a GPU; the vendor arm has not)
 
 ## Identity
 
-- Repo `Qwen/Qwen3.5-9B`, revision `c202236235762e1c871ad0ccb60c8ee5ba337b9a`
-  (`git ls-remote https://huggingface.co/Qwen/Qwen3.5-9B refs/heads/main`, 2026-10-08).
-  Not in `config/models-real.toml` (it was the drafted Perlector before the 2026-08-20
-  ruling); pass it with `--repo/--revision`.
+- Repo `Qwen/Qwen3.5-9B`, revision `c202236235762e1c871ad0ccb60c8ee5ba337b9a`.
+  Not in `config/models-real.toml`; pass it with `--repo/--revision`.
 - Licence Apache-2.0 (card metadata).
 - 18.0 GiB on disk (bf16). Family: VLM, `Qwen3_5ForConditionalGeneration`, vision patch
   16, merge 2. No `generation_config.json` in the repository at this revision.

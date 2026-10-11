@@ -65,8 +65,8 @@ register `retraction` of the current membership head (which restores its predece
 and a producer pass without the wrong confirmation, which republishes the manifest and
 cluster records whole.
 
-Note that the Door currently refuses any submission containing a re-shoot cluster:
-confirmed clusters are recorded in the register, but a run reads one capture per leaf.
+The Door refuses any submission containing a re-shoot cluster: confirmed clusters are
+recorded in the register, but a run reads one capture per leaf.
 
 ## pagekit's geometry
 
@@ -77,8 +77,9 @@ fold into one clockwise rotation of `90 * turns - skew` degrees; the first crop 
 smallest box of the scan holding everything pagekit's page shows; the crop after
 rotation is pagekit's page to the nearest pixel; and the fill is pagekit's paper
 colour, in the scan's own mode. A page with no skew is cut exactly, a skewed one to
-within half a pixel on each axis (the crop after rotation starts on a whole pixel). Where triage still cannot say what pagekit did, the part is the
-nearest one that loses no ink, and a note says why:
+within half a pixel on each axis (the crop after rotation starts on a whole pixel).
+Where triage cannot express what pagekit did, the part is the nearest one that loses no
+ink, and a note says why:
 
 - **Gutter** (two pages): the regions must partition the scan, so the scan is split
   along a straight line through the middle of pagekit's cut. pagekit's overlap and the

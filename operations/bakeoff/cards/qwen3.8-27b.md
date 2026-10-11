@@ -1,12 +1,11 @@
 # Qwen3.8-27B run card
 
-**Verdict in one line:** ready-untested-here (the plain arm ran on 2026-10-08; the vendor arm has not run on a GPU)
+**Verdict in one line:** ready-untested-here (the plain arm has run on a GPU; the vendor arm has not)
 
 ## Identity
 
 - Repo `Qwen/Qwen3.8-27B`, revision `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` (the
-  `[chairs.perlector]` pin in `config/models-real.toml`; `git ls-remote` on 2026-10-08
-  still returns it as `refs/heads/main`).
+  `[chairs.perlector]` pin in `config/models-real.toml`).
 - Licence Apache-2.0 (card metadata): use, modification and redistribution allowed with
   notice.
 - 51.8 GiB on disk (bf16 safetensors). Family: VLM, `Qwen3_5ForConditionalGeneration`
@@ -120,8 +119,7 @@ No GPU here. The tests run the arm against `fake_vllm_server.py`. First command 
 ## Our arm
 
 `operations/bakeoff/arms.py`, arm `qwen-vendor` (family preset `qwen3.8`), run by
-`witness_run.py`; cache label `qwen38-27b-vendor`. The plain arm is `qwen-blind`, label
-as run on 2026-10-08.
+`witness_run.py`; cache label `qwen38-27b-vendor`. The plain arm is `qwen-blind`.
 
 ## Sources
 

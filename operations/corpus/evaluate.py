@@ -855,10 +855,9 @@ def validate_evaluation(report: Any) -> dict[str, Any]:
         raise Refusal("malformed-record: an evaluation must name the split(s) it scored")
 
     aggregate = _closed(report["aggregate"], _AGGREGATE_FIELDS, "the aggregate")
-    # A closed vocabulary, not the current constant: a report sealed under a
-    # profile this module no longer scores with is a historically correct
-    # record, and a validator that refused it would be refusing the past. An
-    # unrecognised profile is a different thing and is refused.
+    # A closed vocabulary, not the current constant: a report sealed under any
+    # declared profile is valid even when this module scores with another. An
+    # unrecognised profile is refused.
     if aggregate["normalization_profile_id"] not in PROFILES:
         raise Refusal(
             f"malformed-record: the aggregate names normalisation profile "

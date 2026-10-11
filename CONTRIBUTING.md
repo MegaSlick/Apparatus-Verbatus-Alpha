@@ -45,7 +45,7 @@ about 20 minutes, so locally run only what your change touches.
 3. Open a pull request. CI must pass, and every review comment is either fixed or
    answered with a reason.
 4. A change to README, PRINCIPLES, ARCHITECTURE, GLOSSARY, CONTRIBUTING, AGENTS,
-   CLAUDE, GOVERNANCE, SECURITY, CODE_OF_CONDUCT or `docs/AI_CONTRIBUTORS.md`, to
+   CLAUDE, GOVERNANCE, SECURITY or CODE_OF_CONDUCT, to
    anything under `.github/`, or to what AI sessions are allowed to do (`.claude/`),
    needs the project lead's approval.
 
@@ -64,3 +64,13 @@ points Claude Code to AGENTS.md. Keep them few and give each its reason; code co
   find some already here, remove it. Tests use the synthetic fixtures in `proof/`.
 - **AI-written commits** name the model that wrote them with a `Co-Authored-By:` trailer,
   and any reviewing model with `Reviewed-by:`.
+
+## Using an AI agent
+
+If an AI agent opens your issue or pull request, say so and name the model. You are
+responsible for what it sends. Every issue and pull request shows its evidence: the
+commit it was made against (`git rev-parse HEAD`), the exact commands run, and their
+full output or exit codes. One focused change per pull request: no drive-by renames,
+reformatting, regenerated files or dependency changes without an agreed issue. Changes
+that touch credentials, GPU pods or paid services, and anything without evidence, are
+closed unread.

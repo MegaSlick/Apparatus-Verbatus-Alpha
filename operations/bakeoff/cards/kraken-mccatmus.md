@@ -8,8 +8,7 @@ pinned 2.14.0; the pinned environment is untested with this file)
   (ALMAnaCH, Inria; Université de Montréal; EPHE).
 - File: `McCATMuS_nfd_nofix_V1.mlmodel`, 16,173,802 bytes (16.2 MB), Zenodo MD5
   `e531463f631303c700750784b4f9ed63`, SHA-256
-  `dfb911ba25fd11f93efc1b0c340957162981ecfdaac0ee1e26793d491f770244` (measured here,
-  2026-10-08). The arm's `revision` field records `<file>@sha256:<that digest>`.
+  `dfb911ba25fd11f93efc1b0c340957162981ecfdaac0ee1e26793d491f770244` (measured). The arm's `revision` field records `<file>@sha256:<that digest>`.
 - Licence: CC BY 4.0 (Zenodo metadata and the file's `metadata.json`): use and adapt
   with attribution. The file is fetched at run time, never stored in this tree.
 - Training (Zenodo description): 22 datasets aggregated under the CATMuS transcription
@@ -83,6 +82,6 @@ then a `--limit 2` run.
   `kraken-mccatmus-blla`, `kraken-mccatmus-surya`; weights in `<store>/hf/kraken-mccatmus-v1/`.
 
 ## Sources
-- https://zenodo.org/api/records/13788177 and its `metadata.json` (read 2026-10-08)
+- https://zenodo.org/api/records/13788177 and its `metadata.json`
 - the file's own CoreML metadata (`kraken_meta`, `vgsl`, `codec`), read with coremltools 9.0
 - kraken 7.1.1 wheel from PyPI: `kraken/models/loaders.py`, `kraken/models/_coreml.py`

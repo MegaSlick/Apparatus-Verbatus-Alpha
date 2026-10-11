@@ -1,15 +1,12 @@
-# Orchestrator — contract
+# Orchestrator: contract
 
-The orchestrator is not a stage. It establishes nothing and holds no progress state
-in the run tree. It can append an optional stage-timing journal outside that tree;
-every fact a resume depends on is in the run tree, which is why a run can be
-re-entered from any process on any machine. This file says what its driver
-vocabulary means, because a word that appears in a `--flag` and nowhere in a document is
-a word two branches can define differently.
+The orchestrator is not a stage. It establishes nothing and holds no progress state in the
+run tree; every fact a resume depends on is in the run tree, so a run can be re-entered from
+any process on any machine. It may append a stage-timing journal outside the tree. This file
+defines its driver vocabulary.
 
-On real ingress, `--canary-folder` and `--canary-manifest` are an inseparable
-pair forwarded to the Door. Fixture ingress refuses the pair. The pod runner
-forwards the same two paths from its volume-bound run plan.
+On real ingress, `--canary-folder` and `--canary-manifest` are an inseparable pair forwarded
+to the Door; fixture ingress refuses them.
 
 ## The one sequence
 
@@ -19,166 +16,123 @@ door → exemplar → ink map → designator → attestatores → perlector → 
 ```
 
 Every member is a stage program with its own completion boundary. The orchestrator
-dispatches no re-reading: the Recensor holds what it cannot accept. The sealed
-recovery budget (`config/recovery.toml`) is spent by the Perlector's page re-ask
-alone, inside stage 4 (`common/page_reask.py`); the denominator plans the re-ask
-again from the same sealed budget to verify it, and `common/test_recovery.py` names
-those two as its only readers.
+dispatches no re-reading: the Recensor holds what it cannot accept. The sealed recovery
+budget (`config/recovery.toml`) is spent only by the Perlector's page re-ask inside stage 4
+(`common/page_reask.py`).
 
 ## The three selections
 
-An invocation runs one **contiguous** subsequence, named one of three ways:
+An invocation runs one **contiguous** subsequence:
 
 | Spelling | Selection | Vocabulary |
 |---|---|---|
 | `--all`, or no selector | the whole sequence | `auto` |
-| `--stage <name>` | exactly that one member | `manual` |
+| `--stage <name>` | exactly that member | `manual` |
 | `--from <a> --to <b>` | inclusive, forward-only | `semi` |
 
-`--mode` may assert the vocabulary the selection already implies; it never chooses one,
-and a disagreement is refused. Non-contiguous and reverse selections are refused, because
-a gap in a staged run is indistinguishable from an unrecorded skipped boundary.
+`--mode` may assert the vocabulary the selection implies, never choose one; a disagreement is
+refused. Non-contiguous and reverse selections are refused, because a gap is
+indistinguishable from an unrecorded skipped boundary.
 
-Entry is gated by evidence, not by memory of the last invocation: each stage program with
-a predecessor proves its stored `stage-seal` at `open_context`, and the orchestrator
-proves the Armarium's own seal before it reports the run. A member that held after publishing its
-evidence sealed, so re-entry past it is legal; a member that held or refused before
-publishing did not, so the next entry is a named missing-seal refusal.
+Entry is gated by evidence: each stage with a predecessor proves its stored `stage-seal` on
+opening, and the orchestrator proves the Armarium's seal before reporting the run. A member
+that held after publishing its evidence sealed, so re-entry past it is legal; one that held
+or refused before publishing did not, and the next entry is a named missing-seal refusal.
 
-## Three stop reasons, told apart
+## Three stop reasons
 
 | Stop | Exit | How it is said |
 |---|---|---|
-| a member **held** | 3 | `manual`/`semi`: `run <id>: <mode> mode stopped at held <name>`, unless the selection ends at the Armarium: such a selection runs through every held member, as `auto` does, so the Armarium's terminal report names every hold. A held Attestatores stops every mode, including `auto`, and says so. So does a held Recensor (below). |
-| a boundary **refused** | 2 | the refusing stage's own named `ContractError`/`SchemaRefusal` on stderr, forwarded verbatim |
-| the run-level **cap** breached | 4 | `run <id>: halted at the <checkpoint> checkpoint — …`, plus the offending subjects by kind |
+| a member **held** | 3 | `manual`/`semi`: `run <id>: <mode> mode stopped at held <name>`, unless the selection ends at the Armarium, which runs through every hold as `auto` does so the terminal report names them all. A held Attestatores and a held Recensor stop every mode |
+| a boundary **refused** | 2 | the refusing stage's `ContractError`/`SchemaRefusal` on stderr, forwarded verbatim |
+| the run-level **cap** breached | 4 | `run <id>: halted at the <checkpoint> checkpoint — …`, with the offending subjects by kind |
 
-The cap is recomputed at **every** member boundary in every mode, before any of the stops
-above, and again at a stage program's own entry (`common/stage.refuse_halted_run`) so a
-directly invoked stage refuses a halted run without writing. A run that is both held and
-over the cap reports the cap: that is the reason that needs fixing rather than re-entry.
-Re-entering a halted run is refused again at the resume preflight, from the same tally
-recomputed from the same artifacts — the driver caches nothing between invocations.
+The hard-failure cap is recomputed from disk at every member boundary in every mode, before
+any other stop, and again at each stage's own entry (`common/stage.refuse_halted_run`), so a
+directly invoked stage refuses a halted run without writing. A run both held and over the cap
+reports the cap. Re-entering a halted run is refused at the resume preflight; the driver
+caches nothing between invocations.
 
 ## A held Recensor stops every mode
 
-Before the Archetypus is invoked, in every mode, the orchestrator reads what the
-Recensor's current records hold (`common/page_review.py::held_by_recensor`: each held
-review's unit and codes, each held continuation link, each page the
-`review-decisions` record still holds, the same total the Recensor exits held on). When anything is held, nothing is established or exported: the
-Archetypus and the Armarium are not invoked. The Coniector has already run when the
-selection includes it, since it reads only the Perlector's readings. The run exits 3
-after `run <id>: stopped at a held recensor, before the archetypus`, listing every held
-item and the way on. An unsealed Recensor is left to
-the Archetypus to refuse by name.
+Before the Archetypus is invoked, in every mode, the orchestrator reads what the Recensor's
+current records hold (`common/page_review.py::held_by_recensor`: held reviews, held
+continuation links, and pages the `review-decisions` record still holds). When anything is
+held, the Archetypus and Armarium are not invoked (the Coniector has already run when the
+selection includes it). The run exits 3 after `run <id>: stopped at a held recensor, before
+the archetypus`, listing every held item and the way on. An unsealed Recensor is left to the
+Archetypus to refuse.
 
-The way on is a person's: record operator review decisions in the run, then resume it
-from the Recensor (`--from recensor --to armarium`), which applies them
-(`pipeline/5_recensor/CONTRACT.md`, "Operator review decisions"), or, for a page
-`re-ask`, from the Perlector (`--from perlector --to armarium`), which reads the page
-again as an operator re-read (`pipeline/4_perlector/CONTRACT.md`, "An operator
-re-read") before the Recensor reviews it. The run continues
-past the Recensor once nothing is held, or once an `advance` record
-(`operations/operator/advance.py`) binds the Recensor's current seal
-(`common.stage.boundary_advanced`); the export then names every hold. A Recensor pass
-that applies new decisions re-seals, so an advance given before it passes nothing.
-The Recensor is in `common.stage.ALWAYS_HELD_BOUNDARIES` for this reason, beside the
-Attestatores and the Armarium, and `advance` accepts it in every mode.
+The way on is a person's: record operator review decisions, then resume from the Recensor
+(`--from recensor --to armarium`; `pipeline/5_recensor/CONTRACT.md`, "Operator review
+decisions"), or for a page `re-ask` from the Perlector (`--from perlector --to armarium`;
+`pipeline/4_perlector/CONTRACT.md`, "An operator re-read"). The run continues past the
+Recensor once nothing is held, or once an `advance` record (`operations/operator/advance.py`)
+binds the Recensor's current seal (`common.stage.boundary_advanced`); the export then names
+every hold. A Recensor pass that applies new decisions re-seals, so an earlier advance passes
+nothing. The Recensor is in `common.stage.ALWAYS_HELD_BOUNDARIES` with the Attestatores and
+the Armarium, and `advance` accepts it in every mode.
 
-**More than 1 in 50 of a run's pages held means the run has a systemic problem.** At
-that stop the orchestrator counts the run's held pages
-(`common/page_review.py::held_pages_after_review`: a page with any held unit, or still
-held by the `review-decisions` record, of the distinct pages the Recensor reviewed).
-When their share is more than the run's sealed `[review] max_held_page_share`
-(`config/review.toml`, read by `common/review_policy.py` and checked against the run's
-`review` seal), the report opens with one line, `run <id>: systemic: <held> of <pages>
-page(s) are held after the recensor, more than the sealed limit of <share> ...`,
-naming the held pages. The run stops all the same: the alarm adds a reason, never a
-pass.
+**The systemic alarm.** At that stop the orchestrator counts held pages
+(`common/page_review.py::held_pages_after_review`). When their share exceeds the sealed
+`[review] max_held_page_share` (`config/review.toml`, `common/review_policy.py`), the report
+opens with `run <id>: systemic: <held> of <pages> page(s) are held after the recensor, more
+than the sealed limit of <share> ...`. The run stops all the same: the alarm adds a reason,
+never a pass. An `advance` may still pass a systemic run, but the alarm never goes silent:
 
-A person's recorded `advance` of the Recensor's seal may still pass a systemic run: it
-is an explicit choice, and the run is not trapped. The alarm never goes silent:
+- the orchestrator prints the same `systemic:` line again at the advance check;
+- the Armarium records `systemic_review` `{held_pages, pages, max_held_page_share}` in the
+  aggregate basis, so the run stays partial and the verifier recomputes it;
+- `verbatus run` and `verbatus export` notify it as a `decision` when notifications are on;
+- the stop record (`--stop-record`, `orchestrator-stop.v2`: run id, exit code, `exported`,
+  `systemic`) names it, and `pod_run --notify` sends it from the pod
+  (`operations/pod/notify_hooks.py::notify_systemic`).
 
-- the orchestrator measures the share again at the advance check and prints the same
-  `systemic:` line before the run continues;
-- the Armarium measures it the same way (`common.page_review.held_share`) and records it
-  in the aggregate basis as `systemic_review` `{held_pages, pages,
-  max_held_page_share}`, so the aggregate carries the line as a `systemic: ...` reason,
-  the run stays partial, the terminal report names it, and the package verifier
-  recomputes it (`pipeline/7_armarium/CONTRACT.md`);
-- `verbatus run` notifies the line as a `decision` through `operations/notify` when
-  notifications are on, at the stop and on a held export, and `verbatus export` names it
-  in a partial export's notification;
-- the invocation's stop record (`--stop-record`, `orchestrator-stop.v2`: run id, exit code, `exported` and `systemic`) names the line
-  as `systemic` (null when none was printed), and `pod_run --notify` sends it from the
-  pod as the same `decision` (`operations/pod/notify_hooks.py::notify_systemic`). The
-  record's directory must exist and be writable before any stage runs. Once the
-  selection starts, the record is written on every return. A refusal raised inside the
-  selection is recorded as `EXIT_FATAL` with `exported` false and any alarm already
-  printed, and is then raised unchanged. A record that cannot be written ends the
-  invocation with `EXIT_FATAL`, and the refusal names the exit, export and alarm it would
-  have held, because a caller cannot tell a missing record from a run with no alarm.
+The stop record's directory must exist and be writable before any stage runs; once the
+selection starts the record is written on every return. A refusal inside the selection is
+recorded as `EXIT_FATAL` and then raised unchanged. A record that cannot be written ends the
+invocation with `EXIT_FATAL`, naming what it would have held, because a caller cannot tell a
+missing record from a run with no alarm.
 
 ## Mode is an invocation choice, never durable bytes
 
-No selection reaches a manifest, a seal, an artifact, a receipt, or any other file. `invoke`
-builds each stage's argv explicitly and forwards no selector. This is checked, not asserted:
+No selection reaches a manifest, seal, artifact, receipt or any other file; `invoke` builds
+each stage's argv explicitly and forwards no selector.
 `test_all_and_manual_stages_write_the_identical_happy_run_tree` and
-`test_all_and_a_split_semi_range_write_the_identical_happy_run_tree` drive the identical
-run three ways and compare every byte, so a mode that leaked into the tree would differ
-between the three and fail.
+`test_all_and_a_split_semi_range_write_the_identical_happy_run_tree` drive the same run three
+ways and compare every byte.
 
-**Scan triage and the driver share one mode vocabulary.** Triage chooses `manual`, `semi`,
-or `auto` per batch through confidence-threshold settings (`config/triage_modes.toml`).
-`common.contracts.stages.TRIAGE_MODES` declares that triple once, and
-`common.stage.RUN_MODES` aliases it; `pipeline/0_triage/CONTRACT.md` ("Modes and refusals")
-records the same join.
+Scan triage uses the same `manual`/`semi`/`auto` vocabulary per batch
+(`config/triage_modes.toml`; `common.contracts.stages.TRIAGE_MODES`, aliased as
+`common.stage.RUN_MODES`; `pipeline/0_triage/CONTRACT.md`, "Modes and refusals"). Triage
+persists its mode as a batch property; the driver never writes one. Other contracts use a field
+named `mode` for unrelated things (`common/contracts/approval.py`'s ingress record, the
+Designator's crop-policy `mode`), so the field name alone identifies no selection.
 
-The selections have different lifetimes. Triage persists its member as a batch property;
-the driver infers one for an invocation and never writes it to the run tree, as the
-byte-identity tests above require. Other contracts use a field named `mode` for unrelated
-vocabularies, so the field name alone identifies no selection
-(the ingress record in `common/contracts/approval.py`, `parse_ingress_record`, and the
-crop-policy `mode` of `pipeline/2_designator/geometry_layer.py`, `yolo_obb`).
+## Transcript, volume sync and timing journal
 
-## Transcript lines and the timing journal
+Every stage runs unbuffered (`python -I -u`) and the orchestrator flushes each line, so a
+transcript shows lines as they happen. Around each stage it prints a start line and an end
+line with its exit, duration and each chair it launched (launch and ready moments from the
+stage's launch audits, found via the empty `launch-audit-<digest>` note beside its engine
+logs).
 
-Every stage runs unbuffered (`python -I -u`), and the orchestrator flushes each line
-it prints, so a transcript shows lines as they happen. Around each stage it prints
-one line when the stage starts and one when it ends, with its exit and duration and
-each chair it launched (launch and ready moments, from the stage's launch audits,
-found by the empty `launch-audit-<digest>` note the stage leaves beside its engine
-logs, so no other blob is read);
-around a volume sync, one line when it starts and one with the files copied and its
-duration.
+With `--stage-sync-root`, each stage's run tree is copied to the volume after it ends. The
+file list is frozen at the stage boundary (`RunTreeSync.plan`) and the copy runs on a thread
+while the next stage starts. Each sync is joined before the next one starts and before the
+invocation returns; a failed sync stops the run when the stage beside it ends. So the volume
+holds a stage's files by the end of the following stage: a pod lost during that stage may lack
+part of the previous one. Each sync is journaled (`kind` `volume-sync`, duration,
+`files_copied`, `exit_code` 0, or `None` with `failure`).
 
-With `--stage-sync-root`, each stage's run tree is copied to the volume after it
-ends. The file list is frozen at the stage boundary, on the main thread
-(`RunTreeSync.plan`); the copy then runs on a thread while the next stage starts, so
-that stage's cold start overlaps the copy. Each sync is joined before the next one
-starts and before the invocation returns, whatever way it ends: a stage that fails
-still waits for the sync running beside it, and a failed sync stops the run when the
-stage beside it ends, before any further stage. The volume therefore holds a stage's
-files by the end of the stage after it, not before that stage starts: a pod lost
-while that stage runs may lack part of the stage before it on the volume.
-Each sync is journaled on its own line, `stage` `volume sync after <stage>`, `kind`
-`volume-sync`, with its duration, `files_copied`, and `exit_code` 0, or `None` with
-`failure` naming why.
+`--stage-timing-journal` (`stage-timing-journal.v4`) gets one line per stage invocation, even
+when the stage fails; readers check only the schema and run, so optional fields can be added.
+`gpu_utilization` summarises reads every 15 s (at most 120 samples; `None` with a reason when
+there is no `nvidia-smi`). `serving_spans` lists each launched chair's `started_at`,
+`ready_at` and `ready_seconds`; a chair taken over from the previous stage keeps its launch
+moments and adds `adopted_at`.
 
-The optional stage-timing journal (`--stage-timing-journal`, `stage-timing-journal.v4`)
-gets one line per stage invocation, written even when the stage fails. Its readers
-check only the schema and the run, so optional fields are added without a new
-version. `gpu_utilization` holds summary statistics over every read and at most 120
-samples, every `sample_stride`th read; the card is read every 15 s, and not at all
-on a host with no `nvidia-smi` on PATH (`None` plus that reason). `serving_spans`
-lists each chair the invocation launched with its `started_at`, `ready_at` and
-`ready_seconds` (`None` when the audits could not be read); the serving manager
-records no stop moment, so the entry's `finished_at` bounds it. A chair taken over
-from the stage before keeps its launch and ready moments and adds `adopted_at`, the
-moment this invocation took it over; the stage's end line says `adopted` for it, with
-no model load, where a launched chair's load would be said.
-
-When a selection runs the Coniector right after the Perlector, the Perlector is
-invoked with `--hand-off-to-coniector`, a scheduling hint that is not sealed: a
-Perlector whose chair the reconstructor's row shares leaves it serving for the
-Coniector to take over (`operations/serving/README.md`, "A shared service").
+When a selection runs the Coniector right after the Perlector, the Perlector gets
+`--hand-off-to-coniector`, an unsealed scheduling hint: a Perlector whose chair the
+reconstructor's row shares leaves it serving for the Coniector to take over
+(`operations/serving/README.md`, "A shared service").

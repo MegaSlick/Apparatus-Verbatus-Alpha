@@ -25,6 +25,10 @@ from common.sealed_config import read_sealed_toml
 DEFAULT_DECODING_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "decoding.toml"
 _PERLECTOR_BOUNDS = ("page_max_tokens", *GUARD_FIELDS)
 _RECONSTRUCTOR_BOUNDS = ("answer_max_tokens",)
+# The witness chairs whose replies are streamed under `[witness_generation]`'s
+# guard: every served witness that sends a plain request. Chandra
+# (`attestator_1`) reads under its native recipe's own retry loop instead.
+STREAMED_WITNESS_CHAIRS = frozenset({"attestator_2", "attestator_3", "attestator_4"})
 # Every sampling field a chair's row may carry, each a top-level field of the
 # pinned vLLM 0.30.0 `ChatCompletionRequest`. Only the sealed table puts them on
 # the wire; a caller's request may not name them.
@@ -119,17 +123,18 @@ def _validate_decoding_policy(policy: Any) -> None:
     `chair_decoding` holds one row per reading chair with its makers' sampling
     values and where they were read. `perlector_generation` caps one whole-page
     reading's output and seals the repetition-loop guard its streamed reply is
-    stopped by, and
-    `reconstructor_generation` caps one Coniector answer.
+    stopped by, `witness_generation` seals the guard of every streamed witness
+    reply, and `reconstructor_generation` caps one Coniector answer.
     """
     if not isinstance(policy, dict):
         raise ContractError("decoding configuration is not a table")
-    if policy.get("schema") != "decoding.v9":
+    if policy.get("schema") != "decoding.v10":
         raise ContractError("decoding configuration has an unsupported schema")
     expected_sections = {
         "schema",
         "chair_decoding",
         "perlector_generation",
+        "witness_generation",
         "reconstructor_generation",
         "chandra_native_inference",
     }
@@ -145,6 +150,10 @@ def _validate_decoding_policy(policy: Any) -> None:
         validate_guard({name: policy["perlector_generation"][name] for name in GUARD_FIELDS})
     except ContractError as error:
         raise ContractError(f"decoding perlector_generation: {error}") from error
+    try:
+        validate_guard(policy["witness_generation"])
+    except ContractError as error:
+        raise ContractError(f"decoding witness_generation: {error}") from error
     _require_output_bounds(
         policy["reconstructor_generation"],
         _RECONSTRUCTOR_BOUNDS,
@@ -416,3 +425,15 @@ def perlector_loop_guard(policy: Mapping[str, Any]) -> dict[str, int]:
     stopped by (`common.repetition_loop`)."""
     _validate_decoding_policy(policy)
     return {name: policy["perlector_generation"][name] for name in GUARD_FIELDS}
+
+
+def witness_loop_guard(policy: Mapping[str, Any], chair: str) -> dict[str, int]:
+    """Return the sealed repetition-loop guard a witness chair's streamed reply is
+    stopped by (`common.repetition_loop`); a chair that is never streamed has none."""
+    _validate_decoding_policy(policy)
+    if chair not in STREAMED_WITNESS_CHAIRS:
+        raise ContractError(
+            f"chair {chair!r} has no witness repetition-loop guard; the streamed witness "
+            f"chairs are {sorted(STREAMED_WITNESS_CHAIRS)}"
+        )
+    return validate_guard(policy["witness_generation"])

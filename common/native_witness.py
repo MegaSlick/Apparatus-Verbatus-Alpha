@@ -19,7 +19,7 @@ from common.chandra_native_retry import validate_trace as validate_chandra_nativ
 from common.contracts.canonical import digest_bytes, is_plain_int, is_sha256
 from common.contracts.envelope import digest_ref, read_verified
 from common.contracts.errors import SchemaRefusal
-from common.contracts.serving import STOP_REASON_UNREPORTED
+from common.contracts.serving import READER_STOP_REPETITION_LOOP, STOP_REASON_UNREPORTED
 from common.contracts.stages import ATTESTATORES, writing_directory
 from common.corpus_register import refuse_capture_preference
 from common.imaging import (
@@ -645,6 +645,18 @@ def _truncation_from_stop_word(transport_stop_reason: str) -> tuple[bool | None,
     return transport_stop_reason in _CHURRO_CUTOFF_STOP_REASONS, "trusted-response-boundary"
 
 
+def cut_off_basis(transport_stop_reason: str, parse_reason: str) -> str:
+    """The health basis of a cut-off response that did not parse: who cut it, and why
+    it is unread. Shared by the writer and this validator so the two cannot drift."""
+
+    who = (
+        "stopped by the client on a repetition loop"
+        if transport_stop_reason == READER_STOP_REPETITION_LOOP
+        else "cut off by the provider"
+    )
+    return f"response {who} ({transport_stop_reason!r}); {parse_reason}"
+
+
 def validate_page_testimonium_payload(
     payload: Any,
     *,
@@ -819,8 +831,7 @@ def _validate_churro_page_health(
         # The same helper the writer uses, so the two cannot disagree.
         parse_refusal = native_parse_refusal(parse)
         basis = (
-            "response cut off by the provider "
-            f"({capture['transport_stop_reason']!r}); {parse_refusal}"
+            cut_off_basis(capture["transport_stop_reason"], parse_refusal)
             if cut_off
             else parse_refusal
         )
@@ -1044,10 +1055,13 @@ REPETITION_FINDING_KINDS: Final = frozenset(
 _CHURRO_CAPTURE_FINDING_KINDS: Final = (
     REPETITION_FINDING_KINDS | churro_document.DOCUMENT_FINDING_KINDS
 )
-_CHURRO_CUTOFF_STOP_REASONS: Final = frozenset({"length", "max_new_tokens"})
+_CHURRO_CUTOFF_STOP_REASONS: Final = frozenset(
+    {"length", "max_new_tokens", READER_STOP_REPETITION_LOOP}
+)
 # `eos`/`stop`/`max_new_tokens` are the fixture transport's words, `length` is
-# vLLM's cut-off word, and `STOP_REASON_UNREPORTED` is what a live page chair
-# retains when the wire carried no `finish_reason`.
+# vLLM's cut-off word, `repetition-loop` is the client's when it stopped a
+# streamed reply on a loop, and `STOP_REASON_UNREPORTED` is what a live page
+# chair retains when the wire carried no `finish_reason`.
 _CHURRO_STOP_REASONS: Final = (
     frozenset({"eos", "stop"}) | _CHURRO_CUTOFF_STOP_REASONS | {STOP_REASON_UNREPORTED}
 )
@@ -1222,12 +1236,16 @@ def derive_churro_capture(
 
 
 def _churro_stop_reason(transport_stop_reason: str, parse_state: str, *, repeated: bool) -> str:
-    """A parse failure outranks repetition; the repetition finding is kept either way."""
+    """A parse failure outranks repetition; the repetition finding is kept either way.
+
+    A reply the client stopped on a repetition loop keeps that stop over the
+    post-hoc scan's finding, which then only restates it.
+    """
     if parse_state == "failed":
         return "partial-parse-failed"
     if parse_state == "unrecognized-shape":
         return "partial-parse-unrecognized-shape"
-    if repeated:
+    if repeated and transport_stop_reason != READER_STOP_REPETITION_LOOP:
         return "partial-post-hoc-repetition-detected"
     return transport_stop_reason
 
@@ -1386,8 +1404,7 @@ def _validate_churro_capture(value: dict[str, Any]) -> None:
             f"{value['transport_stop_reason']!r}"
         )
     view = value["view"]
-    # `framing` names which declared framing was asked; optional so earlier
-    # records stay valid.
+    # `framing` names which declared framing was asked; it may be absent.
     if set(view) - {"framing"} != {"prompt", "generation"}:
         raise SchemaRefusal(
             "a Churro page capture does not retain exactly its prompt and generation view"

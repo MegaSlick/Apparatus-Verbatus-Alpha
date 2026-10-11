@@ -17,6 +17,8 @@
 
 ---
 
+- [ ] Labelled `review-ok` and marked ready for review: CodeRabbit skips drafts and
+      unlabelled pull requests
 - [ ] Serves the goals in [PRINCIPLES.md](../PRINCIPLES.md): nothing picks, no act lost,
       uncertainty flagged
 - [ ] Third-party or adapted code is named, with its source and licence

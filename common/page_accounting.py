@@ -203,10 +203,10 @@ _PROBLEM_RULE: Final = {UNKNOWN_ID: "b"}
 # A hold code the sealed policy names in `[flags] codes` is a review flag: the
 # finding is measured and recorded exactly as before, the Recensor and the
 # Armarium report it and the flagged export carries the reading with it, but it
-# holds nothing. The lead's choice (2026-10-09) for the checks not yet
-# calibrated for this corpus: the record detector's disagreement, the ink
-# thresholds and a short witness unit read differently. Reverting one is a
-# config change: take its code out of `[flags] codes`, and it holds again.
+# holds nothing. The shipped policy flags the checks not yet calibrated for this
+# corpus: the record detector's disagreement, the ink thresholds and a short
+# witness unit read differently. Take a code out of `[flags] codes` and it holds
+# again.
 #
 # The Recensor's own residual-ink check repeats rule (f)'s policy on the same
 # regions (`pipeline/5_recensor/page_review.py`); its code is named here so the

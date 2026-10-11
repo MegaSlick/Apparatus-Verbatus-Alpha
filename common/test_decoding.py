@@ -23,6 +23,7 @@ from common.decoding import (
     reconstructor_max_tokens,
     recorded_wire_decimals,
     verify_call_sampling,
+    witness_loop_guard,
 )
 
 # The makers' recommendations, typed here from their sources rather than read
@@ -137,10 +138,11 @@ def test_shipped_decoding_policy_declares_its_sections():
         "schema",
         "chair_decoding",
         "perlector_generation",
+        "witness_generation",
         "reconstructor_generation",
         "chandra_native_inference",
     }
-    assert policy["schema"] == "decoding.v9"
+    assert policy["schema"] == "decoding.v10"
     assert policy["perlector_generation"] == {
         "page_max_tokens": 12288,
         "loop_line_repeats": 30,
@@ -154,6 +156,12 @@ def test_shipped_decoding_policy_declares_its_sections():
         "loop_block_repeats": 10,
         "loop_block_max_lines": 8,
     }
+    for chair in ("attestator_2", "attestator_3", "attestator_4"):
+        assert witness_loop_guard(policy, chair) == {
+            "loop_line_repeats": 30,
+            "loop_block_repeats": 10,
+            "loop_block_max_lines": 8,
+        }
     assert policy["reconstructor_generation"] == {"answer_max_tokens": 8192}
     assert reconstructor_max_tokens(policy) == 8192
     assert policy["chandra_native_inference"] == recipe_record()
@@ -171,6 +179,7 @@ def test_shipped_decoding_policy_declares_its_sections():
         "decoding.v6",
         "decoding.v7",
         "decoding.v8",
+        "decoding.v9",
     ],
 )
 def test_an_earlier_decoding_schema_is_refused(tmp_path: Path, schema: str):
@@ -333,6 +342,59 @@ def test_a_perlector_generation_section_without_the_page_cap_is_refused(tmp_path
     path.write_text(re.sub(r"^page_max_tokens = \d+\n", "", source, flags=re.M), encoding="utf-8")
 
     with pytest.raises(ContractError, match="perlector_generation must declare a positive integer"):
+        load_decoding_policy(path)
+
+
+@pytest.mark.parametrize("chair", ["attestator_1", "perlector", "reconstructor", "nobody"])
+def test_only_a_streamed_witness_chair_has_a_witness_loop_guard(chair: str):
+    """Chandra reads under its native recipe's retry loop, and the readers have their own."""
+    policy, _digest = load_decoding_policy()
+    with pytest.raises(ContractError, match="has no witness repetition-loop guard"):
+        witness_loop_guard(policy, chair)
+
+
+def _witness_section(source: str) -> tuple[str, str, str]:
+    before, header, rest = source.partition("[witness_generation]\n")
+    body, sep, after = rest.partition("\n[")
+    return before + header, body, sep + after
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        (
+            lambda body: body.replace("loop_line_repeats = 30", "loop_line_repeats = 1"),
+            "at least two",
+        ),
+        (
+            lambda body: body.replace("loop_block_max_lines = 8", "loop_block_max_lines = 1"),
+            "at least 2",
+        ),
+        (
+            lambda body: body.replace("loop_block_repeats = 10", 'loop_block_repeats = "10"'),
+            "integers",
+        ),
+        (lambda body: body.replace("loop_line_repeats = 30\n", ""), "must name exactly"),
+        (lambda body: body + "page_max_tokens = 4096\n", "must name exactly"),
+    ],
+)
+def test_a_witness_generation_guard_that_is_not_a_guard_is_refused(
+    tmp_path: Path, change, message: str
+):
+    before, body, after = _witness_section(DEFAULT_DECODING_CONFIG_PATH.read_text("utf-8"))
+    path = tmp_path / "decoding.toml"
+    path.write_text(before + change(body) + after, encoding="utf-8")
+
+    with pytest.raises(ContractError, match=f"decoding witness_generation: .*{message}"):
+        load_decoding_policy(path)
+
+
+def test_a_missing_witness_generation_section_is_refused(tmp_path: Path):
+    before, _body, after = _witness_section(DEFAULT_DECODING_CONFIG_PATH.read_text("utf-8"))
+    path = tmp_path / "decoding.toml"
+    path.write_text(before.replace("[witness_generation]\n", "") + after.lstrip("\n"), "utf-8")
+
+    with pytest.raises(ContractError, match="wrong closed schema"):
         load_decoding_policy(path)
 
 

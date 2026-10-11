@@ -1,261 +1,150 @@
 # Gold tooling
 
-`python -m gold.cli sample --run RUN.json --catalog catalog.json --plan plan.json
---output-dir records/` creates a stratified, page-only human-gold sample.  The
-catalog has one `{ordinal, sha256, stratum, width, height}` row for every run source
-page.  A row's `sha256` is the digest that page binds into the run's
-`corpus_frame_membership` -- the Door's `computed_sha256` where it inspected the
-bytes, the submitted declaration only where it could not -- which for a raster is
-the page's own digest and for a page fanned out of a container is that container's
-digest composed with the page's index inside it.  One frame identity means one
-field, and this is the field `common/runtree/store` seals; the catalog is checked
-against it.  The plan carries a quota for both `calibration` and `locked-acceptance` for **every**
-stratum the catalog declares.  A stratum the plan does not name would drop out of
-gold without saying so, so an unnamed one is refused; quota `0` is how a stratum
-is deliberately left unsampled, and it stays visible in the plan file.  Each
-page's own sha256 -- not the frame-wide `page_digest` field -- deterministically
-partitions pages into one of those two sets;
-the frame's existing `seed` ranks pages within their own stratum. Keeping the
-partition independent of the frame means the same page cannot switch sets when a
-page is added or a shard is resplit. A quota that the partition cannot fill is
-refused; the sampler never crosses the boundary.
+Human gold: page samples drawn from a run, and each act's reading made by two people
+independently and reconciled by a third only where they differ. Gold is what the pipeline
+is measured against, so no pipeline output ever enters it.
 
-The same command writes one `gold-sampling-draw.v2` record beside the selected
-sample records. It retains the normalized whole-frame catalog, predeclared plan,
-and selected sample digests, so `verify-sampling records/ --run RUN.json` needs no
-unrecorded catalog or plan bytes. Selected membership is recomputed from those
-retained facts; there is no stored member count to trust.
+| Command | What it does |
+|---|---|
+| `sample --run RUN.json --catalog catalog.json --plan plan.json --output-dir records/` | draws a stratified, page-only sample and its `gold-sampling-draw.v2` record |
+| `verify-sampling records/ --run RUN.json [--catalog … --plan …]` | replays the whole draw |
+| `ingest-manual` | records a picker's `gold-manual-pick.v2` page pick unchanged |
+| `bind-instrument` | creates an append-only `gold-instrument-membership.v1` record (sample digest, act identity, protocol digest) |
+| `transcribe` | records one transcriber's reading of one act |
+| `adjudicate` | reconciles two transcriptions |
+| `validate [--run RUN.json]` | checks record schemas and self-hashes |
+| `validate-corpus records/ [--run RUN.json]` | checks what no single record can |
 
-A drawn sample records the catalog and plan digests it came from, and carries no
-`claimed_set`; a manual pick carries a `claimed_set` and no catalog or plan.  A
-record cannot claim one origin while carrying the other's evidence.  That binding
-is what `python -m gold.cli verify-sampling records/ --run RUN.json --catalog
-catalog.json --plan plan.json` replays: validating one record proves its page is a
-real corpus page in the set the seed assigns it, but only replaying the whole draw
-shows that the *sampler* chose those pages.  A hand-picked page minted as
-`stratified-seed`, a record quietly removed from the directory, and a catalog
-re-described after the fact all fail the replay by name.  A `manual` record filed
-in the same directory is validated but is not reconciled against the draw's
-*membership*: it never claimed to be draw membership, and drawn samples and manual
-picks share one directory by design.  It is still reconciled against the draw's
-retained *catalog*, but by `validate-corpus` rather than here — see Custody.
+All run as `python -m gold.cli <command>`.
 
-`ingest-manual` accepts a picker's `gold-manual-pick.v2` record, which has
-`selection_basis`, the bound page/stratum, and the picker's stated set.  It records
-that selection unchanged; it does not choose a replacement page.  The persisted
-sample's `set` is always the page-derived partition — calibration/locked-acceptance
-disjointness is enforced by construction, never by policing a human's claim — but
-a manual pick may predate the corpus frame and its seed, so the stated set can honestly
-disagree with it. That disagreement is never silently resolved
-either way: it is carried unchanged as `claimed_set` alongside the true `set`, so a
-predates-the-seed pick is ingested, not refused and sent back for a re-pick.
-Automatically sampled records carry `claimed_set: null` (no human claim was made).
-Before publishing a manual pick, the CLI reconciles it with the gold records
-already beside its output path. One hand-picked page is picked once: a second pick
-of the same page is refused before it can be counted twice, whether it restates the
-stratum or only the wording of `selection_basis`.  A pick of a page the seed also
-drew is *not* refused — the seed can honestly land on a page picked by hand before
-it existed, and refusing that would strand a real corpus with no remedy short of
-discarding the picker's recorded provenance — but that page is still one act's worth of custody, not two.
-The collection rule is symmetric: one page has at most one distinct sample record
-under each method, including a legacy seeded corpus whose draw record is absent;
-the manual and seeded records may coexist because they preserve different true
-selection provenance.
+## Sampling
 
-`bind-instrument` creates an append-only `gold-instrument-membership.v1` record
-carrying a sample digest, an act identity, and a protocol digest.
+The catalog has one `{ordinal, sha256, stratum, width, height}` row for every source page of
+the run. `sha256` is the digest the page binds into the run's `corpus_frame_membership`
+(the Door's `computed_sha256` where it inspected the bytes, else the submitted
+declaration; for a page fanned out of a container, the container's digest composed with
+the page index), the field `common/runtree/store` seals.
 
-Every act identity in this module — instrument membership, transcription, and
-adjudication — is checked for shape only (well-formed and `act_`-prefixed): gold
-consumes no Perlector act record, so it cannot check that the act actually exists or
-rederive its page binding. Collection validation can prove
-the narrower fact available here: every use of one act identity resolves through
-its sample to the same `{ordinal, sha256}` page. It cannot prove that the first such
-page is the page the Perlector's page reading binds the act to.
+The plan gives a quota for both `calibration` and `locked-acceptance` for **every** stratum
+the catalog declares. An unnamed stratum is refused (it would drop out of gold silently);
+quota `0` leaves one deliberately unsampled and visible.
 
-## The adjudication flow
+- Each page's own sha256 deterministically puts it in one of the two sets, so a page cannot
+  switch sets when pages are added or a shard is resplit. The frame's `seed` ranks pages
+  within their stratum. A quota the partition cannot fill is refused; the sampler never
+  crosses the boundary.
+- The draw record retains the normalized whole-frame catalog, the plan and the selected
+  sample digests, so `verify-sampling` needs no other bytes and recomputes membership rather
+  than trusting a count. A hand-picked page minted as `stratified-seed`, a removed record and
+  a re-described catalog all fail the replay by name.
+- A drawn sample records its catalog and plan digests and no `claimed_set`; a manual pick
+  carries a `claimed_set` and no catalog or plan. A record cannot claim one origin while
+  carrying the other's evidence.
 
-An act's gold reading is made by two people independently and reconciled by a
-third only where they differ.
+**Manual picks.** `ingest-manual` records the pick's `selection_basis`, page, stratum and
+the picker's stated set unchanged; it never chooses a replacement. The stored `set` is
+always the page-derived partition; a stated set that disagrees (a pick made before the seed
+existed) is kept as `claimed_set`, not refused. The same page cannot be hand-picked twice. A
+pick of a page the seed also drew is allowed (both provenance records are true), but it is
+still one act's worth of custody. Manual records share the draw's directory; they are not
+reconciled against draw membership but are reconciled against the draw's retained catalog by
+`validate-corpus`.
 
-`transcribe --sample S.json --act-identity act_… --transcriber NAME --text-file
-F.txt --output T.json [--run RUN.json]` records one transcriber's reading of one
-act on a sampled page.  The text file is UTF-8; its final newline belongs to the
-file and is dropped, and nothing else about the bytes is adjusted.  A
-transcription is never blank — an act nobody can read is transcribed `[ILLEGIBLE]`,
-which is the one reserved spelling, so unreadable spans are counted rather than
-guessed at and never quietly dropped.  Surrounding whitespace, a CR, and any
-composition other than Unicode NFC are refused by name: agreement between two
-transcribers is decided by equality, and an invisible difference would summon an
-adjudicator for two identical readings and inflate the disagreement rate.
-When the source itself literally says `illegible`, write `\illegible`; the backslash
-marks source text rather than the reserved unreadability token.  A literal backslash
-is written `\\`, and those two are the only escapes gold text defines — a backslash
-before anything else is refused by name.  The escapes are read left to right, so
-`\\illegible` is a literal backslash followed by an *unescaped* illegibility and is
-refused; a backslash before the literal word is `\\\illegible`.  The point of
-closing that off is that the stored reading maps back to the ink exactly one way,
-and these records are immutable: an ambiguity admitted now could never be
-re-recorded out of the hours that produced it.
+## Act identities
 
-`adjudicate --first T1.json --second T2.json --output A.json [--adjudicator NAME
---text-file F.txt] [--run RUN.json]` reconciles them.  If the two readings are identical there is
-nothing to reconcile: the outcome is `agreed`, no adjudicator is recorded, and
-naming one is refused.  If they differ, the adjudicator and their own reading of
-the ink are required — **the adjudicator does not choose the better
-transcription**.  This mirrors the pipeline's rule that nothing picks among
-witnesses, although here the transcribers are people and no model output
-reaches these records.  What they read may
-match one, both in part, or neither.  Both transcriptions are retained inside the
-record unaltered, and `outcome` is derived from them on every read, so a record
-cannot claim agreement over two readings that differ.
+Every act identity (instrument membership, transcription, adjudication) is checked for
+shape only (well-formed, `act_`-prefixed): gold reads no Perlector act record, so it cannot
+check that the act exists. `validate-corpus` proves that every use of one act identity
+resolves through its sample to the same `{ordinal, sha256}` page, not that it is the page the
+Perlector bound the act to.
 
-A name shaped like a pipeline identity is refused wherever a person is named:
-gold is what the pipeline is measured against, so gold made of its output would
-make the measurement circular.
+## Transcription and adjudication
 
-**RecordGold truth cannot be filed here as gold.**  `operations/corpus/` admits a
-third-party expert-annotated corpus and gives it its own `reference.py` record
-family — one unnamed expert reading, no adjudication, `provenance:
-"third-party-expert-annotation"` — because it cannot satisfy this module's
-two-reading custody shape.  `_person` in `gold/core.py` catches a
-pipeline identity, but it would not catch an invented Teklia annotator name —
-nothing here can, which is why the boundary has to be the record family
-rather than a name check.  `adjudicate` derives `outcome` from two
-independently stored readings that RecordGold never has, and `validate_corpus`
-refuses closure without both.  Forcing a reference record in as gold would
-mean inventing two transcriber names for one text and minting a fabricated
-`agreed` custody chain — the exact fabrication this module's two-reading
-requirement exists to make impossible.  A reference record and a gold record
-may describe the same page; they are never the same kind of record, and
-neither directory is the right home for the other's.
+```sh
+python -m gold.cli transcribe --sample S.json --act-identity act_… --transcriber NAME \
+  --text-file F.txt --output T.json [--run RUN.json]
+python -m gold.cli adjudicate --first T1.json --second T2.json --output A.json \
+  [--adjudicator NAME --text-file F.txt] [--run RUN.json]
+```
 
-Choosing the acceptance corpus is not this module's job. If RecordGold is used for
-it, that is recorded where the acceptance corpus is chosen, never entered through
-this module's custody chain.
+**Text rules.** The text file is UTF-8; its final newline is dropped and nothing else is
+adjusted. Agreement is decided by equality, so surrounding whitespace, a CR, and anything
+not in Unicode NFC are refused by name. A transcription is never blank: an unreadable act is
+`[ILLEGIBLE]`, the one reserved spelling. Source text that literally says `illegible` is
+written `\illegible`; a literal backslash is `\\`; a backslash before anything else is
+refused. Escapes read left to right, so `\\illegible` is refused and `\\\illegible` is a
+backslash followed by the word. The stored reading maps back to the ink exactly one way,
+because records are immutable.
+
+**Adjudication.** Identical readings give `agreed`, with no adjudicator (naming one is
+refused). Different readings require an adjudicator and their own reading of the ink: **the
+adjudicator does not choose the better transcription**, mirroring the pipeline's rule that
+nothing picks among witnesses. Both transcriptions are kept unaltered inside the record, and
+`outcome` is derived from them on every read.
+
+A person's name shaped like a pipeline identity is refused wherever a person is named.
+
+**RecordGold is not gold.** `operations/corpus/` admits that third-party corpus in its own
+`reference.py` record family (one unnamed expert reading, no adjudication). It cannot
+satisfy gold's two-reading custody, and forcing it in would mean inventing transcribers and
+a fabricated `agreed` chain. A name check cannot catch an invented annotator, so the
+boundary is the record family. Choosing the acceptance corpus is not this module's job.
 
 ## Custody
 
-The layout schema embeds its source `gold-page-sample.v2`, whose page carries
-positive pixel `width` and `height`, and has closed
-`act`, `non-act-text`, `occlusion`, and `true-blank` rectangle kinds.  The padding
-schema also embeds its source sample and carries only rectangles plus the required
-`calibrated_for_this_corpus` flag.  `validate` checks all gold record schemas and
-self-hashes;
-for a sample, layout, or padding record, pass `--run` to prove the derived page and
-frame facts against the run authority again (an embedded sample is otherwise only
-checked for internal self-consistency, not that it names a real run).
-`bind-instrument` accepts the same optional `--run`. A transcription, adjudication, or
-instrument membership names its sample only by digest, so `validate --run` refuses
-it; `validate-corpus --run` resolves it through its corpus instead.
+**Records and versions.** Layout records embed their source `gold-page-sample.v2` (positive
+pixel `width` and `height`) and closed rectangle kinds `act`, `non-act-text`, `occlusion`
+and `true-blank`; a layout needs at least one region (an empty page is `true-blank`).
+Padding records embed their sample and carry rectangles plus the required
+`calibrated_for_this_corpus` flag, with at least one rectangle. Every record is read only
+under the exact schema version it names. v1 sample, draw, manual-pick, layout and padding
+records carry no page size, so they are refused: keep their bytes unchanged and migrate them
+explicitly, never in place.
 
-Sample, draw, manual-pick, layout, and padding records carry the page size, and
-every record is read only under the exact schema version it names. Their v1
-versions carried no page size, so this reader cannot prove that a v1 rectangle
-lies on its page and refuses the record, naming the remedy: keep the v1 bytes
-unchanged as immutable evidence, and read them with their historical reader or
-carry them over by an explicit, provenance-preserving migration. Never edit a v1
-record in place.
+**What `--run` proves.** With `--run`, `validate` re-proves a sample, layout or padding
+record's page and frame facts against the run authority (whose schema and self-hash are
+checked first). The run carries only a page's ordinal and sha256; `stratum`, `width` and
+`height` are catalog-declared, and `validate-corpus` holds them to the draw's catalog.
+Transcriptions, adjudications and memberships name their sample by digest only, so
+`validate --run` refuses them; `validate-corpus --run` resolves them.
 
-`--run` proves the page facts the run actually carries, which are its ordinal and
-sha256.  A page's `stratum`, `width`, and `height` are not among them: the run's
-`source_manifest` records neither, so those three are catalog-declared, and what
-holds them honest is the catalog, not the run.  A rectangle is therefore proven
-on the page **the catalog says this is**, and `validate-corpus` is where that
-declaration is held to the catalog the draw was designed over.
-The run authority's schema and self-hash are checked before its frame or seed is
-used; an edited seed cannot silently define a different draw.
+**`validate-corpus`** checks the collection:
 
-`validate-corpus records/ [--run RUN.json]` checks what no single record can. A
-page's set is stable across frames by construction, but every frame has its own
-seeded ranking and quota universe. Records under two different corpus frames are
-therefore refused by name rather than combined into a draw nobody predeclared, as
-is a page stratified or measured two ways across records, and so are two recorded
-draws — two draws are two predeclared designs, and neither can speak for the
-records beside it. Two records also cannot give one `frame_digest` different
-`page_digest` or seed facts: the digest is one frame identity, not a file-order
-choice between contradictory restatements. A page is identified by its ordinal
-*and* its sha256, because
-the corpus admits the same bytes at two ordinals (one page scanned twice); those
-are two pages, and the same digest carrying two ordinals is not a contradiction.
-Where the corpus retains a draw, every seeded sample the
-records reach must be one that draw produced, *including* the copy a layout or
-padding record embeds: `verify-sampling` reconciles the sample records in a
-directory, so without this a page the sampler never chose could enter gold inside
-an annotation and be replayed by nothing. The reverse is checked too: every page
-the draw did produce must still be present as a `stratified-seed` sample, so a
-page the seed genuinely chose cannot be quietly re-minted `manual` and vanish
-from the seeded count while the corpus still reports itself consistent.
+- Records from two corpus frames, two recorded draws, a page stratified or sized two ways,
+  or one `frame_digest` with differing `page_digest` or seed facts are refused. A page is
+  identified by ordinal **and** sha256 (the same bytes at two ordinals are two pages).
+- Every seeded sample the records reach, including the copy a layout or padding record
+  embeds, must be one the retained draw produced; and every page the draw produced must
+  still be present as a `stratified-seed` sample.
+- A manual pick that restratifies the corpus or declares a page size the catalog does not is
+  refused.
+- Every transcription, adjudication and membership resolves to a sample in the same corpus.
+  An adjudication must embed exactly the two stored transcriptions for its act. Two
+  transcriptions by one person, a third transcription, or two adjudications establishing
+  different text are refused. An act with a transcription must have its adjudication.
+  Names must be NFC and are compared ignoring case. Conflicting layout or padding
+  annotations for one page are refused.
+- Custody is counted **per act**: a page carried by both a manual and a seeded sample does
+  not get two custody chains.
 
-A retained draw keeps the whole normalized catalog, not only the selected rows, so
-it also carries the predeclared stratum and pixel size of every page a manual pick
-could name.  A seeded sample is reconciled against that catalog by its membership
-digest; a manual one is reconciled against it here.  A hand-picked page that
-restratifies the corpus the draw was designed over, or that declares a page size
-the catalog does not, is refused — the first would make the stratification
-unmeasurable, and the second would make "the rectangles are proven on-page"
-vacuous, since every rectangle fits a page said to be enormous.
+`validate-corpus` proves consistency and closure among the records it sees, **not** act
+coverage: gold has no inventory of which acts ought to exist, so a removed act chain leaves
+nothing to contradict it. Do not cite a passing check as proof every act was recorded.
 
-Collection validation also resolves every transcription, adjudication, and
-instrument membership back to a sample in that same corpus. An adjudication
-must embed exactly the two independently stored transcription records for its act;
-two transcription records by one transcriber or two adjudications establishing different text
-for one act are refused instead of leaving a consumer to choose by file order. An
-act with any stored transcription must have its adjudication too, so deleting the
-established record leaves a named partial chain rather than a corpus that still
-passes. An act has at most two transcribers, because an adjudication reconciles exactly
-two and records are immutable: a third transcription is refused before it is
-published, since it would leave the act unclosable. Transcriber and adjudicator names
-must be in Unicode NFC and are compared ignoring case, so one person spelled two ways
-is never counted as two independent readers. Conflicting page-layout or padding annotations for one ordinal/digest pair
-are likewise refused; the same annotation facts may be carried through both a
-manual and a seeded sample because both provenance records are true.
-Custody is counted **per act**, not per act per sample record: an act identity binds
-the page it was marked out on, so it names one act once, and a page carried by both
-a manual and a seeded sample record must not thereby acquire two custody chains and
-two established readings with nothing but file order between them. Conversely,
-duplicate bytes at two ordinals derive different page identities and therefore
-different act identities; they remain two pages and may each carry one established
-reading.
+**One corpus frame at a time.** One run's sealed manifest is the frame; a corpus sharded at
+its sealed shard limit is sampled and validated shard by shard. Uniting frames would need its
+own seed and is not built; the refusal makes that boundary visible.
 
-`validate-corpus` proves consistency and closure among the records it can see; it
-does **not** prove act coverage over each sampled page. Gold consumes no Perlector
-act record or other inventory enumerating which acts ought to exist, so removing an
-entire act chain leaves no local record to contradict. The retained draw is the
-narrow exception because it enumerates seeded pages, and a surviving transcription
-is another because it requires its adjudication. A successful collection check must
-not be cited as proof that every page act was ever recorded.
+## File safety
 
-Every file this CLI reads must be a regular file at most 64 MiB. The reader opens
-the file once without following its final path component, bounds the descriptor
-read, and refuses if the file changes while those bytes are read. A symlink,
-FIFO, oversized JSON document or transcription, and a decimal integer too large
-for the interpreter are therefore named input refusals rather than redirects,
-unbounded reads, blocking opens, or tracebacks. Corpus directories and their
-`*.json` entries follow the same no-link rule. Two record names that compare equal
-after Unicode normalization and case-folding are refused even on a case-sensitive
-filesystem, because they would collapse to one pathname on default APFS.
+Every input must be a regular file of at most 64 MiB, opened once without following its final
+path component, with a bounded read, and refused if it changes while read. Symlinks, FIFOs,
+oversized documents and huge integers are named refusals. Corpus directories follow the same
+no-link rule, and two record names equal after Unicode normalization and case-folding are
+refused (they would collide on default APFS).
 
-Gold is therefore drawn **per corpus frame**: one run's sealed manifest is the
-frame, and the corpus frame shards a corpus at its sealed shard limit, so a corpus split across
-shards is sampled shard by shard and its records are validated shard by shard.
-Uniting several frames into one gold corpus is deliberately not built — the union
-would need its own seed, and inventing one now, before any corpus of that size has
-been measured, would put the disjointness property on an untested footing.  The
-refusal makes the boundary visible at the moment it is reached.
-
-The layout schema requires at least one region and the padding schema at least one
-rectangle: a page with nothing on it is annotated `true-blank`, and a record that
-measured nothing may not carry a calibration verdict.
-
-Every writer creates its file atomically, so a partly written record can never
-take its final name.  Republishing byte-identical content is reuse — `sample`
-writes one file per page, and an interrupted draw has to be finishable by the same
-command — while different bytes under a name already taken are refused and the
-existing file is left untouched. Publication uses the inode of the directory that
-was opened and locked, and compares device/inode identity before using a caller's
-locked descriptor, so replacing its pathname cannot redirect a checked write.
-Temporary names are unpredictable, existing targets are read as regular files
-without following links, and both the published link and temporary-name removal
-are directory-synced before success returns. A filesystem that refuses hard links
-is a named refusal, not a bare traceback.
+Every writer creates its file atomically. Republishing identical bytes is reuse (so an
+interrupted `sample` can be finished by the same command); different bytes under a taken
+name are refused and the existing file is untouched. Writes are bound to the opened, locked
+directory's inode, temporary names are unpredictable, and the link and cleanup are
+directory-synced before success. A filesystem without hard links is a named refusal.

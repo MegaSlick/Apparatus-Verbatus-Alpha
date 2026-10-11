@@ -353,11 +353,11 @@ def test_variant_runs_greedy_and_without_an_image(tree, tmp_path):
     assert not (out / "no-image" / "p003.json").exists()
 
 
-# --- review fixes (C7, 2026-10-09): identity, overlays, seals, config, deadlines ------
+# --- identity, overlays, seals, config, deadlines -------------------------------------
 
 
 def test_a_label_refuses_pages_cached_under_another_setup(tree, tmp_path):
-    """C7 P1: seed, token cap, stream mode, checkpoint revision and run tree are part of a
+    """Seed, token cap, stream mode, checkpoint revision and run tree are part of a
     label's identity; a page cached under any other is refused, never mixed in."""
     (tree / "config.json").write_text("{}")
     out = tmp_path / "cache"
@@ -410,7 +410,7 @@ def test_a_changed_mutation_under_the_same_label_is_refused(tree, tmp_path):
 
 
 def test_a_mutation_from_another_page_or_feed_is_refused(tree):
-    """C7: a stale mutation folder cannot supply another run's witness text."""
+    """A stale mutation folder cannot supply another run's witness text."""
     run = F.load_run_tree(tree)
     page = run.pages[1]
     good = {
@@ -451,7 +451,7 @@ def test_render_and_call_record_bytes_are_digest_checked(tree):
 
 
 def test_a_real_run_tree_must_prove_its_stage_seals(tree):
-    """C7: a tree carrying a run authority (run.json) is used only once its Exemplar and
+    """A tree carrying a run authority (run.json) is used only once its Exemplar and
     Perlector stage seals verify; this synthetic tree has none."""
     (tree / "run.json").write_text(json.dumps({"run_id": "run"}))
     with pytest.raises(SystemExit, match="stage seals do not verify"):
@@ -459,7 +459,7 @@ def test_a_real_run_tree_must_prove_its_stage_seals(tree):
 
 
 def test_overlay_feeds_send_the_render_and_the_overlay(tmp_path):
-    """C7: the pipeline sends the render and the overlay (common/page_path.py); so does
+    """The pipeline sends the render and the overlay (common/page_path.py); so does
     the fed arm, byte for byte, and a variant redraws the overlay from its own feed."""
     tree = make_run_tree(tmp_path / "run", overlay=True)
     run = F.load_run_tree(tree)
@@ -490,7 +490,7 @@ def test_overlay_feeds_send_the_render_and_the_overlay(tmp_path):
 
 
 def test_decoding_that_differs_from_the_runs_is_refused(tree, tmp_path, monkeypatch):
-    """C7: a sealed repeat is sent under the run's sealed sampling and loop guard, or not
+    """A sealed repeat is sent under the run's sealed sampling and loop guard, or not
     at all unless --accept-new-config says so (and the setup records it)."""
     (tree / "config.json").write_text("{}")
     assert F.config_differences(F.load_run_tree(tree)) == []
@@ -565,7 +565,7 @@ class _Trickle:
 
 
 def test_a_trickling_stream_is_cut_at_the_total_deadline():
-    """C7: a reply that keeps sending a little never outlives the request timeout, in the
+    """A reply that keeps sending a little never outlives the request timeout, in the
     fed arm's stream and in witness_run's."""
     from operations.bakeoff import witness_run as W
 
@@ -579,7 +579,7 @@ def test_a_trickling_stream_is_cut_at_the_total_deadline():
 
 
 def test_a_quantized_recipe_is_refused_on_an_unquantized_snapshot(tree, tmp_path):
-    """C7 (arms.py:274): the fed arm launching `--recipe unproven-real-perlector-fp8` on bf16
+    """The fed arm launching `--recipe unproven-real-perlector-fp8` on bf16
     weights is refused before vLLM would quantize them at load."""
     (tree / "config.json").write_text(json.dumps({"architectures": ["X"]}))
     argv = _run_argv(tree, tmp_path / "cache", "q", "--model-name", SERVED, "--pages", "p001",
@@ -591,7 +591,7 @@ def test_a_quantized_recipe_is_refused_on_an_unquantized_snapshot(tree, tmp_path
                       "m", "--weights", "w", "--recipe", "unproven-real-perlector-fp8"])  # fmt: skip
 
 
-# --- bake-off day: the run's served name, and the pipeline's own answer parser -------
+# --- the run's served name, and the pipeline's own answer parser -------
 
 
 def test_the_runs_served_name_is_the_default_and_the_server_answers_under_it(tree, tmp_path):

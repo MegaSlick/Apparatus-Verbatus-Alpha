@@ -2318,7 +2318,7 @@ def test_an_entry_citing_another_entrys_units_beside_its_own_ink_is_still_a_dupl
 
 
 def test_the_committed_file_seals_the_lead_s_review_flags(tmp_path: Path):
-    """The committed `[flags]` table is the lead's four codes, and a file with no table is
+    """The committed `[flags]` table names four codes, and a file with no table is
     refused."""
     assert SEALED.flag_codes == {
         "no-detector-record-on-act-page",
@@ -2420,7 +2420,7 @@ def test_a_rule_with_a_held_finding_beside_a_flagged_one_still_holds():
 
 
 def test_a_long_unit_read_differently_is_never_a_short_unit():
-    """The burial folded into a merged unit (50 letters) keeps the hold the lead did not relax."""
+    """The burial folded into a merged unit (50 letters) keeps its hold."""
     case = page(noise=0.15, seed=3)
     burial = noisy(BURIAL, 0.3, 11)
     witness(case, "A")["units"][2]["text"] += " " + burial

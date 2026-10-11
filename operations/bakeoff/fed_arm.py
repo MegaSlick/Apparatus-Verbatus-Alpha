@@ -103,7 +103,7 @@ RECIPE = "unproven-real-perlector"  # the recorded feeds' serving recipe
 MAX_TOKENS = 12_288
 GREEDY = {"temperature": 0.0, "top_p": 1.0, "top_k": 0, "min_p": 0.0}
 IMAGE_MODES = ("clear", "none", "blur", "blank", "swap")
-# The bake-off arm each chair of the 2026-10 roster is (config/models-real.toml).
+# The bake-off arm for each chair of the real roster (config/models-real.toml).
 CHAIR_ARMS = {"attestator_1": "chandra", "attestator_2": "dai", "attestator_3": "churro"}
 
 

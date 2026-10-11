@@ -1077,7 +1077,7 @@ def _vendor_arm(bench, label, prompt_text):
 
 
 def test_a_smoke_whose_every_page_looped_does_not_start_the_full_run(bench):
-    """C7: terminal failures are kept and never resent, but a smoke with no answer at
+    """Terminal failures are kept and never resent, but a smoke with no answer at
     all is a failed smoke: the full run would repeat it at the same settings."""
     notifier = FakeNotifier()
     queue = Recording(
@@ -1121,7 +1121,7 @@ def test_smoke_verdict_needs_one_answer_and_keeps_terminal_pages(tmp_path):
 
 
 def test_cpu_retries_stay_within_the_thread_budget_together(bench):
-    """C7: two 10-thread CPU arms retried under a 12-thread budget run one after the other,
+    """Two 10-thread CPU arms retried under a 12-thread budget run one after the other,
     not both at 10 threads at once."""
     tmp = bench["tmp"]
     arms = [
@@ -1301,7 +1301,7 @@ def test_own_disk_without_keep_pod_still_checks_the_copy_on_the_pod(bench):
 
 
 def test_a_terminal_page_is_resent_when_its_timeout_or_concurrency_changes(bench):
-    """C7: "the same settings" include the request timeout, concurrency and the server's
+    """The same settings include the request timeout, concurrency and the server's
     batch settings, so a page that failed under them is sent again once they change."""
     argv = _vendor_arm(bench, "qv", "LOOP: transcribe")["command"][3:]
     argv = [*argv, "--limit", "1"]

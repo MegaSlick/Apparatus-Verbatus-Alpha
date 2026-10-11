@@ -7,7 +7,7 @@ here on the CPU with the real model on a synthetic page); cut first if behind sc
   `10.5281/zenodo.14616980`, which Party's README names), "Pretrained multilingual Party
   base model", 2026-06-11. `model.safetensors` 518,329,816 bytes, Zenodo MD5
   `cf165e67061d492b72f600a6a72b7c61`, SHA-256
-  `d6f3c2273687a79dd4852c4cfe63ec4c9e75a2a148fe02a8b787ab6afec236aa` (measured here).
+  `d6f3c2273687a79dd4852c4cfe63ec4c9e75a2a148fe02a8b787ab6afec236aa` (measured).
   Metadata: variant `base`, image size 2560 x 1920.
 - Code: github.com/mittagessen/party, `main` at `c2589b1b515ed690f883c6afaef6c01ce29bf72d`
   (2026-06-12, "Add part ocr command"); there are no release tags.

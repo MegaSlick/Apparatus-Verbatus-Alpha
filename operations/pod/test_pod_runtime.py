@@ -5164,7 +5164,7 @@ def test_bootstrap_crash_resumes_only_the_unfinished_idempotent_step(tmp_path: P
 def test_a_second_pod_sets_the_first_pods_journal_aside_and_same_pod_still_resumes(
     tmp_path: Path,
 ) -> None:
-    """2026-10-08: a replacement pod given the dead pod's journal went red at cuda-compat."""
+    """A replacement pod given the dead pod's journal must not resume its cuda-compat step."""
 
     class Actions(FakeBootstrapActions):
         driver = "570.195.03"
@@ -7612,10 +7612,8 @@ def test_a_previously_valid_v2_policy_is_refused_by_name_not_as_a_missing_ceilin
 ) -> None:
     """The schema identifier separates an operator's mistake from a change in this code.
 
-    ``account_balance_alert_usd`` became required. A file that was a complete
-    configured v2 policy is now an incomplete v3 one, and under the unchanged
-    schema name it failed as "missing a required ceiling" -- an accusation
-    against configuration nobody had touched.
+    A complete configured v2 policy lacks the v3 ``account_balance_alert_usd``; it is
+    refused as an older schema, not as "missing a required ceiling".
     """
 
     from .spend import load_spend_policy

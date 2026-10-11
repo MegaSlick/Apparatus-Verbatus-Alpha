@@ -37,13 +37,10 @@ RETIRED_SPEND_SCHEMAS = {
         "switches, which say whether the budget and the guard's idle delete are on"
     ),
 }
-"""Schemas this loader once accepted, and what changed under each name.
+"""Older schema names, each refused with what the current schema requires.
 
-``account_balance_alert_usd`` became a required ceiling, so a file that was a
-valid configured v2 policy is now an incomplete v3 one. Left at the same schema
-name, that file failed as "missing a required ceiling" and blamed the operator's
-configuration for a change in this code. The version identifier is what tells
-those two apart, so it moves when the required shape moves.
+The version identifier moves whenever the required shape moves, so an older file
+is refused as older rather than as "missing a required ceiling".
 """
 MAX_BALANCE_OBSERVATION_AGE_SECONDS = 60
 """A gate may use only a current observation, never an indefinitely cached balance."""

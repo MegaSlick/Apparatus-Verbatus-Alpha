@@ -1,11 +1,10 @@
 # Qwen3.5-27B run card
 
-**Verdict in one line:** ready-untested-here (the plain arm ran on 2026-10-08; the vendor arm has not run on a GPU)
+**Verdict in one line:** ready-untested-here (the plain arm has run on a GPU; the vendor arm has not)
 
 ## Identity
 
-- Repo `Qwen/Qwen3.5-27B`, revision `fc05daec18b0a78c049392ed2e771dde82bdf654`
-  (`git ls-remote https://huggingface.co/Qwen/Qwen3.5-27B refs/heads/main`, 2026-10-08).
+- Repo `Qwen/Qwen3.5-27B`, revision `fc05daec18b0a78c049392ed2e771dde82bdf654`.
   Not in `config/models-real.toml`; pass it with `--repo/--revision`.
 - Licence Apache-2.0 (card metadata): use, modification and redistribution allowed with
   notice.

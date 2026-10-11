@@ -284,11 +284,10 @@ def validate_pod_report_identity(
 DEFAULT_CONTAINER_DISK_GB = 100
 """Container-local disk for a small card or a request with no known tier, in gigabytes.
 
-Measured 2026-10-08 on a witness pod (RTX 4090, Door to Attestatores): a 60 GB disk
-filled during the Attestatores (ENOSPC) holding the local chair cache (33 GB, every
-witness chair), the uv cache (12 GB), the venv (8.4 GB), the run tree (1.3 GB) and the
-image. The bound below did not count the chair cache; 100 GB is that measurement plus
-room for the run tree to grow on a larger chunk.
+Measured on a witness pod (RTX 4090, Door to Attestatores): the local chair cache
+(33 GB, every witness chair), the uv cache (12 GB), the venv (8.4 GB), the run tree
+(1.3 GB) and the image overflow a 60 GB disk. 100 GB is that measurement plus room
+for the run tree to grow on a larger chunk.
 
 The bootstrap spends this disk twice over, and leaving it to the image or
 account default -- commonly 20 GB -- lets ``uv sync --group pod`` fill the
@@ -678,9 +677,8 @@ def _required_timer_arguments(
     # ``bootstrap_main.resolve_plan`` holds it to the same rules on the pod: a
     # journal path that does not name the launch token is refused there, and
     # the token is minted inside ``create``, so no operator can pre-write it.
-    # An unbound journal therefore refused every full bootstrap plan on the pod
-    # after billing began -- the same shape as the nested report path before
-    # ``launch`` learned to bind it.
+    # An unbound journal would refuse every full bootstrap plan on the pod after
+    # billing began.
     nested_halves = _nested_argv_halves(bootstrap)
     report_paths: list[tuple[list[str], PurePosixPath]] = []
     bootstrap_journal: PurePosixPath | None = None

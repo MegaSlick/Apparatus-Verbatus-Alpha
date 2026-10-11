@@ -1,33 +1,44 @@
-# Weekly pull requests for outdated dependencies. Pins here are exact, so each update is
-# reviewed and tested like any other change.
+# Weekly dependency updates. Pins here are exact, so each update is reviewed and tested
+# like any other change. Each ecosystem's updates arrive together in one pull request,
+# labelled `review-ok` so CodeRabbit reviews it.
 version: 2
 updates:
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    labels: ["dependencies", "review-ok"]
     groups:
       # The GPU serving stack (the `pod` dependency group). CI never installs it, so an
-      # update here needs a qualification run on a GPU pod before it merges. Grouped
-      # rather than ignored, so security updates for these packages still arrive.
+      # update here needs a qualification run on a GPU pod before it merges; it gets its
+      # own pull request so the rest is not held up behind it.
       pod-serving-stack:
         patterns: ["vllm", "transformers", "torch", "ultralytics", "qwen-vl-utils"]
-      python-minor-and-patch:
-        update-types: ["minor", "patch"]
+      python:
+        patterns: ["*"]
   # The Surya serving image's own locked environment.
   - package-ecosystem: "uv"
     directory: "/operations/serving/surya"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
-  # pagekit's own manifest, for the repository it splits into.
+    labels: ["dependencies", "review-ok"]
+    groups:
+      surya:
+        patterns: ["*"]
+  # pagekit's own manifest.
   - package-ecosystem: "pip"
     directory: "/pagekit"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    labels: ["dependencies", "review-ok"]
+    groups:
+      pagekit:
+        patterns: ["*"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    labels: ["dependencies", "review-ok"]
+    groups:
+      actions:
+        patterns: ["*"]

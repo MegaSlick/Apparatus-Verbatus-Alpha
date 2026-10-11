@@ -171,8 +171,23 @@ call to the chair's sealed sampling row and its receipt's seed; a Chandra page
 sends no seed and samples at its returned attempt's ordinal. A live record that
 retains a response and names no serving call is refused.
 
+**Repetition loops.** Every chair but Chandra (DAI, Churro, dots.mocr) is sent its
+requests with the sealed guard of `[witness_generation]` in `config/decoding.toml`,
+so its reply is streamed and abandoned at the first degenerate loop: the same
+whitespace-trimmed line `loop_line_repeats` times in a row, or the same block of 2 to
+`loop_block_max_lines` lines `loop_block_repeats` times (`common/repetition_loop.py`,
+the Perlector's rule). The reply received up to the stop is kept under the stop word
+`repetition-loop` and read as a cut-off one: `truncated` is `true`, it is never full
+testimony, and an empty or unparseable one is `failed` with a reason naming the loop.
+Its call record is a `chair-stream-call-record` naming the guard and the loop; the
+writer and the tally (`verify_call_stream`) require that guard and scan the retained
+reply again, which must show exactly that loop. Chandra reads under its vendor retry
+loop and is never streamed. The post-hoc repetition scan of a Chandra, Churro or
+dots.mocr capture still runs and records what it finds.
+
 **Truncation** comes from the engine's stop word: `"stop"` → `false`,
-`"length"` → `true`, no word → `null` with `truncation_basis = "not-recorded"`.
+`"length"` or `"repetition-loop"` → `true`, no word → `null` with
+`truncation_basis = "not-recorded"`.
 A response whose stop word is anything else (`live_witness.unmeasured_stop_reason`)
 is not read by any adapter: that request is a `failed` attempt whose reason
 names the word, with its call record and response bytes retained and bound, and
@@ -477,10 +492,3 @@ manifest after a seal holds until `RunTree.write_manifest("attestatores")`
 re-derives it from the immutable attempts. Over a folder whose attempts are
 gone, that step discards the last record that they existed; read the manifest
 first.
-
-## Not built
-
-- Witnesses do not use the Perlector's streamed loop detector. A witness reply is read
-  to its end and scanned afterwards for repetition; it is not abandoned at the first
-  looping line as the Perlector's is (`common/repetition_loop.py`, the guard in
-  `config/decoding.toml`).

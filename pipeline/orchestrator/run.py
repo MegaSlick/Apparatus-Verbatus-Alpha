@@ -377,7 +377,7 @@ def resolve_caller_paths(args: argparse.Namespace) -> argparse.Namespace:
 
 
 def stage_environment() -> dict[str, str]:
-    """Keep stage runtime settings, but drop every provider credential (F016)."""
+    """Keep stage runtime settings, but drop every provider credential."""
     return {
         name: value for name, value in os.environ.items() if not looks_like_credential_env(name)
     }

@@ -511,11 +511,11 @@ class BootstrapJournal:
 
     The journal sits on a network volume that outlives the pod, so a second pod
     can be handed the same path.  Its completed steps -- the CUDA receipt above
-    all -- describe the first pod's GPU and disk, not the second's: resuming
-    them went red at once on 2026-10-08.  So, when ``pod_id`` is known, the
+    all -- describe the first pod's GPU and disk, not the second's, and resuming
+    them would fail.  So, when ``pod_id`` is known, the
     journal records it, and a journal written by any other pod (or by one that
     did not record its id) is set aside under a pod-named sibling and a fresh
-    one started.  The same pod resumes exactly as before.
+    one started.  The same pod resumes where it stopped.
     """
 
     def __init__(

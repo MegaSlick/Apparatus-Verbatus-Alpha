@@ -360,7 +360,7 @@ def test_an_attached_group_whose_leader_exited_is_still_stopped() -> None:
 
 
 def test_a_process_that_left_the_service_s_group_keeps_the_lease_and_is_named() -> None:
-    """The live 2026-10-08 failure on real processes: a member of the service that
+    """On real processes: a member of the service that
     inherited the lease and moved to its own session outlives the group, so the
     group's stop leaves the lease held; the refusal names that process."""
     import sys
