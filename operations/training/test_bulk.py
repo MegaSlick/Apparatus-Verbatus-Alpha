@@ -265,10 +265,12 @@ def test_a_dead_render_worker_refuses_its_pages(monkeypatch):
     assert out["P_1"] == {"stem": "P_1", "error": "render worker stopped before this page"}
 
 
-def test_a_pool_that_dies_during_submit_refuses_every_page(monkeypatch):
-    class Broken:
+def test_a_pool_that_dies_during_submit_keeps_done_pages_and_refuses_the_rest(monkeypatch):
+    done = {"stem": "P_1", "image_sha256": "1" * 64}
+
+    class Done:
         def result(self):
-            raise B.BrokenProcessPool("worker died")
+            return done
 
     class Pool:
         def __init__(self, max_workers):
@@ -284,10 +286,10 @@ def test_a_pool_that_dies_during_submit_refuses_every_page(monkeypatch):
             self.submissions += 1
             if self.submissions == 2:
                 raise B.BrokenProcessPool("pool died during submit")
-            return Broken()
+            return Done()
 
     monkeypatch.setattr(B, "ProcessPoolExecutor", Pool)
     jobs = [(f"P_{n}", "x.png", "0" * 64, 2560, None) for n in (1, 2)]
     out = B.render_all(jobs, workers=2)
-    assert set(out) == {"P_1", "P_2"}
-    assert all(r["error"] == "render worker stopped before this page" for r in out.values())
+    assert out["P_1"] == done
+    assert out["P_2"] == {"stem": "P_2", "error": "render worker stopped before this page"}
