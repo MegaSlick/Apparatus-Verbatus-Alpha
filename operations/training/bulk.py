@@ -37,6 +37,7 @@ import sys
 import tomllib
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
@@ -277,6 +278,28 @@ class Candidate:
     notes: Counter = field(default_factory=Counter)
 
 
+def shape_problem(record: dict[str, Any]) -> str | None:
+    """Why a readable record cannot be a reference (provenance, entries or words of the wrong
+    shape), checked before anything reads them, so one malformed page is refused alone."""
+    if not isinstance(record.get("provenance", {}), (dict, type(None))):
+        return "provenance is not an object"
+    entries = record.get("entries")
+    if not isinstance(entries, list):
+        return "entries is not a list"
+    for n, e in enumerate(entries, start=1):
+        if not isinstance(e, dict):
+            return f"entry {n} is not an object"
+        if not isinstance(e.get("kind"), str) or not isinstance(e.get("text"), str):
+            return f"entry {n} lacks a kind or a text"
+        words = e.get("words")
+        if words is not None and not (
+            isinstance(words, list)
+            and all(isinstance(w, dict) and isinstance(w.get("text"), str) for w in words)
+        ):
+            return f"entry {n} has malformed words"
+    return None
+
+
 def status_of(record: dict[str, Any]) -> str:
     if record.get("status_label") == "lead-checked":
         return "checked"
@@ -417,8 +440,18 @@ def _render(job: tuple[str, str, str, int, str | None]) -> dict[str, Any]:
 def render_all(jobs: list, workers: int) -> dict[str, dict[str, Any]]:
     if workers <= 1:
         return {r["stem"]: r for r in map(_render, jobs)}
+    # A worker that dies (out of memory, a crashing decoder) costs its pages, not the
+    # export: each page it held is refused, and none is retried here, where the same page
+    # could take this process down too.
+    out: dict[str, dict[str, Any]] = {}
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        return {r["stem"]: r for r in pool.map(_render, jobs, chunksize=4)}
+        futures = [(job[0], pool.submit(_render, job)) for job in jobs]
+        for stem, future in futures:
+            try:
+                out[stem] = future.result()
+            except BrokenProcessPool:
+                out[stem] = {"stem": stem, "error": "render worker stopped before this page"}
+    return out
 
 
 # --- the export ------------------------------------------------------------------------
@@ -469,6 +502,10 @@ def export_bulk(
         seen[stem] = path
         if E.is_held_out(stem, held):
             held_excluded.append(stem)
+            continue
+        problem = shape_problem(record)
+        if problem:
+            refused.append({"id": stem, "reason": f"reference malformed: {problem}"})
             continue
         status = status_of(record)
         weight = weights.get(status, weights.get("unknown"))

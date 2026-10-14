@@ -217,3 +217,41 @@ def test_catalogue_csv_columns_are_accepted(tmp_path):
         "p1": {"stem": "p1", "image": "/abs/p1.png", "sha256": "a" * 64,
                "volume": "V1", "collection": "fur"}
     }  # fmt: skip
+
+
+def test_malformed_reference_shapes_are_refused_alone(corpus):
+    ref_dir = corpus / "VolC" / "reference"
+    bad_prov = _record("C_010")
+    bad_prov["provenance"] = "agreed"
+    (ref_dir / "C_010.json").write_text(json.dumps(bad_prov))
+    bad_entry = _record("C_011")
+    bad_entry["entries"] = ["not an object"]
+    (ref_dir / "C_011.json").write_text(json.dumps(bad_entry))
+    manifest, examples = _run(corpus)
+    reasons = {r["id"]: r["reason"] for r in manifest["refused"]}
+    assert reasons["C_010"] == "reference malformed: provenance is not an object"
+    assert reasons["C_011"] == "reference malformed: entry 1 is not an object"
+    assert {"C_001", "C_002"} <= {e["page"] for e in examples}
+
+
+def test_a_dead_render_worker_refuses_its_pages(monkeypatch):
+    class Broken:
+        def result(self):
+            raise B.BrokenProcessPool("worker died")
+
+    class Pool:
+        def __init__(self, max_workers):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def submit(self, fn, job):
+            return Broken()
+
+    monkeypatch.setattr(B, "ProcessPoolExecutor", Pool)
+    out = B.render_all([("P_1", "x.png", "0" * 64, 2560, None)], workers=2)
+    assert out["P_1"] == {"stem": "P_1", "error": "render worker stopped before this page"}
