@@ -1204,6 +1204,9 @@ def test_with_threads_sets_only_the_threads_value():
     assert Q.with_threads(("x", "--threads", "4"), None) == ("x", "--threads", "4")
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="stopping a kept server reads /proc, which only Linux has"
+)
 def test_each_witness_arm_loads_its_model_once_for_smoke_and_run(bench):
     """The smoke's server is kept and the full run takes it over: one launch per arm,
     where smoke and run each used to start their own."""
@@ -1237,6 +1240,9 @@ def test_each_witness_arm_loads_its_model_once_for_smoke_and_run(bench):
         assert not W._pid_alive(pid)
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="stopping a kept server reads /proc, which only Linux has"
+)
 def test_a_kept_server_no_run_takes_over_is_stopped(bench):
     """A smoke that passes its server on, then a run that never adopts it (its smoke page
     failed here): the queue stops the server itself."""

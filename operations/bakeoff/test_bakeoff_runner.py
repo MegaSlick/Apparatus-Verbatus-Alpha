@@ -257,6 +257,9 @@ def test_a_label_is_refused_under_another_checkpoint_or_recipe(tmp_path):
     assert W.cache_conflict(cached, {**same, "recipe": "fp8"}) == ["recipe"]
 
 
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="reads /proc to identify the process, which only Linux has"
+)
 def test_a_stale_handoff_never_signals_an_unrelated_process(tmp_path):
     import subprocess
 
