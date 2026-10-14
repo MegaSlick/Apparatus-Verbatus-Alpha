@@ -401,7 +401,10 @@ run.
    - **Add `--from door --to perlector`** before the `--`.
 
    The Perlector is served bf16, as the pipeline does. The run ends with
-   `selection-complete` in its report (exit 8). Do not reuse an older run: its requests
+   `selection-complete` in its report (exit 8). `pod_run` then returns and the pod stays
+   up. Started by hand, it has no pod timer to close it. The guard deletes it only at its
+   deadline; on idle it only warns, since `ladder_delete` is `"off"` in
+   `config/spend.toml`. Do not reuse an older run: its requests
    were served under other settings. Keep the run folder whole at
    `/workspace/private/runs/<run id>` (the stage seals are read through that name). Keep
    the pod.

@@ -154,8 +154,7 @@ PROC_CMDLINE = Path("/proc/self/cmdline")
 
 def _ps_field(pid: int, field: str) -> str | None:
     """One `ps` column for the pid, on a system without /proc (a Mac running the tests).
-    `ps` joins a command's arguments with spaces. None when the pid is gone or `ps`
-    fails."""
+    None when the pid is gone or `ps` fails."""
     try:
         result = subprocess.run(
             ["ps", "-ww", "-o", f"{field}=", "-p", str(pid)],
@@ -169,6 +168,33 @@ def _ps_field(pid: int, field: str) -> str | None:
     if result.returncode != 0:
         return None
     return result.stdout.strip()
+
+
+def _darwin_argv(pid: int) -> list[str] | None:
+    """The pid's exact argv on macOS, from sysctl KERN_PROCARGS2 (argc, the executable
+    path, padding, then the arguments, each ending in a NUL). None anywhere else, or when
+    the pid is gone or not readable."""
+    if sys.platform != "darwin":
+        return None
+    import ctypes
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    mib = (ctypes.c_int * 3)(1, 49, pid)  # CTL_KERN, KERN_PROCARGS2
+    size = ctypes.c_size_t(0)
+    if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0) != 0:
+        return None
+    buffer = ctypes.create_string_buffer(size.value)
+    if libc.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0) != 0 or size.value < 4:
+        return None
+    raw = buffer.raw[: size.value]
+    argc = int.from_bytes(raw[:4], sys.byteorder)
+    path_end = raw.find(b"\0", 4)
+    if path_end < 0:
+        return None
+    parts = raw[path_end:].lstrip(b"\0").split(b"\0")
+    if len(parts) <= argc:  # every argument ends in a NUL, so one more part follows
+        return None
+    return [part.decode("utf-8", "replace") for part in parts[:argc]]
 
 
 def _pid_alive(pid: int) -> bool:
@@ -265,7 +291,9 @@ class Server:
         """Whether the process at the hand-off's pid still runs the recorded command: a
         stale file's pid may have been given to an unrelated process."""
         if not PROC_CMDLINE.exists():
-            return _ps_field(self.pid, "command") == " ".join(self.argv)
+            # Never `ps`: it joins arguments with spaces, so ["a b", "c"] and ["a", "b c"]
+            # would look alike. Without an exact argv the pid is not ours.
+            return _darwin_argv(self.pid) == self.argv
         try:
             raw = Path(f"/proc/{self.pid}/cmdline").read_bytes()
         except OSError:
