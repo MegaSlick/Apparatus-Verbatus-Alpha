@@ -100,6 +100,46 @@ No tokenizer is available offline, so prompt length is reported with the pipelin
 upper bound (`common.request_capacity`) plus the run's image tokens, and the answer with its
 characters, bytes and an estimate.
 
+## Bulk export with no witnesses (`bulk.py`)
+
+```sh
+.venv/bin/python -m operations.training.bulk \
+  --references "$HOME/Verbatus_Corpus/parishes/*/reference" [--references <more>] \
+  --images-map "$HOME/Verbatus_Corpus/catalog.csv" --held-out <frozen test list> \
+  --out <dir> [--seed 0] [--max-pages N] [--max-per-volume N] [--val-share 0.05] \
+  [--weights-by-status agreed=0.7,close=0.5,...] [--long-edge 2560] [--no-copy-images] \
+  [--workers 8]
+```
+
+Stage 1 of training: many pages of many hands with silver answers, before the witness
+training above. It needs no run tree. Each page gives one example: the page render and
+the Perlector's prompt for a page with no witness testimony and no Surya census, which is
+the feed the pipeline itself builds for such a page (`page_feed.assemble_page_feed` with
+`no_testimony=True` and Surya absent), so the prompt is the serving prompt byte for byte.
+It shows no ids, so every entry's `cites` is `[]` and nothing is set aside. The render has
+the pipeline's pixels (`page_render.render_pixels`), saved as an ordinary PNG.
+
+- **References**: `training-reference.v2` records, from folders, files or globs. The answer
+  is built with the exporter's own code and must parse with `common.page_answer`. A kind
+  that is not an entry kind becomes `other`; the reference's own cites are dropped.
+- **Images map**: JSONL `{stem, image, sha256, volume?, collection?}`, or the corpus
+  `catalog.csv` as it is. Each image is checked against its sha256. A page's volume comes
+  from the map, else from the folder above `reference/`.
+- **Weights**: one `weight` per example from the reference's `provenance.best_status`:
+  agreed 0.7, close and majority 0.5, single 0.3, a page with no status 0.3, lead-checked
+  1.0; disputed pages are left out. `loss_spans` weigh each word by its status, as above.
+- **Held out** as above, the other half of a held-out original included.
+- **Spread**: `--max-per-volume` caps each volume, and `--max-pages` takes a page from each
+  volume in turn, so no reel dominates. `val.jsonl` holds whole volumes (`--val-share` of
+  the pages), never pages of a volume that trains.
+- `--no-copy-images` writes no renders: each example lists its source image and the
+  transform the trainer must apply.
+
+`manifest.json` counts examples by page type, writing, status, volume and collection,
+lists what was left out and why, and estimates tokens: image tokens from the Perlector
+row's image geometry, answer tokens as characters / 4, and the prompt's sealed bound.
+These are estimates, not a tokenizer's count.
+
 Not built: image counterfactuals (blur, blank, swap) as training examples, which need checked
 labels for what the model should say about such a page (`fed_arm --image` serves them for
 evaluation).

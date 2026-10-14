@@ -55,8 +55,8 @@ def render_size(size: tuple[int, int], maximum_edge: int) -> tuple[int, int]:
     return max(1, round(width * scale)), max(1, round(height * scale))
 
 
-def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dict[str, Any]]:
-    """A genuine downscale of the sealed page, deterministic for a fixed input.
+def render_pixels(page_bytes: bytes, *, maximum_edge: int) -> tuple[Image.Image, dict[str, Any]]:
+    """The page render's pixels (grayscale) and its transform record, before encoding.
 
     The sealed page goes through `common.imaging.crop_png` first, at its own
     full bounds, so this render inherits the one decode-and-display policy the
@@ -70,6 +70,8 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
     recorded transforms -- and "downscaled by 2" is only reproducible by
     someone who also has this function. A page already inside the bound is
     recorded as `identity` rather than silently resampled to itself.
+
+    `operations/training/bulk.py` shows a training page these same pixels.
     """
     width, height = dimensions(page_bytes)
     image = _display_page(page_bytes, width, height)
@@ -80,11 +82,23 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
     else:
         rendered = lanczos_source(image).resize(target, resample=Image.Resampling.LANCZOS)
         resampler = "pillow-lanczos"
+    return rendered.convert("L"), {
+        "operation": "downscale-for-page-context",
+        "source_dimensions": {"w": width, "h": height},
+        "target_dimensions": {"w": rendered.width, "h": rendered.height},
+        "maximum_edge": maximum_edge,
+        "resampler": resampler,
+    }
+
+
+def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dict[str, Any]]:
+    """A genuine downscale of the sealed page (`render_pixels`), deterministic for a fixed
+    input, encoded byte-identically on every platform."""
+    grayscale, transform = render_pixels(page_bytes, maximum_edge=maximum_edge)
     # The project's own deterministic encoder, never Pillow's: Pillow's
     # wheels bundle their own zlib, so `rendered.save(...)` produces
     # different bytes on Linux than on macOS, and a run-time blob's bytes
     # name its content-addressed path and every artifact digest downstream.
-    grayscale = rendered.convert("L")
     samples = grayscale.tobytes()
     deterministic = encode_grayscale_png_deterministic(
         grayscale.width,
@@ -94,13 +108,7 @@ def _downscale_page(page_bytes: bytes, *, maximum_edge: int) -> tuple[bytes, dic
             for row in range(grayscale.height)
         ],
     )
-    return deterministic, {
-        "operation": "downscale-for-page-context",
-        "source_dimensions": {"w": width, "h": height},
-        "target_dimensions": {"w": rendered.width, "h": rendered.height},
-        "maximum_edge": maximum_edge,
-        "resampler": resampler,
-    }
+    return deterministic, transform
 
 
 # Why a page render has the size it has: the page's ink made legible, or the
