@@ -257,6 +257,29 @@ def test_a_label_is_refused_under_another_checkpoint_or_recipe(tmp_path):
     assert W.cache_conflict(cached, {**same, "recipe": "fp8"}) == ["recipe"]
 
 
+def test_without_proc_a_stale_handoff_is_told_apart_by_ps(tmp_path, monkeypatch):
+    """A Mac has no /proc: `ps` names the process, and the same rule holds."""
+    import subprocess
+
+    monkeypatch.setattr(W, "PROC_CMDLINE", tmp_path / "no-proc")
+    argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+    process = subprocess.Popen(argv, start_new_session=True)
+    try:
+        stale = {"url": "http://127.0.0.1:1", "argv": ["vllm", "serve", "x"], "pid": process.pid}
+        deadline = time.monotonic() + 10
+        while not W.Server.adopted({**stale, "argv": argv})._is_recorded_server():
+            assert time.monotonic() < deadline, "the child never started"
+            time.sleep(0.01)
+        W.Server.adopted(stale).stop()
+        assert process.poll() is None  # the pid is alive but is not the recorded server
+        W.Server.adopted({**stale, "argv": argv}).stop()
+        process.wait(timeout=10)  # well short of the child's 60 s sleep
+        assert process.returncode == -signal.SIGTERM
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+
 @pytest.mark.skipif(
     sys.platform != "linux", reason="reads /proc to identify the process, which only Linux has"
 )

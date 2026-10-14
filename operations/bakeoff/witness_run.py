@@ -148,6 +148,29 @@ def settings_digest(
 # --- the vLLM server ----------------------------------------------------------------
 
 
+# Present on Linux (the pod); absent on a Mac, where `ps` names a process instead.
+PROC_CMDLINE = Path("/proc/self/cmdline")
+
+
+def _ps_field(pid: int, field: str) -> str | None:
+    """One `ps` column for the pid, on a system without /proc (a Mac running the tests).
+    `ps` joins a command's arguments with spaces. None when the pid is gone or `ps`
+    fails."""
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-o", f"{field}=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
 def _pid_alive(pid: int) -> bool:
     """Whether the process exists and is not a zombie left for its new parent to reap."""
     try:
@@ -156,6 +179,9 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    if not PROC_CMDLINE.exists():
+        state = _ps_field(pid, "stat")
+        return state is None or not state.startswith("Z")
     try:
         return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] != "Z"
     except (OSError, IndexError):
@@ -238,6 +264,8 @@ class Server:
     def _is_recorded_server(self) -> bool:
         """Whether the process at the hand-off's pid still runs the recorded command: a
         stale file's pid may have been given to an unrelated process."""
+        if not PROC_CMDLINE.exists():
+            return _ps_field(self.pid, "command") == " ".join(self.argv)
         try:
             raw = Path(f"/proc/{self.pid}/cmdline").read_bytes()
         except OSError:
