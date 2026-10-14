@@ -62,7 +62,7 @@ verbatus prepare --scans private/parish-a/scans --out private/parish-a/prepared 
 ```
 
 pagekit is optional and lives in its own private repository, MegaSlick/pagekit; install
-it with `pip install -e ~/pagekit` from a clone. Without it, `prepare` says so and stops.
+it with `.venv/bin/python -m pip install -e ~/pagekit` from a clone. Without it, `prepare` says so and stops.
 
 It runs pagekit (its README, "Preparing pages") and writes in the output folder:
 
