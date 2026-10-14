@@ -272,7 +272,8 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The pages could not be prepared: pagekit is not installed.",
         "pagekit lives in its own private repository (MegaSlick/pagekit) and is optional; "
         "nothing was read or written.",
-        "Install it into the Python that runs verbatus, with "
+        "Install it into the Python that runs verbatus (`python3` instead of "
+        "`.venv/bin/python` when there is no .venv), with "
         "`.venv/bin/python -m pip install -e ~/pagekit` from a clone or "
         "`.venv/bin/python -m pip install git+ssh://git@github.com/MegaSlick/pagekit.git`, then run "
         "`verbatus prepare` again.",
