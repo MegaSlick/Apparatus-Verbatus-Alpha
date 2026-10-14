@@ -61,7 +61,10 @@ verbatus prepare --scans private/parish-a/scans --out private/parish-a/prepared 
     [--crop none|page|content] [--cache DIR | --no-cache]
 ```
 
-It runs pagekit (`pagekit/README.md`, "Preparing pages") and writes in the output folder:
+pagekit is optional and lives in its own private repository, MegaSlick/pagekit; install
+it with `.venv/bin/python -m pip install -e ~/pagekit` from a clone. Without it, `prepare` says so and stops.
+
+It runs pagekit (its README, "Preparing pages") and writes in the output folder:
 
 - one lossless TIFF per page, `pagekit-prepare.json`, pagekit's project file and its
   review sheet `review.html`;
@@ -87,7 +90,7 @@ the scan.
   scans folder, and never uploaded.
 - **Corrections are kept.** Run again over the same output folder: pagekit keeps every value
   set by hand and recomputes only what changed. Give corrections with `--overrides FILE`
-  (`pagekit/README.md`, "Corrections").
+  (pagekit's README, "Corrections").
 - **Ctrl-C leaves the output folder as it was.**
 - A step whose detector cannot decide takes a neutral default and flags the page for
   review.

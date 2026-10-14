@@ -107,9 +107,11 @@ searchable SQLite database, JSONL, and the items held for human review
 | `operations/` | the `verbatus` operator command, image intake, GPU serving, notifications |
 | `proof/` | small synthetic test pages, safe to publish |
 | `gold/` | tools for building human-checked reference samples |
-| `pagekit/` | page preparation: rotating, splitting, straightening and cropping scans |
 | `.githooks/` | git hooks and the checks CI runs |
 | `private/`, `scriptorium/`, `workbench/` | local only, never committed |
+
+Page preparation (pagekit) lives in its own private repository, MegaSlick/pagekit, and is
+optional: only `verbatus prepare` needs it.
 
 ## Contributing
 

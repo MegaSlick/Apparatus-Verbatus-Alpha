@@ -22,9 +22,13 @@ from operations.triage.pagekit_geometry import (
     make_row,
     map_pages,
 )
-from pagekit.geometry import Chain, apply
-from pagekit.output import execute
-from pagekit.prepare import plan
+
+# pagekit is optional, from its own repository.
+pytest.importorskip("pagekit", reason="pagekit is not installed")
+
+from pagekit.geometry import Chain, apply  # noqa: E402
+from pagekit.output import execute  # noqa: E402
+from pagekit.prepare import plan  # noqa: E402
 
 INK, PAPER = 20, 215
 

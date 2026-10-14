@@ -52,6 +52,7 @@ class ErrorCode(StrEnum):
     INGEST_UNRESOLVED = "ingest-unresolved"
     TRIAGE_REFUSED = "triage-refused"
     PREPARE_REFUSED = "prepare-refused"
+    PAGEKIT_MISSING = "pagekit-missing"
     PREPARE_INTERRUPTED = "prepare-interrupted"
     PREPARE_INCOMPLETE = "prepare-incomplete"
     NOT_A_CHECKOUT = "not-a-checkout"
@@ -266,6 +267,16 @@ ERRORS: Final[dict[ErrorCode, ErrorCopy]] = {
         "The output folder was left as it was, and the scans were only read.",
         "Read the reason below, correct the named folder, scan or overrides file, then run "
         "`verbatus prepare` again; this is safe.",
+    ),
+    ErrorCode.PAGEKIT_MISSING: ErrorCopy(
+        "The pages could not be prepared: pagekit is not installed.",
+        "pagekit lives in its own private repository (MegaSlick/pagekit) and is optional; "
+        "nothing was read or written.",
+        "Install it into the Python that runs verbatus (`python3` instead of "
+        "`.venv/bin/python` when there is no .venv), with "
+        "`.venv/bin/python -m pip install -e ~/pagekit` from a clone or "
+        "`.venv/bin/python -m pip install git+ssh://git@github.com/MegaSlick/pagekit.git`, then run "
+        "`verbatus prepare` again.",
     ),
     ErrorCode.PREPARE_INTERRUPTED: ErrorCopy(
         "Page preparation was stopped before it finished.",

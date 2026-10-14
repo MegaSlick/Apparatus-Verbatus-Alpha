@@ -8,8 +8,8 @@ body:
         **Do not attach images of register pages, crops or screenshots of them**, and no
         transcriptions or personal data. Public images of register pages can be misused.
 
-        Send measurements instead: paste the JSON from pagekit's crop check
-        (`python -m pagekit check ... --json`) or the run's preflight report. They hold
+        Send measurements instead: paste the run's preflight report or, if you have
+        pagekit installed, the JSON from its crop check (`python -m pagekit check ... --json`). They hold
         sizes, thresholds and ink counts, not the page. If a file name in the report
         names a person or a place, replace it with a neutral name before pasting.
   - type: input

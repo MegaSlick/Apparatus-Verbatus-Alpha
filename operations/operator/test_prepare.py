@@ -17,6 +17,10 @@ from operations.operator import cli
 from operations.operator import prepare as prepare_module
 from operations.submit import submit
 
+# pagekit is optional, from its own repository; without it `verbatus prepare` refuses
+# plainly (test_prepare_without_pagekit.py).
+pytest.importorskip("pagekit", reason="pagekit is not installed")
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
