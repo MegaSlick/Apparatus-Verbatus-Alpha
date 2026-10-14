@@ -4,6 +4,7 @@
 import hashlib
 import json
 from io import BytesIO
+from pathlib import Path
 
 import pytest
 from PIL import Image
@@ -172,7 +173,32 @@ def test_kinds_cites_and_bad_images(corpus):
     assert {"id": "C_002", "reason": "image sha256 differs from the map"} in manifest["refused"]
 
 
+def test_bad_reference_files_are_refused_not_fatal(corpus):
+    ref_dir = corpus / "VolC" / "reference"
+    (ref_dir / "broken.json").write_text("{not json")
+    nameless = _record("C_009")
+    del nameless["stem"]
+    (ref_dir / "nameless.json").write_text(json.dumps(nameless))
+    manifest, examples = _run(corpus)
+    reasons = {Path(r["id"]).name: r["reason"] for r in manifest["refused"]}
+    assert reasons["broken.json"].startswith("reference unreadable")
+    assert reasons["nameless.json"] == "reference names no stem"
+    assert {"C_001", "C_002"} <= {e["page"] for e in examples}
+
+
+def test_weights_refuse_an_unknown_status_name():
+    with pytest.raises(SystemExit, match="unknown status 'agred'"):
+        B.parse_weights("agred=0.9")
+    assert B.parse_weights("unknown=exclude")["unknown"] is None
+
+
 def test_render_is_the_pipelines_pixels(corpus):
+    _, examples = _run(corpus, val_share=0)
+    for ex in examples:
+        data = (corpus / "images" / f"{ex['page']}.png").read_bytes()
+        expected, _ = B.render_pixels(data, maximum_edge=2560)
+        written = Image.open(corpus / "out" / ex["images"][0])
+        assert written.mode == "L" and written.tobytes() == expected.tobytes()
     data = _png(0, size=(3000, 1200))
     pixels, transform = B.render_pixels(data, maximum_edge=2560)
     pipeline, pipeline_transform = _downscale_page(data, maximum_edge=2560)

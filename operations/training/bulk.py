@@ -87,6 +87,11 @@ def parse_weights(text: str | None) -> dict[str, float | None]:
         name, _, value = item.strip().partition("=")
         if not name or not value:
             raise SystemExit(f"--weights-by-status item {item!r} is not status=weight")
+        if name not in DEFAULT_WEIGHTS:
+            # A typo would otherwise set a weight no page ever takes.
+            raise SystemExit(
+                f"--weights-by-status names unknown status {name!r}; one of {sorted(DEFAULT_WEIGHTS)}"
+            )
         if value in ("exclude", "x"):
             weights[name] = None
             continue
@@ -446,11 +451,19 @@ def export_bulk(
     cands: list[Candidate] = []
     seen: dict[str, Path] = {}
     for path in reference_files:
-        record = json.loads(path.read_text("utf-8"))
-        if record.get("schema") not in E.READABLE_REFERENCE_SCHEMAS:
+        # One unreadable or malformed file is refused by name, never the whole export.
+        try:
+            record = json.loads(path.read_text("utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError) as failure:
+            refused.append({"id": str(path), "reason": f"reference unreadable: {failure}"})
+            continue
+        if not isinstance(record, dict) or record.get("schema") not in E.READABLE_REFERENCE_SCHEMAS:
             counts["not_a_reference"] += 1
             continue
-        stem = record["stem"]
+        stem = record.get("stem")
+        if not isinstance(stem, str) or not stem.strip():
+            refused.append({"id": str(path), "reason": "reference names no stem"})
+            continue
         if stem in seen:
             raise SystemExit(f"page {stem!r} has two references: {seen[stem]} and {path}")
         seen[stem] = path
