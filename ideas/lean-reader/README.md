@@ -37,11 +37,9 @@ ignoring how the current pipeline is built. **Read that one first.**
    views of the image add evidence; more of the same does not. Making the Perlector read
    less, by routing on witness agreement, is the tempting next step and the riskiest: it
    changes the architecture and should wait for a real export.
-5. **Two constraints shape everything:** (a) Anthropic's usage policy restricts training
-   a model on Claude outputs without its prior authorisation; the lead reads it as not
-   covering this project, and a short written confirmation would settle it (D1); and (b) the goal is the whole act, margin notes, godparents
-   and witnesses included, which rules out the field-extraction shortcuts the large
-   Quebec indexing projects took.
+5. **One constraint shapes everything:** the goal is the whole act, margin notes,
+   godparents and witnesses included, which rules out the field-extraction shortcuts the
+   large Quebec indexing projects took.
 
 **Recommended next step, in order:**
 
@@ -61,7 +59,7 @@ Each comes with a recommendation.
 
 | # | Decision | Recommendation |
 |---|---|---|
-| D1 | May the Haiku and "Luna" transcriptions be used as training labels? | **The lead's position:** the project trains a model to read images, never to imitate Claude, and builds nothing that competes with it. **This note's one flag:** the Acceptable Use Policy's wording ("use outputs to train an AI model ... without prior authorization from Anthropic") is about outputs as such, so a short written confirmation from Anthropic would remove any doubt before the Haiku transcriptions become training targets. The lead decides; nothing in the experiments depends on it, since checked pages come first anyway. Not legal advice. |
+| D1 | Use the existing assembled transcriptions? | **Yes, as the starting reference.** The lead's assembled transcriptions (several model passes, scripted disagreement flags, correction passes, format and logic checks, then assembly) are the lead's own work on public-domain documents. Use them as the large first-stage training set and as the reference to score against, and polish on the pages the lead has checked line by line. |
 | D2 | Use Teklia and BALSAC's work? | **As a yardstick only.** The lead reports that they index the pages and share only names, and their own paper shows the gap: an extraction pipeline that keeps chosen fields, with 74% of birth and death acts complete and valid. This project wants the full diplomatic reading of every act. Their line error (6.3-6.9% on 1850-1920 hands after about 1,000 training pages) is the number to compare against. |
 | D3 | Which target first: a Mac mini or a cluster? | **Neither yet; decide from E1 and E7.** On a rented card a fine-tuned 3B vision reader is not a one-day job on handwriting: churro-3B measures 5-8 s a page on an A40 here, so 120k pages is about 9 A40-days or roughly 3 H100-days. A Mac mini reads roughly 100-150 pages an hour with a 4B vision model (*unverified*), fine for a steady few thousand pages a day, not a 120k backlog. Line recognisers are fast enough for a Mac (about 30 CPU-hours for every line of 120k pages), but only once lines are found, and line finding on a Mac's CPU is unmeasured and may cost far more than the reading. |
 | D4 | Keep the Perlector large? | **Yes.** Shrink the witnesses first. A smaller Perlector, or one that reads less, comes after a real export (E5, E6). |
@@ -267,12 +265,12 @@ decision for the lead (D6), labelled as a search aid and never as text.
   research licence, or DAI, which declares no licence at all, so deriving from it is not
   permitted by default.
 - **Labels, in order of trust:** the lead's checked pages; the lead's corrections from
-  `verbatus decide`; and only then machine readings. Two cautions on machine readings:
-  the pipeline has no accepted real page yet, so a Perlector "silver" set does not exist;
-  and choosing silver pages *because the witnesses agreed* trains a model to agree with
-  them, the exact failure ARCHITECTURE warns about for the Perlector. Silver chosen that
-  way should be a minority of the data and never the polish stage. Not the Haiku outputs
-  unless D1 is settled.
+  `verbatus decide`; then the lead's assembled transcriptions of the 120k pages (D1),
+  which are the large first-stage set. One caution: those still carry errors, and where
+  every source pass made the same mistake the assembly kept it, so polish on checked
+  pages and measure on checked pages only. The same holds for any set chosen *because
+  the readers agreed*: it teaches agreement, so it belongs in the first stage, never the
+  polish.
 - **Recipe:** Teklia's two stages: train on the large, noisier set, then polish on the
   checked set. Keep doubt marks (`[[?]]`) in the targets so the model learns to say when
   it cannot read, as `operations/training/export.py` already does for the Perlector.

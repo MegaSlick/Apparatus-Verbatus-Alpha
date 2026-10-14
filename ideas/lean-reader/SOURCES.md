@@ -7,21 +7,13 @@ whole pages; a source marked *summary* was not read in full, and a figure restin
 such source is marked *unverified* in the note. Check a figure at its source before
 anyone repeats it publicly.
 
-## Prices and terms
+## Prices
 
 - Anthropic pricing (Haiku 5.5 $0.10 / $0.50 per million tokens up to 100k-token
   prompts; Haiku 4.5 $1 / $5; batch 50% off): https://platform.claude.com/docs/en/about-claude/pricing
 - Image tokens (about w/28 x h/28; up to about 4,784 tokens a page on the high-resolution
   tier): https://platform.claude.com/docs/en/build-with-claude/vision
-- Anthropic Acceptable Use Policy, "use outputs to train an AI model (e.g. model scraping
-  or model distillation) without prior authorization from Anthropic":
-  https://www.anthropic.com/legal/aup (the page showed an effective date of 12 November
-  2026; read the version in force)
-- Anthropic Commercial Terms, "access the Services to build a competing product or
-  service, including to train competing AI models": https://www.anthropic.com/legal/commercial-terms
-- Anthropic Consumer Terms, section 3: https://www.anthropic.com/legal/consumer-terms
-- OpenAI Services Agreement (competing-models clause, with an exception for internal
-  classifiers and embeddings; *summary*): https://cdn.openai.com/osa/openai-services-agreement.pdf
+
 
 ## Small readers on historical handwriting
 
