@@ -227,10 +227,18 @@ def test_malformed_reference_shapes_are_refused_alone(corpus):
     bad_entry = _record("C_011")
     bad_entry["entries"] = ["not an object"]
     (ref_dir / "C_011.json").write_text(json.dumps(bad_entry))
+    bad_words = _record("C_012")
+    bad_words["entries"][0]["words"] = ["not an object"]
+    (ref_dir / "C_012.json").write_text(json.dumps(bad_words))
+    bad_status = _record("C_013")
+    bad_status["provenance"] = {"best_status": ["agreed"]}
+    (ref_dir / "C_013.json").write_text(json.dumps(bad_status))
     manifest, examples = _run(corpus)
     reasons = {r["id"]: r["reason"] for r in manifest["refused"]}
     assert reasons["C_010"] == "reference malformed: provenance is not an object"
     assert reasons["C_011"] == "reference malformed: entry 1 is not an object"
+    assert reasons["C_012"] == "reference malformed: entry 1 has malformed words"
+    assert reasons["C_013"] == "reference malformed: provenance best_status is not a string"
     assert {"C_001", "C_002"} <= {e["page"] for e in examples}
 
 
@@ -255,3 +263,31 @@ def test_a_dead_render_worker_refuses_its_pages(monkeypatch):
     monkeypatch.setattr(B, "ProcessPoolExecutor", Pool)
     out = B.render_all([("P_1", "x.png", "0" * 64, 2560, None)], workers=2)
     assert out["P_1"] == {"stem": "P_1", "error": "render worker stopped before this page"}
+
+
+def test_a_pool_that_dies_during_submit_refuses_every_page(monkeypatch):
+    class Broken:
+        def result(self):
+            raise B.BrokenProcessPool("worker died")
+
+    class Pool:
+        def __init__(self, max_workers):
+            self.submissions = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def submit(self, fn, job):
+            self.submissions += 1
+            if self.submissions == 2:
+                raise B.BrokenProcessPool("pool died during submit")
+            return Broken()
+
+    monkeypatch.setattr(B, "ProcessPoolExecutor", Pool)
+    jobs = [(f"P_{n}", "x.png", "0" * 64, 2560, None) for n in (1, 2)]
+    out = B.render_all(jobs, workers=2)
+    assert set(out) == {"P_1", "P_2"}
+    assert all(r["error"] == "render worker stopped before this page" for r in out.values())

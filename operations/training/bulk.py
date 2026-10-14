@@ -281,8 +281,11 @@ class Candidate:
 def shape_problem(record: dict[str, Any]) -> str | None:
     """Why a readable record cannot be a reference (provenance, entries or words of the wrong
     shape), checked before anything reads them, so one malformed page is refused alone."""
-    if not isinstance(record.get("provenance", {}), (dict, type(None))):
+    provenance = record.get("provenance", {})
+    if not isinstance(provenance, (dict, type(None))):
         return "provenance is not an object"
+    if not isinstance((provenance or {}).get("best_status"), (str, type(None))):
+        return "provenance best_status is not a string"
     entries = record.get("entries")
     if not isinstance(entries, list):
         return "entries is not a list"
@@ -445,12 +448,18 @@ def render_all(jobs: list, workers: int) -> dict[str, dict[str, Any]]:
     # could take this process down too.
     out: dict[str, dict[str, Any]] = {}
     with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = [(job[0], pool.submit(_render, job)) for job in jobs]
+        stopped = {"error": "render worker stopped before this page"}
+        futures = []
+        for job in jobs:
+            try:
+                futures.append((job[0], pool.submit(_render, job)))
+            except BrokenProcessPool:  # the pool died: this page was never sent
+                out[job[0]] = {"stem": job[0], **stopped}
         for stem, future in futures:
             try:
                 out[stem] = future.result()
             except BrokenProcessPool:
-                out[stem] = {"stem": stem, "error": "render worker stopped before this page"}
+                out[stem] = {"stem": stem, **stopped}
     return out
 
 
