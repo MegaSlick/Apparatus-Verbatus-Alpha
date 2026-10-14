@@ -21,7 +21,9 @@ each whole, with a second interrupt ignored while anything is being put back or 
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import json
+import os
 import shlex
 import signal
 import subprocess
@@ -72,6 +74,7 @@ def prepare(
     from .ingest import _deny_same_user_inspection
     from .surface import credential_free_environment
 
+    pagekit = _pagekit_root()
     scans_path = _absolute(scans, workspace)
     request = {
         "scans": str(scans_path),
@@ -89,7 +92,7 @@ def prepare(
         raise OperatorError(ErrorCode.PREPARE_REFUSED, detail=str(error)) from error
     _deny_same_user_inspection(ErrorCode.PREPARE_REFUSED)
     returncode, writing, stderr, interrupted = _run_child(
-        json.dumps(request), _child_environment(credential_free_environment()), printer
+        json.dumps(request), _child_environment(credential_free_environment(), pagekit), printer
     )
     detail = stderr.strip() or f"the preparation process exited {returncode}"
     if returncode == 0:
@@ -101,14 +104,29 @@ def prepare(
     raise OperatorError(ErrorCode.PREPARE_INCOMPLETE, detail=detail)
 
 
-def _child_environment(environment: dict[str, str]) -> dict[str, str]:
-    """The worker's environment, importing the repository this module belongs to.
+def _pagekit_root() -> Path:
+    """The folder pagekit is imported from, refused plainly when it is not installed.
 
-    pagekit is not an installed package, and with PYTHONSAFEPATH set Python does not
-    import from the folder it starts in, so the repository root is named explicitly.
-    It replaces any PYTHONPATH the shell set, so no other code is imported first.
+    pagekit is an optional package from its own repository; nothing else needs it.
     """
-    return {**environment, "PYTHONPATH": str(_CHECKOUT)}
+    try:
+        spec = importlib.util.find_spec("pagekit")
+    except (ImportError, ValueError):
+        spec = None
+    if spec is None or not spec.submodule_search_locations:
+        raise OperatorError(ErrorCode.PAGEKIT_MISSING)
+    return Path(next(iter(spec.submodule_search_locations))).resolve().parent
+
+
+def _child_environment(environment: dict[str, str], pagekit: Path) -> dict[str, str]:
+    """The worker's environment, importing this repository and then pagekit.
+
+    With PYTHONSAFEPATH set Python does not import from the folder it starts in, so the
+    repository root is named explicitly, and so is the folder pagekit came from, in case
+    it was found through the shell's PYTHONPATH rather than installed. It replaces any
+    PYTHONPATH the shell set, so no other code is imported first.
+    """
+    return {**environment, "PYTHONPATH": f"{_CHECKOUT}{os.pathsep}{pagekit}"}
 
 
 def _absolute(path: Path, workspace: Path) -> Path:
@@ -199,9 +217,10 @@ def _interrupts_held() -> Iterator[None]:
 def main() -> int:
     """The child: plan with pagekit, map the geometry, write everything, say what happened."""
     signal.signal(signal.SIGINT, _interrupt_once)
+    from pagekit.project import PrepareError
+
     from common.contracts.errors import ContractError
     from operations.triage.pagekit_geometry import MappingError
-    from pagekit.project import PrepareError
 
     try:
         request = _check_request(json.loads(sys.stdin.read()))
@@ -265,6 +284,12 @@ class Prepared:
 
 
 def _plan(request: dict[str, Any]) -> Prepared:
+    from pagekit import __version__ as pagekit_version
+    from pagekit.pipeline import DETECTORS
+    from pagekit.prepare import plan
+    from pagekit.project import PrepareError, load_settings
+    from pagekit.project import digest as settings_digest
+
     from operations.triage.pagekit_geometry import (
         MappingError,
         door_colour_mode,
@@ -273,11 +298,6 @@ def _plan(request: dict[str, Any]) -> Prepared:
         map_pages,
     )
     from operations.triage.pagekit_recipe import make_recipe
-    from pagekit import __version__ as pagekit_version
-    from pagekit.pipeline import DETECTORS
-    from pagekit.prepare import plan
-    from pagekit.project import PrepareError, load_settings
-    from pagekit.project import digest as settings_digest
 
     scans = Path(request["scans"])
     if not scans.is_dir():
@@ -377,10 +397,10 @@ def _plan(request: dict[str, Any]) -> Prepared:
 def _fills(source: Any, pages: list[Any], settings: dict[str, Any]) -> list[list[int]]:
     """Each page's paper colour, measured as pagekit measures the fill of its own page,
     as sample levels in the scan's stored mode."""
+    from pagekit.geometry import paper_colour
     from PIL import Image
 
     from operations.triage.pagekit_geometry import fill_levels
-    from pagekit.geometry import paper_colour
 
     image = source.open()
     palette = None
@@ -488,8 +508,9 @@ def _quoted(path: Path) -> str:
 
 def summary(prepared: Prepared) -> list[str]:
     """What was done, in plain words, and the exact next commands."""
-    from operations.triage.pagekit_geometry import NOTE_SUMMARIES
     from pagekit.answer import STEPS
+
+    from operations.triage.pagekit_geometry import NOTE_SUMMARIES
 
     out = prepared.out
     pages = prepared.pages

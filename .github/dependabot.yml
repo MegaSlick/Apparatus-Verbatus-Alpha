@@ -25,15 +25,6 @@ updates:
     groups:
       surya:
         patterns: ["*"]
-  # pagekit's own manifest.
-  - package-ecosystem: "pip"
-    directory: "/pagekit"
-    schedule:
-      interval: "weekly"
-    labels: ["dependencies", "review-ok"]
-    groups:
-      pagekit:
-        patterns: ["*"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

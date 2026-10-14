@@ -33,11 +33,14 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from common.contracts import triage as triage_manifest
 from common.imaging import check_triage_post_crop, triage_page_to_frame
-from pagekit.geometry import Chain, apply, quarter_turn, upright_size
+
+if TYPE_CHECKING:
+    # pagekit is optional (its own repository), so it is imported where it is used.
+    from pagekit.geometry import Chain
 
 Point = tuple[float, float]
 Affine = tuple[float, float, float, float, float, float]
@@ -171,6 +174,8 @@ def stored_turns(chain: Chain) -> int:
     The Door renders the scan as stored and triage can turn it but never mirror it, so
     a mirrored orientation tag (2, 4, 5 or 7) is refused.
     """
+    from pagekit.geometry import quarter_turn
+
     to_upright = chain.source_to_upright() if hasattr(chain, "source_to_upright") else None
     if to_upright is None:
         return chain.turns
@@ -190,6 +195,8 @@ def stored_turns(chain: Chain) -> int:
 def _shown(chain: Chain) -> list[Point]:
     """The source area pagekit's page shows: its written page mapped back to the
     source, inside the page's polygon (beyond it pagekit shows paper colour)."""
+    from pagekit.geometry import apply, quarter_turn
+
     width, height = _page_size(chain)
     on_source = apply(chain.output_to_source(), _rectangle(0, 0, width, height))
     from_upright = _invert(quarter_turn(chain.source_size, stored_turns(chain)))
@@ -222,6 +229,8 @@ def _regions(
     chains: Sequence[Chain], split: dict[str, Any]
 ) -> list[tuple[dict[str, int], int, float]]:
     """Each page's region of the frame, with the axis it is split on and the line."""
+    from pagekit.geometry import apply, quarter_turn, upright_size
+
     width, height = chains[0].source_size
     whole = {"x": 0, "y": 0, "w": width, "h": height}
     if len(chains) == 1:
@@ -286,6 +295,8 @@ def map_pages(
     as sample levels in the master's own mode (`fill_levels`), and `colour_modes` each
     page's triage colour mode (`door_colour_mode`; `keep` when not given).
     """
+    from pagekit.geometry import apply
+
     colour_modes = list(colour_modes or ["keep"] * len(chains))
     if not chains or len(chains) != split["pages"] or len(fills) != len(chains):
         raise MappingError("one chain and one fill are needed for each page of the split")
