@@ -9,7 +9,13 @@ the same frozen held-out pages, checked by the lead, that no training ever sees.
 time is the lead's decision (AGENTS.md); the figures below are estimates to decide
 with, not approvals.
 
-Order matters: E1 and E2 decide whether anything after them is worth building.
+Order matters: E0 and E1 come first and are cheap. E2 waits for a training set; E3 and
+E5 change nothing until the pipeline has produced a real export. For the clean-sheet
+design, its own "first week" in [CLEAN-SHEET.md](CLEAN-SHEET.md) replaces this list.
+
+Every experiment chooses on a **development** set and reports once on a separate
+**test** set that nothing was tuned on. Pages already used to pick bake-off prompts and
+rosters count as development.
 
 ## E0. Freeze the yardstick (no GPU)
 
@@ -20,8 +26,11 @@ Order matters: E1 and E2 decide whether anything after them is worth building.
   witnesses' names, so every experiment can report their recall apart from page CER.
 - Freeze them as the held-out list `operations/training/export.py --held-out` reads, and
   as the bake-off gold.
-- Record what the current witnesses and the Perlector score on them, and what the Haiku
-  passes scored, if those outputs can be found. These are the numbers to beat.
+- Count the checked pages and the hands they cover; that number decides how much
+  training is possible at all.
+- Score the current witnesses, the Perlector and the Haiku passes already made on them
+  (the bake-off scorer reads any cached answers). These are the numbers to beat, and
+  the first measurement of Haiku on these registers.
 - **Stop if:** fewer than about 150 checked pages exist. Then the first job is checking
   pages, not training.
 
@@ -39,9 +48,11 @@ Order matters: E1 and E2 decide whether anything after them is worth building.
 
 ## E2. Fine-tune one small vision reader ("the lean witness")
 
-- Base: Qwen 3-4B vision model, and churro-3B for comparison (licence permitting).
-  LoRA, Teklia's two stages: the larger silver set first (the Perlector's established
-  readings where every check passed), then the checked pages.
+- Base: a Qwen 3-4B vision model (Apache-2.0); churro-3B only as a research comparison,
+  since its weights are under a research licence.
+  LoRA, Teklia's two stages: a larger, noisier set first, then the checked pages. No
+  Perlector silver set exists until the pipeline has accepted real pages, and silver
+  chosen because the witnesses agreed teaches agreement, so keep it a minority.
 - Serve at bf16 and at 8 bits; score both with `witness_run` and `score.py`.
 - Cost: one rented 24-48 GB card for a few hours; estimate $10-40.
 - **Go if:** at 8 bits it matches or beats the best current witness on `acts`, and its

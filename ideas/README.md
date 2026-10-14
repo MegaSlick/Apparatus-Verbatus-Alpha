@@ -10,4 +10,4 @@ it changes; the note itself stays until the lead says it can go.
 
 | Note | What it asks |
 |---|---|
-| [lean-reader/](lean-reader/README.md) | Can the pipeline shrink to something that runs on a Mac mini, or scale cheaply on a cluster, and is it worth doing before training and beta? |
+| [lean-reader/](lean-reader/README.md) | Can the pipeline shrink to something that runs on a Mac mini, or scale cheaply on a cluster, and is it worth doing before training and beta? Start with [CLEAN-SHEET.md](lean-reader/CLEAN-SHEET.md), the fresh-eyes design. |
