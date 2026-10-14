@@ -44,7 +44,7 @@ free anywhere; something would delete data or a volume; or a step says "stop".
 cd ~/verbatus_alpha
 git switch main && git pull --ff-only
 git rev-parse HEAD                # this 40-character commit is <sha> for the rest of the day
-git fetch origin && git branch -r --contains "$(git rev-parse HEAD)" | grep -c origin/main   # 1
+git fetch origin && git merge-base --is-ancestor HEAD origin/main && echo 1   # 1
 uv sync --frozen --group test
 .venv/bin/python -m pytest -q -p xdist -n 4 operations/bakeoff operations/pod/test_create_pod.py
 sh .githooks/check-static.sh
@@ -390,11 +390,24 @@ home. **The session that runs it sets the budget with the lead.** The queue alon
 run.
 
 1. **Fresh run.** Create and set up a 96 GB pod as in 4.2, with a guard window for the whole
-   day (about 10 hours: `pod_start_command.sh 10 <sha>`). Then `pod_run --from door --to
-   perlector` with the Perlector served bf16 (`operations/pod/README.md`, "`pod_run.py`").
-   Do not reuse an older run: its requests were served under other settings. Keep the run
-   folder whole at `/workspace/private/runs/<run id>` (the stage seals are read through that
-   name). Keep the pod.
+   day (about 10 hours: `pod_start_command.sh 10 <sha>`). Upload the pages first: the
+   files in `private/cold73-2026-10-09/pages/` go to `/workspace/private/submission`, and
+   `private/cold73-2026-10-09/submission-manifest.json` goes to
+   `/workspace/private/submission-manifest.json`. Then launch with the block in
+   `operations/pod/README.md`, "On the pod, over SSH", with two changes:
+   - **Leave out `--no-hold`.** With it, the guard deletes the pod a minute after the run
+     ends, and no build is ever served. Without it, the run also lands at
+     `/workspace/private/runs/<run id>`, where the next steps read it.
+   - **Add `--from door --to perlector`** before the `--`.
+
+   The Perlector is served bf16, as the pipeline does. The run ends with
+   `selection-complete` in its report (exit 8). `pod_run` then returns and the pod stays
+   up. Started by hand, it has no pod timer to close it. The guard deletes it only at its
+   deadline; on idle it only warns, since `ladder_delete` is `"off"` in
+   `config/spend.toml`. Do not reuse an older run: its requests
+   were served under other settings. Keep the run folder whole at
+   `/workspace/private/runs/<run id>` (the stage seals are read through that name). Keep
+   the pod.
 2. **Check the replay.** Put the run's page images in `/workspace/private/bakeoff-pages`
    (same stems), and write the manifest with the run id on the pod:
    `ssh -p <port> root@<ip> 'cd /opt/verbatus && mkdir -p /workspace/private/bakeoff && sed

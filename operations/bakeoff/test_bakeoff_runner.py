@@ -257,6 +257,55 @@ def test_a_label_is_refused_under_another_checkpoint_or_recipe(tmp_path):
     assert W.cache_conflict(cached, {**same, "recipe": "fp8"}) == ["recipe"]
 
 
+@pytest.mark.skipif(sys.platform != "darwin", reason="reads argv through macOS's sysctl")
+def test_without_proc_a_stale_handoff_is_told_apart_by_its_exact_argv(tmp_path, monkeypatch):
+    """A Mac has no /proc: sysctl gives the exact argv, and the same rule holds. `ps`
+    would not do: ["a b", "c"] and ["a", "b c"] print alike there."""
+    import subprocess
+
+    monkeypatch.setattr(W, "PROC_CMDLINE", tmp_path / "no-proc")
+    argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+    process = subprocess.Popen(argv, start_new_session=True)
+    try:
+        stale = {"url": "http://127.0.0.1:1", "argv": ["vllm", "serve", "x"], "pid": process.pid}
+        deadline = time.monotonic() + 10
+        while not W.Server.adopted({**stale, "argv": argv})._is_recorded_server():
+            assert time.monotonic() < deadline, "the child never started"
+            time.sleep(0.01)
+        resplit = [sys.executable, "-c", "import", "time;", "time.sleep(60)"]
+        assert " ".join(resplit) == " ".join(argv)  # what `ps` would show for both
+        for recorded in (["vllm", "serve", "x"], resplit):
+            W.Server.adopted({**stale, "argv": recorded}).stop()
+            assert process.poll() is None  # the pid is alive but is not the recorded server
+        W.Server.adopted({**stale, "argv": argv}).stop()
+        process.wait(timeout=10)  # well short of the child's 60 s sleep
+        assert process.returncode == -signal.SIGTERM
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+
+def test_without_proc_or_an_exact_argv_nothing_is_signalled(tmp_path, monkeypatch):
+    import subprocess
+
+    monkeypatch.setattr(W, "PROC_CMDLINE", tmp_path / "no-proc")
+    monkeypatch.setattr(W, "_darwin_argv", lambda pid: None)
+    argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+    process = subprocess.Popen(argv, start_new_session=True)
+    try:
+        server = W.Server.adopted({"url": "http://127.0.0.1:1", "argv": argv, "pid": process.pid})
+        assert not server._is_recorded_server()
+        server.stop()
+        time.sleep(0.2)
+        assert process.poll() is None
+    finally:
+        process.kill()
+        process.wait(timeout=10)
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="reads /proc to identify the process, which only Linux has"
+)
 def test_a_stale_handoff_never_signals_an_unrelated_process(tmp_path):
     import subprocess
 
